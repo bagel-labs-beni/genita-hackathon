@@ -1,0 +1,467 @@
+import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+
+@MainActor struct ReferenceOnboardingView: View {
+    @Bindable var model: AppState
+    var referenceViewport = false
+    @State private var keyboardTop = CGFloat.greatestFiniteMagnitude
+    @State private var copied = false
+    @State private var progress = 0.0
+    @State private var importing = false
+    @State private var pickingPhoto = false
+    @State private var imageError: String?
+    @State private var player = VoicePlayer()
+    @FocusState private var nameFocused: Bool
+    let stage: Stage
+    init(model: AppState, stage: Stage? = nil, referenceViewport: Bool = false) {
+        self.model = model; self.stage = stage ?? model.stage; self.referenceViewport = referenceViewport
+    }
+    var screen: String { stage == .summary ? model.setup.depth == .quick ? "summaryQuick" : model.setup.depth == .deep ? "summaryDeep" : "summary" : stage.rawValue }
+    var nodes: [DesignNode] { DesignLibrary.nodes(screen) }
+    var texts: [DesignNode] { nodes.filter { $0.type == "text" } }
+    var title: DesignNode { texts.first { $0.fontFamily == "KMU80 TTF" }! }
+    var orb: DesignNode? { nodes.first { $0.name.hasPrefix("soul-orb") } }
+    var primaryTitle: String {
+        switch stage { case .name: "Next"; case .prompt: "Paste response"; case .paste: "Use this response"; case .preparing: "Continue in the background"; case .preferences: "Continue setup"; case .image: "Use this image"; default: "Continue" }
+    }
+    var enabled: Bool {
+        switch stage {
+        case .name: model.validName
+        case .paste: model.validResponse
+        case .image: model.setup.imageData != nil
+        case .voice: model.setup.voice != nil && player.playing == nil
+        case .help, .relationship: model.setup.answers[stage.rawValue] != nil
+        case .presence: !model.setup.presence.isEmpty
+        default: true
+        }
+    }
+    var body: some View {
+        GeometryReader { safe in
+            GeometryReader { full in
+                let viewport = referenceViewport ? CGSize(width: 390, height: stage == .name ? 519 : 844) : full.size
+                let top = referenceViewport ? CGFloat(0) : safe.safeAreaInsets.top - 44
+                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing ? 140 : 108)
+                let stretch = max(0, viewport.height - 844 - top)
+                ZStack(alignment: .topLeading) {
+                    Color("Canvas")
+                    ScrollView {
+                        content(width: viewport.width, top: top, stretch: stretch)
+                            .frame(width: viewport.width, height: max(footerY - 24, (stage == .summary ? 680 : 704) + top + stretch + headingExtra(width: viewport.width)), alignment: .topLeading)
+                    }.frame(height: max(1, footerY - 16)).scrollDismissesKeyboard(.interactively)
+                    if stage != .paste || keyboardTop == .greatestFiniteMagnitude { primary(width: viewport.width).frame(width: viewport.width - 77, height: 50).position(x: (viewport.width - 1) / 2, y: footerY + 25) }
+                    if stage == .preparing {
+                        Button { model.returnTo(.paste) } label: {
+                            let label = texts.first { $0.characters == "Cancel processing" }!
+                            ZStack(alignment: .topLeading) {
+                                Color.clear
+                                DesignText(node: label).frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
+                            }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
+                        }.buttonStyle(.plain).position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel processing")
+                    }
+                }.frame(width: viewport.width, height: viewport.height).clipped()
+            }.ignoresSafeArea(.container)
+        }
+        .ignoresSafeArea(.keyboard, edges: stage == .paste ? .bottom : [])
+        .background(OutsideEditorKeyboardDismissal(enabled: stage == .paste))
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { note in
+            if stage == .paste, let rect = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect {
+                keyboardTop = rect.minY >= UIScreen.main.bounds.maxY ? .greatestFiniteMagnitude : rect.minY
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in keyboardTop = .greatestFiniteMagnitude }
+        .id(stage)
+        .onAppear { if stage == .name && !referenceViewport { nameFocused = true }; if referenceViewport { progress = 0.62 } }
+        .onDisappear { player.stop() }
+        .task(id: stage) {
+            guard stage == .preparing && !referenceViewport else { return }
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"] == "preparing" { progress = 0.62; return }
+            #endif
+            for step in 1...20 {
+                do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
+                progress = Double(step) / 20
+            }
+            if model.stage == .preparing { model.go(.preferences) }
+        }
+        .sheet(isPresented: $pickingPhoto) {
+            ReferencePhotoPicker(isPresented: $pickingPhoto) { data in if let data { accept(data) } else { imageError = "This image could not be opened." } }
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
+            do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; accept(try Data(contentsOf: url)) } catch { imageError = "This image could not be opened." }
+        }
+        .alert("Try another image", isPresented: Binding(get: { imageError != nil }, set: { if !$0 { imageError = nil } })) { Button("OK") { imageError = nil } } message: { Text(imageError ?? "") }
+    }
+    @ViewBuilder func content(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        let extra = headingExtra(width: width)
+        let bodyTop = top + extra
+        ZStack(alignment: .topLeading) {
+            if let orb {
+                DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round").designSlot(orb, width: width, top: bodyTop)
+            }
+            ZStack {
+                DesignText(node: title)
+                if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
+                    Button {
+                        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }
+                        keyboardTop = .greatestFiniteMagnitude
+                    } label: { Color.clear.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityLabel("Dismiss keyboard")
+                }
+            }.frame(width: titleWidth(width), height: title.h + extra)
+                .position(x: title.x + titleWidth(width) / 2, y: title.y + top + (title.h + extra) / 2)
+            if let back = nodes.first(where: { $0.name == "Group" && $0.y == 67 }) {
+                Button { model.back() } label: { Image(resource: "reference-back").resizable().frame(width: 8.8, height: 15.8).frame(width: 44, height: 44) }
+                    .buttonStyle(.plain).position(x: back.x + 3.5, y: back.y + top + 7).accessibilityLabel("Back").accessibilityIdentifier("back")
+            }
+            switch stage {
+            case .name: nameInput(width: width, top: bodyTop)
+            case .prompt, .paste, .preferences: profileContent(width: width, top: bodyTop)
+            case .preparing: processing(width: width, top: bodyTop)
+            case .image: imageContent(width: width, top: bodyTop)
+            case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
+            case .summary: summaryContent(width: width, top: bodyTop, stretch: stretch)
+            case .depth, .help, .relationship, .boundaries: choices(width: width, top: bodyTop, stretch: stretch)
+            case .presence: presence(width: width, top: bodyTop, stretch: stretch)
+            case .challenge, .tempo, .initiative: slider(width: width, top: bodyTop, stretch: stretch)
+            default: EmptyView()
+            }
+        }
+    }
+    func titleWidth(_ width: CGFloat) -> CGFloat { stage == .name ? min(title.w, width - 78) : width - 62 }
+    func headingExtra(width: CGFloat) -> CGFloat {
+        guard width < 390 else { return 0 }
+        let text = title.attributed()
+        let reference = text.boundingRect(with: CGSize(width: titleWidth(390) + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height
+        let actual = text.boundingRect(with: CGSize(width: titleWidth(width) + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height
+        return max(0, ceil(actual - reference))
+    }
+    func primary(width: CGFloat) -> some View {
+        let source = texts.first { $0.characters == primaryTitle && $0.y > 400 }!
+        let sourceY: CGFloat = stage == .name ? 454 : stage == .preparing ? 704 : 736
+        return Button(action: advance) {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 12).fill(enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
+                DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
+                    .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
+            }
+        }.buttonStyle(ReferenceButtonStyle()).disabled(!enabled).accessibilityLabel(primaryTitle).accessibilityIdentifier("primaryCTA")
+    }
+    func advance() {
+        switch stage {
+        case .name: model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.go(.prompt)
+        case .prompt: model.go(.paste)
+        case .paste: UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); model.go(.preparing)
+        case .preparing, .preferences: model.go(.image)
+        case .image: model.go(.voice)
+        case .voice: player.stop(); model.go(.depth)
+        case .summary: model.go(.connecting)
+        default: model.nextPreference()
+        }
+    }
+    func nameInput(width: CGFloat, top: CGFloat) -> some View {
+        let box = nodes.first { $0.type == "box" && $0.y == 287 }!
+        return TextField("Name", text: $model.setup.name).font(TypeStyle.body(20, .medium)).multilineTextAlignment(.center).textContentType(.givenName).submitLabel(.next).focused($nameFocused)
+            .frame(height: 56).background(Color(white: 0.9333), in: RoundedRectangle(cornerRadius: 12)).designSlot(box, width: width, top: top).accessibilityIdentifier("nameInput").onSubmit { if model.validName { advance() } }
+    }
+    @ViewBuilder func profileContent(width: CGFloat, top: CGFloat) -> some View {
+        let card = nodes.first { $0.name == (stage == .prompt ? "Your prompt" : stage == .paste ? "Your AI’s response" : "Your preferences") && $0.type != "text" }!
+        DesignShape(node: card).designSlot(card, width: width, top: top)
+        ForEach(texts.filter { $0.id != title.id && $0.y < 700 && ($0.y < 319 || $0.y >= 617) }) { n in
+            DesignText(node: n).designSlot(n, width: width, top: top)
+        }
+        let body = texts.first { $0.y == 319 }!
+        if stage == .prompt {
+            DesignText(node: body, text: AppState.prompt).designSlot(body, width: width, top: top)
+            Button { UIPasteboard.general.string = AppState.prompt; copied = true } label: {
+                Group { if copied { Image(systemName: "checkmark").foregroundStyle(Color("Ink")) } else { Image(resource: "copy").resizable().frame(width: 19.4526, height: 20.4) } }.frame(width: 44, height: 44)
+            }.buttonStyle(.plain).position(x: width - 65.8737, y: 296.4 + top).accessibilityLabel(copied ? "Prompt copied" : "Copy prompt").accessibilityIdentifier("copyPrompt")
+        } else {
+            let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))
+            ReferenceEditor(text: $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...")
+                .frame(width: body.w + width - 390, height: editorHeight).position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + editorHeight / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+        }
+    }
+    @ViewBuilder func processing(width: CGFloat, top: CGFloat) -> some View {
+        ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
+            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top)
+        }
+        let track = nodes.first { $0.name == "Rectangle 305" }!
+        let fill = nodes.first { $0.name == "Rectangle 306" }!
+        let trackWidth = width - 117
+        DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + track.h / 2)
+        let fillWidth = referenceViewport ? fill.w : trackWidth * CGFloat(progress)
+        DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + fill.h / 2)
+    }
+    func accept(_ data: Data) {
+        guard let image = UIImage(data: data), let thumb = image.preparingThumbnail(of: CGSize(width: 1200, height: 1200)), let jpeg = thumb.jpegData(compressionQuality: 0.88) else { imageError = "Please select a supported image."; return }
+        model.setup.imageData = jpeg
+    }
+    @ViewBuilder func imageContent(width: CGFloat, top: CGFloat) -> some View {
+        ForEach(texts.filter { $0.id != title.id && $0.y < 200 }) { n in DesignText(node: n).designSlot(n, width: width, top: top) }
+        Button { pickingPhoto = true } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
+                if let data = model.setup.imageData, let image = UIImage(data: data) {
+                    Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 12))
+                } else {
+                    let icon = nodes.first { $0.name == "Subtract" }!
+                    let label = texts.first { $0.characters == "Upload Image" }!
+                    ZStack(alignment: .topLeading) {
+                        Image(resource: "reference-upload").resizable().frame(width: icon.w, height: icon.h).position(x: (width - 48) / 2, y: icon.y - 226 + icon.h / 2)
+                        DesignText(node: label).frame(width: label.w, height: label.h).position(x: (width - 48) / 2, y: label.y - 226 + label.h / 2)
+                    }
+                }
+            }
+        }.buttonStyle(.plain).frame(width: width - 48, height: 289).position(x: width / 2, y: 370.5 + top).accessibilityLabel(model.setup.imageData == nil ? "Upload Image" : "Change image").accessibilityIdentifier("uploadImage").contextMenu { Button("Choose from Files") { pickingPhoto = false; importing = true } }
+        if model.setup.imageData != nil {
+            Button { model.setup.imageData = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.black, .white).font(.system(size: 24)) }
+                .position(x: width - 48, y: 250 + top).accessibilityLabel("Remove image").accessibilityIdentifier("removeImage")
+        }
+        // Alternate import uses the same upload surface; no extra product button is invented.
+        Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
+    }
+    var cardFrames: [DesignNode] { nodes.filter { $0.type == "frame" && $0.x == 24 && $0.w == 342 && $0.h == 68 }.sorted { $0.y < $1.y } }
+    func cardTexts(_ card: DesignNode) -> [DesignNode] { texts.filter { $0.y >= card.y && $0.y < card.y + card.h }.sorted { $0.y < $1.y } }
+    @ViewBuilder func card(_ frame: DesignNode, selected: Bool, width: CGFloat, action: @escaping () -> Void) -> some View {
+        let labels = cardTexts(frame)
+        Button(action: action) {
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 12).fill(selected ? Color(red: 0.8431, green: 0.9451, blue: 1) : .white)
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.clear : Color(white: 0.8902), lineWidth: 1))
+                ForEach(Array(labels.enumerated()), id: \.element.id) { i, n in
+                    DesignText(node: n, color: selected ? UIColor(red: i == 0 ? 0 : 0.3294, green: i == 0 ? 0.6353 : 0.7569, blue: 1, alpha: 1) : i == 0 ? UIColor(white: 0.067, alpha: 1) : UIColor(white: 0.7176, alpha: 1))
+                        .frame(width: n.w, height: n.h).position(x: n.x - frame.x + n.w / 2, y: n.y - frame.y + n.h / 2)
+                }
+                if selected { SelectionMark().frame(width: 26, height: 26).position(x: width - 36, y: 34) }
+            }
+        }.buttonStyle(.plain).accessibilityLabel(labels.map { $0.characters ?? "" }.joined(separator: ", ")).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    @ViewBuilder func choices(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
+            let value = cardTexts(n).first?.characters ?? ""
+            let selected = stage == .depth ? model.setup.depth == SetupDepth.allCases[i] : stage == .boundaries ? model.setup.boundaries.contains(value) : model.setup.answers[stage.rawValue] == value
+            card(n, selected: selected, width: width - 48) {
+                if stage == .depth { model.setup.depth = SetupDepth.allCases[i] }
+                else if stage == .boundaries { model.toggleBoundary(value) }
+                else { model.answer(stage.rawValue, value) }
+            }.designSlot(n, width: width, top: top, stretch: stretch)
+        }
+    }
+    @ViewBuilder func voiceContent(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
+            let playing = player.playing == i
+            let selected = model.setup.voice == i && !playing
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(selected ? Color("Selection") : .white)
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(playing ? Color("AccentColor") : selected ? .clear : Color(white: 227.0 / 255), lineWidth: 1))
+                ForEach(cardTexts(n)) { label in
+                    let selectedColor = label.characters == "Warm, steady" ? UIColor(red: 84.0 / 255, green: 193.0 / 255, blue: 1, alpha: 1) : UIColor(red: 0, green: 162.0 / 255, blue: 1, alpha: 1)
+                    DesignText(node: label, color: selected ? selectedColor : nil)
+                        .frame(width: label.w, height: label.h).position(x: label.x - n.x + label.w / 2 + (label.characters == "00:08" ? width - 390 : 0), y: label.y - n.y + label.h / 2)
+                }
+                HStack(spacing: 0) {
+                    Button { player.stop(); model.setup.voice = i } label: { Color.clear.contentShape(Rectangle()) }.accessibilityLabel("Select voice \(i + 1)").accessibilityIdentifier("voice\(i)")
+                    Button { model.setup.voice = i; player.preview(i) } label: {
+                        ZStack {
+                            Image(resource: playing ? "voice-playing" : selected ? "voice-selected-play" : "reference-play").resizable().frame(width: 32, height: 32)
+                            if playing { HStack(spacing: 2) { Rectangle().frame(width: 3, height: 11); Rectangle().frame(width: 3, height: 11) }.foregroundStyle(.white) }
+                        }.frame(width: 44, height: 44)
+                    }.accessibilityLabel("Preview voice \(i + 1)").padding(.trailing, 62)
+                }
+            }.buttonStyle(.plain).designSlot(n, width: width, top: top, stretch: stretch)
+        }
+    }
+    @ViewBuilder func presence(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        let labels = texts.filter { $0.y >= 579 && $0.y < 720 }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
+        ForEach(labels) { label in
+            let value = label.characters ?? ""
+            let key = "\(label.x)-\(label.y)"
+            let inferred = Set(model.setup.presence.compactMap { word in labels.first(where: { $0.characters == word }).map { "\($0.x)-\($0.y)" } })
+            let selectedIDs = model.setup.presenceCardIDs ?? inferred
+            let selected = selectedIDs.contains(key)
+            let cardWidth = (width - 90) / 2
+            let left = label.x < 200 ? CGFloat(38) : 51 + cardWidth
+            Button {
+                var updated = selectedIDs
+                if updated.contains(key) { updated.remove(key) } else { updated.insert(key) }
+                model.setup.presenceCardIDs = updated
+                model.setup.presence = Set(labels.filter { updated.contains("\($0.x)-\($0.y)") }.compactMap(\.characters))
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(selected ? Color("Selection") : .white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.clear : Color(white: 0.89)))
+                    DesignText(node: label, color: selected ? UIColor(red: 0, green: 0.6353, blue: 1, alpha: 1) : UIColor(white: 0.067, alpha: 1)).frame(width: 100, height: label.h)
+                    if selected { SelectionMark().frame(width: 16, height: 16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(6) }
+                }
+            }.buttonStyle(.plain).frame(width: cardWidth, height: 65).position(x: left + cardWidth / 2, y: label.y - 22 + 32.5 + top + stretch)
+                .accessibilityLabel(value).accessibilityAddTraits(selected ? .isSelected : [])
+        }
+    }
+    @ViewBuilder func slider(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        let endpoint = texts.filter { $0.y == 562 }
+        ForEach(endpoint) { n in DesignText(node: n).designSlot(n, width: width, top: top, stretch: stretch) }
+        let bubble = nodes.first { $0.name == "Rectangle 297" }!
+        DesignShape(node: bubble).designSlot(bubble, width: width, top: top, stretch: stretch)
+        let example = texts.first { $0.y == 478 }!
+        DesignText(node: example, text: referenceViewport ? nil : preview).designSlot(example, width: width, top: top, stretch: stretch)
+        Image(resource: "reference-avatar").resizable().frame(width: 50, height: 89).offset(x: -4, y: -16).frame(width: 45, height: 45, alignment: .topLeading).clipped().clipShape(Circle()).position(x: 67.5, y: 487.5 + top + stretch)
+        ReferenceSlider(value: Binding(get: { Double(model.setup.answers[stage.rawValue] ?? "2") ?? 2 }, set: { model.answer(stage.rawValue, String(Int($0))) }))
+            .frame(width: width - 62, height: 24).position(x: (width + 8) / 2, y: 599 + top + stretch).accessibilityLabel(endpoint.map { $0.characters ?? "" }.joined(separator: " to "))
+    }
+    var preview: String {
+        let index = min(4, max(0, Int(model.setup.answers[stage.rawValue] ?? "2") ?? 2))
+        let samples = stage == .challenge ? ["Let’s gently explore what works for you.", "Would you like to try another approach?", "Let’s see what works and what we can rethink.", "Tell me when my plan doesn’t make sense.", "Be direct. Challenge my assumptions."] : stage == .tempo ? ["Take your time. Let’s think this through.", "Let’s pause and look at what matters most.", "A little reflection, then a clear next step.", "Give me the main point and the next step.", "Keep it quick. Just the answer and next step."] : ["Wait for me to ask before reaching out.", "Check in only when I invite you to.", "A gentle check-in now and then is welcome.", "Check in when a deadline is at risk.", "Anticipate what I need. Suggest a next step."]
+        return samples[index]
+    }
+    @ViewBuilder func summaryContent(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 0.996)).shadow(color: .black.opacity(0.04), radius: 25.9)
+            .frame(width: width, height: 551 + stretch).position(x: width / 2, y: 291 + top + (551 + stretch) / 2)
+        RoundedRectangle(cornerRadius: 3.5).fill(Color(white: 0.859)).frame(width: 47, height: 5).position(x: width / 2, y: 305.5 + top)
+        ForEach(texts.filter { $0.y >= 345 && $0.y < 700 }) { n in
+            let key = n.characters ?? ""
+            let replacement: String? = n.fontSize == 18 ? summaryValue(y: n.y) : nil
+            DesignText(node: n, text: referenceViewport ? nil : replacement).designSlot(n, width: width, top: top)
+                .accessibilityIdentifier(key)
+        }
+    }
+    func summaryValue(y: CGFloat) -> String {
+        if y < 438 { return model.setup.answers["help"] ?? "Think with me" }
+        if y < 510 { return model.setup.presence.sorted().joined(separator: ", ") }
+        if y < 582 { return model.setup.answers["initiative"].map { ["Only when asked", "By invitation", "Occasional check-ins", "When a deadline is at risk", "Anticipate"][min(4, max(0, Int($0) ?? 0))] } ?? "Only when asked" }
+        return model.setup.boundaries.isEmpty ? "No messages or actions without approval" : model.setup.boundaries.sorted().joined(separator: ", ")
+    }
+}
+private struct SelectionMark: View {
+    var body: some View { GeometryReader { g in ZStack { Image(resource: "reference-selected").resizable(); Image(resource: "reference-check").resizable().frame(width: g.size.width < 20 ? 10 : 14, height: g.size.width < 20 ? 7 : 10).offset(y: g.size.width < 20 ? 0.5 : 1) } } }
+}
+struct ReferenceEditor: UIViewRepresentable {
+    @Binding var text: String
+    var node: DesignNode
+    var editable: Bool
+    var placeholder: String
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(); view.backgroundColor = .clear; view.delegate = context.coordinator
+        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
+        view.isEditable = editable; view.isSelectable = true
+        view.typingAttributes = node.attributed(" ").attributes(at: 0, effectiveRange: nil)
+        let hint = UILabel(); hint.tag = 19; hint.numberOfLines = 0
+        hint.attributedText = node.attributed(placeholder, color: UIColor(white: 0.55, alpha: 1)); hint.isUserInteractionEnabled = false
+        hint.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(hint)
+        NSLayoutConstraint.activate([hint.leadingAnchor.constraint(equalTo: view.leadingAnchor), hint.topAnchor.constraint(equalTo: view.topAnchor), hint.widthAnchor.constraint(equalTo: view.widthAnchor)])
+        view.keyboardDismissMode = .onDrag
+        view.alwaysBounceVertical = true
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        context.coordinator.parent = self
+        view.viewWithTag(19)?.isHidden = !text.isEmpty || !editable
+        if view.text != text { view.attributedText = node.attributed(text) }
+        view.accessibilityIdentifier = editable ? "responseInput" : "profileResult"
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: ReferenceEditor; weak var view: UITextView?
+        init(_ parent: ReferenceEditor) { self.parent = parent }
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { scrollView.endEditing(true) }
+        func textViewDidChange(_ textView: UITextView) { parent.text = textView.text; textView.viewWithTag(19)?.isHidden = !textView.text.isEmpty }
+    }
+}
+private struct OutsideEditorKeyboardDismissal: UIViewRepresentable {
+    var enabled: Bool
+    func makeUIView(context: Context) -> DismissalView { DismissalView() }
+    func updateUIView(_ view: DismissalView, context: Context) { view.tap.isEnabled = enabled }
+    static func dismantleUIView(_ view: DismissalView, coordinator: ()) { view.detach() }
+
+    final class DismissalView: UIView, UIGestureRecognizerDelegate {
+        weak var attachedWindow: UIWindow?
+        lazy var tap: UITapGestureRecognizer = {
+            let gesture = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
+            gesture.cancelsTouchesInView = false
+            gesture.delegate = self
+            return gesture
+        }()
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            detach()
+            attachedWindow = window
+            window?.addGestureRecognizer(tap)
+        }
+        func detach() { attachedWindow?.removeGestureRecognizer(tap); attachedWindow = nil }
+        @objc private func dismissKeyboard() { attachedWindow?.endEditing(true) }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var view = touch.view
+            while let current = view {
+                if current is UITextView || current is UITextField { return false }
+                view = current.superview
+            }
+            return true
+        }
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool { true }
+    }
+}
+private final class ReferenceNativeSlider: UISlider {
+    let stops = (0..<5).map { _ in UIImageView() }
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        let url = Bundle.main.url(forResource: "reference-slider-dot", withExtension: "png")!
+        let image = UIImage(contentsOfFile: url.path)!
+        for stop in stops { stop.image = image; stop.isUserInteractionEnabled = false; addSubview(stop) }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func trackRect(forBounds bounds: CGRect) -> CGRect { CGRect(x: 12, y: bounds.midY - 0.5, width: bounds.width - 24, height: 1) }
+    override func thumbRect(forBounds bounds: CGRect, trackRect rect: CGRect, value: Float) -> CGRect {
+        CGRect(x: CGFloat(value / 4) * (bounds.width - 24), y: bounds.midY - 12, width: 24, height: 24)
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let selected = Int(value.rounded())
+        let gap = (bounds.width - 88) / 4
+        for (i, stop) in stops.enumerated() {
+            stop.isHidden = i == selected
+            stop.frame = CGRect(x: CGFloat(i) * (16 + gap) + (selected < i ? 8 : 0), y: bounds.midY - 8, width: 16, height: 16)
+            bringSubviewToFront(stop)
+        }
+    }
+}
+struct ReferenceSlider: UIViewRepresentable {
+    @Binding var value: Double
+    func makeUIView(context: Context) -> UISlider {
+        let slider = ReferenceNativeSlider(); slider.minimumValue = 0; slider.maximumValue = 4
+        slider.minimumTrackTintColor = UIColor(white: 0.89, alpha: 1); slider.maximumTrackTintColor = UIColor(white: 0.89, alpha: 1)
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24))
+        let halo = UIImage(contentsOfFile: Bundle.main.url(forResource: "reference-slider-halo", withExtension: "png")!.path)!
+        let fill = UIImage(contentsOfFile: Bundle.main.url(forResource: "reference-slider-selected", withExtension: "png")!.path)!
+        slider.setThumbImage(renderer.image { _ in halo.draw(in: CGRect(x: 0, y: 0, width: 24, height: 24)); fill.draw(in: CGRect(x: 4, y: 4, width: 16, height: 16)) }, for: .normal)
+        return slider
+    }
+    func updateUIView(_ view: UISlider, context: Context) { context.coordinator.parent = self; view.value = Float(value); view.setNeedsLayout() }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    final class Coordinator: NSObject { var parent: ReferenceSlider; init(_ parent: ReferenceSlider) { self.parent = parent }; @objc func changed(_ slider: UISlider) { parent.value = Double(slider.value.rounded()); slider.value = Float(parent.value); slider.setNeedsLayout() } }
+}
+
+private struct ReferenceButtonStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label } }
+
+struct ReferencePhotoPicker: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    var received: (Data?) -> Void
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(); config.filter = .images; config.selectionLimit = 1
+        let controller = PHPickerViewController(configuration: config); controller.delegate = context.coordinator
+        return controller
+    }
+    func updateUIViewController(_ controller: PHPickerViewController, context: Context) { context.coordinator.parent = self }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        var parent: ReferencePhotoPicker
+        init(_ parent: ReferencePhotoPicker) { self.parent = parent }
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            parent.isPresented = false
+            guard let provider = results.first?.itemProvider else { return }
+            provider.loadObject(ofClass: UIImage.self) { image, _ in
+                let data = (image as? UIImage)?.jpegData(compressionQuality: 0.9)
+                DispatchQueue.main.async { self.parent.received(data) }
+            }
+        }
+    }
+}

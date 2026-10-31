@@ -1,0 +1,1296 @@
+{
+ "name": "[EN] C02 · iPhone · 연결 중",
+ "figmaId": "560:19888",
+ "figmaType": "FRAME",
+ "width": 390,
+ "height": 844,
+ "nodes": [
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Group 519",
+   "figmaId": "560:19889",
+   "figmaType": "GROUP",
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "clip": false,
+   "group": true,
+   "children": [
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 517",
+     "figmaId": "560:19890",
+     "figmaType": "GROUP",
+     "x": 0,
+     "y": 0,
+     "w": 390,
+     "h": 844,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Rectangle 378",
+       "figmaId": "560:19891",
+       "figmaType": "RECTANGLE",
+       "x": 0,
+       "y": 0,
+       "w": 390,
+       "h": 844,
+       "mask": {
+        "type": "ALPHA",
+        "shape": "rect"
+       },
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0.8509804010391235,
+          "g": 0.8509804010391235,
+          "b": 0.8509804010391235
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0.8509804010391235,
+        "g": 0.8509804010391235,
+        "b": 0.8509804010391235,
+        "a": 1
+       },
+       "radius": 40
+      },
+      {
+       "type": "box",
+       "ref": null,
+       "name": "image 5",
+       "figmaId": "560:19892",
+       "figmaType": "RECTANGLE",
+       "x": -53,
+       "y": -4,
+       "w": 479,
+       "h": 852,
+       "paintsRaw": [
+        {
+         "type": "IMAGE",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "scaleMode": "FILL",
+         "scalingFactor": 0.5,
+         "rotation": 0,
+         "filters": {
+          "exposure": 0,
+          "contrast": 0,
+          "saturation": 0,
+          "temperature": 0,
+          "tint": 0,
+          "highlights": 0,
+          "shadows": 0
+         },
+         "imageTransform": [
+          [
+           1,
+           0,
+           0
+          ],
+          [
+           0,
+           1,
+           0
+          ]
+         ],
+         "imageHash": "4b753b14c27635446f140ac256219576d47bc630"
+        }
+       ],
+       "imageScale": "FILL",
+       "imageFill": true
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 373",
+     "figmaId": "560:19893",
+     "figmaType": "GROUP",
+     "x": 311,
+     "y": 642,
+     "w": 46,
+     "h": 46,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse 145",
+       "figmaId": "560:19894",
+       "figmaType": "ELLIPSE",
+       "x": 0,
+       "y": 0,
+       "w": 46,
+       "h": 46,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 0.15000000596046448,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.15000000596046448
+       },
+       "effectsRaw": [
+        {
+         "type": "GLASS",
+         "visible": true,
+         "radius": 5,
+         "boundVariables": {},
+         "refraction": 0.800000011920929,
+         "depth": 25,
+         "lightAngle": -45,
+         "lightIntensity": 0.800000011920929,
+         "dispersion": 0.5,
+         "splay": 0
+        }
+       ]
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Group 496",
+       "figmaId": "560:19895",
+       "figmaType": "GROUP",
+       "x": 12,
+       "y": 15.89,
+       "w": 24,
+       "h": 14.22,
+       "clip": false,
+       "group": true,
+       "children": [
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Rectangle 363",
+         "figmaId": "560:19896",
+         "figmaType": "RECTANGLE",
+         "x": 0,
+         "y": 0,
+         "w": 18.67,
+         "h": 14.22,
+         "stroke": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "INSIDE",
+         "strokeCap": "NONE",
+         "strokeJoin": "MITER",
+         "radius": 3
+        },
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Polygon 3",
+         "figmaId": "560:19897",
+         "figmaType": "VECTOR",
+         "x": 17.78,
+         "y": 1.33,
+         "w": 6.22,
+         "h": 12.44,
+         "stroke": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "INSIDE",
+         "strokeCap": "NONE",
+         "strokeJoin": "MITER",
+         "radius": 1
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 372",
+     "figmaId": "560:19898",
+     "figmaType": "GROUP",
+     "x": 311,
+     "y": 701,
+     "w": 46,
+     "h": 46,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse 145",
+       "figmaId": "560:19899",
+       "figmaType": "ELLIPSE",
+       "x": 0,
+       "y": 0,
+       "w": 46,
+       "h": 46,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 0.15000000596046448,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.15000000596046448
+       },
+       "effectsRaw": [
+        {
+         "type": "GLASS",
+         "visible": true,
+         "radius": 5,
+         "boundVariables": {},
+         "refraction": 0.800000011920929,
+         "depth": 25,
+         "lightAngle": -45,
+         "lightIntensity": 0.800000011920929,
+         "dispersion": 0.5,
+         "splay": 0
+        }
+       ]
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Group 376",
+       "figmaId": "560:19900",
+       "figmaType": "GROUP",
+       "x": 15.4,
+       "y": 15,
+       "w": 14.33,
+       "h": 17,
+       "clip": false,
+       "group": true,
+       "children": [
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Rectangle 305",
+         "figmaId": "560:19901",
+         "figmaType": "RECTANGLE",
+         "x": 4.6,
+         "y": 0,
+         "w": 6,
+         "h": 10,
+         "stroke": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "OUTSIDE",
+         "strokeCap": "NONE",
+         "strokeJoin": "MITER",
+         "radius": 3
+        },
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Ellipse 157",
+         "figmaId": "560:19902",
+         "figmaType": "VECTOR",
+         "x": 0,
+         "y": 7.22,
+         "w": 14.33,
+         "h": 9.38,
+         "stroke": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "CENTER",
+         "strokeCap": "ROUND",
+         "strokeJoin": "MITER"
+        },
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Vector 403",
+         "figmaId": "560:19903",
+         "figmaType": "VECTOR",
+         "x": 7.6,
+         "y": 16,
+         "w": 0,
+         "h": 1,
+         "stroke": {
+          "r": 1,
+          "g": 1,
+          "b": 1,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "CENTER",
+         "strokeCap": "ROUND",
+         "strokeJoin": "MITER",
+         "radius": 2
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 374",
+     "figmaId": "560:19904",
+     "figmaType": "GROUP",
+     "x": 311,
+     "y": 760,
+     "w": 46,
+     "h": 46,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse 145",
+       "figmaId": "560:19905",
+       "figmaType": "ELLIPSE",
+       "x": 0,
+       "y": 0,
+       "w": 46,
+       "h": 46,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 0.15000000596046448,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.15000000596046448
+       },
+       "effectsRaw": [
+        {
+         "type": "GLASS",
+         "visible": true,
+         "radius": 5,
+         "boundVariables": {},
+         "refraction": 0.800000011920929,
+         "depth": 25,
+         "lightAngle": -45,
+         "lightIntensity": 0.800000011920929,
+         "dispersion": 0.5,
+         "splay": 0
+        }
+       ]
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "lucide",
+       "figmaId": "560:19906",
+       "figmaType": "INSTANCE",
+       "x": 13,
+       "y": 13,
+       "w": 20,
+       "h": 20,
+       "clip": true,
+       "component": {
+        "id": "245:3005",
+        "name": "lucide",
+        "setId": "245:3004",
+        "variant": "icon=ellipsis-vertical"
+       },
+       "children": [
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Vector",
+         "figmaId": "I560:19906;641:1608",
+         "figmaType": "VECTOR",
+         "x": 9.17,
+         "y": 3.33,
+         "w": 1.67,
+         "h": 13.33,
+         "constraints": {
+          "h": "SCALE",
+          "v": "SCALE"
+         },
+         "stroke": {
+          "r": 0.9803921580314636,
+          "g": 0.9803921580314636,
+          "b": 0.9803921580314636,
+          "a": 1
+         },
+         "strokeWidth": 1.600000023841858,
+         "strokeAlign": "CENTER",
+         "strokeCap": "ROUND",
+         "strokeJoin": "ROUND"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 515",
+     "figmaId": "560:19907",
+     "figmaType": "GROUP",
+     "x": 24,
+     "y": 63,
+     "w": 47,
+     "h": 47,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse 145",
+       "figmaId": "560:19908",
+       "figmaType": "ELLIPSE",
+       "x": 0,
+       "y": 0,
+       "w": 47,
+       "h": 47,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 0.15000000596046448,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.15000000596046448
+       },
+       "effectsRaw": [
+        {
+         "type": "GLASS",
+         "visible": true,
+         "radius": 5,
+         "boundVariables": {},
+         "refraction": 0.800000011920929,
+         "depth": 25,
+         "lightAngle": -45,
+         "lightIntensity": 0.800000011920929,
+         "dispersion": 0.5,
+         "splay": 0
+        }
+       ]
+      },
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Vector",
+       "figmaId": "560:19909",
+       "figmaType": "VECTOR",
+       "x": 13,
+       "y": 13,
+       "w": 21,
+       "h": 20,
+       "stroke": {
+        "r": 0.996412992477417,
+        "g": 0.996412992477417,
+        "b": 0.996412992477417,
+        "a": 1
+       },
+       "strokeWidth": 1.7000000476837158,
+       "strokeAlign": "CENTER",
+       "strokeCap": "ROUND",
+       "strokeJoin": "ROUND"
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 476",
+     "figmaId": "560:19910",
+     "figmaType": "GROUP",
+     "x": 31,
+     "y": 595,
+     "w": 113,
+     "h": 211,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Rectangle 331",
+       "figmaId": "560:19911",
+       "figmaType": "RECTANGLE",
+       "x": 0,
+       "y": 0,
+       "w": 113,
+       "h": 211,
+       "mask": {
+        "type": "ALPHA",
+        "shape": "rect"
+       },
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0.8509804010391235,
+          "g": 0.8509804010391235,
+          "b": 0.8509804010391235
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0.8509804010391235,
+        "g": 0.8509804010391235,
+        "b": 0.8509804010391235,
+        "a": 1
+       },
+       "radius": 16
+      },
+      {
+       "type": "box",
+       "ref": null,
+       "name": "gen_5a728b0c_1 2",
+       "figmaId": "560:19912",
+       "figmaType": "RECTANGLE",
+       "x": -19.99,
+       "y": -25,
+       "w": 147.82,
+       "h": 262.64,
+       "paintsRaw": [
+        {
+         "type": "IMAGE",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "scaleMode": "FILL",
+         "scalingFactor": 0.5,
+         "rotation": 0,
+         "filters": {
+          "exposure": 0,
+          "contrast": 0,
+          "saturation": 0,
+          "temperature": 0,
+          "tint": 0,
+          "highlights": 0,
+          "shadows": 0
+         },
+         "imageTransform": [
+          [
+           1,
+           0,
+           0
+          ],
+          [
+           0,
+           1,
+           0
+          ]
+         ],
+         "imageHash": "17b12b46cd0f2b29042f6d6f25b1821a0a35ae2d"
+        }
+       ],
+       "imageScale": "FILL",
+       "imageFill": true
+      }
+     ]
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Union",
+     "figmaId": "560:19913",
+     "figmaType": "BOOLEAN_OPERATION",
+     "x": 45,
+     "y": 777,
+     "w": 15,
+     "h": 15,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0.9803921580314636,
+        "g": 0.9803921580314636,
+        "b": 0.9803921580314636
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0.9803921580314636,
+      "g": 0.9803921580314636,
+      "b": 0.9803921580314636,
+      "a": 1
+     }
+    }
+   ]
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "System Bar",
+   "figmaId": "560:19918",
+   "figmaType": "INSTANCE",
+   "x": 0,
+   "y": 1,
+   "w": 390,
+   "h": 57,
+   "clip": false,
+   "component": {
+    "id": "452:6510",
+    "name": "System Bar",
+    "setId": "452:6486",
+    "variant": "Device=Dynamic Island"
+   },
+   "layout": {
+    "mode": "HORIZONTAL",
+    "padding": [
+     22,
+     24,
+     20,
+     24
+    ],
+    "gap": 154,
+    "primary": "CENTER",
+    "counter": "CENTER",
+    "sizingH": "FIXED",
+    "sizingV": "FIXED",
+    "wrap": false
+   },
+   "children": [
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Time",
+     "figmaId": "I560:19918;5688:5172",
+     "figmaType": "FRAME",
+     "x": 24,
+     "y": 18.5,
+     "w": 94,
+     "h": 22,
+     "layoutGrow": 1,
+     "layoutSizingH": "FILL",
+     "clip": false,
+     "layout": {
+      "mode": "HORIZONTAL",
+      "padding": [
+       1.5,
+       0,
+       0,
+       0
+      ],
+      "gap": 10,
+      "primary": "CENTER",
+      "counter": "CENTER",
+      "sizingH": "FILL",
+      "sizingV": "FIXED",
+      "wrap": false
+     },
+     "children": [
+      {
+       "type": "text",
+       "ref": null,
+       "name": "Time",
+       "figmaId": "I560:19918;5688:5173",
+       "figmaType": "TEXT",
+       "x": 29,
+       "y": 0.75,
+       "w": 36,
+       "h": 22,
+       "bindings": {
+        "fill": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+       },
+       "layoutSizingH": "HUG",
+       "layoutSizingV": "HUG",
+       "characters": "9:41",
+       "fontFamily": "SF Pro",
+       "fontStyle": "Semibold",
+       "weight": 600,
+       "fontSize": 17,
+       "lineHeight": 22,
+       "letterSpacing": -0.4300000071525574,
+       "align": "CENTER",
+       "valign": "TOP",
+       "autoResize": "WIDTH_AND_HEIGHT",
+       "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 1
+       },
+       "decoration": "NONE",
+       "textStyle": "iOS/Headline/Regular"
+      }
+     ]
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Levels",
+     "figmaId": "I560:19918;5688:5174",
+     "figmaType": "FRAME",
+     "x": 272,
+     "y": 18.5,
+     "w": 94,
+     "h": 22,
+     "layoutGrow": 1,
+     "layoutSizingH": "FILL",
+     "clip": false,
+     "layout": {
+      "mode": "HORIZONTAL",
+      "padding": [
+       1,
+       1,
+       0,
+       0
+      ],
+      "gap": 7,
+      "primary": "CENTER",
+      "counter": "CENTER",
+      "sizingH": "FILL",
+      "sizingV": "FIXED",
+      "wrap": false
+     },
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Cellular Connection",
+       "figmaId": "I560:19918;5688:5175",
+       "figmaType": "VECTOR",
+       "x": 7.67,
+       "y": 5.39,
+       "w": 19.2,
+       "h": 12.23,
+       "bindings": {
+        "fill": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+       },
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {
+          "color": {
+           "type": "VARIABLE_ALIAS",
+           "id": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+          }
+         }
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 1
+       }
+      },
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Wifi",
+       "figmaId": "I560:19918;5688:5176",
+       "figmaType": "VECTOR",
+       "x": 33.87,
+       "y": 5.34,
+       "w": 17.14,
+       "h": 12.33,
+       "bindings": {
+        "fill": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+       },
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0,
+          "b": 0
+         },
+         "boundVariables": {
+          "color": {
+           "type": "VARIABLE_ALIAS",
+           "id": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+          }
+         }
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 1
+       }
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Battery",
+       "figmaId": "I560:19918;5688:5177",
+       "figmaType": "FRAME",
+       "x": 58.01,
+       "y": 5,
+       "w": 27.33,
+       "h": 13,
+       "clip": false,
+       "children": [
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Border",
+         "figmaId": "I560:19918;5688:5178",
+         "figmaType": "RECTANGLE",
+         "x": 0,
+         "y": 0,
+         "w": 25,
+         "h": 13,
+         "constraints": {
+          "h": "CENTER",
+          "v": "SCALE"
+         },
+         "opacity": 0.3499999940395355,
+         "stroke": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 1
+         },
+         "strokeWidth": 1,
+         "strokeAlign": "INSIDE",
+         "strokeCap": "NONE",
+         "strokeJoin": "MITER",
+         "radius": 4.300000190734863
+        },
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Cap",
+         "figmaId": "I560:19918;5688:5179",
+         "figmaType": "VECTOR",
+         "x": 26,
+         "y": 4.5,
+         "w": 1.33,
+         "h": 4.08,
+         "bindings": {
+          "fill": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+         },
+         "constraints": {
+          "h": "CENTER",
+          "v": "SCALE"
+         },
+         "opacity": 0.4000000059604645,
+         "paintsRaw": [
+          {
+           "type": "SOLID",
+           "visible": true,
+           "opacity": 1,
+           "blendMode": "NORMAL",
+           "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0
+           },
+           "boundVariables": {
+            "color": {
+             "type": "VARIABLE_ALIAS",
+             "id": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+            }
+           }
+          }
+         ],
+         "fill": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 1
+         }
+        },
+        {
+         "type": "box",
+         "ref": null,
+         "name": "Capacity",
+         "figmaId": "I560:19918;5688:5180",
+         "figmaType": "RECTANGLE",
+         "x": 2,
+         "y": 2,
+         "w": 21,
+         "h": 9,
+         "bindings": {
+          "fill": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+         },
+         "constraints": {
+          "h": "CENTER",
+          "v": "SCALE"
+         },
+         "paintsRaw": [
+          {
+           "type": "SOLID",
+           "visible": true,
+           "opacity": 1,
+           "blendMode": "NORMAL",
+           "color": {
+            "r": 0,
+            "g": 0,
+            "b": 0
+           },
+           "boundVariables": {
+            "color": {
+             "type": "VARIABLE_ALIAS",
+             "id": "VariableID:28e81863ea2186e99e609a967ed7d94bd2beab51/6876:0"
+            }
+           }
+          }
+         ],
+         "fill": {
+          "r": 0,
+          "g": 0,
+          "b": 0,
+          "a": 1
+         },
+         "radius": 2.5
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Dynamic Island",
+     "figmaId": "I560:19918;6108:37533",
+     "figmaType": "RECTANGLE",
+     "x": 133,
+     "y": 11,
+     "w": 124,
+     "h": 36,
+     "absolute": true,
+     "constraints": {
+      "h": "CENTER",
+      "v": "CENTER"
+     },
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 1
+     },
+     "radius": 18
+    }
+   ]
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Group 495",
+   "figmaId": "560:19919",
+   "figmaType": "GROUP",
+   "x": 108,
+   "y": 124,
+   "w": 175,
+   "h": 36,
+   "clip": false,
+   "group": true,
+   "children": [
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Rectangle 332",
+     "figmaId": "560:19920",
+     "figmaType": "RECTANGLE",
+     "x": 0,
+     "y": 0,
+     "w": 175,
+     "h": 36,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 0.05000000074505806,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0,
+      "g": 0,
+      "b": 0,
+      "a": 0.05000000074505806
+     },
+     "shadow": {
+      "color": {
+       "r": 0,
+       "g": 0,
+       "b": 0,
+       "a": 0.15000000596046448
+      },
+      "offsetX": 0,
+      "offsetY": 4,
+      "radius": 4,
+      "spread": 0
+     },
+     "effectsRaw": [
+      {
+       "type": "GLASS",
+       "visible": true,
+       "radius": 7,
+       "boundVariables": {},
+       "refraction": 1,
+       "depth": 16,
+       "lightAngle": -45,
+       "lightIntensity": 0.6000000238418579,
+       "dispersion": 0,
+       "splay": 0.05999999865889549
+      },
+      {
+       "type": "DROP_SHADOW",
+       "visible": true,
+       "radius": 4,
+       "boundVariables": {},
+       "color": {
+        "r": 0,
+        "g": 0,
+        "b": 0,
+        "a": 0.15000000596046448
+       },
+       "offset": {
+        "x": 0,
+        "y": 4
+       },
+       "spread": 0,
+       "blendMode": "NORMAL",
+       "showShadowBehindNode": false
+      }
+     ],
+     "radius": 16
+    },
+    {
+     "type": "text",
+     "ref": null,
+     "name": "Connecting to Jin…",
+     "figmaId": "560:19921",
+     "figmaType": "TEXT",
+     "x": 34,
+     "y": 10,
+     "w": 106,
+     "h": 16,
+     "characters": "Connecting to Jin…",
+     "fontFamily": "Pretendard",
+     "fontStyle": "Medium",
+     "weight": 500,
+     "fontSize": 12,
+     "lineHeight": 16,
+     "letterSpacing": 0,
+     "align": "CENTER",
+     "valign": "TOP",
+     "autoResize": "WIDTH_AND_HEIGHT",
+     "color": {
+      "r": 1,
+      "g": 1,
+      "b": 1,
+      "a": 1
+     },
+     "decoration": "NONE"
+    }
+   ]
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Home bar",
+   "figmaId": "560:19928",
+   "figmaType": "INSTANCE",
+   "x": 0,
+   "y": 810,
+   "w": 390,
+   "h": 34,
+   "clip": false,
+   "component": {
+    "id": "245:2555",
+    "name": "Home Bar"
+   },
+   "children": [
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Home Bar",
+     "figmaId": "I560:19928;577:856",
+     "figmaType": "INSTANCE",
+     "x": 0,
+     "y": 0,
+     "w": 390,
+     "h": 34,
+     "constraints": {
+      "h": "SCALE",
+      "v": "SCALE"
+     },
+     "clip": false,
+     "component": {
+      "id": "245:2553",
+      "name": "Home bar"
+     },
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Rectangle",
+       "figmaId": "I560:19928;577:856;3:4914",
+       "figmaType": "RECTANGLE",
+       "x": 125,
+       "y": 21,
+       "w": 140,
+       "h": 5,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0.9882352948188782,
+          "g": 0.9882352948188782,
+          "b": 0.9882352948188782
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0.9882352948188782,
+        "g": 0.9882352948188782,
+        "b": 0.9882352948188782,
+        "a": 1
+       },
+       "radius": 4
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "overlayPositionType": "CENTER",
+ "overlayBackground": {
+  "type": "NONE"
+ },
+ "overlayBackgroundInteraction": "NONE",
+ "background": {
+  "r": 0.996412992477417,
+  "g": 0.996412992477417,
+  "b": 0.996412992477417,
+  "a": 1
+ },
+ "root": {
+  "paintsRaw": [
+   {
+    "type": "SOLID",
+    "visible": true,
+    "opacity": 1,
+    "blendMode": "NORMAL",
+    "color": {
+     "r": 0.996412992477417,
+     "g": 0.996412992477417,
+     "b": 0.996412992477417
+    },
+    "boundVariables": {}
+   }
+  ],
+  "radius": 40
+ },
+ "clip": true,
+ "meta": {
+  "count": 43,
+  "images": 0,
+  "vectors": 0,
+  "notes": []
+ }
+}

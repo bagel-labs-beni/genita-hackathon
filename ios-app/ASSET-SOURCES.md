@@ -1,0 +1,15 @@
+# Asset provenance
+
+- Figma file: `gwtsmRVpVmuBzrEQDfa0yX`; hackathon page `526:15117`.
+- `companion.png`: original bitmap from current iPhone conversation node `560:19929` (`imgImage6`). A selected upload replaces this design reference in the local conversation preview.
+- `camera`, `microphone`, `more`, `menu`, `selfPreview`: original SVG exports from the same current node. PNGs are transparent local renders of those vectors, not recreated icons.
+- `orb.png`: original soul-orb bitmap from the existing Genita design prototype (`53b53c1be3257303.png`). SwiftUI clips its original transparent padding using the Figma crop ratio.
+- `KMU80TTFSungkokSemiSerif.ttf`, `PretendardVariable.ttf`: existing locally installed fonts used by the supplied Figma design. Registered PostScript names were checked before implementation.
+
+No Figma screenshots are used as complete app screens. Layouts, inputs, text and buttons are native SwiftUI views. Native iOS status bars and the home indicator are supplied by the system.
+
+- `signin.png`, `google`, `apple`, `logo`: current sign-in frame `526:15929`; original background crop, provider order and white buttons are retained.
+- `brandmark`: existing original splash mark from `526:15959`.
+- `copy`: original prompt-copy icon from `526:16137`.
+
+- `mac-app/GenitaMac/mac-status-*`: original cellular, Wi-Fi and battery SVGs from Mac frame `526:16013`, system-bar instance `526:16049`; PNGs are local transparent renders. The Mac demo reproduces this status bar and Dynamic Island at the user’s request.

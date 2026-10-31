@@ -1,0 +1,1559 @@
+{
+ "name": "[EN] P · 성격 설정 · 대화 속도 · 상태 02",
+ "figmaId": "526:15776",
+ "figmaType": "FRAME",
+ "width": 390,
+ "height": 844,
+ "nodes": [
+  {
+   "type": "box",
+   "ref": null,
+   "name": "Rectangle",
+   "figmaId": "526:15777",
+   "figmaType": "RECTANGLE",
+   "x": 126,
+   "y": 818,
+   "w": 138,
+   "h": 5,
+   "paintsRaw": [
+    {
+     "type": "SOLID",
+     "visible": true,
+     "opacity": 1,
+     "blendMode": "NORMAL",
+     "color": {
+      "r": 0.06655649095773697,
+      "g": 0.06655649095773697,
+      "b": 0.06655649095773697
+     },
+     "boundVariables": {}
+    }
+   ],
+   "fill": {
+    "r": 0.06655649095773697,
+    "g": 0.06655649095773697,
+    "b": 0.06655649095773697,
+    "a": 1
+   },
+   "radius": 3
+  },
+  {
+   "type": "text",
+   "ref": null,
+   "name": "How should conversation move?",
+   "figmaId": "526:15778",
+   "figmaType": "TEXT",
+   "x": 31,
+   "y": 98,
+   "w": 316,
+   "h": 78,
+   "characters": "How should\nconversation move?",
+   "fontFamily": "KMU80 TTF",
+   "fontStyle": "Sungkok Semi-Serif",
+   "weight": 400,
+   "fontSize": 35,
+   "lineHeight": 39,
+   "letterSpacing": -0.35,
+   "align": "LEFT",
+   "valign": "TOP",
+   "autoResize": "WIDTH_AND_HEIGHT",
+   "color": {
+    "r": 0.06655649095773697,
+    "g": 0.06655649095773697,
+    "b": 0.06655649095773697,
+    "a": 1
+   },
+   "decoration": "NONE"
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Group 318",
+   "figmaId": "526:15779",
+   "figmaType": "GROUP",
+   "x": 38,
+   "y": 736,
+   "w": 313,
+   "h": 50,
+   "clip": false,
+   "group": true,
+   "children": [
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Button background",
+     "figmaId": "526:15780",
+     "figmaType": "RECTANGLE",
+     "x": 0,
+     "y": 0,
+     "w": 313,
+     "h": 50,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0.06655649095773697,
+        "g": 0.06655649095773697,
+        "b": 0.06655649095773697
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0.06655649095773697,
+      "g": 0.06655649095773697,
+      "b": 0.06655649095773697,
+      "a": 1
+     },
+     "radius": 12
+    },
+    {
+     "type": "text",
+     "ref": null,
+     "name": "Continue",
+     "figmaId": "526:15781",
+     "figmaType": "TEXT",
+     "x": 124,
+     "y": 15,
+     "w": 67,
+     "h": 18,
+     "characters": "Continue",
+     "fontFamily": "Pretendard",
+     "fontStyle": "Medium",
+     "weight": 500,
+     "fontSize": 16,
+     "lineHeight": 18,
+     "letterSpacing": 0,
+     "align": "CENTER",
+     "valign": "TOP",
+     "autoResize": "WIDTH_AND_HEIGHT",
+     "color": {
+      "r": 0.9921568632125854,
+      "g": 0.9921568632125854,
+      "b": 0.9921568632125854,
+      "a": 1
+     },
+     "decoration": "NONE"
+    }
+   ]
+  },
+  {
+   "type": "box",
+   "ref": null,
+   "name": "soul-orb-transparent (2) 1",
+   "figmaId": "526:15782",
+   "figmaType": "RECTANGLE",
+   "x": 41,
+   "y": 208,
+   "w": 295,
+   "h": 179,
+   "paintsRaw": [
+    {
+     "type": "IMAGE",
+     "visible": true,
+     "opacity": 1,
+     "blendMode": "NORMAL",
+     "scaleMode": "CROP",
+     "scalingFactor": 0.5,
+     "filters": {
+      "exposure": 0,
+      "contrast": 0,
+      "saturation": 0,
+      "temperature": 0,
+      "tint": 0,
+      "highlights": 0,
+      "shadows": 0
+     },
+     "imageTransform": [
+      [
+       0.6323529481887817,
+       0,
+       0.18582887947559357
+      ],
+      [
+       0,
+       0.29435890913009644,
+       0.3610255718231201
+      ]
+     ],
+     "imageHash": "18dcaaf8f0966d7fb4f2a82f1a5b679568597ce1"
+    }
+   ],
+   "imageScale": "CROP",
+   "imageFill": true
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Group",
+   "figmaId": "526:15783",
+   "figmaType": "GROUP",
+   "x": 34,
+   "y": 67,
+   "w": 7,
+   "h": 14,
+   "clip": false,
+   "group": true,
+   "children": [
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Vector",
+     "figmaId": "526:15784",
+     "figmaType": "VECTOR",
+     "x": 0,
+     "y": 0,
+     "w": 7,
+     "h": 14,
+     "constraints": {
+      "h": "SCALE",
+      "v": "SCALE"
+     },
+     "stroke": {
+      "r": 0.06655649095773697,
+      "g": 0.06655649095773697,
+      "b": 0.06655649095773697,
+      "a": 1
+     },
+     "strokeWidth": 1.7999999523162842,
+     "strokeAlign": "CENTER",
+     "strokeCap": "ROUND",
+     "strokeJoin": "ROUND"
+    }
+   ]
+  },
+  {
+   "type": "box",
+   "ref": null,
+   "name": "Rectangle",
+   "figmaId": "526:15785",
+   "figmaType": "RECTANGLE",
+   "x": 40,
+   "y": 598,
+   "w": 310,
+   "h": 1,
+   "paintsRaw": [
+    {
+     "type": "SOLID",
+     "visible": true,
+     "opacity": 1,
+     "blendMode": "NORMAL",
+     "color": {
+      "r": 0.8901960849761963,
+      "g": 0.8901960849761963,
+      "b": 0.8901960849761963
+     },
+     "boundVariables": {}
+    }
+   ],
+   "fill": {
+    "r": 0.8901960849761963,
+    "g": 0.8901960849761963,
+    "b": 0.8901960849761963,
+    "a": 1
+   }
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Frame 1",
+   "figmaId": "526:15786",
+   "figmaType": "FRAME",
+   "x": 35,
+   "y": 587,
+   "w": 328,
+   "h": 24,
+   "layoutSizingH": "HUG",
+   "layoutSizingV": "HUG",
+   "clip": false,
+   "layout": {
+    "mode": "HORIZONTAL",
+    "padding": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "gap": 60,
+    "primary": "MIN",
+    "counter": "CENTER",
+    "sizingH": "HUG",
+    "sizingV": "HUG",
+    "wrap": false
+   },
+   "children": [
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Ellipse",
+     "figmaId": "526:15787",
+     "figmaType": "ELLIPSE",
+     "x": 0,
+     "y": 4,
+     "w": 16,
+     "h": 16,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 1,
+        "g": 1,
+        "b": 1
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 1,
+      "g": 1,
+      "b": 1,
+      "a": 1
+     },
+     "stroke": {
+      "r": 0.8901960849761963,
+      "g": 0.8901960849761963,
+      "b": 0.8901960849761963,
+      "a": 1
+     },
+     "strokeWidth": 1,
+     "strokeAlign": "INSIDE",
+     "strokeCap": "NONE",
+     "strokeJoin": "MITER"
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Ellipse",
+     "figmaId": "526:15788",
+     "figmaType": "ELLIPSE",
+     "x": 76,
+     "y": 4,
+     "w": 16,
+     "h": 16,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 1,
+        "g": 1,
+        "b": 1
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 1,
+      "g": 1,
+      "b": 1,
+      "a": 1
+     },
+     "stroke": {
+      "r": 0.8901960849761963,
+      "g": 0.8901960849761963,
+      "b": 0.8901960849761963,
+      "a": 1
+     },
+     "strokeWidth": 1,
+     "strokeAlign": "INSIDE",
+     "strokeCap": "NONE",
+     "strokeJoin": "MITER"
+    },
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "Group 352",
+     "figmaId": "526:15789",
+     "figmaType": "GROUP",
+     "x": 152,
+     "y": 0,
+     "w": 24,
+     "h": 24,
+     "clip": false,
+     "group": true,
+     "children": [
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse",
+       "figmaId": "526:15790",
+       "figmaType": "ELLIPSE",
+       "x": 0,
+       "y": 0,
+       "w": 24,
+       "h": 24,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0.843137264251709,
+          "g": 0.9450980424880981,
+          "b": 1
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0.843137264251709,
+        "g": 0.9450980424880981,
+        "b": 1,
+        "a": 1
+       }
+      },
+      {
+       "type": "box",
+       "ref": null,
+       "name": "Ellipse",
+       "figmaId": "526:15791",
+       "figmaType": "ELLIPSE",
+       "x": 4,
+       "y": 4,
+       "w": 16,
+       "h": 16,
+       "paintsRaw": [
+        {
+         "type": "SOLID",
+         "visible": true,
+         "opacity": 1,
+         "blendMode": "NORMAL",
+         "color": {
+          "r": 0,
+          "g": 0.6352941393852234,
+          "b": 1
+         },
+         "boundVariables": {}
+        }
+       ],
+       "fill": {
+        "r": 0,
+        "g": 0.6352941393852234,
+        "b": 1,
+        "a": 1
+       }
+      }
+     ]
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Ellipse",
+     "figmaId": "526:15792",
+     "figmaType": "ELLIPSE",
+     "x": 236,
+     "y": 4,
+     "w": 16,
+     "h": 16,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 1,
+        "g": 1,
+        "b": 1
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 1,
+      "g": 1,
+      "b": 1,
+      "a": 1
+     },
+     "stroke": {
+      "r": 0.8901960849761963,
+      "g": 0.8901960849761963,
+      "b": 0.8901960849761963,
+      "a": 1
+     },
+     "strokeWidth": 1,
+     "strokeAlign": "INSIDE",
+     "strokeCap": "NONE",
+     "strokeJoin": "MITER"
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Ellipse",
+     "figmaId": "526:15793",
+     "figmaType": "ELLIPSE",
+     "x": 312,
+     "y": 4,
+     "w": 16,
+     "h": 16,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 1,
+        "g": 1,
+        "b": 1
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 1,
+      "g": 1,
+      "b": 1,
+      "a": 1
+     },
+     "stroke": {
+      "r": 0.8901960849761963,
+      "g": 0.8901960849761963,
+      "b": 0.8901960849761963,
+      "a": 1
+     },
+     "strokeWidth": 1,
+     "strokeAlign": "INSIDE",
+     "strokeCap": "NONE",
+     "strokeJoin": "MITER"
+    }
+   ]
+  },
+  {
+   "type": "text",
+   "ref": null,
+   "name": "Reflective",
+   "figmaId": "526:15794",
+   "figmaType": "TEXT",
+   "x": 35,
+   "y": 562,
+   "w": 120,
+   "h": 17,
+   "characters": "Reflective",
+   "fontFamily": "Pretendard",
+   "fontStyle": "Medium",
+   "weight": 500,
+   "fontSize": 14,
+   "letterSpacing": 0,
+   "align": "LEFT",
+   "valign": "TOP",
+   "autoResize": "HEIGHT",
+   "wrap": true,
+   "color": {
+    "r": 0.06655649095773697,
+    "g": 0.06655649095773697,
+    "b": 0.06655649095773697,
+    "a": 1
+   },
+   "decoration": "NONE"
+  },
+  {
+   "type": "text",
+   "ref": null,
+   "name": "Quick",
+   "figmaId": "526:15795",
+   "figmaType": "TEXT",
+   "x": 243,
+   "y": 562,
+   "w": 120,
+   "h": 17,
+   "characters": "Quick",
+   "fontFamily": "Pretendard",
+   "fontStyle": "Medium",
+   "weight": 500,
+   "fontSize": 14,
+   "letterSpacing": 0,
+   "align": "RIGHT",
+   "valign": "TOP",
+   "autoResize": "HEIGHT",
+   "wrap": true,
+   "color": {
+    "r": 0.06655649095773697,
+    "g": 0.06655649095773697,
+    "b": 0.06655649095773697,
+    "a": 1
+   },
+   "decoration": "NONE"
+  },
+  {
+   "type": "box",
+   "ref": null,
+   "name": "Rectangle 297",
+   "figmaId": "526:15796",
+   "figmaType": "RECTANGLE",
+   "x": 103,
+   "y": 465,
+   "w": 241,
+   "h": 61,
+   "paintsRaw": [
+    {
+     "type": "SOLID",
+     "visible": true,
+     "opacity": 1,
+     "blendMode": "NORMAL",
+     "color": {
+      "r": 0.9450980424880981,
+      "g": 0.9450980424880981,
+      "b": 0.9450980424880981
+     },
+     "boundVariables": {}
+    }
+   ],
+   "fill": {
+    "r": 0.9450980424880981,
+    "g": 0.9450980424880981,
+    "b": 0.9450980424880981,
+    "a": 1
+   },
+   "radii": [
+    8,
+    14,
+    14,
+    14
+   ]
+  },
+  {
+   "type": "text",
+   "ref": null,
+   "name": "Tell me when my plan doesn’t make sense.",
+   "figmaId": "526:15797",
+   "figmaType": "TEXT",
+   "x": 130,
+   "y": 478,
+   "w": 188,
+   "h": 34,
+   "characters": "Tell me when my plan doesn’t\nmake sense.",
+   "fontFamily": "Pretendard",
+   "fontStyle": "Medium",
+   "weight": 500,
+   "fontSize": 14,
+   "letterSpacing": 0,
+   "align": "LEFT",
+   "valign": "TOP",
+   "autoResize": "WIDTH_AND_HEIGHT",
+   "color": {
+    "r": 0.06655649095773697,
+    "g": 0.06655649095773697,
+    "b": 0.06655649095773697,
+    "a": 1
+   },
+   "decoration": "NONE"
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Group 351",
+   "figmaId": "526:15798",
+   "figmaType": "GROUP",
+   "x": 45,
+   "y": 465,
+   "w": 45,
+   "h": 45,
+   "clip": false,
+   "group": true,
+   "children": [
+    {
+     "type": "box",
+     "ref": null,
+     "name": "Ellipse 149",
+     "figmaId": "526:15799",
+     "figmaType": "ELLIPSE",
+     "x": 0,
+     "y": 0,
+     "w": 45,
+     "h": 45,
+     "mask": {
+      "type": "ALPHA",
+      "shape": "ellipse"
+     },
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0.8509804010391235,
+        "g": 0.8509804010391235,
+        "b": 0.8509804010391235
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0.8509804010391235,
+      "g": 0.8509804010391235,
+      "b": 0.8509804010391235,
+      "a": 1
+     }
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "image 5",
+     "figmaId": "526:15800",
+     "figmaType": "RECTANGLE",
+     "x": -4,
+     "y": -16,
+     "w": 50,
+     "h": 89,
+     "paintsRaw": [
+      {
+       "type": "SOLID",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "color": {
+        "r": 0.943434476852417,
+        "g": 0.943434476852417,
+        "b": 0.943434476852417
+       },
+       "boundVariables": {}
+      }
+     ],
+     "fill": {
+      "r": 0.943434476852417,
+      "g": 0.943434476852417,
+      "b": 0.943434476852417,
+      "a": 1
+     }
+    },
+    {
+     "type": "box",
+     "ref": null,
+     "name": "image 71",
+     "figmaId": "526:15801",
+     "figmaType": "RECTANGLE",
+     "x": -1,
+     "y": -8,
+     "w": 47,
+     "h": 62,
+     "paintsRaw": [
+      {
+       "type": "IMAGE",
+       "visible": true,
+       "opacity": 1,
+       "blendMode": "NORMAL",
+       "scaleMode": "FILL",
+       "scalingFactor": 0.5,
+       "rotation": 0,
+       "filters": {
+        "exposure": 0,
+        "contrast": 0,
+        "saturation": 0,
+        "temperature": 0,
+        "tint": 0,
+        "highlights": 0,
+        "shadows": 0
+       },
+       "imageTransform": [
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ]
+       ],
+       "imageHash": "41dd4a5c0a3de61f5ef1cfaf33f26a7dec45525f"
+      }
+     ],
+     "imageScale": "FILL",
+     "imageFill": true
+    }
+   ]
+  },
+  {
+   "type": "frame",
+   "ref": null,
+   "name": "Status bar",
+   "figmaId": "526:15802",
+   "figmaType": "INSTANCE",
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 44,
+   "clip": false,
+   "component": {
+    "id": "1:525",
+    "name": "IOS Status Bar"
+   },
+   "children": [
+    {
+     "type": "frame",
+     "ref": null,
+     "name": "IOS Status Bar",
+     "figmaId": "I526:15802;577:855",
+     "figmaType": "INSTANCE",
+     "x": 0,
+     "y": 0,
+     "w": 390,
+     "h": 44,
+     "constraints": {
+      "h": "SCALE",
+      "v": "SCALE"
+     },
+     "clip": true,
+     "component": {
+      "id": "1:517",
+      "name": "IOS Status Bar"
+     },
+     "children": [
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Notch",
+       "figmaId": "I526:15802;577:855;3:4386",
+       "figmaType": "INSTANCE",
+       "x": 0,
+       "y": 0,
+       "w": 390,
+       "h": 31.2,
+       "constraints": {
+        "h": "STRETCH",
+        "v": "MIN"
+       },
+       "clip": false,
+       "component": {
+        "id": "1:374",
+        "name": "Notch",
+        "setId": "1:4",
+        "variant": "Visible=NO"
+       },
+       "children": []
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Status Icons",
+       "figmaId": "I526:15802;577:855;3:4387",
+       "figmaType": "FRAME",
+       "x": 303.68,
+       "y": 16.64,
+       "w": 71.76,
+       "h": 14.56,
+       "constraints": {
+        "h": "MAX",
+        "v": "MIN"
+       },
+       "layoutSizingH": "HUG",
+       "layoutSizingV": "HUG",
+       "clip": false,
+       "layout": {
+        "mode": "HORIZONTAL",
+        "padding": [
+         0,
+         0,
+         0,
+         0
+        ],
+        "gap": 4.159999847412109,
+        "primary": "MIN",
+        "counter": "CENTER",
+        "sizingH": "HUG",
+        "sizingV": "HUG",
+        "wrap": false
+       },
+       "children": [
+        {
+         "type": "frame",
+         "ref": null,
+         "name": "Network Signal / Light",
+         "figmaId": "I526:15802;577:855;3:4388",
+         "figmaType": "INSTANCE",
+         "x": 0,
+         "y": 0,
+         "w": 20.8,
+         "h": 14.56,
+         "clip": false,
+         "component": {
+          "id": "1:391",
+          "name": "Network Signal / Light",
+          "setId": "1:381",
+          "variant": "Strength=3 Bars"
+         },
+         "children": [
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:33",
+           "figmaType": "VECTOR",
+           "x": 11.44,
+           "y": 4.16,
+           "w": 3.12,
+           "h": 8.32,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:34",
+           "figmaType": "VECTOR",
+           "x": 6.76,
+           "y": 6.24,
+           "w": 3.12,
+           "h": 6.24,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:35",
+           "figmaType": "VECTOR",
+           "x": 2.08,
+           "y": 7.8,
+           "w": 3.12,
+           "h": 4.68,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Empty Bar",
+           "figmaId": "I526:15802;577:855;3:4388;1:36",
+           "figmaType": "VECTOR",
+           "x": 16.12,
+           "y": 2.08,
+           "w": 3.12,
+           "h": 10.4,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 0.18000000715255737,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 0.18000000715255737
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:37",
+           "figmaType": "VECTOR",
+           "x": 11.44,
+           "y": 4.16,
+           "w": 3.12,
+           "h": 8.32,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:38",
+           "figmaType": "VECTOR",
+           "x": 6.76,
+           "y": 6.24,
+           "w": 3.12,
+           "h": 6.24,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4388;1:39",
+           "figmaType": "VECTOR",
+           "x": 2.08,
+           "y": 7.8,
+           "w": 3.12,
+           "h": 4.68,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          }
+         ]
+        },
+        {
+         "type": "frame",
+         "ref": null,
+         "name": "WiFi Signal / Light",
+         "figmaId": "I526:15802;577:855;3:4389",
+         "figmaType": "INSTANCE",
+         "x": 24.96,
+         "y": 0,
+         "w": 16.64,
+         "h": 14.56,
+         "clip": false,
+         "component": {
+          "id": "1:432",
+          "name": "WiFi Signal / Light",
+          "setId": "1:427",
+          "variant": "Property 1=2 Bars"
+         },
+         "children": [
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4389;1:120",
+           "figmaType": "VECTOR",
+           "x": 6.18,
+           "y": 9.3,
+           "w": 4.55,
+           "h": 3.18,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4389;1:121",
+           "figmaType": "VECTOR",
+           "x": 3.6,
+           "y": 5.69,
+           "w": 9.69,
+           "h": 3.45,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Path",
+           "figmaId": "I526:15802;577:855;3:4389;1:122",
+           "figmaType": "VECTOR",
+           "x": 1.04,
+           "y": 2.08,
+           "w": 14.82,
+           "h": 4.5,
+           "constraints": {
+            "h": "SCALE",
+            "v": "SCALE"
+           },
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 0.30000001192092896,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 0.30000001192092896
+           }
+          }
+         ]
+        },
+        {
+         "type": "frame",
+         "ref": null,
+         "name": "Battery / Light",
+         "figmaId": "I526:15802;577:855;3:4390",
+         "figmaType": "INSTANCE",
+         "x": 45.76,
+         "y": 0,
+         "w": 26,
+         "h": 14.56,
+         "clip": false,
+         "component": {
+          "id": "1:468",
+          "name": "Battery / Light",
+          "setId": "1:449",
+          "variant": "Status=Charging, Level=50"
+         },
+         "children": [
+          {
+           "type": "box",
+           "ref": null,
+           "name": "􀋦",
+           "figmaId": "I526:15802;577:855;3:4390;1:215",
+           "figmaType": "VECTOR",
+           "x": 8.32,
+           "y": 1.04,
+           "w": 8.32,
+           "h": 12.48,
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Subtract",
+           "figmaId": "I526:15802;577:855;3:4390;1:216",
+           "figmaType": "VECTOR",
+           "x": 0,
+           "y": 1.04,
+           "w": 23.92,
+           "h": 12.48,
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 0.6000000238418579,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 0.6000000238418579
+           }
+          },
+          {
+           "type": "box",
+           "ref": null,
+           "name": "Rectangle 23",
+           "figmaId": "I526:15802;577:855;3:4390;1:217",
+           "figmaType": "VECTOR",
+           "x": 24.96,
+           "y": 5.2,
+           "w": 1.04,
+           "h": 4.16,
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 0.6000000238418579,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.6274510025978088,
+              "g": 0.6392157077789307,
+              "b": 0.6941176652908325
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.6274510025978088,
+            "g": 0.6392157077789307,
+            "b": 0.6941176652908325,
+            "a": 0.6000000238418579
+           }
+          },
+          {
+           "type": "frame",
+           "ref": null,
+           "name": "Battery",
+           "figmaId": "I526:15802;577:855;3:4390;1:218",
+           "figmaType": "GROUP",
+           "x": 2.08,
+           "y": 3.12,
+           "w": 8.79,
+           "h": 8.32,
+           "clip": false,
+           "group": true,
+           "children": [
+            {
+             "type": "box",
+             "ref": null,
+             "name": "50",
+             "figmaId": "I526:15802;577:855;3:4390;1:220",
+             "figmaType": "VECTOR",
+             "x": 0,
+             "y": 0,
+             "w": 8.79,
+             "h": 8.32,
+             "paintsRaw": [
+              {
+               "type": "SOLID",
+               "visible": true,
+               "opacity": 1,
+               "blendMode": "NORMAL",
+               "color": {
+                "r": 0.3450980484485626,
+                "g": 0.7647058963775635,
+                "b": 0.13333334028720856
+               },
+               "boundVariables": {}
+              }
+             ],
+             "fill": {
+              "r": 0.3450980484485626,
+              "g": 0.7647058963775635,
+              "b": 0.13333334028720856,
+              "a": 1
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Indicator",
+       "figmaId": "I526:15802;577:855;3:4391",
+       "figmaType": "INSTANCE",
+       "x": 309.92,
+       "y": 8.32,
+       "w": 6.24,
+       "h": 6.24,
+       "constraints": {
+        "h": "MAX",
+        "v": "MIN"
+       },
+       "clip": false,
+       "component": {
+        "id": "1:500",
+        "name": "Indicator",
+        "setId": "1:497",
+        "variant": "Type=None"
+       },
+       "children": []
+      },
+      {
+       "type": "frame",
+       "ref": null,
+       "name": "Time / Light",
+       "figmaId": "I526:15802;577:855;3:4392",
+       "figmaType": "INSTANCE",
+       "x": 21.84,
+       "y": 12.48,
+       "w": 56.16,
+       "h": 21.84,
+       "radius": 20.799999237060547,
+       "clip": true,
+       "component": {
+        "id": "1:514",
+        "name": "Time / Light",
+        "setId": "1:504",
+        "variant": "Color=Clear"
+       },
+       "children": [
+        {
+         "type": "frame",
+         "ref": null,
+         "name": "9:41",
+         "figmaId": "I526:15802;577:855;3:4392;1:260",
+         "figmaType": "FRAME",
+         "x": 11.36,
+         "y": 2.68,
+         "w": 34.32,
+         "h": 15.6,
+         "constraints": {
+          "h": "CENTER",
+          "v": "CENTER"
+         },
+         "clip": false,
+         "children": [
+          {
+           "type": "box",
+           "ref": null,
+           "name": "9:41",
+           "figmaId": "I526:15802;577:855;3:4392;1:261",
+           "figmaType": "VECTOR",
+           "x": 1.4,
+           "y": 1.76,
+           "w": 29.56,
+           "h": 11.53,
+           "constraints": {
+            "h": "CENTER",
+            "v": "CENTER"
+           },
+           "layoutAlign": "CENTER",
+           "paintsRaw": [
+            {
+             "type": "SOLID",
+             "visible": true,
+             "opacity": 1,
+             "blendMode": "NORMAL",
+             "color": {
+              "r": 0.06655649095773697,
+              "g": 0.06655649095773697,
+              "b": 0.06655649095773697
+             },
+             "boundVariables": {}
+            }
+           ],
+           "fill": {
+            "r": 0.06655649095773697,
+            "g": 0.06655649095773697,
+            "b": 0.06655649095773697,
+            "a": 1
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "overlayPositionType": "CENTER",
+ "overlayBackground": {
+  "type": "NONE"
+ },
+ "overlayBackgroundInteraction": "NONE",
+ "background": {
+  "r": 0.9921568632125854,
+  "g": 0.9921568632125854,
+  "b": 0.9921568632125854,
+  "a": 1
+ },
+ "root": {
+  "paintsRaw": [
+   {
+    "type": "SOLID",
+    "visible": true,
+    "opacity": 1,
+    "blendMode": "NORMAL",
+    "color": {
+     "r": 0.9921568632125854,
+     "g": 0.9921568632125854,
+     "b": 0.9921568632125854
+    },
+    "boundVariables": {}
+   }
+  ],
+  "radius": 40
+ },
+ "clip": true,
+ "meta": {
+  "count": 51,
+  "images": 0,
+  "vectors": 0,
+  "notes": []
+ }
+}

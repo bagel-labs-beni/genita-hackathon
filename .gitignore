@@ -4,3 +4,13 @@ dist/
 .env.*
 !.env.example
 .DS_Store
+
+# Native Apple app build and local review artifacts
+**/build/
+**/DerivedData/
+*.xcresult/
+xcuserdata/
+*.xcuserstate
+**/QA-*/
+**/Screenshots/
+**/iOS-Screen-Review*/
