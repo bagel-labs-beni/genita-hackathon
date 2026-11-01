@@ -7,7 +7,7 @@ import CoreMedia
     @Published var isSharing = false
     @Published var error: String?
     private var stream: SCStream?
-    private let queue = DispatchQueue(label: "com.genita.screen-sharing")
+    private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
     override init() { super.init(); SCContentSharingPicker.shared.add(self) }
     func requestSharing() {
         if isSharing { stop(); return }
