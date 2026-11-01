@@ -17,6 +17,9 @@ import SwiftUI
                         model.setup.response = "Communication style: clear and warm."
                         model.setup.voice = 0
                     }
+                    if let i = ProcessInfo.processInfo.arguments.firstIndex(of: "--media-state"), ProcessInfo.processInfo.arguments.indices.contains(i + 1) {
+                        PhoneHandoff.shared.media.showDeniedForReview(ProcessInfo.processInfo.arguments[i + 1] == "camera-denied" ? .camera : .microphone)
+                    }
                     #endif
                 }
                 .preferredColorScheme(model.stage == .signIn ? .dark : .light)
