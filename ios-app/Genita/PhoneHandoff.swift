@@ -14,7 +14,6 @@ import Combine
     @Published private(set) var renderedMotionID: String?
     var motionVisible: Bool { motion != nil && renderedMotionID == motion?.id }
     func effectReady(_ id:String) { guard motion?.id == id else{return};renderedMotionID=id }
-    @Published var status = ""
     @Published var settings = false
     @Published var code = ""
     @Published private(set) var moving = false
@@ -32,6 +31,7 @@ import Combine
     private var sceneActive=true
     private var registering=false
     private var moveAttempt=0
+    private var trackingStarted=false
     private var lastPing=Date().timeIntervalSince1970
     private var timer: Timer?
     private var debugPeerReachable: Bool?
@@ -49,7 +49,7 @@ import Combine
             guard let self else { return }; var packet=reading; packet["type"]="reading"
             self.link.send(packet, reliable:false)
         }
-        media.beforeCameraStart = { [weak self] in self?.tracker.stop() }
+        media.beforeCameraStart = { [weak self] in self?.trackingStarted=false;self?.tracker.stop() }
         media.onCameraChange = { [weak self] in self?.updateTracking() }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         tracker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
@@ -111,7 +111,9 @@ import Combine
     /// Tracking only runs while this iPhone has the conversation: it stops the rear camera once moved.
     private func updateTracking() {
         let wanted=sceneActive && ownership.isOwner && link.connected && proximitySupported && trackingURL != nil && !media.cameraOn && (registering || tracker.hasSavedSpace)
-        if wanted,let trackingURL {tracker.start(trackingURL)} else if tracker.running {tracker.stop()}
+        if wanted,let trackingURL {
+            if !trackingStarted {trackingStarted=true;tracker.start(trackingURL)}
+        } else if trackingStarted {trackingStarted=false;tracker.stop()}
     }
     private func refreshSurface() {
         let reachable=debugPeerReachable ?? (link.connected && Date().timeIntervalSince1970-lastPing<3)
@@ -183,6 +185,8 @@ struct PhoneHandoffOverlay: View {
     @Environment(\.scenePhase) private var phase
     var body: some View {
         ZStack(alignment:.top) {
+            // Keeps this view alive when no effect is running, so its lifecycle and alerts fire.
+            Color.clear.allowsHitTesting(false)
             if handoff.motionVisible { Color.black.ignoresSafeArea() }
             if let motion=handoff.motion { DuoTransition(payload:motion,onReady:handoff.effectReady).ignoresSafeArea().allowsHitTesting(false) }
         }.onAppear { handoff.attach(model) }

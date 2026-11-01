@@ -50,9 +50,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
-        sharing.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         link.host()
-        if ownership.isOwner && ownership.state.epoch>0 {showCompanion()}
+        // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
+        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion() }}
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
     }
@@ -116,6 +116,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         refreshSurface()
     }
     private func refreshSurface() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil {return}
+        #endif
         let next=ownership.surface(peerReachable:phoneReachable)
         if next != surface {surface=next}
     }
@@ -144,7 +147,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
                 if rtt>=0 && rtt<bestRTT {bestRTT=rtt;link.send(["type":"clock","offset":phone-(sent+now)/2])}
             }
         case "reading":
-            guard let p=HandoffPosition(message) else {last=nil;candidate=nil;status=message["reason"] as? String ?? "Finding the screen position";return}
+            guard let p=HandoffPosition(message) else {
+                last=nil;candidate=nil
+                if message["state"] as? String != "stopped" {status=message["reason"] as? String ?? "Finding the screen position"}
+                return
+            }
             last=p;lastAt=now;closeRegistration()
             let edge=p.touchesEdge(phoneHeight:phoneHeight)
             status="\(p.right ? "Right":"Left") · \(Int(p.y*100)) cm from screen center · \(ownership.isOwner ? "on this Mac":"on your iPhone")"

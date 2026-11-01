@@ -2,6 +2,9 @@ import SwiftUI
 
 @main struct GenitaApp: App {
     @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
+    @ObservedObject private var handoff = PhoneHandoff.shared
+    /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
+    private var darkStatusBar: Bool { model.stage == .signIn || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
     var body: some Scene {
         WindowGroup {
             Group {
@@ -22,7 +25,7 @@ import SwiftUI
                     }
                     #endif
                 }
-                .preferredColorScheme(model.stage == .signIn ? .dark : .light)
+                .preferredColorScheme(darkStatusBar ? .dark : .light)
         }
     }
 }

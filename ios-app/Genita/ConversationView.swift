@@ -90,13 +90,13 @@ struct ConversationView: View {
         return Button(action: action) {
             ZStack(alignment: .topLeading) {
                 Color.clear
-                Image(systemName: "laptopcomputer").font(.system(size: 17)).foregroundStyle(Color(white: 17.0 / 255)).frame(width: 24, height: 21).position(x: 20, y: 22)
+                Image(systemName: "laptopcomputer").symbolRenderingMode(.monochrome).font(.system(size: 16)).foregroundStyle(Color(white: 17.0 / 255)).frame(width: 24, height: 21).position(x: 20, y: 22)
                 DesignText(node: label, text: "Move to Mac").frame(width: 140, height: label.h).position(x: label.x - 24 + 70, y: 22)
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
     }
     @ViewBuilder var selfView: some View {
-        if media.cameraOn {
+        if media.cameraOn && handoffEnabled {
             ZStack(alignment: .bottomLeading) {
                 SelfCameraPreview(session: media.session).frame(width: 113, height: 211)
                 if media.canFlip {

@@ -54,7 +54,7 @@ jobs:
             -only-testing:GenitaUITests/HandoffScreensUITests \
             -only-testing:GenitaUITests/GenitaUITests/testReviewCorrections \
             -resultBundlePath build-output/ios.xcresult \
-            CODE_SIGNING_ALLOWED=NO | tail -n 200
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
       - name: Export iOS screenshots

@@ -15,7 +15,7 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
  private let queue=DispatchQueue(label:"genita.lidar.world")
  private let imageContext=CIContext(options:[.workingColorSpace:NSNull()])
  var onReading: (([String:Any])->Void)?
- private var active=false,last=0.0,generation=0
+ private var active=false,last=0.0,generation=0,startRequest=0
  private var candidate:Screen?,locked:Screen?,stable=0
  private var registrationFrames=[Screen]()
  private var restoring:(Float,Float)?,saving=false,lastSave=0.0,restoreStarted=0.0
@@ -57,7 +57,9 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
   guard !running else{return}
   guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else{status="This iPhone has no LiDAR. Use Move to Mac in the menu.";return}
 
+  startRequest+=1;let request=startRequest
   AVCaptureDevice.requestAccess(for:.video){ok in guard ok else{self.publish("Camera access is off. Use Move to Mac in the menu.");return};self.queue.async{
+   guard request==self.startRequest else{return}
    self.generation+=1;self.active=true;self.locked=nil;self.candidate=nil;self.stable=0;self.registrationFrames=[];self.last=0;self.lastSave=0;self.originalURL=original;self.restoring=nil;self.restoreStarted=0
    let config=self.configuration()
    if let data=try? Data(contentsOf:self.mapURL),let saved=try? JSONDecoder().decode(SavedSpace.self,from:data),saved.geometryVersion==2,saved.host==original.host,saved.width>0,saved.height>0,
@@ -74,7 +76,7 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
   publish("Screen registered. Bring your iPhone next to your Mac.")
   DispatchQueue.main.async{self.canLock=false}
  }
- func stop(){queue.async{self.active=false;self.generation+=1;self.session.pause();self.locked=nil;self.send(["state":"stopped"]);DispatchQueue.main.async{self.running=false;self.canLock=false;self.status="Stopped"}}}
+ func stop(){startRequest+=1;queue.async{self.active=false;self.generation+=1;self.session.pause();self.locked=nil;self.send(["state":"stopped"]);DispatchQueue.main.async{self.running=false;self.canLock=false;self.status="Stopped"}}}
  private func publish(_ s:String){DispatchQueue.main.async{self.status=s}}
  func sessionWasInterrupted(_ session:ARSession){queue.async{self.send(["state":"limited","reason":"Camera interrupted. Waiting to restore the space."]);self.publish("Camera interrupted. Waiting to restore the space.")}}
  func session(_ session:ARSession,didFailWithError error:Error){publish(error.localizedDescription);stop()}
