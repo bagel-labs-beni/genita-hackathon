@@ -9,8 +9,8 @@ import CoreText
         }
     }
     var body: some Scene {
-        WindowGroup("Genita", id: "companion") { MacConversationView().frame(width: 390, height: 844).preferredColorScheme(.light) }
-            .windowStyle(.plain).windowResizability(.contentSize).defaultSize(width: 390, height: 844)
+        WindowGroup("Genita", id: "companion") { MacHandoffControls().preferredColorScheme(.light) }
+            .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
     }
 }
 func resourceImage(_ name: String) -> Image {

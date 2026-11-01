@@ -46,9 +46,10 @@ import UniformTypeIdentifiers
                 ZStack(alignment: .topLeading) {
                     Color("Canvas")
                     ScrollView {
-                        content(width: viewport.width, top: top, stretch: stretch)
+                        content(width: viewport.width, top: top, stretch: stretch, contentBottom: footerY - 24)
                             .frame(width: viewport.width, height: max(footerY - 24, (stage == .summary ? 680 : 704) + top + stretch + headingExtra(width: viewport.width)), alignment: .topLeading)
                     }.frame(height: max(1, footerY - 16)).scrollDismissesKeyboard(.interactively)
+                        .scrollDisabled(stage == .prompt)
                     if stage != .paste || keyboardTop == .greatestFiniteMagnitude { primary(width: viewport.width).frame(width: viewport.width - 77, height: 50).position(x: (viewport.width - 1) / 2, y: footerY + 25) }
                     if stage == .preparing {
                         Button { model.returnTo(.paste) } label: {
@@ -92,7 +93,7 @@ import UniformTypeIdentifiers
         }
         .alert("Try another image", isPresented: Binding(get: { imageError != nil }, set: { if !$0 { imageError = nil } })) { Button("OK") { imageError = nil } } message: { Text(imageError ?? "") }
     }
-    @ViewBuilder func content(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+    @ViewBuilder func content(width: CGFloat, top: CGFloat, stretch: CGFloat, contentBottom: CGFloat) -> some View {
         let extra = headingExtra(width: width)
         let bodyTop = top + extra
         ZStack(alignment: .topLeading) {
@@ -115,7 +116,7 @@ import UniformTypeIdentifiers
             }
             switch stage {
             case .name: nameInput(width: width, top: bodyTop)
-            case .prompt, .paste, .preferences: profileContent(width: width, top: bodyTop)
+            case .prompt, .paste, .preferences: profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
             case .preparing: processing(width: width, top: bodyTop)
             case .image: imageContent(width: width, top: bodyTop)
             case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
@@ -163,15 +164,22 @@ import UniformTypeIdentifiers
         return TextField("Name", text: $model.setup.name).font(TypeStyle.body(20, .medium)).multilineTextAlignment(.center).textContentType(.givenName).submitLabel(.next).focused($nameFocused)
             .frame(height: 56).background(Color(white: 0.9333), in: RoundedRectangle(cornerRadius: 12)).designSlot(box, width: width, top: top).accessibilityIdentifier("nameInput").onSubmit { if model.validName { advance() } }
     }
-    @ViewBuilder func profileContent(width: CGFloat, top: CGFloat) -> some View {
-        let card = nodes.first { $0.name == (stage == .prompt ? "Your prompt" : stage == .paste ? "Your AI’s response" : "Your preferences") && $0.type != "text" }!
+    @ViewBuilder func profileContent(width: CGFloat, top: CGFloat, contentBottom: CGFloat) -> some View {
+        let card: DesignNode = {
+            var node = nodes.first { $0.name == (stage == .prompt ? "Your prompt" : stage == .paste ? "Your AI’s response" : "Your preferences") && $0.type != "text" }!
+            if stage == .prompt { node.h = min(node.h, max(100, contentBottom - node.y - top)) }
+            return node
+        }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
         ForEach(texts.filter { $0.id != title.id && $0.y < 700 && ($0.y < 319 || $0.y >= 617) }) { n in
             DesignText(node: n).designSlot(n, width: width, top: top)
         }
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
-            DesignText(node: body, text: AppState.prompt).designSlot(body, width: width, top: top)
+            let readerHeight = max(1, card.y + card.h - body.y - 20)
+            ReferenceEditor(text: .constant(AppState.prompt), node: body, editable: false, placeholder: "", identifier: "promptReader")
+                .frame(width: body.w + width - 390, height: readerHeight)
+                .position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + readerHeight / 2)
             Button { UIPasteboard.general.string = AppState.prompt; copied = true } label: {
                 Group { if copied { Image(systemName: "checkmark").foregroundStyle(Color("Ink")) } else { Image(resource: "copy").resizable().frame(width: 19.4526, height: 20.4) } }.frame(width: 44, height: 44)
             }.buttonStyle(.plain).position(x: width - 65.8737, y: 296.4 + top).accessibilityLabel(copied ? "Prompt copied" : "Copy prompt").accessibilityIdentifier("copyPrompt")
@@ -338,6 +346,7 @@ struct ReferenceEditor: UIViewRepresentable {
     var node: DesignNode
     var editable: Bool
     var placeholder: String
+    var identifier: String? = nil
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView(); view.backgroundColor = .clear; view.delegate = context.coordinator
         view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
@@ -355,13 +364,13 @@ struct ReferenceEditor: UIViewRepresentable {
         context.coordinator.parent = self
         view.viewWithTag(19)?.isHidden = !text.isEmpty || !editable
         if view.text != text { view.attributedText = node.attributed(text) }
-        view.accessibilityIdentifier = editable ? "responseInput" : "profileResult"
+        view.accessibilityIdentifier = identifier ?? (editable ? "responseInput" : "profileResult")
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: ReferenceEditor; weak var view: UITextView?
         init(_ parent: ReferenceEditor) { self.parent = parent }
-        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { scrollView.endEditing(true) }
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { if parent.editable { scrollView.endEditing(true) } }
         func textViewDidChange(_ textView: UITextView) { parent.text = textView.text; textView.viewWithTag(19)?.isHidden = !textView.text.isEmpty }
     }
 }

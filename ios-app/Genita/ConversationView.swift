@@ -3,6 +3,8 @@ import SwiftUI
 struct ConversationView: View {
     @Bindable var model: AppState
     var connecting = false
+    var handoffEnabled = true
+    @ObservedObject private var handoff = PhoneHandoff.shared
     var body: some View {
         GeometryReader { safe in
             GeometryReader { full in
@@ -39,7 +41,9 @@ struct ConversationView: View {
                     }
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
-        }.sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
+        }.opacity(handoffEnabled && (handoff.desktop || handoff.motionVisible) ? 0 : 1)
+        .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
+        .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
     }
     @ViewBuilder var connectingSurface: some View {
         if #available(iOS 26.0, *) {

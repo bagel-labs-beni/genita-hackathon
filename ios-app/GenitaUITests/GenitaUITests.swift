@@ -1,5 +1,53 @@
 import XCTest
 final class GenitaUITests: XCTestCase {
+    func testLongPromptImport() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "prompt", "GENITA_REVIEW_VARIANT": "empty"]
+        app.launch()
+        let reader = app.textViews["promptReader"]
+        XCTAssertTrue(reader.waitForExistence(timeout: 5))
+        let fullPrompt = reader.value as! String
+        XCTAssertTrue(fullPrompt.hasPrefix("Create an evidence-based personalization profile"))
+        XCTAssertTrue(fullPrompt.hasSuffix("memory summaries, and suggested behaviors."))
+        let cta = app.buttons["primaryCTA"]
+        XCTAssertLessThan(reader.frame.maxY, cta.frame.minY)
+        let ctaTop = cta.frame.minY
+        func capture(_ name: String) {
+            Thread.sleep(forTimeInterval: 0.5)
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = name; shot.lifetime = .keepAlways; add(shot)
+        }
+        capture("prompt-v2-top")
+        for _ in 0..<20 { reader.swipeUp() }
+        XCTAssertTrue(cta.isHittable, "Only the prompt body should scroll; the CTA must stay visible")
+        XCTAssertEqual(cta.frame.minY, ctaTop, accuracy: 1)
+        capture("prompt-v2-bottom")
+        reader.tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "The prompt is a read-only reader")
+        app.buttons["copyPrompt"].tap()
+        XCTAssertTrue(app.buttons["Prompt copied"].exists)
+        cta.tap()
+        let editor = app.textViews["responseInput"]
+        editor.tap(); editor.press(forDuration: 1.2)
+        let paste = app.menuItems["Paste"].exists ? app.menuItems["Paste"] : app.buttons["Paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5)); paste.tap()
+        XCTAssertEqual(editor.value as? String, fullPrompt, "Copy must include the entire prompt even after scrolling")
+        editor.typeText(" QA_EDIT")
+        let edited = editor.value as! String
+        XCTAssertTrue(edited.contains("QA_EDIT"))
+        app.buttons["Dismiss keyboard"].tap()
+        cta.tap()
+        let result = app.textViews["profileResult"]
+        XCTAssertTrue(result.waitForExistence(timeout: 8))
+        XCTAssertEqual(result.value as? String, edited)
+        capture("prompt-v2-imported-result")
+        app.terminate()
+        app.launchArguments = []; app.launchEnvironment = [:]; app.launch()
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        XCTAssertEqual(result.value as? String, edited, "Edited import must survive a relaunch")
+        app.terminate()
+    }
     func reveal(_ element: XCUIElement, in app: XCUIApplication) {
         for _ in 0..<4 { if element.isHittable { return }; app.scrollViews.firstMatch.swipeUp() }
     }

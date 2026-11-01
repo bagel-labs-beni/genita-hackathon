@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MacConversationView: View {
+    @ObservedObject private var handoff = MacHandoff.shared
     @State private var model = AppState()
     @StateObject private var sharing = ScreenSharingController()
     @State private var menuOpen = false
@@ -21,7 +22,7 @@ struct MacConversationView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                resourceImage("companion").resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: 86.5).accessibilityIdentifier("macOpenMenu")
                 resourceImage("selfPreview").resizable().frame(width: 113, height: 211).position(x: 87.5, y: 700.5).accessibilityLabel("Your camera is off")
@@ -30,6 +31,7 @@ struct MacConversationView: View {
                     excluded("glass-mic-icon", "Microphone unavailable in demo")
                     excluded("glass-more-icon", "More unavailable in demo")
                 }.position(x: 334, y: 724)
+                if handoff.desktop && handoff.motion == nil {
                 Button { sharing.requestSharing() } label: {
                     if displaySharing || permissionVisible {
                         Circle().fill(Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255)).frame(width: 47, height: 47)
@@ -37,7 +39,8 @@ struct MacConversationView: View {
                     } else { MacGlassControl(icon: "glass-share-icon") }
                 }.buttonStyle(.plain).position(x: 342.5, y: 86.5).onHover { hoverShare = $0 }
                     .accessibilityLabel(displaySharing ? "Stop screen sharing" : "Share screen").accessibilityIdentifier("macShareScreen")
-                if !permissionVisible && (hoverShare || reviewState == "hint") {
+                }
+                if handoff.desktop && !permissionVisible && (hoverShare || reviewState == "hint") {
                     Text("화면 공유").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
                         .frame(width: 61, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
                 }
@@ -45,14 +48,22 @@ struct MacConversationView: View {
             if menuOpen { menu }
             if permissionVisible { permissionPanel }
             MacDemoSystemBar().allowsHitTesting(false).accessibilityHidden(true)
+            IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
+                .accessibilityLabel("아일랜드를 드래그해서 창 이동")
         }.frame(width: 390, height: 844).clipped().ignoresSafeArea()
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }
         }
         .onDisappear { sharing.stop() }
+        .onChange(of: handoff.motion?.id) { _, id in if id != nil {sharing.stop()} }
+        .onChange(of: handoff.desktop) { _, value in if !value { sharing.stop() } }
+        .overlay(alignment:.bottom) { Button("아이폰으로") { handoff.returnToPhone() }.disabled(!handoff.canReturn).buttonStyle(.borderedProminent).padding(.bottom,20) }
         .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
         .alert("Screen sharing could not start", isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+    }
+    private var companionImage: Image {
+        if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
     }
     private func excluded(_ icon: String, _ label: String) -> some View {
         Button {} label: { MacGlassControl(icon: icon, size: 46) }.buttonStyle(MacUnchangedControlStyle()).disabled(true).accessibilityLabel(label)
@@ -97,5 +108,22 @@ private struct MacDemoSystemBar: View {
             }.padding(.horizontal, 24).offset(y: 1)
             RoundedRectangle(cornerRadius: 18).fill(.black).frame(width: 124, height: 36).offset(y: 0.5)
         }.foregroundStyle(.black).frame(width: 390, height: 57).position(x: 195, y: 29.5)
+    }
+}
+
+/// Restrict native window dragging to the black island; other controls retain
+/// their normal click behavior. The handoff coordinator does not reposition a
+/// settled window until a return transfer starts.
+private struct IslandDragHandle:NSViewRepresentable {
+    func makeNSView(context:Context)->IslandDragView {IslandDragView()}
+    func updateNSView(_ view:IslandDragView,context:Context) {}
+}
+private final class IslandDragView:NSView {
+    override var mouseDownCanMoveWindow:Bool {false}
+    override func resetCursorRects(){addCursorRect(bounds,cursor:.openHand)}
+    override func mouseDown(with event:NSEvent){
+        guard MacHandoff.shared.desktop,MacHandoff.shared.motion == nil else{return}
+        NSCursor.closedHand.push();defer{NSCursor.pop()}
+        window?.performDrag(with:event)
     }
 }

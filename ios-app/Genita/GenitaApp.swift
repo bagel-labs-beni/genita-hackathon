@@ -4,7 +4,10 @@ import SwiftUI
     @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
     var body: some Scene {
         WindowGroup {
-            RootView(model: model)
+            Group {
+                if ProcessInfo.processInfo.arguments.contains("--handoff-demo") { ConversationView(model:model) }
+                else { RootView(model:model) }
+            }
                 .onAppear {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--fixture-image"), let url = Bundle.main.url(forResource: "companion", withExtension: "png") { model.setup.imageData = try? Data(contentsOf: url) }

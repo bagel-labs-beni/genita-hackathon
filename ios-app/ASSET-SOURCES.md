@@ -13,3 +13,8 @@ No Figma screenshots are used as complete app screens. Layouts, inputs, text and
 - `copy`: original prompt-copy icon from `526:16137`.
 
 - `mac-app/GenitaMac/mac-status-*`: original cellular, Wi-Fi and battery SVGs from Mac frame `526:16013`, system-bar instance `526:16049`; PNGs are local transparent renders. The Mac demo reproduces this status bar and Dynamic Island at the user’s request.
+
+## Handoff prototype additions
+
+- `NameDropHintingPrimaryDevice.caf`, `NameDropConnectedPrimaryDevice.caf`: copied from the working handoff lab. Original source: https://github.com/rob-paprocki/iOS-System-Sounds/tree/main/Current/Haptics/Generic . Apple system sound assets; inclusion here is for the requested local prototype and does not establish redistribution rights.
+- `shared/Handoff/EffectSource`: existing Duo blur shader / sampler and Genita payload compositor from the handoff lab. Upstream MIT license retained alongside the sources. `handoff-effect.js` is the locally bundled build, including Three.js (MIT).

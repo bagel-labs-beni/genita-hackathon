@@ -16,6 +16,14 @@
 	<string>0.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_genita-handoff._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Find the Mac screen and align Genita with your iPhone using LiDAR.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to your Mac to move Genita between devices.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>KMU80TTFSungkokSemiSerif.ttf</string>
