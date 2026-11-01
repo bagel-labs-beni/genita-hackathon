@@ -4,7 +4,7 @@ What in this repository predates the hackathon, and what does not.
 
 ## Existing (pre-hackathon)
 
-- `existing/peter-engine/`: Peter lip-sync engine bundle, native Swift compositor, demo character cache and test media. Offline only. The apps do not call it.
+- `existing/peter-engine/`: Peter lip-sync engine bundle, native Swift compositor, demo character cache, model weights, vendored MuseTalk and Earlier source snapshots (`vendor/`), and test media. Offline only. The apps do not call it.
 - `shared/Handoff/EffectSource/` and the built `shared/Handoff/handoff-effect.{js,html}`: Duo blur shader, sampler and payload compositor from `handoff-effects-lab`. Upstream license is kept next to the sources. Three.js is MIT.
 - `ios-app/Genita/LidarWorldTracker.swift`: plane, corner and world-map algorithm ported from `handoff-effects-lab`.
 
