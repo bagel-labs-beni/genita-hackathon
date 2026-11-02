@@ -6,25 +6,6 @@ import AppKit
 /// Same r03 interaction as the iPhone (PF-1): the shared `FindsModel` drives searching → rising → half → full,
 /// peek, close + Undo, and the same drag / tap rules. Product links open in the Mac's default browser
 /// (MAC-LINK, 184:150), never inside the sheet.
-enum MacSheetInk {
-    static let ink = Color(white: 17.0 / 255)
-    static let sheet = Color(white: 254.0 / 255)
-    static let onInk = Color(white: 253.0 / 255)
-    static let mute = Color(white: 115.0 / 255)
-    static let faint = Color(white: 158.0 / 255)
-    static let line = Color(white: 232.0 / 255)
-    static let handle = Color(white: 219.0 / 255)
-    static let chip = Color(white: 242.0 / 255)
-    static let chipBlue = Color(red: 222.0 / 255, green: 243.0 / 255, blue: 1)
-    static let chipBlueText = Color(red: 0, green: 106.0 / 255, blue: 163.0 / 255)
-    static let scan = Color(red: 0, green: 179.0 / 255, blue: 1)
-    static let pill = Color(white: 17.0 / 255).opacity(0.84)
-    static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .custom("PretendardVariable-" + (weight == .medium ? "Medium" : weight == .semibold ? "SemiBold" : "Regular"), fixedSize: size)
-    }
-    static func serif(_ size: CGFloat) -> Font { .custom("KMUTTF-SungkokSemiSerif", fixedSize: size) }
-}
-
 extension SheetState {
     /// MAC-RS-a is taller than the iPhone's 148: the searching row plus the scan line (198 visible).
     var macHeight: CGFloat { self == .searching ? 198 : height }
@@ -90,11 +71,12 @@ struct MacResultSheet: View {
             HStack(alignment: .center, spacing: 12) {
                 MacTalkWave(color: MacSheetInk.ink)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(failed?.title ?? entry?.searchTitle ?? "Looking")
-                        .font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macResultSearchTitle")
+                    // one line each next to Stop, as the iPhone (#211): server copy, never wrapped, never a cut word
+                    OneLineText(text: failed?.title ?? entry?.searchTitle ?? "Looking", font: MacSheetInk.sans(16, .medium), color: MacSheetInk.ink)
+                        .accessibilityIdentifier("macResultSearchTitle")
                     if let detail = failed?.body ?? entry?.searchDetail, !detail.isEmpty {
-                        Text(detail).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineLimit(2)
+                        OneLineText(text: detail, font: MacSheetInk.sans(14), color: MacSheetInk.mute, alternates: OneLineText.afterDot(detail))
+                            .accessibilityIdentifier("macResultSearchDetail")
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 // PF-1d on the Mac too: a failed product search can be asked again; other failures close
@@ -316,22 +298,7 @@ struct MacLinkPrompt: View {
     }
 }
 
-/// The call's one-line status (S09 pill), Mac copy of the iPhone's cue: "Listening", "{name} is talking"…
-/// At full sheet it carries the card's spoken line, as MAC-RS-b shows.
-struct MacCallCue: View {
-    let text: String
-    var wave = true
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if wave { MacTalkWave(color: MacSheetInk.onInk).padding(.top, 4) }
-            Text(text).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.onInk).lineSpacing(4).lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(MacSheetInk.pill, in: RoundedRectangle(cornerRadius: 18))
-        .accessibilityElement(children: .combine).accessibilityIdentifier("macCallCue")
-    }
-
+extension MacCallCue {
     static func text(_ cue: CallCue, name: String) -> String? {
         switch cue {
         case .none: nil
@@ -343,24 +310,6 @@ struct MacCallCue: View {
         case .answerFailed: "Couldn’t get an answer."
         case .micBlocked: "Microphone is off for Genita."
         }
-    }
-}
-
-/// Four 2 × 12 bars (the board's talk wave).
-struct MacTalkWave: View {
-    var color: Color
-    @State private var phase = false
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<4, id: \.self) { i in
-                Capsule().fill(color).frame(width: 2, height: 12).scaleEffect(y: phase ? [0.5, 1, 0.7, 0.9][i] : [1, 0.6, 1, 0.5][i])
-            }
-        }.frame(width: 14, height: 12)
-        .onAppear {
-            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil else { return }
-            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { phase = true }
-        }
-        .accessibilityHidden(true)
     }
 }
 

@@ -128,6 +128,19 @@ enum ProductPicks {
     }
 }
 
+/// #211 (Chelsea 11/3): the Mac call pill is one line. A spoken answer longer than the pill shows its first
+/// sentence ("I found two. Their simple cuts match your style." → "I found two."); `OneLineText` then
+/// shortens by whole words if even that doesn't fit. The text is always the server's, never app copy.
+enum CueLine {
+    /// Shorter versions to try after the whole line, longest first. Empty for a single sentence.
+    static func summaries(_ said: String) -> [String] {
+        // a sentence ends at . ! ? followed by a space and a capital ("$68.50", "Field & Co. has" don't end one)
+        let text = said.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = text.range(of: #"[.!?]\s+(?=[A-Z“"'])"#, options: .regularExpression) else { return [] }
+        return [String(text[..<r.lowerBound]) + String(text[r.lowerBound])]
+    }
+}
+
 /// A02-J on the Mac (PRD v12 D41, server #166 `POST /auth/judge`): a code instead of an Apple ID.
 /// Same request and answers as GenitaKit's `signInWithJudgeCode` (#166), with `device: "mac"`.
 enum JudgeAccess {

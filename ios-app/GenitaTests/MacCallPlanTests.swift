@@ -142,6 +142,25 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertNil(ProductPicks.searchingWhy(after: [recipe]))
     }
 
+    // MARK: call pill — one line (#211, Chelsea 11/3)
+
+    func testLongSpokenLineFallsBackToItsFirstSentence() {
+        // "I found two. Their simple cuts / match your style." wrapped in the pill; the pill shows the first sentence
+        XCTAssertEqual(CueLine.summaries("I found two. Their simple cuts match your style."), ["I found two."])
+        XCTAssertEqual(CueLine.summaries("Two options! Simple cuts, like you prefer."), ["Two options!"])
+        XCTAssertEqual(CueLine.summaries("Right here?  We're looking for a jacket."), ["Right here?"])
+        // a dot inside a price or a name is not a sentence end
+        XCTAssertEqual(CueLine.summaries("It's $68.50 at Northline. Want the link?"), ["It's $68.50 at Northline."])
+        XCTAssertEqual(CueLine.summaries("Field & Co. has one in linen."), [])
+    }
+
+    func testOneSentenceHasNoSummary() {
+        // one sentence: the pill shortens by whole words (OneLineText) — nothing to add here
+        XCTAssertEqual(CueLine.summaries("Mina is talking"), [])
+        XCTAssertEqual(CueLine.summaries("Two options that fit your style."), [])
+        XCTAssertEqual(CueLine.summaries("  "), [])
+    }
+
     // MARK: A02-J on the Mac (#166 POST /auth/judge)
 
     func testJudgeCodeAnswersBecomeOneLine() {
