@@ -51,6 +51,8 @@ struct FindEntry: Identifiable, Equatable {
     }
     /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
     /// Product searches only: a recipe or outfit retry would need the camera frames the server already used.
+    /// IC-4: the camera could not make out the food. The call shows a dark card over a blurred picture, not the sheet.
+    var isUnclear: Bool { failed?.reason == .unclear }
     var canRetry: Bool { kind == .product && question?.isEmpty == false && (failed?.reason == .searchFailed || failed?.reason == .error) }
 }
 
@@ -242,6 +244,12 @@ struct FindEntry: Identifiable, Equatable {
     func stop() {
         guard let f = current else { state = .idle; return }
         send(.findStop(findId: f.id))
+        state = .idle
+    }
+
+    /// IC-4 "Look again": the card goes away; the camera is still on, the person shows the shelves again.
+    func lookAgain() {
+        guard current?.isUnclear == true else { return }
         state = .idle
     }
 

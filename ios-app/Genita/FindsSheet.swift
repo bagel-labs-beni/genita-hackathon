@@ -342,14 +342,21 @@ struct FindsSheet: View {
     // r03 #8: the source opens inside the sheet, Done goes back to the card.
     private func browserLayer(_ source: FindCard.Source) -> some View {
         VStack(spacing: 0) {
-            HStack {
+            // Figma F10-8 (125:357): left 38, top 72, 324 wide: Done (underlined) · lock + domain · Open in Safari 44 × 44
+            HStack(spacing: 0) {
+                Button("Done") { withAnimation(.fade) { finds.browser = nil } }.font(TypeStyle.body(16)).underline().foregroundStyle(CallInk.ink)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .leading).accessibilityIdentifier("browserDone")
+                Spacer(minLength: 8)
                 HStack(spacing: 4) {
                     Image(systemName: "lock.fill").font(.system(size: 11, weight: .medium))
-                    Text(source.domain).font(TypeStyle.body(14, .medium))
+                    Text(source.domain).font(TypeStyle.body(14, .medium)).lineLimit(1)
                 }.foregroundStyle(CallInk.ink)
-                Spacer()
-                Button("Done") { withAnimation(.fade) { finds.browser = nil } }.font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("browserDone")
-            }.frame(height: 44).padding(.leading, 38).padding(.trailing, 28).padding(.top, 72)
+                Spacer(minLength: 8)
+                if let url = URL(string: source.url) {
+                    Link(destination: url) { Image(systemName: "arrow.up.right.square").font(.system(size: 17)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44) }
+                        .accessibilityLabel("Open in Safari").accessibilityIdentifier("browserOpenExternal")
+                }
+            }.frame(height: 44).padding(.horizontal, 38).padding(.top, 72)
             FindsBrowser(url: URL(string: source.url)).padding(.top, 16)
         }.background(CallInk.sheet).transition(.opacity).accessibilityIdentifier("findBrowser")
     }
@@ -881,5 +888,25 @@ struct FindsToast: View {
         .padding(.leading, 16).padding(.trailing, 8)
         .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain).accessibilityIdentifier("findToast")
+    }
+}
+
+/// IC-4 · "안 보임 (실패)" (Figma rp1wR9…, frame 102:2): rgba(17,17,17,.84) card, radius 16, padding 16, 310 wide.
+/// Title 15/20 medium, body 14/20 at 76 %, a white 44 pt "Look again". Nothing is guessed: no ingredient is named.
+struct FindUnclearCard: View {
+    let finds: FindsModel
+    var body: some View {
+        let lines = finds.current?.failureLines
+        VStack(alignment: .leading, spacing: 4) {
+            Text(lines?.title ?? "I can’t see it clearly").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.onInk)
+            Text(lines?.body ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk.opacity(0.76)).fixedSize(horizontal: false, vertical: true)
+            Button { withAnimation(.fade) { finds.lookAgain() } } label: {
+                Text("Look again").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
+                    .frame(maxWidth: .infinity).frame(height: 44).background(CallInk.onInk, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(PressScale()).padding(.top, 8).accessibilityIdentifier("findLookAgain")
+        }
+        .padding(16).frame(width: 342, alignment: .leading)
+        .background(Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain).accessibilityIdentifier("findUnclear")
     }
 }

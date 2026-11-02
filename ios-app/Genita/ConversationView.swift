@@ -22,15 +22,16 @@ struct ConversationView: View {
                 let sheet = call.finds.state
                 // F10 sheet during interpretation (11/2 decision): the sheet can open; while it is up the
                 // interpretation bubbles and hold rail are hidden, and they come back when it closes.
-                let findsOpen = !connecting && sheet != .idle && sheet != .dismissed
+                let unclear = !connecting && sheet == .searching && call.finds.current?.isUnclear == true
+                let findsOpen = !connecting && sheet != .idle && sheet != .dismissed && !unclear
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
-                        if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).transition(.opacity) }
+                        if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
-                            .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0)
+                            .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
                             .allowsHitTesting(!call.cameraOn)
@@ -70,6 +71,11 @@ struct ConversationView: View {
                         }
                         if findsTabOpen && !connecting {
                             FindsTabView(call: call, list: findsList, top: top) { closeFindsTab() }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .trailing))
+                        }
+                        if unclear {
+                            // IC-4 (features r01): a dark card over the blurred picture, 24 / 124, 310 wide, one button
+                            FindUnclearCard(finds: call.finds).position(x: full.size.width / 2, y: 124 + top + 74)
+                                .transition(.opacity)
                         }
                         if findsOpen {
                             FindsSheet(call: call, size: full.size, talk: { closeFindsTab() }, openFinds: { openFindsTab() }).frame(width: full.size.width, height: full.size.height, alignment: .top)
