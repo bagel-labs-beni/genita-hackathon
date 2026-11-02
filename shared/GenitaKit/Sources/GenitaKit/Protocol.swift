@@ -107,6 +107,13 @@ public enum ServerEvent: Equatable, Sendable {
     case lipChanged(LipChanged)
     case error(ServerError)
     case pong(Pong)
+    case findStarted(FindStarted)
+    case findProgress(FindProgress)
+    case findItems(FindItems)
+    case observeBoxes(ObserveBoxes)
+    case findCreated(FindCreated)
+    case findImage(FindImageEvent)
+    case findFailed(FindFailed)
     /// A type this build does not know yet. Ignore it; never fail the socket.
     case unknown(type: String)
 
@@ -239,6 +246,13 @@ extension ServerEvent: Codable {
         case "lip.changed": self = .lipChanged(try .init(from: decoder))
         case "error": self = .error(try .init(from: decoder))
         case "pong": self = .pong(try .init(from: decoder))
+        case "find.started": self = .findStarted(try .init(from: decoder))
+        case "find.progress": self = .findProgress(try .init(from: decoder))
+        case "find.items": self = .findItems(try .init(from: decoder))
+        case "observe.boxes": self = .observeBoxes(try .init(from: decoder))
+        case "find.created": self = .findCreated(try .init(from: decoder))
+        case "find.image": self = .findImage(try .init(from: decoder))
+        case "find.failed": self = .findFailed(try .init(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -263,6 +277,13 @@ extension ServerEvent: Codable {
         case .lipChanged: "lip.changed"
         case .error: "error"
         case .pong: "pong"
+        case .findStarted: "find.started"
+        case .findProgress: "find.progress"
+        case .findItems: "find.items"
+        case .observeBoxes: "observe.boxes"
+        case .findCreated: "find.created"
+        case .findImage: "find.image"
+        case .findFailed: "find.failed"
         case let .unknown(type): type
         }
     }
@@ -286,6 +307,13 @@ extension ServerEvent: Codable {
         case let .lipChanged(p): try p.encode(to: encoder)
         case let .error(p): try p.encode(to: encoder)
         case let .pong(p): try p.encode(to: encoder)
+        case let .findStarted(p): try p.encode(to: encoder)
+        case let .findProgress(p): try p.encode(to: encoder)
+        case let .findItems(p): try p.encode(to: encoder)
+        case let .observeBoxes(p): try p.encode(to: encoder)
+        case let .findCreated(p): try p.encode(to: encoder)
+        case let .findImage(p): try p.encode(to: encoder)
+        case let .findFailed(p): try p.encode(to: encoder)
         case .unknown: break
         }
         var c = encoder.container(keyedBy: TypeKey.self)
@@ -306,6 +334,10 @@ public enum ClientMessage: Equatable, Sendable {
     case mode(ConversationMode)
     case ping(t: Double?)
     case stop
+    /// "맞아?" answer for a maybe ingredient (IC-3).
+    case findConfirm(FindConfirm)
+    /// Stop button while a card is still being looked for.
+    case findStop(findId: String)
 
     public struct Persona: Codable, Equatable, Sendable {
         public enum Kind: String, Codable, Sendable { case human, animal, character }
@@ -327,7 +359,13 @@ public enum ClientMessage: Equatable, Sendable {
     public struct User: Codable, Equatable, Sendable {
         public var name: String?
         public var profile: String?
-        public init(name: String? = nil, profile: String? = nil) { self.name = name; self.profile = profile }
+        /// Stable owner key for Finds until login (F1-L5).
+        public var id: String?
+        /// IANA zone, for "7:12 PM" in cards.
+        public var timeZone: String?
+        public init(name: String? = nil, profile: String? = nil, id: String? = nil, timeZone: String? = nil) {
+            self.name = name; self.profile = profile; self.id = id; self.timeZone = timeZone
+        }
     }
     public struct HistoryItem: Codable, Equatable, Sendable {
         public enum Role: String, Codable, Sendable { case user, assistant }
@@ -380,7 +418,9 @@ public enum ClientMessage: Equatable, Sendable {
         public var text: String
         /// Base64 JPEG camera frames (≤2) for this turn.
         public var frames: [String]?
-        public init(text: String, frames: [String]? = nil) { self.text = text; self.frames = frames }
+        /// "Ask about this" from a card: the follow-up is about that card.
+        public var findId: String?
+        public init(text: String, frames: [String]? = nil, findId: String? = nil) { self.text = text; self.frames = frames; self.findId = findId }
     }
     public struct Frames: Codable, Equatable, Sendable {
         /// ≤2 base64 JPEGs (or data URLs), each < 1.5 MB; used by the next turn within 15 s.
@@ -390,7 +430,7 @@ public enum ClientMessage: Equatable, Sendable {
 }
 
 extension ClientMessage: Codable {
-    private enum K: String, CodingKey { case type, utteranceId, mode, t }
+    private enum K: String, CodingKey { case type, utteranceId, mode, t, findId }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -406,6 +446,8 @@ extension ClientMessage: Codable {
         case "mode": self = .mode(try c.decode(ConversationMode.self, forKey: .mode))
         case "ping": self = .ping(t: try c.decodeIfPresent(Double.self, forKey: .t))
         case "stop": self = .stop
+        case "find.confirm": self = .findConfirm(try .init(from: decoder))
+        case "find.stop": self = .findStop(findId: try c.decode(String.self, forKey: .findId))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message \(type)")
         }
     }
@@ -423,6 +465,8 @@ extension ClientMessage: Codable {
         case let .mode(m): try c.encode("mode", forKey: .type); try c.encode(m, forKey: .mode)
         case let .ping(t): try c.encode("ping", forKey: .type); try c.encodeIfPresent(t, forKey: .t)
         case .stop: try c.encode("stop", forKey: .type)
+        case let .findConfirm(p): try p.encode(to: encoder); try c.encode("find.confirm", forKey: .type)
+        case let .findStop(id): try c.encode("find.stop", forKey: .type); try c.encode(id, forKey: .findId)
         }
     }
 }
