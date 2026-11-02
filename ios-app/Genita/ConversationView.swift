@@ -107,7 +107,9 @@ struct ConversationView: View {
                         if sheet == .dismissed {
                             FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
-                        if !connecting && !interpreting && !unclear {
+                        // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
+                        // screen's title or subtitle; closing Finds immediately resumes the current call cue.
+                        if !findsTabOpen && !connecting && !interpreting && !unclear {
                             let findsPill = call.finds.pillText
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
