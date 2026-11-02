@@ -214,7 +214,7 @@ export function toStyleCard(raw: Partial<ImportRaw> | null | undefined, source: 
     if (k === "to_confirm") continue;
     const list = Array.isArray(raw?.sections?.[k]) ? raw!.sections![k] : [];
     sections[k] = list
-      .map((f) => ({ text: clean(f?.text), label: k === "approach" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any" }))
+      .map((f) => ({ text: clean(f?.text), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any" }))
       .filter((f) => keep(f.text))
       .slice(0, 12) as Finding[];
   }
@@ -280,3 +280,63 @@ export function styleProfileText(card: StyleCard, max = 2000): string {
   return out;
 }
 
+
+// ---------- N1–N3: skip the import (PRD v12 D33) ----------
+
+export const SKIP_REPLIES: Record<string, string> = {
+  "Talk it out": "Talk it through with me.",
+  "Show me options": "Show a few options to choose from.",
+  "Start with the answer": "Start with the answer, then explain.",
+  "Ask me questions": "Ask me questions to understand first.",
+};
+const SKIP_AVOID: Record<string, string> = {
+  "unasked advice": "Don't give advice I didn't ask for.",
+  "too many questions": "Don't ask too many questions.",
+  "jokes when i'm serious": "No jokes when I'm being serious.",
+  "comments on my looks": "Don't comment on my looks.",
+};
+const SKIP_MAX_ITEMS = 8;
+const SKIP_INTEREST_MAX = 40;
+const SKIP_AVOID_MAX = 60;
+
+function skipList(v: unknown, max: number): string[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > SKIP_MAX_ITEMS) return null;
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") return null;
+    // control and bidi characters become spaces; the text stays data
+    const t = x.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+    if (t.length > max) return null;
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** N1–N3 answers → the same card the import makes, without Spark. null = bad_skip. */
+export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { ok: false } {
+  const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  if (!b) return { ok: false };
+  const interests = skipList(b.interests, SKIP_INTEREST_MAX);
+  const avoid = skipList(b.avoid, SKIP_AVOID_MAX);
+  const reply = b.replies === undefined || b.replies === null ? null : typeof b.replies === "string" && Object.hasOwn(SKIP_REPLIES, b.replies) ? SKIP_REPLIES[b.replies] : false;
+  if (!interests || !avoid || reply === false) return { ok: false };
+  const f = (text: string): Finding => ({ text, label: "explicit", scope: "any" });
+  const raw: ImportRaw = {
+    sections: {
+      tendencies: [],
+      communication: [],
+      help: [],
+      support: [],
+      interests: interests.map(f),
+      boundaries: avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+      approach: reply ? [f(reply)] : [],
+    },
+    rules: [],
+    to_confirm: [],
+  };
+  const card = toStyleCard(raw, "skip");
+  if (card.itemCount === 0) return { ok: false };
+  card.toConfirm = card.display.filter((r) => r.items.length === 0).map((r) => r.title).slice(0, 4);
+  return { ok: true, card };
+}

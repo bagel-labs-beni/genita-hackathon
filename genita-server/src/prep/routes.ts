@@ -3,6 +3,7 @@
  *
  *   GET  /v1/import/prompt                  F3-L2  prompt to copy (I01)
  *   POST /v1/import {text, background?}     F3-L2  paste → style card (I03 → I04); background:true → 202
+ *   POST /v1/import/skip {interests, replies, avoid}  N1–N3 → style card, no Spark call
  *   GET  /v1/import                         F3-L2  {status, style} (after "Continue in the background")
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
  *   GET  /v1/companion/voices?imageId=      F2-L8  four voices, Spark order
@@ -21,7 +22,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { IMPORT_PROMPT, styleProfileText, type StyleCard } from "./importProfile.ts";
+import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import type { CompanionRecord } from "./store.ts";
@@ -125,6 +126,14 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         throw err;
       });
       return send(res, 200, { status: "ready", style, profile: styleProfileText(style) });
+    }
+
+    if (m === "POST" && p === "/v1/import/skip") {
+      const r = skipStyleCard(await readJson(req));
+      if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
+      await d.store.putStyle(user, r.card);
+      d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
+      return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });
     }
 
     if (m === "GET" && p === "/v1/import") {

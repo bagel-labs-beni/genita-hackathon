@@ -179,3 +179,46 @@ test("prefs (Codex P2): a rename that lands while the persona is being written i
   assert.equal(next.name, "Max");
   assert.equal(next.persona?.card.name, "Max");
 });
+
+test("POST /v1/import/skip: N1–N3 → style card, no vendor call, readable via GET /v1/import", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-skip-"));
+  const store = new FileStore(dir);
+  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const routes = createPrepRoutes(d, new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() }));
+  const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
+  t.after(() => {
+    http.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const call = async (method: string, path: string, body?: unknown, user = "u1") => {
+    const r = await fetch(base + path, { method, headers: { "x-genita-user": user, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: r.status, json: (await r.json()) as Record<string, any> };
+  };
+
+  for (const bad of [{ interests: "Design" }, { interests: Array(9).fill("a") }, { avoid: ["x".repeat(61)] }, { replies: "nope" }, {}]) {
+    const r = await call("POST", "/v1/import/skip", bad);
+    assert.equal(r.status, 400, JSON.stringify(bad));
+    assert.equal(r.json.error, "bad_skip");
+  }
+  assert.equal((await call("GET", "/v1/import")).json.status, "none"); // nothing stored by bad calls
+
+  const ok = await call("POST", "/v1/import/skip", { interests: ["Design", "Food"], replies: "Talk it out", avoid: ["Unasked advice"] });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.json.status, "ready");
+  assert.equal(ok.json.style.source, "skip");
+  assert.equal(ok.json.style.display.length, 6);
+  assert.equal(ok.json.style.partial, true);
+  assert.deepEqual(ok.json.style.display.map((r: any) => r.items.length), [0, 1, 0, 2, 0, 1]);
+  assert.match(ok.json.profile, /Interests: Design/);
+  const got = await call("GET", "/v1/import");
+  assert.equal(got.json.status, "ready");
+  assert.equal(got.json.style.source, "skip");
+
+  // only N2 answered
+  const only = await call("POST", "/v1/import/skip", { replies: "Start with the answer" }, "u2");
+  assert.equal(only.status, 200);
+  assert.deepEqual(only.json.style.display.map((r: any) => r.items.length), [0, 1, 0, 0, 0, 0]);
+  assert.equal(only.json.style.toConfirm.length, 4);
+});

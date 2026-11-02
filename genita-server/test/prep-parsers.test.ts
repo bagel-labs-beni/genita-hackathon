@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { interpretCheck, pickHeadBox, sniffImage, buildClassifyRequest, type ClassifyRaw } from "../src/prep/classify.ts";
-import { checkPaste, looksLikeInjection, redactSensitive, ruleLine, styleProfileText, toStyleCard, buildImportRequest, IMPORT_MIN_CHARS } from "../src/prep/importProfile.ts";
+import { checkPaste, looksLikeInjection, redactSensitive, ruleLine, styleProfileText, toStyleCard, buildImportRequest, skipStyleCard, IMPORT_MIN_CHARS } from "../src/prep/importProfile.ts";
 import { applyOrder, DEFAULT_VOICES, voicesFromEnv } from "../src/prep/voices.ts";
 import type { SamBox } from "../src/meta/sam.ts";
 
@@ -160,4 +160,45 @@ test("style card: a reply with no help section → partial, empty 'How Genita ca
   assert.equal(help.title, "How Genita can help");
   assert.equal(help.items.length, 0);
   assert.equal(card.partial, true);
+});
+
+test("skip card: N1–N3 → explicit findings, unchosen rows stay empty and are listed to confirm", () => {
+  const r = skipStyleCard({ interests: ["Design", "Film & TV", "Ceramics"], replies: "Show me options", avoid: ["Unasked advice", "Too many questions", "no loud puns"] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const c = r.card;
+  assert.equal(c.source, "skip");
+  assert.deepEqual(c.display.map((x) => x.key), ["communication", "response", "help", "interests", "likes", "boundaries"]);
+  assert.deepEqual(c.display[3].items, [
+    { text: "Design", label: "explicit" },
+    { text: "Film & TV", label: "explicit" },
+    { text: "Ceramics", label: "explicit" },
+  ]);
+  assert.deepEqual(c.display[1].items, [{ text: "Show a few options to choose from.", label: "explicit" }]);
+  assert.deepEqual(c.display[5].items, [
+    { text: "Don't give advice I didn't ask for.", label: "explicit" },
+    { text: "Don't ask too many questions.", label: "explicit" },
+    { text: "Avoid: no loud puns", label: "explicit" },
+  ]);
+  assert.equal(c.partial, true);
+  assert.deepEqual(c.toConfirm, ["Communication style", "How Genita can help", "Likes & dislikes"]);
+  assert.match(styleProfileText(c), /Interests: Design/);
+});
+
+test("skip card: validation and control chars", () => {
+  const bad = (b: unknown) => {
+    const r = skipStyleCard(b);
+    assert.equal(r.ok, false, JSON.stringify(b));
+  };
+  bad({ interests: "Design" });
+  bad({ interests: Array(9).fill("a") });
+  bad({ interests: ["x".repeat(41)] });
+  bad({ avoid: ["x".repeat(61)] });
+  bad({ avoid: [5] });
+  bad({ replies: "Whatever" });
+  bad({});
+  bad({ interests: ["", "  "] });
+  const r = skipStyleCard({ interests: ["De\u0000si\ngn\u202e"], replies: null, avoid: [] });
+  assert.ok(r.ok);
+  if (r.ok) assert.equal(r.card.display[3].items[0].text, "De si gn");
 });
