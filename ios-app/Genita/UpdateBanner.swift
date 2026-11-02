@@ -78,7 +78,11 @@ extension GenitaAppConfigStore {
     func refreshUnlessTesting(force: Bool = false) async {
         let args = ProcessInfo.processInfo.arguments
         #if DEBUG
-        if args.contains("--update-banner-demo") { applyDemo(); return }
+        if args.contains("--update-banner-demo") {
+            UserDefaults.standard.removeObject(forKey: "genita.update.dismissedBuild") // each run starts undismissed
+            applyDemo()
+            return
+        }
         #endif
         if args.contains("--uitesting") { return }
         await refresh(force: force)
