@@ -24,6 +24,51 @@ import UIKit
         XCTAssertEqual(reopened.setup.imageData, image)
         XCTAssertEqual(reopened.stage, .conversation)
     }
+    func testCallStopRoutesToSignInAndConsent() {
+        let model = AppState(storage: store)
+        model.go(.connecting); model.go(.conversation)
+        model.route(.consent)
+        XCTAssertEqual(model.stage, .consent, "4403 → CS01")
+        model.consentAccepted()
+        XCTAssertEqual(model.stage, .conversation, "agree → back to the call")
+        model.route(.signIn)
+        XCTAssertEqual(model.stage, .signIn, "4401 → A02")
+        model.route(.timeLimit)
+        XCTAssertEqual(model.stage, .signIn, "4001 is not a route")
+    }
+    func testSignOutSurvivesARestartAndSignInReturnsToTheCall() {
+        let model = AppState(storage: store)
+        model.setup.hasOnboarded = true; model.go(.conversation); model.save()
+        model.signedOut()
+        XCTAssertEqual(model.stage, .signIn)
+        let restarted = AppState(storage: store)
+        XCTAssertEqual(restarted.stage, .signIn, "a signed-out user does not land back in the call")
+        restarted.signedIn()
+        XCTAssertEqual(restarted.stage, .conversation)
+        XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
+    func testAnotherAccountStartsWithAFreshLocalProfile() {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a")
+        model.setup.name = "A"; model.setup.hasOnboarded = true
+        model.signedOut()
+        model.signedIn(userId: "user-a")
+        XCTAssertEqual(model.setup.name, "A", "same account keeps its profile")
+        XCTAssertEqual(model.stage, .conversation)
+        model.signedOut()
+        model.signedIn(userId: "user-b", consented: false)
+        XCTAssertEqual(model.setup.name, "", "another account never sees A's profile")
+        XCTAssertFalse(model.setup.hasOnboarded)
+        XCTAssertEqual(model.stage, .consent)
+    }
+    func testPendingConsentSurvivesARestart() {
+        let model = AppState(storage: store)
+        model.setup.hasOnboarded = true; model.go(.conversation); model.save()
+        model.route(.consent)
+        XCTAssertEqual(AppState(storage: store).stage, .consent, "4403 then restart: still CS01, not the call")
+        model.consentAccepted()
+        XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
         model.go(.prompt); model.go(.paste); model.go(.preparing); model.go(.preferences)
