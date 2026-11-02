@@ -159,14 +159,20 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/companion/image") {
       const ct = req.headers["content-type"] ?? "";
       let bytes: Buffer;
+      let uploadedAt: number;
       let rights = url.searchParams.get("rights") === "1";
       if (ct.startsWith("application/json")) {
         const b = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+        uploadedAt = Date.now();
         bytes = Buffer.from(String(b.image ?? "").replace(/^data:[^,]*,/, ""), "base64");
         rights ||= b.rightsAck === true;
-      } else bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
-      d.log("face.uploaded", { bytes: bytes.length });
-      const rec = await checkImage(d, user, bytes, rights);
+      } else {
+        bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
+        uploadedAt = Date.now();
+      }
+      const uploadAt = new Date(uploadedAt).toISOString();
+      const rec = await checkImage(d, user, bytes, rights, uploadAt);
+      d.log("face.uploaded", { imageId: rec.id, userId: user, bytes: bytes.length, check_ms: rec.ms.check, at: uploadAt });
       return send(res, 200, {
         imageId: rec.id,
         passed: rec.check.passed,
@@ -245,7 +251,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         prep: newPrepState(),
       };
       await d.store.putCompanion(c);
-      d.log("voice.selected", { voice_id: voice.id });
+      d.log("voice.selected", { companionId: c.id, userId: user, voice_id: voice.id });
+      d.log("companion.named", { companionId: c.id, userId: user });
+      d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
       void runner.run(user);
       return send(res, 201, companionView(c, await d.store.getStyle(user)));
     }
