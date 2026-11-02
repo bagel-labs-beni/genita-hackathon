@@ -16,7 +16,7 @@ import SwiftUI
         let prompt = DesignLibrary.nodes("prompt").first { $0.characters == "Your prompt" }!
         let bounds = prompt.attributed().boundingRect(with: CGSize(width: prompt.w, height: 1000), options: [.usesLineFragmentOrigin], context: nil)
         XCTAssertLessThanOrEqual(bounds.height, prompt.h + 1, "The source label must not wrap or clip")
-        // D44: the I01/I02 subtitles name no assistant and still fit their two source lines
+        // D44/D55: the I01/I02 subtitles name no assistant and still fit their two source lines
         for (stage, id) in [("prompt", "526:17751"), ("paste", "526:17821")] {
             let sub = DesignLibrary.nodes(stage).first { $0.figmaId == id }!
             let text = (sub.characters ?? "").replacingOccurrences(of: "\n", with: " ").lowercased()

@@ -1,6 +1,6 @@
 /**
  * Device voice mode (lane L4 · metaface spec "Protocol"): the server sends each
- * reply sentence as a `say` event and the app speaks it on-device. No ElevenLabs
+ * reply sentence as a `say` event and the app speaks it on-device. No server voice
  * call, no `audio` events, no binary frames.
  */
 import { test } from "node:test";
@@ -11,20 +11,15 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 import { speechLang } from "../src/text/language.ts";
 
 const config: Config = {
   metaKey: "x",
-  elevenKey: null,
   serverTts: false,
-  kling: false,
-  peter: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English", "Korean"],
@@ -87,7 +82,6 @@ function setup(opts: { sparkText?: string; pieceDelayMs?: number; cfg?: Partial<
   const asr = new FakeAsr();
   const client = new FakeClient();
   let ttsCalls = 0;
-  let peterOpened = 0;
   const session = new Session("d1", client, {
     config: { ...config, ...opts.cfg },
     openAsr: () => asr,
@@ -105,12 +99,8 @@ function setup(opts: { sparkText?: string; pieceDelayMs?: number; cfg?: Partial<
       ttsCalls++;
       throw new Error("tts must not be called in device mode");
     },
-    openPeter: () => {
-      peterOpened++;
-      throw new Error("peter must not be opened in device mode");
-    },
   });
-  return { asr, client, session, ttsCalls: () => ttsCalls, peterOpened: () => peterOpened };
+  return { asr, client, session, ttsCalls: () => ttsCalls };
 }
 
 test("device mode is the default without server TTS: ready.tts device, lip none/device_tts", async () => {
@@ -139,7 +129,7 @@ test("device mode: a voice turn sends one plain-text `say` per sentence, no audi
       { utteranceId: 1, sentence: 1, text: "That sounds great.", emotion: "happy", lang: "en-US" },
     ],
   );
-  assert.equal(ttsCalls(), 0, "ElevenLabs dep never called");
+  assert.equal(ttsCalls(), 0, "server voice dep never called");
   assert.equal(client.of("audio").length, 0, "no audio events");
   assert.equal(client.bin.length, 0, "no binary frames");
 
@@ -227,21 +217,20 @@ test("device mode: barge-in mid reply cancels and no say follows utterance.cance
 });
 
 test("device mode: start.tts:server is refused when the server has no server TTS", async () => {
-  const { client, session, ttsCalls, peterOpened } = setup();
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "P", kind: "human" }, tts: "server", lip: { mode: "peter", fallback: "none" }, mic: false }));
+  const { client, session, ttsCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "P", kind: "human" }, tts: "server", lip: { mode: "retired", fallback: "none" }, mic: false }));
   const ready = client.of("ready")[0];
   assert.equal(ready.tts, "device");
-  assert.deepEqual(ready.lip, { requested: "peter", active: "none", reason: "device_tts" });
+  assert.deepEqual(ready.lip, { requested: "none", active: "none", reason: "device_tts" });
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   await client.waitFor((m) => m.type === "reply");
   assert.equal(ttsCalls(), 0);
-  assert.equal(peterOpened(), 0, "no Peter worker in device mode");
   assert.ok(client.of("say").length > 0);
   session.close();
 });
 
 test("server TTS on: default stays server; start.tts:device switches this call to device", async () => {
-  const on = { serverTts: true, elevenKey: "k" } as Partial<Config>;
+  const on = { serverTts: true } as Partial<Config>;
   const a = setup({ cfg: on });
   await a.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   assert.equal(a.client.of("ready")[0].tts, "server");
@@ -281,5 +270,5 @@ test("speechLang maps text + language name to a BCP-47 tag", () => {
   assert.equal(speechLang("Hello there.", "Korean"), "ko-KR");
   assert.equal(speechLang("Hola.", "Spanish"), "es-ES");
   assert.equal(speechLang("Bonjour.", "fr-CA"), "fr-CA");
-  assert.equal(speechLang("Hello.", "Klingon"), "en-US");
+  assert.equal(speechLang("Hello.", "Unrecognized language"), "en-US");
 });
