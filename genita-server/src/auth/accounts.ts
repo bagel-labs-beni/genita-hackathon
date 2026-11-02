@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { iso, type Db, type Queryable } from "../db/index.ts";
 
-export type Provider = "apple" | "google" | "dev";
+export type Provider = "apple" | "google" | "dev" | "email";
 export type Device = "iphone" | "mac" | "web" | "dev";
 export const DEVICES: Device[] = ["iphone", "mac", "web", "dev"];
 export const SESSION_DAYS = 30;
@@ -52,6 +52,16 @@ export class Accounts {
       [p.provider, p.sub, p.email ?? null, name],
     );
     return { user: toUser(r.rows[0]), isNew: r.rows[0].inserted === true };
+  }
+
+  /**
+   * Email code sign-in: the oldest account whose provider verified this address (Apple, Google, or an
+   * earlier email sign-in), else a new 'email' account. Dev/judge rows never match: their email is unverified.
+   */
+  async userForVerifiedEmail(email: string): Promise<{ user: User; isNew: boolean }> {
+    const r = await this.db.query("SELECT * FROM users WHERE lower(email) = $1 AND provider <> 'dev' ORDER BY created_at, id LIMIT 1", [email]);
+    if (r.rows[0]) return { user: toUser(r.rows[0]), isNew: false };
+    return this.upsertUser({ provider: "email", sub: email, email });
   }
 
   async getUser(id: string, q: Queryable = this.db): Promise<User | null> {

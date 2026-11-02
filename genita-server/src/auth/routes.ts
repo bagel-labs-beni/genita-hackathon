@@ -5,6 +5,8 @@
  *   GET    /auth/apple/start      ?challenge=<b64url sha256(verifier)>&device=mac                Mac: 302 to Apple
  *   POST   /auth/apple/callback   Apple form_post (code, id_token, state, user)                  302 genita://auth?code=…
  *   POST   /auth/exchange         {code, verifier}                                                Mac: one-time code → session
+ *   POST   /auth/email/start      {email}                                                         mails a 6-digit code (also /v1/auth/email/start)
+ *   POST   /auth/email/verify     {email, code, device?}                                          code → session (also /v1/auth/email/verify)
  *   POST   /auth/logout           (session)                                                       revokes this session
  *   GET    /me                    {user, consented, hasCompanion, prepStatus, conversation}
  *   PATCH  /me                    {displayName}                                                   blank → 400
@@ -14,17 +16,43 @@
  * Threat line: callers are the Genita iOS/macOS apps, plus Apple's form_post
  * through the user's browser on /auth/apple/callback. Auth: Apple identity
  * token checked against Apple's JWKS (aud + nonce) for sign-in; HMAC-signed
- * state + one-time 60 s code + PKCE verifier for the Mac web flow; the
- * session JWT (HS256, 30 d, revocable sid) for /me*. Limits: 30 req/min per
- * IP on /auth/*, 64 KB bodies. Exposes only the caller's own user row.
+ * state + one-time 60 s code + PKCE verifier for the Mac web flow; a mailed
+ * 6-digit code (10 min, 5 tries, keyed hash) for email sign-in; the session JWT
+ * (HS256, 30 d, revocable sid) for /me*. Limits: 30 req/min per IP on /auth/*,
+ * 64 KB bodies; email: 1 send/60 s and 5/h per address, 20 sends/h and 20 wrong
+ * codes/10 min per IP, and start answers the same whether or not an account
+ * exists. Exposes only the caller's own user row.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { JwtError, b64url, sha256B64url, sha256Hex } from "./jwt.ts";
 import { DEVICES, type Device } from "./accounts.ts";
 import type { AccountsCore, Principal } from "./index.ts";
+import { CODE_TTL_SEC, RESEND_AFTER_SEC, maskEmail, normalizeEmail } from "./email.ts";
 
 const BODY_LIMIT = 64 * 1024;
+const EMAIL_SENDS_PER_IP_HOUR = 20;
+const EMAIL_FAILS_PER_IP_10MIN = 20;
+
+/** Fixed-window counter per key (one server instance; cleared when it grows past 10k keys). */
+function windowCounter(limit: number, windowMs: number) {
+  const m = new Map<string, { n: number; reset: number }>();
+  const live = (k: string) => {
+    const h = m.get(k);
+    return h && h.reset > Date.now() ? h : null;
+  };
+  return {
+    full: (k: string) => (live(k)?.n ?? 0) >= limit,
+    add(k: string) {
+      const h = live(k);
+      if (h) h.n++;
+      else {
+        if (m.size > 10_000) m.clear();
+        m.set(k, { n: 1, reset: Date.now() + windowMs });
+      }
+    },
+  };
+}
 const STATE_TTL_SEC = 10 * 60;
 export const APP_CALLBACK = "genita://auth";
 
@@ -123,6 +151,8 @@ export type AccountRoutes = {
 
 export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   const { accounts, apple, blobs, log } = core;
+  const emailSends = windowCounter(EMAIL_SENDS_PER_IP_HOUR, 60 * 60_000);
+  const emailFails = windowCounter(EMAIL_FAILS_PER_IP_10MIN, 10 * 60_000);
   const hits = new Map<string, { n: number; reset: number }>();
   const limited = (ip: string) => {
     const now = Date.now();
@@ -149,7 +179,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, who: Principal | null) {
     const m = req.method ?? "GET";
-    const p = url.pathname.replace(/\/+$/, "");
+    const p = url.pathname.replace(/\/+$/, "").replace(/^\/v1(?=\/auth\/email\/)/, "");
 
     if (p.startsWith("/auth/") && limited(clientIp(req, core.trustProxy))) throw new HttpError(429, "rate_limited");
 
@@ -235,6 +265,60 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       return send(res, 200, await issue(c.userId, c.device, c.isNew, "apple"));
     }
 
+    // ── email one-time code (any address; same answer whether or not an account exists) ──
+    if (m === "POST" && p === "/auth/email/start") {
+      const ip = clientIp(req, core.trustProxy);
+      const email = normalizeEmail((await readJson(req)).email);
+      if (!email) throw new HttpError(400, "bad_email");
+      if (emailSends.full(ip)) {
+        log("auth.failed", { provider: "email", reason: "ip_send_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      if (!core.mail) {
+        log("auth.failed", { provider: "email", reason: "no_mail_sender" });
+        throw new HttpError(503, "email_unavailable", "Email sign-in isn't available right now.");
+      }
+      const issued = await core.emailCodes.issue(email);
+      if (!issued.ok) {
+        log("auth.failed", { provider: "email", reason: "email_send_limit" });
+        return send(res, 429, { error: "rate_limited", retryAfterSec: issued.retryAfterSec });
+      }
+      emailSends.add(ip);
+      try {
+        await core.mail.send(email, issued.code, CODE_TTL_SEC / 60);
+      } catch (e) {
+        await core.emailCodes.discard(issued.id);
+        log("auth.email_send_failed", { to: maskEmail(email), sender: core.mail.kind, message: String(e).slice(0, 80) });
+        throw new HttpError(502, "send_failed", "Couldn't send the code. Try again.");
+      }
+      log("auth.email_code_sent", { to: maskEmail(email), sender: core.mail.kind });
+      return send(res, 200, { ok: true, expiresInSec: CODE_TTL_SEC, resendAfterSec: RESEND_AFTER_SEC });
+    }
+
+    if (m === "POST" && p === "/auth/email/verify") {
+      const ip = clientIp(req, core.trustProxy);
+      const b = await readJson(req);
+      const email = normalizeEmail(b.email);
+      const code = typeof b.code === "string" ? b.code.trim() : "";
+      if (!email || !/^\d{6}$/.test(code)) throw new HttpError(400, "bad_request");
+      if (emailFails.full(ip)) {
+        log("auth.failed", { provider: "email", reason: "ip_fail_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      const device: Device = b.device === "mac" ? "mac" : "iphone";
+      const r = await core.emailCodes.check(email, code);
+      if (r !== "ok") {
+        emailFails.add(ip);
+        if (r === "too_many") {
+          log("auth.failed", { provider: "email", reason: "too_many_attempts" });
+          return send(res, 429, { error: "too_many_attempts", message: "Too many tries. Ask for a new code." });
+        }
+        throw fail("email", "code_invalid");
+      }
+      const { user, isNew } = await accounts.userForVerifiedEmail(email);
+      return send(res, 200, await issue(user.id, device, isNew, "email"));
+    }
+
     // ── everything below needs a session ──
     if (!who) throw new HttpError(401, "unauthorized");
 
@@ -304,7 +388,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   }
 
   return {
-    handles: (p) => p === "/me" || p.startsWith("/me/") || p.startsWith("/auth/"),
+    handles: (p) => p === "/me" || p.startsWith("/me/") || p.startsWith("/auth/") || p.startsWith("/v1/auth/email/"),
     async handle(req, res, who) {
       const url = new URL(req.url ?? "/", "http://localhost");
       try {
