@@ -8,6 +8,7 @@
  *   GENITA_DB_MIGRATE     "0" skips migrate-on-boot (default: run pending migrations)
  *   GENITA_JWT_SECRET     HS256 secret for session tokens (≥32 chars). Unset on loopback = random per boot.
  *   GENITA_PUBLIC_URL     https://genita-api.thebeni.ai — Apple web callback base (Mac login)
+ *   GENITA_JUDGE_CODES    label=code,… Judge access (auth/judge.ts)
  *   GENITA_TRUST_PROXY    "1" = rate-limit by X-Forwarded-For (behind a proxy/load balancer)
  *   APPLE_*               see auth/apple.ts · GENITA_S3_* see storage/blob.ts
  */
@@ -21,6 +22,7 @@ import { PgPrepStore } from "../prep/pgStore.ts";
 import { AppleAuth, appleConfigFromEnv } from "./apple.ts";
 import { Accounts, DEVICES, type Device } from "./accounts.ts";
 import { JwtError, looksLikeJwt, signHs256, verifyHs256 } from "./jwt.ts";
+import { JudgeAccess } from "./judge.ts";
 import { createAccountRoutes, type AccountRoutes } from "./routes.ts";
 
 export const SESSION_ISSUER = "genita";
@@ -45,6 +47,8 @@ export type AccountsCore = {
   callbackUrl: string;
   trustProxy: boolean;
   authRatePerMin: number;
+  /** D41 Judge access codes (GENITA_JUDGE_CODES); disabled when none are set */
+  judge: JudgeAccess;
   log: Log;
   signSession(userId: string, sid: string, device: Device, expiresAt: Date): string;
   onUserDeleted?: (userId: string) => void;
@@ -89,13 +93,14 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     callbackUrl: `${publicUrl}/auth/apple/callback`,
     trustProxy: env.GENITA_TRUST_PROXY === "1",
     authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 30,
+    judge: new JudgeAccess(env.GENITA_JUDGE_CODES),
     log,
     forgetAvatars: peterForgetter(env, log),
     signSession: (userId, sid, device, expiresAt) =>
       signHs256({ iss: SESSION_ISSUER, sub: userId, sid, dev: device, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt.getTime() / 1000) }, jwtSecret),
   };
 
-  log("accounts.ready", { db: db.kind, blobs: blobs.kind, apple_key: apple.canExchange ? "set" : "unset" });
+  log("accounts.ready", { db: db.kind, blobs: blobs.kind, apple_key: apple.canExchange ? "set" : "unset", judge_codes: core.judge.enabled ? "set" : "unset" });
 
   return Object.assign(core, {
     routes: createAccountRoutes(core),

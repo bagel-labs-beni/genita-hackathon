@@ -20,6 +20,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
+| 11/3 | D41 Judge access: `POST /auth/judge {code, device?}` → the same body as `POST /auth/apple` (session JWT + `/me` view) for the demo account that code belongs to. 401 wrong code, 400 no code, 429 after 5 wrong tries per IP in 10 min, 404 when `GENITA_JUDGE_CODES` is unset. Additive; WS and other routes unchanged. |
 
 ```
 wss://<host>/v1/session
