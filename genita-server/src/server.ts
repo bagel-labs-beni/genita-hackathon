@@ -37,7 +37,7 @@ import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
-import { attachPresence, deviceFor, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
+import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -219,14 +219,14 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, deviceFor(who.device, url));
+          attach(ws, who, gatedCallDevice(who.device, url));
         });
       },
       () => reject(500, "Internal Server Error"),
     );
   });
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof deviceFor>) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>) {
     const id = randomUUID();
     const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),

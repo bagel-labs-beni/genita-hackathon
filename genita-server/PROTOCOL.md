@@ -389,10 +389,11 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
-device's reply (`utterance.cancelled`, reason `client`), (2) writes the row, (3) opens the gate for the new
-owner and sends `ownership` to every presence and call socket of the user. Between (1) and (3) nobody plays.
+device's reply (`utterance.cancelled`, reason `client`), (2) writes the row, (3) sends `ownership` to every
+presence and call socket of the user, (4) opens the gate for the new owner after a 250 ms handover lease
+(the apps don't acknowledge the cancel, so the lease covers its delivery and the queue flush). Between (1) and (4) nobody plays.
 
-On `/v1/session?device=…`: `audio` events and binary frames go only to the owner; mic audio from a non-owner is dropped;
+On `/v1/session?device=…` (the query opts in; a JWT's device alone does not gate an older build): `audio` events and binary frames go only to the owner; mic audio from a non-owner is dropped;
 captions and state still flow. A `start` on a conversation nobody holds (fresh, or released) makes that device the owner;
 a `start` while the other device owns it does not move it.
 

@@ -71,9 +71,15 @@ const ownedSince: Record<Dev, number> = { iphone: Date.now(), mac: 0 };
 for (let i = 0; i < trips * 2; i++) {
   const from: Dev = owner;
   const to: Dev = from === "iphone" ? "mac" : "iphone";
-  const mark = dev[from].call.json.length;
-  dev[from].call.send({ type: "text", text: i % 2 ? "Tell me a short story about a cat." : "Describe your morning in three sentences." });
-  await dev[from].call.wait((m) => m.type === "audio", mark, 30000); // mid-reply
+  // mid-reply; a vendor hiccup (no audio for a reply) is retried once, it is not what this measures
+  let spoke = false;
+  for (let attempt = 0; attempt < 2 && !spoke; attempt++) {
+    const mark = dev[from].call.json.length;
+    dev[from].call.send({ type: "text", text: i % 2 ? "Tell me a short story about a cat." : "Describe your morning in three sentences." });
+    const first = await dev[from].call.wait((m) => m.type === "audio" || m.type === "reply" || m.type === "error", mark, 30000);
+    spoke = first.type === "audio";
+  }
+  if (!spoke) throw new Error(`no audio from ${from} twice`);
   const t0 = Date.now();
   const toMark = dev[from].call.json.length;
   dev[from].presence.send({ type: "move.request", to });

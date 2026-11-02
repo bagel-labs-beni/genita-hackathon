@@ -33,6 +33,8 @@ type UserState = {
   calls: Set<Call>;
   /** claims in flight that will change the owner; the gate is shut while > 0 */
   switching: number;
+  /** after a change the new owner waits until then, so the old device's cancel lands first */
+  leaseUntil: number;
   chain: Promise<unknown>;
 };
 
@@ -56,9 +58,16 @@ export class HandoffHub {
   private users = new Map<string, UserState>();
   private store: OwnershipStore;
   private log: LogFn;
-  constructor(store: OwnershipStore, log: LogFn = () => {}) {
+  private handoverMs: number;
+  /**
+   * handoverMs: after the owner changes, the new owner's gate stays shut this long. The old device's
+   * `utterance.cancelled` goes out first; the lease covers its delivery and the queue flush, since the
+   * apps don't acknowledge it. 250 ms is below anything a person notices next to a ≥1.5 s first reply.
+   */
+  constructor(store: OwnershipStore, log: LogFn = () => {}, opts: { handoverMs?: number } = {}) {
     this.store = store;
     this.log = log;
+    this.handoverMs = opts.handoverMs ?? 250;
   }
 
   /** cached owner, undefined before the first load */
@@ -121,11 +130,11 @@ export class HandoffHub {
     u.calls.add(call);
     void this.load(u).catch(() => {});
     return {
-      mayPlay: () => u.switching === 0 && u.record?.owner === device,
+      mayPlay: () => u.switching === 0 && u.record?.owner === device && Date.now() >= u.leaseUntil,
       started: async () => {
-        const r = await this.load(u);
-        if (r.owner === null) await this.claimFor(userId, device, null, "start", null);
-        else call.send(this.ownershipEvent(r, null, "current"));
+        // Checked again inside the serial section: a claim that lands first wins, the start doesn't steal.
+        const out = await this.claimFor(userId, device, null, "start", null, true);
+        if (!out.changed) call.send(this.ownershipEvent(out.state, null, "current"));
       },
       close: () => void u.calls.delete(call),
     };
@@ -149,7 +158,7 @@ export class HandoffHub {
   private user(userId: string): UserState {
     let u = this.users.get(userId);
     if (!u) {
-      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), switching: 0, chain: Promise.resolve() };
+      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), switching: 0, leaseUntil: 0, chain: Promise.resolve() };
       this.users.set(userId, u);
     }
     return u;
@@ -187,22 +196,24 @@ export class HandoffHub {
     return true;
   }
 
-  private claimFor(userId: string, device: HandoffDevice, epoch: number | null, trigger: Trigger, from: Conn | null): Promise<ClaimOutcome> {
+  private claimFor(userId: string, device: HandoffDevice, epoch: number | null, trigger: Trigger, from: Conn | null, onlyIfFree = false): Promise<ClaimOutcome> {
     const u = this.user(userId);
     const t0 = Date.now();
     // Predict from the cache synchronously so the old device stops first, even with queued claims.
     const cur = u.record;
-    const willChange = !!cur && (epoch === null ? cur.owner !== device : claimWins(cur, { owner: device, epoch }));
+    const willChange = !onlyIfFree && !!cur && (epoch === null ? cur.owner !== device : claimWins(cur, { owner: device, epoch }));
     const shut = willChange && this.shutGate(u, device);
     return this.serial(u, async () => {
       try {
         const before = await this.load(u);
         const prev = before.owner;
+        if (onlyIfFree && prev !== null) return { accepted: prev === device, changed: false, state: { ...before } };
         // A claim that was not predicted to change (e.g. cache cold) still stops the old device first.
         const late = !shut && (epoch === null ? before.owner !== device : claimWins(before, { owner: device, epoch })) && this.shutGate(u, device);
         try {
           const out = await this.store.claim(userId, device, epoch);
           u.record = out.state;
+          if (out.changed && out.state.owner !== prev && prev !== null) u.leaseUntil = Date.now() + this.handoverMs;
           from?.send({ type: "claim.result", accepted: out.accepted, owner: out.state.owner, epoch: out.state.epoch });
           if (out.changed) {
             if (out.state.owner !== prev) this.log("handoff.committed", { from: prev, to: out.state.owner, total_ms: Date.now() - t0, trigger, epoch: out.state.epoch });
@@ -222,7 +233,8 @@ export class HandoffHub {
     const u = this.user(userId);
     return this.serial(u, async () => {
       const before = await this.load(u);
-      const shut = before.owner === device && this.shutGate(u, null);
+      // only a release that will be accepted stops the reply
+      const shut = before.owner === device && (epoch === null || epoch >= before.epoch) && this.shutGate(u, null);
       try {
         const out = await this.store.release(userId, device, epoch);
         u.record = out.state;

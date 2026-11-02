@@ -166,7 +166,7 @@ test("hub: move request is relayed to the other device; offline or locked target
 });
 
 test("hub: sound only on the owner; the old device is stopped before the new one may play", async () => {
-  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const hub = new HandoffHub(new MemoryOwnershipStore(), () => {}, { handoverMs: 0 }); // the lease has its own test
   const timeline: string[] = [];
   const phone = device(hub, "u", "iphone");
   const mac = device(hub, "u", "mac");
@@ -258,4 +258,45 @@ test("hub: release leaves nobody holding the sound until the next start", async 
   const mc = call(hub, "u", "mac", []);
   await mc.handle.started();
   assert.deepEqual(hub.ownership("u"), { owner: "mac", epoch: 3 });
+});
+
+// ───────────────────────── Codex review 11/2 ─────────────────────────
+
+test("review P1: the new owner gets a short handover lease after the old device was stopped", async () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore(), () => {}, { handoverMs: 40 });
+  const pc = call(hub, "u", "iphone", []);
+  const mc = call(hub, "u", "mac", []);
+  const mac = device(hub, "u", "mac");
+  await pc.handle.started();
+  await mac.conn.claim(null, "button");
+  assert.deepEqual([pc.handle.mayPlay(), mc.handle.mayPlay()], [false, false], "nobody plays while the old device drains its queue");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.deepEqual([pc.handle.mayPlay(), mc.handle.mayPlay()], [false, true]);
+});
+
+test("review P2: a call start racing an explicit claim never takes the conversation back", async () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const mac = device(hub, "u", "mac");
+  const pc = call(hub, "u", "iphone", []);
+  await hub.current("u");
+  await Promise.all([mac.conn.claim(null, "button"), pc.handle.started()]);
+  assert.equal(hub.ownership("u")?.owner, "mac");
+});
+
+test("review P2: a stale release is rejected without cancelling the owner's reply", async () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const mac = device(hub, "u", "mac");
+  const mc = call(hub, "u", "mac", []);
+  await mac.conn.claim(3, "button");
+  const out = await mac.conn.release(1);
+  assert.equal(out.accepted, false);
+  assert.equal(mc.stops(), 0, "the reply keeps going");
+});
+
+test("review P2: only ?device= opts a call into the gate; the token's device alone does not", async () => {
+  const { gatedCallDevice } = await import("../src/handoff/routes.ts");
+  assert.equal(gatedCallDevice("mac", new URL("ws://x/v1/session")), null, "signed-in older Mac build: not gated");
+  assert.equal(gatedCallDevice("mac", new URL("ws://x/v1/session?device=mac")), "mac");
+  assert.equal(gatedCallDevice("iphone", new URL("ws://x/v1/session?device=mac")), "iphone", "the token wins when both are present");
+  assert.equal(gatedCallDevice("dev", new URL("ws://x/v1/session?device=phone")), "iphone");
 });

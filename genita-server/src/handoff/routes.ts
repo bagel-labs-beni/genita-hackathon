@@ -30,9 +30,18 @@ const json = (res: ServerResponse, status: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
-/** Which device a socket is: the JWT's device when it is iphone/mac, else `?device=`. */
+/** Which device a presence socket is: the JWT's device when it is iphone/mac, else `?device=`. */
 export function deviceFor(principalDevice: string, url: URL): HandoffDevice | null {
   return asDevice(principalDevice) ?? asDevice(url.searchParams.get("device"));
+}
+
+/**
+ * A call is gated only when it opts in with `?device=` (a build that also runs the presence client).
+ * The JWT's device alone does not gate it: an older build with a signed-in token keeps its sound.
+ */
+export function gatedCallDevice(principalDevice: string, url: URL): HandoffDevice | null {
+  const asked = asDevice(url.searchParams.get("device"));
+  return asked ? (asDevice(principalDevice) ?? asked) : null;
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown> | null> {
@@ -87,7 +96,9 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
     if (isBinary || buf.length > MAX_PRESENCE_BYTES) return send({ type: "error", code: "bad_message" });
     let m: Record<string, unknown>;
     try {
-      m = JSON.parse(buf.toString("utf8"));
+      const v: unknown = JSON.parse(buf.toString("utf8"));
+      if (!v || typeof v !== "object" || Array.isArray(v)) return send({ type: "error", code: "bad_message" });
+      m = v as Record<string, unknown>;
     } catch {
       return send({ type: "error", code: "bad_message" });
     }

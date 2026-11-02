@@ -181,6 +181,34 @@ test("lock keeps the owner, the other device sees peer inactive; HTTP claim and 
   mac.ws.close();
 });
 
+test("review P1: a presence message that is valid JSON but not an object is an error, not a crash", async (t) => {
+  const { base } = await boot(t);
+  const p = await open(base, "/v1/presence?device=mac", "z");
+  for (const bad of ["null", "[]", "3", '"x"']) p.ws.send(bad);
+  await p.waitFor((m) => m.type === "error");
+  await sleep(50);
+  assert.equal(p.json.filter((m) => m.type === "error").length, 4);
+  const health = await fetch(`http://${base}/healthz`);
+  assert.equal(health.status, 200, "the server is still up");
+  p.ws.close();
+});
+
+test("review P2: a call without ?device= is never gated, even when the token names a device", async (t) => {
+  const { base } = await boot(t);
+  const owner = await open(base, "/v1/presence?device=iphone", "old");
+  owner.send({ type: "claim" });
+  await owner.waitFor((m) => m.type === "claim.result");
+  const legacy = await open(base, "/v1/session", "old");
+  legacy.send({ type: "start", persona: { name: "Jin" } });
+  await legacy.waitFor((m) => m.type === "ready");
+  legacy.send({ type: "text", text: "hi" });
+  await legacy.waitFor((m) => m.type === "reply");
+  assert.ok(legacy.bin.length > 0, "an old build keeps its sound");
+  assert.equal(legacy.json.filter((m) => m.type === "ownership").length, 0);
+  owner.ws.close();
+  legacy.ws.close();
+});
+
 test("presence without a device closes with 4400; other users never see each other", async (t) => {
   const { base } = await boot(t);
   const bad = await open(base, "/v1/presence");
