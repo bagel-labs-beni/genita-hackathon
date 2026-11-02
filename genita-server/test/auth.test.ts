@@ -41,10 +41,10 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
   const realFetch = globalThis.fetch;
   globalThis.fetch = apple.fetch;
   const dir = mkdtempSync(join(tmpdir(), "genita-auth-"));
-  const peterDeletes: string[] = []; // stand-in for deploy/aws/peter/prep_api.py
+  const peterDeletes: string[] = []; // stand-in for deploy/aws/peter/prep_api.py; the first DELETE fails (box down)
   const peterApi = createHttpServer((req, res) => {
     if (req.method === "DELETE" && req.headers.authorization === "Bearer worker-token") peterDeletes.push(req.url ?? "");
-    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+    res.writeHead(peterDeletes.length === 1 ? 503 : 200, { "content-type": "application/json" }).end("{}");
   });
   await new Promise<void>((r) => peterApi.listen(0, "127.0.0.1", r));
   const env: NodeJS.ProcessEnv = {
@@ -258,10 +258,15 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
 
   // ── F1-L8 delete account (incl. the Peter avatar cache keyed by companion id) ──
   await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
+  const failed = await call("DELETE", "/me", { token });
+  assert.equal(failed.status, 502, "GPU box could not confirm → nothing is reported deleted");
+  assert.equal((await call("GET", "/me", { token })).status, 200, "rows kept so the user can retry");
+  await accounts.blobs.put("users/" + userId + "/images/img1", Buffer.from("x"), "image/jpeg"); // put back for the count below
+  await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
   const del = await call("DELETE", "/me", { token });
   assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 2 });
   assert.equal((await accounts.blobs.list("avatars/comp1/")).length, 0, "avatar cache gone from blob storage");
-  assert.deepEqual(peterDeletes, ["/avatars/comp1"], "GPU box told to drop its local cache");
+  assert.deepEqual(peterDeletes, ["/avatars/comp1", "/avatars/comp1"], "GPU box told to drop its local cache (retried)");
   const revoke = apple.requests.find((r) => r.url.endsWith("/auth/revoke"))!;
   // the latest login's refresh token is kept (here the Mac web one) and revoked with its own client_id
   assert.equal(revoke.form.get("token"), "rt-ai.thebeni.genita.web");

@@ -283,11 +283,11 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         blobsDeleted = await blobs.deletePrefix(`users/${who.userId}/`);
         // Peter avatar caches (face frames + latents) are keyed by companion id, outside users/<id>/
         for (const cid of companionIds) blobsDeleted += await blobs.deletePrefix(`avatars/${cid}/`);
+        await core.forgetAvatars?.(companionIds); // GPU box copy; throws → rows kept, user retries
       } catch (e) {
         log("account.delete_failed", { stage: "blobs", message: String(e).slice(0, 120) });
         throw new HttpError(502, "delete_failed", "Couldn't delete your files. Try again.");
       }
-      await core.forgetAvatars?.(companionIds);
       await accounts.deleteUser(who.userId);
       core.onUserDeleted?.(who.userId);
       log("account.deleted", { blobs: blobsDeleted, apple_revoked: appleStatus === 200 });
