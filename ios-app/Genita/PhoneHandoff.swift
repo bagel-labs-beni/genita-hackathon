@@ -61,7 +61,8 @@ import ARKit
         }
         tracker.$registered.dropFirst().removeDuplicates().sink { [weak self] done in
             guard let self,done,self.registeringVisible else{return}
-            self.registeringVisible=false;self.registering=false;self.showRegisteredToast()
+            // Keep `registering` on: tracking must restart even if the app leaves before the world map is saved.
+            self.registeringVisible=false;self.showRegisteredToast()
         }.store(in:&subscriptions)
         link.autoReconnect=true
         tracker.onReading = { [weak self] reading in
@@ -105,7 +106,7 @@ import ARKit
     }
     func connect() { registering=proximitySupported;link.join(code) }
     /// P02 Set up touch to move → P03 here and MAC-REG on the Mac at the same time.
-    func registerScreen() { registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false }
+    func registerScreen() { registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false;model?.settingsOpen=false }
     func cancelRegistration() { registeringVisible=false;registering=false;link.send(["type":"registerCancel"]);updateTracking() }
     private func showRegisteredToast() {
         withAnimation(.easeOut(duration:0.2)) {registeredToast=true}
@@ -137,8 +138,9 @@ import ARKit
             return
         }
         moving=true;moveAttempt+=1;let attempt=moveAttempt
+        // One channel per request, so a late duplicate can't undo a later Continue here.
         if viaServer {server.moveRequest(to:.mac)}
-        if link.connected {link.send(["type":"moveRequest"])} else if !viaServer {link.reconnect()}
+        else if link.connected {link.send(["type":"moveRequest"])} else {link.reconnect()}
         DispatchQueue.main.asyncAfter(deadline:.now()+5) { [weak self] in
             guard let self,self.moving,self.moveAttempt==attempt else{return}
             self.moving=false;self.moveFailed=true
@@ -185,7 +187,7 @@ import ARKit
             if let size=PhoneDisplayGeometry.meters {hello["phoneHeight"]=size.height;hello["phoneWidth"]=size.width}
             link.send(hello)
             ownership.publishCurrent()
-            if moving {link.send(["type":"moveRequest"])}
+            if moving && !server.peerActive {link.send(["type":"moveRequest"])}
             if link.pairedWithCode {settings=false}
             refreshSurface()
         case "welcome":

@@ -25,7 +25,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     func effectReady(_ id:String) { guard motion?.id==id else{return};renderedMotionID=id }
     /// An arriving window shows only the effect; a departing one stays visible until its first frame.
     var conversationHidden:Bool { guard let motion else{return false};return motion.outgoing ? motionVisible : true }
-    var canMoveToPhone:Bool { ownership.isOwner && (phoneReachable || server.peerActive) && motion == nil }
+    /// Only when a request can actually reach an iPhone that is in front (local link, or the server says active).
+    var canMoveToPhone:Bool { ownership.isOwner && (linkReachable || server.peerActive) && motion == nil }
+    private var linkReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
     private var returnOrigin:NSPoint?
     @Published var profile: Data?
     private var image = ""
@@ -124,8 +126,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     func moveToPhone() {
         guard canMoveToPhone else{return}
-        if server.peerActive {server.moveRequest(to:.phone)}
-        if link.connected {link.send(["type":"moveRequest"])}
+        // One channel per request, so a late duplicate can't undo a later Continue here.
+        if server.peerActive {server.moveRequest(to:.phone)} else {link.send(["type":"moveRequest"])}
         status="Moving to your iPhone"
     }
     private func serverEffect(_ effect:PresenceEffect) {
