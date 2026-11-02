@@ -38,6 +38,8 @@ export type PipelineCtx = {
   log: (event: string, data: Record<string, unknown>) => void;
   images: boolean;
   putImage: (slot: string, bytes: Buffer) => Promise<string>;
+  /** D23: the companion says this line now (after the boxes are up); the runner announces it */
+  speak?: (text: string) => void;
 };
 
 export type PipelineResult = { card: FindCard | null; timings: Record<string, number> };
@@ -46,6 +48,49 @@ const SEEN_PROMPT =
   "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
+export const FRIDGE_PILL_MAX = 28;
+
+/**
+ * The fridge card's pill line (shown, not spoken): the "있음" items, whole names only, ≤ 28 characters —
+ * "Egg, tofu, milk" · "Egg, tofu +2" · "I see 5 things." · "Not sure yet." (#122 follow-up).
+ */
+export function fridgePill(items: FindItem[]): string {
+  const have = items.filter((i) => i.tier === "have").map((i) => i.name);
+  if (!have.length) return "Not sure yet.";
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  for (let n = have.length; n >= 1; n--) {
+    const line = cap(have.slice(0, n).join(", ")) + (n < have.length ? ` +${have.length - n}` : "");
+    if (line.length <= FRIDGE_PILL_MAX) return line;
+  }
+  return `I see ${have.length} thing${have.length > 1 ? "s" : ""}.`;
+}
+
+/** IC-4 for the fridge (Figma copy): title, then body. Other kinds keep their own wording. */
+export const FRIDGE_UNCLEAR = "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.";
+
+/** D23: after the card is ready, wait at most this long for the remaining checks before speaking */
+export const SPEAK_WAIT_MS = 3000;
+
+/** "a", "a and b", "a, b, and c" */
+function listOf(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`;
+}
+
+/**
+ * D23 ③ / #122: the spoken answer names only "있음" items (Spark YES + SAM box,
+ * or a "맞아?" the user confirmed) — never the first look's raw list — then the dish.
+ */
+export function fridgeLine(items: FindItem[], dish: string | null): string {
+  const have = items.filter((i) => i.tier === "have").map((i) => i.name).slice(0, 4);
+  const d = dish ? dish.toLowerCase() : "";
+  if (!have.length) return d ? `I can't say for sure what's in there yet. Tap what you have on the card — ${d} might work.` : "I can't say for sure what's in there yet. Tap what you have on the card.";
+  if (!d) return `I can see ${listOf(have)}.`;
+  // the dish may lean on something not confirmed ("tofu fried rice" with tofu only "맞아?"): say so, don't imply it
+  const unsure = items.filter((i) => i.tier !== "have" && d.includes(i.name.toLowerCase().replace(/s$/, ""))).map((i) => i.name).slice(0, 2);
+  return `I can see ${listOf(have)}. You could make ${d}${unsure.length ? `, if you have ${listOf(unsure)}` : ""}.`;
+}
 
 const yesPrompt = (name: string) => `Is there ${name} clearly visible in this photo? Answer only YES or NO.`;
 
@@ -269,7 +314,8 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   if (seenCount === 0) {
     // IC-4: blurry or dark — say so, never make a list up
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: "I couldn't see the food clearly. Can you show me again with more light?" });
+    // IC-4 copy from Figma (UI-3): "Title. Body" — the app splits on the first ". "
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: FRIDGE_UNCLEAR });
     return { card: null, timings };
   }
 
@@ -313,7 +359,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       title: sentenceCase(dish),
       subtitle: sum.subtitle,
       status: sum.status,
-      say: str(r?.say, 120) || `Found one. ${capFirst(dish)} uses what you've got.`,
+      // no `say` yet: the spoken line is made from checked items once the boxes are up (D23)
       ...(ctx.images ? { hero: pending("hero") } : {}),
       camera: { frame: frameIndex, at: at.toISOString(), w: wh.w, h: wh.h, label: `Your camera · ${label}` },
       items,
@@ -337,7 +383,21 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       ])
     : Promise.resolve();
 
-  await Promise.all(checks);
+  // D23 ③: speak once the checks are in (or SPEAK_WAIT_MS after the card), naming only "have" items —
+  // each of those already had its box sent (pushBoxes runs when an item turns YES + box)
+  const allChecks = Promise.all(checks);
+  if (card) {
+    await Promise.race([allChecks, new Promise((r) => setTimeout(r, SPEAK_WAIT_MS))]);
+    if (ctx.signal.aborted) return { card, timings };
+    const wire = toWire(cands.all());
+    card.say = fridgeLine(wire, dish);
+    // the pill shows a short line; the full sentence is only spoken (≤ 28 chars, one line on both devices)
+    card.pill = fridgePill(wire);
+    ctx.emit({ type: "find.items", findId: ctx.findId, items: wire, checking: true, subtitle: card.subtitle, ...(card.status ? { status: card.status } : {}), pill: card.pill });
+    timings.speakMs = ms();
+    ctx.speak?.(card.say);
+  }
+  await allChecks;
   timings.checksDoneMs = ms();
   if (ctx.signal.aborted) return { card, timings };
   if (card) card.camera = { ...card.camera!, w: wh.w, h: wh.h };

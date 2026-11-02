@@ -147,6 +147,9 @@ enum CallStop: Equatable {
     @ObservationIgnored private var lastUserText: String?
     @ObservationIgnored private var seqToUtterance: [UInt32: Int] = [:]
     @ObservationIgnored private var cancelled: Set<Int> = []
+    /// Utterances the server sent as `say` while `ready.tts` is server (voice GPU full or failed): complete them
+    /// after the device voice has rendered them, not when `reply` arrives.
+    @ObservationIgnored private var saidOnDevice: Set<Int> = []
     @ObservationIgnored private var currentUtterance: Int?
     @ObservationIgnored private var lookedUp: Set<Int> = []
     @ObservationIgnored private var playingUtterance: Int?
@@ -585,15 +588,17 @@ enum CallStop: Equatable {
             // Device voice mode: speak it into the call's player (same AEC, flush and playback_done as server audio).
             guard !cancelled.contains(sentence.utteranceId) else { break }
             currentUtterance = sentence.utteranceId
+            saidOnDevice.insert(sentence.utteranceId)
             voice.say(sentence)
         case let .reply(r):
             if !r.interpret, !r.text.isEmpty { history.append(.init(role: .assistant, text: r.text)) }
             if !cancelled.contains(r.utteranceId), !routed.contains(r.utteranceId) {
                 // Device mode: complete once every `say` of the reply is rendered into the player.
-                if tts == .device { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
+                if tts == .device || saidOnDevice.remove(r.utteranceId) != nil { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
+            saidOnDevice.remove(c.utteranceId)
             flushPlayback()
             if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
@@ -626,7 +631,7 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
     }
