@@ -137,7 +137,7 @@ interpretation). The server then uses the new name from that turn's reply on (th
 the name), saves it to the user's companion (same as `PATCH /v1/companion {name}`), and sends
 `companion.named {name}` (after the save, before that reply's audio). Update every {name} label (S07, S09-T,
 PREP-1). If the save fails, nothing changes: no event, the call keeps the old name. A negated phrase
-("Don't call yourself Max") or a question about the name ("Why do you call yourself Max?", "Should I
+("Don't call yourself Max"), reported speech ("My friend said your name is Max") or a question about the name ("Why do you call yourself Max?", "Should I
 call you Max?") is not a rename; a request ("Can I call you Max?") is.
 
 ## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
