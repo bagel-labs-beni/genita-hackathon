@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import { PeterClient, TMC1_HEADER_BYTES, packTmc1, unpackTmc1 } from "../src/lips/peter.ts";
@@ -38,7 +38,12 @@ function fakeWorker(token: string) {
     });
   });
   const port = () => (wss.address() as { port: number }).port;
-  return { wss, log, url: () => `ws://127.0.0.1:${port()}` };
+  /** terminate open sockets too: wss.close() alone leaves them (and the test process) running */
+  const stop = () => {
+    for (const c of wss.clients) c.terminate();
+    wss.close();
+  };
+  return { wss, log, stop, url: () => `ws://127.0.0.1:${port()}` };
 }
 
 test("TMC1 header packs and unpacks like struct '<IBIQQQ' (33 bytes)", () => {
@@ -48,10 +53,15 @@ test("TMC1 header packs and unpacks like struct '<IBIQQQ' (33 bytes)", () => {
   assert.deepEqual(unpackTmc1(b), { kind: 1, epoch: 0xdeadbeef, requestId: 123456789012n, frame: 5n, pts: 3200n });
 });
 
-test("bridge: HELLO → READY, 24 kHz TTS audio arrives at the worker as continuous 16 kHz TMC1, crops come back per request", async () => {
+test("bridge: HELLO → READY, 24 kHz TTS audio arrives at the worker as continuous 16 kHz TMC1, crops come back per request", async (t: TestContext) => {
   const w = fakeWorker("secret");
   await new Promise((r) => w.wss.once("listening", r));
   const peter = new PeterClient({ url: w.url(), token: "secret", heartbeatMs: 50 });
+  // cleanup even when an assertion throws; otherwise the heartbeat timer keeps the run alive until CI's timeout
+  t.after(() => {
+    peter.close();
+    w.stop();
+  });
   const ready = await peter.connect();
   assert.deepEqual(ready, { epoch: 7, bundleId: "079316aa99195c4d", fps: 25, sampleRate: 16000, pasteDy: -3 });
   const crops: { requestId: number; frame: number; jpeg: Buffer }[] = [];
@@ -76,9 +86,8 @@ test("bridge: HELLO → READY, 24 kHz TTS audio arrives at the worker as continu
   assert.deepEqual(w.log.deflate, [false], "permessage-deflate off (Modal proxy closes 1002 otherwise)");
   peter.cancel(9);
   await new Promise((r) => setTimeout(r, 20));
-  assert.equal(w.log.control.at(-1)!.type, "CANCEL");
-  peter.close();
-  w.wss.close();
+  // the 50 ms heartbeat can land after CANCEL on a slow runner: check the last non-heartbeat message
+  assert.equal(w.log.control.filter((m) => m.type !== "HEARTBEAT").at(-1)!.type, "CANCEL");
 });
 
 test("bridge: a wrong token rejects connect", async () => {
