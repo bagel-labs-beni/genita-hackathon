@@ -223,6 +223,23 @@ import XCTest
         p.retry(); XCTAssertTrue(sent.isEmpty, "interpretation would translate it to the other person")
     }
 
+    /// IC-4: the unclear failure is the dark card, "Look again" drops it and the call goes on; other failures never show the card.
+    func testLookAgainClosesTheUnclearCardOnly() throws {
+        let m = FindsModel()
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"unclear","message":"Show me again?"}"#))
+        XCTAssertTrue(m.current?.isUnclear ?? false)
+        m.lookAgain()
+        XCTAssertEqual(m.state, .idle)
+
+        let n = FindsModel()
+        n.apply(started("b"))
+        n.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"b","reason":"search_failed","message":"x"}"#))
+        XCTAssertFalse(n.current?.isUnclear ?? true)
+        n.lookAgain()
+        XCTAssertEqual(n.state, .searching, "only IC-4 is dismissed by Look again")
+    }
+
     func testUnclearFailureHasNoRetry() throws {
         let m = FindsModel()
         m.apply(started("a"))
@@ -243,6 +260,37 @@ import XCTest
         XCTAssertNil(CallController.tokenSubject(nil))
     }
 
+    // FT-NOSEE: the card names only what the camera did not show, never a guess, and goes by itself
+    func testNoSeeCheckFromRecipeCard() {
+        func item(_ id: String, _ name: String, _ tier: FindTier) -> FindItem {
+            try! JSONDecoder().decode(FindItem.self, from: Data(#"{"id":"\#(id)","name":"\#(name)","tier":"\#(tier.rawValue)","from":"recipe"}"#.utf8))
+        }
+        var c = card("a")
+        c.items = [item("1", "eggs", .have), item("2", "scallions", .have), item("3", "cooked rice", .buy), item("4", "kimchi", .maybe), item("5", "oil", .buy)]
+        let check = NoSeeCheck.from(card: c)
+        XCTAssertEqual(check?.title, "For kimchi fried rice")
+        XCTAssertEqual(check?.rows.map(\.name), ["Eggs", "Scallions", "cooked rice", "kimchi"])
+        XCTAssertEqual(check?.rows.map(\.seen), [true, true, false, false])
+        XCTAssertEqual(check?.hint, "Move the camera if it’s there.")
+        c.items = [item("1", "eggs", .have)]
+        XCTAssertNil(NoSeeCheck.from(card: c), "everything seen: no card")
+        c.items = [item("3", "cooked rice", .buy)]; c.kind = .outfit
+        XCTAssertNil(NoSeeCheck.from(card: c), "recipes only")
+    }
+
+    func testNoSeeCardLeavesByItselfOrOnDismiss() async throws {
+        let m = FindsModel()
+        let check = NoSeeCheck(title: "For x", rows: [.init(name: "rice", seen: false)])
+        m.showNoSee(check, hold: .milliseconds(80))
+        XCTAssertEqual(m.noSee, check)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(m.noSee, "auto-hides")
+        m.showNoSee(check, hold: nil)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(m.noSee, "no hold = stays")
+        m.dismissNoSee(); XCTAssertNil(m.noSee)
+    }
+
     func testStatusLineShortensByWholeWordsOnly() {
         XCTAssertEqual(OneLineText.afterDot("Light jacket · checking 2 shops"), ["Checking 2 shops"])
         XCTAssertEqual(OneLineText.afterDot("Finding 2 for your style…"), [])
@@ -250,5 +298,42 @@ import XCTest
         XCTAssertEqual(opts.first, "Couldn’t find a good match")
         XCTAssertEqual(Array(opts.dropFirst()), ["Couldn’t find a good…", "Couldn’t find a…", "Couldn’t find…", "Couldn’t…"])
         for o in opts { XCTAssertTrue(o.replacingOccurrences(of: "…", with: "").split(separator: " ").allSatisfy { "Couldn’t find a good match".split(separator: " ").contains($0) }, "no cut word: \(o)") }
+    }
+
+    /// #214: the PF-1 status pill follows the sheet — On it… → the card's line → Saved → Nothing I'd pick; not for recipes.
+    func testProductPillFollowsTheSheet() async throws {
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        let m = FindsModel()
+        m.saveRemote = { _, _ in true }
+        m.apply(productStarted(id))
+        XCTAssertEqual(m.pillText, "On it…")
+        m.apply(try productCreated()); m.force(.half)
+        XCTAssertEqual(m.pillText, "Found two for you.")
+        XCTAssertLessThanOrEqual(m.pillText?.count ?? 99, 28, "one line on both devices (#211)")
+        m.toggleSave()
+        XCTAssertEqual(m.pillText, "Saved. They’re in Finds.")
+        let f = FindsModel()
+        f.apply(productStarted("a")); f.apply(try ServerEvent.decode(noMatch))
+        XCTAssertEqual(f.pillText, "Nothing I’d pick for you.")
+        // fridge (recipe) cards use the pill too since #122's follow-up; other kinds (link, outfit) keep the call cue
+        let r = FindsModel()
+        r.apply(started("r")); r.force(.half)
+        XCTAssertEqual(r.pillText, "Let me take a look…", "a fridge search shows the short line until the server's pill arrives")
+        let l = FindsModel()
+        l.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"l","utteranceId":1,"kind":"link","title":"Reading your link","detail":"example.com"}"#))
+        XCTAssertNil(l.pillText, "link cards keep the ordinary call cue")
+    }
+
+    /// Fridge pill (#122 follow-up): the server's short line is shown; the long sentence is not.
+    func testFridgePillUsesTheServerLineNotTheSentence() throws {
+        let m = FindsModel()
+        m.apply(started("r"))
+        XCTAssertEqual(m.pillText, "Let me take a look…")
+        m.apply(created("r")); m.force(.half)
+        let items = try ServerEvent.decode(#"{"type":"find.items","findId":"r","items":[],"checking":true,"pill":"Egg, tofu +2"}"#)
+        m.apply(items)
+        XCTAssertEqual(m.pillText, "Egg, tofu +2")
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"r","items":[],"checking":false}"#))
+        XCTAssertEqual(m.pillText, "Egg, tofu +2", "a later update without a pill keeps it")
     }
 }

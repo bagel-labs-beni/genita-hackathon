@@ -12,7 +12,7 @@ import { MemoryService } from "../src/memory/service.ts";
 
 // #199 (L3 Mac): with server memory on, start.history is ignored, so after a move to the Mac the call lost the
 // iPhone's turns ("Things · searching shops", "Right here. We're looking for…" impossible).
-const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta", ELEVENLABS_API_KEY: "fake-eleven" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
+const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
 const pause = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function waitFor(check: () => boolean) { const deadline = Date.now() + 3000; while (!check()) { if (Date.now() > deadline) throw new Error("test timed out"); await pause(); } }
 const IPHONE = [

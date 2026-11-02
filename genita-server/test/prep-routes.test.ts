@@ -231,6 +231,21 @@ test("POST /v1/import/skip: N1–N3 → style card, no vendor call, readable via
   assert.equal(got.json.status, "ready");
   assert.equal(got.json.style.source, "skip");
 
+  // N3 taste picker (Figma 269:2): n3.{clothes,food,chats}.{like,no}
+  const n3 = await call("POST", "/v1/import/skip", {
+    interests: ["Design"], replies: "Start with the answer",
+    n3: { clothes: { like: ["Minimal", "Comfy"], no: ["Colorful"] }, food: { like: ["Spicy", "Noodles"], no: ["Seafood"] }, chats: { like: ["Jokes"], no: ["Unasked advice", "Talk about looks"] } },
+  }, "u3");
+  assert.equal(n3.status, 200);
+  assert.match(n3.json.profile, /Style: Minimal, Comfy\./);
+  assert.match(n3.json.profile, /Dislikes seafood\./);
+  assert.match(n3.json.profile, /No advice you didn't ask for\./);
+  assert.match(n3.json.profile, /No comments on your looks\./);
+  assert.match(n3.json.profile, /Likes jokes in our chats\./);
+  for (const bad of [{ n3: "x" }, { n3: { food: [] } }, { n3: { food: { like: Array(9).fill("a") } } }, { n3: { chats: { no: [1] } } }]) {
+    assert.equal((await call("POST", "/v1/import/skip", { interests: ["Design"], ...bad })).json.error, "bad_skip", JSON.stringify(bad));
+  }
+
   // only N2 answered
   const only = await call("POST", "/v1/import/skip", { replies: "Start with the answer" }, "u2");
   assert.equal(only.status, 200);

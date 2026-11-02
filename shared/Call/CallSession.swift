@@ -417,6 +417,17 @@ enum CallStop: Equatable {
         socket?.send(.text(.init(text: text, frames: nil)))
     }
 
+    /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
+    func lookAgain() {
+        let question = finds.lookAgain() ?? lastUserText
+        guard let text = question else { return }
+        if cameraOn, let frame = camera.snapshotBase64() {
+            finds.latestFrames = [frame]
+            socket?.send(.frames(.init(images: [frame])))
+        }
+        socket?.send(.text(.init(text: text, frames: nil)))
+    }
+
     func dismissMicBlocked() { micDenied = false }
     /// E01/E02 sheet closed (Mac).
     func dismissDenied() { micDenied = false; cameraDenied = false }
