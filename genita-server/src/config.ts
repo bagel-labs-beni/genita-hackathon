@@ -34,8 +34,13 @@ export type Config = {
   maxSessions: number;
   maxSessionMs: number;
   sparkFirstTokenTimeoutMs: number;
-  /** concurrent identical Spark requests per turn; first text wins (1 = off) */
+  /**
+   * concurrent identical Spark requests per turn; first text wins (1 = off). 3 since 11/3: in-region,
+   * 40 turns each, speech end → first audio p50 1488 → 1265 ms, p90 2127 → 1924 ms vs 2 lanes.
+   */
   sparkHedge: number;
+  /** idle ms a vendor HTTPS socket stays open between turns (0 = Node's 4 s default) */
+  httpKeepAliveMs?: number;
   /** start Spark on a likely-final partial transcript before speechComplete */
   speculate: boolean;
   /** an unpunctuated partial counts as likely-final after this long unchanged */
@@ -122,7 +127,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSessions: num(env.GENITA_MAX_SESSIONS, 16),
     maxSessionMs: num(env.GENITA_MAX_SESSION_MS, 30 * 60_000),
     sparkFirstTokenTimeoutMs: num(env.GENITA_SPARK_TIMEOUT_MS, 8000),
-    sparkHedge: Math.max(1, Math.min(3, num(env.GENITA_SPARK_HEDGE, 2))),
+    sparkHedge: Math.max(1, Math.min(3, num(env.GENITA_SPARK_HEDGE, 3))),
+    httpKeepAliveMs: Math.max(0, num(env.GENITA_HTTP_KEEPALIVE_MS, 60_000)),
     speculate: env.GENITA_SPECULATE !== "0",
     speculateStableMs: num(env.GENITA_SPECULATE_STABLE_MS, 250),
   };

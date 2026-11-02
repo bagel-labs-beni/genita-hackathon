@@ -5,7 +5,10 @@
 import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
-import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
+import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
+const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
+import { makeFaceFlow } from "./faceflow.ts";
+import { flowProfileOf, type FlowProfile } from "./profiles.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
@@ -41,6 +44,8 @@ export function newPrepState(): PrepState {
 
 /** Public URL of a companion image (scene = `neutral`); GET /v1/companion/face/:key, same auth as every prep route. */
 export const faceUrl = (key: "neutral" | FaceKey) => `/v1/companion/face/${key}`;
+/** Face-flow assets (`flow_*`) are served by the same route. */
+export const flowUrl = (asset: string) => `/v1/companion/face/${asset}`;
 
 /**
  * Pure: scene + 13 face images for the progress bar; settled = kept or rejected.
@@ -51,8 +56,9 @@ export function prepProgress(p: PrepState): { done: number; total: number } {
   let total = 1;
   const f = p.steps.face;
   if (f?.status !== "skipped") {
-    total += FACE_KEYS.length;
-    done += f?.status === "done" ? FACE_KEYS.length : Object.keys(f?.face?.items ?? {}).length;
+    const n = f?.face?.keys?.length ?? FACE_KEYS.length;
+    total += n;
+    done += f?.status === "done" ? n : Object.keys(f?.face?.items ?? {}).length;
   }
   return { done, total };
 }
@@ -70,7 +76,7 @@ export function prepView(c: CompanionRecord) {
     // Keep the legacy prep response shape neutral for existing clients.
     emotionVideos: {},
     /** Meta-only face set manifest (team/metaface spec), once the face step is done */
-    face: p.steps.face?.status === "done" && p.steps.face.face ? faceManifest(p.steps.face.face, faceUrl) : null,
+    face: p.steps.face?.status === "done" && p.steps.face.face ? faceManifest(p.steps.face.face, faceUrl, flowUrl) : null,
     lips: { status: "skipped", detail: null, url: null, ms: null },
     steps: {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
@@ -88,6 +94,7 @@ export class PrepRunner {
   readonly events = new EventEmitter();
   private running = new Map<string, Promise<void>>();
   private aborts = new Map<string, AbortController>();
+  private deleting = new Set<string>();
   private d: PrepDeps;
   constructor(d: PrepDeps) { this.d = d; }
 
@@ -99,6 +106,7 @@ export class PrepRunner {
   run(userId: string): Promise<void> {
     const existing = this.running.get(userId);
     if (existing) return existing;
+    if (this.deleting.has(userId)) return Promise.resolve();
     const ac = new AbortController();
     this.aborts.set(userId, ac);
     const p = this.loop(userId, ac).catch((err) => {
@@ -126,12 +134,12 @@ export class PrepRunner {
   }
 
   /**
-   * Account deleted: stop the user's prep, wait until it has stopped writing,
-   * then remove every face image the user still has. Safe to call after the
-   * rows are gone (server.ts accounts.onUserDeleted), which also covers a run
-   * that finished between DELETE /me's blob delete and its row delete.
+   * Before deleting account rows: stop prep, drain in-flight writes, then erase
+   * every face image. Keep new prep blocked through the remaining feature/row
+   * cleanup, including a failed DELETE /me; a later deletion can retry the purge.
    */
   async forgetUser(userId: string): Promise<void> {
+    this.deleting.add(userId);
     this.cancel(userId);
     await this.running.get(userId)?.catch(() => {});
     await this.d.store.deleteAssets(userId);
@@ -158,7 +166,9 @@ export class PrepRunner {
   }
 
   async retry(userId: string): Promise<CompanionRecord> {
+    if (this.deleting.has(userId)) throw new Error("account deletion in progress");
     const c = await this.d.store.getCompanion(userId);
+    if (this.deleting.has(userId)) throw new Error("account deletion in progress");
     if (!c) throw new Error("no companion");
     if (c.prep.status === "running" && this.isRunning(userId)) return c;
     const steps = c.prep.steps;
@@ -282,8 +292,14 @@ export class PrepRunner {
     await setStep("face", { status: "running", attempts: fs.attempts + 1, error: undefined });
     const companionId = c.id;
     const userId = c.userId;
+    // mouth profile from the image check (species / character style); a resumed set keeps its own
+    const raw = fs.face?.profile ? null : (await d.store.getImage(c.imageId).catch(() => null))?.rec.check.raw;
+    const profile: FlowProfile = fs.face?.profile ?? flowProfileOf(c.type, raw);
+    const species = raw?.species || undefined;
     try {
       const out = await makeFaceSet({
+        profile,
+        species,
         metaKey: d.metaKey,
         media: mediaOf(d),
         scene,
@@ -302,8 +318,34 @@ export class PrepRunner {
         log: d.log,
         signal,
       });
+      // optical-flow morph data (optional: without Python/OpenCV the device draws the viseme patches)
+      if (d.python) {
+        out.flow = await makeFaceFlow({
+          python: d.python,
+          profile,
+          scene,
+          state: out,
+          kind: c.type,
+          image: (k) => d.store.getAsset(userId, companionId, k),
+          put: (asset, bytes) => d.store.putAsset(userId, companionId, asset, bytes),
+          // subnasale line for the nose lock (SAM misses human noses at times; the script then estimates it)
+          nose: async () => {
+            const size = imageSize(scene!);
+            const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "nose"), signal);
+            return size && boxes[0] ? normBox(boxes[0], size) : null;
+          },
+          eyes: async () => {
+            const size = imageSize(scene!);
+            const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "eyes"), signal);
+            return size ? boxes.slice(0, 2).map((b) => normBox(b, size)) : [];
+          },
+          log: (e, x) => d.log(e, { companion: companionId, ...x }),
+          signal,
+        });
+        signal.throwIfAborted();
+      }
       await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
-      const m = faceManifest(out, faceUrl);
+      const m = faceManifest(out, faceUrl, flowUrl);
       d.log("face.done", { companionId, userId, ms: out.ms.total, expressions: Object.keys(m.images).filter((key) => key !== "neutral" && (FACE_EXPRESSIONS as readonly string[]).includes(key)).length, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
     } catch (err) {
       if (!signal.aborted && !(err instanceof PrepStoreError)) await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
@@ -351,7 +393,7 @@ export class PrepRunner {
       }
     }
     if (gone) throw new Error("companion deleted");
-    const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl) : null;
+    const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl, flowUrl) : null;
     const image = await d.store.getImage(c.imageId).catch(() => null);
     const uploadAt = image ? Date.parse(image.rec.createdAt) : NaN;
     const msFromUpload = Number.isFinite(uploadAt) ? Math.max(0, Date.now() - uploadAt) : null;
