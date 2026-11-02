@@ -48,6 +48,9 @@ const SEEN_PROMPT =
   "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
+/** IC-4 for the fridge (Figma copy): title, then body. Other kinds keep their own wording. */
+export const FRIDGE_UNCLEAR = "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.";
+
 /** D23: after the card is ready, wait at most this long for the remaining checks before speaking */
 export const SPEAK_WAIT_MS = 3000;
 
@@ -283,7 +286,8 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   if (seenCount === 0) {
     // IC-4: blurry or dark — say so, never make a list up
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: "I couldn't see the food clearly. Can you show me again with more light?" });
+    // IC-4 copy from Figma (UI-3): "Title. Body" — the app splits on the first ". "
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: FRIDGE_UNCLEAR });
     return { card: null, timings };
   }
 

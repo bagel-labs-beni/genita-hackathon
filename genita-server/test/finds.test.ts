@@ -302,6 +302,7 @@ test("recipe pipeline: nothing seen → find.failed unclear (IC-4), no card, no 
   assert.equal(r.card, null);
   const f = events.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
   assert.equal(f.reason, "unclear");
+  assert.equal(f.message, "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.", "IC-4 Figma copy (title. body)");
   assert.ok(!events.some((e) => e.type === "find.created"));
 });
 
