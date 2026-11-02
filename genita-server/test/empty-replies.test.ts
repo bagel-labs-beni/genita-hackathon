@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { loadConfig } from "../src/config.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import { turn, tick } from "./helpers/emptyReplies.ts";
+import { MemoryService } from "../src/memory/service.ts";
+import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
 
 const done = (status = "completed"): SparkStreamEvent => ({ type: "done", responseId: "r", text: "", status });
 const config = { ...loadConfig({ MODEL_API_KEY: "fake" }), serverTts: false, webSearch: false, sparkHedge: 3, speculate: false };
@@ -167,4 +169,73 @@ test("hedge: tag-only prefixes across deltas cannot beat actual words", async ()
     assert.equal(answer(events), "Yes!");
     assert.equal(calls, 3, "the real-text lane wins without a retry");
   }
+});
+
+for (const speculative of [false, true]) {
+  for (const lanes of [1, 3]) {
+    for (const failure of ["empty", "tags", "error"]) {
+      test(`memory: ${speculative ? "speculative" : "ordinary"}, ${lanes} lanes, ${failure} follow-up retries with saved tool outputs, one write`, async () => {
+        const repo = new InMemoryMemoryRepository();
+        const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+        let writes = 0, originals = 0;
+        const remember = memory.remember.bind(memory);
+        memory.remember = async (...args) => { writes++; return remember(...args); };
+        const followups: SparkRequest[] = [];
+        try {
+          const { events, logs } = await turn({ memory, userId: "fake", priorTurns: () => [{ role: "assistant", text: "Earlier." }],
+            config: { ...config, sparkHedge: lanes, speculate: speculative },
+            async *spark(req): AsyncGenerator<SparkStreamEvent> {
+              const followup = Array.isArray(req.input) && req.input.some((e) => "type" in e && e.type === "function_call_output");
+              if (!followup) {
+                originals++;
+                yield { type: "function_call", name: "remember", call_id: `save-${originals}`, arguments: JSON.stringify({ fact: originals === 1 ? "I like spicy food." : "I enjoy spicy food.", kind: "fact" }) };
+              } else {
+                followups.push(req);
+                if (followups.length <= lanes) {
+                  if (failure === "error") throw new Error("empty follow-up failed");
+                  if (failure === "tags") yield { type: "text", delta: "<warm>" };
+                } else yield { type: "text", delta: "Saved that." };
+              }
+              yield done();
+            } }, { speculative });
+          assert.equal(answer(events), "Saved that.");
+          assert.equal(writes, 1, "paraphrased remember is never executed by the retry");
+          assert.equal(originals, lanes, "retry starts from the follow-up, not the user request");
+          assert.equal(followups.length, lanes + 1, "retry uses a single lane");
+          assert.deepEqual(followups[lanes], followups[0], "retry retains the completed call and saved result");
+          const output = Array.isArray(followups[lanes].input) && followups[lanes].input.find((e) => "type" in e && e.type === "function_call_output");
+          assert.ok(output && "output" in output && JSON.parse(output.output).saved);
+          assert.equal((await memory.list("fake")).length, 1);
+          assert.equal(events.filter((e) => e.type === "tool" && e.name === "remember" && e.status === "completed").length, 1);
+          assert.equal(logs.filter((l) => l.event === "spark.empty_retry").length, 1);
+        } finally { await memory.drain(); }
+      });
+    }
+  }
+}
+
+test("memory: a completed remember call wins over a later text-only promise to remember", async () => {
+  const repo = new InMemoryMemoryRepository();
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  let originals = 0, writes = 0, textLaneAborted = false;
+  const remember = memory.remember.bind(memory);
+  memory.remember = async (...args) => { writes++; return remember(...args); };
+  try {
+    const { events } = await turn({ memory, userId: "fake", priorTurns: () => [{ role: "assistant", text: "Earlier." }],
+      config: { ...config, sparkHedge: 2 },
+      async *spark(req, { signal }): AsyncGenerator<SparkStreamEvent> {
+        const followup = Array.isArray(req.input) && req.input.some((e) => "type" in e && e.type === "function_call_output");
+        if (followup) yield { type: "text", delta: "Saved that." };
+        else if (originals++ === 0) yield { type: "function_call", name: "remember", call_id: "save", arguments: '{"fact":"I like spicy food.","kind":"fact"}' };
+        else {
+          try { await tick(); yield { type: "text", delta: "I'll remember that." }; }
+          finally { textLaneAborted = !!signal?.aborted; }
+        }
+        yield done();
+      } });
+    assert.equal(answer(events), "Saved that.", "the write lane supplies the follow-up answer");
+    assert.equal(writes, 1);
+    assert.equal((await memory.list("fake")).length, 1);
+    assert.equal(textLaneAborted, true);
+  } finally { await memory.drain(); }
 });

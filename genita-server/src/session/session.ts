@@ -36,6 +36,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
+import type { MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -110,7 +111,7 @@ type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: 
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void; at: number; firstTextAt?: number };
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -872,25 +873,28 @@ export class Session {
     };
   }
 
-  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>, lanes = this.deps.config.sparkHedge): AsyncIterable<SparkStreamEvent> {
+  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>, lanes = this.deps.config.sparkHedge, memoryRetry?: MemoryRetryState): AsyncIterable<SparkStreamEvent> {
     const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
     const source = (request: SparkRequest, parent: AbortSignal) => {
       const prefixes: string[] = [];
       return hedged(lanes, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent,
         (e, lane) => {
+          // A complete write call commits this lane before a competing text-only
+          // "I'll remember" can discard the save. MemoryCall still gates effects
+          // on an accepted transcript and generates this lane's follow-up text.
+          if (e.type === "function_call" && e.name === "remember" && this.memoryCall && useMemory) return true;
           if (e.type !== "text") return false;
           prefixes[lane] = (prefixes[lane] ?? "") + e.delta;
           // A partial/complete emotion or audio tag is not spoken text. Keep
           // buffering that lane until actual words arrive, even across deltas.
           return !!parseTaggedSentence(prefixes[lane].replace(/<[^>]*$|\[[^\]]*$/g, "")).displayText;
         },
-        // Only if no lane produces text: pass a complete tool call to MemoryCall
-        // for execution/follow-up. Losing lanes never execute memory writes.
+        // Read tools remain fallbacks: give nearby text a bounded chance to win.
         (e) => e.type === "function_call");
     };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
     const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
-    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed) : source(req, signal);
+    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 
   // ───────────────────────── speculation ─────────────────────────
@@ -920,8 +924,9 @@ export class Session {
     let confirm!: () => void;
     const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
     abort.signal.addEventListener("abort", confirm, { once: true });
-    const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed);
-    const spec: Speculation = { norm, abort, built, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
+    const memoryRetry: MemoryRetryState = {};
+    const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed, undefined, memoryRetry);
+    const spec: Speculation = { norm, abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
     this.spec = spec;
   }
 
@@ -970,6 +975,7 @@ export class Session {
     this.metrics = {};
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
+    let memoryRetry: MemoryRetryState = {};
     let built: Built | null = null;
     const spec = self ? null : this.spec;
     if (!self) this.spec = null;
@@ -983,6 +989,7 @@ export class Session {
         spec.confirm();
         built = spec.built;
         pre = spec.stream;
+        memoryRetry = spec.memoryRetry;
         signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
       } else {
         speculative = "miss";
@@ -1058,7 +1065,7 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource(req, signal, greeting?.item, !interpret, undefined, 1);
+            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret, undefined, 1, memoryRetry);
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {

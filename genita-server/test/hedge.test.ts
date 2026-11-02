@@ -76,3 +76,34 @@ test("closing the consumer aborts and closes all three independent iterators", a
   await sleep(5);
   assert.deepEqual(closed.sort(), [0, 1, 2]);
 });
+
+test("a completed tool fallback aborts a stalled tag-only lane after a bounded grace", async () => {
+  const parent = new AbortController();
+  const deadline = setTimeout(() => parent.abort(new Error("fallback stalled")), 1500);
+  let tagAborted = false;
+  const started = Date.now();
+  try {
+    const out = await collect(hedged(2, async function* (signal, lane): AsyncGenerator<Ev> {
+      if (!lane) {
+        yield { type: "tool", v: "remember" };
+        yield { type: "done", v: "complete" };
+      } else {
+        yield { type: "text", v: "<warm>" };
+        try { await sleep(5000, signal); }
+        finally { tagAborted = signal.aborted; }
+      }
+    }, parent.signal, (e) => e.type === "text" && e.v !== "<warm>", (e) => e.type === "tool"));
+    assert.deepEqual(out, ["remember", "complete"]);
+    assert.ok(Date.now() - started < 1200, "fallback does not wait for the upstream timeout");
+    assert.equal(parent.signal.aborted, false);
+    assert.equal(tagAborted, true, "the stalled loser was aborted");
+  } finally { clearTimeout(deadline); parent.abort(); }
+});
+
+test("a text lane arriving within the fallback grace still wins", async () => {
+  const out = await collect(hedged(2, async function* (_signal, lane): AsyncGenerator<Ev> {
+    if (!lane) yield { type: "tool", v: "recall" };
+    else { await sleep(20); yield { type: "text", v: "Yes!" }; }
+  }, new AbortController().signal, isText, (e) => e.type === "tool"));
+  assert.deepEqual(out, ["Yes!"]);
+});
