@@ -39,7 +39,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -89,6 +89,8 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
+  priorThread?: (revision: number) => ThreadState | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -489,6 +491,8 @@ export class Session {
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
           this.history = seed.slice(-MAX_HISTORY);
+          // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
+          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
@@ -944,6 +948,11 @@ export class Session {
     this.frames = null;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     return f.images;
+  }
+
+  /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
+  threadInfo(): ThreadState | null {
+    return this.memoryCall?.threadState() ?? null;
   }
 
   /** This call's turns (copy) — for the account's next device after a handoff. */
