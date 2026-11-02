@@ -14,15 +14,13 @@ import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
+import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 
-export const PROTOCOL_VERSION = 1;
-/** Binary server frame: "GA" | kind u8 | reserved u8 | seq u32 LE | payload */
-export const FRAME_HEADER_BYTES = 8;
-export const FRAME_KIND_TTS_PCM = 1;
+export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
 export interface ClientSink {
-  sendJson(msg: Record<string, unknown>): void;
+  sendJson(msg: ServerEvent): void;
   sendBinary(buf: Buffer): void;
   close(code: number, reason: string): void;
 }
@@ -313,7 +311,7 @@ export class Session {
     }
   }
 
-  private cancelReply(utteranceId: number, reason: string): void {
+  private cancelReply(utteranceId: number, reason: CancelReason): void {
     const r = this.reply;
     if (!r || r.utteranceId !== utteranceId) return;
     r.abort.abort();
@@ -514,11 +512,7 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           if (chunk.audio.length) {
-            const head = Buffer.alloc(FRAME_HEADER_BYTES);
-            head.write("GA", 0, "latin1");
-            head.writeUInt8(FRAME_KIND_TTS_PCM, 2);
-            head.writeUInt32LE(seq, 4);
-            this.client.sendBinary(Buffer.concat([head, chunk.audio]));
+            this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
           }
           reply.audioMs += durationMs;
         }
@@ -571,7 +565,7 @@ export class Session {
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
   }
 
-  private error(code: string, message: string, retryable: boolean): void {
+  private error(code: ErrorCode, message: string, retryable: boolean): void {
     this.client.sendJson({ type: "error", code, message, retryable });
   }
 

@@ -1,8 +1,23 @@
 # Genita realtime session protocol (v1)
 
 One WebSocket per call. The app streams mic audio up; the server streams the
-companion's voice, captions and state down. Ticket: F0-L3 (#3). Shared Swift/TS
-types come later in F0-L4 (#4) and must keep these names.
+companion's voice, captions and state down. Ticket: F0-L3 (#3).
+
+**Types (F0-L4, #4):** TypeScript `genita-server/src/protocol.ts`, Swift
+`shared/GenitaKit/Sources/GenitaKit/Protocol.swift` (package `shared/GenitaKit`,
+`ServerEvent` / `ClientMessage` / `AudioFrameHeader`). Both decode the same samples in
+`shared/protocol-samples/{server,client}/*.json`; the server's own session tests also
+check every event it emits against the spec. Unknown server event types decode to
+`ServerEvent.unknown(type:)` — ignore them, never drop the socket.
+
+## Changelog
+
+Breaking changes are marked **BREAKING**; anything else is additive and safe to ignore.
+
+| date | change |
+|---|---|
+| 11/2 | v1 published. |
+| 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 
 ```
 wss://<host>/v1/session
@@ -133,6 +148,15 @@ Default: `atlas` for animal/character personas, `none` for humans. Always read `
   The server sends no more audio for that utterance. The interrupting speech becomes the next turn.
 - `speaking` lasts until the reply's audio should have finished playing (first audio + audio length + 250 ms)
   or `playback_done`, so barge-in keeps working while the app is still playing.
+
+## Reserved names (not emitted yet)
+
+Owned by later tickets; listed so nobody reuses them for something else. Shapes are
+decided in those tickets and will be added here as additive changes.
+
+`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
+`interpret.*` beyond `interpret.detected` (F8) · `prep.progress` (F2-L3).
 
 ## Errors
 

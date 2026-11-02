@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Session, FRAME_HEADER_BYTES, type ClientSink, type SessionDeps } from "../src/session/session.ts";
 import type { Config } from "../src/config.ts";
+import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/elevenlabs.ts";
@@ -47,6 +48,8 @@ class FakeClient implements ClientSink {
   bin: Buffer[] = [];
   closed: [number, string] | null = null;
   sendJson(m: Record<string, unknown>) {
+    // every event the session emits must match the wire spec (F0-L4)
+    assert.deepEqual(checkServerEvent(m), [], JSON.stringify(m));
     this.json.push(m);
   }
   sendBinary(b: Buffer) {

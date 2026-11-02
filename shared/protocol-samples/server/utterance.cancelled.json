@@ -1,0 +1,5 @@
+{
+  "type": "utterance.cancelled",
+  "utteranceId": 4,
+  "reason": "barge_in"
+}
