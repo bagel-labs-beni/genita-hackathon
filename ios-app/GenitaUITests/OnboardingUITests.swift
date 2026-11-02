@@ -28,6 +28,11 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["copyPrompt"].waitForExistence(timeout: 15), "StartRouter → I01")
         XCTAssertTrue(app.buttons["openChatGPT"].exists && app.buttons["openClaude"].exists)
         XCTAssertTrue(app.buttons["skipImport"].exists)
+        // D44: the copy says "any AI assistant"; only the two Open buttons name ChatGPT / Claude
+        let named = NSPredicate(format: "(label CONTAINS[c] 'chatgpt' OR label CONTAINS[c] 'claude') AND NOT (label BEGINSWITH 'Open ')")
+        XCTAssertFalse(app.staticTexts.matching(named).firstMatch.exists, "I01 copy names no assistant (D44)")
+        let skipLabel = app.buttons["skipImport"].label.lowercased()
+        XCTAssertFalse(skipLabel.contains("chatgpt") || skipLabel.contains("claude"), "I01 skip link names no assistant (D44)")
         capture("I01")
         primary.tap()
 
