@@ -24,6 +24,8 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var springHz = 8.0
     public var idle = 0.2
     public var stressPercentile = 70.0
+    /// 11/3 (v8.9 review: "Maybe" EY a slit): a vowel within this share below the threshold still counts as stressed
+    public var stressMargin = 0.05
     public var shortStressedMs = 150.0
     /// v25: short stressed vowel floors (lip aperture, jaw ladder input)
     public var shortStressedLip = 0.7, shortStressedJaw = 0.5
@@ -39,7 +41,7 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// v28: pre-emphasis cap; jaw target inside a non-closing consonant (syllable beats)
     public var preemphCap = 2.5, consonantJaw = 0.1
     public init() {}
-    enum CodingKeys: String, CodingKey { case stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
+    enum CodingKeys: String, CodingKey { case stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain, stressMargin }
     enum AliasKeys: String, CodingKey { case consonantDip }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
@@ -65,6 +67,7 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
         if let v = try? c.decodeIfPresent(Double.self, forKey: .springHz) { springHz = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .idle) { idle = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .stressPercentile) { stressPercentile = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .stressMargin) { stressMargin = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedMs) { shortStressedMs = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedLip) { shortStressedLip = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedJaw) { shortStressedJaw = v }
@@ -99,6 +102,8 @@ struct MotionV2 {
     private var jitter: [Double] = [0, 0, 0]
     private var idleNoise: [Double] = Array(repeating: 0, count: 12)
     private var f1 = 0.0, f2 = 0.0, fPeak = 0.05
+    /// the last step was the frame before a closure
+    private(set) var preClose = false
 
     init(params: MotionV2Params, faceNorm: Double) { p = params; self.faceNorm = faceNorm }
 
@@ -122,7 +127,7 @@ struct MotionV2 {
         let thr: Double = {
             guard !peaks.isEmpty else { return 1 }
             let sorted = peaks.sorted(); let idx = Int((Double(sorted.count - 1) * p.stressPercentile / 100).rounded())
-            return sorted[min(sorted.count - 1, max(0, idx))]
+            return sorted[min(sorted.count - 1, max(0, idx))] * (1 - p.stressMargin)
         }()
         // where are we
         let curVowel = vow.indices.first { vow[$0].s <= ms && ms < vow[$0].e }
@@ -215,9 +220,8 @@ struct MotionV2 {
             }
         }
         // the frame before a closure eases off (the lips are already on their way)
-        if !closed, p.closePre < 1, ph.contains(where: { ["M", "B", "P"].contains($0.p) && $0.s > ms && $0.s <= ms + 40 }) {
-            tgt = tgt.map { $0 * p.closePre }
-        }
+        preClose = !closed && ph.contains(where: { ["M", "B", "P"].contains($0.p) && $0.s > ms && $0.s <= ms + 40 })
+        if preClose, p.closePre < 1 { tgt = tgt.map { $0 * p.closePre } }
         let target0 = tgt
         // spring (closures fast)
         if x.count != order.count { x = tgt; v = tgt.map { _ in 0 } }

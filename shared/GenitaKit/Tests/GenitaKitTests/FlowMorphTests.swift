@@ -339,3 +339,18 @@ struct LipRigTests {
         #expect(v2.consonantJaw == 0.2 && v2.springHz == MotionV2Params().springHz)
     }
 }
+
+struct FramingTests {
+    /// Small non-human faces are zoomed up to 35 % of the frame height (≤ 1.35×); people never; map wins.
+    @Test func smallAnimalFacesZoomPeopleDoNot() throws {
+        let set = try Synth.faceSet()           // human, face box 60 % high
+        #expect(FaceRenderer.framing(set).zoom == 1)
+        let fr = try JSONDecoder().decode(FlowMap.Framing.self, from: Data(#"{"zoom":1.2,"cy":"x"}"#.utf8))
+        #expect(fr.zoom == 1.2 && fr.cy == nil)
+    }
+
+    @Test func v44TeethToneAndExitDecode() throws {
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"teethTop":{"tone":{"cavityDark":0.4,"split":0.5},"exitBeforeClose":1},"blendFloor":[0.12,0.4]}"#.utf8))
+        #expect(rig.teethTone?.cavityDark == 0.4 && rig.teethTone?.teethLift == 0.5 && rig.teethExitBeforeClose && rig.blendFloor == [0.12, 0.4])
+    }
+}

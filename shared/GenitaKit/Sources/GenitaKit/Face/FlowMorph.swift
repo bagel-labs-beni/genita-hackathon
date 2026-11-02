@@ -212,13 +212,32 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var noTex = ["MBP"]
         /// teeth layer: top key (hysteresis, none below teethMin), alpha = interior × clip((a − teethAlpha[0]) / teethAlpha[1])
         public var teethHyst = 0.05, teethMin = 0.08, teethAlpha = [0.06, 0.12]
+        /// v44: the teeth layer leaves on the frame before a closure
+        public var teethExitBeforeClose = false
+        /// v44 teeth-layer texture tone (teethTop.tone): darker, warmer cavity; an upper band of bright,
+        /// unsaturated pixels lifted toward white. nil = the key texture as it is.
+        public struct TeethTone: Codable, Equatable, Sendable {
+            public var cavityDark = 0.5, teethLift = 0.5, band = 0.85, split = 0.55, thrPct = 50.0
+            public init() {}
+            enum CodingKeys: String, CodingKey { case cavityDark, teethLift, band, split, thrPct }
+            public init(from decoder: Decoder) throws {
+                self.init()
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                if let v = try? c.decodeIfPresent(Double.self, forKey: .cavityDark) { cavityDark = v }
+                if let v = try? c.decodeIfPresent(Double.self, forKey: .teethLift) { teethLift = v }
+                if let v = try? c.decodeIfPresent(Double.self, forKey: .band) { band = v }
+                if let v = try? c.decodeIfPresent(Double.self, forKey: .split) { split = v }
+                if let v = try? c.decodeIfPresent(Double.self, forKey: .thrPct) { thrPct = v }
+            }
+        }
+        public var teethTone: TeethTone? = nil
         /// living lips: loudness × smooth random field (σ = lipFlowSigma × still width), px at 540 wide
         public var lipFlowPx = 1.2, lipFlowSigma = 0.012, lipTex = 0.15
         /// closed lips (neutral texture) take the open keys' lip tone (0 = off, 1 = full)
         public var lipTone = 1.0
         public init() {}
         enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, teethTop }
-        enum TeethKeys: String, CodingKey { case hyst, min, alpha }
+        enum TeethKeys: String, CodingKey { case hyst, min, alpha, tone, exitBeforeClose }
         public init(from decoder: Decoder) throws {
             self.init()
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -239,6 +258,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
                 if let v = try? t.decodeIfPresent(Double.self, forKey: .hyst) { teethHyst = v }
                 if let v = try? t.decodeIfPresent(Double.self, forKey: .min) { teethMin = v }
                 if let v = try? t.decodeIfPresent([Double].self, forKey: .alpha), v.count == 2 { teethAlpha = v }
+                if let v = try? t.decodeIfPresent(TeethTone.self, forKey: .tone) { teethTone = v }
+                if let v = try? t.decodeIfPresent(Double.self, forKey: .exitBeforeClose) { teethExitBeforeClose = v >= 0.5 }
+                else if let v = try? t.decodeIfPresent(Bool.self, forKey: .exitBeforeClose) { teethExitBeforeClose = v }
             }
         }
         public func encode(to encoder: Encoder) throws {
@@ -247,9 +269,25 @@ public struct FlowMap: Codable, Equatable, Sendable {
             try c.encode(blendFloor, forKey: .blendFloor); try c.encode(noTex, forKey: .noTex)
             try c.encode(teethHyst, forKey: .teethHyst); try c.encode(teethMin, forKey: .teethMin); try c.encode(teethAlpha, forKey: .teethAlpha)
             try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone)
+            var t = c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop)
+            try t.encode(teethHyst, forKey: .hyst); try t.encode(teethMin, forKey: .min); try t.encode(teethAlpha, forKey: .alpha)
+            try t.encodeIfPresent(teethTone, forKey: .tone); try t.encode(teethExitBeforeClose ? 1.0 : 0.0, forKey: .exitBeforeClose)
         }
     }
     public var rig: Rig? = nil
+    /// Call-screen framing: zoom (1…2) about cy (still height, y down). Absent → from the face box.
+    public struct Framing: Codable, Equatable, Sendable {
+        public var zoom: Double?
+        public var cy: Double?
+        public init(zoom: Double? = nil, cy: Double? = nil) { self.zoom = zoom; self.cy = cy }
+        enum CodingKeys: String, CodingKey { case zoom, cy }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            zoom = (try? c.decodeIfPresent(Double.self, forKey: .zoom)) ?? nil
+            cy = (try? c.decodeIfPresent(Double.self, forKey: .cy)) ?? nil
+        }
+    }
+    public var framing: Framing? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
     /// spring instead of stepping with the texture snap; amplitude scaled by stress; the next shape is
     /// blended in ahead; only closures are fast. Texture snap keeps its own hysteresis.
@@ -463,6 +501,9 @@ final class FlowMorph: @unchecked Sendable {
         let m = Self.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height), width: width, height: height)
         maskW = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
         order = data.keys
+        if let tone = data.map.rig?.teethTone {
+            for (k, inn) in ip { if let p = keyPix[k] { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) } }
+        }
         if let rg = data.map.rig, rg.lipTone > 0, data.neutralROI != nil, let closedLip = lm["MBP"] {
             // the photo's own lip tone (prep's colour fix greyed the lips toward lilac, v8.8 review)
             let mw = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
@@ -539,6 +580,8 @@ final class FlowMorph: @unchecked Sendable {
     /// Lip rig: interior masks per key (working res), chin share per flow-grid row (0 lips … 1 chin),
     /// living-lip noise bases and mouth ellipse on the flow grid.
     private let intPix: [String: [Float]]
+    /// Lip rig teeth-layer textures (teethTop.tone); keys without one use their own texture.
+    private var teethTex: [String: [Float]] = [:]
     private var rigLo: [Float] = []
     private var rigN1: [Float] = [], rigN2: [Float] = [], rigLipMask: [Float] = []
     private var rigChinX: [Double] = [], rigChinV: [Double] = [], rigT: Double?
@@ -1074,7 +1117,8 @@ final class FlowMorph: @unchecked Sendable {
         var teethL: (key: [Float], field: [Float], int: [Float], s: Float)? = nil
         if let rg, let j = rigTop, let ip = intPix[order[j]] {
             let s = Float(min(1, max(0, (Double(am[j]) - rg.teethAlpha[0]) / max(1e-3, rg.teethAlpha[1]))))
-            if s > 0 { teethL = (keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s) }
+            let leaving = rg.teethExitBeforeClose && usedV2 && (v2?.preClose ?? false)
+            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s) }
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -1214,6 +1258,53 @@ final class FlowMorph: @unchecked Sendable {
     }
 
     /// Bilinear single-channel sample; 0 outside (a warped mask has nothing beyond its edge).
+    /// Teeth-layer texture (v44 teethTop.tone): inside the interior, low-saturation pixels darker than
+    /// the interior's V percentile + 25 become a darker, warmer cavity; an upper band (rows above
+    /// `split`, |dx| < `band`, fading 40 % toward the sides) of bright unsaturated pixels is lifted
+    /// toward white by `teethLift`.
+    static func toneTeeth(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone) -> [Float] {
+        var ys: [Int] = [], xs: [Int] = [], vs: [Float] = []
+        for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 {
+            let i = (y * w + x) * 3
+            ys.append(y); xs.append(x); vs.append(max(p[i], p[i + 1], p[i + 2]))
+        } }
+        guard ys.count > 20, let y0 = ys.min(), let y1 = ys.max(), let x0 = xs.min(), let x1 = xs.max() else { return p }
+        vs.sort(); let thr = vs[min(vs.count - 1, Int(Double(vs.count - 1) * tone.thrPct / 100))]
+        let cx = Float(x0 + x1) / 2, hw = max(1, Float(x1 - x0) / 2), band = Float(tone.band), split = Float(tone.split)
+        func clip(_ v: Float) -> Float { min(1, max(0, v)) }
+        var teeth = [Float](repeating: 0, count: w * h)
+        for y in y0...y1 {
+            let r = Float(y - y0) / Float(max(1, y1 - y0)), up = clip((split - r) / 0.15)
+            if up <= 0 { continue }
+            for x in x0...x1 {
+                let k = y * w + x, inn = interior[k] > 0.5 ? Float(1) : 0
+                if inn == 0 { continue }
+                let i = k * 3, mx = max(p[i], p[i + 1], p[i + 2]), mn = min(p[i], p[i + 1], p[i + 2])
+                let sat = mx > 0 ? (mx - mn) / mx : 0
+                let dx = abs(Float(x) - cx) / hw
+                let bw = clip((band - dx) / 0.1) * (1 - 0.4 * clip(dx / band))
+                teeth[k] = up * bw * clip((0.4 - sat) / 0.1) * clip((mx - thr) / 15)
+            }
+        }
+        var o = p
+        let white: (Float, Float, Float) = (242, 240, 238), lift = Float(tone.teethLift), dark = Float(tone.cavityDark)
+        for y in y0...y1 { for x in x0...x1 {
+            let k = y * w + x
+            guard interior[k] > 0.5 else { continue }
+            let i = k * 3, mx = max(p[i], p[i + 1], p[i + 2]), mn = min(p[i], p[i + 1], p[i + 2])
+            let sat = mx > 0 ? (mx - mn) / mx : 0
+            let t = teeth[k] * lift
+            var c = (p[i] + (white.0 - p[i]) * t, p[i + 1] + (white.1 - p[i + 1]) * t, p[i + 2] + (white.2 - p[i + 2]) * t)
+            let cav = (1 - clip(teeth[k] * 2)) * clip((0.35 - sat) / 0.1) * clip((thr + 25 - mx) / 20)
+            if cav > 0 {
+                // warm cavity: BGR × (0.8, 0.82, 1.1) → RGB × (1.1, 0.82, 0.8)
+                c = (c.0 * (1 - cav) + c.0 * dark * 1.1 * cav, c.1 * (1 - cav) + c.1 * dark * 0.82 * cav, c.2 * (1 - cav) + c.2 * dark * 0.8 * cav)
+            }
+            o[i] = c.0; o[i + 1] = c.1; o[i + 2] = c.2
+        } }
+        return o
+    }
+
     /// Lip tone (v8.8 review: lilac lips): per-channel gain of the lip mean from the texture to the
     /// photo (lip pixels = lip hull, redder than the skin around it); ±15 % max.
     static func lipToneGain(from n: [Float], to photo: [Float], lip: [Float], mask: [Float], strength: Float) -> (gain: (Float, Float, Float), skinRG: Float)? {

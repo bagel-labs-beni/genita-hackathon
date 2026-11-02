@@ -36,6 +36,10 @@ public final class FaceRenderer: @unchecked Sendable {
     private let bases: [FaceExpression: CIImage]
     private let patchImages: [LipViseme: CIImage]
     private let extent: CGRect
+    /// Framing (11/3 small-mouth animals on a phone): zoom about a point just above the face centre
+    /// (CI coords). 1 = plain aspect fill.
+    private let framingZoom: CGFloat
+    private let framingCenter: CGPoint
     private let blinkMask: CIImage?
     private let jawMask: CIImage
     private let headMask: CIImage
@@ -81,8 +85,11 @@ public final class FaceRenderer: @unchecked Sendable {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth
         }
+        let fr = Self.framing(faceSet)
+        framingZoom = fr.zoom
+        framingCenter = CGPoint(x: fr.center.x, y: CGFloat(faceSet.pixelSize.height) - fr.center.y)
         // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
-        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
+        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity * Double(fr.zoom)
         flowMorph = faceSet.flow.flatMap { d in
             faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox,
                                                          expressions: Self.expressionLayer) }
@@ -230,8 +237,15 @@ public final class FaceRenderer: @unchecked Sendable {
         // background layers that move separately, so the mouth rides the head and never slides.
         let out = CGRect(origin: .zero, size: outputSize)
         let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
-        let fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+        var fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
                                      tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
+        if framingZoom > 1.001 {
+            // zoom about the framing point where it already sits on screen (inside the image: no edge shows)
+            let c = CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY).applying(fill)
+            fill = fill.concatenating(CGAffineTransform(translationX: -c.x, y: -c.y))
+                .concatenating(CGAffineTransform(scaleX: framingZoom, y: framingZoom))
+                .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
+        }
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
         var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
@@ -349,6 +363,20 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     // MARK: helpers
+
+    /// Zoom and centre (still px, y down). map.framing wins; otherwise people stay unzoomed and a
+    /// face shorter than 35 % of the still is zoomed up to it (1…1.35×), centred a little above the
+    /// face centre.
+    static func framing(_ set: FaceSet) -> (zoom: CGFloat, center: CGPoint) {
+        let f = set.faceBox, H = Double(set.pixelSize.height)
+        let fh = Double(f.height) / max(1, H)
+        let fr = set.flow?.map.framing
+        let human = (set.flow?.kind ?? "human") == "human"
+        var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
+        z = min(2, max(1, z))
+        let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))
+        return (CGFloat(z), CGPoint(x: f.midX, y: CGFloat(cy)))
+    }
 
     static func ciRect(_ r: CGRect, height: CGFloat) -> CGRect {
         CGRect(x: r.minX, y: height - r.maxY, width: r.width, height: r.height)
