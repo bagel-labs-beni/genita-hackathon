@@ -129,7 +129,7 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     static func stepStatus(_ raw: String?) -> Status? {
         switch raw {
         case "done", "ready", "ok": return .done
-        // `skipped` / `off` = not part of this prep (Meta-only skips the Kling clips and the Peter lips): no signal
+        // `skipped` / `off` = not part of this prep (Meta-only skips the old video clips and lip step): no signal
         case "skipped", "off": return nil
         case "running", "processing", "baking", "submitted": return .running
         case "failed", "error": return .failed

@@ -19,6 +19,8 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
     store: store ?? new FileStore(env.GENITA_DATA_DIR || join(homedir(), ".genita-data")),
     voices: config.serverTts ? voicesFromEnv(env.GENITA_VOICES) : DEVICE_VOICES,
     log,
+    // AWS box: /opt/genita/pyflow (bootstrap.sh); "0" turns the flow step off
+    python: env.GENITA_PYFLOW === "0" ? null : env.GENITA_PYFLOW || "python3",
   };
   // lane 개인화: HISY story, corrections, first-call asks, call growth (same store; the server hands it to calls)
   deps.personalize = new Personalize({ store: deps.store, metaKey: config.metaKey, log });

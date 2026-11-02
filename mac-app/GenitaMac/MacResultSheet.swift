@@ -1,30 +1,11 @@
 import SwiftUI
 import AppKit
 
-/// F7 · #121 · MAC-RS: the result sheet on the Mac call window (390 × 844 design space), Figma
+/// F7 · #121 · MAC-RS (MF-1~3): the result sheet on the Mac call window (390 × 844 design space), Figma
 /// rp1wR9pxV0IsgyjvOcwo92 nodes 184:2 (MAC-RS-a searching) and 184:68 (MAC-RS-b two results).
 /// Same r03 interaction as the iPhone (PF-1): the shared `FindsModel` drives searching → rising → half → full,
 /// peek, close + Undo, and the same drag / tap rules. Product links open in the Mac's default browser
 /// (MAC-LINK, 184:150), never inside the sheet.
-enum MacSheetInk {
-    static let ink = Color(white: 17.0 / 255)
-    static let sheet = Color(white: 254.0 / 255)
-    static let onInk = Color(white: 253.0 / 255)
-    static let mute = Color(white: 115.0 / 255)
-    static let faint = Color(white: 158.0 / 255)
-    static let line = Color(white: 232.0 / 255)
-    static let handle = Color(white: 219.0 / 255)
-    static let chip = Color(white: 242.0 / 255)
-    static let chipBlue = Color(red: 222.0 / 255, green: 243.0 / 255, blue: 1)
-    static let chipBlueText = Color(red: 0, green: 106.0 / 255, blue: 163.0 / 255)
-    static let scan = Color(red: 0, green: 179.0 / 255, blue: 1)
-    static let pill = Color(white: 17.0 / 255).opacity(0.84)
-    static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .custom("PretendardVariable-" + (weight == .medium ? "Medium" : weight == .semibold ? "SemiBold" : "Regular"), fixedSize: size)
-    }
-    static func serif(_ size: CGFloat) -> Font { .custom("KMUTTF-SungkokSemiSerif", fixedSize: size) }
-}
-
 extension SheetState {
     /// MAC-RS-a is taller than the iPhone's 148: the searching row plus the scan line (198 visible).
     var macHeight: CGFloat { self == .searching ? 198 : height }
@@ -81,23 +62,38 @@ struct MacResultSheet: View {
     // MARK: MAC-RS-a · searching
 
     private var searching: some View {
-        let failed = entry?.failed
+        let failed = entry?.failureLines
+        let retry = entry?.canRetry == true
+        // MF-1 "Why": a refine stands on the last product answer of this call (none yet on a first search)
+        let why = failed == nil && entry?.kind == .product
+            ? ProductPicks.searchingWhy(after: finds.entries.filter { $0.id != entry?.id }.compactMap(\.card)) : nil
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 12) {
                 MacTalkWave(color: MacSheetInk.ink)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(failed?.message ?? entry?.searchTitle ?? "Looking")
-                        .font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if failed == nil, let detail = entry?.searchDetail, !detail.isEmpty {
-                        Text(detail).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineLimit(1)
+                    // one line each next to Stop, as the iPhone (#211): server copy, never wrapped, never a cut word
+                    OneLineText(text: failed?.title ?? entry?.searchTitle ?? "Looking", font: MacSheetInk.sans(16, .medium), color: MacSheetInk.ink)
+                        .accessibilityIdentifier("macResultSearchTitle")
+                    if let detail = failed?.body ?? entry?.searchDetail, !detail.isEmpty {
+                        OneLineText(text: detail, font: MacSheetInk.sans(14), color: MacSheetInk.mute, alternates: OneLineText.afterDot(detail))
+                            .accessibilityIdentifier("macResultSearchDetail")
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Button(failed == nil ? "Stop" : "Close") { withAnimation { failed == nil ? finds.stop() : finds.close() } }
+                // PF-1d on the Mac too: a failed product search can be asked again; other failures close
+                Button(failed == nil ? "Stop" : retry ? "Retry" : "Close") {
+                    withAnimation { failed == nil ? finds.stop() : retry ? finds.retry() : finds.close() }
+                }
                     .buttonStyle(.plain).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink)
-                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle()).accessibilityIdentifier("macResultStop")
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    .accessibilityIdentifier(failed == nil ? "macResultStop" : retry ? "macResultRetry" : "macResultClose")
             }.frame(minHeight: 68)
             if failed == nil { MacScanLine().padding(.top, 6) }
+            if let why {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Why").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
+                    Text(why).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }.padding(.top, 10).accessibilityElement(children: .combine).accessibilityIdentifier("macResultSearchWhy")
+            }
         }
         .padding(.horizontal, 38).padding(.top, 32)
         .frame(maxHeight: .infinity, alignment: .top)
@@ -140,7 +136,7 @@ struct MacResultSheet: View {
                         } else {
                             HStack(alignment: .top, spacing: 12) {
                                 ForEach(Array(picks.enumerated()), id: \.element.id) { i, pick in
-                                    MacProductCard(pick: pick, primary: i == 0, imageURL: productImage(card, i).flatMap { CallController.shared.findsURL($0) }) { open(pick) }
+                                    MacProductCard(pick: pick, primary: i == 0, imageURL: pick.image.flatMap { $0.status == .ready ? $0.url : nil }.flatMap { CallController.shared.findsURL($0) }) { open(pick) }
                                 }
                                 if picks.count == 1 { Spacer(minLength: 0) }
                             }.padding(.top, 16)
@@ -157,10 +153,12 @@ struct MacResultSheet: View {
                         Color.clear.frame(height: 110)
                     }.padding(.horizontal, 38).padding(.top, 64)
                 }
+                // PF-1c: saved turns the one button grey (the Mac has no Finds tab to open; the card is in Finds on the iPhone)
+                let saved = entry?.saved == true
                 Button { finds.toggleSave() } label: {
-                    Text(entry?.saved == true ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
-                        .frame(width: 314, height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(.plain).padding(.bottom, 56).accessibilityIdentifier("macResultSave")
+                    Text(saved ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(saved ? MacSheetInk.ink : MacSheetInk.onInk)
+                        .frame(width: 314, height: 50).background(saved ? MacSheetInk.chip : MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(.plain).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
             }
         }
     }
@@ -218,12 +216,6 @@ struct MacResultSheet: View {
         }
     }
 
-    /// The server's product picture (`hero`, ready) on the first card; the others show their shop's name.
-    private func productImage(_ card: FindCard, _ i: Int) -> String? {
-        guard i == 0, let hero = card.hero, hero.status == .ready else { return nil }
-        return hero.url
-    }
-
     private func open(_ pick: ProductPick) {
         NSWorkspace.shared.open(pick.url)
         opened(pick)
@@ -244,12 +236,9 @@ struct MacProductCard: View {
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(pick.reasons.prefix(2).enumerated()), id: \.offset) { i, reason in
-                    Text(reason).font(MacSheetInk.sans(12, .medium)).lineLimit(1)
-                        .foregroundStyle(i == 0 ? MacSheetInk.chipBlueText : MacSheetInk.ink)
-                        .padding(.horizontal, 10).frame(height: 24)
-                        .background(i == 0 ? MacSheetInk.chipBlue : MacSheetInk.chip, in: Capsule())
-                }
+                // blue = from the import (taste), grey = from what they said (situation) — PF-1's chips
+                if !pick.taste.isEmpty { chip(pick.taste, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).accessibilityIdentifier("macProductTaste") }
+                if !pick.situation.isEmpty { chip(pick.situation, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
             Button(action: open) {
                 Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
@@ -269,8 +258,14 @@ struct MacProductCard: View {
             }
         } else { placeholder }
     }
+    /// Many shops give no readable picture: a calm bag, as on the iPhone (PF-1).
     private var placeholder: some View {
-        ZStack { MacSheetInk.chip; Text(pick.brand).font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint) }
+        ZStack { MacSheetInk.chip; Image(systemName: "bag").font(.system(size: 28, weight: .light)).foregroundStyle(MacSheetInk.faint) }
+            .accessibilityLabel("Picture of \(pick.name)")
+    }
+    private func chip(_ text: String, fg: Color, bg: Color) -> some View {
+        Text(text).font(MacSheetInk.sans(12, .medium)).lineLimit(1).foregroundStyle(fg)
+            .padding(.horizontal, 10).frame(height: 24).background(bg, in: Capsule())
     }
 }
 
@@ -303,22 +298,7 @@ struct MacLinkPrompt: View {
     }
 }
 
-/// The call's one-line status (S09 pill), Mac copy of the iPhone's cue: "Listening", "{name} is talking"…
-/// At full sheet it carries the card's spoken line, as MAC-RS-b shows.
-struct MacCallCue: View {
-    let text: String
-    var wave = true
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if wave { MacTalkWave(color: MacSheetInk.onInk).padding(.top, 4) }
-            Text(text).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.onInk).lineSpacing(4).lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(MacSheetInk.pill, in: RoundedRectangle(cornerRadius: 18))
-        .accessibilityElement(children: .combine).accessibilityIdentifier("macCallCue")
-    }
-
+extension MacCallCue {
     static func text(_ cue: CallCue, name: String) -> String? {
         switch cue {
         case .none: nil
@@ -330,24 +310,6 @@ struct MacCallCue: View {
         case .answerFailed: "Couldn’t get an answer."
         case .micBlocked: "Microphone is off for Genita."
         }
-    }
-}
-
-/// Four 2 × 12 bars (the board's talk wave).
-struct MacTalkWave: View {
-    var color: Color
-    @State private var phase = false
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(0..<4, id: \.self) { i in
-                Capsule().fill(color).frame(width: 2, height: 12).scaleEffect(y: phase ? [0.5, 1, 0.7, 0.9][i] : [1, 0.6, 1, 0.5][i])
-            }
-        }.frame(width: 14, height: 12)
-        .onAppear {
-            guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil else { return }
-            withAnimation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true)) { phase = true }
-        }
-        .accessibilityHidden(true)
     }
 }
 

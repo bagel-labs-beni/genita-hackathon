@@ -27,6 +27,8 @@ export type PrepDeps = {
   spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
+  /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
+  python?: string | null;
   /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
   personalize?: Personalize;
 };

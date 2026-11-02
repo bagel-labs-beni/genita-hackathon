@@ -38,6 +38,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
+import type { MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -76,6 +77,8 @@ export type SessionDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: TtsRequest) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** open the vendor HTTPS connections ahead of the first answer (keepalive.ts warmUp); fire and forget */
+  prewarm?: (o: { voice: boolean }) => void;
   /** Test-only clock seam for the delayed first greeting. Returns a cancellation function. */
   greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
@@ -91,7 +94,7 @@ export type SessionDeps = {
    * Handoff: this account's turns from its other live call, or from a call that ended in the last few minutes
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
-  priorTurns?: () => HistoryItem[] | null;
+  priorTurns?: (revision: number) => HistoryItem[] | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -140,10 +143,12 @@ type Reply = {
   fellBack: boolean;
 };
 
-type TurnMetrics = { speechEndAt?: number; completeAt?: number };
+/** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
+type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void };
+/** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -156,9 +161,14 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** longest a ready reply waits for the user to stop talking before its first sound (ASR lost a speechEnd) */
+const HOLD_MAX_MS = 3000;
+/** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
+const WARM_AGAIN_MS = 45_000;
 const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
+const ASR_RETRY_MS = 2000;
 
 /**
  * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
@@ -235,6 +245,7 @@ export class Session {
   private tts: TtsMode = "device";
   private voiceOverflow = false;
   private history: HistoryItem[] = [];
+  private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
   private asr: AsrLike | null = null;
@@ -242,6 +253,10 @@ export class Session {
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
   private callAsr: AsrLike | null = null;
+  private readonly asrRetry = {
+    mic: { connecting: false, retryAt: 0, failed: false },
+    call: { connecting: false, retryAt: 0, failed: false },
+  };
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
@@ -250,6 +265,9 @@ export class Session {
   private specCheck = 0;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
+  private lastWarmAt = -Infinity;
+  /** replies whose first sound waits for the user to stop talking */
+  private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
@@ -382,16 +400,22 @@ export class Session {
       pcm = frame.subarray(FRAME_HEADER_BYTES);
       if (frame[2] === CLIENT_FRAME_KIND_CALL) {
         if (this.interp?.source !== "call") return;
-        if (!this.callAsr?.isOpen) void this.ensureCallAsr();
-        this.callAsr?.sendAudio(pcm);
+        if (!this.callAsr?.isOpen) {
+          void this.ensureCallAsr();
+          return; // live frames are dropped while connecting or cooling down
+        }
+        this.callAsr.sendAudio(pcm);
         return;
       }
     }
     if (!this.micOn) return;
     // "Hold to reply": outside the hold the mic is silence, which also ends the held turn quickly
     if (this.interp?.micGated) pcm = Buffer.alloc(pcm.length);
-    if (!this.asr?.isOpen) void this.ensureAsr();
-    this.asr?.sendAudio(pcm);
+    if (!this.asr?.isOpen) {
+      void this.ensureAsr();
+      return;
+    }
+    this.asr.sendAudio(pcm);
   }
 
   // ───────────────────────── lifecycle ─────────────────────────
@@ -434,20 +458,45 @@ export class Session {
     const g = msg.greetAfterMs;
     const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
+    this.warm();
     (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
-      this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
+      const memory = this.deps.memory;
+      const userId = this.deps.userId;
+      this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.historyRevision = revision;
       });
       try {
         // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
         // and the greeting prompt would be sent to the translator
         const item = await this.memoryCall.open(startMode === "chat");
-        this.greeting = startMode === "chat" ? { item } : null;
-        this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+        // A Forget during open already cleared these; do not restore its older result.
+        if (this.historyRevision === null) {
+          this.greeting = startMode === "chat" ? { item } : null;
+          this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+        }
+        // Validate and copy together under the same per-user lock as Forget. The cache/live call must
+        // carry this persisted revision. Clients cannot prove their snapshot's age, so after ANY Forget
+        // only server-side turns can continue the conversation (even across a service restart).
+        await memory.serial(userId, async () => {
+          const revision = (await memory.state.getState(userId)).revision;
+          if (this.closed) return;
+          this.historyRevision = revision;
+          if (startMode !== "chat" || this.history.length) return;
+          const server = this.deps.priorTurns?.(revision) ?? null;
+          const claimed = revision === 0 && msg.handoff === true ? parseHistory(msg.history) : [];
+          const seed = server?.length ? server : claimed;
+          if (!seed.length) return;
+          this.history = seed.slice(-MAX_HISTORY);
+          this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
+          this.greeting = null;
+          this.continued = true;
+          this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
+        });
       }
-      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
+      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
     }
     if (this.closed) return;
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
@@ -469,31 +518,11 @@ export class Session {
       }
       if (this.closed) return;
     }
-    // Handoff (D24 scene 5, #199): with server memory on, start.history is ignored (stale snapshots must not restore
-    // forgotten memories), so a call continuing on the other device started with no turns ("Things · searching
-    // shops"). Seed this call's turns from the account's other/just-ended call (server-side, trusted); a start
-    // marked `handoff: true` with no server-side turns falls back to its own history (context only, never stored as memory).
-    if (this.memoryCall && startMode === "chat" && !this.history.length) {
-      const server = this.deps.priorTurns?.() ?? null;
-      const claimed = msg.handoff === true ? parseHistory(msg.history) : [];
-      const seed = server?.length ? server : claimed;
-      if (seed.length) {
-        this.history = seed.slice(-MAX_HISTORY);
-        this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
-        this.greeting = null; // continuing a conversation: no fresh hello on the new device
-        this.continued = true;
-        this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
-      }
-    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.timeZone = str(u.timeZone, 40);
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
     if (this.micOn) {
-      try {
-        await this.ensureAsr();
-      } catch {
-        this.error("asr_unavailable", "Speech recognition could not connect; text still works", true);
-      }
+      await this.ensureAsr();
     }
     if (this.closed) return;
     this.client.sendJson({
@@ -571,7 +600,7 @@ export class Session {
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
-    if (this.interp.source === "call") void this.ensureCallAsr().catch(() => this.error("asr_unavailable", "Could not listen to the call's sound", true));
+    if (this.interp.source === "call") void this.ensureCallAsr();
     else this.dropCallAsr();
   }
 
@@ -584,24 +613,13 @@ export class Session {
   private dropCallAsr(): void {
     const a = this.callAsr;
     this.callAsr = null;
+    this.asrRetry.call.failed = false;
+    this.asrRetry.call.retryAt = 0;
     a?.end();
   }
 
-  private async ensureCallAsr(): Promise<void> {
-    if (this.closed || this.callAsr) return;
-    const asr = this.deps.openAsr(this.deps.config.asrLanguages);
-    this.callAsr = asr;
-    asr.on("event", (e) => {
-      if (this.callAsr !== asr || !this.interp) return;
-      if (e.type === "partial") this.interp.partial("call", e.text);
-      else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.interp.final("call", e.text);
-    });
-    asr.on("status", (s) => {
-      if (s === "closed" && this.callAsr === asr) this.callAsr = null;
-    });
-    asr.on("error", (err) => this.log("asr.call.error", { message: err.message.slice(0, 200) }));
-    await asr.connect();
+  private ensureCallAsr(): Promise<void> {
+    return this.connectAsr("call");
   }
 
   private interpretHost(): InterpretHost {
@@ -629,19 +647,60 @@ export class Session {
     };
   }
 
-  private async ensureAsr(): Promise<void> {
-    if (this.closed || (this.asr && this.asr.isOpen)) return;
-    if (!this.asr) {
-      const asr = this.deps.openAsr(this.deps.config.asrLanguages);
-      asr.on("event", (e) => this.onAsr(e));
-      asr.on("status", (s) => {
+  private ensureAsr(): Promise<void> {
+    return this.connectAsr("mic");
+  }
+
+  /** All entry points (start, unmute, interpretation and live frames) contain provider failures here. */
+  private async connectAsr(source: "mic" | "call"): Promise<void> {
+    const retry = this.asrRetry[source];
+    const current = () => source === "mic" ? this.asr : this.callAsr;
+    if (this.closed || current() || retry.connecting || this.now() < retry.retryAt) return;
+    if (source === "call" && this.interp?.source !== "call") return;
+    retry.connecting = true;
+    let asr: AsrLike | null = null;
+    try {
+      asr = this.deps.openAsr(this.deps.config.asrLanguages);
+      const stream = asr;
+      if (source === "mic") this.asr = stream;
+      else this.callAsr = stream;
+      stream.on("event", (e) => {
+        if (this.closed || current() !== stream) return;
+        if (source === "mic") return this.onAsr(e);
+        if (e.type === "partial") this.interp?.partial("call", e.text);
+        else if (e.type === "speechEnd") this.interp?.speechEnd("call");
+        else if (e.type === "speechComplete") this.interp?.final("call", e.text);
+      });
+      stream.on("status", (s) => {
+        if (this.closed || current() !== stream) return;
+        if (s === "closed") {
+          if (source === "mic") this.asr = null;
+          else this.callAsr = null;
+        }
+        if (source !== "mic") return;
         if (s === "reconnecting") this.client.sendJson({ type: "asr.status", status: "reconnecting" });
         if (s === "connected") this.client.sendJson({ type: "asr.status", status: "connected" });
-        if (s === "closed" && this.asr === asr) this.asr = null;
       });
-      asr.on("error", (err) => this.log("asr.error", { message: err.message.slice(0, 200) }));
-      this.asr = asr;
-      await asr.connect();
+      stream.on("error", (err) => this.log(source === "mic" ? "asr.error" : "asr.call.error", { message: err.message.slice(0, 200) }));
+      await stream.connect();
+      if (current() === stream) {
+        retry.failed = false;
+        retry.retryAt = 0;
+      }
+    } catch {
+      if (source === "mic" && this.asr === asr) this.asr = null;
+      if (source === "call" && this.callAsr === asr) this.callAsr = null;
+      // Stop the failed stream's own reconnect timers before allowing a replacement.
+      try { asr?.end(); } catch { /* already unusable */ }
+      if (this.closed || (source === "call" && this.interp?.source !== "call")) return;
+      retry.retryAt = this.now() + ASR_RETRY_MS;
+      const reported = this.asrRetry.mic.failed || this.asrRetry.call.failed;
+      retry.failed = true;
+      if (!reported) this.error("asr_unavailable", source === "mic"
+        ? "Speech recognition could not connect; text still works"
+        : "Could not listen to the call's sound", true);
+    } finally {
+      retry.connecting = false;
     }
   }
 
@@ -677,20 +736,30 @@ export class Session {
 
   // ───────────────────────── ASR → turn machine ─────────────────────────
 
+  /** Open the vendor connections now unless they were opened (or used for a turn) recently. */
+  private warm(): void {
+    if (!this.deps.prewarm || this.now() - this.lastWarmAt < WARM_AGAIN_MS) return;
+    this.lastWarmAt = this.now();
+    this.deps.prewarm({ voice: this.tts === "server" && !!this.deps.config.voice });
+  }
+
   private onAsr(e: AsrEvent): void {
     const t = this.now();
+    if (e.type === "speechStart") this.warm();
     if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
+        this.metrics = {};
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
+        this.metrics.lastPartialAt = t;
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
-        this.metrics = { speechEndAt: t };
+        this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
@@ -803,6 +872,7 @@ export class Session {
     }
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
+    if (!this.turn.userSpeaking && this.quietWaiters.length) for (const w of this.quietWaiters.splice(0)) w();
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
       const p = this.pendingAnnounce;
       this.pendingAnnounce = null;
@@ -835,6 +905,29 @@ export class Session {
       case "start_reply":
         void this.runReply(fx.text, fx.utteranceId, fx.self);
         return;
+    }
+  }
+
+  /**
+   * A reply's first sound never starts while the user is talking (they went on after a pause the ASR
+   * took for the end of the turn): it waits until they stop — a backchannel — or the barge-in cancels
+   * it. Resolves at once when the user is quiet; never waits longer than HOLD_MAX_MS.
+   */
+  private async untilUserQuiet(signal: AbortSignal): Promise<void> {
+    const deadline = Date.now() + HOLD_MAX_MS;
+    // re-check after every wake: the user may have stopped and started again before this resumed
+    while (this.turn.userSpeaking && !signal.aborted && Date.now() < deadline) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", done);
+          this.quietWaiters = this.quietWaiters.filter((w) => w !== done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
+        signal.addEventListener("abort", done, { once: true });
+        this.quietWaiters.push(done);
+      });
     }
   }
 
@@ -931,6 +1024,9 @@ export class Session {
     return this.history.map((h) => ({ ...h }));
   }
 
+  /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
+  get historyForgetRevision(): number | null { return this.historyRevision; }
+
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
@@ -995,12 +1091,28 @@ export class Session {
     };
   }
 
-  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>): AsyncIterable<SparkStreamEvent> {
+  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>, lanes = this.deps.config.sparkHedge, memoryRetry?: MemoryRetryState): AsyncIterable<SparkStreamEvent> {
     const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
-    const source = (request: SparkRequest, parent: AbortSignal) => hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent, (e) => e.type === "text" || e.type === "function_call");
+    const source = (request: SparkRequest, parent: AbortSignal) => {
+      const prefixes: string[] = [];
+      return hedged(lanes, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent,
+        (e, lane) => {
+          // A complete write call commits this lane before a competing text-only
+          // "I'll remember" can discard the save. MemoryCall still gates effects
+          // on an accepted transcript and generates this lane's follow-up text.
+          if (e.type === "function_call" && e.name === "remember" && this.memoryCall && useMemory) return true;
+          if (e.type !== "text") return false;
+          prefixes[lane] = (prefixes[lane] ?? "") + e.delta;
+          // A partial/complete emotion or audio tag is not spoken text. Keep
+          // buffering that lane until actual words arrive, even across deltas.
+          return !!parseTaggedSentence(prefixes[lane].replace(/<[^>]*$|\[[^\]]*$/g, "")).displayText;
+        },
+        // Read tools remain fallbacks: give nearby text a bounded chance to win.
+        (e) => e.type === "function_call");
+    };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
     const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
-    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed) : source(req, signal);
+    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 
   // ───────────────────────── speculation ─────────────────────────
@@ -1034,7 +1146,17 @@ export class Session {
     let confirm!: () => void;
     const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
     abort.signal.addEventListener("abort", confirm, { once: true });
-    this.spec = { norm, abort, built, confirm, stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
+    const memoryRetry: MemoryRetryState = {};
+    const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed, undefined, memoryRetry);
+    const spec: Speculation = { norm, abort, built, memoryRetry, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
+    this.spec = spec;
+  }
+
+  private async *stampFirstText(source: AsyncIterable<SparkStreamEvent>, onText: (t: number) => void): AsyncGenerator<SparkStreamEvent> {
+    for await (const ev of source) {
+      if (ev.type === "text" && ev.delta.trim()) onText(this.now());
+      yield ev;
+    }
   }
 
   private dropSpeculation(): void {
@@ -1064,6 +1186,8 @@ export class Session {
   private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
+    // the vendors are about to be used: their sockets stay open for the keep-alive from here
+    if (!self) this.lastWarmAt = this.now();
     // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
     const newName = !self && !greeting && this.mode === "chat" ? detectRename(text) : null;
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
@@ -1083,6 +1207,8 @@ export class Session {
       firstTokenAt?: number;
       firstSentenceAt?: number;
       firstAudioAt?: number;
+      toolsBeforeText?: number;
+      firstSentenceChars?: number;
     };
     this.metrics = {};
     let firstAudioLogged = false;
@@ -1095,16 +1221,19 @@ export class Session {
     };
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
+    let memoryRetry: MemoryRetryState = {};
     let built: Built | null = null;
     if (!self && this.specTimer) clearTimeout(this.specTimer);
     if (!self) this.specTimer = null;
     if (spec) {
       // a guess built before a rename still carries the old name: ask again
-      if (spec.norm === normTranscript(text) && !renamedFrom) {
+      if (spec.norm === normTranscript(text) && !renamedFrom && !spec.abort.signal.aborted) {
         speculative = "hit";
+        m.specStartAt = spec.at;
         spec.confirm();
         built = spec.built;
         pre = spec.stream;
+        memoryRetry = spec.memoryRetry;
       } else {
         speculative = "miss";
         spec.abort.abort();
@@ -1143,26 +1272,36 @@ export class Session {
     }
 
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
-    const splitter = new SentenceSplitter(!device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {});
+    const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
+    let splitter = new SentenceSplitter(splitOptions);
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
     let sparkError: unknown = null;
+    let emptyCause: string | null = null;
     let droppedOpener = false;
-    const pushSentences = (list: string[]) => {
+    let onlyOpener: string | null = null;
+    const pushSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
+        // Delivery/emotion tags alone cannot be displayed or spoken. Do not
+        // enqueue a blank sentence (or call TTS with just "[laughs]").
+        if (!p.displayText) continue;
         let tts = p.ttsText;
-        if (!sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
-        if (!tts) {
+        if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        if (!tts || !parseTaggedSentence(tts).displayText) {
+          onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
           continue;
         }
         if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
-        if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
+        if (m.firstSentenceAt === undefined) {
+          m.firstSentenceAt = this.now();
+          m.firstSentenceChars = tts.length;
+        }
         sentences.push({ tts, display, emotion });
         // captions go out per sentence: the opener guard may rewrite the first one
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
@@ -1180,26 +1319,45 @@ export class Session {
           pushSentences(splitter.flush());
           return;
         }
-        // An answer with no text (seen once on 11/2 after a web search) gets
-        // one retry without tools rather than silence.
+        // Retry any answer with no usable content, even with no tools, after
+        // an empty speculative hit, or after a pre-text upstream failure.
         for (let attempt = 0; attempt < 2; attempt++) {
           let gotText = false;
           let status = "";
-          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource({ ...req, tools: undefined }, signal, greeting?.item, !interpret);
-          for await (const ev of stream) {
+          let attemptError: unknown = null;
+          try {
+            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret, undefined, 1, memoryRetry);
+            for await (const ev of stream) {
+              if (signal.aborted) return;
+              if (ev.type === "text") {
+                // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
+                if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
+                gotText ||= !!ev.delta.trim();
+                pushSentences(splitter.push(ev.delta));
+              } else if (ev.type === "tool") {
+                if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
+                this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
+              } else if (ev.type === "done") status = ev.status;
+            }
+          } catch (err) {
             if (signal.aborted) return;
-            if (ev.type === "text") {
-              if (m.firstTokenAt === undefined) m.firstTokenAt = this.now();
-              gotText = true;
-              pushSentences(splitter.push(ev.delta));
-            } else if (ev.type === "tool") {
-              this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
-            } else if (ev.type === "done") status = ev.status;
+            attemptError = err;
           }
-          if (gotText || !req.tools?.length) break;
-          this.log("spark.empty", { utteranceId, status, retry: attempt === 0 });
+          if (signal.aborted) return;
+          pushSentences(splitter.flush());
+          // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
+          // opener until EOF so "Oh, the rest" still loses the repeated Oh.
+          if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
+          if (sentences.length) { sparkError = attemptError; break; }
+          emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
+          if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
+          if (attempt === 1) sparkError = attemptError;
+          splitter = new SentenceSplitter(splitOptions);
+          onlyOpener = null;
+          emotion = null;
+          droppedOpener = false;
+          m.firstTokenAt = undefined;
         }
-        pushSentences(splitter.flush());
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
@@ -1252,6 +1410,8 @@ export class Session {
       if (signal.aborted || !sentences[i]) break;
       const s = sentences[i];
       if (device || reply.fellBack) {
+        if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
+        if (signal.aborted) break;
         sayOnDevice(i, s);
         continue;
       }
@@ -1283,6 +1443,8 @@ export class Session {
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
@@ -1325,7 +1487,11 @@ export class Session {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
             this.log("tts.fallback_device", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
-            if (!sentAudio) sayOnDevice(i, s);
+            if (!sentAudio) {
+              if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
+              if (signal.aborted) break;
+              sayOnDevice(i, s);
+            }
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
               // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
@@ -1343,6 +1509,13 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
+    if (!reply.spoken.join(" ").trim()) {
+      resolveSaid(null);
+      this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
+      this.finishReply(reply);
+      return;
+    }
     if (sparkError) {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
@@ -1385,7 +1558,20 @@ export class Session {
       speculative,
     };
     this.client.sendJson({ type: "turn.metrics", ...metrics });
-    this.log("turn.answered", metrics);
+    // stage timeline for the latency breakdown (ms from the ASR's speechEnd; server clock; log only)
+    const rel = (x?: number) => (x !== undefined && m.speechEndAt !== undefined ? Math.round(x - m.speechEndAt) : null);
+    const stages = {
+      lastPartial: rel(m.lastPartialAt),
+      specStart: rel(m.specStartAt),
+      complete: rel(m.completeAt),
+      replyStart: rel(m.replyStartAt),
+      firstToken: rel(m.firstTokenAt),
+      firstSentence: rel(m.firstSentenceAt),
+      firstAudio: rel(m.firstAudioAt),
+      toolsBeforeText: m.toolsBeforeText ?? 0,
+      firstSentenceChars: m.firstSentenceChars ?? null,
+    };
+    this.log("turn.answered", { ...metrics, stages });
 
     // The app is still playing what we sent faster than real time; stay in
     // "speaking" (so barge-in still works) until playback should be over or
