@@ -51,6 +51,8 @@ struct FindEntry: Identifiable, Equatable {
     }
     /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
     /// Product searches only: a recipe or outfit retry would need the camera frames the server already used.
+    /// IC-4: the camera could not make out the food. The call shows a dark card over a blurred picture, not the sheet.
+    var isUnclear: Bool { failed?.reason == .unclear }
     var canRetry: Bool { kind == .product && question?.isEmpty == false && (failed?.reason == .searchFailed || failed?.reason == .error) }
 }
 
@@ -245,6 +247,14 @@ struct FindEntry: Identifiable, Equatable {
         guard let f = current else { state = .idle; return }
         send(.findStop(findId: f.id))
         state = .idle
+    }
+
+    /// IC-4 "Look again": the card goes away; the camera is still on, the person shows the shelves again.
+    /// Returns the words of the failed question so the call can ask again with a fresh camera frame.
+    @discardableResult func lookAgain() -> String? {
+        guard let f = current, f.isUnclear else { return nil }
+        state = .idle
+        return f.question
     }
 
     /// PF-1 status pill (Figma 179:4/68/494/921): what the sheet is doing, one line (server strings ≤ 28 chars).

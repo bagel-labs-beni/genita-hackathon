@@ -223,6 +223,23 @@ import XCTest
         p.retry(); XCTAssertTrue(sent.isEmpty, "interpretation would translate it to the other person")
     }
 
+    /// IC-4: the unclear failure is the dark card, "Look again" drops it and the call goes on; other failures never show the card.
+    func testLookAgainClosesTheUnclearCardOnly() throws {
+        let m = FindsModel()
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"unclear","message":"Show me again?"}"#))
+        XCTAssertTrue(m.current?.isUnclear ?? false)
+        m.lookAgain()
+        XCTAssertEqual(m.state, .idle)
+
+        let n = FindsModel()
+        n.apply(started("b"))
+        n.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"b","reason":"search_failed","message":"x"}"#))
+        XCTAssertFalse(n.current?.isUnclear ?? true)
+        n.lookAgain()
+        XCTAssertEqual(n.state, .searching, "only IC-4 is dismissed by Look again")
+    }
+
     func testUnclearFailureHasNoRetry() throws {
         let m = FindsModel()
         m.apply(started("a"))
