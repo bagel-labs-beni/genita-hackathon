@@ -110,7 +110,16 @@ def lip_map(kind):
     if isinstance(mo, dict):
         mk = kind if kind in mo else {'cat': 'animal', 'toy': 'character3d', 'character': 'character3d'}.get(kind)
         if mk in mo:
-            m['motion'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}   # v2 runtime coefficients (FaceDriver)
+            m['motion'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}   # v2 runtime coefficients (prototype names)
+            if 'motionV2' not in m and isinstance(m['motion'].get('motionV2'), dict):
+                m['motionV2'] = m['motion']['motionV2']                                # the block GenitaKit reads (#267)
+    # cheek field names: the app reads cheekW / nasoW; keep cheek / naso for older readers
+    ch = m.get('cheek')
+    if isinstance(ch, dict):
+        if 'cheekW' not in ch and 'cheek' in ch: ch['cheekW'] = ch['cheek']
+        if 'nasoW' not in ch and 'naso' in ch: ch['nasoW'] = ch['naso']
+        if 'cheek' not in ch and 'cheekW' in ch: ch['cheek'] = ch['cheekW']
+        if 'naso' not in ch and 'nasoW' in ch: ch['naso'] = ch['nasoW']
     m['profile'] = kind
     return m
 
@@ -174,7 +183,9 @@ def lip_hull_mask(img, mouth_px, dilate_px):
         cv2.ellipse(el, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
         if cs:
             L_ = lab[..., 0]; lipL_ = float(np.median(L_[keep > 0]))
-            el = el * (L_ < lipL_ - 15).astype(np.uint8)
+            hs_ = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+            teeth_ = (hs_[..., 1] < 0.35 * 255) & (L_ > lipL_ + 10)
+            el = el * ((L_ < lipL_ - 15) | teeth_).astype(np.uint8)        # the opening: dark cavity or teeth (codex P2)
             el = cv2.morphologyEx(el, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         hull = np.maximum(hull, el)
     d = max(1, int(dilate_px)); dl = max(1, d // 2)
@@ -191,7 +202,7 @@ def lip_hull_mask(img, mouth_px, dilate_px):
 # a grey cavity. Inside each key's lip hull (lips excluded), the upper 60 % low-saturation teeth lift halfway to white
 # (a band 70 % of the hull width, dimmer off-centre), everything else in the opening becomes a warm dark maroon with a
 # faint tongue tone in the lower third. Colour only; no geometry. Teeth white scales with skin lightness.
-INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 1.0, 'greyDark': 0.4, 'newDark': 0.78}}
+INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 1.0, 'greyDark': 0.5}}
 
 
 def interior_tone(img, mouth_px, spec, scale, neutral=None):
@@ -260,20 +271,33 @@ def interior_tone(img, mouth_px, spec, scale, neutral=None):
     hsv[..., 2] = np.clip(V + (vhi - V) * spec['lift'] * th, 0, 255)
     hsv[..., 1] = np.clip(hsv[..., 1] * (1 - 0.4 * th), 0, 255)
     out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)
-    # grey film -> warm, a bit darker: only low-saturation pixels that are not the whitened upper teeth. Already dark or
-    # coloured pixels (lip patches, shadowed teeth) are left alone, so nothing turns black (critic: holes / blotches)
-    grey = np.clip((0.28 - S) / 0.1, 0, 1) * np.clip((V - 0.35 * lipV) / 15, 0, 1) * np.clip((vlo + 10 - V) / 20, 0, 1)   # bright teeth stay
-    g = cv2.GaussianBlur(inn * grey * (1 - np.clip(th * 1.5, 0, 1)), (0, 0), fe)[..., None] * spec['mix']
+    # every darkening below only where the key CHANGED vs the neutral (Lab distance): lips and skin that are still the
+    # neutral's (incl. dark / low-saturation lips the lip mask missed) are never touched (critic darkskin, codex P2)
+    if neutral is not None:
+        labn = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+        chg = np.clip((np.linalg.norm(lab - labn, axis=2) - 12) / 10, 0, 1)
+    else:
+        chg = np.ones(inn.shape, np.float32)
+    notc = 1 - np.clip(th * 1.5, 0, 1)
+    # the real opening = dark cavity or tooth pixels, in the components that cross the middle of the mouth; a patch on the
+    # lower lip (not dark, not a tooth, or off to the side on its own) is outside it (critic darkskin)
+    core = ((inn > 0.05) & ((V < 0.75 * lipV) | ((S < 0.35) & (V > 0.9 * lipV) & (up > 0.5)))).astype(np.uint8)
+    nc_, lc_, stc_, _ = cv2.connectedComponentsWithStats(core)
+    mid0, mid1 = int(cx - 0.4 * hw), int(cx + 0.4 * hw)
+    keepc = [c for c in range(1, nc_) if stc_[c, cv2.CC_STAT_LEFT] <= mid1 and stc_[c, cv2.CC_STAT_LEFT] + stc_[c, cv2.CC_STAT_WIDTH] >= mid0]
+    core = np.isin(lc_, keepc).astype(np.uint8) if keepc else np.zeros_like(core)
+    near = cv2.dilate(core, np.ones((5, 5), np.uint8)).astype(np.float32)
+    chg = chg * near
+    lows = np.clip((0.3 - S) / 0.1, 0, 1)                    # low saturation only: coloured lip / tongue keep their colour
+    # grey film -> warm and darker. Upper part: not the bright teeth (V cap); lower part (lower teeth, film): all of it
+    vcap = np.clip((vlo + 10 - V) / 20, 0, 1)
+    vcap2 = np.clip((min(vlo + 50, 200) - V) / 20, 0, 1)      # lower part: never a bright lip highlight (specular, low-sat)
+    grey = lows * np.clip((V - 0.35 * lipV) / 15, 0, 1) * (up * vcap + (1 - up) * vcap2)
+    g = cv2.GaussianBlur(inn * chg * grey * notc, (0, 0), fe)[..., None] * spec['mix']
     dark = out * spec.get('greyDark', 0.62) * np.array([0.85, 0.85, 1.08], np.float32)
     out = out * (1 - g) + dark * g
-    if neutral is not None:
-        # new opening = clearly darker than the neutral at the same place (lips / skin match the neutral, so they stay)
-        Ln = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)[..., 0]
-        newo = np.clip((Ln - lab[..., 0] - 15) / 20, 0, 1) * inn * (1 - np.clip(th * 1.5, 0, 1))
-        newo = cv2.GaussianBlur(newo, (0, 0), fe)[..., None]
-        out = out * (1 - newo) + out * spec.get('newDark', 0.65) * newo
-    # tongue shadow: the lower third of the opening x .7 (inside the opening only; reads as depth on a phone)
-    low3 = cv2.GaussianBlur(inn * np.clip((r - 0.62) / 0.15, 0, 1), (0, 0), fe)[..., None]
+    # tongue shadow: the lower third of the opening x .7, changed pixels only
+    low3 = cv2.GaussianBlur(inn * chg * np.clip((r - 0.62) / 0.15, 0, 1), (0, 0), fe)[..., None]
     return out * (1 - 0.3 * low3)
 
 

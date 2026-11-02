@@ -34,7 +34,8 @@ export const VISEMES = ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"
 export const MOUTH_KEYS = ["MID", "AH", "AH2", "EH", "OH"] as const;
 export type FaceExpression = (typeof FACE_EXPRESSIONS)[number];
 export type Viseme = (typeof VISEMES)[number];
-/** Non-human profile keys (prep-py/profiles.json): animal J2/J3, cat C2, 2D anime SM/WD/OO/EE. */
+/** Non-human profile keys (prep-py/profiles.json): 2D anime SM/WD/OO/EE; J2/J3/C2 = the animal jaw keys of companions
+ *  prepped before 11/3 (now AH/AH2 like the human ladder), kept so their manifests stay valid. */
 export const PROFILE_KEYS = ["J2", "J3", "C2", "SM", "WD", "OO", "EE"] as const;
 export type ProfileKey = (typeof PROFILE_KEYS)[number];
 export type MouthKey = (typeof MOUTH_KEYS)[number] | ProfileKey;
@@ -214,7 +215,8 @@ const SOUND: Record<Viseme | (typeof MOUTH_KEYS)[number], string> = {
 export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx = {}): string {
   // profile keys (and a profile's blink): the lane's own prompt again, same species; its wording is already
   // the filter-safe "talking / calm" one (codex P2: never swap a blink retry for a mouth prompt)
-  if (isProfileKey(key) || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
+  // also a mouth key the profile brings its own prompt for (11/3: animal / cat / toy jaw keys are named AH / AH2)
+  if (isProfileKey(key) || (ctx.profile && profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species))) {
     return faceEditPrompt(key, kind, false, ctx);
   }
   const s = NOUN[kind];
