@@ -5,28 +5,6 @@ import SwiftUI
 // launched with `--browser-preview`: a small "Preview" tab on the right edge opens a list that jumps between the flows.
 // Every entry is a fixture the UI tests already use (review stages, recorded call session, Finds fixtures, fixture camera).
 
-extension AppState {
-    /// What the app knows at review stage `reviewStage` (name, imported style, answers, face), with the demo companion's name.
-    /// One source for the GENITA_REVIEW_STAGE launch environment (UI tests, screen review) and the browser preview menu.
-    func applyReviewFixture(stage reviewStage: Stage, variant: String) {
-        setup.name = variant == "empty" ? "" : "Dyno"
-        // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
-        setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
-        setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
-        setup.voice = variant == "empty" ? nil : 0
-        setup.depth = SetupDepth(rawValue: variant) ?? .right
-        if variant != "empty" {
-            setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
-            setup.boundaries = ["Message anyone for me"]
-            setup.presence = ["Calm"]
-        }
-        if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
-           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
-        else { setup.imageData = nil }
-        setup.stage = reviewStage
-    }
-}
-
 enum PreviewTarget {
     case onboarding(Stage)
     case call(session: String = "r1", findsState: Int? = nil, findsTab: String? = nil, camera: Bool = false, settings: Bool = false)
