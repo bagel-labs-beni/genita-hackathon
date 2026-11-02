@@ -13,8 +13,10 @@
 import type { FindCard } from "../protocol.ts";
 import { isDislike, type EvidenceLabel, type StyleCard } from "../prep/importProfile.ts";
 
-export type TasteLine = { text: string; label: EvidenceLabel | null };
-export type FindReason = { text: string; source: string };
+/** fromCall = said in this call (a voice correction) → grey "You said: …" chip */
+export type TasteLine = { text: string; label: EvidenceLabel | null; fromCall?: boolean };
+/** from "profile" = blue chip (import / HISY corrections), "call" = grey chip (said in this call) */
+export type FindReason = { text: string; source: string; from: "profile" | "call" };
 
 const STYLE_PREFIX = /^(?:style|fashion|clothes|clothing|outfits?|wardrobe|aesthetics?|look)\s*(?:and \w+\s*)?:\s*/i;
 const FOOD_PREFIX = /^(?:food|cooking|cuisine|diet|eating|meals?|food and cooking)\s*(?:and \w+\s*)?:\s*/i;
@@ -79,20 +81,21 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   if (!want || !lines.length) return [];
   const text = cardText(card);
   const mine = lines.filter((l) => kindOf(l.text) === want);
-  const likes = mine.filter((l) => !isDislike(l.text));
-  const dislikes = mine.filter((l) => isDislike(l.text));
   const out: FindReason[] = [];
-  // a like that the card echoes first, else the first one
-  const like = likes.find((l) => contentWords(shortTaste(l.text)).some((w) => text.includes(w))) ?? likes[0];
-  if (like) {
-    const phrase = shortTaste(like.text);
-    if (phrase) out.push({ text: `${want === "style" ? "Your style" : "Your taste"}: ${phrase}`.slice(0, 48), source: like.text });
-  }
-  for (const d of dislikes) {
-    const phrase = shortTaste(d.text);
-    if (!phrase || contentWords(phrase).some((w) => text.includes(w))) continue;
-    out.push({ text: `${d.label === "explicit" ? "You said" : "Your taste"}: no ${phrase}`.slice(0, 48), source: d.text });
-    break;
-  }
+  const respected = (l: TasteLine) => !contentWords(shortTaste(l.text)).some((w) => text.includes(w));
+  const echoed = (l: TasteLine) => contentWords(shortTaste(l.text)).some((w) => text.includes(w));
+  const push = (l: TasteLine | undefined, label: string, from: FindReason["from"]) => {
+    if (!l || out.some((o) => o.source === l.text)) return;
+    const phrase = shortTaste(l.text);
+    if (phrase) out.push({ text: `${label}: ${isDislike(l.text) ? "no " : ""}${phrase}`.slice(0, 48), source: l.text, from });
+  };
+  // grey "You said: …" — said in this call (a dislike only when the card respects it)
+  const call = mine.filter((l) => l.fromCall);
+  push(call.find((l) => (isDislike(l.text) ? respected(l) : echoed(l))) ?? call.find((l) => !isDislike(l.text)), "You said", "call");
+  // blue "Your style / Your taste: …" — the stored profile (import, HISY corrections)
+  const stored = mine.filter((l) => !l.fromCall);
+  const likes = stored.filter((l) => !isDislike(l.text));
+  push(likes.find(echoed) ?? likes[0], want === "style" ? "Your style" : "Your taste", "profile");
+  if (out.length < 2) push(stored.find((l) => isDislike(l.text) && respected(l)), "Your taste", "profile");
   return out.slice(0, 2);
 }

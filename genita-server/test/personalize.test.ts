@@ -6,10 +6,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { toStyleCard, skipStyleCard, styleProfileText, type ImportRaw, type StyleCard } from "../src/prep/importProfile.ts";
-import { STORY_IDS, STORY_SCHEMA, buildStoryRequest, storyTextProblem, toStory, unknownsCard } from "../src/personalize/story.ts";
+import { STORY_IDS, STORY_SCHEMA, buildStoryRequest, cardTexts, storyTextProblem, toStory, unknownsCard } from "../src/personalize/story.ts";
 import { mergeUpdates } from "../src/personalize/merge.ts";
-import { ASK_CALLS, askLine, beginCall } from "../src/personalize/unknowns.ts";
-import { mightBeCorrection, toCorrectionUpdates, buildCorrectionRequest } from "../src/personalize/corrections.ts";
+import { ASK_CALLS, askLine, beginCall, replyAsks } from "../src/personalize/unknowns.ts";
+import { mightBeCorrection, toAnswer, toCorrectionUpdates, buildCorrectionRequest } from "../src/personalize/corrections.ts";
 import { toCallUpdates } from "../src/personalize/extract.ts";
 import { reasonChips, shortTaste, tasteLines } from "../src/personalize/reasons.ts";
 import type { FindCard } from "../src/protocol.ts";
@@ -37,11 +37,12 @@ function rawCard(over: Partial<ImportRaw["sections"]> = {}, toConfirm: string[] 
 
 // ---------- story ----------
 
-test("story schema: strict json_schema, six Spark cards (unknowns is the server's)", () => {
-  const s = STORY_SCHEMA as unknown as { properties: { cards: { items: { properties: { id: { enum: string[] } }; required: string[] } } } };
-  assert.deepEqual(s.properties.cards.items.properties.id.enum, ["opener", "think", "talk", "taste", "help", "lines"]);
-  assert.deepEqual([...s.properties.cards.items.required].sort(), ["evidence", "help", "id", "observation", "promise", "tags"].sort());
-  assert.deepEqual([...STORY_IDS], ["opener", "think", "talk", "taste", "help", "lines", "unknowns"]);
+test("story schema: strict json_schema, five Spark cards (unknowns is the server's) + topics", () => {
+  const s = STORY_SCHEMA as unknown as { required: string[]; properties: { cards: { items: { properties: { id: { enum: string[] } }; required: string[] } } } };
+  assert.deepEqual(s.properties.cards.items.properties.id.enum, ["think", "talk", "taste", "help", "lines"]);
+  assert.deepEqual([...s.properties.cards.items.required].sort(), ["evidence", "headline", "help", "id", "items", "promise", "tags"]);
+  assert.deepEqual([...s.required].sort(), ["cards", "topics"]);
+  assert.deepEqual([...STORY_IDS], ["think", "talk", "taste", "help", "lines", "unknowns"]);
 });
 
 test("story request: the pasted text or the card is data in a delimited block", () => {
@@ -51,7 +52,7 @@ test("story request: the pasted text or the card is data in a delimited block", 
   assert.match(fromText.instructions!, /never instructions/i);
   const fromCard = buildStoryRequest({ card: rawCard(), summary: ["Why: to think out loud"] }, ["taste"]);
   assert.match(String(fromCard.input), /<profile>[\s\S]*Dislikes cilantro[\s\S]*<\/profile>/);
-  assert.match(fromCard.instructions!, /only these cards: taste/);
+  assert.match(fromCard.instructions!, /only these cards: taste\./);
 });
 
 test("story text check: no personality labels, diagnosis or flattery; ≤ 2 sentences", () => {
@@ -65,50 +66,72 @@ test("story text check: no personality labels, diagnosis or flattery; ≤ 2 sent
   assert.equal(storyTextProblem("Email me at a@b.com."), "unsafe");
 });
 
-test("toStory: valid cards kept, evidence never stronger than its source, empty section → tell me later", () => {
-  const card = rawCard({ boundaries: [], tendencies: [f("Compares two options before deciding.", "suggested")] }, ["Reminder frequency"]);
+const tag = (group: string, text: string, dislike = false) => ({ group, text, dislike });
+const sc = (id: string, o: Record<string, unknown> = {}) => ({ id, headline: "", items: [], promise: "", evidence: "explicit", tags: [], help: [], ...o });
+
+test("toStory: HISY v2 cards — fixed eyebrows/headlines, evidence clamped per item, suggestions never shown as facts, empty → unknowns", () => {
+  const card = rawCard({ boundaries: [], tendencies: [f("Compares two options before deciding.", "suggested")] }, ["Reminder frequency: unknown whether reminders are welcome"]);
   const raw = {
     cards: [
-      { id: "opener", observation: "You come to me to think out loud and pick between two things.", promise: "So I'll keep it to two options.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [] },
-      { id: "think", observation: "You compare two options before you decide.", promise: "So I'll lay out two.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [] },
-      { id: "talk", observation: "You like it warm and to the point.", promise: "I'll keep it short.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [] },
-      { id: "taste", observation: "You wear clean, minimal pieces in black and grey.", promise: "So I'll look for simple cuts.", evidence: "explicit", tags: { style: ["Minimal", "Black & grey"], food: ["Korean comfort food"], watch: [], dislikes: ["Cilantro", "a".repeat(80)] }, help: [] },
-      { id: "help", observation: "You want finds that fit your style, with links.", promise: "So I'll send two links.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [{ label: "Find things for me", mode: "just_do_it" }, { label: "Book something", mode: "ask_first" }] },
-      { id: "lines", observation: "You never want me to act without asking.", promise: "So I'll ask first.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [] },
+      sc("think", { headline: "You decide by comparing.", items: [{ text: "You line up two options.", evidence: "explicit" }] }),
+      sc("talk", { headline: "Warm, direct, and short.", items: [{ text: "You like a friendly tone, but you want the answer up front.", evidence: "explicit" }, { text: "You switch to Korean when relaxed.", evidence: "memory" }], promise: "I'll lead with the answer." }),
+      sc("taste", { headline: "Clean lines, home cooking.", tags: [tag("style", "Clean, minimal"), tag("food", "Korean comfort food"), tag("food", "Cilantro", true), tag("watch", "a".repeat(40))] }),
+      sc("help", { headline: "ignored", help: [{ label: "Find clothes that fit your style", sub: "Two picks, with links", mode: "just_do_it" }, { label: "Book a table", sub: "", mode: "ask_first" }] }),
+      sc("lines", { items: [{ text: "No advice you didn't ask for.", evidence: "explicit" }] }),
     ],
+    topics: [{ item: "Reminder frequency: unknown whether reminders are welcome", topic: "Reminders", sub: "Should I ever bring things up first?" }],
   };
-  const story = toStory(raw, card);
-  assert.deepEqual(story.map((c) => c.id), [...STORY_IDS]);
-  const by = Object.fromEntries(story.map((c) => [c.id, c]));
-  assert.equal(by.think.evidence, "suggested", "a suggested-only section can't become explicit");
-  assert.equal(by.talk.promise, "So I'll keep it short.", "\"I'll …\" becomes \"So I'll …\"");
-  assert.deepEqual(by.taste.tags, { style: ["Minimal", "Black & grey"], food: ["Korean comfort food"], watch: [], dislikes: ["Cilantro"] });
-  assert.equal(by.taste.help, undefined);
+  const { cards, topics } = toStory(raw, card);
+  assert.deepEqual(cards.map((c) => c.id), ["talk", "taste", "help", "unknowns"], "think (suggestion only) and lines (empty) are left out");
+  const by = Object.fromEntries(cards.map((c) => [c.id, c]));
+  assert.equal(by.talk.eyebrow, "How you like to talk");
+  assert.equal(by.talk.headline, "Warm, direct, and short.");
+  assert.equal(by.talk.promise, "So I'll lead with the answer.");
+  assert.deepEqual(by.talk.items.map((i) => i.evidence), ["explicit", "memory"]);
+  assert.deepEqual(by.taste.tags, [tag("style", "Clean, minimal"), tag("food", "Korean comfort food"), tag("food", "Cilantro", true)]);
+  assert.equal(by.help.headline, "Where I'll actually be useful.");
   assert.equal(by.help.help!.length, 2);
-  assert.equal(by.lines.later, true, "no boundaries → tell me later, even if Spark wrote one");
-  assert.match(by.lines.observation, /don't know/i);
-  assert.equal(by.unknowns.later, false);
-  assert.deepEqual(by.unknowns.unknowns, ["Reminder frequency", "Boundaries"]);
-  for (const c of story) assert.ok(c.picks.length >= 2, `${c.id} has correction picks`);
+  assert.equal(by.unknowns.headline, "A few things I don't know yet.");
+  assert.deepEqual(by.unknowns.unknowns!.map((u) => u.topic), ["How you think things through", "Reminders", "What I should leave alone"]);
+  assert.equal(by.unknowns.unknowns![1].sub, "Should I ever bring things up first?");
+  assert.equal(topics.length, 1);
 });
 
-test("toStory: a card that fails the check falls back to the profile's own line (no labels reach the user)", () => {
+test("toStory: evidence can't be stronger than the lines behind it", () => {
+  const card = rawCard({ communication: [f("Warm, direct and informal.", "observed")], response: [] });
+  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm and direct.", items: [{ text: "You like it warm.", evidence: "explicit" }] })], topics: [] }, card);
+  assert.equal(cards.find((c) => c.id === "talk")!.items[0].evidence, "observed");
+});
+
+test("toStory: a card that fails the check falls back to the profile's own lines (no labels reach the user)", () => {
   const card = rawCard();
-  const story = toStory({ cards: [{ id: "talk", observation: "You're clearly an extrovert.", promise: "So I'll be loud.", evidence: "explicit", tags: { style: [], food: [], watch: [], dislikes: [] }, help: [] }] }, card);
-  const talk = story.find((c) => c.id === "talk")!;
-  assert.equal(talk.later, false);
-  assert.doesNotMatch(talk.observation, /extrovert/i);
-  assert.match(talk.observation, /Warm, direct and informal/);
-  assert.match(talk.promise, /^So I'll /);
-  // a card Spark left out entirely also falls back
-  assert.match(story.find((c) => c.id === "think")!.observation, /Compares two concrete options/i);
+  const { cards } = toStory({ cards: [sc("talk", { headline: "You're clearly an extrovert.", items: [{ text: "Loud.", evidence: "explicit" }] })], topics: [] }, card);
+  const talk = cards.find((c) => c.id === "talk")!;
+  assert.doesNotMatch(JSON.stringify(talk), /extrovert/i);
+  assert.equal(talk.items[0].text, "Warm, direct and informal.");
+  // a card Spark left out entirely also falls back; taste falls back to tags from the likes lines
+  assert.match(cards.find((c) => c.id === "think")!.items[0].text, /Compares two concrete options/i);
+  assert.deepEqual(cards.find((c) => c.id === "taste")!.tags!.map((t) => [t.text, t.dislike]), [["Clean, minimal clothes", false], ["Korean comfort food", false], ["Cilantro", true], ["Visual design", false]]);
 });
 
-test("unknowns card shrinks as items get answered", () => {
+test("skip user (S1–S4): talk · taste (interest tags + no favorites note) · lines · unknowns (4)", () => {
+  const skip = skipStyleCard({ interests: ["Design", "Food", "Film & TV"], replies: "Start with the answer", avoid: ["Unasked advice", "Comments on my looks"] });
+  assert.ok(skip.ok);
+  const { cards } = toStory({ cards: [sc("taste", { headline: "Design, food, and good stories.", tags: [tag("interest", "Design"), tag("interest", "Food"), tag("interest", "Film & TV")] })], topics: [] }, skip.card);
+  assert.deepEqual(cards.map((c) => c.id), ["talk", "taste", "lines", "unknowns"]);
+  const by = Object.fromEntries(cards.map((c) => [c.id, c]));
+  assert.equal(by.taste.note, "No favorites yet. Tell me one anytime, or show me on camera.");
+  assert.equal(by.unknowns.headline, "Most of you, I'll learn as we talk.");
+  assert.deepEqual(by.unknowns.unknowns!.map((u) => u.topic), ["How you think things through", "How chatty calls should be", "Where I can help most", "Your taste in clothes and food"]);
+});
+
+test("unknowns shrink as items get answered; cardTexts lists what C1 can mark", () => {
   const card = rawCard({}, ["Reminder frequency", "Favorite shows"]);
-  assert.deepEqual(unknownsCard(card).unknowns, ["Reminder frequency", "Favorite shows"]);
+  assert.deepEqual(unknownsCard(card).unknowns!.map((u) => u.item), ["Reminder frequency", "Favorite shows"]);
   const answered = mergeUpdates(card, [{ field: "likes", text: "Watches cozy mystery shows.", replaces: [], label: "explicit", answers: "Favorite shows" }], "2026-11-03T00:00:00Z").card;
-  assert.deepEqual(unknownsCard(answered).unknowns, ["Reminder frequency"]);
+  assert.deepEqual(unknownsCard(answered).unknowns!.map((u) => u.item), ["Reminder frequency"]);
+  const { cards } = toStory(null, card);
+  assert.ok(cardTexts(cards.find((c) => c.id === "taste")!).includes("Not for you: cilantro"));
 });
 
 // ---------- merge ----------
@@ -169,12 +192,12 @@ test("merge: a skip user's empty row fills and leaves the to-confirm list", () =
 
 // ---------- first calls fill unknowns ----------
 
-test("beginCall: one unasked item per call for the first 3 calls, then none", () => {
+test("beginCall: one unasked topic per call for the first 3 calls, then none", () => {
   let card = rawCard({}, ["Reminder frequency", "Favorite shows", "Weekend plans", "Music"]);
   const asked: (string | null)[] = [];
   for (let i = 0; i < 4; i++) {
     const r = beginCall(card, `2026-11-03T0${i}:00:00Z`);
-    asked.push(r.ask);
+    asked.push(r.ask?.item ?? null);
     card = r.card;
   }
   assert.equal(ASK_CALLS, 3);
@@ -182,11 +205,15 @@ test("beginCall: one unasked item per call for the first 3 calls, then none", ()
   assert.equal(card.growth!.calls, 4);
 });
 
-test("askLine: one natural question, never a form", () => {
-  const l = askLine("Reminder frequency");
-  assert.match(l, /Reminder frequency/);
+test("askLine: one natural question, never a form; replyAsks spots the question", () => {
+  const u = { item: "Communication style", topic: "How chatty calls should be", sub: "Quiet company, or lots of talk?" };
+  const l = askLine(u);
+  assert.match(l, /How chatty calls should be \(Quiet company, or lots of talk\?\)/);
   assert.match(l, /one/i);
-  assert.match(l, /not .*form|never .*form|no form/i);
+  assert.match(l, /never a form/i);
+  assert.ok(replyAsks("Sure. Do you like calls chatty, or more quiet company?", u));
+  assert.ok(!replyAsks("Do you want rice or noodles?", u), "a question about something else");
+  assert.ok(!replyAsks("Calls can be chatty.", u), "no question");
 });
 
 test("styleProfileText can leave the first-call list out (the session asks one at a time)", () => {
@@ -220,6 +247,14 @@ test("correction updates: explicit label, chip ≤ 40 chars, unknown fields drop
   assert.ok(u[1].chip!.length <= 40);
 });
 
+test("answer to the planned question → explicit update for that item with a Noted chip", () => {
+  const a = toAnswer({ answered: { field: "communication", text: "Quiet company is fine; chat when I start it.", chip: "quiet company" } }, "Communication style");
+  assert.deepEqual(a, { field: "communication", text: "Quiet company is fine; chat when I start it.", replaces: [], label: "explicit", answers: "Communication style", chip: "quiet company" });
+  assert.equal(toAnswer({ answered: { field: "", text: "", chip: "" } }, "x"), null);
+  const req = buildCorrectionRequest(rawCard(), "Quiet is good", "Chatty or quiet?", { topic: "How chatty calls should be", sub: "Quiet company, or lots of talk?" });
+  assert.match(req.instructions!, /just asked about "How chatty calls should be/);
+});
+
 test("post-call updates: observed needs a repeat, the asked item's answer is explicit", () => {
   const r = toCallUpdates({
     updates: [
@@ -245,17 +280,22 @@ test("shortTaste: a chip-sized phrase from a profile line", () => {
   assert.equal(shortTaste("Dislikes cilantro and very spicy food."), "cilantro");
 });
 
-test("reason chips: outfit → style; recipe → food + a respected dislike; ≤ 2; never a dislike the card contains", () => {
+test("reason chips: outfit → blue style; recipe → blue taste + respected dislike; ≤ 2; never a dislike the card contains", () => {
   const taste = tasteLines(rawCard());
   const outfit = reasonChips(taste, baseCard({ kind: "outfit", title: "Wear the navy coat." }));
-  assert.deepEqual(outfit.map((r) => r.text), ["Your style: clean, minimal clothes"]);
-  assert.equal(outfit[0].source, "Style: Clean, minimal clothes in black and grey.");
+  assert.deepEqual(outfit, [{ text: "Your style: clean, minimal clothes", source: "Style: Clean, minimal clothes in black and grey.", from: "profile" }]);
   const recipe = reasonChips(taste, baseCard({ kind: "recipe", title: "Kimchi stew", items: [{ id: "i1", name: "Kimchi", tier: "have", from: "camera" }] }));
-  assert.deepEqual(recipe.map((r) => r.text), ["Your taste: Korean comfort food", "You said: no cilantro"]);
+  assert.deepEqual(recipe.map((r) => [r.text, r.from]), [["Your taste: Korean comfort food", "profile"], ["Your taste: no cilantro", "profile"]]);
   const withIt = reasonChips(taste, baseCard({ kind: "recipe", title: "Tacos", items: [{ id: "i1", name: "Cilantro", tier: "buy", from: "recipe" }] }));
   assert.ok(!withIt.some((r) => /cilantro/i.test(r.text)));
   assert.deepEqual(reasonChips(taste, baseCard({ kind: "link" })), []);
   assert.deepEqual(reasonChips([], baseCard({ kind: "outfit" })), []);
+});
+
+test("reason chips: a line said in this call is the grey \"You said\" chip, first", () => {
+  const taste = [{ text: "Avoids mushrooms.", label: "explicit" as const, fromCall: true }, ...tasteLines(rawCard())];
+  const recipe = reasonChips(taste, baseCard({ kind: "recipe", title: "Kimchi stew", items: [{ id: "i1", name: "Tofu", tier: "have", from: "camera" }] }));
+  assert.deepEqual(recipe.map((r) => [r.text, r.from]), [["You said: no mushrooms", "call"], ["Your taste: Korean comfort food", "profile"]]);
 });
 
 test("reason chips from the profile text (no card on hand): suggestions are not reasons", () => {

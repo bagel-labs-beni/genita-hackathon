@@ -34,21 +34,24 @@ class Client implements ClientSink {
   }
 }
 
-function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number } = {}) {
+function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number; reply?: string } = {}) {
   const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
   const client = new Client();
   const sparkCalls: SparkRequest[] = [];
   const log: Array<{ ev: string; at: number }> = [];
   const ended: Array<{ turns: Array<{ role: string; text: string }>; asked: string | null }> = [];
+  const asks: Array<string | null> = [];
   const personalize: SessionPersonalize = {
     async startCall() {
-      return { profile: "How the user wants to be treated:\n- Taste: Dislikes cilantro.", ask: "Within your first few replies, when it fits, ask one casual question to learn about: Weekend rhythm.", askItem: "Weekend rhythm", taste: [{ text: "Dislikes cilantro.", label: "explicit" }] };
+      return { profile: "How the user wants to be treated:\n- Taste: Dislikes cilantro.", ask: "Within your first few replies, when it fits, ask one casual question to learn about: Weekend rhythm.", askItem: "Weekend rhythm", askTopic: { item: "Weekend rhythm", topic: "Weekend rhythm", sub: "Busy or slow?" }, taste: [{ text: "Dislikes cilantro.", label: "explicit" }] };
     },
-    async voiceCorrection(_u, line) {
+    async voiceCorrection(_u, line, _last, _sig, asked) {
       log.push({ ev: "correction.start", at: Date.now() });
+      asks.push(asked?.topic ?? null);
       if (p.slowCorrectionMs) await sleep(p.slowCorrectionMs);
+      if (asked && /sleep in/i.test(line)) return { events: [{ text: "Noted: slow weekends", fields: ["interests"] }], applied: [{ field: "interests", text: "Slow weekends.", label: "explicit", removed: [] }], answered: true, profile: "x", taste: [] };
       if (!/don't like mushrooms/i.test(line)) return null;
-      return { chip: "Updated: no mushrooms", applied: [{ field: "likes", text: "Avoids mushrooms.", label: "explicit", removed: [] }], profile: "How the user wants to be treated:\n- Taste: Avoids mushrooms.\n- Taste: Dislikes cilantro.", taste: [] };
+      return { events: [{ text: "Updated: no mushrooms", fields: ["likes"] }], applied: [{ field: "likes", text: "Avoids mushrooms.", label: "explicit", removed: [] }], answered: false, profile: "How the user wants to be treated:\n- Taste: Avoids mushrooms.\n- Taste: Dislikes cilantro.", taste: [{ text: "Avoids mushrooms.", label: "explicit" }] };
     },
     async endCall(_u, turns, asked) {
       ended.push({ turns, asked });
@@ -62,7 +65,7 @@ function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number } = 
     async *spark(req): AsyncGenerator<SparkStreamEvent> {
       sparkCalls.push(req);
       log.push({ ev: "reply", at: Date.now() });
-      yield { type: "text", delta: "<happy> Sure thing." };
+      yield { type: "text", delta: p.reply ?? "<happy> Sure thing." };
       yield { type: "done", responseId: "r", text: "", status: "completed" };
     },
     async *tts() {},
@@ -70,7 +73,7 @@ function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number } = 
     personalize,
   };
   const session = new Session("s1", client, deps);
-  return { client, session, sparkCalls, log, ended };
+  return { client, session, sparkCalls, log, ended, asks };
 }
 
 const persona = { name: "Jin", kind: "human" };
@@ -124,6 +127,21 @@ test("no correction check while interpreting; the call's turns and the asked ite
   i.session.close();
 });
 
+test("GK-1: a reply that asks the planned question → profile.asking; the next line is checked for the answer → Noted chip; the ask line stops", async () => {
+  const s = setup({ reply: "<curious> Sure thing. Are your weekends busy, or slow?" });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  await say(s, "Hi there, long week.", 1);
+  const asking = await s.client.waitFor((m) => m.type === "profile.asking");
+  assert.deepEqual(asking, { type: "profile.asking", topic: "Weekend rhythm" });
+  await say(s, "Mostly I sleep in.", 2);
+  const noted = await s.client.waitFor((m) => m.type === "profile.updated");
+  assert.deepEqual(noted, { type: "profile.updated", text: "Noted: slow weekends", fields: ["interests"] });
+  assert.deepEqual(s.asks, [null, "Weekend rhythm"]);
+  assert.doesNotMatch(s.sparkCalls[1].instructions!, /learn about: Weekend rhythm/, "asked once; the line stops riding along");
+  assert.equal(s.client.json.filter((m) => m.type === "profile.asking").length, 1);
+  s.session.close();
+});
+
 test("a failing personalize dep never breaks the call", async () => {
   const s = setup({
     async startCall() { throw new Error("db down"); },
@@ -173,6 +191,6 @@ test("finds: a recipe card carries reason chips from the user's taste lines (E)"
   await session.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA"] }));
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   const card = created.card as { reasons?: Array<{ text: string; source: string }> };
-  assert.deepEqual(card.reasons?.map((r) => r.text), ["Your taste: Korean comfort food", "You said: no cilantro"]);
+  assert.deepEqual(card.reasons?.map((r) => r.text), ["Your taste: Korean comfort food", "Your taste: no cilantro"]);
   session.close();
 });

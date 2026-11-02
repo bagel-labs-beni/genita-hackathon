@@ -43,7 +43,8 @@ import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
-import { ASK_TURNS } from "../personalize/unknowns.ts";
+import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
+import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -104,7 +105,7 @@ export type SessionDeps = {
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
 export type SessionPersonalize = {
   startCall(userId: string): Promise<CallStart | null>;
-  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal): Promise<VoiceUpdate | null>;
+  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null): Promise<number>;
 };
 /** at most this many correction checks per call, one at a time */
@@ -244,7 +245,9 @@ export class Session {
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
-  private ask: { line: string; item: string } | null = null;
+  private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
+  /** the companion just asked this call's question: the next user line is checked for the answer */
+  private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private taste: TasteLine[] = [];
   private correcting: AbortController | null = null;
@@ -420,7 +423,7 @@ export class Session {
       try {
         const p = await this.deps.personalize.startCall(this.deps.userId);
         if (p?.profile) this.user = { ...this.user, profile: p.profile };
-        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem };
+        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
         this.log("profile.unavailable", { message: String(err).slice(0, 120) });
@@ -842,19 +845,23 @@ export class Session {
   private checkCorrection(text: string): void {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
+    const asked = this.awaitingAnswer;
+    this.awaitingAnswer = null;
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS) return;
     const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
     const abort = new AbortController();
     this.correcting = abort;
-    void p.voiceCorrection(userId, text, lastAssistant, abort.signal).then(
+    this.correctionChecks++;
+    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
       (r) => {
-        if (r !== null) this.correctionChecks++;
         if (!r || this.closed || abort.signal.aborted) return;
         this.user = { ...this.user, profile: r.profile };
-        if (r.taste.length) this.taste = r.taste;
+        // lines said in this call are "You said: …" on result cards (grey), the stored ones "Your taste: …" (blue)
+        const said = new Set(r.applied.filter((a) => a.field === "likes" && a.text).map((a) => a.text));
+        this.taste = (r.taste.length ? r.taste : this.taste).map((t) => (said.has(t.text) || this.taste.some((x) => x.fromCall && x.text === t.text) ? { ...t, fromCall: true } : t));
         this.finds?.setProfile(r.profile, this.taste);
-        this.client.sendJson({ type: "profile.updated", text: r.chip, fields: [...new Set(r.applied.map((a) => a.field))] });
-        this.log("profile.updated", { fields: r.applied.map((a) => a.field) });
+        for (const e of r.events) this.client.sendJson({ type: "profile.updated", text: e.text, fields: e.fields });
+        this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
       },
       (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
     ).finally(() => { if (this.correcting === abort) this.correcting = null; });
@@ -902,7 +909,7 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
-      ask: this.ask && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
     });
     return {
       interpret,
@@ -1238,6 +1245,13 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
+    // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
+    if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
+      this.ask.asked = true;
+      this.awaitingAnswer = this.ask.topic;
+      this.client.sendJson({ type: "profile.asking", topic: this.ask.topic.topic });
+      this.log("profile.asked", {});
+    }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,

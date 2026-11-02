@@ -137,6 +137,12 @@ public enum ServerEvent: Equatable, Sendable {
     /// F2-L26: the user renamed the companion by voice ("Call yourself Max"). Already saved on the server;
     /// update every {name} label (S07, S09-T, PREP-1 …).
     case companionNamed(CompanionNamed)
+    /// Lane 개인화: saved to the profile from the call — a correction ("Updated: no cilantro") or the answer to
+    /// the call's getting-to-know-you question ("Noted: quiet company"). Chip under the status line for 2.5 s.
+    case profileUpdated(ProfileUpdated)
+    /// Lane 개인화 GK-1: the companion just asked this call's getting-to-know-you question.
+    /// Soft chip "Getting to know you · {topic}".
+    case profileAsking(ProfileAsking)
     /// A type this build does not know yet. Ignore it; never fail the socket.
     case unknown(type: String)
 
@@ -309,6 +315,16 @@ public enum ServerEvent: Equatable, Sendable {
         public var name: String
         public init(name: String) { self.name = name }
     }
+    public struct ProfileUpdated: Codable, Equatable, Sendable {
+        public var text: String
+        /// profile sections it touched, e.g. `likes`
+        public var fields: [String]
+        public init(text: String, fields: [String]) { self.text = text; self.fields = fields }
+    }
+    public struct ProfileAsking: Codable, Equatable, Sendable {
+        public var topic: String
+        public init(topic: String) { self.topic = topic }
+    }
 }
 
 private enum TypeKey: String, CodingKey { case type }
@@ -346,6 +362,8 @@ extension ServerEvent: Codable {
         case "find.image": self = .findImage(try .init(from: decoder))
         case "find.failed": self = .findFailed(try .init(from: decoder))
         case "companion.named": self = .companionNamed(try .init(from: decoder))
+        case "profile.updated": self = .profileUpdated(try .init(from: decoder))
+        case "profile.asking": self = .profileAsking(try .init(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -381,6 +399,8 @@ extension ServerEvent: Codable {
         case .findImage: "find.image"
         case .findFailed: "find.failed"
         case .companionNamed: "companion.named"
+        case .profileUpdated: "profile.updated"
+        case .profileAsking: "profile.asking"
         case let .unknown(type): type
         }
     }
@@ -415,6 +435,8 @@ extension ServerEvent: Codable {
         case let .findImage(p): try p.encode(to: encoder)
         case let .findFailed(p): try p.encode(to: encoder)
         case let .companionNamed(p): try p.encode(to: encoder)
+        case let .profileUpdated(p): try p.encode(to: encoder)
+        case let .profileAsking(p): try p.encode(to: encoder)
         case .unknown: break
         }
         var c = encoder.container(keyedBy: TypeKey.self)

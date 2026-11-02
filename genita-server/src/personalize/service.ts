@@ -15,10 +15,10 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { PICKS, STORY_IDS, TITLES, buildStoryRequest, openItems, toStory, unknownsCard, type Story, type StoryCard, type StoryId } from "./story.ts";
+import { EYEBROWS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
-import { buildCorrectionRequest, mightBeCorrection, toCorrectionUpdates } from "./corrections.ts";
+import { buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
 import { tasteLines, type TasteLine } from "./reasons.ts";
 
@@ -36,8 +36,9 @@ export class PersonalizeError extends Error {
   constructor(status: number, code: string, message = code) { super(message); this.status = status; this.code = code; }
 }
 
-export type CallStart = { profile?: string; ask?: string; askItem?: string; taste: TasteLine[] };
-export type VoiceUpdate = { chip: string; applied: AppliedUpdate[]; profile: string; taste: TasteLine[] };
+export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[] };
+/** events: "Noted: …" (the planned question was answered) and/or "Updated: …" (a correction) */
+export type VoiceUpdate = { events: Array<{ text: string; fields: string[] }>; applied: AppliedUpdate[]; answered: boolean; profile: string; taste: TasteLine[] };
 
 export class Personalize {
   private readonly store: PersonalizeStore;
@@ -92,8 +93,8 @@ export class Personalize {
 
   /** Attach a story written from the paste to the card the parse made (checked against that card). */
   withStory(card: StyleCard, r: { raw: unknown; ms: number }, from: Story["from"] = "text"): StyleCard {
-    const cards = toStory(r.raw as { cards?: unknown }, card);
-    return { ...card, story: { version: 1, cards, at: this.now().toISOString(), from, ms: r.ms } };
+    const { cards, topics } = toStory(r.raw as { cards?: unknown }, card);
+    return { ...card, story: { version: 2, cards, topics, at: this.now().toISOString(), from, ms: r.ms } };
   }
 
   /** Save a story that landed after the import response went out (only if the card has none yet). */
@@ -107,6 +108,13 @@ export class Personalize {
     return s ? [`Why: ${s.why}`, `Energy: ${s.energy}`, `Initiative: ${s.initiative}`, `Never: ${s.never}`].filter((l) => !/:\s*$/.test(l)) : [];
   }
 
+  /** A story written before v2 (or none) is rewritten whole. */
+  private static needsWrite(card: StyleCard): SparkStoryId[] | "all" | null {
+    if (!card.story || card.story.version !== 2) return "all";
+    const only = (card.story.stale ?? []).filter((id): id is SparkStoryId => id !== "unknowns");
+    return only.length ? only : null;
+  }
+
   /** Write (or rewrite the stale cards of) the story from the stored card. */
   private writeStory(userId: string): Promise<void> {
     const running = this.storyJobs.get(userId);
@@ -114,15 +122,17 @@ export class Personalize {
     const job = (async () => {
       const card = await this.store.getStyle(userId);
       if (!card) return;
-      const only = card.story ? (card.story.stale ?? []).filter((id) => id !== "unknowns") : [];
-      if (card.story && !only.length) return;
+      const need = Personalize.needsWrite(card);
+      if (!need) return;
+      const only = need === "all" ? undefined : need;
       const t0 = performance.now();
-      const raw = await this.timed(this.json<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only.length ? (only as Exclude<StoryId, "unknowns">[]) : undefined)));
+      const raw = await this.timed(this.json<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only)));
       const ms = Math.round(performance.now() - t0);
       await this.update(userId, (latest) => {
-        const cards = toStory(raw as { cards?: unknown }, latest, latest.story?.cards, only.length ? only : undefined);
-        this.log("story.written", { from: "card", cards: only.length || cards.length - 1, ms, later: cards.filter((c) => c.later).length });
-        return { card: { ...latest, story: { version: 1, cards, at: this.now().toISOString(), from: "card", ms } }, out: true };
+        const prev = latest.story?.version === 2 ? latest.story : undefined;
+        const { cards, topics } = toStory(raw as { cards?: unknown }, latest, prev?.cards, only);
+        this.log("story.written", { from: "card", cards: only?.length ?? cards.length - 1, ms });
+        return { card: { ...latest, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ms } }, out: true };
       });
     })()
       .catch((err) => this.log("story.failed", { from: "card", message: String(err).slice(0, 160) }))
@@ -131,86 +141,94 @@ export class Personalize {
     return job;
   }
 
-  /** GET /v1/profile/story?wait=s — `processing` if not written within the wait. The unknowns card is always current. */
+  /** The cards to show now: the stored ones, with `unknowns` rebuilt from the latest card. */
+  private static current(card: StyleCard): StoryCard[] {
+    return toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards;
+  }
+
+  /** GET /v1/profile/story?wait=s — `processing` if not written within the wait. */
   async story(userId: string, waitMs = 0): Promise<{ status: "ready" | "processing" | "none"; source?: StyleCard["source"]; cards: StoryCard[]; ms?: number }> {
     let card = await this.store.getStyle(userId);
     if (!card) return { status: "none", cards: [] };
-    if (!card.story || card.story.stale?.some((id) => id !== "unknowns")) {
+    if (Personalize.needsWrite(card)) {
       const job = this.writeStory(userId);
       if (waitMs > 0) await Promise.race([job, new Promise((r) => setTimeout(r, waitMs).unref?.())]);
       card = (await this.store.getStyle(userId)) ?? card;
-      if (!card.story) return this.storyJobs.has(userId) ? { status: "processing", source: card.source, cards: [] } : { status: "ready", source: card.source, cards: toStory(null, card) };
+      if (card.story?.version !== 2 && this.storyJobs.has(userId)) return { status: "processing", source: card.source, cards: [] };
     }
-    // unknowns is the server's own: recomputed from the latest card on every read
-    const cards = toStory(null, card, card.story!.cards, ["unknowns"]);
-    return { status: "ready", source: card.source, cards, ms: card.story!.ms };
+    return { status: "ready", source: card.source, cards: Personalize.current(card), ms: card.story?.ms };
   }
 
-  // ───────────── "That's not me" ─────────────
+  // ───────────── "That's not me" (C1–C3) ─────────────
 
-  async correct(userId: string, body: Record<string, unknown>): Promise<{ card: StoryCard; ack: string; changed: boolean; profile: string; rows: DisplayRow[] }> {
+  async correct(userId: string, body: Record<string, unknown>): Promise<{ card: StoryCard | null; ack: string; changed: string[]; profile: string; rows: DisplayRow[] }> {
     const cardId = body.cardId as StoryId;
     if (!STORY_IDS.includes(cardId)) throw new PersonalizeError(400, "bad_correction", "unknown card");
-    const pick = body.pick === undefined || body.pick === null || body.pick === "" ? null : body.pick;
-    if (pick !== null && (typeof pick !== "string" || !PICKS[cardId].includes(pick))) throw new PersonalizeError(400, "bad_correction", "unknown pick");
-    const text = typeof body.text === "string" ? body.text.replace(/[\u0000-\u001f\u007f‎‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim() : "";
+    const rawItems = body.items === undefined || body.items === null ? [] : body.items;
+    if (!Array.isArray(rawItems) || rawItems.length > 12 || rawItems.some((i) => typeof i !== "string" || i.length > 240)) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     if (body.text !== undefined && body.text !== null && typeof body.text !== "string") throw new PersonalizeError(400, "bad_correction");
+    const text = typeof body.text === "string" ? body.text.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim() : "";
     if (text.length > CORRECTION_TEXT_MAX) throw new PersonalizeError(400, "bad_correction", `text is at most ${CORRECTION_TEXT_MAX} characters`);
-    if (!pick && !text) throw new PersonalizeError(400, "bad_correction", "pick or text");
+    const items = rawItems as string[];
+    if (!items.length && !text) throw new PersonalizeError(400, "bad_correction", "items or text");
     const before = await this.store.getStyle(userId);
     if (!before) throw new PersonalizeError(404, "no_profile");
+    const shown = Personalize.current(before).find((c) => c.id === cardId);
+    if (!shown) throw new PersonalizeError(409, "card_not_shown", "that card isn't in the story");
+    const texts = cardTexts(shown);
+    if (items.some((i) => !texts.includes(i))) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     const t0 = performance.now();
 
-    let applied: AppliedUpdate[] = [];
-    if (cardId === "unknowns" && pick === "Don't ask about these" && !text) {
-      // no Spark: every open item is declined (the first calls won't ask, the card stops listing them)
-      const latest = (await this.update(userId, (card) => {
-        const at = this.now().toISOString();
-        const asked = [...(card.growth?.asked ?? []), ...openItems(card).map((item) => ({ item, at, declined: true }))];
-        const next = { ...card, toConfirm: [], growth: { calls: card.growth?.calls ?? 0, asked } };
-        return { card: next, out: next };
-      }))!;
-      this.log("profile.corrected", { card: cardId, applied: 0, by: "declined" });
-      return { card: unknownsCard(latest), ack: ACK, changed: true, profile: styleProfileText(latest), rows: latest.display };
+    // C1: the marked lines + what's right → explicit updates (newer wins)
+    let updates: ProfileUpdate[];
+    if (cardId === "unknowns") {
+      // "let me tell you now": an answer to one of the open topics
+      const topic = shown.unknowns!.find((u) => u.topic === items[0]) ?? shown.unknowns![0];
+      if (!text || !topic) throw new PersonalizeError(400, "bad_correction", "text");
+      const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(before, text, undefined, topic)).catch(() => { throw new PersonalizeError(502, "upstream_failed", "try again"); });
+      const answer = toAnswer(raw, topic.item);
+      updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)];
+    } else {
+      const line = [
+        `On the "${EYEBROWS[cardId]}" card ("${shown.headline}") the user marked these as wrong: ${items.length ? items.map((i) => `"${i}"`).join("; ") : "(nothing specific)"}.`,
+        text ? `They wrote what's right: ${text}` : "They didn't say what's right: remove the marked lines.",
+      ].join(" ");
+      const req = buildCorrectionRequest(before, line);
+      req.instructions += "\nThis comes from the profile screen, where the user is correcting what a card says about them: treat it as their own explicit statement. Each marked line that is wrong goes into replaces (copy the matching current profile line). A marked line with nothing to put instead is an update with text \"\" and that line in replaces.";
+      const raw = await this.json<{ updates?: unknown }>(req).catch((err) => {
+        this.log("profile.correct_failed", { card: cardId, message: String(err).slice(0, 160) });
+        throw new PersonalizeError(502, "upstream_failed", "try again");
+      });
+      updates = toCorrectionUpdates(raw, { allowRemove: true });
     }
-
-    const shown = before.story?.cards.find((c) => c.id === cardId);
-    const line = [`About the "${TITLES[cardId]}" card${shown && !shown.later ? ` (it said: "${shown.observation}")` : ""}, the user says it's not right.`, pick ? `They picked: ${pick}.` : "", text ? `They wrote: ${text}` : ""].filter(Boolean).join(" ");
-    const req = buildCorrectionRequest(before, line);
-    req.instructions += "\nThis comes from the profile screen, where the user is correcting what a card says about them: treat it as their own explicit statement and turn it into updates. A pick that removes something (e.g. \"That's fine with me\" on a boundary, \"I don't need this\" on help) is an update with text \"\" and the removed lines in replaces.";
-    const raw = await this.json<{ updates?: unknown }>(req).catch((err) => {
-      this.log("profile.correct_failed", { card: cardId, message: String(err).slice(0, 160) });
-      throw new PersonalizeError(502, "upstream_failed", "try again");
-    });
-    const updates = toCorrectionUpdates(raw, { allowRemove: true });
-    if (updates.length) {
-      applied = (await this.update(userId, (card) => {
-        const m = mergeUpdates(card, updates, this.now().toISOString());
-        if (!m.applied.length) return null;
-        // the corrected card is rewritten now, the others it touched on the next read
-        if (m.card.story) m.card.story.stale = [...new Set([...(m.card.story.stale ?? []), cardId])];
-        return { card: m.card, out: m.applied };
-      })) ?? [];
-    }
+    const applied = updates.length
+      ? ((await this.update(userId, (card) => {
+          const m = mergeUpdates(card, updates, this.now().toISOString());
+          if (!m.applied.length) return null;
+          if (m.card.story) m.card.story.stale = [...new Set([...(m.card.story.stale ?? []), ...(cardId === "unknowns" ? [] : [cardId])])];
+          return { card: m.card, out: m.applied };
+        })) ?? [])
+      : [];
     let latest = (await this.store.getStyle(userId))!;
+    // C3: the same card comes back rewritten now; other cards the change touched are rewritten on the next read
     if (applied.length && cardId !== "unknowns") {
       try {
-        const story = await this.timed(this.json<unknown>(buildStoryRequest({ card: latest }, [cardId as Exclude<StoryId, "unknowns">])));
+        const raw = await this.timed(this.json<unknown>(buildStoryRequest({ card: latest }, [cardId])));
         await this.update(userId, (c) => {
-          const cards = toStory(story as { cards?: unknown }, c, c.story?.cards, [cardId]);
-          // no story yet: the other cards are profile-line fallbacks until the next read rewrites them
-          const stale = c.story ? (c.story.stale ?? []).filter((id) => id !== cardId) : STORY_IDS.filter((id) => id !== cardId && id !== "unknowns");
-          return { card: { ...c, story: { version: 1, at: this.now().toISOString(), from: c.story?.from ?? "card", ...(c.story?.ms ? { ms: c.story.ms } : {}), cards, stale } }, out: true };
+          const prev = c.story?.version === 2 ? c.story : undefined;
+          const { cards, topics } = toStory(raw as { cards?: unknown }, c, prev?.cards, prev ? [cardId] : undefined);
+          const stale = (prev?.stale ?? []).filter((id) => id !== cardId);
+          return { card: { ...c, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ...(prev?.ms ? { ms: prev.ms } : {}), stale } }, out: true };
         });
       } catch (err) {
         this.log("story.failed", { from: "correction", message: String(err).slice(0, 160) });
       }
       latest = (await this.store.getStyle(userId))!;
     }
-    const cards = toStory(null, latest, latest.story?.cards, latest.story ? ["unknowns"] : undefined);
-    const card = cards.find((c) => c.id === cardId)!;
+    const card = Personalize.current(latest).find((c) => c.id === cardId) ?? null;
+    const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
     this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0) });
-    return { card, ack: ACK, changed: applied.length > 0, profile: styleProfileText(latest), rows: latest.display };
+    return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
   }
 
   // ───────────── calls ─────────────
@@ -222,28 +240,38 @@ export class Personalize {
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
       return {
         card: r.card,
-        out: { profile: styleProfileText(r.card, 2000, { toConfirm: false }) || undefined, ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask } : {}), taste: tasteLines(r.card) },
+        out: { profile: styleProfileText(r.card, 2000, { toConfirm: false }) || undefined, ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
       };
     });
   }
 
-  /** One user line in a call. null = not a correction (most lines never reach Spark). */
-  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal): Promise<VoiceUpdate | null> {
-    if (!mightBeCorrection(line)) return null;
+  /**
+   * One user line in a call. `asked` = the companion just asked this call's question: the line is always
+   * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
+   */
+  async voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null> {
+    if (!asked && !mightBeCorrection(line)) return null;
     const card = await this.store.getStyle(userId);
     if (!card) return null;
     const t0 = performance.now();
-    const raw = await this.json<{ updates?: unknown }>(buildCorrectionRequest(card, line, lastAssistant), signal);
-    const updates = toCorrectionUpdates(raw);
+    const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
+    const answer = asked ? toAnswer(raw, asked.item) : null;
+    const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)];
     if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return null; }
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
-      return m.applied.length ? { card: m.card, out: { m, card: m.card } } : null;
+      if (!m.applied.length) return null;
+      if (answer && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
+      return { card: m.card, out: { m, card: m.card } };
     });
     if (!out) return null;
-    const chips = out.m.applied.map((a) => a.chip).filter((c): c is string => !!c);
-    this.log("profile.voice_updated", { applied: out.m.applied.length, fields: out.m.applied.map((a) => a.field), ms: Math.round(performance.now() - t0) });
-    return { chip: `Updated: ${chips.join(", ") || out.m.applied[0].text.replace(/\.$/, "")}`.slice(0, 60), applied: out.m.applied, profile: styleProfileText(out.card, 2000, { toConfirm: false }), taste: tasteLines(out.card) };
+    const events: Array<{ text: string; fields: string[] }> = [];
+    const noted = out.m.applied.filter((a) => answer && a.text === answer.text);
+    const rest = out.m.applied.filter((a) => !noted.includes(a));
+    if (noted.length) events.push({ text: `Noted: ${noted[0].chip ?? noted[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [noted[0].field] });
+    if (rest.length) events.push({ text: `Updated: ${rest.map((a) => a.chip).filter(Boolean).join(", ") || rest[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [...new Set(rest.map((a) => a.field))] });
+    this.log("profile.voice_updated", { applied: out.m.applied.length, answered: noted.length > 0, fields: out.m.applied.map((a) => a.field), ms: Math.round(performance.now() - t0) });
+    return { events, applied: out.m.applied, answered: noted.length > 0, profile: styleProfileText(out.card, 2000, { toConfirm: false }), taste: tasteLines(out.card) };
   }
 
   /** After a call: grow the profile. Returns how many updates were applied. */

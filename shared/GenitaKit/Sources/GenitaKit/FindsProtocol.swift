@@ -72,6 +72,14 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
         public var url: String
         public var domain: String
     }
+    /// `from` profile = blue "Your style/taste: …" (import, HISY corrections) · call = grey "You said: …" (this call)
+    public struct Reason: Codable, Equatable, Sendable {
+        public var text: String
+        /// the profile line it comes from
+        public var source: String
+        public var from: String?
+        public init(text: String, source: String, from: String? = nil) { self.text = text; self.source = source; self.from = from }
+    }
     public struct Page: Codable, Equatable, Sendable {
         public var url: String
         public var opened: Bool
@@ -92,6 +100,8 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     public var why: [String]
     public var ask: [String]
     public var sources: [Source]
+    /// Lane 개인화: 1–2 reason chips (optional: older servers and cards without a matching taste line send none)
+    public var reasons: [Reason]?
     public var how: [String]
     public var page: Page?
     public var saved: Bool?

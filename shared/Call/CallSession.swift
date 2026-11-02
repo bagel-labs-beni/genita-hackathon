@@ -618,6 +618,9 @@ enum CallStop: Equatable {
             onCompanionNamed?(n.name)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
             break
+        case .profileUpdated, .profileAsking:
+            // lane 개인화 chips (CC-1, GK-1): drawn by the app PR (#195)
+            break
         }
     }
 
