@@ -18,8 +18,9 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     /// GENITA_API_URL env → `genita.api.url` default → production host.
     public static func defaultBaseURL(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> URL {
-        let raw = environment["GENITA_API_URL"] ?? defaults.string(forKey: "genita.api.url") ?? "https://genita-api.thebeni.ai"
-        return URL(string: raw) ?? URL(string: "https://genita-api.thebeni.ai")!
+        // the deployed server (AWS CloudFront, deploy/aws); same host as the call socket
+        let raw = environment["GENITA_API_URL"] ?? defaults.string(forKey: "genita.api.url") ?? "https://d72kt0jfmscyj.cloudfront.net"
+        return URL(string: raw) ?? URL(string: "https://d72kt0jfmscyj.cloudfront.net")!
     }
 
     /// The bearer for `wss://…/v1/session`.

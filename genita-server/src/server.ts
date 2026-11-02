@@ -38,13 +38,18 @@ const IDLE_MS = 120_000;
 
 export type LogFn = (event: string, data: Record<string, unknown>) => void;
 
+/** No ElevenLabs key: every sentence goes out as text only (the session's ttsFailed path), no vendor call. */
+async function* ttsOff(): AsyncGenerator<never> {
+  throw new Error("tts_off");
+}
+
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages) => new TranscribeStream({ key: config.metaKey, languages }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: (req) => streamSpeech({ ...req, apiKey: config.elevenKey }),
+    tts: config.elevenKey ? (req) => streamSpeech({ ...req, apiKey: config.elevenKey }) : ttsOff,
     // one Peter connection per call = one Modal container = one GPU
     openPeter:
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN

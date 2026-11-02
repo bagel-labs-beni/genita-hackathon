@@ -935,8 +935,11 @@ export class Session {
         if (signal.aborted) break;
         ttsFailed = true;
         reply.spoken.push(s.display);
-        this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
-        this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
+        if (!(err instanceof Error && err.message === "tts_off")) {
+          // tts_off = no server voice configured (the app speaks on-device): text-only is the normal path
+          this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
+          this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
+        }
       }
     }
     await producer;

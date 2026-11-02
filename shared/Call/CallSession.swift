@@ -50,10 +50,13 @@ struct CallEndpoint {
     /// once GenitaKit Auth is on this branch, set it to `{ GenitaAuthClient().token }`.
     nonisolated(unsafe) static var userToken: () -> String? = { KeychainSessionToken.load() }
 
+    /// The deployed server (AWS CloudFront → EC2, deploy/aws). Local runs set GENITA_SERVER_URL.
+    static let defaultURL = "wss://d72kt0jfmscyj.cloudfront.net/v1/session"
+
     static func current(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> CallEndpoint {
-        let raw = environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? "ws://127.0.0.1:8787/v1/session"
+        let raw = environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? defaultURL
         let token = userToken() ?? environment["GENITA_SESSION_TOKEN"] ?? defaults.string(forKey: "genita.session.token")
-        return CallEndpoint(url: URL(string: raw) ?? URL(string: "ws://127.0.0.1:8787/v1/session")!, token: token)
+        return CallEndpoint(url: URL(string: raw) ?? URL(string: defaultURL)!, token: token)
     }
 }
 
