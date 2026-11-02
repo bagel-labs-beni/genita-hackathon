@@ -117,6 +117,9 @@ public actor AppEventsClient {
     private struct QueuedEvent: Sendable {
         let id = UUID()
         let event: AppEvent
+        /// The session token when the event happened: it is only ever sent with that same token,
+        /// so a sign-out → sign-in never attributes one account's events to another.
+        let token: String
         var attempts = 0
     }
 
@@ -156,7 +159,9 @@ public actor AppEventsClient {
 
     /// Enqueues only; transport happens later or when the batch is full.
     public func log(_ event: AppEvent) {
-        buffer.append(QueuedEvent(event: event))
+        guard let current = token(), !current.isEmpty else { return } // signed out: nothing to attribute it to
+        buffer.removeAll { $0.token != current } // the account changed: the old account's events are dropped
+        buffer.append(QueuedEvent(event: event, token: current))
         if buffer.count > 200 { buffer.removeFirst(buffer.count - 200) }
         startTimerIfNeeded()
         if buffer.count >= maxBatch {
@@ -174,13 +179,16 @@ public actor AppEventsClient {
                 buffer.removeAll()
                 return
             }
-            let batch = Array(buffer.prefix(maxBatch))
+            buffer.removeAll { $0.token != token }
+            let batch = Array(buffer.filter { $0.token == token }.prefix(maxBatch))
+            if batch.isEmpty { return }
             let outcome = await send(batch, token: token)
             switch outcome {
             case .success:
                 remove(batch)
             case .unauthorized:
-                buffer.removeAll()
+                // only this token's events: events logged meanwhile under a new sign-in stay
+                buffer.removeAll { $0.token == token }
                 return
             case .retry:
                 incrementAttempts(for: batch)

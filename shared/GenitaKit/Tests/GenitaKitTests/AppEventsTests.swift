@@ -120,6 +120,23 @@ struct AppEventsTests {
         #expect(StubURLProtocol.requests.isEmpty)
     }
 
+    @Test func accountSwitchNeverSendsTheOldAccountsEvents() async throws {
+        StubURLProtocol.reset(statuses: [204])
+        let token = TokenBox("account-a")
+        let client = AppEventsClient(baseURL: URL(string: "https://events.example")!, token: { token.value }, session: stubSession, flushEvery: .seconds(3_600))
+        await client.log(.findOpened(findId: "find-of-a"))
+        token.value = "account-b"
+        await client.log(.appReopened(gapHours: 1))
+        await client.flush()
+        try await waitForRequests(1)
+        let requests = StubURLProtocol.requests
+        #expect(requests.count == 1)
+        #expect(requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer account-b")
+        let body = String(data: StubURLProtocol.bodies.first ?? Data(), encoding: .utf8) ?? ""
+        #expect(!body.contains("find-of-a"))
+        #expect(body.contains("app.reopened"))
+    }
+
     @Test func clientRetries503ThenDropsAfterThreeFailures() async throws {
         StubURLProtocol.reset(statuses: [503, 204])
         let retrying = AppEventsClient(baseURL: URL(string: "https://events.example")!, token: { "session-jwt" }, session: stubSession, flushEvery: .seconds(3_600))
