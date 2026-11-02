@@ -314,4 +314,66 @@ struct MouthQualityTests {
         print(String(format: "tooth after patch: %.0f %.0f %.0f", r, g, b))
         #expect(abs(r - g) < 3 && abs(g - b) < 3)
     }
+
+    // MARK: alive base (⑦)
+
+    private func faceCI(_ set: FaceSet) -> CGRect { FaceRenderer.ciRect(set.faceBox, height: set.pixelSize.height) }
+
+    @Test func theMouthSitsInsideTheSolidPartOfTheHeadLayer() {
+        let face = faceCI(animalSet)
+        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
+        let e = FaceRenderer.headEllipse(face: face)
+        for p in [CGPoint(x: mouth.midX, y: mouth.midY), CGPoint(x: mouth.minX, y: mouth.minY), CGPoint(x: mouth.maxX, y: mouth.minY)] {
+            let nx = (p.x - e.center.x) / e.rx, ny = (p.y - e.center.y) / e.ry
+            #expect((nx * nx + ny * ny).squareRoot() < FaceRenderer.headMaskInner)
+        }
+    }
+
+    @Test func aliveMotionIsSmallSmoothAndSeeded() {
+        let out: CGFloat = 540
+        let r = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7)
+        let k = out / animalSet.pixelSize.width * AliveMotion.overscan   // still px → output px
+        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
+        let p0 = CGPoint(x: mouth.midX, y: mouth.midY)
+        var prev: CGPoint?
+        var maxStep: CGFloat = 0, maxOff: CGFloat = 0, maxRoll = 0.0
+        var moved = false
+        for i in 0..<1500 {   // 60 s at 25 fps, silent
+            let m = r.motionTransforms(at: Double(i) / 25, open: 0)
+            let p = p0.applying(m.head.concatenating(m.camera))
+            let off = hypot(p.x - p0.x, p.y - p0.y) * k
+            maxOff = max(maxOff, off)
+            if off > 1 { moved = true }
+            if let q = prev { maxStep = max(maxStep, hypot(p.x - q.x, p.y - q.y) * k) }
+            prev = p
+            maxRoll = max(maxRoll, abs(atan2(Double(m.head.b), Double(m.head.a))) * 180 / .pi)
+        }
+        print(String(format: "alive: mouth max offset %.2f px, max step %.3f px/frame, head roll max %.2f°", maxOff, maxStep, maxRoll))
+        #expect(moved)
+        #expect(maxOff < 9)
+        #expect(maxStep < 0.6)
+        #expect(maxRoll < 2.0)
+        let a = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 7).motionTransforms(at: 4.2, open: 0)
+        let b = FaceRenderer(faceSet: animalSet, outputSize: CGSize(width: out, height: 960), seed: 8).motionTransforms(at: 4.2, open: 0)
+        #expect(a.head != b.head)
+    }
+
+    @Test func speechOnsetsNodTheHead() {
+        let size = CGSize(width: 540, height: 960)
+        let quiet = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        let talk = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
+        let p0 = CGPoint(x: mouth.midX, y: mouth.midY)
+        var maxDiff: CGFloat = 0
+        for i in 0..<100 {
+            let t = Double(i) / 25
+            let open = (i % 12) < 4 ? 0.9 : 0.05      // a syllable every ~0.5 s
+            let q = quiet.motionTransforms(at: t, open: 0).head, s = talk.motionTransforms(at: t, open: open).head
+            maxDiff = max(maxDiff, abs(p0.applying(q).y - p0.applying(s).y) * size.width / animalSet.pixelSize.width)
+        }
+        print(String(format: "nod: max %.2f px", maxDiff))
+        #expect(maxDiff > 1)
+        #expect(maxDiff < 4)
+    }
 }
+

@@ -1,7 +1,8 @@
 // L4 face · Draws one frame of the companion from a face set, a mouth frame and a time.
 // Layer order: expression still (crossfade on emotion) → one mouth patch (the lip frame's
 // strongest shape; changes are cuts) → jaw warp (lower face stretched down by openness, strip warp) → blink (eye band from
-// the blink still) → idle motion (breathing scale, sway) → aspect-fill to the output size.
+// the blink still) → alive base (head layer sways/nods on the speech envelope, body breathes,
+// handheld camera drift with parallax; see `AliveMotion`) → aspect-fill with overscan.
 // Same inputs, same seed, same call order → same pixels. No Metal library, no platform UI.
 
 import CoreGraphics
@@ -13,10 +14,6 @@ public final class FaceRenderer: @unchecked Sendable {
     public static let expressionFade = 0.25        // s
     public static let blinkLength = 0.12           // s
     public static let blinkGap = 2.0...6.0         // s between blinks
-    public static let breathingAmplitude = 0.006   // scale ±
-    public static let breathingHz = 0.25
-    public static let swayDegrees = 0.4
-    public static let swayHz = 0.17
     /// Chin drop at full openness, as a fraction of the face height.
     public static let jawDrop = 0.035
     static let jawStrips = 28
@@ -24,7 +21,7 @@ public final class FaceRenderer: @unchecked Sendable {
     public let faceSet: FaceSet
     public let outputSize: CGSize
     public let seed: UInt64
-    /// Accessibility Reduce Motion: no breathing, sway or blinks; the mouth still moves.
+    /// Accessibility Reduce Motion: no head/body/camera motion or blinks; the mouth still moves.
     public var reduceMotion: Bool
 
     private let lock = NSLock()
@@ -41,6 +38,9 @@ public final class FaceRenderer: @unchecked Sendable {
     private let extent: CGRect
     private let blinkMask: CIImage?
     private let jawMask: CIImage
+    private let headMask: CIImage
+    private let bodyMask: CIImage
+    private var motion: AliveMotion
 
     public init(faceSet: FaceSet, outputSize: CGSize, seed: UInt64 = 1, reduceMotion: Bool = false, context: CIContext? = nil) {
         self.faceSet = faceSet
@@ -48,6 +48,7 @@ public final class FaceRenderer: @unchecked Sendable {
         self.seed = seed
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
+        motion = AliveMotion(seed: seed)
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
         extent = CGRect(x: 0, y: 0, width: w, height: h)
@@ -81,6 +82,12 @@ public final class FaceRenderer: @unchecked Sendable {
         let (_, un) = Self.jawSpan(face: face, mouth: mouth)
         jawMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: mouth.midY - un * 0.5),
                                    rx: face.width * 0.62, ry: un * 1.3, inner: 0.62, extent: extent)
+        // Person layers from the SAM face box: the head (with hair) and the shoulders/chest under it.
+        // Soft masks, so the warp between layers is a smooth field with no holes.
+        let he = Self.headEllipse(face: face)
+        headMask = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
+        bodyMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
+                                    rx: face.width * 2.0, ry: face.height * 1.75, inner: 0.6, extent: extent)
     }
 
     // MARK: state
@@ -170,24 +177,30 @@ public final class FaceRenderer: @unchecked Sendable {
             img = f.outputImage!.cropped(to: extent)
         }
 
-        // 5. idle motion around the chin
-        if !reduceMotion {
-            let face = Self.ciRect(faceSet.faceBox, height: h)
-            let pivot = CGPoint(x: face.midX, y: face.minY)
-            let s = 1 + Self.breathingAmplitude * sin(2 * .pi * Self.breathingHz * t)
-            let a = Self.swayDegrees * .pi / 180 * sin(2 * .pi * Self.swayHz * t + 0.7)
-            let m = CGAffineTransform(translationX: pivot.x, y: pivot.y)
-                .rotated(by: a).scaledBy(x: s, y: s)
-                .translatedBy(x: -pivot.x, y: -pivot.y)
-            img = img.clampedToExtent().transformed(by: m).cropped(to: extent)
-        }
-
-        // 6. aspect fill
-        let scale = max(outputSize.width / extent.width, outputSize.height / extent.height)
-        let dx = (outputSize.width - extent.width * scale) / 2, dy = (outputSize.height - extent.height * scale) / 2
-        return img.clampedToExtent()
-            .transformed(by: CGAffineTransform(a: scale, b: 0, c: 0, d: scale, tx: dx, ty: dy))
-            .cropped(to: CGRect(origin: .zero, size: outputSize))
+        // 5. aspect fill (with overscan while the camera drifts), then 6. the alive base at output
+        // resolution: the frame so far (mouth, jaw, blink included) is cut into head, body and
+        // background layers that move separately, so the mouth rides the head and never slides.
+        let out = CGRect(origin: .zero, size: outputSize)
+        let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
+        let fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+                                     tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
+        let filled = img.clampedToExtent().transformed(by: fill)
+        guard !reduceMotion else { return filled.cropped(to: out) }
+        let m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        let inv = fill.inverted()
+        func inOutput(_ a: CGAffineTransform) -> CGAffineTransform { inv.concatenating(a).concatenating(fill) }
+        let bodyT = inOutput(m.body), headT = inOutput(m.head)
+        let bodyM = bodyMask.transformed(by: fill.concatenating(bodyT))
+        let headM = headMask.transformed(by: fill.concatenating(headT))
+        let b = CIFilter.blendWithAlphaMask()
+        b.inputImage = filled.transformed(by: bodyT).cropped(to: bodyM.extent)
+        b.backgroundImage = filled
+        b.maskImage = bodyM
+        let hb = CIFilter.blendWithAlphaMask()
+        hb.inputImage = filled.transformed(by: headT).cropped(to: headM.extent)
+        hb.backgroundImage = b.outputImage!
+        hb.maskImage = headM
+        return hb.outputImage!.transformed(by: inOutput(m.camera)).cropped(to: out)
     }
 
     /// Rendered RGBA frame (sRGB).
@@ -198,6 +211,25 @@ public final class FaceRenderer: @unchecked Sendable {
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via
     /// `CIContext.render(_:to:)` in the app or the render tool).
     public var ciContext: CIContext { context }
+
+    /// Transforms of the alive base at `t` (image coordinates, y up). Calls are expected in time
+    /// order (the speech-coupled nod is a spring); a jump back in time resets the spring.
+    public func motionTransforms(at t: Double, open: Double) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
+        let m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: extent.height))
+        return (m.head, m.body, m.camera)
+    }
+
+    private func motionState(at t: Double, open: Double, face: CGRect) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
+        lock.lock(); defer { lock.unlock() }
+        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width)
+    }
+
+    /// Head layer ellipse (image coordinates, y up): hair and face; fully opaque inside
+    /// `headMaskInner` of its radii.
+    static let headMaskInner: CGFloat = 0.72
+    static func headEllipse(face: CGRect) -> (center: CGPoint, rx: CGFloat, ry: CGFloat) {
+        (CGPoint(x: face.midX, y: face.midY + face.height * 0.12), face.width * 0.78, face.height * 0.82)
+    }
 
     /// Openness below which an open vowel shows the rest mouth (no sound, no open mouth).
     public static let openVowelMinOpenness = 0.06
@@ -288,9 +320,10 @@ public final class FaceRenderer: @unchecked Sendable {
         g.radius1 = 100
         g.color0 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
         g.color1 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let box = CGRect(x: center.x - rx, y: center.y - ry, width: 2 * rx, height: 2 * ry).intersection(extent)
         return g.outputImage!
             .transformed(by: CGAffineTransform(a: rx / 100, b: 0, c: 0, d: ry / 100, tx: center.x, ty: center.y))
-            .cropped(to: extent)
+            .cropped(to: box.isNull ? .zero : box)
     }
 }
 
