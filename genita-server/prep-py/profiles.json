@@ -50,19 +50,8 @@
    "MBP": 2
   },
   "blink": {
-   "mode": "lidFlow",
-   "max": 0.6,
-   "profile": [
-    0.45,
-    1,
-    1,
-    0.55,
-    0.2
-   ],
-   "gapS": [
-    2.6,
-    4.8
-   ]
+   "mode": "snap",
+   "frames": 3
   },
   "earTwitch": {
    "deg": 5,
@@ -95,7 +84,11 @@
     "the <species>'s mouth",
     "the <species>'s eyes",
     "the <species>'s ears"
-   ]
+   ],
+   "lineBoost": {
+    "k": 1.6,
+    "sigmaPx1024": 3
+   }
   },
   "swayInterp": "cubic",
   "prompts": {
@@ -105,7 +98,16 @@
    "_notes": "Muse content filter (400 content_policy_violation) trips on 'fangs', 'canines', 'bared', 'hiss' and big-open-mouth cat prompts. Keep 'talking / softly meowing / calm, friendly'. Cats: if J2/J3 is filtered, retry once with the cat override prompt."
   },
   "neutralFlow": 0.0,
-  "shownFloor": 0.6
+  "shownFloor": 0.6,
+  "secondary": {
+   "cheek": [
+    2.0,
+    0.8
+   ],
+   "brow": 1.5,
+   "nosePx": 2.0,
+   "_units": "px at 540 px frame width; cheek = [down, out] at full opening; brow lift on stressed onsets (op > .6 and rise > .25 within 3 frames, ≥0.6 s apart, profile [.5,1,1,.7,.4,.15]); nose lifts with jaw + idle sniff [.6,1,.4,.8,.3] every 2.2–4 s"
+  }
  },
  "cat_override": {
   "_when": "species is a cat (or the J3 prompt is filtered): a single open key, small openings drawn by flow only",
@@ -141,8 +143,7 @@
   "prep": {
    "lineBoost": {
     "k": 2.0,
-    "sigmaPx1024": 4,
-    "_what": "dark local detail x k inside a feathered mouth ellipse on the companion still (lineboost.py) so the closed mouth line is crisp"
+    "sigmaPx1024": 4
    }
   }
  },
@@ -153,8 +154,7 @@
    "AH2",
    "EH",
    "OH",
-   "U",
-   "FV"
+   "U"
   ],
   "ladder": {
    "viseme": "A",
@@ -179,6 +179,8 @@
   },
   "gain": 1.8,
   "cap": {
+   "AH": 0.75,
+   "AH2": 0.75,
    "OH": 0.6
   },
   "dissolve": {
@@ -186,7 +188,7 @@
    "ms": 40,
    "minAmount": 0.3
   },
-  "minHold": 2,
+  "minHold": 3,
   "onTwos": true,
   "slew": 0.25,
   "focus": 6.0,
@@ -207,16 +209,27 @@
   "sway": 0.5,
   "prep": {
    "squash": {
-    "OH": 0.65,
-    "AH": 1.2,
-    "AH2": 1.3
-   },
-   "_squash": "vertical scale of the mouth opening about the upper lip, smooth falloff (faceflow.py --squash)"
+    "AH": 1.15,
+    "OH": 0.65
+   }
   },
   "swayInterp": "cubic",
   "prompts": {
-   "_source": "B-lane v6 character keys (keys-char/set, muse-log) \u2014 same prompts as the human prep with the clay tail: 'Keep the character's identity, face, freckles, hair, eyes, eyebrows, nose, clay texture, lighting, background, framing and camera exactly the same. Keep the original clay art style. Neutral relaxed expression, not smiling. Do not move, resize, rotate or re-crop\u2026'",
-   "BLINK": "Edit this exact image of a handmade clay stop-motion character. Keep everything identical: same clay texture, colours, face, mouth, pose, framing, lighting and background. Only change: the eyes are gently closed with smooth clay eyelids, as in the middle of a blink."
+   "MID": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The lips are slightly parted as if mid-word, a narrow opening with a hint of the upper teeth.",
+   "AH": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The mouth is open as if saying 'ah' in calm conversation, the jaw dropped a little: the upper teeth, the dark red-brown inside and the tongue low inside are visible.",
+   "AH2": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The mouth is open clearly as if saying a long 'aah', the jaw dropped: a simple even row of upper teeth, the dark red-brown inside and the tongue low.",
+   "EH": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The mouth is open sideways as if saying 'eh', showing the upper teeth and a hint of the tongue.",
+   "OH": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The lips are softly rounded into a relaxed, conversational 'oh': a small round opening, the jaw barely dropped.",
+   "U": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The lips are pushed forward and rounded into a small 'oo' pucker, almost closed.",
+   "BLINK": "Edit this exact image of a 3D animated character. Keep everything identical: same materials, colours, face, mouth, pose, framing, lighting and background. Only change: the eyes are gently closed with smooth eyelids, as in the middle of a blink.",
+   "_notes": "FV dropped (read as a twisted lower lip). Muse filters some 'OH'/'AH' 3D prompts at random: retry once without the teeth sentence."
+  },
+  "secondary": {
+   "cheek": [
+    2.5,
+    1.0
+   ],
+   "brow": 1.0
   }
  },
  "character2d": {
@@ -236,9 +249,9 @@
      [
       "A"
      ],
-     0.6,
+     0.5,
      "WD",
-     3
+     2
     ],
     [
      [
@@ -253,7 +266,7 @@
      [
       "EI"
      ],
-     0.4,
+     0.55,
      "EE"
     ],
     [
@@ -283,25 +296,70 @@
    "mask": "diff",
    "fit": {
     "SM": 0,
-    "WD": 0.8,
-    "EE": 1.12,
+    "WD": 0.62,
+    "EE": 0.87,
     "OO": 0
    },
-   "cleanPlate": true
+   "cleanPlate": true,
+   "mouthWidthMin": 0.08
   },
   "prompts": {
    "SM": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is slightly open, a small soft open mouth shape with a flat dark red-brown inside, no teeth.",
    "WD": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is open wide as if saying 'ah': a large rounded open mouth with a flat dark red-brown inside, a flat pink tongue shape at the bottom and a thin flat white strip of upper teeth at the top.",
    "OO": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth forms a small round 'o' shape as if saying 'oh', with a flat dark red-brown inside.",
-   "EE": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is a wide, flat, slightly open shape as if saying 'ee' with a smile: a flat white strip along the top of the mouth and a thin flat dark red-brown gap below it.",
+   "EE": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is a small rounded open smiling mouth, a soft wide ▽ shape no wider than the mouth line, with a flat dark red-brown inside and a thin flat white strip of upper teeth.",
    "BLINK": "Edit this exact anime illustration. Keep everything identical: same line art and line weight, flat colours, hair, face, mouth, pose, framing and background. Only change: both eyes are closed, each drawn as one clean curved dark line with a few lashes, flat skin colour above it, no extra eyelid lines, no shading, as in a blink.",
    "_neutral": "neutral = the scene image (closed mouth line); SM/WD/OO/EE are edits of it"
-  }
+  },
+  "lookaheadMs": 80,
+  "_sizes": "small SM / medium WD (0.62x, loud A >= 2 frames) / wide EE (0.87x, loud EI); base width = max(mouth box, 0.08 x head)"
  },
  "_fields": {
   "neutralFlow": "when the snap shows neutral, scale its flow warp (0 = untouched neutral texture)",
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "FINAL 03:2x KST \u2014 critic: anime 8 (v5), clay 6 (v7), dog 6.5 (v8), cat v9 pending. Exports: export-{animal,animal-cat,character3d,character2d}/"
+ "_status": "v16 04:00 KST — all kinds re-tuned toward 9/10. Critic: anime 8.5, chibi 7.5, dog 7, pixar 7, plush 6.5, clay 6, rabbit 6, cat 5.5",
+ "toy_override": {
+  "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
+  "keys": [
+   "AH"
+  ],
+  "drive": "open",
+  "jaw": {
+   "floor": 0.0,
+   "gain": 1.4,
+   "gamma": 0.85,
+   "mbpClose": 1.0,
+   "steps": [
+    [
+     "AH",
+     1.0
+    ]
+   ],
+   "vowel": {
+    "A": 1.0,
+    "O": 0.8,
+    "EI": 0.7,
+    "U": 0.55,
+    "other": 0.35
+   }
+  },
+  "cap": {
+   "AH": 0.7
+  },
+  "snapMin": 0.3,
+  "neutralFlow": 0.0,
+  "minHold": 3,
+  "onTwos": false,
+  "secondary": {
+   "cheek": [
+    1.0,
+    0.8
+   ]
+  },
+  "prompts": {
+   "AH": "Edit this exact photo of a plush toy. Keep everything identical: same toy, fabric, fur, nose, embroidered details, eyes, pose, framing, lighting and background. Only change: the embroidered mouth line opens slightly into a small felt fabric mouth opening with dark brown felt inside and stitched edges, no lips, no tongue, in the same plush toy style."
+  }
+ }
 }

@@ -87,6 +87,8 @@ def profile_of(name):
     P = profiles()
     if name == 'cat':
         return deep_merge(P.get('animal', {}), P.get('cat_override', {}))
+    if name == 'toy':
+        return deep_merge(P.get('character3d', {}), P.get('toy_override', {}))
     return json.loads(json.dumps(P.get(name, {})))
 
 
@@ -146,7 +148,7 @@ def colorfix(img, mouth_px, spec):
 # Mask shape per kind: ellipse radii as a fraction of the face box, centre below the mouth.
 DIFF_MASK = {'character2d': (1.05, 0.10, 0.03, 28)}   # 2D: limit ellipse (x mouth width), dilation, feather, threshold
 SHAPE = {'human': (0.40, 0.30, 0.08), 'animal': (0.30, 0.42, 0.14), 'cat': (0.30, 0.42, 0.14), 'character': (0.36, 0.30, 0.08),
-         'character3d': (0.36, 0.30, 0.08), 'character2d': (0.36, 0.30, 0.08)}
+         'character3d': (0.36, 0.30, 0.08), 'character2d': (0.36, 0.30, 0.08), 'toy': (0.36, 0.30, 0.08)}
 
 
 def feature_init(gN, gK, reg):
@@ -211,7 +213,7 @@ def main():
     ap.add_argument('--face', required=True)
     ap.add_argument('--mouth', required=True)
     ap.add_argument('--nose')
-    ap.add_argument('--kind', default='human', help='profile: human | animal | cat | character3d | character2d (character = character3d)')
+    ap.add_argument('--kind', default='human', help='profile: human | animal | cat | character3d | character2d | toy (character = character3d)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--jpeg', type=int, default=90)
     a = ap.parse_args()
@@ -280,7 +282,7 @@ def main():
     base = N.astype(np.float32)
     if prep.get('mask') == 'diff' and ALN:
         fit = {k: float(v) for k, v in (prep.get('fit') or {}).items()}
-        mw = max((mouth[2] - mouth[0]) * W, 0.12 * (face[2] - face[0]) * W)   # chibi: a dot-sized closed mouth
+        mw = max((mouth[2] - mouth[0]) * W, float(prep.get('mouthWidthMin', 0.12)) * (face[2] - face[0]) * W)   # chibi: a dot-sized closed mouth
         mcx, mcy = (mouth[0] + mouth[2]) / 2 * W, (mouth[1] + mouth[3]) / 2 * H
         Nl = cv2.cvtColor(N, cv2.COLOR_BGR2GRAY).astype(np.float32)
         lim = np.zeros((H, W), np.uint8)

@@ -7,7 +7,7 @@ import { flowProfileOf, profileMouthKeys, profilePrompt } from "../src/prep/prof
 test("classify asks for species and character style (mouth profiles), strict schema keeps them required", () => {
   const req = CLASSIFY_SCHEMA as unknown as { required: string[]; properties: Record<string, { enum?: string[] }> };
   assert.ok(req.required.includes("species") && req.required.includes("character_style"));
-  assert.deepEqual(req.properties.character_style.enum, ["2d", "3d", "none"]);
+  assert.deepEqual(req.properties.character_style.enum, ["2d", "3d", "toy", "none"]);
 });
 
 test("profile from the image check: human / dog → animal / cat / 2D anime / 3D (and unsure → 3D)", () => {
@@ -19,6 +19,7 @@ test("profile from the image check: human / dog → animal / cat / 2D anime / 3D
   assert.equal(flowProfileOf("character", { character_style: "2d" }), "character2d");
   assert.equal(flowProfileOf("character", { character_style: "3d" }), "character3d");
   assert.equal(flowProfileOf("character", {}), "character3d");
+  assert.equal(flowProfileOf("character", { character_style: "toy" }), "toy");
 });
 
 test("profile keys and prompts come from prep-py/profiles.json; humans keep the v7 set", () => {
@@ -26,6 +27,9 @@ test("profile keys and prompts come from prep-py/profiles.json; humans keep the 
   assert.deepEqual(profileMouthKeys("animal"), ["J2", "J3"]);
   assert.deepEqual(profileMouthKeys("cat"), ["C2"]);
   assert.deepEqual(profileMouthKeys("character2d"), ["SM", "WD", "OO", "EE"]);
+  assert.deepEqual(profileMouthKeys("toy"), ["AH"]);
+  assert.ok(!(profileMouthKeys("character3d") ?? []).includes("FV"), "v16: FV dropped from 3D (lower-lip twist)");
+  assert.match(profilePrompt("toy", "AH") ?? "", /\S/);
   assert.deepEqual([...faceKeysFor("human", "human")], [...FACE_KEYS]);
   const dog = faceKeysFor("animal", "animal");
   assert.ok(dog.includes("J2") && dog.includes("J3") && !dog.includes("MID") && dog.includes("blink") && dog.includes("A"));

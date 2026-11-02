@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { ClassifyRaw } from "./classify.ts";
 import type { CompanionKind } from "./prompts.ts";
 
-export type FlowProfile = "human" | "animal" | "cat" | "character3d" | "character2d";
+export type FlowProfile = "human" | "animal" | "cat" | "character3d" | "character2d" | "toy";
 
 type ProfileJson = { keys?: string[]; prompts?: Record<string, string> };
 export const PROFILES_JSON = fileURLToPath(new URL("../../prep-py/profiles.json", import.meta.url));
@@ -31,12 +31,15 @@ const isCat = (species: string | undefined) => !!species && /\b(cat|kitten|kitty
 export function flowProfileOf(kind: CompanionKind, raw?: Partial<ClassifyRaw> | null): FlowProfile {
   if (kind === "human") return "human";
   if (kind === "animal") return isCat(raw?.species) ? "cat" : "animal";
-  return raw?.character_style === "2d" ? "character2d" : "character3d";
+  if (raw?.character_style === "2d") return "character2d";
+  return raw?.character_style === "toy" ? "toy" : "character3d";
 }
 
 function entry(p: FlowProfile): ProfileJson {
   const all = profiles();
-  if (p === "cat") return { ...all.animal, ...all.cat_override, prompts: { ...all.animal?.prompts, ...all.cat_override?.prompts } };
+  const over = (base: string, o: string): ProfileJson => ({ ...all[base], ...all[o], prompts: { ...all[base]?.prompts, ...all[o]?.prompts } });
+  if (p === "cat") return over("animal", "cat_override");
+  if (p === "toy") return over("character3d", "toy_override"); // plush / figurine: no anatomical jaw
   return all[p] ?? {};
 }
 
