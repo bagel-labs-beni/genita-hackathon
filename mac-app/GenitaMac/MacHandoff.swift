@@ -66,7 +66,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         link.host()
         // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
-        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion() }}
+        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion();MacCall.shared.conversationArrived() }}
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
     }
@@ -147,10 +147,12 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         if new == .mac {
             sharingStopped=false;showCompanion()
+            MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
         } else {
             if old == .mac {sharingStopped=sharing.isSharing}
             // The conversation left: sharing stops now and does not come back by itself.
             sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
+            MacCall.shared.conversationLeft()
             candidate=nil;armed=false
             status="Conversation on your iPhone"
         }
@@ -304,6 +306,7 @@ struct MacHandoffControls:View {
     var body:some View {
         VStack(spacing:16) {
             Text("Genita").font(.largeTitle)
+            MacAccountRow()
             Text("First time? Enter this code on your iPhone.").foregroundStyle(.secondary)
             Text(handoff.link.code).font(.system(size:40,weight:.medium,design:.monospaced)).textSelection(.enabled)
             Text(handoff.link.status)
@@ -327,6 +330,24 @@ extension MacHandoff {
         for (name,next,stopped) in [("R2-mac",HandoffSurface.waiting,false),("R2-mac-sharing-stopped",.waiting,true),("R2E-mac",.waitingPeerUnreachable,false)] {
             surface=next;sharingStopped=stopped
             let host=NSHostingView(rootView:MacConversationView().frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+            }
+            window.orderOut(nil)
+        }
+        // #118 / #121: the call window's cue and MAC-RS / MAC-LINK, from wire events (no server)
+        let call=CallController.shared
+        call.companionName="Mina"
+        for (name,results,state,review) in [("C01-mac-thinking",false,SheetState.idle,""),("MAC-RS-a",false,.searching,""),("MAC-RS-b",true,.full,""),("MAC-RS-half",true,.half,""),("MAC-LINK-prompt",true,.half,"link")] {
+            surface = .active;sharingStopped=false
+            if let ready=try? ServerEvent.decode(#"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#) {call.handle(ready)}
+            if let thinking=try? ServerEvent.decode(#"{"type":"state","state":"thinking"}"#) {call.handle(thinking)}
+            if state == .idle {call.finds.reset()} else {call.finds.load(recorded:MacResultFixture.events(results:results),frames:[]);call.finds.force(state)}
+            let host=NSHostingView(rootView:MacConversationView(reviewOverride:review).frame(width:390,height:844))
             let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
             window.contentView=host;window.orderFront(nil)
             try? await Task.sleep(for:.seconds(1))
