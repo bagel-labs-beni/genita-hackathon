@@ -257,17 +257,41 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; at: number }>();
-  function priorTurns(userId: string, self: string): HistoryItem[] | null {
+  const lastTurns = new Map<string, { turns: HistoryItem[]; revision: number | null; at: number; unsubscribe?: () => void }>();
+  function dropLastTurns(userId: string) {
+    lastTurns.get(userId)?.unsubscribe?.();
+    lastTurns.delete(userId);
+  }
+  function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
-      const t = sessions.get(sid)?.historySnapshot();
+      const session = sessions.get(sid);
+      const t = session?.historyForgetRevision === revision ? session.historySnapshot() : null;
       if (t?.length && (!best || t.length >= best.length)) best = t;
     }
     if (best) return best;
     const c = lastTurns.get(userId);
-    return c && Date.now() - c.at < 10 * 60_000 ? c.turns : null;
+    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) return c.turns;
+    dropLastTurns(userId);
+    return null;
+  }
+  async function cacheTurns(userId: string, session: Session): Promise<void> {
+    const turns = session.historySnapshot();
+    const revision = session.historyForgetRevision;
+    if (!turns.length) return;
+    const save = () => {
+      dropLastTurns(userId);
+      const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
+      lastTurns.set(userId, { turns, revision, at: Date.now(), unsubscribe });
+    };
+    if (!deps.memory) return save();
+    // Session.close unsubscribes before the socket closes. Keep the snapshot's ORIGINAL revision and
+    // refuse a late pre-Forget close, including when newer safe turns are already cached.
+    if (revision === null) return;
+    await deps.memory.serial(userId, async () => {
+      if ((await deps.memory!.state.getState(userId)).revision === revision) save();
+    });
   }
 
   function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
@@ -284,7 +308,7 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id) });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -320,16 +344,19 @@ export async function startServer(
       clearTimeout(life);
       session.close();
       gated?.call.close();
-      const turns = session.historySnapshot();
-      if (turns.length) lastTurns.set(who.userId, { turns, at: Date.now() });
       sessions.delete(id);
       sessionUsers.delete(id);
       touches.delete(id);
-      log("session.close", { session: id, sessions: sessions.size });
+      void cacheTurns(who.userId, session)
+        .catch(() => log("history.unavailable", { session: id }))
+        .finally(() => log("session.close", { session: id, sessions: sessions.size }));
     });
     ws.on("error", () => ws.terminate());
   }
 
-  http.on("close", () => void accounts?.close().catch(() => {}));
+  http.on("close", () => {
+    for (const userId of lastTurns.keys()) dropLastTurns(userId);
+    void accounts?.close().catch(() => {});
+  });
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }

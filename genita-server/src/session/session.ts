@@ -82,7 +82,7 @@ export type SessionDeps = {
    * Handoff: this account's turns from its other live call, or from a call that ended in the last few minutes
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
-  priorTurns?: () => HistoryItem[] | null;
+  priorTurns?: (revision: number) => HistoryItem[] | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -205,6 +205,7 @@ export class Session {
   private tts: TtsMode = "device";
   private voiceOverflow = false;
   private history: HistoryItem[] = [];
+  private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
   private asr: AsrLike | null = null;
@@ -391,36 +392,44 @@ export class Session {
     this.started = true;
     (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
-      this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
+      const memory = this.deps.memory;
+      const userId = this.deps.userId;
+      this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.historyRevision = revision;
       });
       try {
         // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
         // and the greeting prompt would be sent to the translator
         const item = await this.memoryCall.open(startMode === "chat");
-        this.greeting = startMode === "chat" ? { item } : null;
-        this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+        // A Forget during open already cleared these; do not restore its older result.
+        if (this.historyRevision === null) {
+          this.greeting = startMode === "chat" ? { item } : null;
+          this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+        }
+        // Validate and copy together under the same per-user lock as Forget. The cache/live call must
+        // carry this persisted revision. Clients cannot prove their snapshot's age, so after ANY Forget
+        // only server-side turns can continue the conversation (even across a service restart).
+        await memory.serial(userId, async () => {
+          const revision = (await memory.state.getState(userId)).revision;
+          if (this.closed) return;
+          this.historyRevision = revision;
+          if (startMode !== "chat" || this.history.length) return;
+          const server = this.deps.priorTurns?.(revision) ?? null;
+          const claimed = revision === 0 && msg.handoff === true ? parseHistory(msg.history) : [];
+          const seed = server?.length ? server : claimed;
+          if (!seed.length) return;
+          this.history = seed.slice(-MAX_HISTORY);
+          this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
+          this.greeting = null;
+          this.continued = true;
+          this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
+        });
       }
-      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
+      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
     }
     if (this.closed) return;
-    // Handoff (D24 scene 5, #199): with server memory on, start.history is ignored (stale snapshots must not restore
-    // forgotten memories), so a call continuing on the other device started with no turns ("Things · searching
-    // shops"). Seed this call's turns from the account's other/just-ended call (server-side, trusted); a start
-    // marked `handoff: true` with no server-side turns falls back to its own history (context only, never stored as memory).
-    if (this.memoryCall && startMode === "chat" && !this.history.length) {
-      const server = this.deps.priorTurns?.() ?? null;
-      const claimed = msg.handoff === true ? parseHistory(msg.history) : [];
-      const seed = server?.length ? server : claimed;
-      if (seed.length) {
-        this.history = seed.slice(-MAX_HISTORY);
-        this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
-        this.greeting = null; // continuing a conversation: no fresh hello on the new device
-        this.continued = true;
-        this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
-      }
-    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
@@ -801,6 +810,9 @@ export class Session {
   historySnapshot(): HistoryItem[] {
     return this.history.map((h) => ({ ...h }));
   }
+
+  /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
+  get historyForgetRevision(): number | null { return this.historyRevision; }
 
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
