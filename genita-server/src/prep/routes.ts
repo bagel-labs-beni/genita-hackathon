@@ -60,6 +60,17 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
+/**
+ * Session `lip` for the realtime start message (Meta-only runtime, D34): Peter for humans only when
+ * GENITA_PETER=1; the mouth atlas only on the Kling pipeline (GENITA_KLING=1); otherwise "none" (the app
+ * animates the face itself). Same rule as lane L4's #158.
+ */
+function sessionLip(c: CompanionRecord, env: NodeJS.ProcessEnv = process.env) {
+  if (c.type === "human" && env.GENITA_PETER === "1") return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
+  if (c.type !== "human" && env.GENITA_KLING === "1") return "atlas";
+  return "none";
+}
+
 export function companionView(c: CompanionRecord, style: StyleCard | null) {
   return {
     id: c.id,
@@ -73,7 +84,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: c.type === "human" ? { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) } : "atlas", peter: prepView(c).lips.peter }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c), peter: prepView(c).lips.peter }
       : null,
   };
 }

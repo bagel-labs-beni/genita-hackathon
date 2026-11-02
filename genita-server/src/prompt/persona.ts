@@ -93,6 +93,8 @@ export function buildInstructions(input: InstructionInput): string {
   const lines = [
     who.join(" "),
     `Reply in ${language}, one or two short spoken sentences, no lists or emojis. Begin with one emotion tag: ${EMOTIONS.map((e) => `<${e}>`).join(" ")}.`,
+    // Spoken style: the reply is read aloud by a speech engine with no prosody controls, so rhythm comes from the text
+    "Your words are spoken aloud, so talk like a person on a call: contractions, short sentences that each end with a period, question mark or exclamation mark, and now and then a natural \"Hmm,\" or \"Oh,\" to start. No markdown, lists, emojis, URLs or parentheses; say numbers, times and prices the way you'd say them.",
     "Only if the user hints at self-harm, suicide or danger, gently point them to emergency help; a bad day just needs a friend.",
   ];
   if (cameraAttached) {

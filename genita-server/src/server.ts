@@ -24,8 +24,10 @@ import { Session, type ClientSink, type SessionDeps } from "./session/session.ts
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
+import { createSeamless } from "./tts/seamless.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
+import { likesFromStyle } from "./finds/setup.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
@@ -40,23 +42,30 @@ const IDLE_MS = 120_000;
 
 export type LogFn = (event: string, data: Record<string, unknown>) => void;
 
-/** No ElevenLabs key: every sentence goes out as text only (the session's ttsFailed path), no vendor call. */
-async function* ttsOff(): AsyncGenerator<never> {
+/**
+ * Server TTS off: sessions run in device mode and never call this. If one did, it refuses
+ * without reaching a vendor; "tts_off" is the session's text-only (no error) path.
+ */
+async function* serverTtsOff(): AsyncGenerator<never> {
   throw new Error("tts_off");
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
+  const elevenKey = config.serverTts ? config.elevenKey : null;
+  const peterUrl = process.env.GENITA_PETER_URL;
+  const peterToken = process.env.GENITA_PETER_TOKEN;
+  // Meta voice service (Seamless on our GPU) wins; ElevenLabs only as the legacy flag path; else device mode
+  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: config.elevenKey ? (req) => streamSpeech({ ...req, apiKey: config.elevenKey }) : ttsOff,
-    // one Peter connection per call = one Modal container = one GPU
+    tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
-      process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
-        ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
-        : undefined,
+      config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };
@@ -92,6 +101,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
+  if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried

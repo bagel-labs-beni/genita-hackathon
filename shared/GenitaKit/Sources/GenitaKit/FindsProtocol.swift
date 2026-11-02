@@ -3,7 +3,13 @@
 
 import Foundation
 
-public enum FindKind: String, Codable, Sendable { case recipe, outfit, link, product }
+public enum FindKind: String, Codable, Sendable {
+    case recipe, outfit, link, product, unknown
+    /// A kind this build does not know decodes as `.unknown` (a newer server must not break the Finds list).
+    public init(from decoder: Decoder) throws {
+        self = FindKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+}
 
 /// checking → have (Spark YES + SAM box) | maybe ("맞아?") | buy (recipe only).
 public enum FindTier: String, Codable, Sendable { case checking, have, maybe, buy }
@@ -95,6 +101,34 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     public var how: [String]
     public var page: Page?
     public var saved: Bool?
+    /// kind `product` (PF-1 / MAC-RS): product detail pages the search really opened (≤ 2).
+    public var products: [Product]?
+    /// kind `product`: the import line and the situation line this answer is based on.
+    public var evidence: Evidence?
+
+    public struct Product: Codable, Equatable, Identifiable, Sendable {
+        public var id: String
+        public var name: String
+        public var url: String
+        public var domain: String
+        public var store: String
+        /// only when the page showed it; nil → "Price on site"
+        public var price: String?
+        public var image: FindImage?
+        /// blue chip: from the user's import (Likes & dislikes)
+        public var taste: String
+        /// grey chip: from what they said (weekend, weather)
+        public var situation: String
+        public init(id: String, name: String, url: String, domain: String, store: String, price: String? = nil, image: FindImage? = nil, taste: String, situation: String) {
+            self.id = id; self.name = name; self.url = url; self.domain = domain; self.store = store; self.price = price; self.image = image
+            self.taste = taste; self.situation = situation
+        }
+    }
+    public struct Evidence: Codable, Equatable, Sendable {
+        public var style: String
+        public var situation: String
+        public init(style: String, situation: String) { self.style = style; self.situation = situation }
+    }
 }
 
 extension ServerEvent {

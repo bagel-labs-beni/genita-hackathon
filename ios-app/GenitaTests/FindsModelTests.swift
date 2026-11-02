@@ -120,6 +120,118 @@ import XCTest
         XCTAssertEqual(calls.first?.0, "a"); XCTAssertEqual(calls.first?.1, true)
     }
 
+    // MARK: PF-1 product search (#120)
+
+    /// The server's own sample (shared/protocol-samples/server/find.created.product.json), the same file GenitaKit decodes.
+    private func productCreated() throws -> ServerEvent {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("shared/protocol-samples/server/find.created.product.json"))
+        return try ServerEvent.decode(String(decoding: data, as: UTF8.self))
+    }
+
+    func testProductCardDecodesWithOptionalPrice() throws {
+        let m = FindsModel()
+        m.apply(started("4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"))
+        m.apply(try productCreated())
+        let card = try XCTUnwrap(m.current?.card)
+        XCTAssertEqual(card.kind, .product)
+        XCTAssertEqual(card.products?.map(\.store), ["Northline", "Field & Co."])
+        XCTAssertEqual(card.products?.first?.price, "$68")
+        XCTAssertNil(card.products?.last?.price, "no price on the page: the card says Price on site")
+        XCTAssertEqual(card.evidence?.style, "Clean, minimal clothes. Understated colors.")
+    }
+
+    func testProductImageSlotsLandOnTheProducts() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-2","status":"ready","url":"/v1/finds/\#(id)/images/product-2"}"#))
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-1","status":"failed"}"#))
+        let products = try XCTUnwrap(m.current?.card?.products)
+        XCTAssertEqual(products[1].image?.status, .ready)
+        XCTAssertEqual(products[1].image?.url, "/v1/finds/\(id)/images/product-2")
+        XCTAssertEqual(products[0].image?.status, .failed, "a failed picture becomes the calm placeholder, not a hole")
+    }
+
+    func testProductImageSlotOutOfRangeIsIgnored() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        let before = m.current?.card
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-3","status":"ready","url":"/x"}"#))
+        XCTAssertEqual(m.current?.card, before)
+    }
+
+    func testProductRowSaysProductsAndLinkCount() throws {
+        let m = FindsModel()
+        m.apply(started("4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43")); m.apply(try productCreated())
+        let card = try XCTUnwrap(m.entries.first?.card)
+        XCTAssertEqual(FindsRow(card: card).subtitle, "Products · 2 links")
+    }
+
+    func testSavingAProductCardFlipsTheCTAStateAndPostsOnce() async throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        var calls: [(String, Bool)] = []
+        m.saveRemote = { id, saved in calls.append((id, saved)); return true }
+        m.apply(started(id)); m.apply(try productCreated()); m.force(.full)
+        XCTAssertEqual(m.current?.saved, false, "Save to Finds")
+        m.toggleSave()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(m.current?.saved, true, "Open Finds")
+        XCTAssertEqual(calls.count, 1); XCTAssertEqual(calls.first?.0, id); XCTAssertEqual(calls.first?.1, true)
+    }
+
+    private func productStarted(_ id: String) -> ServerEvent {
+        try! ServerEvent.decode(#"{"type":"find.started","findId":"\#(id)","utteranceId":1,"kind":"product","title":"Looking for 2 that match your style…","detail":"Jacket"}"#)
+    }
+    private let noMatch = #"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
+
+    func testNoMatchFailureSplitsTitleAndBodyAndRetryAsksTheSameQuestion() throws {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.latestQuestion = "Jin, can we look for a jacket for this weekend?"
+        m.apply(productStarted("a"))
+        m.latestQuestion = "Thanks"   // said while it searched: not what Retry asks
+        m.apply(try ServerEvent.decode(noMatch))
+        let lines = try XCTUnwrap(m.current?.failureLines)
+        XCTAssertEqual(lines.title, "Couldn’t find a good match")
+        XCTAssertEqual(lines.body, "Try a color or a price, or ask me again.")
+        XCTAssertEqual(m.state, .searching, "stays the collapsed sheet")
+        XCTAssertTrue(m.current?.canRetry == true)
+        m.retry()
+        XCTAssertEqual(sent.last, .text(.init(text: "Jin, can we look for a jacket for this weekend?", frames: nil)))
+        XCTAssertEqual(m.state, .idle)
+    }
+
+    func testRetryIsProductOnlyAndOffWhileInterpreting() throws {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.latestQuestion = "What can I make?"
+        m.apply(started("a"))   // recipe: its camera frames are gone
+        m.apply(try ServerEvent.decode(noMatch))
+        XCTAssertFalse(m.current?.canRetry ?? true)
+        m.retry(); XCTAssertTrue(sent.isEmpty)
+
+        let p = FindsModel()
+        p.send = { sent.append($0) }
+        p.latestQuestion = "a jacket"
+        p.apply(productStarted("a")); p.apply(try ServerEvent.decode(noMatch))
+        p.interpreting = true
+        p.retry(); XCTAssertTrue(sent.isEmpty, "interpretation would translate it to the other person")
+    }
+
+    func testUnclearFailureHasNoRetry() throws {
+        let m = FindsModel()
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"unclear","message":"Show me again?"}"#))
+        XCTAssertEqual(m.current?.failureLines?.title, "I can’t see it clearly")
+        XCTAssertEqual(m.current?.failureLines?.body, "Show me again?")
+        XCTAssertFalse(m.current?.canRetry ?? true)
+    }
+
     func testTokenSubjectSeparatesAccounts() {
         func jwt(_ sub: String) -> String {
             let body = Data(#"{"sub":"\#(sub)"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")

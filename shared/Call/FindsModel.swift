@@ -34,6 +34,24 @@ struct FindEntry: Identifiable, Equatable {
     var frames: [Data] = []
     var checking = true
     var saved = false
+    /// Opened from the Finds tab (F10-U-FINDS): the card shows "Talk about this on a call" and closing goes back to the list.
+    var reopened = false
+    /// The user's words that started this find (PF-1d Retry asks them again, not whatever was said since).
+    var question: String?
+
+    /// The collapsed failure line (PF-1d). A server message is "Title. Body" — split on the first ". ".
+    /// "I can't see it" (unclear) keeps its fixed title and shows the whole message as the body.
+    var failureLines: (title: String, body: String)? {
+        guard let f = failed else { return nil }
+        if f.reason == .unclear { return ("I can’t see it clearly", f.message) }
+        if let r = f.message.range(of: ". ") {
+            return (String(f.message[..<r.lowerBound]), String(f.message[r.upperBound...]))
+        }
+        return (f.message.hasSuffix(".") ? String(f.message.dropLast()) : f.message, "")
+    }
+    /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
+    /// Product searches only: a recipe or outfit retry would need the camera frames the server already used.
+    var canRetry: Bool { kind == .product && question?.isEmpty == false && (failed?.reason == .searchFailed || failed?.reason == .error) }
 }
 
 @MainActor @Observable final class FindsModel {
@@ -57,6 +75,8 @@ struct FindEntry: Identifiable, Equatable {
     var scrollTarget: String?
     /// Undo target after a close (r03 #17).
     private(set) var undoState: SheetState?
+    /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
+    let boxes = CameraBoxes()
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
@@ -66,8 +86,12 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
+    /// The user's latest final words; copied onto the next find.started.
+    @ObservationIgnored var latestQuestion: String?
     /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
+    /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
+    @ObservationIgnored var persistFrames: (String, [Data]) -> Void = { _, _ in }
     /// Frames the controller sent with the latest question (base64 JPEG), attached to the next find.
     @ObservationIgnored var latestFrames: [String] = []
 
@@ -79,8 +103,9 @@ struct FindEntry: Identifiable, Equatable {
     func apply(_ event: ServerEvent) {
         switch event {
         case let .findStarted(s):
+            boxEpoch[s.findId] = boxes.epoch
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
-            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames))
+            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             if state == .idle || state == .dismissed || state == .searching {
                 page = entries.count - 1
                 state = .searching
@@ -102,6 +127,7 @@ struct FindEntry: Identifiable, Equatable {
             var card = c.card
             if let items = pendingItems.removeValue(forKey: c.findId), card.items.allSatisfy({ $0.tier == .checking }) { card.items = items }
             update(c.findId) { $0.card = card; $0.saved = card.saved ?? false }
+            if let e = entries.first(where: { $0.id == c.findId }) { persistFrames(e.id, e.frames) }
             guard let index = entries.firstIndex(where: { $0.id == c.findId }) else { return }
             if state == .searching && page == index {
                 state = .rising
@@ -117,12 +143,17 @@ struct FindEntry: Identifiable, Equatable {
                 page = index
                 state = .peek
             }
+        case let .observeBoxes(b):
+            // a late batch from before the camera was flipped or turned off is not for this preview
+            if let epoch = boxEpoch[b.findId], epoch != boxes.epoch { break }
+            boxes.apply(b)
         case let .findImage(i):
             update(i.findId) { e in
                 guard var card = e.card else { return }
                 let image = FindImage(slot: i.slot, status: i.status == .ready ? .ready : .failed, url: i.url)
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
+                if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
                 e.card = card
             }
         case let .findFailed(f):
@@ -134,6 +165,10 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     @ObservationIgnored private var pendingItems: [String: [FindItem]] = [:]
+    @ObservationIgnored private var boxEpoch: [String: Int] = [:]
+
+    /// The save request failed: put the bookmark back.
+    func revertSave(_ id: String, to saved: Bool) { update(id) { $0.saved = saved; $0.card?.saved = saved } }
 
     private func update(_ id: String, _ change: (inout FindEntry) -> Void) {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
@@ -152,7 +187,8 @@ struct FindEntry: Identifiable, Equatable {
         let up = translation < -24 || velocity < -600
         let down = translation > 24 || velocity > 600
         switch state {
-        case .half: if up { state = .full } else if down { state = .peek }
+        case .half:
+            if up { state = .full } else if down { if current?.reopened == true { close() } else { state = .peek } }
         case .full: if down { state = .half }
         case .peek: if up { state = .half } else if down { close() }
         case .searching: if down { stop() }
@@ -177,6 +213,13 @@ struct FindEntry: Identifiable, Equatable {
 
     func close() {
         guard state != .idle, state != .dismissed else { return }
+        if let i = entries.indices.contains(page) ? page : nil, entries[i].reopened {
+            // Reopened from the Finds tab: back to the list, nothing to undo (it never left Finds).
+            entries[i].reopened = false
+            state = .idle
+            selectedItem = nil; browser = nil
+            return
+        }
         undoState = state == .searching ? nil : state
         if state == .searching, let f = current { send(.findStop(findId: f.id)) }
         state = .dismissed
@@ -202,11 +245,19 @@ struct FindEntry: Identifiable, Equatable {
         state = .idle
     }
 
+    /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.
+    func retry() {
+        guard canAsk, let f = current, f.canRetry, let text = f.question else { return }
+        state = .idle
+        send(.text(.init(text: text, frames: nil)))
+    }
+
     func viewNewFind() {
         guard let id = newFind, let i = entries.firstIndex(where: { $0.id == id }) else { return }
         page = i
         newFind = nil
         selectedItem = nil
+        boxes.highlight(nil)
         if state == .peek { state = .half }
     }
 
@@ -214,6 +265,7 @@ struct FindEntry: Identifiable, Equatable {
         guard entries.indices.contains(i), entries[i].card != nil else { return }
         page = i
         selectedItem = nil
+        boxes.highlight(nil)
         if newFind == entries[i].id { newFind = nil }
     }
 
@@ -235,8 +287,34 @@ struct FindEntry: Identifiable, Equatable {
         }
     }
 
+    /// F10-U-FINDS: a card from the Finds tab goes into the sheet at half height. A card made in this call keeps
+    /// its entry (frames, done steps); an older one is added with the frames this phone kept for it.
+    func openSaved(_ card: FindCard, frames: [Data]) {
+        risingTask?.cancel(); toastTask?.cancel()
+        if let i = entries.firstIndex(where: { $0.id == card.id }) {
+            entries[i].reopened = true
+            if let saved = card.saved { entries[i].saved = saved; entries[i].card?.saved = saved }
+            if entries[i].frames.isEmpty { entries[i].frames = frames }
+            page = i
+        } else {
+            entries.append(FindEntry(id: card.id, kind: card.kind, utteranceId: 0, searchTitle: card.title, searchDetail: "", card: card,
+                                     frames: frames, checking: false, saved: card.saved ?? false, reopened: true))
+            page = entries.count - 1
+        }
+        selectedItem = nil; browser = nil; newFind = nil; undoState = nil
+        boxes.clear(stale: false)
+        state = .half
+    }
+
+    /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
+    func talkAboutThis() {
+        guard entries.indices.contains(page) else { return }
+        entries[page].reopened = false
+    }
+
     func tapItem(_ item: FindItem) {
         selectedItem = selectedItem == item.id ? nil : item.id
+        boxes.highlight(selectedItem == nil ? nil : item.name)
     }
 
     /// "맞아?" answer (IC-3).
@@ -244,6 +322,7 @@ struct FindEntry: Identifiable, Equatable {
         guard let f = current else { return }
         send(.findConfirm(.init(findId: f.id, itemId: item.id, yes: yes)))
         selectedItem = nil
+        boxes.highlight(nil)
     }
 
     func toggleStep(_ index: Int) {
@@ -260,6 +339,7 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     func callEnded() {
+        boxes.clear()
         risingTask?.cancel(); toastTask?.cancel()
         state = .idle
         browser = nil
@@ -299,4 +379,12 @@ struct FindEntry: Identifiable, Equatable {
 
 extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}
+
+extension FindCard.Source {
+    /// GenitaKit's Source has no public initializer (protocol types stay untouched); the wire shape builds one.
+    static func make(title: String, url: String, domain: String) -> FindCard.Source? {
+        let body = try? JSONSerialization.data(withJSONObject: ["title": title, "url": url, "domain": domain])
+        return body.flatMap { try? JSONDecoder().decode(FindCard.Source.self, from: $0) }
+    }
 }

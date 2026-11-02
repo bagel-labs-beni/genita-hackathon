@@ -59,6 +59,8 @@ public struct AudioFrameHeader: Equatable, Sendable {
 // MARK: - Shared value types
 
 public enum LipMode: String, Codable, Sendable { case peter, atlas, none }
+/// Who speaks the reply: the server (TTS PCM frames) or the device (`say` text, on-device speech).
+public enum TtsMode: String, Codable, Sendable { case server, device }
 public enum ConversationMode: String, Codable, Sendable { case chat, interpret }
 public enum Phase: String, Codable, Sendable { case listening, thinking, speaking, interrupted }
 public enum CancelReason: String, Codable, Sendable { case bargeIn = "barge_in", text, client }
@@ -116,6 +118,7 @@ public enum ServerEvent: Equatable, Sendable {
     case replyDelta(ReplyDelta)
     case speaking(Speaking)
     case audio(Audio)
+    case say(Say)
     case reply(Reply)
     case utteranceCancelled(UtteranceCancelled)
     case turnMetrics(TurnMetrics)
@@ -151,6 +154,8 @@ public enum ServerEvent: Equatable, Sendable {
         public var lip: LipPlan
         public var voiceId: String
         public var bargeIn: BargeIn
+        /// Voice mode used for this call. Optional: servers before 11/2 (metaface) do not send it (= server).
+        public var tts: TtsMode?
     }
     public struct StateChange: Codable, Equatable, Sendable { public var state: Phase }
     public struct Turn: Codable, Equatable, Sendable { public var turnId: Int }
@@ -242,6 +247,15 @@ public enum ServerEvent: Equatable, Sendable {
         public var words: [WordTiming]
         public var mouth: [MouthCue]?
     }
+    /// Device mode: one sentence for the app to speak, in order. `text` is plain (no tags);
+    /// `lang` is a BCP-47 hint (en-US, ko-KR, …) for the voice.
+    public struct Say: Codable, Equatable, Sendable {
+        public var utteranceId: Int
+        public var sentence: Int
+        public var text: String
+        public var emotion: String
+        public var lang: String
+    }
     public struct Reply: Codable, Equatable, Sendable {
         public var utteranceId: Int
         public var text: String
@@ -308,6 +322,7 @@ extension ServerEvent: Codable {
         case "reply.delta": self = .replyDelta(try .init(from: decoder))
         case "speaking": self = .speaking(try .init(from: decoder))
         case "audio": self = .audio(try .init(from: decoder))
+        case "say": self = .say(try .init(from: decoder))
         case "reply": self = .reply(try .init(from: decoder))
         case "utterance.cancelled": self = .utteranceCancelled(try .init(from: decoder))
         case "turn.metrics": self = .turnMetrics(try .init(from: decoder))
@@ -341,6 +356,7 @@ extension ServerEvent: Codable {
         case .replyDelta: "reply.delta"
         case .speaking: "speaking"
         case .audio: "audio"
+        case .say: "say"
         case .reply: "reply"
         case .utteranceCancelled: "utterance.cancelled"
         case .turnMetrics: "turn.metrics"
@@ -373,6 +389,7 @@ extension ServerEvent: Codable {
         case let .replyDelta(p): try p.encode(to: encoder)
         case let .speaking(p): try p.encode(to: encoder)
         case let .audio(p): try p.encode(to: encoder)
+        case let .say(p): try p.encode(to: encoder)
         case let .reply(p): try p.encode(to: encoder)
         case let .utteranceCancelled(p): try p.encode(to: encoder)
         case let .turnMetrics(p): try p.encode(to: encoder)
@@ -487,11 +504,13 @@ public enum ClientMessage: Equatable, Sendable {
         public var lip: Lip?
         public var bargeIn: BargeIn?
         public var mic: Bool?
+        /// "device" = speak `say` events on-device. Omitted: the server's default (device unless it runs server TTS).
+        public var tts: TtsMode?
         /// F8: read only when `mode` is interpret.
         public var interpret: InterpretOptions?
-        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil, interpret: InterpretOptions? = nil) {
+        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil, interpret: InterpretOptions? = nil, tts: TtsMode? = nil) {
             self.persona = persona; self.user = user; self.memories = memories; self.history = history; self.mode = mode
-            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic; self.interpret = interpret
+            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic; self.interpret = interpret; self.tts = tts
         }
     }
     public struct Text: Codable, Equatable, Sendable {

@@ -29,6 +29,8 @@ struct FindPicture: View {
     let resolve: (String) -> URL?
     var retry: () -> Void = {}
     var showFailText = true
+    /// A calm placeholder (SF Symbol) instead of "Picture didn't load" — product shots, where many shops give no picture.
+    var quietGlyph: String?
     @State private var attempt = 0
     var body: some View {
         ZStack {
@@ -50,16 +52,20 @@ struct FindPicture: View {
                         }.id(attempt)
                     } else { failed }
                 }
-            }
+            } else if quietGlyph != nil { failed }
         }.clipped()
     }
-    private var failed: some View {
+    @ViewBuilder private var failed: some View {
+        if let quietGlyph {
+            Image(systemName: quietGlyph).font(.system(size: 28, weight: .light)).foregroundStyle(CallInk.mute.opacity(0.7)).accessibilityHidden(true)
+        } else {
         VStack(spacing: 4) {
             if showFailText { Text("Picture didn’t load").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute) }
             Button { attempt += 1; retry() } label: {
                 Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
             }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Retry picture")
         }.multilineTextAlignment(.center)
+        }
     }
 }
 
@@ -132,6 +138,10 @@ struct PressScale: ButtonStyle {
 struct FindsSheet: View {
     let call: CallController
     let size: CGSize
+    /// F10-U-FINDS: "Talk about this on a call" on a card reopened from the Finds tab.
+    var talk: (() -> Void)?
+    /// PF-1c "Open Finds": the Finds tab over the call.
+    var openFinds: (() -> Void)?
     @State private var dragY: CGFloat = 0
     @State private var scrolledPage: Int?
     private var finds: FindsModel { call.finds }
@@ -187,12 +197,14 @@ struct FindsSheet: View {
             HStack(spacing: 12) {
                 FindsTalkWave()
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(f?.failed?.reason == .unclear ? "I can’t see it clearly" : f?.searchTitle ?? "Looking").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                    Text(f?.failed?.message ?? f?.searchDetail ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2)
+                    Text(f?.failureLines?.title ?? f?.searchTitle ?? "Looking").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
+                    Text(f?.failureLines?.body ?? f?.searchDetail ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2)
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                Button(f?.failed == nil ? "Stop" : "Close") { withAnimation(.drawer) { f?.failed == nil ? finds.stop() : finds.close() } }
+                Button(f?.failed == nil ? "Stop" : f?.canRetry == true ? "Retry" : "Close") {
+                    withAnimation(.drawer) { f?.failed == nil ? finds.stop() : f?.canRetry == true ? finds.retry() : finds.close() }
+                }
                     .font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(minWidth: 44, minHeight: 44).buttonStyle(PressScale())
-                    .accessibilityIdentifier("findStop")
+                    .accessibilityIdentifier(f?.canRetry == true ? "findRetry" : "findStop")
             }.frame(height: 74)
             if f?.failed == nil { ScanLine() }
         }
@@ -245,7 +257,7 @@ struct FindsSheet: View {
                 LazyHStack(spacing: 0) {
                     ForEach(Array(finds.entries.enumerated()), id: \.element.id) { i, entry in
                         if let card = entry.card {
-                            FindCardPage(call: call, entry: entry, card: card, index: i, full: full, offline: offline)
+                            FindCardPage(call: call, entry: entry, card: card, index: i, full: full, offline: offline, openFinds: openFinds)
                                 .frame(width: size.width, height: full ? 612 : 344, alignment: .top)
                                 .id(i)
                         }
@@ -282,10 +294,21 @@ struct FindsSheet: View {
                         Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
-                Button { if let card { finds.ask(Self.cta(card.kind)) } } label: {
-                    Text(card.map { Self.cta($0.kind) } ?? "").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
+                let reopened = finds.current?.reopened == true
+                if card?.kind == .product, !reopened {
+                    // PF-1b/c: one button — Save to Finds, then Open Finds (grey)
+                    let saved = finds.current?.saved == true
+                    Button { if saved { openFinds?() } else { finds.toggleSave() } } label: {
+                        Text(saved ? "Open Finds" : "Save to Finds").font(TypeStyle.body(16, .medium)).foregroundStyle(saved ? CallInk.ink : CallInk.onInk)
+                            .frame(maxWidth: .infinity).frame(height: 50).background(saved ? FindsInk.skip : CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(PressScale()).accessibilityIdentifier(saved ? "openFinds" : "findCTA").accessibilitySortPriority(-10)
+                } else {
+                // r03 F2 `.fcta`: on a card reopened from Finds the one button continues the call about it
+                Button { if reopened { finds.talkAboutThis(); talk?() } else if let card { finds.ask(Self.cta(card.kind)) } } label: {
+                    Text(reopened ? "Talk about this on a call" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(PressScale()).disabled(!finds.canAsk).opacity(finds.canAsk ? 1 : 0.4).accessibilityIdentifier("findCTA").accessibilitySortPriority(-10)
+                }.buttonStyle(PressScale()).disabled(!reopened && !finds.canAsk).opacity(reopened || finds.canAsk ? 1 : 0.4).accessibilityIdentifier(reopened ? "findTalk" : "findCTA").accessibilitySortPriority(-10)
+                }
             }
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
@@ -295,8 +318,8 @@ struct FindsSheet: View {
         case .recipe: "Walk me through it"
         case .outfit: "Show me one more"
         case .link: "Read it with me"
-        // #119 PF-1 draws its own product layout; until then a product card reads like a link card
-        case .product: "Open the first one"
+        case .product: "Save to Finds"
+        case .unknown: "Tell me more"
         }
     }
 
@@ -341,6 +364,7 @@ struct FindCardPage: View {
     let index: Int
     let full: Bool
     let offline: Bool
+    var openFinds: (() -> Void)?
     private var finds: FindsModel { call.finds }
 
     var body: some View {
@@ -352,10 +376,11 @@ struct FindCardPage: View {
                 switch card.kind {
                 case .recipe: recipe
                 case .outfit: outfit
-                case .link, .product: link
+                case .product: product
+                case .link, .unknown: link
                 }
                 if !card.ask.isEmpty { askSection.id("ask") }
-                if !card.sources.isEmpty { sourcesSection.id("sources") }
+                if !card.sources.isEmpty, card.kind != .product { sourcesSection.id("sources") }
                 if !card.how.isEmpty { howSection.id("how") }
                 Color.clear.frame(height: full ? 96 : 24)
             }
@@ -373,12 +398,18 @@ struct FindCardPage: View {
         .accessibilityIdentifier("findPage\(index)")
     }
 
+    /// r03 F2: "From your fridge · Today" when reopened from Finds.
+    private var eyebrow: String {
+        guard entry.reopened, let date = FindsListModel.date(card.createdAt) else { return card.eyebrow }
+        return card.eyebrow + " · " + FindsListModel.dayTitle(Calendar.current.startOfDay(for: date), now: Date(), calendar: .current)
+    }
+
     // r03 `.hd`: eyebrow + dots | save, close
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(card.eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
-                if finds.cardCount > 1 {
+                Text(eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
+                if finds.cardCount > 1, !entry.reopened {
                     HStack(spacing: 4) {
                         ForEach(Array(finds.entries.filter { $0.card != nil }.enumerated()), id: \.element.id) { i, e in
                             Circle().fill(e.id == entry.id ? CallInk.ink : (e.id == finds.newFind ? FindsInk.blue : FindsInk.line)).frame(width: 6, height: 6)
@@ -391,9 +422,11 @@ struct FindCardPage: View {
                 Button { finds.toggleSave() } label: {
                     Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
+                if !entry.reopened {
                 Button { withAnimation(.drawer) { finds.close() } } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
+                }
             }.padding(.trailing, -10)
         }.frame(height: 44)
     }
@@ -425,7 +458,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : 132)
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 84 : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
@@ -582,6 +615,47 @@ struct FindCardPage: View {
                 }.foregroundStyle(CallInk.ink)
             }
         }
+    }
+
+    // MARK: product (PF-1b: two columns, View ↗ opens the shop page in the sheet browser)
+
+    @ViewBuilder private var product: some View {
+        let items = Array((card.products ?? []).prefix(2))
+        HStack(alignment: .top, spacing: 12) {
+            ForEach(items) { p in productColumn(p) }
+            if items.count == 1 { Color.clear.frame(maxWidth: .infinity) }
+        }.padding(.top, 8)
+        .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
+    }
+
+    private func productColumn(_ p: FindCard.Product) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            FindPicture(image: p.image, resolve: call.findsURL, showFailText: false, quietGlyph: "bag")
+                .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
+                .accessibilityLabel("Picture of \(p.name)")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
+                Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+            }
+            if !p.taste.isEmpty { productChip(p.taste, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
+            if !p.situation.isEmpty { productChip(p.situation, fg: CallInk.ink, bg: FindsInk.skip) }
+            Button {
+                if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
+            } label: {
+                HStack(spacing: 4) {
+                    Text("View").font(TypeStyle.body(14))
+                    Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .medium))
+                }.foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 34)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(FindsInk.line, lineWidth: 1))
+                .padding(.vertical, 5).contentShape(Rectangle())
+            }.buttonStyle(PressScale()).opacity(offline ? 0.5 : 1)
+            .accessibilityLabel("View \(p.name) at \(p.store)").accessibilityIdentifier("productLink-\(p.id)")
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func productChip(_ text: String, fg: Color, bg: Color) -> some View {
+        Text(text).font(TypeStyle.body(12, .medium)).foregroundStyle(fg).fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, 12).padding(.vertical, 4).background(bg, in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: shared sections
