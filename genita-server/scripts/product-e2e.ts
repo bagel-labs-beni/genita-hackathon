@@ -53,7 +53,7 @@ for (let i = 0; i < runs; i++) {
     ...real,
     async spark(req, signal) {
       const r = await real.spark(req, signal);
-      if (req.tools?.length) trace = r.output; // the search call's trace (a write-up pass has no tools)
+      if (req.tools?.length) trace = [...trace, ...r.output]; // every search call's trace (hedged calls race; a write-up pass has no tools)
       return r;
     },
   };
@@ -77,6 +77,7 @@ for (let i = 0; i < runs; i++) {
     putImage: async (slot) => `/v1/finds/e2e-${i}/images/${slot}`,
     likes: LIKES,
     region: "US",
+    hedge: Number(arg("hedge", "2")),
   });
   const card: FindCard | null = r.card;
   const opened = new Set(completedOpens(trace).map((u) => urlKey(u)));

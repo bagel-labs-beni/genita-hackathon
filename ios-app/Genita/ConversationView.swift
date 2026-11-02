@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// Figma PF-1b / r03 full: over the dark band the status bar is white. The window goes dark only while the sheet
+/// is full; the call's own views keep the light scheme (their colors are explicit anyway).
+struct StatusBarOnInk: ViewModifier {
+    let on: Bool
+    @Environment(\.colorScheme) private var scheme
+    func body(content: Content) -> some View {
+        content.environment(\.colorScheme, on ? .light : scheme).preferredColorScheme(on ? .dark : nil)
+    }
+}
+
 struct ConversationView: View {
     @Bindable var model: AppState
     var connecting = false
@@ -31,6 +41,9 @@ struct ConversationView: View {
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed && !unclear
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
+                        // r03 / PF-1: the call sits on ink — the band above a full sheet (and the edges of a
+                        // stepped-back face) are dark, not the window's white
+                        CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
@@ -100,8 +113,9 @@ struct ConversationView: View {
                             FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
                         if !connecting && !interpreting && !unclear {
-                            CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
-                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                            let findsPill = call.finds.pillText
+                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
+                                .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
                         }
@@ -150,6 +164,7 @@ struct ConversationView: View {
                     }
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
+            .modifier(StatusBarOnInk(on: !connecting && call.finds.state == .full))
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }

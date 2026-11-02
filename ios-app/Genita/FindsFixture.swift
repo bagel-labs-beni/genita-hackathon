@@ -116,6 +116,10 @@ extension FindsModel {
                 apply(.findFailed(.init(findId: id, reason: .unclear, message: "I couldn't see the food clearly. Can you show me again with more light?")))
             }
             state = .searching
+        case 25:
+            // fridge pill (#122 follow-up): the server's short line, the sentence is only spoken
+            play([(recipe, recipe.events)]); state = .half
+            if entries.indices.contains(page) { entries[page].card?.pill = "Egg, tofu, green onion +1"; entries[page].card?.say = "I can see egg, tofu, green onion, and milk. You could make kimchi fried rice with tofu and egg, if you have kimchi." }
         case 21, 22, 23, 24:
             // PF-1 product search: 21 searching · 22 two cards · 23 saved (Open Finds) · 24 "Couldn't find a good match"
             guard let product else { return }

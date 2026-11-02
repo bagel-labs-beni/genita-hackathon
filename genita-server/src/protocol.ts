@@ -127,6 +127,8 @@ export type FindCard = {
   status?: string;
   /** what the companion says when the card lands */
   say?: string;
+  /** the status pill's line for this card, ≤ 28 characters (one line on iPhone and Mac); `say` is spoken, this is shown */
+  pill?: string;
   hero?: FindImage;
   /** which camera frame boxes are drawn on (the app keeps the frame; the server never stores it) */
   camera?: { frame: number; at: string; w: number; h: number; label: string };
@@ -142,7 +144,7 @@ export type FindCard = {
   /** kind "product" (F7 PF-1 / MAC-RS): up to 2 product detail pages the search really opened */
   products?: FindProduct[];
   /** kind "product": what this answer is based on (MAC-RS evidence line) */
-  evidence?: { style: string; situation: string };
+  evidence?: FindEvidence;
 };
 /**
  * One product card. `url` is a product detail page found in Spark's tool trace
@@ -151,6 +153,8 @@ export type FindCard = {
  * chips: `taste` from the user's import (Likes & dislikes), `situation` from what
  * they said ("this weekend", weather).
  */
+/** The import line a product search follows (shown as-is by MF-1 / PF-1) and the situation line ("" until known). */
+export type FindEvidence = { style: string; situation: string };
 export type FindProduct = {
   id: string;
   name: string;
@@ -222,10 +226,10 @@ export type ServerEvent =
   | { type: "lip.changed"; lip: LipPlan }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown }
-  | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
-  | { type: "find.progress"; findId: string; detail: string }
+  | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string; evidence?: FindEvidence }
+  | { type: "find.progress"; findId: string; detail: string; evidence?: FindEvidence }
   /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
-  | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string }
+  | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
@@ -286,9 +290,9 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "lip.changed": { required: ["lip"], optional: [] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
-  "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },
-  "find.progress": { required: ["findId", "detail"], optional: [] },
-  "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status"] },
+  "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: ["evidence"] },
+  "find.progress": { required: ["findId", "detail"], optional: ["evidence"] },
+  "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status", "pill"] },
   "observe.boxes": { required: ["findId", "frame", "w", "h", "items"], optional: [] },
   "find.created": { required: ["findId", "card"], optional: [] },
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
