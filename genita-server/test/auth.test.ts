@@ -205,7 +205,12 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   assert.equal(auth.searchParams.get("response_mode"), "form_post");
   const state = auth.searchParams.get("state")!;
   const webToken = apple.idToken({ sub: "001234.abcd.0001", aud: "ai.thebeni.genita.web", nonce: auth.searchParams.get("nonce") });
-  const tampered = await call("POST", "/auth/apple/callback", { form: { state: state.replace(/.$/, (c) => (c === "A" ? "B" : "A")), id_token: webToken, code: "c-2" } });
+  // flip a decoded signature byte: the last base64url char of a 32-byte HMAC carries 2 unused bits, so editing it
+  // left the bytes unchanged ~4/64 of the time (flaky "bad_state" assertion)
+  const [stateBody, stateSig] = state.split(".");
+  const sigBytes = Buffer.from(stateSig, "base64url");
+  sigBytes[0] ^= 0x01;
+  const tampered = await call("POST", "/auth/apple/callback", { form: { state: `${stateBody}.${sigBytes.toString("base64url")}`, id_token: webToken, code: "c-2" } });
   assert.equal(tampered.location, "genita://auth?error=bad_state");
   const wrongNonce = await call("POST", "/auth/apple/callback", { form: { state, id_token: apple.idToken({ sub: "001234.abcd.0001", aud: "ai.thebeni.genita.web", nonce: "x" }), code: "c-2" } });
   assert.equal(wrongNonce.location, "genita://auth?error=invalid_token");
