@@ -112,9 +112,11 @@ def lip_map(kind):
     if isinstance(mo, dict):
         mk = kind if kind in mo else {'cat': 'animal', 'toy': 'character3d', 'character': 'character3d'}.get(kind)
         if mk in mo:
-            m['motion'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}   # v2 runtime coefficients (prototype names)
-            if 'motionV2' not in m and isinstance(m['motion'].get('motionV2'), dict):
-                m['motionV2'] = m['motion']['motionV2']                                # the block GenitaKit reads (#267)
+            # prototype names under their own key: GenitaKit's FlowMap.motion (riseMs / amplitude ...) is a different
+            # block, and its mere presence switches the app's continuous-motion path on (codex P1)
+            m['motionProto'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}
+            if 'motionV2' not in m and isinstance(m['motionProto'].get('motionV2'), dict):
+                m['motionV2'] = m['motionProto']['motionV2']                           # the block GenitaKit reads (#267)
     # cheek field names: the app reads cheekW / nasoW; keep cheek / naso for older readers
     ch = m.get('cheek')
     if isinstance(ch, dict):
@@ -699,6 +701,7 @@ def main():
 
     # 4) neutral ROI (+ human colour fix, applied identically to the neutral and every key)
     cfx = COLORFIX.get(kind)
+    RIG_RUNTIME = ((lip_map(kind).get('runtime') or {}).get('default') == 'humanV41')
     mouth_px = (int(mouth[0] * W) - X1, int(mouth[1] * H) - Y1, int(mouth[2] * W) - X1, int(mouth[3] * H) - Y1)
     Mr = Mfull[roiF][..., None]
     NR = base[roiF]
@@ -745,8 +748,8 @@ def main():
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
-        if kind == 'human':
-            # 6 px at a 540-wide frame, scaled to this face set's resolution
+        if kind == 'human' or RIG_RUNTIME:
+            # 6 px at a 540-wide frame, scaled to this face set's resolution (also for kinds on the human lip rig, codex P2)
             lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
             cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
             ent['lip'] = f'{name}.lip.png'
