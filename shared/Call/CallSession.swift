@@ -688,6 +688,9 @@ enum CallStop: Equatable {
             showProfileChip(p.text)
         case let .profileAsking(a):
             showAskingChip(a.topic)
+        case .expression:
+            // expression layer (11/3): the face renderer lane (FaceDriver warp) consumes it; nothing to do here yet
+            break
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
