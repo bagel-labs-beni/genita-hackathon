@@ -82,6 +82,13 @@ final class ConversationOwnershipTests: XCTestCase {
         XCTAssertEqual(OwnershipClaim(claim.message), claim)
         XCTAssertNil(OwnershipClaim(["type": "ownership", "owner": "tablet", "epoch": 1]))
     }
+    /// E01 / E02 use the companion's name, never a hardcoded one.
+    func testPermissionSheetsUseTheCompanionName() {
+        XCTAssertEqual(MediaPermissionSheet.lines(kind: .camera, name: "Mira")[1], "to show Mira what you see.")
+        XCTAssertEqual(MediaPermissionSheet.lines(kind: .microphone, name: "Mira")[1], "to talk with Mira.")
+        XCTAssertEqual(MediaPermissionSheet.lines(kind: .camera, name: " ")[1], "to show your companion what you see.")
+        XCTAssertFalse(MediaPermissionSheet.lines(kind: .microphone, name: "Mira").joined().contains("Jin"))
+    }
     func testApprovedCopy() {
         XCTAssertEqual(HandoffCopy.phone(.active), nil)
         XCTAssertEqual(HandoffCopy.phone(.waiting)?.title, "Continue on your Mac.")

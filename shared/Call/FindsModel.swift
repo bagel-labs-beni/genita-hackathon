@@ -36,10 +36,29 @@ struct FindEntry: Identifiable, Equatable {
     var saved = false
     /// Opened from the Finds tab (F10-U-FINDS): the card shows "Talk about this on a call" and closing goes back to the list.
     var reopened = false
+    /// The user's words that started this find (PF-1d Retry asks them again, not whatever was said since).
+    var question: String?
+
+    /// The collapsed failure line (PF-1d). A server message is "Title. Body" — split on the first ". ".
+    /// "I can't see it" (unclear) keeps its fixed title and shows the whole message as the body.
+    var failureLines: (title: String, body: String)? {
+        guard let f = failed else { return nil }
+        if f.reason == .unclear { return ("I can’t see it clearly", f.message) }
+        if let r = f.message.range(of: ". ") {
+            return (String(f.message[..<r.lowerBound]), String(f.message[r.upperBound...]))
+        }
+        return (f.message.hasSuffix(".") ? String(f.message.dropLast()) : f.message, "")
+    }
+    /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
+    /// Product searches only: a recipe or outfit retry would need the camera frames the server already used.
+    /// IC-4: the camera could not make out the food. The call shows a dark card over a blurred picture, not the sheet.
+    var isUnclear: Bool { failed?.reason == .unclear }
+    var canRetry: Bool { kind == .product && question?.isEmpty == false && (failed?.reason == .searchFailed || failed?.reason == .error) }
 }
 
 @MainActor @Observable final class FindsModel {
-    private(set) var entries: [FindEntry] = []
+    // DEBUG fixtures (FindsFixture state 25) set the pill/say on the shown card, so the setter is not private
+    var entries: [FindEntry] = []
     var state: SheetState = .idle
     /// Index into `entries` of the card on screen.
     var page = 0
@@ -61,6 +80,9 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var undoState: SheetState?
     /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
     let boxes = CameraBoxes()
+    /// FT-NOSEE: a small card on the camera says what the companion cannot see and asks to move the camera. Never a guess.
+    private(set) var noSee: NoSeeCheck?
+    @ObservationIgnored private var noSeeTask: Task<Void, Never>?
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
@@ -70,6 +92,8 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
+    /// The user's latest final words; copied onto the next find.started.
+    @ObservationIgnored var latestQuestion: String?
     /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
@@ -87,7 +111,7 @@ struct FindEntry: Identifiable, Equatable {
         case let .findStarted(s):
             boxEpoch[s.findId] = boxes.epoch
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
-            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames))
+            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             if state == .idle || state == .dismissed || state == .searching {
                 page = entries.count - 1
                 state = .searching
@@ -102,6 +126,7 @@ struct FindEntry: Identifiable, Equatable {
                 card.items = i.items
                 if let s = i.subtitle { card.subtitle = s }
                 if let s = i.status { card.status = s }
+                if let p = i.pill { card.pill = p } // later item updates without a pill keep it
                 e.card = card
             }
             pendingItems[i.findId] = i.items
@@ -135,6 +160,7 @@ struct FindEntry: Identifiable, Equatable {
                 let image = FindImage(slot: i.slot, status: i.status == .ready ? .ready : .failed, url: i.url)
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
+                if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
                 e.card = card
             }
         case let .findFailed(f):
@@ -224,6 +250,34 @@ struct FindEntry: Identifiable, Equatable {
         guard let f = current else { state = .idle; return }
         send(.findStop(findId: f.id))
         state = .idle
+    }
+
+    /// IC-4 "Look again": the card goes away; the camera is still on, the person shows the shelves again.
+    /// Returns the words of the failed question so the call can ask again with a fresh camera frame.
+    @discardableResult func lookAgain() -> String? {
+        guard let f = current, f.isUnclear else { return nil }
+        state = .idle
+        return f.question
+    }
+
+    /// PF-1 status pill (Figma 179:4/68/494/921): what the sheet is doing, one line (server strings ≤ 28 chars).
+    /// nil = the ordinary call cue. Product searches only.
+    /// Fridge (recipe) cards use the server's short `pill` ("Egg, tofu +2"); the full sentence is only spoken.
+    var pillText: String? {
+        guard let f = current, f.kind == .product || f.kind == .recipe, state != .idle, state != .dismissed else { return nil }
+        if f.failed != nil { return f.kind == .product ? "Nothing I’d pick for you." : f.failureLines?.title }
+        if state == .searching || f.card == nil { return f.kind == .product ? "On it…" : "Let me take a look…" }
+        if f.saved { return "Saved. They’re in Finds." }
+        if let pill = f.card?.pill, !pill.isEmpty { return pill }
+        if let say = f.card?.say, say.count <= 28 { return say }
+        return nil
+    }
+
+    /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.
+    func retry() {
+        guard canAsk, let f = current, f.canRetry, let text = f.question else { return }
+        state = .idle
+        send(.text(.init(text: text, frames: nil)))
     }
 
     func viewNewFind() {
@@ -321,7 +375,21 @@ struct FindEntry: Identifiable, Equatable {
         undoState = nil
     }
 
+    /// FT-NOSEE: show the card; it leaves by itself after `hold` (nil = stays until tapped, for screenshots).
+    func showNoSee(_ check: NoSeeCheck, hold: Duration? = .seconds(8)) {
+        noSeeTask?.cancel()
+        noSee = check
+        guard let hold else { return }
+        noSeeTask = Task { [weak self] in
+            try? await Task.sleep(for: hold)
+            guard !Task.isCancelled else { return }
+            self?.noSee = nil
+        }
+    }
+    func dismissNoSee() { noSeeTask?.cancel(); noSee = nil }
+
     func reset() {
+        dismissNoSee()
         callEnded()
         entries = []
         page = 0
@@ -353,4 +421,41 @@ struct FindEntry: Identifiable, Equatable {
 
 extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}
+
+extension FindCard.Source {
+    /// GenitaKit's Source has no public initializer (protocol types stay untouched); the wire shape builds one.
+    static func make(title: String, url: String, domain: String) -> FindCard.Source? {
+        let body = try? JSONSerialization.data(withJSONObject: ["title": title, "url": url, "domain": domain])
+        return body.flatMap { try? JSONDecoder().decode(FindCard.Source.self, from: $0) }
+    }
+}
+
+/// FT-NOSEE (Figma 59:2): "For kimchi fried rice · ✓ Eggs · ✓ Scallions · ✗ I don't see cooked rice · Move the camera if it's there."
+/// The ✗ rows are only what the camera did not show; the card never says the thing is not there.
+struct NoSeeCheck: Equatable {
+    struct Row: Equatable, Identifiable {
+        let name: String
+        let seen: Bool
+        var id: String { name }
+    }
+    var title: String
+    var rows: [Row]
+    var hint = "Move the camera if it’s there."
+
+    /// Card height: padding 12 + title 16 + 8 + rows 20 (gap 4) + 8 + hint 16 + 12.
+    var cardHeight: CGFloat { CGFloat(12 + 16 + 8 + 8 + 16 + 12 + 20 * rows.count + 4 * max(0, rows.count - 1)) }
+
+    /// From a recipe card made with the camera on: `have` = in frame, `maybe`/`buy` = not seen. Nil when everything was seen.
+    static func from(card: FindCard, maxRows: Int = 4) -> NoSeeCheck? {
+        guard card.kind == .recipe else { return nil }
+        let seen = card.items.filter { $0.tier == .have }
+        let missing = card.items.filter { $0.tier == .maybe || $0.tier == .buy }
+        guard !missing.isEmpty else { return nil }
+        let missingShown = Array(missing.prefix(2))
+        let seenShown = Array(seen.prefix(max(0, maxRows - missingShown.count)))
+        let title = "For " + card.title.prefix(1).lowercased() + String(card.title.dropFirst())
+        return NoSeeCheck(title: title, rows: seenShown.map { Row(name: $0.name.prefix(1).uppercased() + String($0.name.dropFirst()), seen: true) }
+                          + missingShown.map { Row(name: $0.name, seen: false) })
+    }
 }

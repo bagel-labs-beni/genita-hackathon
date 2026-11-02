@@ -3,7 +3,7 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it"
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -18,6 +18,7 @@ extension CallController {
 
 struct FindsFixtureRun {
     let kind: FindKind
+    var question: String? = nil
     let frames: [Data]
     let events: [ServerEvent]
 
@@ -35,7 +36,7 @@ struct FindsFixtureRun {
                 guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
                 return try? JSONDecoder().decode(ServerEvent.self, from: d)
             }
-            return FindsFixtureRun(kind: kind, frames: frames, events: events)
+            return FindsFixtureRun(kind: kind, question: run["question"] as? String, frames: frames, events: events)
         }
     }
 }
@@ -46,12 +47,14 @@ extension FindsModel {
         guard let recipe = runs.first(where: { $0.kind == .recipe }) else { return }
         let outfit = runs.first { $0.kind == .outfit }
         let link = runs.first { $0.kind == .link }
+        let product = runs.first { $0.kind == .product }
         let noImages = { (r: FindsFixtureRun) in r.events.filter { if case .findImage = $0 { return false }; return true } }
         let untilCard = { (r: FindsFixtureRun) in Array(r.events.prefix { if case .findCreated = $0 { return false }; return true }) }
         func play(_ list: [(FindsFixtureRun, [ServerEvent])]) {
             reset()
             for (run, events) in list {
                 latestFrames = run.frames.map { $0.base64EncodedString() }
+                latestQuestion = run.question
                 for e in events { apply(e) }
             }
         }
@@ -100,6 +103,14 @@ extension FindsModel {
                 for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
                 if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
             }
+        case 26:
+            // FT-NOSEE: boxes on the camera, no sheet, the check card says the rice is not in view
+            play([(recipe, recipe.events)]); force(.idle)
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
+                self?.showNoSee(NoSeeCheck(title: "For kimchi fried rice", rows: [.init(name: "Eggs", seen: true), .init(name: "Scallions", seen: true), .init(name: "cooked rice", seen: false)]), hold: nil)
+            }
         case 31:
             // CAM-H with the card half up: boxes arrive with the card; the test taps an ingredient chip
             play([(recipe, recipe.events)]); state = .half
@@ -113,6 +124,26 @@ extension FindsModel {
                 apply(.findFailed(.init(findId: id, reason: .unclear, message: "I couldn't see the food clearly. Can you show me again with more light?")))
             }
             state = .searching
+        case 25:
+            // fridge pill (#122 follow-up): the server's short line, the sentence is only spoken
+            play([(recipe, recipe.events)]); state = .half
+            if entries.indices.contains(page) { entries[page].card?.pill = "Egg, tofu, green onion +1"; entries[page].card?.say = "I can see egg, tofu, green onion, and milk. You could make kimchi fried rice with tofu and egg, if you have kimchi." }
+        case 21, 22, 23, 24:
+            // PF-1 product search: 21 searching · 22 two cards · 23 saved (Open Finds) · 24 "Couldn't find a good match"
+            guard let product else { return }
+            saveRemote = { _, _ in true } // no server in screenshots: the bookmark stays
+            if n == 21 {
+                play([(product, Array(product.events.prefix { if case .findCreated = $0 { return false }; return true }))]); state = .searching
+            } else if n == 24 {
+                play([(product, Array(product.events.prefix(1)))])
+                if let id = entries.first?.id {
+                    apply(.findFailed(.init(findId: id, reason: .searchFailed, message: "Couldn’t find a good match. Try a color or a price, or ask me again.")))
+                }
+                state = .searching
+            } else {
+                play([(product, product.events)]); state = .full
+                if n == 23 { toggleSave() }
+            }
         default: break
         }
     }

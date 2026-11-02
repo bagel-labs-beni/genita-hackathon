@@ -42,10 +42,19 @@ extension AppState {
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
-        if setup.imageData == nil, let url = c.prep?.sceneURL, url.scheme == "https",
-           let (data, res) = try? await URLSession.shared.data(from: url), (res as? HTTPURLResponse)?.statusCode == 200, UIImage(data: data) != nil {
+        // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
+        if setup.imageData == nil, let url = c.prep?.sceneURL,
+           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
             setup.imageData = data
         }
+    }
+
+    /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
+    func loadScene() async {
+        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
+              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
+        // the account or companion may have changed while the image was on its way
+        if sceneKey == key { sceneImage = (key, data) }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil) {
@@ -110,6 +119,15 @@ extension AppState {
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
 
+    /// What N1–N3 send (`POST /v1/import/skip`): the N1 topics as interests and the taste picker as
+    /// `n3.{clothes,food,chats}.{like,no}` (each chip is off, liked or "no").
+    static func skipAnswers(_ s: SavedSetup) -> (interests: [String], n3: [String: [String: [String]]]) {
+        let like = Set(s.skipLikes ?? []), no = Set(s.skipAvoid ?? [])
+        func group(_ items: [String]) -> [String: [String]] { ["like": items.filter { like.contains($0) }, "no": items.filter { no.contains($0) }] }
+        return (Array((s.skipInterests ?? []).prefix(8)),
+                ["clothes": group(SkipImportView.clothes), "food": group(SkipImportView.foods), "chats": group(SkipImportView.chats)])
+    }
+
     /// N1–N3 Continue → I04-S (same rows, from the chips).
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
@@ -117,7 +135,8 @@ extension AppState {
         Task {
             defer { importing = false }
             do {
-                applyStyle(try await onboarding.importSkip(interests: setup.skipInterests ?? [], replies: setup.skipReplies, avoid: setup.skipAvoid ?? []))
+                let answers = Self.skipAnswers(setup)
+                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }
@@ -243,7 +262,9 @@ extension AppState {
         suggestingName = true
         Task {
             defer { suggestingName = false }
-            if let s = try? await onboarding.suggestName(imageId: imageId), (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
+            guard let s = try? await onboarding.suggestName(imageId: imageId) else { return }
+            if CompanionName.isValid(s.name) { suggestedCompanionName = CompanionName.clean(s.name) }
+            if (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
         }
     }
 
@@ -297,24 +318,43 @@ extension AppState {
         }
     }
 
-    /// PREP-1: poll `GET /v1/companion/prep` every 2 s while the screen is up (scene → expressions → mouth).
-    func followPrep() async {
+    /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
+    /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
+    func followPrep(every seconds: Double = 2) async {
         guard serverWired else { return }
+        if prep?.isReady == true { return }
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
                 prep = p
-                if p.isReady { return }
+                if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
+            } catch GenitaAuthError.server(404, _) {
+                return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(seconds))
         }
     }
 
-    /// PREP-1 Continue (or everything ready): S07 → S09. Before ready the call starts with the photo face.
+    /// PREP-1e Try again: the server redoes only what didn't finish; the screen polls again (its task is keyed on
+    /// `prep.status`).
+    func retryPrep() {
+        guard serverWired, !retryingPrep else { return }
+        retryingPrep = true; prepError = nil
+        Task {
+            defer { retryingPrep = false }
+            do { prep = try await onboarding.retryPrep() } catch { prepError = Self.errorLine(error); route(error) }
+        }
+    }
+
+    /// S09-PREP: the stage still being made while the call is up ("Getting the mouth ready"), nil when ready/failed.
+    var callPrepIndicator: String? { PrepScreen.callIndicator(prep) }
+
+    /// PREP-1 Start talking / Continue with the photo (or everything ready): S07 → S09. Before ready the call starts
+    /// with the photo face (S09-P); after a failure it stays the photo (S09-PF).
     func startFirstCall() { if stage == .bringing { go(.connecting) } }
 
     // MARK: call start
