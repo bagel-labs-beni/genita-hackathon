@@ -7,11 +7,20 @@ import Observation
 // everything fades after 4 s, and a tapped ingredient chip lights its box (and brings the boxes back for 4 s).
 
 struct LiveBox: Identifiable, Equatable {
-    var id: String { label.lowercased() }
+    /// One per label, except with SAM masks on (one item per match): "tomatoes", "tomatoes#1", "tomatoes#2".
+    var id: String { instance == 0 ? key : "\(key)#\(instance)" }
+    /// The label lowercased: what a chip lights (every instance of it).
+    var key: String { label.lowercased() }
     var label: String
     var box: NormBox
     /// Order the box popped in within its batch (drives the 60 ms stagger).
     var order: Int
+    /// Demo S3 · SAM pixel mask (server GENITA_SAM_MASKS=1); nil = draw the box as before.
+    var mask: NormMask? = nil
+    /// n-th match of this label in the batch (0 = the first)
+    var instance: Int = 0
+    /// The label pill is drawn once per label: on its largest instance.
+    var showsLabel: Bool = true
 }
 
 @MainActor @Observable final class CameraBoxes {
@@ -29,6 +38,25 @@ struct LiveBox: Identifiable, Equatable {
     /// Bumped when the camera is flipped or turned off; boxes from before it are stale.
     private(set) var epoch = 0
     @ObservationIgnored var fadeAfter: Duration = .seconds(4)
+    /// Demo S3: soft pixel masks instead of boxes, when the server sends them. Off by default (boxes, as today):
+    /// `GENITA_SAM_MASKS_UI=1` in the environment or the `genita.samMasks` default turns it on.
+    static var masksEnabled: Bool {
+        ProcessInfo.processInfo.environment["GENITA_SAM_MASKS_UI"] == "1" || UserDefaults.standard.bool(forKey: "genita.samMasks")
+    }
+    /// Gray images of each box's mask and its outline, made once per batch (by LiveBox.id).
+    @ObservationIgnored private var maskCache: [String: (fill: CGImage, edge: CGImage)] = [:]
+    func maskImages(for item: LiveBox) -> (fill: CGImage, edge: CGImage)? {
+        if let hit = maskCache[item.id] { return hit }
+        guard let m = item.mask, let fill = m.bitmap().flatMap({ Self.grayImage($0, w: m.w, h: m.h) }),
+              let edge = m.edgeBitmap().flatMap({ Self.grayImage($0, w: m.w, h: m.h) }) else { return nil }
+        maskCache[item.id] = (fill, edge)
+        return (fill, edge)
+    }
+    static func grayImage(_ bytes: [UInt8], w: Int, h: Int) -> CGImage? {
+        guard bytes.count == w * h, let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
     @ObservationIgnored private var fadeTask: Task<Void, Never>?
 
     func apply(_ e: ServerEvent.ObserveBoxes) {
@@ -39,26 +67,39 @@ struct LiveBox: Identifiable, Equatable {
         let known = Set(boxes.map(\.id))
         var next: [LiveBox] = []
         var order = 0
+        var seen: [String: Int] = [:]
         for item in e.items {
-            let isNew = !known.contains(item.label.lowercased())
-            next.append(LiveBox(label: item.label, box: item.box, order: isNew ? order : 0))
+            let key = item.label.lowercased()
+            let instance = seen[key, default: 0]; seen[key] = instance + 1
+            var live = LiveBox(label: item.label, box: item.box, order: 0, mask: item.mask, instance: instance)
+            let isNew = !known.contains(live.id)
+            live.order = isNew ? order : 0
+            next.append(live)
             if isNew { order += 1 }
         }
+        // one label pill per label, on its largest instance
+        let area = { (b: NormBox) in (b.x2 - b.x1) * (b.y2 - b.y1) }
+        for key in Set(next.map(\.key)) {
+            let same = next.indices.filter { next[$0].key == key }
+            guard same.count > 1, let biggest = same.max(by: { area(next[$0].box) < area(next[$1].box) }) else { continue }
+            for i in same { next[i].showsLabel = i == biggest }
+        }
         boxes = next
+        maskCache = [:]
         reveal()
     }
 
-    /// Chip tapped (or tapped again to let go). Only a chip that has a box lights one.
+    /// Chip tapped (or tapped again to let go). Only a chip that has a box lights one (every instance of it).
     func highlight(_ name: String?) {
         let key = name?.lowercased()
-        highlighted = key.flatMap { k in boxes.contains { $0.id == k } ? k : nil }
+        highlighted = key.flatMap { k in boxes.contains { $0.key == k } ? k : nil }
         if highlighted != nil { reveal() }
     }
 
     func clear(stale: Bool = true) {
         fadeTask?.cancel()
         if stale { epoch += 1 }
-        boxes = []; highlighted = nil; visible = false; findId = nil
+        boxes = []; highlighted = nil; visible = false; findId = nil; maskCache = [:]
     }
 
     private func reveal() {

@@ -65,8 +65,9 @@ struct CameraBoxOverlay: View {
                 ForEach(boxes.boxes) { item in
                     let rect = CameraBoxes.rect(item.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)
                     // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
-                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
-                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.id) }
+                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.key,
+                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.key,
+                           mask: CameraBoxes.masksEnabled ? boxes.maskImages(for: item) : nil, mirrored: mirrored) }
                 }
             }
             .opacity(boxes.visible ? 1 : 0)
@@ -86,18 +87,33 @@ private struct PopBox: View {
     let topInset: CGFloat
     let lit: Bool
     let dimmed: Bool
+    /// Demo S3 (flag, off by default): the SAM pixel mask drawn instead of the box — soft translucent fill + thin outline.
+    var mask: (fill: CGImage, edge: CGImage)? = nil
+    var mirrored = false
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
-            RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
+            if let mask {
+                // a light, neutral fill (red-on-red vanishes on tomatoes) and a blue outline, both from the mask grid
+                Color.white.opacity(lit ? 0.55 : 0.4)
+                    .mask(Image(decorative: mask.fill, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 2))
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+                CallInk.blueOnInk
+                    .mask(Image(decorative: mask.edge, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 0.6))
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+            } else {
+                RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
+                RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
+            }
+            if item.showsLabel {
             Text(item.label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(height: 28)
                 .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 12))
                 .offset(x: max(-2, -rect.minX), y: CameraBoxes.labelOffsetY(rect, topInset: topInset))
                 .accessibilityIdentifier("boxLabel-\(item.label)")
+            }
         }
         .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)
         .scaleEffect(shown || reduceMotion ? 1 : 0.97)
