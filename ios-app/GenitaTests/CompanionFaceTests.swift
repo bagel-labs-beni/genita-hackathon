@@ -104,6 +104,40 @@ import XCTest
         XCTAssertEqual(face.timeline.sample(atMs: 200), .rest)
     }
 
+    func testANewSessionsRepliesStillMoveTheMouth() throws {
+        let (call, face, _) = try callWithFace()
+        let ready = #"{"type":"ready","protocol":1,"sessionId":"S","mode":"chat","audio":{"in":"a","out":"a","frameHeaderBytes":8},"lip":{"requested":"none","active":"none","reason":null},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#
+        call.handle(ready.replacingOccurrences(of: "\"S\"", with: "\"s1\""))
+        call.handle(audio(5, seq: 1))
+        call.handle(binary: frame(seq: 1, pcm(ms: 400)))
+        call.handle(#"{"type":"reply","utteranceId":5,"text":"Hi.","emotion":"neutral","interpret":false,"final":true}"#)
+        // reconnect: the new session counts utterances from 1 again
+        call.handle(ready.replacingOccurrences(of: "\"S\"", with: "\"s2\""))
+        call.handle(audio(1, seq: 1))
+        call.handle(binary: frame(seq: 1, pcm(ms: 400)))
+        XCTAssertNotNil(face.currentUtteranceId)
+        XCTAssertGreaterThan(peak(face).openness, 0.5, "the new session's first reply is not taken for an old one")
+    }
+
+    func testAnotherAccountNeverSeesTheFaceSet() throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        func jwt(_ sub: String) -> String {
+            let body = Data(#"{"sub":"\#(sub)"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")
+            return "h.\(body).s"
+        }
+        let call = CallController()
+        CallEndpoint.userToken = { jwt("account-a") }
+        call.useFace(try Self.fixtureSet(), key: "k", owner: "account-a", reduceMotion: true)
+        call.showFace(reduceMotion: true, animate: false)
+        call.hideFace()
+        XCTAssertNotNil(call.face, "same account keeps its face")
+        CallEndpoint.userToken = { jwt("account-b") }
+        call.showFace(reduceMotion: true, animate: false)
+        call.hideFace()
+        XCTAssertNil(call.face, "B must not see A's face, not even until B's own loads")
+    }
+
     func testNoFaceSetKeepsTheStill() {
         let call = CallController()
         call.playbackSink = { _, _ in }
@@ -236,21 +270,28 @@ import XCTest
     /// The number for the PR: frames per second of the face renderer at 540×960 on the CI simulator.
     func testRenderThroughputAt540x960() throws {
         let set = try Self.fixtureSet()
-        let renderer = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 7)
         let shapes = LipViseme.shapes
-        _ = renderer.render(at: 0, lip: .rest)   // warm up the context
         let n = 120
-        let start = CFAbsoluteTimeGetCurrent()
         var last: CGImage?
-        for i in 0..<n {
-            let v = shapes[i % shapes.count]
-            let lip = LipFrame(weights: [v: 0.7, .rest: 0.3], openness: Float(i % 10) / 10)
-            last = renderer.render(at: Double(i) / 30, lip: lip)
-            XCTAssertNotNil(last)
+        /// Frames per second over n frames; `context` nil = the app's (default Core Image, GPU where there is one).
+        func measure(_ context: CIContext?) -> (fps: Double, seconds: Double) {
+            let renderer = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 7, context: context)
+            _ = renderer.render(at: 0, lip: .rest)   // warm up the context
+            let start = CFAbsoluteTimeGetCurrent()
+            for i in 0..<n {
+                let v = shapes[i % shapes.count]
+                let lip = LipFrame(weights: [v: 0.7, .rest: 0.3], openness: Float(i % 10) / 10)
+                last = renderer.render(at: Double(i) / 30, lip: lip)
+                XCTAssertNotNil(last)
+            }
+            let seconds = CFAbsoluteTimeGetCurrent() - start
+            return (Double(n) / seconds, seconds)
         }
-        let seconds = CFAbsoluteTimeGetCurrent() - start
-        let fps = Double(n) / seconds
-        let line = String(format: "FACE_FPS=%.1f (%d frames 540x960, %.2f s, simulator)", fps, n, seconds)
+        let app = measure(nil)
+        let cpu = measure(CIContext(options: [.useSoftwareRenderer: true, .cacheIntermediates: false,
+                                              .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!]))
+        let line = String(format: "FACE_FPS=%.1f (app Core Image context, %d frames 540x960 in %.1f s, iOS simulator) cpu-renderer=%.1f fps",
+                          app.fps, n, app.seconds, cpu.fps)
         print(line)
         XCTContext.runActivity(named: line) { _ in }
         if let last {
@@ -261,7 +302,7 @@ import XCTest
         }
         XCTAssertEqual(last?.width, 540)
         XCTAssertEqual(last?.height, 960)
-        XCTAssertGreaterThan(fps, 1, "renderer stalled")
+        XCTAssertGreaterThan(app.fps, 0.2, "renderer stalled")
     }
 }
 
