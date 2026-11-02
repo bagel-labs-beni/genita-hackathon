@@ -87,6 +87,11 @@ test("detectRename: questions and look-alikes are not renames", () => {
     "Call yourself lucky",
     "",
     "Call yourself " + "A".repeat(30),
+    "Don't call yourself Max",
+    "Do not change your name to Max.",
+    "Please never call yourself Max!",
+    "I won't call you Max.",
+    "Stop, you can't call yourself Max",
   ];
   for (const text of no) assert.equal(detectRename(text), null, text);
 });
@@ -140,7 +145,11 @@ test("suggestName: Spark failure, timeout or an invalid name → deterministic f
   const bad = deps(dir, async () => ({ name: "Genita" }) as never);
   assert.equal((await suggestName(bad, "u1", "img1")).suggested, false);
 
-  const slow = deps(dir, (_req, signal) => new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")))));
+  // a hung request: the ref'd timer stands in for the open socket (AbortSignal.timeout alone does not keep the loop alive)
+  const slow = deps(dir, (_req, signal) => new Promise((_, reject) => {
+    const hold = setTimeout(() => reject(new Error("never")), 5000);
+    signal?.addEventListener("abort", () => (clearTimeout(hold), reject(new Error("aborted"))));
+  }));
   const t0 = Date.now();
   const c = await suggestName(slow, "u1", "img1", { timeoutMs: 50 });
   assert.equal(c.suggested, false);

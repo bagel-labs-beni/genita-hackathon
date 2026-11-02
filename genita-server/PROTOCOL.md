@@ -135,7 +135,9 @@ Max", "Your name is Max now", "I'll call you Max", "Can I call you Max?" (Englis
 server without a model call; questions like "What should I call you?" are not renames; never during
 interpretation). The server then uses the new name from that turn's reply on (the reply briefly takes
 the name), saves it to the user's companion (same as `PATCH /v1/companion {name}`), and sends
-`companion.named {name}` before that reply's audio. Update every {name} label (S07, S09-T, PREP-1).
+`companion.named {name}` (after the save, before that reply's audio). Update every {name} label (S07, S09-T,
+PREP-1). If the save fails, nothing changes: no event, the call keeps the old name. A negated phrase
+("Don't call yourself Max") is not a rename.
 
 ## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
 

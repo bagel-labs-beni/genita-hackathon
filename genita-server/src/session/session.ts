@@ -389,7 +389,12 @@ export class Session {
     if (!this.greeting || this.closed) return;
     this.greetTimer = setTimeout(() => {
       this.greetTimer = null;
-      if (!this.greeting || this.closed || this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) return;
+      if (!this.greeting || this.closed) return;
+      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
+        // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
+        this.greeting = null;
+        return this.log("call.greet_skipped", { by: "busy" });
+      }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
   }
@@ -855,10 +860,15 @@ export class Session {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
     // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
-    const renamedFrom = !self && !greeting && this.mode === "chat" ? this.renameFrom(text) : undefined;
+    const newName = !self && !greeting && this.mode === "chat" ? detectRename(text) : null;
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
+    let renamedFrom: string | undefined;
+    if (newName && newName !== this.persona!.name) {
+      renamedFrom = await this.applyRename(newName);
+      if (signal.aborted || this.reply !== reply) return;
+    }
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
       firstTokenAt?: number;
@@ -1079,18 +1089,26 @@ export class Session {
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
   }
 
-  /** Applies a rename found in the user's turn; returns the old name, or undefined if none. */
-  private renameFrom(text: string): string | undefined {
-    const name = detectRename(text);
+  /**
+   * Saves the new name first (own companion; no-op without one), then switches this call to it and tells the app.
+   * A failed save keeps the old name everywhere (call, labels, stored) rather than splitting them (Codex 11/2).
+   * Returns the old name, or undefined if nothing changed.
+   */
+  private async applyRename(name: string): Promise<string | undefined> {
+    const userId = this.deps.userId;
+    if (userId && this.deps.renameCompanion) {
+      try {
+        await this.deps.renameCompanion(userId, name);
+      } catch (err) {
+        this.log("companion.rename_failed", { message: String(err).slice(0, 200) });
+        return undefined;
+      }
+    }
+    if (this.closed) return undefined;
     const from = this.persona!.name;
-    if (!name || name === from) return undefined;
     this.persona = { ...this.persona!, name };
     this.client.sendJson({ type: "companion.named", name });
     this.log("companion.renamed", { by: "voice", chars: [...name].length });
-    const userId = this.deps.userId;
-    if (userId && this.deps.renameCompanion) {
-      void this.deps.renameCompanion(userId, name).catch((err) => this.log("companion.rename_failed", { message: String(err).slice(0, 200) }));
-    }
     return from;
   }
 

@@ -25,6 +25,9 @@ const RENAME = new RegExp(
   "iu",
 );
 
+/** "Don't call yourself Max", "I won't call you Max": a negation before the phrase is not a rename (Codex 11/2) */
+const NEGATED = /\b(?:don't|dont|do not|doesn't|never|not|won't|wont|will not|can't|cant|cannot|shouldn't|stop)\b/i;
+
 const STOP = new Set(
   "out back later tomorrow tonight soon again now today sometime sometimes then when if in on at up a an the my your his her their that this it what whatever something anything maybe lucky so how anytime every after before about because yourself myself me him them us ok okay yes no please by".split(" "),
 );
@@ -33,7 +36,7 @@ export function detectRename(text: string): string | null {
   for (const sentence of text.split(/(?<=[.!?…])\s+/)) {
     const s = sentence.trim();
     const m = s.match(RENAME);
-    if (!m) continue;
+    if (!m || NEGATED.test(s.slice(0, m.index! + m[0].search(/\S/)))) continue;
     const name = m[1];
     if (STOP.has(name.split(/\s+/)[0].toLowerCase())) continue;
     const mixedCase = /\p{Lu}/u.test(s);

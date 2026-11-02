@@ -7,7 +7,8 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { FileStore, type ImageRecord } from "../src/prep/store.ts";
 import { createPrepRoutes } from "../src/prep/routes.ts";
-import { PrepRunner } from "../src/prep/runner.ts";
+import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
+import { savePrefs } from "../src/prep/pipeline.ts";
 import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
@@ -165,4 +166,16 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   assert.ok(limited >= 2, `limited ${limited}`);
   assert.ok(sparkCalls - before <= 10);
   assert.equal((await call("POST", "/v1/companion/name/suggest", { imageId: "img1" }, "u2")).status, 404, "another user has their own budget");
+});
+
+test("prefs (Codex P2): a rename that lands while the persona is being written is not overwritten", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-prefs-race-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const stale = { id: "c1", userId: "u1", imageId: "img1", type: "human" as const, voiceId: DEFAULT_VOICES[0].id, name: "Jin", createdAt: new Date().toISOString(), prep: newPrepState() };
+  await store.putCompanion({ ...stale, name: "Max" }); // PATCH landed after savePrefs read the record
+  const next = await savePrefs(d, stale, "quick", { help: "Be there", relationship: "Close companion", presence: ["Calm"] });
+  assert.equal(next.name, "Max");
+  assert.equal(next.persona?.card.name, "Max");
 });

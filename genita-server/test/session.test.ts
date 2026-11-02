@@ -677,3 +677,40 @@ test("D21: without greetAfterMs (and no memory) nothing changes — no greeting;
   d.session.close();
   assert.equal(asksGreeting(d.sparkCalls), 0, "never greets into interpretation");
 });
+
+test("rename (Codex P2): a failed save keeps the old name — no companion.named, the call stays consistent", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async () => { throw new Error("db down"); } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(sparkCalls[0].instructions!, /^You are Jin,/);
+  session.close();
+});
+
+test("rename (Codex P2): the save finishes before companion.named goes out", async () => {
+  let saved = false;
+  const { client, session } = setup({ deps: { userId: "u1", renameCompanion: async () => { await sleep(30); saved = true; } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  let savedAtEvent: boolean | null = null;
+  const orig = client.sendJson.bind(client);
+  client.sendJson = (m) => { if (m.type === "companion.named") savedAtEvent = saved; orig(m); };
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(savedAtEvent, true);
+  session.close();
+});
+
+test("D21 (Codex P2): a greeting the window could not deliver (companion busy) is dropped, not given to the user's next turn", async () => {
+  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {} } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, greetAfterMs: 50 }));
+  // the companion is already speaking on its own (e.g. a watch reaction / card line) when the window ends
+  (session as unknown as { dispatch(e: unknown): void }).dispatch({ type: "self_speak", text: "Ooh, look at that.", origin: "card" });
+  await sleep(120);
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "companion.named");
+  assert.equal(asksGreeting(sparkCalls), 0);
+  session.close();
+});

@@ -168,7 +168,8 @@ export async function savePrefs(d: PrepDeps, companion: CompanionRecord, depth: 
   }
   const persona = toPersona(raw, input);
   const prefs = { depth: v.depth, answers: v.answers, updatedAt: new Date().toISOString() };
-  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona }))) ?? { ...companion, prefs, persona };
+  // a rename (PATCH / by voice) may land while Spark writes the card: the stored name wins
+  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona: { ...persona, card: { ...persona.card, name: x.name } } }))) ?? { ...companion, prefs, persona };
   d.log("setup.persona_written", { depth: v.depth, ms: since(t0), spark: !!raw });
   return next;
 }
