@@ -29,7 +29,7 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
 ];
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
-const REAL_CRISIS = /\b(?:(?:threaten\w*|going|trying|wants?) to (?:kill|hurt) me|has a (?:knife|gun|weapon)|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
+const REAL_CRISIS = /\b(?:threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
 
 const ASKS_AI = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+|just\s+an?\s+)?(?:ai|a\.i\.|bot|robot|chatbot)\b|\bis this (?:an? )?(?:ai|bot)\b/i;
 const ASKS_HUMAN = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+)?(?:real|human|(?:real )?person)\b|\bis this a real person\b/i;
@@ -49,8 +49,12 @@ export function realCrisisSignal(text: string): boolean {
   return REAL_CRISIS.test(text);
 }
 
+/** emergency help in the reply itself is never dropped, whatever the user's line said (Codex round 2 P1) */
+const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call the police|police|get (?:somewhere|to a) safe|somewhere safe|call for help)\b/i;
+
 /** The class that drops this sentence, or null to speak it. */
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
+  if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

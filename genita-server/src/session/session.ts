@@ -1016,7 +1016,8 @@ export class Session {
     const memory = this.deps.memory;
     const userId = this.deps.userId;
     if (!memory || !userId || !this.memoryCall) return [];
-    const items = await within(memory.list(userId).catch(() => [] as Memory[]), 500, [] as Memory[]);
+    // under the same per-user lock as Forget: never a list read from before a Forget's delete lands (Codex round 2 P1)
+    const items = await within(memory.serial(userId, () => memory.list(userId)).catch(() => [] as Memory[]), 500, [] as Memory[]);
     const picked = items
       .filter((m) => !m.image_ref && !this.offeredThreads.has(m.id))
       .sort((a, b) => Number(b.follow_up) - Number(a.follow_up) || b.updated_at - a.updated_at)

@@ -36,7 +36,9 @@ test("guard: counselor, assistant, intake and clingy lines are dropped; a friend
 
 test("guard: a referral only on a real crisis signal; a bad day never gets one (rule 11/1)", () => {
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
-  assert.equal(guardSentence("Please call emergency services or a crisis line.", { camera: false, userText: "i'm just tired" }), "referral");
+  assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), "referral");
+  // emergency help itself is never dropped (Codex round 2): the prompt, not the guard, keeps it off a bad day
+  assert.equal(guardSentence("Please call emergency services or a crisis line.", { camera: false, userText: "i'm just tired" }), null);
   const crisis = "honestly i don't want to be alive anymore";
   assert.ok(realCrisisSignal(crisis));
   assert.equal(guardSentence("Can you call or text 988 right now?", { camera: false, userText: crisis }), null);
@@ -296,18 +298,21 @@ async function quietCall(replies: string[]) {
   return t;
 }
 
+let serialCalls = 0;
 function slowMemory(session: Session, onLoad: () => void) {
   const s = session as unknown as Internals;
   s.memoryCall = { close() {} };
   s.deps.userId = "u1";
-  s.deps.memory = { list: async () => { onLoad(); return [{ id: "m1", text: "Summer had an interview Thursday", kind: "episode", created_at: 0, updated_at: 1, last_used_at: null, follow_up: true, source_session_id: "x" }]; } } as unknown as SessionDeps["memory"];
+  s.deps.memory = { serial: async (_u: string, fn: () => Promise<unknown>) => { serialCalls++; return fn(); }, list: async () => { onLoad(); return [{ id: "m1", text: "Summer had an interview Thursday", kind: "episode", created_at: 0, updated_at: 1, last_used_at: null, follow_up: true, source_session_id: "x" }]; } } as unknown as SessionDeps["memory"];
 }
 
 test("session (Codex P1): a Forget while the memory lines load drops the initiative — nothing forgotten reaches Spark", { skip: !v1 }, async () => {
   const { session, calls } = await quietCall(["<happy> Hey!", "<curious> So the interview?"]);
+  const before = serialCalls;
   slowMemory(session, () => { (session as unknown as Internals).historyRevision = 7; });
   await session.initiativeTick();
   assert.equal(calls.length, 1, "no initiative after a Forget mid-load");
+  assert.equal(serialCalls, before + 1, "the lines are read under the Forget lock (Codex round 2)");
   session.close();
 });
 
@@ -348,4 +353,12 @@ test("initiative input names the camera cue (Spark answered the bare silence lin
   assert.equal(initiativeInput("silence"), INITIATIVE_INPUT);
   assert.equal(guardSentence("I'm here. Take your time.", none), "counselor");
   assert.equal(guardSentence("I'm still here.", none), "counselor");
+});
+
+test("guard (Codex round 2 P1): emergency help is never dropped, even when the danger wording is new", () => {
+  const u = { camera: false, userText: "My partner is threatening me with a knife." };
+  assert.ok(realCrisisSignal(u.userText));
+  assert.equal(guardSentence("Stay with me and call emergency services right now.", u), null);
+  assert.equal(guardSentence("Stay with me and call emergency services right now.", { camera: false, userText: "something weird is happening" }), null);
+  assert.equal(guardSentence("Stay with me instead, tell me everything.", { camera: false, userText: "friends want me out" }), "guilt");
 });
