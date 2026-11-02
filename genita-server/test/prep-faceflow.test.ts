@@ -198,3 +198,68 @@ test("2D blink assets (character2d): BLINK.jpg / BLINKMASK.png are store-safe an
   const m = faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`);
   assert.equal(m.flow!.blink!.image, "/f/flow_blink");
 });
+
+test("makeFaceFlow passes the animal species to faceflow.py (--species, non-human rules)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ff-species-"));
+  try {
+    const argsFile = join(dir, "args.txt");
+    const sh = join(dir, "spy.sh");
+    writeFileSync(sh, `#!/bin/sh\necho "$@" > ${argsFile}\nexit 3\n`);
+    chmodSync(sh, 0o755);
+    await makeFaceFlow({ python: "/bin/sh", script: sh, scene: pngOf(8, 8), state: state(), kind: "animal", profile: "animal", species: "parrot",
+      image: async () => pngOf(8, 8), put: async () => {} });
+    const argv = readFileSync(argsFile, "utf8");
+    assert.match(argv, /--species parrot/);
+    assert.match(argv, /--kind animal/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const pyFaceflow = (expr: string) => {
+  const py = pythonWithCv2()!;
+  return JSON.parse(execFileSync(py, ["-c", `import sys, json; sys.path.insert(0, ${JSON.stringify(FACEFLOW_SCRIPT.replace(/\/faceflow\.py$/, ""))}); import faceflow as F; print(json.dumps(${expr}))`]).toString());
+};
+
+test("faceflow.py animal rules (non-human port): bird beak split, small muzzle by box or species, long-snout dog", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const face = "[0.2,0.25,0.8,0.62]";
+  const wide = "[0.40,0.50,0.60,0.53]", tiny = "[0.47,0.50,0.53,0.53]";
+  const rule = (kind: string, sp: string, mouth: string) => pyFaceflow(`(lambda r: r and r[0])(F.animal_rule('${kind}', F.profile_of('${kind}'), '${sp}', ${face}, ${mouth}))`);
+  assert.equal(rule("animal", "parrot", wide), "bird");
+  assert.equal(rule("animal", "dog", wide), null, "a wide dog mouth gets no exaggeration");
+  assert.equal(rule("animal", "dog", tiny), "smallMuzzle", "mouth box < 12 % of the face width");
+  assert.equal(rule("animal", "hamster", wide), "smallMuzzle");
+  assert.equal(rule("cat", "cat", wide), "smallMuzzle");
+  assert.equal(rule("animal", "golden retriever", wide), "longSnoutDog");
+  assert.equal(rule("character3d", "parrot", wide), null, "characters never take animal rules");
+  const sm = pyFaceflow("F.profile_of('animal')['smallMuzzle']['prep']");
+  assert.deepEqual([sm.squash, sm.widen, sm.shade], [1.6, 1.3, 0.5]);
+});
+
+test("faceflow.py end to end (non-human port): toy derives AH2 from AH; small-muzzle animal shades + widens the opening", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, mouthY = 0.515 * H, mouthX = W / 2;
+  const tex = (x: number, y: number): [number, number, number] => [150 + ((x * 7 + y * 3) % 40), 120 + ((x * 3 + y * 5) % 30), 110 + ((x + y) % 25)];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - mouthY) < 1.5 && Math.abs(x - mouthX) < 18 ? [90, 40, 40] : tex(x, y)));
+  const open = pngOf(W, H, (x, y) => (((x - mouthX) / 14) ** 2 + ((y - mouthY - 3) / 6) ** 2 < 1 ? [150, 90, 170] : tex(x, y)));
+  const dir = mkdtempSync(join(tmpdir(), "ff-nh-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "ah.png"), open);
+    const run = (kind: string, keys: string, species = "") => {
+      const out = join(dir, `out-${kind}`);
+      const args = [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", keys, "--face", "0.2,0.25,0.8,0.62", "--mouth", "0.47,0.50,0.53,0.53", "--kind", kind, "--out", out];
+      if (species) args.push("--species", species);
+      const res = JSON.parse(execFileSync(py, args).toString().trim().split("\n").pop()!);
+      return { res, flow: JSON.parse(readFileSync(join(out, "flow.json"), "utf8")) };
+    };
+    const toy = run("toy", `AH=${join(dir, "ah.png")}`);
+    assert.deepEqual(toy.flow.keys.sort(), ["AH", "AH2"], "AH2 derived from the single felt key");
+    assert.equal(toy.res.diag.AH2.derivedFrom, "AH");
+    const ham = run("animal", `AH=${join(dir, "ah.png")}`, "hamster");
+    assert.ok(ham.flow.keys.includes("AH"));
+    assert.equal(ham.flow.map.profile, "animal");
+    assert.equal(ham.flow.map.fallback.EH, "AH", "animal shapes fall back to the jaw ladder");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

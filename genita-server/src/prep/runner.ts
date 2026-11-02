@@ -323,6 +323,7 @@ export class PrepRunner {
         out.flow = await makeFaceFlow({
           python: d.python,
           profile,
+          species,
           scene,
           state: out,
           kind: c.type,

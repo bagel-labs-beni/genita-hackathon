@@ -119,7 +119,7 @@
   "rampIn": 0.55,
   "whiskers": 0.8,
   "motionV2": {
-   "springHz": 4.0,
+   "springHz": 3.2,
    "amp": 0.5,
    "unstressed": 0.7,
    "lip": 1.0,
@@ -142,7 +142,7 @@
   },
   "chinWarp": {
    "px": 7,
-   "springMs": 90,
+   "springMs": 170,
    "from": "lip",
    "sideW": 0.2
   },
@@ -156,14 +156,24 @@
    },
    "motionV2": {
     "lip": 1.2
+   },
+   "longSnoutDog": {
+    "prep": {
+     "squash": 1.8,
+     "widen": 1.35,
+     "shade": 0.55
+    },
+    "motionV2": {
+     "lip": 1.3
+    },
+    "_": "retriever fin6 (7 → 7.5); stop here, more reads un-dog-like"
    }
   },
   "bird": {
    "_when": "species is a bird (beak)",
    "boxes": "SAM mouth = whole beak -> upper 55 % = nose (locked), lower 45 % = mouth",
    "prep": {
-    "squash": 1.8,
-    "shade": 0.4
+    "shade": 0.3
    },
    "chinWarp": {
     "px": 10,
@@ -172,7 +182,9 @@
    },
    "motionV2": {
     "lip": 1.2
-   }
+   },
+   "split": 0.5,
+   "_split": "three-quarter beaks (parrot2, critic 8): lower 50 % of the SAM beak box moves"
   },
   "runtime": {
    "default": "motionV2",
@@ -181,6 +193,23 @@
   "rabbitLike": {
    "lipPartPx": 6,
    "gap": "inverted triangle, shade .45 × jaw, just below the nose"
+  },
+  "sourcePhoto": "three-quarter views beat front-on for long muzzles and beaks (horse2 7.5 vs 7, parrot2 8 vs 7); leave room below the chin",
+  "fallback": {
+   "TH": "AH",
+   "L": "AH",
+   "U": "AH",
+   "WQ": "AH",
+   "FV": "MBP",
+   "CDG": "AH",
+   "MID": "AH",
+   "EH": "AH",
+   "EI": "AH",
+   "OH": "AH",
+   "O": "AH",
+   "A": "AH2",
+   "AH2": "AH",
+   "AH": "AH2"
   }
  },
  "cat_override": {
@@ -312,11 +341,12 @@
    "brow": 1.0
   },
   "cheek": {
-   "spread": 0.8,
+   "spread": 1.2,
    "pull": 1.0,
-   "cheekW": 1.7,
-   "nasoW": 0.56,
-   "lift": 2.0
+   "cheekW": 2.5,
+   "nasoW": 0.8,
+   "lift": 3.0,
+   "_": "×1.5 (fin4: mascot 8.5, pixar 8)"
   },
   "lipmask": 6,
   "rampIn": 0.55,
@@ -447,7 +477,21 @@
    },
    "cleanPlate": true,
    "mouthWidthMin": 0.12,
-   "fitMaxUpscale": 2.0
+   "fitMaxUpscale": 2.0,
+   "colourMatch": false,
+   "plateLineOnly": true,
+   "fitDotMouth": {
+    "_when": "mouth box < 8 % head width (chibi)",
+    "fit": {
+     "SM": 1.0,
+     "WD": 1.3,
+     "EE": 1.55,
+     "OO": 0.5
+    }
+   },
+   "pasteDrawnOnly": true,
+   "_plateLineOnly": "inpaint only the real closed-mouth line (ellipse 0.75 × mouth width + 6 px), never the chin / neck lines",
+   "_pasteDrawnOnly": "fitted key pasted only where it differs from the plate by > 45 (the drawing), skin from the plate"
   },
   "prompts": {
    "SM": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is slightly open, a small soft open mouth shape with a flat dark red-brown inside, no teeth.",
@@ -470,6 +514,12 @@
   "_exclude": "soft-gradient shaded styles (webtoon) break the flat clean plate; skip 2D path or fall back to character3d",
   "runtime": {
    "default": "snap2d (coart driver on twos)"
+  },
+  "perioral": {
+   "chinPx": 2.0,
+   "cheekPx": 1.0,
+   "lowpass": 0.35,
+   "_": "chin outline + skin under the lip move down, blush blobs 1 px, cubic remap (line art stays crisp); phone effect is small"
   }
  },
  "_fields": {
@@ -477,7 +527,7 @@
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "m19 final per-subject choice 07:2x",
+ "_status": "server port 11/3 (feat/faceflow-nonhuman-prep)",
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
@@ -531,9 +581,7 @@
     0.08,
     0.08,
     0.07
-   ],
-   "cheekW": 1.0,
-   "nasoW": 0.3
+   ]
   },
   "lipmask": 0,
   "prep": {
@@ -541,7 +589,9 @@
     "AH": 1.05,
     "AH2": 1.4
    },
-   "AH2From": "AH"
+   "derive": {
+    "AH2": "AH"
+   }
   },
   "motionV2": {
    "jawAttackMs": 70,
@@ -560,7 +610,7 @@
    "default": "motionV2",
    "_": "plush 8.5 on v2 (lipmask 0)"
   },
-  "_keysServer": "server prep: AH only until the AH2 squash derivation (non-human faceflow --squash 1.4 from AH) is ported; generating AH2 would inherit the 3D teeth / tongue prompt (codex P2)"
+  "_keys": "Muse makes AH only; prep derives AH2 = AH squashed 1.4 (taller felt opening on stress)"
  },
  "motion": {
   "animal": {
@@ -885,5 +935,8 @@
   }
  },
  "_keyNames": "animal keys use the human names AH (half open) / AH2 (open); cat: AH2 only",
- "_motionV2": "app field names (L4): written by prep into face.flow.map.motionV2; values = render.py v22 flags used offline (--spring, --amp a:b, --lip, --idle, --jaw a:r:k, --preemph, --antic). texMin = render.py --texmin."
+ "_motionV2": "app field names (L4): written by prep into face.flow.map.motionV2; values = render.py v22 flags used offline (--spring, --amp a:b, --lip, --idle, --jaw a:r:k, --preemph, --antic). texMin = render.py --texmin.",
+ "stillBackground": {
+  "_": "all kinds: head sway / nod only inside a subject mask (GrabCut seeded by the SAM head box, eroded 4 px, feather 2.5 px), weighted toward the head (body below the face → 15 %), frame borders (12 %) fixed. App: use the subject matte from prep (or SAM mask) the same way."
+ }
 }
