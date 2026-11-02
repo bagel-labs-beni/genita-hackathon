@@ -76,7 +76,8 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
-  assert.deepEqual(prefs.json.session.lip, { mode: "peter", fallback: "none" });
+  // Meta-only (D34): no Peter suggested unless GENITA_PETER=1
+  assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Mira");
