@@ -46,6 +46,13 @@ export type WatchDeps = {
   openAsr: (mode: "ENDPOINTING" | "DIARIZATION") => WatchAsr;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   diarize?: boolean;
+  /**
+   * D40 (PRD v12, 11/2): watch together is cut down to "share a window + ask".
+   * First reactions (MS-2) and the speaker chip (FT-SPK) stay in the code; the session turns them
+   * on only with GENITA_WATCH_REACTIONS=1 / GENITA_WATCH_SPEAKER=1. Undefined = on (direct use, tests).
+   */
+  reactions?: boolean;
+  speakerChip?: boolean;
   memoEveryMs?: number;
   memoAfterLineMs?: number;
   log?: (event: string, data: Record<string, unknown>) => void;
@@ -270,7 +277,7 @@ export class WatchController {
           this.stats.lines++;
           this.lineSinceMemo = true;
           this.log("watch.line", { label, text: text.slice(0, 120) });
-          if (label && speakerChipEnabled(this.labelsSeen, now)) this.setSpeaker(label);
+          if (label && this.deps.speakerChip !== false && speakerChipEnabled(this.labelsSeen, now)) this.setSpeaker(label);
         }
         this.flushWaiters();
         if (this.speakerOn) {
@@ -378,6 +385,7 @@ export class WatchController {
   }
 
   private tryReact(v: MemoVerdict, verdictAt: number): void {
+    if (this.deps.reactions === false) return;
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
     const gate = reactionAllowed({
