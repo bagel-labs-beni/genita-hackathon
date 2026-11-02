@@ -129,7 +129,7 @@ struct HISYView: View {
             .frame(width: w - 62, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             .position(x: 31 + (w - 62) / 2, y: 106 + titleLines * 39 + 8 + top + 12)
         HISYGlobe().position(x: w / 2, y: 339 + top + 321 / 2 + (h - 844) / 2)
-        HISYPrimary(title: "Show me", busy: n == 0 && !model.storyFailed, id: "hisyShowMe") { go(n == 0 ? facePage : 1) }
+        HISYPrimary(title: "Show me", busy: n == 0 && model.serverWired && !model.storyFailed, id: "hisyShowMe") { go(n == 0 ? facePage : 1) }
             .position(x: w / 2, y: h - 140 + 25)
         Text(skip ? "Made only from your three answers." : "Made only from the reply you pasted.\nThe reply itself isn’t kept.")
             .hisyBody(12, line: 16, color: HISYInk.mute).multilineTextAlignment(.center)

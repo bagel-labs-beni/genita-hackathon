@@ -23,19 +23,50 @@ const style = (source) => ({
   style: { version: 1, source, display: rows, partial: false, toConfirm: ["Budget"], itemCount: 7, dropped: { injection: 0, sensitive: 0 } },
 });
 
-// D47 "How I see you": the seven cards (genita-server/src/personalize/story.ts shape, TITLES / PICKS)
-const card = (id, title, observation, promise, evidence, picks, extra = {}) => ({ id, title, observation, promise, evidence, later: false, picks, ...extra });
-let story = [
-  card("opener", "How I see you", "You come to me to think things through and find what fits you.", "So I'll keep it short, honest and on your side.", "explicit", ["That's not why I'm here", "Something's missing"]),
-  card("think", "How you think things through", "You like two or three options, with one picked for you.", "So I'll always say which one I'd choose.", "explicit", ["That's not how I decide", "Something's missing"]),
-  card("talk", "How you like to talk", "You want it warm, direct and informal. Short first, details if you ask.", "So I'll lead with the answer, not the windup.", "observed", ["Shorter replies", "More back-and-forth", "Less joking", "Something else"]),
-  card("taste", "Your taste", "You lean clean and minimal, in understated colors.", "So I'll pick things with that in mind.", "observed", ["I don't like one of these", "My taste changed", "Something's missing"],
-    { tags: { style: ["Clean, minimal", "Understated colors"], food: ["Spicy noodles"], watch: ["Design talks"], dislikes: ["Loud logos"] } }),
-  card("help", "How I can help", "You want me to find things that fit your style and send the links.", "So I'll look things up without asking, and check before anything costs money.", "observed", ["Ask me first", "Just do it", "I don't need this"],
-    { help: [{ label: "Find what fits", mode: "just_do_it" }, { label: "Send the links", mode: "just_do_it" }, { label: "Buy something", mode: "ask_first" }] }),
-  card("lines", "Your lines", "You want me to ask before I do anything for you.", "So I'll stay on the right side of that.", "explicit", ["That's fine with me", "Something's missing"]),
-  card("unknowns", "Still getting to know you", "There's still a little I don't know about you.", "So I'll ask about one of these on our next call, in passing.", "suggested", ["Let me tell you now", "Don't ask about these"], { unknowns: ["Budget", "Food you love"] }),
+// D47 HISY v2: the cards (genita-server/src/personalize/story.ts shape), with the Figma HISY-1~6 / S1~S4 copy
+const it = (text, evidence) => ({ text, evidence });
+const tag = (group, text, dislike = false) => ({ group, text, dislike });
+const importStory = () => [
+  { id: "think", eyebrow: "How you think", headline: "You decide by comparing, not by guessing.", evidence: "explicit",
+    items: [it("When a choice matters, you line up two real options and pick between them.", "observed"), it("You talk big decisions through out loud before you commit.", "explicit")] },
+  { id: "talk", eyebrow: "How you like to talk", headline: "Warm, direct, and short.", evidence: "explicit",
+    items: [it("You like a friendly tone, but you want the answer first. Long replies lose you.", "explicit"), it("You switch to Korean when you’re relaxed.", "observed")],
+    promise: "So I'll lead with the answer, keep it to a few sentences, and go deeper only when you ask." },
+  { id: "taste", eyebrow: "What you're into", headline: "Clean lines, slow stories, home cooking.", evidence: "memory", items: [],
+    tags: [tag("style", "Clean, minimal"), tag("style", "Understated colors"), tag("style", "Linen"), tag("style", "Loud logos", true),
+      tag("food", "Korean home cooking"), tag("food", "Quick weeknight meals"), tag("food", "Cilantro", true),
+      tag("watch", "Slow-burn dramas"), tag("watch", "Lo-fi while working"), tag("watch", "Laugh tracks", true)] },
+  { id: "help", eyebrow: "How I can help", headline: "Where I'll actually be useful.", evidence: "observed", items: [],
+    help: [{ label: "Find clothes that fit your style", sub: "Two picks, with links", mode: "ask_first" },
+      { label: "Cook with what's in your fridge", sub: "One recipe and what to buy", mode: "just_do_it" },
+      { label: "Pick something to watch", sub: "One pick for tonight", mode: "ask_first" }] },
+  { id: "lines", eyebrow: "Lines I won't cross", headline: "Some things I'll leave alone.", evidence: "explicit",
+    items: [it("No advice you didn't ask for.", "explicit"), it("No comments on your looks.", "explicit"), it("No jokes when you're being serious.", "observed")] },
+  { id: "unknowns", eyebrow: "Still getting to know you", headline: "A few things I don't know yet.", subline: "Your reply didn't say. I'll ask you in our calls, one at a time.",
+    evidence: "explicit", items: [],
+    unknowns: [{ item: "Communication style", topic: "How chatty calls should be", sub: "Quiet company, or lots of talk?" },
+      { item: "Budget", topic: "What you spend on clothes", sub: "So my picks fit your budget" },
+      { item: "Food", topic: "Food you don't eat", sub: "Anything beyond cilantro" },
+      { item: "Reminders", topic: "Reminders", sub: "Should I ever bring things up first?" }] },
 ];
+const skipStory = () => [
+  { id: "talk", eyebrow: "How you like to talk", headline: "Answer first.", evidence: "explicit",
+    items: [it("You want the answer up front, then the why.", "explicit")], promise: "So I'll lead with the answer and keep the rest short." },
+  { id: "taste", eyebrow: "What you're into", headline: "Design, food, and good stories.", evidence: "explicit", items: [],
+    tags: [tag("interest", "Design"), tag("interest", "Food"), tag("interest", "Film & TV")], note: "No favorites yet. Tell me one anytime, or show me on camera." },
+  { id: "lines", eyebrow: "Lines I won't cross", headline: "Some things I'll leave alone.", evidence: "explicit",
+    items: [it("No advice you didn't ask for.", "explicit"), it("No comments on your looks.", "explicit")] },
+  { id: "unknowns", eyebrow: "Still getting to know you", headline: "Most of you, I'll learn as we talk.", subline: "I'll ask you in our calls, one at a time. You can always just tell me.",
+    evidence: "explicit", items: [],
+    unknowns: [{ item: "think", topic: "How you think things through", sub: "Out loud, or quietly first?" },
+      { item: "Likes & dislikes", topic: "Your taste in clothes and food", sub: "Colors, fits, what you cook" },
+      { item: "How Genita can help", topic: "Where I can help most", sub: "Cooking, outfits, what to watch" },
+      { item: "Communication style", topic: "How chatty calls should be", sub: "Quiet company, or lots of talk?" }] },
+];
+let story = importStory();
+let storySource = "import";
+const cardTexts = (c) => [...c.items.map((i) => i.text), ...(c.tags ?? []).map((t) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text)),
+  ...(c.help ?? []).map((h) => h.label), ...(c.unknowns ?? []).map((u) => u.topic)];
 const ACK = "Got it. I'll remember that.";
 
 let companion = null;
@@ -77,26 +108,33 @@ createServer(async (req, res) => {
   if (req.method === "GET" && p === "/me")
     return send(200, { user: { id: "u1", provider: "apple", email: null, displayName: "Chelsea", aiConsentAt: "t", createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: companion ? prepView().status : "none", conversation: null });
   if (req.method === "PATCH" && p === "/me") return send(200, { user: { id: "u1", provider: "apple", displayName: b.displayName, createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: "none", conversation: null });
-  if (req.method === "POST" && p === "/v1/import") { await sleep(1500); return send(200, { ...style("import"), story }); }
+  if (req.method === "POST" && p === "/v1/import") { await sleep(1500); story = importStory(); storySource = "import"; return send(200, { ...style("import"), story }); }
   // skip users get their story from GET /v1/profile/story (as on the server)
-  if (req.method === "POST" && p === "/v1/import/skip") return send(200, style("skip"));
-  if (req.method === "GET" && p === "/v1/profile/story") { await sleep(1200); return send(200, { status: "ready", source: "import", cards: story, ms: 1200 }); }
+  if (req.method === "POST" && p === "/v1/import/skip") { story = skipStory(); storySource = "skip"; return send(200, style("skip")); }
+  if (req.method === "GET" && p === "/v1/profile/story") { await sleep(1200); return send(200, { status: "ready", source: storySource, cards: story, ms: 1200 }); }
   if (req.method === "PATCH" && p === "/v1/profile") {
     const i = story.findIndex((c) => c.id === b.cardId);
-    if (i < 0) return send(400, { error: "bad_correction" });
-    if (b.pick != null && !story[i].picks.includes(b.pick)) return send(400, { error: "bad_correction" });
-    if (!b.pick && !String(b.text ?? "").trim()) return send(400, { error: "bad_correction" });
-    if (String(b.text ?? "").length > 200) return send(400, { error: "bad_correction" });
+    if (i < 0) return send(409, { error: "card_not_shown" });
+    const items = Array.isArray(b.items) ? b.items : [];
+    const said = typeof b.text === "string" ? b.text.trim() : "";
+    if (items.some((x) => !cardTexts(story[i]).includes(x)) || (!items.length && !said) || said.length > 200) return send(400, { error: "bad_correction" });
     await sleep(1200);
-    const said = String(b.text ?? "").trim();
-    if (b.cardId === "taste") {
-      const tags = { ...story[i].tags, food: [], dislikes: ["Loud logos", "Cilantro"] };
-      story[i] = { ...story[i], observation: "You lean clean and minimal. And no cilantro, ever.", promise: "So I'll leave it out of anything I cook up for you.", evidence: "explicit", tags };
-    } else story[i] = { ...story[i], observation: said ? `You told me: ${said}.` : story[i].observation, promise: "So I'll go by what you said.", evidence: "explicit" };
-    const likes = rows.find((r) => r.key === "likes");
-    if (b.cardId === "taste") likes.items = [...likes.items.filter((x) => !/cilantro/i.test(x.text)), { text: "No cilantro.", label: "explicit" }];
-    return send(200, { card: story[i], ack: ACK, changed: true, profile: style("import").profile + "\n- Likes: no cilantro", rows });
+    const before = cardTexts(story[i]);
+    if (b.cardId === "taste" && story[i].tags.some((t) => t.text === "Cilantro")) {
+      // C3 (Figma 252:473): cilantro is a like now, raw onion is the one they skip
+      const tags = story[i].tags.filter((t) => t.text !== "Cilantro");
+      const at = tags.findIndex((t) => t.group === "food" && !t.dislike) + 2;
+      tags.splice(at, 0, tag("food", "Cilantro"), tag("food", "Raw onion", true));
+      story[i] = { ...story[i], tags };
+      const likes = rows.find((r) => r.key === "likes");
+      likes.items = [...likes.items, { text: "Loves cilantro; skips raw onion.", label: "explicit" }];
+    } else if (said) {
+      story[i] = { ...story[i], items: [...story[i].items.filter((x) => !items.includes(x.text)), it(said.replace(/\.?$/, "."), "explicit")] };
+    }
+    const changed = cardTexts(story[i]).filter((t) => !before.includes(t));
+    return send(200, { card: story[i], ack: ACK, changed, profile: style("import").profile + "\n- Likes: cilantro, not raw onion", rows });
   }
+
   if (req.method === "POST" && p === "/v1/companion/image") {
     await sleep(1800);
     return send(200, { imageId: "img1", passed: true, type: "human", checks: { oneFaceFrontFacing: true, sharpAndLit: true, noText: true }, reasons: [], headBox: null, ms: 1800 });
