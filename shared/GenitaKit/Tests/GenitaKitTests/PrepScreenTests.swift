@@ -6,7 +6,7 @@ import Testing
 /// 3 expressions + 10 visemes (`settled` of `total`), `videos` and `lips` are `skipped`.
 private func serverPrep(status: String = "running", scene: String = "done", face: String? = "running", settled: Int = 0) -> String {
     let faceJSON = face.map { #","face":{"status":"\#($0)","settled":\#(settled),"total":13}"# } ?? #","face":null"#
-    return #"{"status":"\#(status)","progress":{"done":1,"total":14},"sceneUrl":null,"steps":{"scene":{"status":"\#(scene)"},"videos":{"neutral":{"status":"skipped"},"happy":{"status":"skipped"},"warm":{"status":"skipped"}}\#(faceJSON)},"lips":{"status":"skipped","peter":null}}"#
+    return #"{"status":"\#(status)","progress":{"done":1,"total":14},"sceneUrl":null,"steps":{"scene":{"status":"\#(scene)"},"videos":{"neutral":{"status":"skipped"},"happy":{"status":"skipped"},"warm":{"status":"skipped"}}\#(faceJSON)},"lips":{"status":"skipped"}}"#
 }
 
 struct MetaOnlyPrepTests {
@@ -14,7 +14,7 @@ struct MetaOnlyPrepTests {
 
     @Test func skippedLipsDoNotMarkTheMouthDone() throws {
         let p = try decode(serverPrep(settled: 1))
-        #expect(p.stages == [.scene: .done, .expressions: .running, .mouth: .pending], "mouth waits for the face step, not the skipped Peter lips")
+        #expect(p.stages == [.scene: .done, .expressions: .running, .mouth: .pending], "mouth waits for the face step, not the skipped lip step")
         #expect(p.current == .expressions)
     }
 

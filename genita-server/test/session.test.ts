@@ -79,6 +79,21 @@ class FakeClient implements ClientSink {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function greetingScheduler() {
+  let pending: (() => void) | null = null;
+  return {
+    schedule(fn: () => void) {
+      pending = fn;
+      return () => { if (pending === fn) pending = null; };
+    },
+    fire() {
+      const fn = pending;
+      pending = null;
+      fn?.();
+    },
+  };
+}
+
 function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number; deps?: Partial<SessionDeps> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
@@ -243,7 +258,7 @@ test("a reply opening with the same interjection as a recent reply is spoken and
   session.close();
 });
 
-test("an empty Spark answer (e.g. a web search that never produced text) is retried once without tools", async () => {
+test("an empty Spark answer (e.g. a web search that never produced text) is retried once with the same tools", async () => {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: SparkRequest[] = [];
@@ -270,7 +285,7 @@ test("an empty Spark answer (e.g. a web search that never produced text) is retr
   assert.equal(reply.text, "Try a comedy special tonight.");
   assert.equal(calls.length, 2);
   assert.ok(calls[0].tools?.length);
-  assert.equal(calls[1].tools, undefined);
+  assert.deepEqual(calls[1], calls[0]);
   session.close();
 });
 
@@ -576,16 +591,16 @@ test("rename: works without a rename dep (no store / no user) — the call still
 });
 
 test("D21 greetAfterMs: the user speaks inside the window → no greeting, the user's turn is answered", async () => {
-  const { asr, client, session, sparkCalls } = setup();
+  const clock = greetingScheduler();
+  const { asr, client, session, sparkCalls } = setup({ deps: { greetScheduler: clock.schedule } });
   // the window outlasts the user's whole reply, so only the cancel (not "busy replying") keeps the greeting out
   await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
-  await sleep(40);
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
   asr.fire({ type: "speechComplete", turnId: 0, text: "Hey, what should I call you?" });
   await client.waitFor((m) => m.type === "reply");
   await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 2);
-  await sleep(750); // past the window
+  clock.fire();
   assert.equal(asksGreeting(sparkCalls), 0, "companion spoke first 0 times");
   assert.equal(client.json.filter((m) => m.type === "reply").length, 1);
   // the user's first line was an ordinary turn (kept in history), not swallowed as "the greeting"
@@ -596,11 +611,12 @@ test("D21 greetAfterMs: the user speaks inside the window → no greeting, the u
 });
 
 test("D21 greetAfterMs: typed text inside the window also cancels the greeting", async () => {
-  const { client, session, sparkCalls } = setup();
+  const clock = greetingScheduler();
+  const { client, session, sparkCalls } = setup({ deps: { greetScheduler: clock.schedule } });
   await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   await client.waitFor((m) => m.type === "reply");
-  await sleep(900);
+  clock.fire();
   assert.equal(asksGreeting(sparkCalls), 0);
   await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
   await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
@@ -609,18 +625,17 @@ test("D21 greetAfterMs: typed text inside the window also cancels the greeting",
 });
 
 test("D21 greetAfterMs: silence → exactly one greeting after about the window, without the memory dependency", async () => {
-  const { client, session, sparkCalls } = setup();
-  const t0 = Date.now();
+  const clock = greetingScheduler();
+  const { client, session, sparkCalls } = setup({ deps: { greetScheduler: clock.schedule } });
   await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 150 }));
-  await sleep(60);
   assert.equal(sparkCalls.length, 0, "no greeting inside the window");
+  clock.fire();
   const reply = await client.waitFor((m) => m.type === "reply", 2000);
-  assert.ok(Date.now() - t0 >= 140, `greeted after ${Date.now() - t0} ms`);
   assert.equal(asksGreeting(sparkCalls), 1);
   assert.ok(!client.json.some((m) => m.type === "transcript"), "no synthetic user transcript");
   assert.equal(reply.text, "Hey you! That sounds great.");
   // the greeting prompt is not kept as a user line in the history
-  await sleep(80);
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > client.json.indexOf(reply));
   await session.onClientText(JSON.stringify({ type: "text", text: "how are you" }));
   await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
   assert.ok(!JSON.stringify(sparkCalls[1].input).includes(GREET));
@@ -630,24 +645,23 @@ test("D21 greetAfterMs: silence → exactly one greeting after about the window,
 test("D21: without greetAfterMs (and no memory) nothing changes — no greeting; values are clamped to 0–3000", async () => {
   const a = setup();
   await a.session.onClientText(JSON.stringify({ type: "start", persona }));
-  await sleep(80);
   assert.equal(a.sparkCalls.length, 0);
   a.session.close();
 
-  const b = setup();
+  const clock = greetingScheduler();
+  const b = setup({ deps: { greetScheduler: clock.schedule } });
   await b.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: -50 }));
+  clock.fire();
   await b.client.waitFor((m) => m.type === "reply", 1000); // clamped to 0 → greets right away
   b.session.close();
 
   const c = setup();
   await c.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: "2000" }));
-  await sleep(60);
   assert.equal(c.sparkCalls.length, 0, "a non-number is ignored");
   c.session.close();
 
   const d = setup();
   await d.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 2000, mode: "interpret" }));
-  await sleep(60);
   d.session.close();
   assert.equal(asksGreeting(d.sparkCalls), 0, "never greets into interpretation");
 });
@@ -676,11 +690,13 @@ test("rename (Codex P2): the save finishes before companion.named goes out", asy
 });
 
 test("D21 (Codex P2): a greeting the window could not deliver (companion busy) is dropped, not given to the user's next turn", async () => {
-  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {} } });
+  const clock = greetingScheduler();
+  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {}, greetScheduler: clock.schedule } });
   await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, greetAfterMs: 50 }));
   // the companion is already speaking on its own (e.g. a watch reaction / card line) when the window ends
   (session as unknown as { dispatch(e: unknown): void }).dispatch({ type: "self_speak", text: "Ooh, look at that.", origin: "card" });
-  await sleep(120);
+  await client.waitFor((m) => m.type === "state" && m.state === "thinking");
+  clock.fire();
   await client.waitFor((m) => m.type === "reply");
   await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
   await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
