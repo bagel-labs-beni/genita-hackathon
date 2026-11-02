@@ -118,6 +118,7 @@ export async function startServer(
     const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     await findsDeleted;
+    await prep.runner.forgetUser(userId);
     await deps.memory?.forget(userId);
     await deps.finds?.store.removeOwner(ownerKey(userId));
   };
@@ -129,7 +130,6 @@ export async function startServer(
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
     for (const [close, u] of presence) if (u === userId) close();
     handoff.forget(userId);
-    void prep.runner.forgetUser(userId).catch((err) => log("prep.forget_failed", { message: String(err).slice(0, 200) }));
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
