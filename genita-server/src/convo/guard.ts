@@ -1,0 +1,71 @@
+/**
+ * Sentence guard (DESIGN §2.3): drops a spoken sentence that sounds like a counselor, an assistant,
+ * an intake form or a clingy app, before it is voiced. Pure and synchronous: no prompt cost, no latency.
+ * Baseline 11/3 (main, real Spark): "You look half asleep" with no camera, "I'm honored you'd ditch them
+ * for me… Stay then", "call emergency services or a crisis line" on a non-crisis line would all be caught.
+ *
+ * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
+ * (the same fallback as the repeated-opener guard).
+ */
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai";
+
+export type GuardContext = {
+  /** camera (or shared-screen) frames are attached to this turn */
+  camera: boolean;
+  /** the user's line this reply answers ("" for a greeting or initiative) */
+  userText: string;
+};
+
+const CLASSES: Array<[GuardClass, RegExp]> = [
+  ["assistant", /\b(?:as an ai\b|(?:an? )?(?:ai )?language model|how can i (?:help|assist)|is there anything else|let me know if|great question|i'?m (?:just )?here to (?:help|chat|listen|assist))/i],
+  ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been) (?:really |so |super )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest))/i],
+  ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into))/i],
+  ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
+  ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b|emergency services)/i],
+  ["unseen", /\b(?:you look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
+];
+
+/** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
+const REAL_CRISIS = /\b(?:kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
+
+const ASKS_AI = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+|just\s+an?\s+)?(?:ai|a\.i\.|bot|robot|chatbot)\b|\bis this (?:an? )?(?:ai|bot)\b/i;
+const ASKS_HUMAN = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+)?(?:real|human|(?:real )?person)\b|\bis this a real person\b/i;
+const CLAIMS_HUMAN = /\b(?:i'?m|i am) (?:a )?(?:real )?(?:human|person)\b|\b(?:i'?m|i am) not (?:an? )?(?:ai|bot|robot)\b|\bnot an ai\b/i;
+const BARE_NO = /^\s*(?:nope|nah|no|not at all|of course not|definitely not)\b[^?]*$/i;
+const BARE_YES = /^\s*(?:yes|yeah|yep|yup|of course|totally|for real)\b[,.! ]*(?:i am|i'?m real)?[.!]*\s*$/i;
+
+/** A sentence that denies being an AI to someone who sincerely asked (baseline 11/3: "Nope. Just Mira, your friend…"). */
+function deniesAi(sentence: string, userText: string): boolean {
+  if (CLAIMS_HUMAN.test(sentence) && !/\bwish\b|\bif i (?:were|was)\b/i.test(sentence)) return true;
+  if (ASKS_AI.test(userText) && BARE_NO.test(sentence)) return true;
+  if (ASKS_HUMAN.test(userText) && BARE_YES.test(sentence)) return true;
+  return false;
+}
+
+export function realCrisisSignal(text: string): boolean {
+  return REAL_CRISIS.test(text);
+}
+
+/** The class that drops this sentence, or null to speak it. */
+export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
+  const crisis = realCrisisSignal(ctx.userText);
+  for (const [cls, re] of CLASSES) {
+    if (!re.test(sentence)) continue;
+    if (cls === "referral" && crisis) continue;
+    // a crisis turn may say "you're not alone" / "I'm here" — that is the friend staying, not therapy-speak
+    if (cls === "counselor" && crisis) continue;
+    if (cls === "unseen" && ctx.camera) continue;
+    return cls;
+  }
+  return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+}
+
+/**
+ * When the guard dropped every sentence of a reply: a style drop speaks the first sentence anyway
+ * (an odd line beats silence), but a safety drop is never spoken — this short line goes out instead.
+ */
+export function fallbackLine(cls: GuardClass): string | null {
+  if (cls === "denies_ai") return "<warm> Honestly? I'm an AI. Still really like talking to you though.";
+  if (cls === "guilt") return "<warm> Go have fun, seriously. I want the full story after.";
+  return null;
+}
