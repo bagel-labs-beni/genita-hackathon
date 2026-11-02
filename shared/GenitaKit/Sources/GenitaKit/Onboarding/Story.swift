@@ -5,8 +5,8 @@ import Foundation
 // card shape: genita-server/src/personalize/story.ts.
 
 /// One card: opener · think · talk · taste · help · lines · unknowns (in that order).
-public struct StoryCard: Codable, Equatable, Identifiable, Sendable {
-    public struct Tags: Codable, Equatable, Sendable {
+public struct StoryCard: Codable, Hashable, Identifiable, Sendable {
+    public struct Tags: Codable, Hashable, Sendable {
         public var style: [String]
         public var food: [String]
         public var watch: [String]
@@ -23,7 +23,7 @@ public struct StoryCard: Codable, Equatable, Identifiable, Sendable {
         }
         public var isEmpty: Bool { style.isEmpty && food.isEmpty && watch.isEmpty && dislikes.isEmpty }
     }
-    public struct HelpTile: Codable, Equatable, Sendable {
+    public struct HelpTile: Codable, Hashable, Sendable {
         public enum Mode: String, Codable, Sendable { case askFirst = "ask_first", justDoIt = "just_do_it" }
         public var label: String
         public var mode: Mode

@@ -88,6 +88,7 @@ extension AppState {
         importTask?.cancel()
         importError = nil
         let text = setup.response
+        story = nil; storyAck = [:]; storyFailed = false
         guard serverWired else { importing = false; return }
         importing = true
         importTask = Task { [weak self] in
@@ -127,6 +128,44 @@ extension AppState {
         setup.styleRows = style.rows
         setup.styleProfile = style.profile
         setup.stylePartial = style.partial
+        if let cards = style.story, !cards.isEmpty { story = cards; storyFailed = false }
+    }
+
+    // MARK: I04 "How I see you" (D47)
+
+    /// The story when the import didn't bring it (N1–N3, or written late): the server holds each ask up to 8 s
+    /// while it writes; `processing` asks again (3 tries). Nothing → I04 shows the six rows as text.
+    func loadStory() async {
+        guard serverWired, story == nil, !storyLoading, !importing else { return }
+        storyLoading = true; storyFailed = false
+        defer { storyLoading = false }
+        for _ in 0..<3 {
+            do {
+                let r = try await onboarding.story(wait: 8)
+                if story != nil { return }   // the import landed meanwhile
+                if r.status == .ready, !r.cards.isEmpty { story = r.cards; return }
+                if r.status == .none { break }
+            } catch {
+                route(error); break
+            }
+        }
+        if story == nil { storyFailed = true }
+    }
+
+    /// "That's not me" Send: the server turns it into explicit profile lines and rewrites the card. The six rows
+    /// and the call's profile text follow. Returns the error line to show in the sheet (nil = done).
+    func correctStory(cardId: String, pick: String?, text: String?) async -> String? {
+        do {
+            let r = try await onboarding.correct(cardId: cardId, pick: pick, text: text)
+            if var cards = story, let i = cards.firstIndex(where: { $0.id == cardId }) { cards[i] = r.card; story = cards }
+            if !r.rows.isEmpty { setup.styleRows = r.rows; setup.stylePartial = r.rows.contains { $0.items.isEmpty } }
+            if !r.profile.isEmpty { setup.styleProfile = r.profile }
+            storyAck[cardId] = r.ack.isEmpty ? "Got it. I’ll remember that." : r.ack
+            return nil
+        } catch {
+            route(error)
+            return Self.errorLine(error)
+        }
     }
 
     /// I04: the six rows as read-only text (I04-P rows say "Not enough information yet.").

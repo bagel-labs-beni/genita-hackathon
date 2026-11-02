@@ -23,6 +23,21 @@ const style = (source) => ({
   style: { version: 1, source, display: rows, partial: false, toConfirm: ["Budget"], itemCount: 7, dropped: { injection: 0, sensitive: 0 } },
 });
 
+// D47 "How I see you": the seven cards (genita-server/src/personalize/story.ts shape, TITLES / PICKS)
+const card = (id, title, observation, promise, evidence, picks, extra = {}) => ({ id, title, observation, promise, evidence, later: false, picks, ...extra });
+let story = [
+  card("opener", "How I see you", "You come to me to think things through and find what fits you.", "So I'll keep it short, honest and on your side.", "explicit", ["That's not why I'm here", "Something's missing"]),
+  card("think", "How you think things through", "You like two or three options, with one picked for you.", "So I'll always say which one I'd choose.", "explicit", ["That's not how I decide", "Something's missing"]),
+  card("talk", "How you like to talk", "You want it warm, direct and informal. Short first, details if you ask.", "So I'll lead with the answer, not the windup.", "observed", ["Shorter replies", "More back-and-forth", "Less joking", "Something else"]),
+  card("taste", "Your taste", "You lean clean and minimal, in understated colors.", "So I'll pick things with that in mind.", "observed", ["I don't like one of these", "My taste changed", "Something's missing"],
+    { tags: { style: ["Clean, minimal", "Understated colors"], food: ["Spicy noodles"], watch: ["Design talks"], dislikes: ["Loud logos"] } }),
+  card("help", "How I can help", "You want me to find things that fit your style and send the links.", "So I'll look things up without asking, and check before anything costs money.", "observed", ["Ask me first", "Just do it", "I don't need this"],
+    { help: [{ label: "Find what fits", mode: "just_do_it" }, { label: "Send the links", mode: "just_do_it" }, { label: "Buy something", mode: "ask_first" }] }),
+  card("lines", "Your lines", "You want me to ask before I do anything for you.", "So I'll stay on the right side of that.", "explicit", ["That's fine with me", "Something's missing"]),
+  card("unknowns", "Still getting to know you", "There's still a little I don't know about you.", "So I'll ask about one of these on our next call, in passing.", "suggested", ["Let me tell you now", "Don't ask about these"], { unknowns: ["Budget", "Food you love"] }),
+];
+const ACK = "Got it. I'll remember that.";
+
 let companion = null;
 let prepStartedAt = 0;
 // The clock starts at PREP-1's first poll (the UI test spends longer than the prep on the screens before it):
@@ -62,8 +77,26 @@ createServer(async (req, res) => {
   if (req.method === "GET" && p === "/me")
     return send(200, { user: { id: "u1", provider: "apple", email: null, displayName: "Chelsea", aiConsentAt: "t", createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: companion ? prepView().status : "none", conversation: null });
   if (req.method === "PATCH" && p === "/me") return send(200, { user: { id: "u1", provider: "apple", displayName: b.displayName, createdAt: "t" }, consented: true, hasCompanion: !!companion, prepStatus: "none", conversation: null });
-  if (req.method === "POST" && p === "/v1/import") { await sleep(1500); return send(200, style("import")); }
+  if (req.method === "POST" && p === "/v1/import") { await sleep(1500); return send(200, { ...style("import"), story }); }
+  // skip users get their story from GET /v1/profile/story (as on the server)
   if (req.method === "POST" && p === "/v1/import/skip") return send(200, style("skip"));
+  if (req.method === "GET" && p === "/v1/profile/story") { await sleep(1200); return send(200, { status: "ready", source: "import", cards: story, ms: 1200 }); }
+  if (req.method === "PATCH" && p === "/v1/profile") {
+    const i = story.findIndex((c) => c.id === b.cardId);
+    if (i < 0) return send(400, { error: "bad_correction" });
+    if (b.pick != null && !story[i].picks.includes(b.pick)) return send(400, { error: "bad_correction" });
+    if (!b.pick && !String(b.text ?? "").trim()) return send(400, { error: "bad_correction" });
+    if (String(b.text ?? "").length > 200) return send(400, { error: "bad_correction" });
+    await sleep(1200);
+    const said = String(b.text ?? "").trim();
+    if (b.cardId === "taste") {
+      const tags = { ...story[i].tags, food: [], dislikes: ["Loud logos", "Cilantro"] };
+      story[i] = { ...story[i], observation: "You lean clean and minimal. And no cilantro, ever.", promise: "So I'll leave it out of anything I cook up for you.", evidence: "explicit", tags };
+    } else story[i] = { ...story[i], observation: said ? `You told me: ${said}.` : story[i].observation, promise: "So I'll go by what you said.", evidence: "explicit" };
+    const likes = rows.find((r) => r.key === "likes");
+    if (b.cardId === "taste") likes.items = [...likes.items.filter((x) => !/cilantro/i.test(x.text)), { text: "No cilantro.", label: "explicit" }];
+    return send(200, { card: story[i], ack: ACK, changed: true, profile: style("import").profile + "\n- Likes: no cilantro", rows });
+  }
   if (req.method === "POST" && p === "/v1/companion/image") {
     await sleep(1800);
     return send(200, { imageId: "img1", passed: true, type: "human", checks: { oneFaceFrontFacing: true, sharpAndLit: true, noText: true }, reasons: [], headBox: null, ms: 1800 });

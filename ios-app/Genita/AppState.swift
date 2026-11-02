@@ -89,6 +89,13 @@ struct SavedSetup: Codable {
     var prep: PrepProgress?
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
+    /// D47 "How I see you" cards at I04. Transient: after a relaunch they're read again (`GET /v1/profile/story`).
+    var story: [StoryCard]?
+    var storyLoading = false
+    /// no story could be had: I04 falls back to the six rows as text
+    var storyFailed = false
+    /// "Got it. I'll remember that." under a card the user just corrected, by card id
+    var storyAck: [String: String] = [:]
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
@@ -198,6 +205,7 @@ struct SavedSetup: Codable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
+            story = nil; storyAck = [:]; storyFailed = false
         }
         setup.accountId = id
     }
@@ -218,6 +226,7 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        story = nil; storyAck = [:]; storyFailed = false
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {
