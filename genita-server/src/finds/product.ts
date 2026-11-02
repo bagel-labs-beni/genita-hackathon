@@ -143,6 +143,13 @@ export function writeUpPrompt(searchPrompt: string, opened: string[]): string {
   ].join("\n\n");
 }
 
+/** Card names stay short (r03 column is ~150 pt): cut at a word under 48 characters. */
+export function shortName(s: string): string {
+  if (s.length <= 48) return s;
+  const cut = s.slice(0, 48);
+  return cut.slice(0, cut.lastIndexOf(" ") > 20 ? cut.lastIndexOf(" ") : 48).replace(/[\s,;:–-]+$/, "") + "…";
+}
+
 /** Keep a product page: the page says product → yes; says list → no; can't tell → URL shape must not be a list. */
 export function isProductPage(url: string, facts: PageFacts | null): boolean {
   if (hardList(url)) return false;
@@ -217,7 +224,7 @@ export function productPrompt(o: { question: string; recent: string[]; taste: st
 2. Open each candidate's own product page with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. Open ${PRODUCT_COUNT + 1} candidates so ${PRODUCT_COUNT} survive.
 3. Only if they named a day or a trip ("this weekend", "next week"), search once for the forecast${o.city ? ` in ${o.city}` : ""}.
 Be quick: at most 2 product searches, then open the pages.`,
-    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "product name as on its page", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "one short spoken line under 10 words with the shared taste reason and no product names, e.g. Two options. Simple cuts, like you prefer."}`,
+    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "one short spoken line under 10 words with the shared taste reason and no product names, e.g. Two options. Simple cuts, like you prefer."}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -328,7 +335,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     const domain = domainOf(p.url);
     // price: the page's own markup first; the model's reading only when we could not read the page
     const price = f?.price ?? (f ? undefined : cleanPrice(str(p.item.price, 30)));
-    const name = str(p.item.name, 80) || f?.title || domain;
+    const name = shortName(str(p.item.name, 200) || f?.title || domain);
     const picture = f?.image ?? (allowedImage(str(p.item.image, 600)) ?? undefined);
     products.push({
       id: `p${products.length + 1}`,

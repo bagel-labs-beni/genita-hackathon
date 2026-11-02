@@ -1,5 +1,5 @@
 /**
- * npm run product:e2e [-- --runs=10 --out=<file.json>]
+ * npm run product:e2e [-- --runs=10 --out=<file.json> --record=<events.json>]
  *
  * #119 acceptance on real vendors (Spark web_search + the page reader). Runs the
  * product pipeline for 10 different spoken asks with one imported taste, and
@@ -28,6 +28,7 @@ const args = process.argv.slice(2);
 const arg = (k: string, d: string) => args.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? d;
 const runs = Number(arg("runs", "10"));
 const out = arg("out", "");
+const record = arg("record", ""); // write the first full card's events (app fixture for PF-1)
 
 const LIKES = ["Clean, minimal clothes. Understated colors.", "Mostly black, grey and navy; no loud logos."];
 const ASKS = [
@@ -107,6 +108,9 @@ for (let i = 0; i < runs; i++) {
     traceOpens: [...opened].length,
   };
   results.push(row);
+  if (record && card && urls.length === 2 && !existsSync(record)) {
+    writeFileSync(record, JSON.stringify({ kind: "product", ask, events: events.map((x) => ({ t: Math.round(x.t), ...x.e })) }, null, 2));
+  }
   console.log(JSON.stringify(row));
 }
 const ms = results.map((r) => r.cardMs as number | null).filter((v): v is number => v !== null).sort((a, b) => a - b);

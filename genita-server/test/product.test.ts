@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, httpsOf, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, httpsOf, shortName, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { likesFromStyle } from "../src/finds/setup.ts";
@@ -284,4 +284,9 @@ test("product pipeline: a URL the search didn't open counts only if our own read
   assert.deepEqual(card.products!.map((p) => [p.url, p.price ?? null]), [[INVENTED, "$40"], [P2, null]]);
   const v2 = vendors({ items: [{ ...ITEM1, url: INVENTED }, ITEM2], output: [OPEN(P2)], facts: { [INVENTED]: { kind: "unknown" } } });
   assert.deepEqual((await runProduct(ctxFor(v2).ctx)).card!.products!.map((p) => p.url), [P2], "readable but not a product page → not proof");
+});
+
+test("product names stay short at a word boundary", () => {
+  assert.equal(shortName("Cotton chore jacket"), "Cotton chore jacket");
+  assert.equal(shortName("Anna-Kaci Active Men's Lightweight Zip-Up Windbreaker Jacket with High Collar and Elastic Cuffs"), "Anna-Kaci Active Men's Lightweight Zip-Up…");
 });
