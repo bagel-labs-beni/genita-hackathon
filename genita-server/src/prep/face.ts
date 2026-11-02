@@ -22,6 +22,7 @@
  */
 import type { SamBox } from "../meta/sam.ts";
 import type { CompanionKind } from "./prompts.ts";
+import { profileMouthKeys, profilePrompt, type FlowProfile } from "./profiles.ts";
 
 export const FACE_EXPRESSIONS = ["blink", "smile", "warm"] as const;
 export const VISEMES = ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"] as const;
@@ -33,9 +34,15 @@ export const VISEMES = ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"
 export const MOUTH_KEYS = ["MID", "AH", "AH2", "EH", "OH"] as const;
 export type FaceExpression = (typeof FACE_EXPRESSIONS)[number];
 export type Viseme = (typeof VISEMES)[number];
-export type MouthKey = (typeof MOUTH_KEYS)[number];
+/** Non-human profile keys (prep-py/profiles.json): animal J2/J3, cat C2, 2D anime SM/WD/OO/EE. */
+export const PROFILE_KEYS = ["J2", "J3", "C2", "SM", "WD", "OO", "EE"] as const;
+export type ProfileKey = (typeof PROFILE_KEYS)[number];
+export type MouthKey = (typeof MOUTH_KEYS)[number] | ProfileKey;
 export type FaceKey = FaceExpression | Viseme | MouthKey;
+/** The human face set (and the default when no profile is known). */
 export const FACE_KEYS: readonly FaceKey[] = [...FACE_EXPRESSIONS, ...VISEMES, ...MOUTH_KEYS];
+/** Every key any profile can make (route allow-list). */
+export const ALL_FACE_KEYS: readonly FaceKey[] = [...FACE_KEYS, ...PROFILE_KEYS];
 
 /**
  * Per-category mouth keys and prompt lines for the flow morph. Every kind gets the five keys today;
@@ -43,12 +50,14 @@ export const FACE_KEYS: readonly FaceKey[] = [...FACE_EXPRESSIONS, ...VISEMES, .
  * A key left out of a kind's list is never generated for it (the device resolves it via map.fallback).
  */
 export const MOUTH_KEYS_BY_KIND: Record<CompanionKind, readonly MouthKey[]> = { human: MOUTH_KEYS, animal: MOUTH_KEYS, character: MOUTH_KEYS };
+const ALL_MOUTH = new Set<string>([...MOUTH_KEYS, ...PROFILE_KEYS]);
 export const MOUTH_PROMPT_BY_KIND: Partial<Record<CompanionKind, Partial<Record<MouthKey, string>>>> = {};
 
-/** Keys a face set of this kind is made of. */
-export function faceKeysFor(kind: CompanionKind): readonly FaceKey[] {
-  const mouth = new Set<string>(MOUTH_KEYS_BY_KIND[kind] ?? MOUTH_KEYS);
-  return FACE_KEYS.filter((k) => !(MOUTH_KEYS as readonly string[]).includes(k) || mouth.has(k));
+/** Keys a face set of this kind (and mouth profile, when known) is made of: expressions + visemes + mouth keys. */
+export function faceKeysFor(kind: CompanionKind, profile?: FlowProfile): readonly FaceKey[] {
+  const fromProfile = profile ? profileMouthKeys(profile) : null;
+  const mouth = new Set<string>(fromProfile ?? MOUTH_KEYS_BY_KIND[kind] ?? MOUTH_KEYS);
+  return ALL_FACE_KEYS.filter((k) => !ALL_MOUTH.has(k) || mouth.has(k));
 }
 export const FACE_CONCURRENCY = 6;
 
@@ -70,6 +79,9 @@ export type FaceState = {
   ms: { total: number; edits: number; sam: number };
   /** optical-flow morph data (prep/faceflow.ts), file values are asset names; absent = patches only */
   flow?: FaceFlow | null;
+  /** mouth profile and the keys this set is made of (absent on sets from before 11/3 = FACE_KEYS) */
+  profile?: FlowProfile;
+  keys?: FaceKey[];
 };
 
 /** `flow` block written by prep-py/faceflow.py (see that file for the binary format). */
@@ -79,7 +91,8 @@ export type FaceFlow = {
   size: [number, number];
   flowSize: [number, number];
   keys: string[];
-  files: Record<string, { key: string; nk: string; kn: string }>;
+  /** nk/kn absent when the profile does not morph (character2d snaps between drawings) */
+  files: Record<string, { key: string; nk?: string; kn?: string }>;
   mask: string;
   neutralRoi: string;
   lockY: number;
@@ -126,7 +139,7 @@ const SHAPE: Record<Viseme, [string, string]> = {
 };
 
 /** Conversational mouth keys: [human wording, wording for a muzzle, beak or drawn mouth]. Tested 11/3 on T9 / dog / clay = the v7 demo set (critic 7/10 vs Peter). Dark-interior rewrites were tried and lost (bigger openings, fewer visible teeth); see sweep s25–s31. */
-const MOUTH: Record<MouthKey, [string, string]> = {
+const MOUTH: Record<(typeof MOUTH_KEYS)[number], [string, string]> = {
   MID: [
     "the person is talking on a video call, caught mid-word with the lips relaxed and slightly parted, the upper front teeth just visible, the jaw lowered very slightly, as in the middle of saying 'uh'",
     "caught mid-sound with the mouth just slightly open, a thin gap between the lips, the jaw lowered very slightly",
@@ -148,7 +161,11 @@ const MOUTH: Record<MouthKey, [string, string]> = {
     "caught mid-sound saying 'oh', the mouth softly rounded and a little open",
   ],
 };
-const isMouthKey = (k: FaceKey): k is MouthKey => (MOUTH_KEYS as readonly string[]).includes(k);
+const isMouthKey = (k: FaceKey): k is MouthKey => ALL_MOUTH.has(k);
+const isProfileKey = (k: FaceKey): k is ProfileKey => (PROFILE_KEYS as readonly string[]).includes(k);
+/** Profile context for prompts: which non-human set, and the classified species for `{species}`. */
+export type PromptCtx = { profile?: FlowProfile; species?: string };
+const HOLD = "Do not move, resize, rotate or re-crop: the head stays at exactly the same position and size in the frame.";
 
 const EXPRESSION: Record<FaceExpression, [string, string]> = {
   blink: ["both eyes fully closed in a natural relaxed blink", "both eyes fully closed in a natural relaxed blink"],
@@ -165,12 +182,16 @@ function region(key: FaceKey, kind: CompanionKind): { part: string; keep: string
   return { part: mouth, keep: "hair, eyes" };
 }
 
-export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolean): string {
+export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolean, ctx: PromptCtx = {}): string {
+  // non-human profiles bring whole prompts (tested by the non-human lane); strict adds the hold-still line
+  const own = ctx.profile ? profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species) : null;
+  if (own) return strict ? `${own} ${HOLD}` : own;
+  if (isProfileKey(key)) throw new Error(`face set: no prompt for ${key} in profile ${ctx.profile ?? "-"}`);
   const s = NOUN[kind];
   const { part, keep } = region(key, kind);
   const line =
     (isMouthKey(key) ? MOUTH_PROMPT_BY_KIND[kind]?.[key] : undefined) ??
-    (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
+    (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key as (typeof MOUTH_KEYS)[number]] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
   const base = `Edit only the ${s}'s ${part}: ${line}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
   // the mouth keys always carry the hold-still line (that is how they were tested), and never smile
@@ -180,7 +201,7 @@ export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolea
 }
 
 /** The sound each viseme is caught on, for the soft prompt. */
-const SOUND: Record<Viseme | MouthKey, string> = {
+const SOUND: Record<Viseme | (typeof MOUTH_KEYS)[number], string> = {
   MBP: "'mm'", FV: "'f'", TH: "'th'", L: "'l'", WQ: "'w'", O: "'oh'", EI: "'ee'", A: "'ah'", U: "'oo'", CDG: "'s'",
   MID: "'uh', lips just parted", AH: "'ah', mouth a little open", AH2: "an open 'ah'", EH: "'eh'", OH: "a relaxed 'oh'",
 };
@@ -190,11 +211,15 @@ const SOUND: Record<Viseme | MouthKey, string> = {
  * pass on one scene and be refused on the next). It describes a moment of
  * speech instead of a mouth shape: "caught mid-word saying 'ah'".
  */
-export function faceSoftPrompt(key: FaceKey, kind: CompanionKind): string {
+export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx = {}): string {
+  // profile keys: the lane's own fallback (cat: the C2 prompt), else the same prompt again
+  if (isProfileKey(key) || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
+    return (ctx.profile === "animal" ? profilePrompt("cat", "C2", ctx.species) : null) ?? faceEditPrompt(key, kind, false, ctx);
+  }
   const s = NOUN[kind];
   const { part, keep } = region(key, kind);
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
-  const moment = key in SOUND ? `the ${s} is talking on a video call, caught mid-word saying ${SOUND[key as Viseme | MouthKey]}` : `the ${s} on a video call with ${EXPRESSION[key as FaceExpression][kind === "human" ? 0 : 1]}`;
+  const moment = key in SOUND ? `the ${s} is talking on a video call, caught mid-word saying ${SOUND[key as Viseme]}` : `the ${s} on a video call with ${EXPRESSION[key as FaceExpression][kind === "human" ? 0 : 1]}`;
   return `Photo edit of the same video call frame: ${moment}. Change only the ${part}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
 }
 
@@ -276,6 +301,9 @@ export type FaceSetInput = {
   size: string;
   /** saved state of an interrupted run */
   prev?: FaceState | null;
+  /** mouth profile (from the image check) and species for the profile prompts */
+  profile?: FlowProfile;
+  species?: string;
   /** persist one settled key (bytes for a kept edit) before it counts */
   onItem?: (key: FaceKey, item: FaceItem, bytes: Buffer | null) => Promise<void>;
   /** the scene's own boxes, once known (saved so a resume skips them) */
@@ -359,7 +387,8 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     let last: FaceReject | null = null;
     for (const retry of [false, true]) {
       // first try: the shape prompt; retry: stricter after drift, speech framing after a content-policy refusal
-      const prompt = !retry ? faceEditPrompt(key, o.kind, false) : last === "content_policy" ? faceSoftPrompt(key, o.kind) : faceEditPrompt(key, o.kind, true);
+      const ctx = { profile: o.profile, species: o.species };
+      const prompt = !retry ? faceEditPrompt(key, o.kind, false, ctx) : last === "content_policy" ? faceSoftPrompt(key, o.kind, ctx) : faceEditPrompt(key, o.kind, true, ctx);
       try {
         const r = await attempt(key, prompt);
         if (typeof r !== "string") {
@@ -381,7 +410,12 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     state.items[key] = item;
   };
 
-  const todo = faceKeysFor(o.kind).filter((k) => !state.items[k]);
+  const plan = faceKeysFor(o.kind, o.profile);
+  if (o.profile) {
+    state.profile = o.profile;
+    state.keys = [...plan];
+  }
+  const todo = plan.filter((k) => !state.items[k]);
   let next = 0;
   let failure: { err: unknown } | null = null;
   const lanes = Math.min(o.concurrency ?? FACE_CONCURRENCY, todo.length);
@@ -433,7 +467,7 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) =>
   const mouthKeys: FaceManifest["mouthKeys"] = {};
   const boxes: Record<string, FaceBoxes> = { neutral: s.ref };
   const rejected: FaceManifest["rejected"] = [];
-  for (const k of FACE_KEYS) {
+  for (const k of s.keys ?? FACE_KEYS) {
     const it = s.items[k];
     if (!it) continue;
     if (it.status === "rejected") {
@@ -448,7 +482,9 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) =>
   const flow = s.flow
     ? {
         ...s.flow,
-        files: Object.fromEntries(Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), nk: flowUrl(f.nk), kn: flowUrl(f.kn) }])),
+        files: Object.fromEntries(
+          Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}) }]),
+        ),
         mask: flowUrl(s.flow.mask),
         neutralRoi: flowUrl(s.flow.neutralRoi),
       }

@@ -1,0 +1,307 @@
+{
+ "_note": "Nonhuman lane per-category profiles. Merge over faceflow.py BASE_MAP (PROFILE[kind]). New runtime fields: drive, jaw, cap, minHold, onTwos, snap, blink, earTwitch. New prep fields: prep.*",
+ "animal": {
+  "keys": [
+   "J2",
+   "J3"
+  ],
+  "drive": "open",
+  "jaw": {
+   "floor": 0.0,
+   "gain": 1.45,
+   "gamma": 1.0,
+   "mbpClose": 1.0,
+   "steps": [
+    [
+     "J2",
+     0.4
+    ],
+    [
+     "J3",
+     1.0
+    ]
+   ],
+   "vowel": {
+    "A": 1.0,
+    "O": 0.8,
+    "EI": 0.7,
+    "U": 0.5,
+    "other": 0.4
+   }
+  },
+  "cap": {
+   "J3": 0.85
+  },
+  "smoothing": {
+   "fps": 25,
+   "attack": 0.75,
+   "release": 0.5
+  },
+  "slew": 0.25,
+  "focus": 6.0,
+  "lookaheadMs": 0,
+  "dissolve": {
+   "mode": "snap",
+   "ms": 40,
+   "minAmount": 0.3
+  },
+  "minHold": 3,
+  "holdFrames": {
+   "MBP": 2
+  },
+  "blink": {
+   "mode": "lidFlow",
+   "max": 0.6,
+   "profile": [
+    0.45,
+    1,
+    1,
+    0.55,
+    0.2
+   ],
+   "gapS": [
+    2.6,
+    4.8
+   ]
+  },
+  "earTwitch": {
+   "deg": 5,
+   "gapS": [
+    2.8,
+    5.0
+   ],
+   "profile": [
+    0.55,
+    1.0,
+    0.8,
+    0.45,
+    0.2,
+    0.05,
+    0,
+    -0.08,
+    0
+   ]
+  },
+  "sway": 0.5,
+  "prep": {
+   "mask": {
+    "rx": 0.3,
+    "ry": 0.42,
+    "dy": 0.14
+   },
+   "sam": [
+    "the animal's head",
+    "the <species>'s nose",
+    "the <species>'s mouth",
+    "the <species>'s eyes",
+    "the <species>'s ears"
+   ]
+  },
+  "swayInterp": "cubic",
+  "prompts": {
+   "J2": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking, its lower jaw lowered halfway: mouth half open, the tongue stays inside the mouth with only a little of its tip visible behind the small lower front teeth, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo.",
+   "J3": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking with its lower jaw lowered halfway: mouth clearly open, the tongue lying low and flat on the floor of the mouth and mostly hidden behind the lower teeth, small white lower teeth visible, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo.",
+   "BLINK": "Edit this exact photo. Keep everything identical: same {species}, same face, fur, mouth, head position, framing, lighting and background. Only change: the eyes are gently closed, as in the middle of a natural blink. Natural photo.",
+   "_notes": "Muse content filter (400 content_policy_violation) trips on 'fangs', 'canines', 'bared', 'hiss' and big-open-mouth cat prompts. Keep 'talking / softly meowing / calm, friendly'. Cats: if J2/J3 is filtered, retry once with the cat override prompt."
+  },
+  "neutralFlow": 0.0,
+  "shownFloor": 0.6
+ },
+ "cat_override": {
+  "_when": "species is a cat (or the J3 prompt is filtered): a single open key, small openings drawn by flow only",
+  "keys": [
+   "C2"
+  ],
+  "jaw": {
+   "gain": 1.4,
+   "gamma": 0.85,
+   "steps": [
+    [
+     "C2",
+     0.9
+    ]
+   ],
+   "vowel": {
+    "A": 1.0,
+    "O": 0.8,
+    "EI": 0.7,
+    "U": 0.55,
+    "other": 0.35
+   }
+  },
+  "cap": {},
+  "snapMin": 0.3,
+  "earTwitch": {
+   "deg": 8
+  },
+  "prompts": {
+   "C2": "Edit this exact photo. Keep the same cat, same fur, markings, eyes, nose, whiskers, head position, framing, lighting and background. The nose and the split upper lip under it stay exactly where they are. Only change: the cat is meowing, its small mouth open a bit wider, the rounded lower jaw lowered, pink inner mouth and the pink tongue resting inside the mouth visible, upper lip shape unchanged. Calm, sweet, natural photo."
+  },
+  "neutralFlow": 0.0,
+  "prep": {
+   "lineBoost": {
+    "k": 2.0,
+    "sigmaPx1024": 4,
+    "_what": "dark local detail x k inside a feathered mouth ellipse on the companion still (lineboost.py) so the closed mouth line is crisp"
+   }
+  }
+ },
+ "character3d": {
+  "keys": [
+   "MID",
+   "AH",
+   "AH2",
+   "EH",
+   "OH",
+   "U",
+   "FV"
+  ],
+  "ladder": {
+   "viseme": "A",
+   "steps": [
+    [
+     "MID",
+     0.0
+    ],
+    [
+     "AH",
+     0.2
+    ],
+    [
+     "AH2",
+     0.45
+    ]
+   ],
+   "gain": [
+    0.8,
+    0.4
+   ]
+  },
+  "gain": 1.8,
+  "cap": {
+   "OH": 0.6
+  },
+  "dissolve": {
+   "mode": "snap",
+   "ms": 40,
+   "minAmount": 0.3
+  },
+  "minHold": 2,
+  "onTwos": true,
+  "slew": 0.25,
+  "focus": 6.0,
+  "holdFrames": {
+   "MBP": 2
+  },
+  "blink": {
+   "mode": "flowSnap",
+   "profile": [
+    0.45,
+    1,
+    1,
+    0.55,
+    0.2
+   ],
+   "colourAt": 0.75
+  },
+  "sway": 0.5,
+  "prep": {
+   "squash": {
+    "OH": 0.65,
+    "AH": 1.2,
+    "AH2": 1.3
+   },
+   "_squash": "vertical scale of the mouth opening about the upper lip, smooth falloff (faceflow.py --squash)"
+  },
+  "swayInterp": "cubic",
+  "prompts": {
+   "_source": "B-lane v6 character keys (keys-char/set, muse-log) \u2014 same prompts as the human prep with the clay tail: 'Keep the character's identity, face, freckles, hair, eyes, eyebrows, nose, clay texture, lighting, background, framing and camera exactly the same. Keep the original clay art style. Neutral relaxed expression, not smiling. Do not move, resize, rotate or re-crop\u2026'",
+   "BLINK": "Edit this exact image of a handmade clay stop-motion character. Keep everything identical: same clay texture, colours, face, mouth, pose, framing, lighting and background. Only change: the eyes are gently closed with smooth clay eyelids, as in the middle of a blink."
+  }
+ },
+ "character2d": {
+  "keys": [
+   "SM",
+   "WD",
+   "OO",
+   "EE"
+  ],
+  "drive": "snap",
+  "snap": {
+   "hold": 2,
+   "minHold": 2,
+   "closedBelow": 0.12,
+   "rules": [
+    [
+     [
+      "A"
+     ],
+     0.6,
+     "WD",
+     3
+    ],
+    [
+     [
+      "O",
+      "U",
+      "WQ"
+     ],
+     0.0,
+     "OO"
+    ],
+    [
+     [
+      "EI"
+     ],
+     0.4,
+     "EE"
+    ],
+    [
+     [
+      "A",
+      "EI",
+      "CDG",
+      "TH",
+      "L",
+      "FV"
+     ],
+     0.0,
+     "SM"
+    ]
+   ],
+   "default": "SM",
+   "_rule": "[visemes, min loudness, key, optional minRun frames]; rest / MBP / loudness<closedBelow -> neutral (closed line)"
+  },
+  "flow": false,
+  "blink": {
+   "mode": "snap2d",
+   "frames": 3
+  },
+  "sway": 0.6,
+  "swayInterp": "cubic",
+  "prep": {
+   "mask": "diff",
+   "fit": {
+    "SM": 0,
+    "WD": 0.8,
+    "EE": 1.12,
+    "OO": 0
+   },
+   "cleanPlate": true
+  },
+  "prompts": {
+   "SM": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is slightly open, a small soft open mouth shape with a flat dark red-brown inside, no teeth.",
+   "WD": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is open wide as if saying 'ah': a large rounded open mouth with a flat dark red-brown inside, a flat pink tongue shape at the bottom and a thin flat white strip of upper teeth at the top.",
+   "OO": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth forms a small round 'o' shape as if saying 'oh', with a flat dark red-brown inside.",
+   "EE": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is a wide, flat, slightly open shape as if saying 'ee' with a smile: a flat white strip along the top of the mouth and a thin flat dark red-brown gap below it.",
+   "BLINK": "Edit this exact anime illustration. Keep everything identical: same line art and line weight, flat colours, hair, face, mouth, pose, framing and background. Only change: both eyes are closed, each drawn as one clean curved dark line with a few lashes, flat skin colour above it, no extra eyelid lines, no shading, as in a blink.",
+   "_neutral": "neutral = the scene image (closed mouth line); SM/WD/OO/EE are edits of it"
+  }
+ },
+ "_fields": {
+  "neutralFlow": "when the snap shows neutral, scale its flow warp (0 = untouched neutral texture)",
+  "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
+  "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
+ },
+ "_status": "FINAL 03:2x KST \u2014 critic: anime 8 (v5), clay 6 (v7), dog 6.5 (v8), cat v9 pending. Exports: export-{animal,animal-cat,character3d,character2d}/"
+}

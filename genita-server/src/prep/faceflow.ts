@@ -16,12 +16,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CompanionKind } from "./prompts.ts";
 import type { FaceFlow, FaceKey, FaceState } from "./face.ts";
-import { MOUTH_KEYS, VISEMES } from "./face.ts";
+import { MOUTH_KEYS, PROFILE_KEYS, VISEMES } from "./face.ts";
+import { profileMouthKeys, type FlowProfile } from "./profiles.ts";
 
 export const FACEFLOW_SCRIPT = fileURLToPath(new URL("../../prep-py/faceflow.py", import.meta.url));
 export const FACEFLOW_TIMEOUT_MS = 90_000;
 /** Keys the runtime morphs between (expressions are not part of the mouth morph). */
-export const FLOW_KEYS: readonly FaceKey[] = [...VISEMES, ...MOUTH_KEYS];
+export const FLOW_KEYS: readonly FaceKey[] = [...VISEMES, ...MOUTH_KEYS, ...PROFILE_KEYS];
 
 /** faceflow.py file name -> asset name (store ids are [A-Za-z0-9_-] only). */
 export function flowAssetName(file: string): string | null {
@@ -38,7 +39,7 @@ export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   const out = new Set<string>();
   if (!flow) return out;
   out.add(flow.mask).add(flow.neutralRoi);
-  for (const f of Object.values(flow.files)) out.add(f.key).add(f.nk).add(f.kn);
+  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn]) if (a) out.add(a);
   return out;
 }
 
@@ -63,6 +64,8 @@ export type FaceflowInput = {
   scene: Buffer;
   state: FaceState;
   kind: CompanionKind;
+  /** mouth profile (faceflow.py --kind); defaults to the companion kind */
+  profile?: FlowProfile;
   /** bytes of a kept key image (null = not available) */
   image: (key: FaceKey) => Promise<Buffer | null>;
   put: (asset: string, bytes: Buffer) => Promise<void>;
@@ -103,7 +106,9 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
   try {
     const ext = extOf(o.scene);
     await writeFile(join(dir, `neutral.${ext}`), o.scene);
-    for (const k of FLOW_KEYS) {
+    // non-human profiles morph only their own keys (2D: the diff mask must see only the mouth drawings)
+    const wanted = (o.profile ? profileMouthKeys(o.profile) : null) ?? FLOW_KEYS;
+    for (const k of wanted as FaceKey[]) {
       o.signal?.throwIfAborted();
       if (o.state.items[k]?.status !== "done") continue;
       const b = await o.image(k);
@@ -115,6 +120,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     const out = join(dir, "out");
     // keys may differ in format from the scene: pass full paths
     const args = faceflowArgs({ dir, out, keys: [], ext, state: o.state, kind: o.kind });
+    if (o.profile) args[args.indexOf("--kind") + 1] = o.profile;
     args[3] = keys.map((f) => `${f.split(".")[0]}=${join(dir, f)}`).join(",");
     const nose = o.nose ? await o.nose().catch(() => null) : null;
     if (nose) args.push("--nose", fmt(nose));
@@ -129,7 +135,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       return a;
     };
     const files: FaceFlow["files"] = {};
-    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), nk: rename(f.nk), kn: rename(f.kn) };
+    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);

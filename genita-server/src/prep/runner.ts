@@ -8,6 +8,7 @@ import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
+import { flowProfileOf, type FlowProfile } from "./profiles.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
@@ -46,8 +47,9 @@ export function prepProgress(p: PrepState): { done: number; total: number } {
   let total = 1;
   const f = p.steps.face;
   if (f?.status !== "skipped") {
-    total += FACE_KEYS.length;
-    done += f?.status === "done" ? FACE_KEYS.length : Object.keys(f?.face?.items ?? {}).length;
+    const n = f?.face?.keys?.length ?? FACE_KEYS.length;
+    total += n;
+    done += f?.status === "done" ? n : Object.keys(f?.face?.items ?? {}).length;
   }
   return { done, total };
 }
@@ -257,8 +259,14 @@ export class PrepRunner {
     await setStep("face", { status: "running", attempts: fs.attempts + 1, error: undefined });
     const companionId = c.id;
     const userId = c.userId;
+    // mouth profile from the image check (species / character style); a resumed set keeps its own
+    const raw = fs.face?.profile ? null : (await d.store.getImage(c.imageId).catch(() => null))?.rec.check.raw;
+    const profile: FlowProfile = fs.face?.profile ?? flowProfileOf(c.type, raw);
+    const species = raw?.species || undefined;
     try {
       const out = await makeFaceSet({
+        profile,
+        species,
         metaKey: d.metaKey,
         media: mediaOf(d),
         scene,
@@ -281,6 +289,7 @@ export class PrepRunner {
       if (d.python) {
         out.flow = await makeFaceFlow({
           python: d.python,
+          profile,
           scene,
           state: out,
           kind: c.type,

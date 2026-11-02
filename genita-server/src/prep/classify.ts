@@ -32,6 +32,10 @@ export type ClassifyRaw = {
   sharp: boolean;
   well_lit: boolean;
   text_on_image: boolean;
+  /** 11/3, mouth profiles: the animal's species in one or two words ("dog", "cat"); "" otherwise */
+  species?: string;
+  /** 11/3, mouth profiles: drawn / flat ("2d") or rendered / clay / toy ("3d"); "none" for photos */
+  character_style?: "2d" | "3d" | "none";
 };
 
 export const CLASSIFY_SCHEMA = {
@@ -44,8 +48,10 @@ export const CLASSIFY_SCHEMA = {
     sharp: { type: "boolean" },
     well_lit: { type: "boolean" },
     text_on_image: { type: "boolean" },
+    species: { type: "string" },
+    character_style: { type: "string", enum: ["2d", "3d", "none"] },
   },
-  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image"],
+  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image", "species", "character_style"],
   additionalProperties: false,
 } as const;
 
@@ -57,6 +63,8 @@ const CLASSIFY_PROMPT = [
   "face_covered: true if a mask, hand, object, hair or heavy shadow hides the eyes, nose or mouth.",
   "sharp: false if the face is noticeably blurry or out of focus. well_lit: false if the face is too dark to see its features.",
   "text_on_image: true if there is a caption, watermark, sticker text or large printed text over the image.",
+  "species: for an animal, its species in one or two plain words (e.g. dog, cat, rabbit); otherwise an empty string.",
+  "character_style: for a character, 2d = flat drawn / anime / cartoon / illustration with line art; 3d = 3D render, clay, toy or CGI; if unsure, 3d. For a person or an animal: none.",
 ].join("\n");
 
 export function buildClassifyRequest(imageDataUrl: string): SparkRequest & { schemaName: string; schema: Record<string, unknown> } {

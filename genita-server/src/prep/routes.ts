@@ -28,7 +28,7 @@ import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
-import { FACE_KEYS, type FaceKey } from "./face.ts";
+import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
 import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
@@ -70,7 +70,7 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
+const FACE_ASSETS = new Set<string>(["neutral", ...ALL_FACE_KEYS]);
 
 /** All companion kinds animate the Meta face set on the device. */
 function sessionLip(_c: CompanionRecord): "none" {
