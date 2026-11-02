@@ -85,12 +85,13 @@ struct CompanionFaceLoader: Sendable {
         // Every image the manifest names, by its manifest key (also the cache file name).
         var refs: [String: String] = [:]
         for (k, ref) in manifest.images.merging(manifest.visemes, uniquingKeysWith: { a, _ in a }) where Self.safeName(k) { refs[k] = ref }
-        // Option B flow morph files (#226): extension-less refs, decoded by role (key image, f16 flow, mask).
+        // Option B flow morph files (#226): extension-less refs, decoded by role (key image, f16 flow, lip /
+        // interior masks, …). Every file the entry names is fetched, so a role GenitaKit adds later comes along.
         var flowNames: Set<String> = []
         if let flow = manifest.flow {
             for (k, f) in flow.files where Self.safeName(k) {
-                for (role, ref) in [("key", f.key as String?), ("nk", f.nk), ("kn", f.kn), ("lip", f.lip)] {
-                    guard let ref else { continue }   // 2D snap faces have no flows
+                for child in Mirror(reflecting: f).children {
+                    guard let role = child.label, let ref = child.value as? String else { continue }   // 2D snap faces have no flows
                     refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)")
                 }
             }
