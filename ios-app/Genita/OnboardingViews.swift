@@ -78,6 +78,13 @@ struct RootView: View {
         }
     }
 
+    /// A quiet re-ask while the voice service wakes: only a good answer changes the list (keeps the pick's row).
+    func refresh(client: OnboardingClient, imageId: String?) async {
+        guard let r = try? await client.voices(imageId: imageId), r.available ?? true, !r.voices.isEmpty else { return }
+        voices = Array(r.voices.prefix(4))
+        available = true
+    }
+
     /// Play (or stop) one clip. A 503 / offline turns the list grey instead of showing an error.
     func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient) {
         if playing == voice.id || fetching == voice.id { stop(); return }
