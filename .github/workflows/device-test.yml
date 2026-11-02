@@ -219,6 +219,7 @@ jobs:
         run: |
           APP=ios-app/build/Release/GenitaMac.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "$BUILD_NUMBER"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$MAC_VERSION"
           /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" > /dev/null
           test -d "$APP/Contents/Frameworks/Sparkle.framework" || { echo "::error::Sparkle.framework is not embedded"; ls -la "$APP/Contents/Frameworks" || true; exit 1; }
@@ -330,6 +331,11 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null
           spctl -a -t exec -vv "$MNT/GenitaMac.app"
           codesign --verify --deep --strict "$MNT/GenitaMac.app"
+          # Sparkle compares versions: the shipped app must carry both, equal to this run's numbers
+          V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          echo "DMG app: $SV ($V)"
+          test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           hdiutil detach "$MNT" >/dev/null
           shasum -a 256 "$DMG"
           {
