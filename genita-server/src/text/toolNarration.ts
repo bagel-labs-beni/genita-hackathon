@@ -13,11 +13,11 @@ const INTENT = new RegExp(`^(?:i'll|i will|let me) ${LOOKUP}$`);
 const SEPARATOR = `[${CLAUSE_SEPARATORS} ]+`;
 const WAIT = "(?:one sec(?:ond)?|give me a sec(?:ond)?|just a moment)";
 const KOREAN_WAIT = "(?:잠깐|잠시만요?|잠시)";
-const INTERJECTION = "(?:hm+|um+|uh+|oh|ah|well)";
-const STANDALONE_INTERJECTION = new RegExp(`^${INTERJECTION}[.!?…。！？]+$`, "iu");
+const INTERJECTION = "(?:hm+|mm+|um+|uh+|oh+|ah+|eh+|er+m*|huh|well|ok(?:ay)?|alright)";
+const INTERJECTION_WORD = new RegExp(`^${INTERJECTION}$`, "iu");
 const INTERJECTION_PREFIX = new RegExp(`^(?:${INTERJECTION}${SEPARATOR})+`);
 const WAIT_LOOKUP = new RegExp(`^${WAIT}${SEPARATOR}(?:while i (?:${LOOKUP})|(?:looking (?:that|this|it) up|checking my memory|searching (?:my memory|the web))${QUERY})$`);
-const NARRATION_LEAD = new RegExp(`^(?:${WAIT}|${KOREAN_WAIT}|${INTERJECTION})${SEPARATOR}$`, "iu");
+const NARRATION_LEAD = new RegExp(`^(?:${WAIT}|${KOREAN_WAIT})${SEPARATOR}$`, "iu");
 const KOREAN_LOOKUP = new RegExp(`^(?:${KOREAN_WAIT}${SEPARATOR})?(?:(?:(?:기억을?|네가 말해준 내용을|전에 (?:말한|나눈) (?:내용을|대화를)) )?(?:찾아\\s?볼게요?|확인해\\s?볼게요?)|검색해\\s?볼게요?|기억해\\s?둘게요?)$`, "u");
 const TRAILING_PUNCTUATION = new RegExp(`[${CLAUSE_SEPARATORS}.!?…。！？]+$`, "u");
 
@@ -33,10 +33,14 @@ export function isToolNarration(sentence: string): boolean {
 
 /** Hold a wait or interjection until the following clause can be judged. */
 export function isToolNarrationLead(sentence: string): boolean {
-  return NARRATION_LEAD.test(sentence.trim());
+  return NARRATION_LEAD.test(sentence.trim()) ||
+    (isInterjectionOnly(sentence) && !/[.!?…。！？][\p{P}\s]*$/u.test(sentence));
 }
 
-/** Speak a complete interjection while leaving the next sentence undecided. */
-export function isStandaloneInterjection(sentence: string): boolean {
-  return STANDALONE_INTERJECTION.test(sentence.trim());
+/** Shared by fragment buffering and tool-answer detection, regardless of punctuation. */
+export function isInterjectionOnly(text: string): boolean {
+  // Treat punctuation as a word boundary so merged fragments and full-width
+  // separators work without allowing a filler prefix to hide real words.
+  const words = text.normalize("NFKC").replace(/[\p{P}\s]+/gu, " ").trim();
+  return !!words && words.split(" ").every((word) => INTERJECTION_WORD.test(word));
 }

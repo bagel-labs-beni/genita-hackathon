@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isToolNarration } from "../src/text/toolNarration.ts";
+import { isToolNarration, isToolNarrationLead, isInterjectionOnly } from "../src/text/toolNarration.ts";
 import { SentenceSplitter } from "../src/text/sentences.ts";
 import { loadConfig, type Config } from "../src/config.ts";
 import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
@@ -73,6 +73,33 @@ const negatives = [
 for (const sentence of positives) test(`tool narration: ${sentence}`, () => assert.equal(isToolNarration(sentence), true));
 for (const sentence of negatives) test(`real content: ${sentence}`, () => assert.equal(isToolNarration(sentence), false));
 
+const fillers = ["Hm", "Hmm", "HMMMM", "mm", "mmm", "uh", "uhhh", "um", "ummm", "well", "oh", "ohhh", "ah", "ahhh", "eh", "er", "erm", "huh", "okay", "OK", "alright"];
+const fillerSeparators = [" ", ", ", ". ", "!? ", "…", "，", "、", "；", "：", "。", "！？", "—", "\n\t"];
+for (const filler of fillers) {
+  for (const punctuation of ["", ".", ",", "！", "？", "。", "…", "，", "；", "："]) {
+    test(`interjection only: ${JSON.stringify(filler + punctuation)}`, () => {
+      assert.equal(isInterjectionOnly(` \t${filler}${punctuation}\n`), true);
+    });
+  }
+}
+for (const separator of fillerSeparators) {
+  for (const text of [fillers.join(separator), `Hmm${separator}Hmm`, `Hmm${separator}Hmm.`]) {
+    test(`merged interjections: ${JSON.stringify(text)}`, () => assert.equal(isInterjectionOnly(text), true));
+  }
+  for (const text of [`Hmm${separator}tofu`, `tofu${separator}okay`, `uh${separator}tofu${separator}um`]) {
+    test(`interjections with real words: ${JSON.stringify(text)}`, () => assert.equal(isInterjectionOnly(text), false));
+  }
+}
+for (const text of ["", " \t\n", "，！？…", "Yes!", "No.", "Hmm tofu", "Okay, you like tofu.", "well-being", "ohm", "human", "summary", "okayish", "🤔", "Hmm 🤔"]) {
+  test(`not interjection only: ${JSON.stringify(text)}`, () => assert.equal(isInterjectionOnly(text), false));
+}
+for (const text of ["Hmm", "Hmm,", "Hmm，um", "Okay", "Well, uh，", "Hmm Hmm"]) {
+  test(`buffer interjection fragment: ${JSON.stringify(text)}`, () => assert.equal(isToolNarrationLead(text), true));
+}
+for (const text of ["Hmm.", "Hmm, Hmm.", "Hmm。", "uh！", "Okay?", "Hmm, tofu", "well-being"]) {
+  test(`speak complete interjection or real content: ${JSON.stringify(text)}`, () => assert.equal(isToolNarrationLead(text), false));
+}
+
 for (const separator of [",", ";", ":", "—", "，", "、", "；", "："]) {
   test(`splitter and announcement check agree on ${separator}`, () => {
     const splitter = new SentenceSplitter({ eagerFirstClause: true });
@@ -123,6 +150,46 @@ async function recallTurn(voice: "server" | "device", announcements: string[][],
 }
 
 for (const voice of ["server", "device"] as const) {
+  for (const [lead, followup] of [
+    ["Hmm,", "Hmm."],
+    ["Hmm,", "Hmm"],
+    ["Hmm,", "Hmm, Hmm."],
+    ["Hmm，", "Hmm。"],
+    ["Hmm", "uh um well oh ah okay"],
+    ["Okay,", "OK"],
+    ["Well, uh,", "um，okay！"],
+  ]) test(`round 4: repeated fillers require a real tool answer (${voice}, ${JSON.stringify([lead, followup])})`, async () => {
+    const { events, logs, spoken, answer, followups } = await recallTurn(voice, [[lead]], [followup, "You told me you love tofu."]);
+    assert.equal(followups, 2);
+    assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+    const reply = events.find((e) => e.type === "reply")?.text;
+    assert.ok(reply?.endsWith(answer));
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), reply);
+    assert.equal(events.some((e) => e.type === "error"), false);
+    if (voice === "server") assert.equal(spoken.join(" "), reply);
+    else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), reply);
+  });
+
+  for (const followup of ["Hmm. Hmm", "uh，um；well：oh、ah okay", "Okay"]) {
+    test(`round 4: fillers after both attempts report failure (${voice}, ${JSON.stringify(followup)})`, async () => {
+      const { events, logs, followups } = await recallTurn(voice, [["Hmm,"]], [followup]);
+      assert.equal(followups, 2);
+      assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+      assert.equal(events.some((e) => e.type === "reply"), false);
+      assert.equal(events.filter((e) => e.type === "error" && e.code === "spark_unavailable").length, 1);
+    });
+  }
+
+  for (const followup of ["Hmm, tofu works.", "Hmm tofu", "Okay, you like tofu.", "Well，tofu！", "Yes!"]) {
+    test(`round 4: fillers mixed with real words are an answer (${voice}, ${JSON.stringify(followup)})`, async () => {
+      const { events, logs, followups } = await recallTurn(voice, [["Hmm,"]], [followup]);
+      assert.equal(followups, 1);
+      assert.equal(logs.some((log) => log.event === "spark.empty_retry"), false);
+      assert.ok(events.find((e) => e.type === "reply")?.text.endsWith(followup));
+      assert.equal(events.some((e) => e.type === "error"), false);
+    });
+  }
+
   for (const followup of ["", "<curious> Hmm."]) test(`P2: interjection-only tool turn retries an empty answer (${voice}, ${JSON.stringify(followup)})`, async () => {
     const { events, logs, spoken, answer, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], [followup, "You told me you love tofu."]);
     const expected = ["Hmm.", followup ? "Hmm." : "", answer].filter(Boolean).join(" ");
