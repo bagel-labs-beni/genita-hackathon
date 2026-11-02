@@ -1,6 +1,9 @@
 import Foundation
 import MultipeerConnectivity
 import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Encrypted local peer connection. The Mac advertises a session code; the phone
 /// only invites the Mac whose code the user entered. No web server is required.
@@ -9,7 +12,24 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     @Published var status = "연결 대기"
     @Published var code = ""
     var onMessage: (([String: Any]) -> Void)?
-    private let peer = MCPeerID(displayName: String(ProcessInfo.processInfo.hostName.prefix(40)))
+    // ProcessInfo.hostName does a blocking reverse-DNS lookup on the main thread (37 s on launch).
+    private let peer = MCPeerID(displayName: HandoffLink.peerName(HandoffLink.deviceName))
+    /// MCPeerID throws when the name is over 63 UTF-8 bytes; Korean device names hit that fast.
+    static func peerName(_ name: String) -> String {
+        var out = ""
+        for ch in name {
+            if (out + String(ch)).utf8.count > 60 { break }
+            out.append(ch)
+        }
+        return out.isEmpty ? "Genita" : out
+    }
+    private static var deviceName: String {
+        #if os(macOS)
+        return Host.current().localizedName ?? "Mac"
+        #else
+        return UIDevice.current.name
+        #endif
+    }
     private lazy var session = MCSession(peer: peer, securityIdentity: nil, encryptionPreference: .required)
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?

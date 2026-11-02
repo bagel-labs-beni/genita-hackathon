@@ -189,6 +189,13 @@ import XCTest
         XCTAssertEqual(Array(crop.jpeg), [0xFF, 0xD8])
     }
 
+    func testHandoffPeerNameFitsMultipeerLimit() {
+        let korean = HandoffLink.peerName(String(repeating: "채은의아이폰", count: 10))
+        XCTAssertLessThanOrEqual(korean.utf8.count, 60, "MCPeerID throws over 63 bytes")
+        XCTAssertTrue(korean.hasPrefix("채은의아이폰"))
+        XCTAssertEqual(HandoffLink.peerName(""), "Genita")
+    }
+
     func testFixtureVoicedEndTrimsTrailingSilence() {
         let loud = PCM.data(from: [Int16](repeating: 8000, count: 4800))  // 200 ms
         let quiet = Data(count: 4800 * 2)                                  // 200 ms silence
