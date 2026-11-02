@@ -182,4 +182,27 @@ export class PgPrepStore implements PrepStore {
     await this.blobs.deletePrefix(`users/${userId}/companions/${gone.id}/`);
     return true;
   }
+
+  /** One transaction: delete the demo row (only if it is still the user's demo companion), insert `rec`. Files after commit. */
+  async replaceDemoCompanion(demoId: string, rec: CompanionRecord) {
+    const oldImage = await this.db.tx(async (q) => {
+      const r = await q.query("DELETE FROM companions WHERE user_id = $1 AND id = $2 AND demo RETURNING image_id", [rec.userId, demoId]);
+      if (!r.rows[0]) return null;
+      await this.write(q, rec);
+      const img = String(r.rows[0].image_id);
+      if (img === rec.imageId) return "";
+      await q.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [img, rec.userId]);
+      return img;
+    });
+    if (oldImage === null) return false;
+    // leftovers on a storage hiccup stay under users/<id>/, which DELETE /me removes
+    if (oldImage) await this.blobs.deletePrefix(imageKey(rec.userId, oldImage)).catch(() => 0);
+    await this.blobs.deletePrefix(`users/${rec.userId}/companions/${demoId}/`).catch(() => 0);
+    return true;
+  }
+
+  async deleteImage(userId: string, imageId: string) {
+    await this.db.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [imageId, userId]);
+    await this.blobs.deletePrefix(imageKey(userId, imageId));
+  }
 }

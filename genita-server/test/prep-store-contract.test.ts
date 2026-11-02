@@ -66,8 +66,20 @@ async function demoContract(store: PrepStore, userId: string) {
   assert.equal((await store.getCompanion(userId))!.demo, undefined);
   await store.patchCompanion(userId, (x) => ({ ...x, demo: true }));
   assert.equal((await store.getCompanion(userId))!.demo, true);
+  // replace swaps only the expected demo companion, never a real one
+  const cur = (await store.getCompanion(userId))!;
+  const mine = { ...cur, id: "comp_own", demo: undefined, name: "Mine" };
+  assert.equal(await store.replaceDemoCompanion("other_id", mine), false);
+  assert.equal((await store.getCompanion(userId))!.id, cur.id);
+  assert.equal(await store.replaceDemoCompanion(cur.id, mine), true);
+  assert.equal((await store.getCompanion(userId))!.name, "Mine");
+  assert.equal((await store.getCompanion(userId))!.demo, undefined);
+  assert.ok(await store.getImage(cur.imageId), "a photo the new companion reuses is kept");
+  assert.equal(await store.replaceDemoCompanion("comp_own", { ...mine, id: "comp_x" }), false, "a real companion is never replaced");
   assert.equal(await store.deleteCompanion(userId), true);
   assert.equal(await store.getCompanion(userId), null);
+  await store.deleteImage(userId, cur.imageId);
+  assert.equal(await store.getImage(cur.imageId), null);
   assert.equal(await store.deleteCompanion(userId), false);
   assert.deepEqual(await store.listCompanions(), []);
 }

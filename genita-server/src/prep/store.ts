@@ -91,6 +91,13 @@ export interface PrepStore {
   putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
   /** removes the user's companion (and, on Postgres, its photo and users/<id>/companions/<cid>/ files); false if none */
   deleteCompanion(userId: string): Promise<boolean>;
+  /**
+   * D41: swap the user's demo companion `demoId` for `rec` in one step (the old one's photo and files go,
+   * unless `rec` reuses the photo). False, with nothing written, when the current companion is not that demo one.
+   */
+  replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean>;
+  /** drops one of the user's photos (row + bytes); cleans up a demo seed that failed half-way */
+  deleteImage(userId: string, imageId: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -197,5 +204,24 @@ export class FileStore implements PrepStore {
     if (!c) return false;
     await rm(join(this.dir, `companions/${key}.json`), { force: true });
     return true;
+  }
+  replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean> {
+    const key = safe(rec.userId);
+    const next = (this.locks.get(key) ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        const cur = await this.getCompanion(key);
+        if (!cur || cur.id !== demoId || !cur.demo) return false;
+        await this.putCompanion(rec);
+        return true;
+      });
+    this.locks.set(key, next);
+    return next;
+  }
+  async deleteImage(userId: string, imageId: string) {
+    const rec = await this.read<ImageRecord>(`images/${safe(imageId)}.json`);
+    if (!rec || rec.userId !== userId) return;
+    await rm(join(this.dir, `images/${safe(imageId)}.json`), { force: true });
+    await rm(join(this.dir, `images/${safe(imageId)}.bin`), { force: true });
   }
 }

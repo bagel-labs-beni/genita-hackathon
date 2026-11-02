@@ -78,10 +78,11 @@ async function seed(d: DemoSeedDeps, userId: string, limits: { maxFiles?: number
   if (keys.length > maxFiles) return skip("template_too_big", { files: keys.length });
 
   let bytes = img.bytes.length;
+  let imageId: string | null = null;
   try {
     for (const key of keys) {
       const b = await d.blobs.get(key);
-      if (!b) continue;
+      if (!b) throw new Error(`template file vanished: ${key.slice(from.length)}`); // never a ready companion with holes
       bytes += b.length;
       if (bytes > maxBytes) {
         await d.blobs.deletePrefix(to);
@@ -89,7 +90,7 @@ async function seed(d: DemoSeedDeps, userId: string, limits: { maxFiles?: number
       }
       await d.blobs.put(to + key.slice(from.length), b, sniffImage(b) ?? "application/octet-stream");
     }
-    const imageId = newId();
+    imageId = newId();
     await d.store.putImage({ ...img.rec, id: imageId, userId, createdAt: new Date().toISOString() }, img.bytes);
     const copy: CompanionRecord = {
       ...structuredClone(tpl),
@@ -104,6 +105,7 @@ async function seed(d: DemoSeedDeps, userId: string, limits: { maxFiles?: number
     await d.store.putCompanion(copy);
   } catch (err) {
     await d.blobs.deletePrefix(to).catch(() => {});
+    if (imageId) await d.store.deleteImage(userId, imageId).catch(() => {});
     d.log("demo.failed", { message: String(err).slice(0, 200) });
     return { seeded: false, reason: "copy_failed", ms: ms() };
   }

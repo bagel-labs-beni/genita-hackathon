@@ -207,3 +207,58 @@ test("seed copy is bounded: a template with too many or too large files is skipp
   assert.equal(ok.seeded, true);
   assert.equal(ok.files, 5);
 });
+
+// ── Codex review 11/2 (P1, P2×3) ──
+
+test("two concurrent POST /v1/companion over the demo: one 201, the other 409, the winner survives", async (t) => {
+  const { accounts, call, signIn } = await boot(t);
+  await makeTemplate(accounts);
+  const s = await signIn();
+  await accounts.prepStore.putImage(image("ownA", s.user.id), JPEG);
+  await accounts.prepStore.putImage(image("ownB", s.user.id), JPEG);
+  const [a, b] = await Promise.all([
+    call("POST", "/v1/companion", s.token, { imageId: "ownA", voiceId: VOICES[1].id, name: "A" }),
+    call("POST", "/v1/companion", s.token, { imageId: "ownB", voiceId: VOICES[1].id, name: "B" }),
+  ]);
+  assert.deepEqual([a.status, b.status].sort(), [201, 409]);
+  const won = a.status === 201 ? a.body : b.body;
+  const now = await call("GET", "/v1/companion", s.token);
+  assert.equal(now.body.id, won.id, "the 201 companion is the one that stays");
+  assert.ok(await accounts.prepStore.getImage(won.imageId), "its photo stays");
+  for (let i = 0; i < 100 && (await call("GET", "/v1/companion/prep", s.token)).body.status === "running"; i++) await new Promise((r) => setTimeout(r, 100));
+});
+
+test("making their own companion from the demo's own photo keeps the photo", async (t) => {
+  const { accounts, call, signIn } = await boot(t);
+  await makeTemplate(accounts);
+  const s = await signIn();
+  const demo = (await call("GET", "/v1/companion", s.token)).body;
+  const made = await call("POST", "/v1/companion", s.token, { imageId: demo.imageId, voiceId: VOICES[1].id, name: "Mine" });
+  assert.equal(made.status, 201);
+  assert.equal(made.body.imageId, demo.imageId);
+  assert.ok(await accounts.prepStore.getImage(demo.imageId), "photo kept for the new companion");
+  assert.equal((await call("GET", "/v1/companion", s.token)).body.name, "Mine");
+  for (let i = 0; i < 100 && (await call("GET", "/v1/companion/prep", s.token)).body.status === "running"; i++) await new Promise((r) => setTimeout(r, 100));
+});
+
+test("a seed that fails half-way leaves nothing: no photo row, no files, no companion", async (t) => {
+  const { accounts } = await boot(t);
+  await makeTemplate(accounts);
+  const { user } = await accounts.accounts.upsertUser({ provider: "dev", sub: "judge:fail" });
+  const tplUser = () => accounts.accounts.findUserId("dev", DEMO_TEMPLATE_SUB);
+  const log = () => {};
+  // the companion write fails after the photo and files were copied
+  const store = Object.assign(Object.create(Object.getPrototypeOf(accounts.prepStore)), accounts.prepStore, { putCompanion: async () => Promise.reject(new Error("db down")) });
+  const r1 = await seedDemoCompanion({ store, blobs: accounts.blobs, templateUserId: tplUser, log }, user.id);
+  assert.equal(r1.seeded, false);
+  // a template file disappears between list and get
+  const blobs = Object.assign(Object.create(Object.getPrototypeOf(accounts.blobs)), accounts.blobs, { get: async (k: string) => (k.endsWith("face/A") ? null : accounts.blobs.get(k)) });
+  const r2 = await seedDemoCompanion({ store: accounts.prepStore, blobs, templateUserId: tplUser, log }, user.id);
+  assert.equal(r2.seeded, false, "an incomplete copy is not a ready companion");
+  assert.equal(await accounts.prepStore.getCompanion(user.id), null);
+  assert.deepEqual(await accounts.blobs.list(`users/${user.id}/`), []);
+  const imgs = await accounts.db.query("SELECT count(*)::int AS n FROM companion_images WHERE user_id = $1", [user.id]);
+  assert.equal(imgs.rows[0].n, 0);
+  // and a later sign-in can still seed it
+  assert.equal((await seedDemoCompanion({ store: accounts.prepStore, blobs: accounts.blobs, templateUserId: tplUser, log }, user.id)).seeded, true);
+});

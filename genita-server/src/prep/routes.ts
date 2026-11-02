@@ -171,11 +171,6 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const voice = d.voices.find((v) => v.id === b.voiceId);
       if (!voice) throw new PrepError(400, "unknown_voice");
       const name = typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 40) : voice.name;
-      // B7 keeps one companion per user: a judge's own companion takes the demo one's place (checked above, so a bad request keeps it)
-      if (existing?.demo) {
-        await d.store.deleteCompanion(user);
-        d.log("demo.replaced", { companion: existing.id });
-      }
       const c: CompanionRecord = {
         id: randomUUID().replace(/-/g, ""),
         userId: user,
@@ -186,7 +181,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         createdAt: new Date().toISOString(),
         prep: newPrepState(),
       };
-      await d.store.putCompanion(c);
+      // B7 keeps one companion per user: a judge's own companion takes the demo one's place, atomically and only
+      // if that demo is still there (a concurrent create wins once; the other gets 409). Bad requests never get here.
+      if (existing?.demo) {
+        if (!(await d.store.replaceDemoCompanion(existing.id, c))) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
+        d.log("demo.replaced", { companion: existing.id });
+      } else await d.store.putCompanion(c);
       d.log("voice.selected", { voice_id: voice.id });
       void runner.run(user);
       return send(res, 201, companionView(c, await d.store.getStyle(user)));
