@@ -1119,9 +1119,10 @@ final class CheekRig: @unchecked Sendable {
         let eyes = [(ex1 + 0.25 * (ex2 - ex1), -1.0), (ex1 + 0.75 * (ex2 - ex1), 1.0)]
         let feather = 0.03 * W
         typealias Part = (cx: Double, cy: Double, sx: Double, sy: Double, dx: Double, dy: Double)
-        // only the corner tips move (a wide corner warp bent the closed lip line into a bitten-lip curl)
+        // the outer quarter of the lips, gently: a smile mostly widens (×1.5 out, ×.6 up); a narrow
+        // tip warp hooked the corners up like an emoji, a wide central one curled the lip line
         func corner(_ kx: Double, _ ky: Double, _ inward: Bool = false, dx0: Double = 3, dy0: Double = -4) -> [Part] {
-            corners.map { (c) in (c.0 + c.2 * 0.02 * W, c.1, 0.028 * W, 0.025 * H, (inward ? -c.2 : c.2) * dx0 * kx, dy0 * ky) }
+            corners.map { (c) in (c.0, c.1, 0.09 * W, 0.03 * H, (inward ? -c.2 : c.2) * dx0 * kx * 1.5, dy0 * ky * 0.6) }
         }
         func cheekApple(_ k: Double) -> [Part] { eyes.map { e in (e.0 + 0.15 * (e.0 - mcx), eyeY + 0.17 * H, 0.09 * W, 0.06 * H, 0, -3 * k) } }
         func lowerLid(_ k: Double, _ dy: Double = -1.6, _ off: Double = 0.9) -> [Part] { eyes.map { e in (e.0, eyeY + off * eh, 0.07 * W, 0.6 * eh, 0, dy * k) } }
