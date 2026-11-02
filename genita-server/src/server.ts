@@ -2,6 +2,7 @@
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
+ *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *
  * Threat line: callers are the Genita iOS/macOS apps. Auth is a shared
  * bearer token (GENITA_SESSION_TOKEN) until the login ticket lands; with no
@@ -18,6 +19,8 @@ import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
+import { findsFromEnv } from "./finds/setup.ts";
+import { handleFindsHttp } from "./finds/http.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -35,6 +38,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
         ? () => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN! })
         : undefined,
+    finds: findsFromEnv(config.metaKey),
     log,
   };
 }
@@ -58,6 +62,7 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
     }
+    if (deps.finds && handleFindsHttp(req, res, deps.finds.store, config.sessionToken)) return;
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "not_found" }));
   });

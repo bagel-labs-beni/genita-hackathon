@@ -17,6 +17,7 @@ import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
 import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
+import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -57,6 +58,8 @@ export type SessionDeps = {
   /** Peter worker connection factory; unset = Peter not deployed */
   openPeter?: () => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
+  /** result cards (F10); unset = spoken answers only */
+  finds?: FindsDeps;
 };
 
 type Mode = "chat" | "interpret";
@@ -75,7 +78,7 @@ type Reply = {
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[] };
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent> };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
@@ -89,6 +92,7 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+const ANNOUNCE_WAIT_MS = 20_000;
 
 function str(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -141,6 +145,9 @@ export class Session {
   private metrics: TurnMetrics = {};
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
+  private finds: FindsRunner | null = null;
+  /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
+  private pendingAnnounce: { text: string; at: number } | null = null;
 
   constructor(id: string, client: ClientSink, deps: SessionDeps) {
     this.id = id;
@@ -149,6 +156,14 @@ export class Session {
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    if (deps.finds) {
+      this.finds = new FindsRunner(deps.finds, {
+        emit: (e) => !this.closed && this.client.sendJson(e),
+        announce: (text) => this.announce(text),
+        log: (event, data) => this.log(event, data),
+        now: this.now,
+      });
+    }
   }
 
   // ───────────────────────── client input ─────────────────────────
@@ -178,6 +193,7 @@ export class Session {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
+        if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         return this.dispatch({ type: "text", text });
       }
@@ -202,6 +218,12 @@ export class Session {
         return;
       case "stop":
         return this.close(1000, "stopped");
+      case "find.confirm":
+        if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
+        return;
+      case "find.stop":
+        if (typeof msg.findId === "string") this.finds?.stop(msg.findId);
+        return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);
     }
@@ -242,6 +264,7 @@ export class Session {
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
     this.started = true;
+    this.finds?.configure({ owner: str(u.id, 128), memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
       try {
         await this.ensureAsr();
@@ -319,6 +342,7 @@ export class Session {
     }
     this.asr?.end();
     this.peter?.close();
+    this.finds?.close();
     this.client.close(code, reason);
   }
 
@@ -349,9 +373,22 @@ export class Session {
 
   private dispatch(e: TurnEvent): void {
     if (this.closed) return;
+    if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
     const r = reduceTurn(this.turn, e, this.bargeCfg);
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
+    if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce) {
+      const p = this.pendingAnnounce;
+      this.pendingAnnounce = null;
+      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "announce", text: p.text });
+    }
+  }
+
+  /** Say a card's line now if the companion is idle, else right after the current reply. */
+  private announce(text: string): void {
+    if (this.closed) return;
+    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "announce", text });
+    if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
   private run(fx: Effect): void {
@@ -369,7 +406,7 @@ export class Session {
       case "cancel_reply":
         return this.cancelReply(fx.utteranceId, fx.reason);
       case "start_reply":
-        void this.runReply(fx.text, fx.utteranceId);
+        void this.runReply(fx.text, fx.utteranceId, fx.announce === true);
         return;
     }
   }
@@ -429,6 +466,7 @@ export class Session {
         interpret,
         detected: this.mode === "chat" ? { from, to } : null,
         req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
+        images: [],
       };
     }
     const images = this.takeFrames();
@@ -446,10 +484,12 @@ export class Session {
       mode: "chat",
       language: this.language,
       cameraAttached: images.length > 0,
+      onScreen: this.finds?.onScreen(),
     });
     return {
       interpret,
       detected: null,
+      images,
       req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
     };
   }
@@ -493,7 +533,12 @@ export class Session {
     this.spec = null;
   }
 
-  private async runReply(text: string, utteranceId: number): Promise<void> {
+  /** A line the companion says on its own (a card landed); see turnMachine "announce". */
+  private announceRequest(text: string): Built {
+    return { interpret: false, detected: null, images: [], req: { input: text } };
+  }
+
+  private async runReply(text: string, utteranceId: number, announce = false): Promise<void> {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -507,10 +552,17 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = this.spec;
-    this.spec = null;
-    if (this.specTimer) clearTimeout(this.specTimer);
-    this.specTimer = null;
+    const spec = announce ? null : this.spec;
+    if (!announce) this.spec = null;
+    if (!announce && this.specTimer) clearTimeout(this.specTimer);
+    if (!announce) this.specTimer = null;
+    if (announce) {
+      built = this.announceRequest(text);
+      pre = (async function* () {
+        yield { type: "text" as const, delta: `<warm> ${text}` };
+        yield { type: "done" as const, responseId: null, text, status: "completed" };
+      })();
+    }
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
@@ -525,7 +577,14 @@ export class Session {
     built ??= this.buildRequest(text);
     const { req, interpret } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!interpret) this.remember("user", text);
+    if (!interpret && !announce) this.remember("user", text);
+    // F10: a card pipeline runs beside the spoken answer (answer first, card after)
+    let resolveSaid: (t: string | null) => void = () => {};
+    if (!interpret && !announce && this.finds) {
+      const said = new Promise<string | null>((r) => (resolveSaid = r));
+      this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said });
+      signal.addEventListener("abort", () => resolveSaid(null), { once: true });
+    }
 
     const splitter = new SentenceSplitter();
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
@@ -670,6 +729,7 @@ export class Session {
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     const full = reply.spoken.join(" ").trim();
+    resolveSaid(full || null);
     if (full && !interpret) this.remember("assistant", full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
