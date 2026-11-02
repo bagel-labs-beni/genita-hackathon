@@ -24,7 +24,7 @@ final class SplashUITests: XCTestCase {
         for t in ["0.2", "0.6", "0.86", "1.2", "1.4"] {
             let app = launch(at: t)
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "splash at \(t)")
-            shot(app, "call-splash-\(t)")
+            shot(app, "call-splash-t\(Int((Double(t) ?? 0) * 1000))ms") // no "." in the name: the export cuts there
             app.terminate()
         }
     }
