@@ -30,6 +30,9 @@ struct ConversationView: View {
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
+                        // r03 / PF-1: the call sits on ink — the band above a full sheet (and the edges of a
+                        // stepped-back face) are dark, not the window's white
+                        CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
