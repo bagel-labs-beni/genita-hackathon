@@ -14,7 +14,10 @@ import CoreText
         }
         let call = CallController.shared
         call.companionName = "Mina"
-        for state in CommandLine.arguments.dropFirst(3) {
+        for arg in CommandLine.arguments.dropFirst(3) {
+            // "<state>@v2" renders the to-be design (MacDesignV2) for Chelsea's OK
+            let state = arg.hasSuffix("@v2") ? String(arg.dropLast(3)) : arg
+            MacDesignV2.reviewOverride = arg.hasSuffix("@v2")
             // #118/#121 states drive the shared call + Finds model from wire events; watch states use GENITA_MAC_REVIEW
             var override: String? = nil
             call.finds.reset()
@@ -58,7 +61,7 @@ import CoreText
             r.scale = 2
             guard let img = r.cgImage else { print("no image", state); continue }
             let rep = NSBitmapImageRep(cgImage: img)
-            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("mac-\(state).png"))
+            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("mac-\(arg.replacingOccurrences(of: "@", with: "-")).png"))
             print("wrote", state)
         }
     }

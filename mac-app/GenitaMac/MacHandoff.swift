@@ -387,6 +387,9 @@ struct MacHomeView:View {
     }
     /// "First time with this iPhone?" + the six digits (MAC-3 88:19 / 88:21).
     @ViewBuilder private var pairingBlock:some View {
+        if MacDesignV2.enabled { MacPairingCode(code:handoff.link.code,connected:paired).padding(.top,8) } else { pairingBlockV1 }
+    }
+    @ViewBuilder private var pairingBlockV1:some View {
         Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
             .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
         Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)

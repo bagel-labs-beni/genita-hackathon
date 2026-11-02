@@ -107,7 +107,8 @@ struct MacConversationView: View {
             if menuOpen { menu }
             if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
-            MacDemoSystemBar(onDark: waitingCopy != nil || sheetFull).allowsHitTesting(false).accessibilityHidden(true)
+            // QA #216 to-be: no fake 9:41 / battery bar on a real Mac (the island handle stays for moving the window)
+            if !MacDesignV2.enabled { MacDemoSystemBar(onDark: waitingCopy != nil || sheetFull).allowsHitTesting(false).accessibilityHidden(true) }
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
                 .accessibilityLabel("Drag to move the window")
         }.frame(width: 390, height: 844).clipped().ignoresSafeArea()
