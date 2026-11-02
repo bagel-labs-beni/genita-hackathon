@@ -163,4 +163,55 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
         capture("I04-S")
     }
+
+    private func launchToI01(_ app: XCUIApplication) {
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
+        app.launch()
+    }
+
+    /// I01 "Open ChatGPT": one tap copies the prompt ("Prompt copied"), opens the AI app, and coming back lands on I02
+    /// with the system paste button ready. Named so it runs before the tests that create a companion on the stub.
+    func testAOpenChatGPTCopiesThenReturnsToPaste() throws {
+        let app = XCUIApplication()
+        launchToI01(app)
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
+        app.buttons["openChatGPT"].tap()
+        XCTAssertTrue(element("promptCopiedToast").waitForExistence(timeout: 3), "Prompt copied")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
+        // leave the app (ChatGPT or its site opens; home makes sure) and come back
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 15))
+        app.activate()
+        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
+        XCTAssertTrue(element("responseInput").exists)
+        XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
+        let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
+    }
+
+    /// D01: people who skipped the import (N1–N3) start on Quick start; the stub already has a companion by now (409 is fine).
+    func testZSkipperGetsQuickAtD01() throws {
+        let app = XCUIApplication()
+        launchToI01(app)
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        let primary = app.buttons["primaryCTA"]
+        XCTAssertTrue(app.buttons["skipImport"].waitForExistence(timeout: 15)); app.buttons["skipImport"].tap()
+        XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("skipReplies").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S"); primary.tap()
+        XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        app.buttons["rightsAck"].tap(); primary.tap()
+        XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
+        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 5)); app.buttons["voice0"].tap(); primary.tap()
+        let name = app.textFields["companionNameInput"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value != %@ AND value != %@", "", "Name"), evaluatedWith: name); waitForExpectations(timeout: 10)
+        primary.tap()
+        let quick = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Quick start'")).firstMatch
+        XCTAssertTrue(quick.waitForExistence(timeout: 10), "D01")
+        XCTAssertTrue(quick.isSelected, "skippers start on Quick start")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-D01-quick-for-skippers"; shot.lifetime = .keepAlways; add(shot)
+    }
 }

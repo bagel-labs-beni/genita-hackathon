@@ -79,6 +79,8 @@ struct SavedSetup: Codable {
     var importing = false
     /// I02-E line ("I couldn't read this one…"); the pasted text stays
     var importError: String?
+    /// I01 → ChatGPT / Claude → back: I02 opens with the paste button focused (transient)
+    var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
     var imageCheckError: String?

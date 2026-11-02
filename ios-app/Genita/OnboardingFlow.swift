@@ -96,6 +96,7 @@ extension AppState {
                 let style = try await onboarding.importReply(text)
                 if Task.isCancelled { return }
                 applyStyle(style)
+                setup.depth = .right   // D01 default for people who brought an AI profile (skippers get Quick)
                 importing = false
                 if stage == .preparing { go(.preferences) }
             } catch {
@@ -121,6 +122,7 @@ extension AppState {
 
     /// N1–N3 Continue → I04-S (same rows, from the chips).
     func finishSkip() {
+        setup.depth = .quick   // D01 default for people who skipped the import (Chelsea 11/3): Quick start, 3 questions
         guard serverWired else { go(.preferences); return }
         importing = true
         Task {

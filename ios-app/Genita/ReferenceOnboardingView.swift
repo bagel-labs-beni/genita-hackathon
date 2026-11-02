@@ -7,6 +7,13 @@ import UniformTypeIdentifiers
     var referenceViewport = false
     @State private var keyboardTop = CGFloat.greatestFiniteMagnitude
     @State private var copied = false
+    /// I01 "Open ChatGPT / Open Claude": the prompt was copied and the AI app was opened; coming back lands on I02
+    @State private var openedAI = false
+    @State private var leftApp = false
+    @State private var copiedToast = false
+    @State private var pasteHighlight = false
+    @Environment(\.scenePhase) private var scenePhase
+    @AccessibilityFocusState private var pasteFocused: Bool
     @State private var progress = 0.0
     @State private var importing = false
     @State private var pickingPhoto = false
@@ -125,7 +132,14 @@ import UniformTypeIdentifiers
             }
             switch stage {
             case .name: nameInput(width: width, top: bodyTop)
-            case .prompt, .paste, .preferences: profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
+            case .prompt, .paste, .preferences:
+                profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
+                    .onChange(of: scenePhase) { _, phase in
+                        // I01 → AI app → back: open I02 with the paste button ready (only after the app really left)
+                        guard stage == .prompt, openedAI else { return }
+                        if phase == .background { leftApp = true }
+                        else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+                    }
             case .preparing: processing(width: width, top: bodyTop)
             case .image: imageContent(width: width, top: bodyTop)
             case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
@@ -199,6 +213,11 @@ import UniformTypeIdentifiers
                 appButton("Open ChatGPT", app: "chatgpt://", web: "https://chatgpt.com/")
                 appButton("Open Claude", app: "claude://", web: "https://claude.ai/new")
             }.frame(width: width - 48).position(x: width / 2, y: cardBottom + 32)
+            if copiedToast {
+                Text("Prompt copied").font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk).padding(.horizontal, 14).frame(height: 30)
+                    .background(CallInk.ink.opacity(0.84), in: Capsule()).transition(.opacity)
+                    .position(x: width / 2, y: cardBottom + 32 - 38).accessibilityIdentifier("promptCopiedToast")
+            }
             Button { model.go(.skipTopics) } label: {
                 Text("I don’t use an AI assistant").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
             }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
@@ -209,9 +228,17 @@ import UniformTypeIdentifiers
             if stage == .paste {
                 // I02 one tap: paste the reply straight from the clipboard (system paste button, no permission prompt)
                 PasteButton(payloadType: String.self) { strings in
-                    if let text = strings.first { Task { @MainActor in model.setup.response = text; model.importError = nil } }
+                    if let text = strings.first { Task { @MainActor in model.setup.response = text; model.importError = nil; pasteHighlight = false } }
                 }.buttonBorderShape(.capsule).labelStyle(.titleAndIcon).tint(CallInk.ink).controlSize(.small)
+                    .overlay { if pasteHighlight { Capsule().strokeBorder(Color(red: 0, green: 0.635, blue: 1), lineWidth: 2).padding(-4).allowsHitTesting(false) } }
+                    .accessibilityFocused($pasteFocused)
                     .position(x: width - 88, y: card.y + top + 22).accessibilityIdentifier("pasteReply")
+                    .onAppear {
+                        // back from ChatGPT / Claude: the paste button is the one thing to do (no permission prompt, system paste control)
+                        guard model.pasteFocusRequested else { return }
+                        model.pasteFocusRequested = false; pasteHighlight = true
+                        Task { @MainActor in try? await Task.sleep(for: .milliseconds(300)); pasteFocused = true }
+                    }
                 if let e = model.importError {
                     // I02-E: one line, the text stays
                     Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
@@ -225,6 +252,11 @@ import UniformTypeIdentifiers
     func appButton(_ title: String, app: String, web: String) -> some View {
         Button {
             guard let a = URL(string: app), let w = URL(string: web) else { return }
+            // one tap: copy the prompt, say so, open the AI app (or its site); coming back opens I02
+            UIPasteboard.general.string = AppState.prompt
+            copied = true; openedAI = true; leftApp = false
+            withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
+            Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
         } label: {
             Text(title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 40)
