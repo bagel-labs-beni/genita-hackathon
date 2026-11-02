@@ -422,7 +422,7 @@
  "motion": {
   "human": {
    "motion": "v2",
-   "_ref": "B-lane render.py --motion v2, sweep row v29 (critic v28 8.5, phone-visibility weighted); flags proto/tools/v29.flags",
+   "_ref": "B-lane render.py --motion v2, sweep row v30 (critic v28/v29 8.5, phone-visibility weighted); flags proto/tools/v30.flags",
    "lookaheadMs": 40,
    "mbp": 2,
    "dissolve": {
@@ -538,11 +538,11 @@
    "micro": 0.15,
    "warmStart": true,
    "teethFade": [
-    0.06,
-    0.2
+    0.1,
+    0.3
    ],
    "expression": {
-    "gain": 2.2,
+    "gain": 3.2,
     "attackMs": 250,
     "releaseMs": 400,
     "_spec": "sweep/README.md 'Expression layer' (smile, smileopen, laugh, surprised, concerned)"

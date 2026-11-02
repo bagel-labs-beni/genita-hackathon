@@ -167,7 +167,8 @@ def lip_hull_mask(img, mouth_px, dilate_px):
     else:
         # no redder-than-skin lips (grey / desaturated photo): the mouth box ellipse, so the key's opening still shows
         bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
-        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2), (max(1, (bx2 - bx1) // 2), max(1, (by2 - by1) // 2)), 0, 0, 360, 1, -1)
+        mh_ = max(1, by2 - by1)   # reach down: the key's jaw may be lowered by more than the closed mouth's height
+        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
     d = max(1, int(dilate_px)); dl = max(1, d // 2)
     up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
     lo = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dl + 1, 2 * dl + 1)))
@@ -201,7 +202,30 @@ def interior_tone(img, mouth_px, spec, scale):
     hull = np.zeros_like(keep)
     cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
     k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
-    inn = (cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))).astype(np.float32)
+    # opening = the gap between the upper and lower lip, traced column by column from the mouth centre outwards
+    # (each column takes the gap overlapping the previous column's): never a missed patch lower on the lip
+    kd = cv2.dilate(keep, np.ones((3, 3), np.uint8))
+    inn = np.zeros(keep.shape, np.float32)
+    cols = np.where(hull.any(0))[0]
+    def gaps_at(x):
+        ys_ = np.where(kd[:, x] > 0)[0]
+        if len(ys_) < 2: return []
+        runs = np.split(ys_, np.where(np.diff(ys_) > 1)[0] + 1)
+        return [(r1[-1] + 1, r2[0]) for r1, r2 in zip(runs, runs[1:]) if r2[0] - r1[-1] > 1]
+    if len(cols):
+        xc = int(np.clip((mouth_px[0] + mouth_px[2]) // 2, cols.min(), cols.max()))
+        g0 = gaps_at(xc)
+        if g0:
+            start = max(g0, key=lambda g: g[1] - g[0])
+            for step in (1, -1):
+                prev = start; x = xc
+                while cols.min() <= x <= cols.max():
+                    gs = gaps_at(x)
+                    ov = [(min(g[1], prev[1]) - max(g[0], prev[0]), g) for g in gs]
+                    ov = [o for o in ov if o[0] > 0]
+                    if not ov: break
+                    g = max(ov)[1]; inn[g[0]:g[1], x] = 1.0; prev = g; x += step
+    inn = inn * cv2.erode(hull, k3)
     # never on lip-coloured skin: a big lip hull can cover part of the lower lip (critic: dark tick on darkskin / woman)
     bx1, by1, bx2, by2 = mouth_px
     mw_, mh_ = bx2 - bx1, max(1, by2 - by1)
@@ -211,6 +235,11 @@ def interior_tone(img, mouth_px, spec, scale):
     hsv0 = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
     lipish = (lab[..., 1] > skin_a + 6) & (hsv0[..., 1] > 0.2 * 255) & (lab[..., 0] > 0.7 * lipL)
     inn = inn * (1 - lipish).astype(np.float32)
+    # the opening is one big region between the lips; small islands are lip patches the lip mask missed (darkskin tick)
+    n_, lab2, st2, _ = cv2.connectedComponentsWithStats((inn > 0).astype(np.uint8))
+    if n_ > 2:
+        big = st2[1:, cv2.CC_STAT_AREA].max()
+        inn = inn * np.isin(lab2, [c for c in range(1, n_) if st2[c, cv2.CC_STAT_AREA] >= 0.3 * big]).astype(np.float32)
     ys, xs = np.where(inn > 0)
     if len(ys) < 10:
         return img
@@ -223,13 +252,19 @@ def interior_tone(img, mouth_px, spec, scale):
     # teeth threshold relative to this key: top 30 % of the low-saturation interior (dim teeth on older / glasses faces)
     cand = V[(inn > 0) & (S < 0.42)]
     vlo = float(np.clip(min(spec['vlo'], np.percentile(cand, 70)) if len(cand) > 20 else spec['vlo'], 60, spec['vlo']))
+    # teeth area 10-40 % of the opening (older: no white paint over everything; glasses: some teeth at all)
+    vin = V[inn > 0]; sin_ = S[inn > 0]
+    if len(vin) > 30:
+        frac = lambda t: float(((vin > t) & (sin_ < 0.42)).mean())
+        if frac(vlo) > 0.4: vlo = float(np.percentile(vin, 60))
+        elif frac(vlo) < 0.1: vlo = max(60.0, float(np.percentile(vin, 90)))
     r = ((np.arange(H, dtype=np.float32) - ys.min()) / max(1, ys.max() - ys.min()))[:, None]
     up = np.clip((spec['split'] - r) / 0.15, 0, 1)
     cx, hw = (xs.min() + xs.max()) / 2, max(1, (xs.max() - xs.min()) / 2)
     dx = (np.abs(np.arange(W, dtype=np.float32) - cx) / hw)[None, :]
     band = np.clip((spec['band'] - dx) / 0.1, 0, 1) * (1 - 0.45 * np.clip(dx / spec['band'], 0, 1))
     th = np.clip((0.38 - S) / 0.1, 0, 1) * np.clip((V - vlo) / 12, 0, 1) * inn
-    th = np.maximum(th, band * np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - (vlo - 30)) / 12, 0, 1) * inn) * up
+    th = np.maximum(th, band * np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - (vlo - 15)) / 12, 0, 1) * inn) * up
     cav = np.clip((vlo - V) / 12, 0, 1) * inn
     th = cv2.GaussianBlur(th, (0, 0), fe); cav = cv2.GaussianBlur(cav, (0, 0), fe)
     hsv[..., 2] = np.clip(V + (vhi - V) * spec['lift'] * th, 0, 255)
@@ -239,7 +274,7 @@ def interior_tone(img, mouth_px, spec, scale):
     darker = np.clip((lipL - lab[..., 0]) / 25.0, 0, 1) + np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - vlo + 30) / 12, 0, 1)
     low = cv2.GaussianBlur(inn * (1 - up) * np.clip(darker, 0, 1), (0, 0), fe)
     g = np.clip(low + cav * (1 - th), 0, 1)[..., None]
-    r3 = (np.clip((r - 0.62) / 0.25, 0, 1) * 0.6)[..., None]
+    r3 = (np.clip((r - 0.72) / 0.2, 0, 1) * 0.3)[..., None]     # faint tongue tone, bottom quarter only
     tgt = np.array([25, 25, 45], np.float32) * (1 - r3) + np.array([60, 60, 110], np.float32) * r3
     lum = (out.mean(2, keepdims=True) / 60.0).clip(0.6, spec.get('lumHi', 1.4))
     dark = (1 - spec['mix']) * out * 0.6 + spec['mix'] * tgt * lum
