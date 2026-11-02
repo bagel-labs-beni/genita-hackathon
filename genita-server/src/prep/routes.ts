@@ -15,6 +15,8 @@
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, emotionVideos}
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
+ *   GET  /v1/profile/story?wait=s           D47 HISY story cards (wait ≤ 10 s for one being written)
+ *   PATCH /v1/profile {cardId, pick?, text?}  D47 "That's not me" → updated card + ack (10/min/user)
  *
  * The user comes from server.ts (session JWT → users.id, F1-L5). Without one
  * (shared-token dev mode, tests) it is `x-genita-user` (default "demo").
@@ -27,6 +29,7 @@ import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, sav
 import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
+import { PersonalizeError } from "../personalize/service.ts";
 
 const JSON_LIMIT = 256 * 1024;
 
@@ -99,19 +102,27 @@ export type PrepRoutes = { handles(req: IncomingMessage): boolean; handle(req: I
 
 /** suggest is a Spark call: at most 10 per user per rolling minute */
 const SUGGEST_PER_MIN = 10;
+/** a profile correction is up to two Spark calls: same budget */
+const CORRECT_PER_MIN = 10;
+const STORY_WAIT_MAX_S = 10;
+const PROFILE_JSON_LIMIT = 2048;
 
 export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   const importJobs = new Map<string, ImportJob>();
-  const suggestHits = new Map<string, number[]>();
-  const allowSuggest = (user: string) => {
-    const now = Date.now();
-    const hits = (suggestHits.get(user) ?? []).filter((t) => now - t < 60_000);
-    const ok = hits.length < SUGGEST_PER_MIN;
-    if (ok) hits.push(now);
-    suggestHits.set(user, hits);
-    if (suggestHits.size > 10_000) for (const [k, v] of suggestHits) if (!v.some((t) => now - t < 60_000)) suggestHits.delete(k);
-    return ok;
+  const limiter = (perMin: number) => {
+    const hitsBy = new Map<string, number[]>();
+    return (user: string) => {
+      const now = Date.now();
+      const hits = (hitsBy.get(user) ?? []).filter((t) => now - t < 60_000);
+      const ok = hits.length < perMin;
+      if (ok) hits.push(now);
+      hitsBy.set(user, hits);
+      if (hitsBy.size > 10_000) for (const [k, v] of hitsBy) if (!v.some((t) => now - t < 60_000)) hitsBy.delete(k);
+      return ok;
+    };
   };
+  const allowSuggest = limiter(SUGGEST_PER_MIN);
+  const allowCorrect = limiter(CORRECT_PER_MIN);
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
@@ -136,7 +147,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         d.log("import.failed", { reason: err instanceof PrepError ? err.code : String(err).slice(0, 120) });
         throw err;
       });
-      return send(res, 200, { status: "ready", style, profile: styleProfileText(style) });
+      return send(res, 200, { status: "ready", style, profile: styleProfileText(style), story: style.story?.cards ?? null });
     }
 
     if (m === "POST" && p === "/v1/import/skip") {
@@ -268,13 +279,35 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
     }
 
+    if (m === "GET" && p === "/v1/profile/story") {
+      if (!d.personalize) throw new PrepError(404, "not_found");
+      const w = Number(url.searchParams.get("wait") ?? 0);
+      const waitMs = Number.isFinite(w) ? Math.round(Math.min(STORY_WAIT_MAX_S, Math.max(0, w)) * 1000) : 0;
+      return send(res, 200, await d.personalize.story(user, waitMs));
+    }
+
+    if (m === "PATCH" && p === "/v1/profile") {
+      if (!d.personalize) throw new PrepError(404, "not_found");
+      const raw = await readBody(req, PROFILE_JSON_LIMIT);
+      let b: unknown;
+      try { b = JSON.parse(raw.toString("utf8") || "null"); } catch { throw new PrepError(400, "bad_json"); }
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw new PrepError(400, "bad_json");
+      if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+      try {
+        return send(res, 200, await d.personalize.correct(user, b as Record<string, unknown>));
+      } catch (err) {
+        if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+        throw err;
+      }
+    }
+
     throw new PrepError(404, "not_found");
   }
 
   return {
     handles: (req) => {
       const p = new URL(req.url ?? "/", "http://localhost").pathname;
-      return p === "/v1/import" || p.startsWith("/v1/import/") || p === "/v1/companion" || p.startsWith("/v1/companion/");
+      return p === "/v1/import" || p.startsWith("/v1/import/") || p === "/v1/companion" || p.startsWith("/v1/companion/") || p === "/v1/profile" || p.startsWith("/v1/profile/");
     },
     async handle(req, res, userId) {
       const url = new URL(req.url ?? "/", "http://localhost");

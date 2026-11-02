@@ -231,7 +231,7 @@ export type StyleCard = {
   /** D47 HISY story cards (src/personalize/story.ts); absent until generated */
   story?: Story;
   /** calls made with this profile and the still-to-confirm items asked (first 3 calls ask one each) */
-  growth?: { calls: number; asked: Array<{ item: string; at: string; answered?: boolean }> };
+  growth?: { calls: number; asked: Array<{ item: string; at: string; answered?: boolean; declined?: boolean }> };
   /** last correction / call update */
   updatedAt?: string;
 };

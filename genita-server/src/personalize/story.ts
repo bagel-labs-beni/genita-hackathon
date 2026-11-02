@@ -225,10 +225,11 @@ function bestLabel(card: StyleCard, keys: Array<keyof StyleCard["sections"]>): E
 
 /** Empty I04 rows + still-to-confirm items, one list (unknowns card, and what the first calls ask about). */
 export function openItems(card: StyleCard): string[] {
+  const declined = new Set((card.growth?.asked ?? []).filter((a) => a.declined).map((a) => a.item.toLowerCase()));
   const out: string[] = [];
   for (const t of card.toConfirm ?? []) if (!out.some((o) => o.toLowerCase() === t.toLowerCase())) out.push(t);
   for (const row of card.display ?? []) if (!row.items.length && !out.some((o) => o.toLowerCase() === row.title.toLowerCase())) out.push(row.title);
-  return out;
+  return out.filter((t) => !declined.has(t.toLowerCase()));
 }
 
 export function unknownsCard(card: StyleCard): StoryCard {

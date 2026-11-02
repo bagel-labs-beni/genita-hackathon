@@ -18,6 +18,7 @@ import { createPrepRoutes, type PrepRoutes } from "./routes.ts";
 import { ModalPeterBaker, MouthAtlasBaker } from "./lips.ts";
 import { voicesFromEnv } from "./voices.ts";
 import type { PrepDeps, PrepLog } from "./pipeline.ts";
+import { Personalize } from "../personalize/service.ts";
 
 export type Prep = { routes: PrepRoutes; runner: PrepRunner; deps: PrepDeps };
 
@@ -31,6 +32,8 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
     voices: voicesFromEnv(env.GENITA_VOICES),
     log,
   };
+  // lane 개인화: HISY story, corrections, first-call asks, call growth (same store; the server hands it to calls)
+  deps.personalize = new Personalize({ store: deps.store, metaKey: config.metaKey, log });
   const runner = new PrepRunner(deps, { peter: new ModalPeterBaker(env.GENITA_PETER_PREPARE_URL || null, env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || null), atlas: new MouthAtlasBaker() });
   void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));
   return { routes: createPrepRoutes(deps, runner), runner, deps };

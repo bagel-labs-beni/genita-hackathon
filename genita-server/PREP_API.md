@@ -27,6 +27,18 @@ Prompt v3 has 10 sections: 1 Thinking style, 2 Communication style, 3 Response p
 
 `style.display` = I04's six rows in order `communication` Communication style (section 2) · `response` Response preferences (3, then rules fill free slots) · `help` How Genita can help (4) · `interests` Interests (6) · `likes` Likes & dislikes (7; when there is a dislike, one of the 3 slots shows it) · `boundaries` Boundaries (8), each `{key, title, items:[{text, label}]}` (max 3 items). Sections 1, 5, 9 are not rows; they go into `profile`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile` (≤2,000 chars): Likes & dislikes first as `- Taste:` lines (Finds' outfit and recipe cards read its first 800 chars), then the other five rows' fields, every boundary, the rules, the to-confirm line, then support/thinking/suggestions. The pasted text is never stored.
 
+## How I see you + corrections (D47, lane 개인화)
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/import` | as above | now also `story`: the seven cards (written from the same paste **in parallel** with the parse; `null` if it isn't ready 1.5 s after the parse — then it's saved when it lands, read it with `GET /v1/profile/story?wait=8`) |
+| `GET /v1/profile/story?wait=s` | | `{status:"ready"\|"processing"\|"none", source:"import"\|"skip", cards, ms?}`. Not written yet (skip users, or the import's story failed) → the server writes it from the stored style (+ SUM lines once saved); `wait` (0–10 s) holds the answer that long. `processing` = still writing, ask again |
+| `PATCH /v1/profile` | `{cardId, pick?, text?}` (≤2 KB, `text` ≤200 chars, `pick` ∈ that card's `picks`, at least one) | `200 {card, ack:"Got it. I'll remember that.", changed, profile, rows}` (`rows` = the six I04 rows, updated) · `400 bad_correction` · `404 no_profile` · `429 rate_limited` (10/min) · `502 upstream_failed`. Spark turns the pick/text into explicit profile lines (newer wins), then rewrites that one card. `unknowns` + "Don't ask about these" clears the open items without Spark |
+
+Card: `{id, title, observation, promise, evidence, later, picks, tags?, help?, unknowns?}` in this order: `opener` How I see you · `think` How you think things through · `talk` How you like to talk · `taste` Your taste (`tags: {style, food, watch, dislikes}`, ≤4 each) · `help` How I can help (`help: [{label, mode: ask_first|just_do_it}]`, ≤4) · `lines` Your lines · `unknowns` Still getting to know you (`unknowns: [items]`, shrinks as calls fill them). `observation` ≤2 short sentences in the companion's voice ("You …"), `promise` starts "So I'll". `later: true` = nothing to say yet (show it as "tell me later"). `evidence` is never stronger than the profile lines behind the card. Server checks: no personality labels, diagnosis or flattery, no injection/sensitive text (a failing card falls back to the profile's own line).
+
+In calls (with an account): the server uses the stored profile, asks one `unknowns` item in each of the first 3 calls (first 3 turns), saves corrections said in the call (`profile.updated` event, PROTOCOL.md) and, after the call, explicit statements and repeated patterns from it.
+
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 
 | call | body | answer |

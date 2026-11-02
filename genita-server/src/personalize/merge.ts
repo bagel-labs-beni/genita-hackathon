@@ -63,9 +63,19 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   for (const u of updates) {
     if (!u || !PROFILE_FIELDS.includes(u.field) || (u.label !== "explicit" && u.label !== "observed")) continue;
     const text = typeof u.text === "string" ? u.text.replace(/\s+/g, " ").trim().slice(0, 160) : "";
-    if (!safe(text)) continue;
     const list = sections[u.field];
     const replaces = new Set((Array.isArray(u.replaces) ? u.replaces : []).filter((r) => typeof r === "string").map(norm));
+    if (!text && u.label === "explicit" && replaces.size) {
+      // removal only (profile screen: "That's fine with me" on a boundary)
+      const removed: string[] = [];
+      for (const key of PROFILE_FIELDS) {
+        const l = sections[key];
+        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text))) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); }
+      }
+      if (removed.length) applied.push({ field: u.field, text: "", label: "explicit", removed, ...(u.chip ? { chip: u.chip } : {}) });
+      continue;
+    }
+    if (!safe(text)) continue;
     const same = list.find((x) => norm(x.text) === norm(text));
     const removed: string[] = [];
     // an observed pattern can't touch what the user said

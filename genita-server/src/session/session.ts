@@ -41,6 +41,10 @@ import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
+import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
+import type { CallTurn } from "../personalize/extract.ts";
+import { ASK_TURNS } from "../personalize/unknowns.ts";
+import type { TasteLine } from "../personalize/reasons.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -93,7 +97,18 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
+  personalize?: SessionPersonalize;
 };
+
+/** The slice of the personalize service a call uses (structural, so tests can fake it). */
+export type SessionPersonalize = {
+  startCall(userId: string): Promise<CallStart | null>;
+  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal): Promise<VoiceUpdate | null>;
+  endCall(userId: string, turns: CallTurn[], asked: string | null): Promise<number>;
+};
+/** at most this many correction checks per call, one at a time */
+const MAX_CORRECTION_CHECKS = 12;
 
 type Mode = "chat" | "interpret";
 type HistoryItem = { role: "user" | "assistant"; text: string };
@@ -228,6 +243,12 @@ export class Session {
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
+  /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
+  private ask: { line: string; item: string } | null = null;
+  private userTurns = 0;
+  private taste: TasteLine[] = [];
+  private correcting: AbortController | null = null;
+  private correctionChecks = 0;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
 
@@ -394,8 +415,20 @@ export class Session {
       catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
     }
     if (this.closed) return;
+    // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
+    if (this.deps.personalize && this.deps.userId && startMode === "chat") {
+      try {
+        const p = await this.deps.personalize.startCall(this.deps.userId);
+        if (p?.profile) this.user = { ...this.user, profile: p.profile };
+        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem };
+        this.taste = p?.taste ?? [];
+      } catch (err) {
+        this.log("profile.unavailable", { message: String(err).slice(0, 120) });
+      }
+      if (this.closed) return;
+    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
-    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
+    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40), taste: this.taste });
     if (this.micOn) {
       try {
         await this.ensureAsr();
@@ -602,6 +635,15 @@ export class Session {
     this.asr?.end();
     this.peter?.close();
     this.memoryCall?.close();
+    this.correcting?.abort();
+    // lane 개인화: the call's turns grow the profile (not after an account delete)
+    if (this.deps.personalize && this.deps.userId && reason !== "account_deleted" && this.userTurns > 0) {
+      const turns: CallTurn[] = this.history.map((h) => ({ role: h.role, text: h.text }));
+      void this.deps.personalize.endCall(this.deps.userId, turns, this.ask?.item ?? null).then(
+        (n) => this.log("profile.grown", { applied: n }),
+        (err) => this.log("profile.grow_failed", { message: String(err).slice(0, 120) }),
+      );
+    }
     // account deleted: Finds stop now and never write again (the delete runs right after)
     this.finds?.close({ purge: reason === "account_deleted" });
     this.watch?.close();
@@ -796,6 +838,28 @@ export class Session {
     return f.images;
   }
 
+  /** lane 개인화: "actually I don't like X" → merge → profile.updated. Beside the reply, never blocking it. */
+  private checkCorrection(text: string): void {
+    const p = this.deps.personalize;
+    const userId = this.deps.userId;
+    if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS) return;
+    const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
+    const abort = new AbortController();
+    this.correcting = abort;
+    void p.voiceCorrection(userId, text, lastAssistant, abort.signal).then(
+      (r) => {
+        if (r !== null) this.correctionChecks++;
+        if (!r || this.closed || abort.signal.aborted) return;
+        this.user = { ...this.user, profile: r.profile };
+        if (r.taste.length) this.taste = r.taste;
+        this.finds?.setProfile(r.profile, this.taste);
+        this.client.sendJson({ type: "profile.updated", text: r.chip, fields: [...new Set(r.applied.map((a) => a.field))] });
+        this.log("profile.updated", { fields: r.applied.map((a) => a.field) });
+      },
+      (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
+    ).finally(() => { if (this.correcting === abort) this.correcting = null; });
+  }
+
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
@@ -837,6 +901,8 @@ export class Session {
       cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
       renamedFrom,
+      // this call's one question rides the first user turns (the turn being built is userTurns + 1)
+      ask: this.ask && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
     });
     return {
       interpret,
@@ -948,7 +1014,11 @@ export class Session {
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!greeting && !self) this.memoryCall?.userMessage();
-    if (!interpret && !greeting && !self) this.remember("user", text);
+    if (!interpret && !greeting && !self) {
+      this.checkCorrection(text);
+      this.userTurns++;
+      this.remember("user", text);
+    }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
     if (!interpret && !self && !greeting && this.finds) {

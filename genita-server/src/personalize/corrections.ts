@@ -74,16 +74,18 @@ export function buildCorrectionRequest(card: StyleCard, userLine: string, lastAs
 const clean = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
 
 /** Spark's raw output → explicit updates with a chip (≤ 40 chars). */
-export function toCorrectionUpdates(raw: { updates?: unknown } | null | undefined): ProfileUpdate[] {
+export function toCorrectionUpdates(raw: { updates?: unknown } | null | undefined, opts: { allowRemove?: boolean } = {}): ProfileUpdate[] {
   const list = Array.isArray(raw?.updates) ? (raw!.updates as Array<Record<string, unknown>>) : [];
   const out: ProfileUpdate[] = [];
   for (const u of list.slice(0, 3)) {
     if (!PROFILE_FIELDS.includes(u?.field as ProfileField)) continue;
     const text = clean(u.text, 160);
-    if (!text) continue;
+    const replaces = Array.isArray(u.replaces) ? (u.replaces as unknown[]).filter((r): r is string => typeof r === "string").slice(0, 4) : [];
+    // a removal (text "", lines in replaces) only from the profile screen
+    if (!text && !(opts.allowRemove && replaces.length)) continue;
     let chip = clean(u.chip, 80).replace(/^updated:\s*/i, "").replace(/[.!]+$/, "");
-    if (!chip || chip.length > 40) chip = text.replace(/[.!]+$/, "").slice(0, 40).replace(/\s+\S*$/, (m) => (text.length > 40 ? "" : m));
-    out.push({ field: u.field as ProfileField, text, replaces: Array.isArray(u.replaces) ? (u.replaces as unknown[]).filter((r): r is string => typeof r === "string").slice(0, 4) : [], label: "explicit", chip });
+    if (!chip || chip.length > 40) chip = text ? (text.length > 40 ? text.slice(0, 40).replace(/\s+\S*$/, "") : text.replace(/[.!]+$/, "")) : "removed";
+    out.push({ field: u.field as ProfileField, text, replaces, label: "explicit", chip });
   }
   return out;
 }

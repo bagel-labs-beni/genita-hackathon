@@ -13,6 +13,7 @@ import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
 import { applyOrder, buildOrderRequest, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
+import type { Personalize } from "../personalize/service.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -26,7 +27,12 @@ export type PrepDeps = {
   log: PrepLog;
   /** tests: replaces the structured Spark call used by name suggest (F2-L26); unset = Muse Spark */
   spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
+  /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
+  personalize?: Personalize;
 };
+
+/** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */
+export const STORY_GRACE_MS = 1500;
 
 export class PrepError extends Error {
   readonly status: number;
@@ -91,9 +97,22 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();
   // raw text is redacted before it leaves the server and never stored or logged
-  const raw = await sparkJson<ImportRaw>(d.metaKey, buildImportRequest(redactSensitive(p.text)));
-  const card = toStyleCard(raw, "import");
+  const redacted = redactSensitive(p.text);
+  // D47: the story is written from the same redacted text in parallel, so I03 has no extra wait
+  const storyJob = d.personalize?.storyFromText(redacted) ?? null;
+  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
+  const raw = await json<ImportRaw>(buildImportRequest(redacted));
+  let card = toStyleCard(raw, "import");
   if (card.itemCount === 0) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
+  if (storyJob && d.personalize) {
+    const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
+    const s = await Promise.race([storyJob, grace]);
+    if (s && s !== "late") card = d.personalize.withStory(card, s);
+    else if (s === "late") {
+      const pz = d.personalize;
+      void storyJob.then((late) => late && pz.attachLate(userId, late)).catch(() => {});
+    }
+  }
   await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   return card;

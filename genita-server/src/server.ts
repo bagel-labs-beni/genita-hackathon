@@ -225,7 +225,8 @@ export async function startServer(
     };
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
+    // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
+    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename, personalize: deps.personalize ?? prep.deps.personalize });
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
