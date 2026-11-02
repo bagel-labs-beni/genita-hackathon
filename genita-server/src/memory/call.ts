@@ -21,8 +21,8 @@ export const TOOL_BUDGET_MS = 1500;
 export const MEMORY_START_BUDGET_MS = 1500;
 export function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise<T>((resolve) => {
+    // not unref'd: a short (≤ 1.5 s) timer may be the only pending handle, and the result must arrive
     const t = setTimeout(() => resolve(fallback), ms);
-    (t as { unref?: () => void }).unref?.();
     p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
   });
 }
