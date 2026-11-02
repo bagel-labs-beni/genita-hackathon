@@ -8,6 +8,19 @@
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Genita hears you while you hold to reply, and says it in the other person's language.</string>
+	<!-- Sparkle 2 auto-update (lane 업데이트·모션): appcast on GitHub Pages, EdDSA-signed DMGs, check at launch + daily, silent download, "Restart to update". Private key: SSM /genita/apple/sparkle_ed_private. -->
+	<key>SUFeedURL</key>
+	<string>https://bagel-labs-beni.github.io/genita-legal/mac/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>yV79iW9rznjxfzqZsttsTvp8JCGZ+Ep6ytdUo+rpeuw=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect your iPhone to move Genita between devices.</string>
 </dict>
