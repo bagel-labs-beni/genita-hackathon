@@ -86,6 +86,7 @@ const INSTRUCTIONS = [
   "topics: up to 4 short noun phrases the call was about. mood: the user's mood in 2-5 words (\"tired but upbeat\"), or \"\" if unclear.",
   "open_threads: unfinished things worth picking up next time, each one short sentence (\"Deciding between the two jackets for Saturday\").",
   "promises: what the COMPANION said it would do or check next time (\"Ask how the interview went\"). asks: what the USER asked the companion for.",
+  "Decisions made in the call are topics stated as decided (\"Picked the black top over the white\"), never open threads; an open thread is only what is still unresolved.",
   "Only what was actually said; never invent. Short standalone English lines that make sense without the transcript.",
   "Leave out entirely anything about health, religion, politics, sex, income, debt or money, locations, identifiers, and details about other people; set sensitive=true if you left something out.",
   "previous, when present, holds your notes from EARLIER in this same conversation (before these turns): merge them, keep what still applies, drop threads that got resolved.",
