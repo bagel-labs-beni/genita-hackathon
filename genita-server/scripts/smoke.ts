@@ -25,6 +25,11 @@ const FRAME = (SR * 2 * 80) / 1000; // 80 ms = 3840 bytes
 const QA = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101");
 const args = process.argv.slice(2);
 const doBarge = !args.includes("--no-barge");
+const lipArg = args.find((a) => a.startsWith("--lip="))?.slice(6) ?? "atlas";
+type PeterStat = { firstAudio?: number; firstCrop?: number; lastCrop?: number; crops: number; gaps: number[]; jpegs: Map<number, Buffer> };
+const peterStats = new Map<number, PeterStat>();
+const pstat = (u: number) => peterStats.get(u) ?? (peterStats.set(u, { crops: 0, gaps: [], jpegs: new Map() }), peterStats.get(u)!);
+let lastAudioUtt = 0;
 const turnsArg = Number(args.find((a) => a.startsWith("--turns="))?.slice(8) ?? 6);
 let files = args.filter((a) => !a.startsWith("--"));
 if (!files.length) {
@@ -79,12 +84,26 @@ let binCount = 0;
 ws.on("message", (data, isBinary) => {
   const t = performance.now();
   if (isBinary) {
+    const b = data as Buffer;
+    if (b.readUInt8(2) === 2) {
+      // Peter mouth crop: seq = utteranceId, payload = frame u32 + JPEG
+      const st = pstat(b.readUInt32LE(4));
+      if (st.lastCrop !== undefined) st.gaps.push(t - st.lastCrop);
+      st.firstCrop ??= t;
+      st.lastCrop = t;
+      st.crops++;
+      st.jpegs.set(b.readUInt32LE(8), b.subarray(12));
+      return;
+    }
     binCount++;
+    pstat(lastAudioUtt).firstAudio ??= t;
     if (firstAudioAfter && firstAudioAfter.at === null) firstAudioAfter.at = t;
-    if (captureAudio) replyAudio.push((data as Buffer).subarray(8));
+    if (captureAudio) replyAudio.push(b.subarray(8));
     return;
   }
-  inbox.push({ t, m: JSON.parse(data.toString()) });
+  const m = JSON.parse(data.toString());
+  if (m.type === "audio") lastAudioUtt = m.utteranceId;
+  inbox.push({ t, m });
 });
 const waitMsg = async (pred: (m: Msg) => boolean, from: number, ms = 20000): Promise<{ t: number; m: Msg }> => {
   const t0 = performance.now();
@@ -142,10 +161,15 @@ ws.send(
     type: "start",
     persona: { name: "Genita", kind: "character", traits: ["warm", "witty", "curious"], speakingStyle: "short and playful" },
     user: { name: "Chelsea" },
-    lip: "atlas",
+    lip: lipArg === "peter" ? { mode: "peter", fallback: "none" } : lipArg,
   }),
 );
 const ready = await waitMsg((m) => m.type === "ready", 0);
+if (lipArg === "peter") {
+  const t0 = performance.now();
+  const changed = await waitMsg((m) => m.type === "lip.changed", 0, 240000);
+  console.log(`peter: lip.changed after ${Math.round(changed.t - t0)} ms`, JSON.stringify(changed.m));
+}
 console.log("ready:", JSON.stringify({ lip: ready.m.lip, audio: ready.m.audio, voiceId: ready.m.voiceId }));
 await sleep(1200);
 
@@ -238,6 +262,41 @@ if (doBarge) {
   await waitMsg((m) => m.type === "reply", inbox.length - 1, 30000).catch(() => {});
 }
 
+let peter: Record<string, unknown> | null = null;
+if (lipArg === "peter") {
+  await sleep(3000); // crops trail the audio
+  const per = [...peterStats.entries()]
+    .filter(([u, st]) => u > 0 && st.firstAudio !== undefined)
+    .map(([u, st]) => {
+      const m = inbox.find((x) => x.m.type === "turn.metrics" && x.m.utteranceId === u)?.m as Record<string, number> | undefined;
+      const expected = m ? Math.round(m.audioMs / 40) : null;
+      const span = st.firstCrop !== undefined && st.lastCrop !== undefined ? (st.lastCrop - st.firstCrop) / 1000 : 0;
+      return {
+        utteranceId: u,
+        firstCropAfterFirstAudioMs: st.firstCrop !== undefined ? Math.round(st.firstCrop - st.firstAudio!) : null,
+        crops: st.crops,
+        expectedFrames: expected,
+        arrivalFps: span > 0 ? Math.round(((st.crops - 1) / span) * 10) / 10 : null,
+        maxGapMs: st.gaps.length ? Math.round(Math.max(...st.gaps)) : null,
+      };
+    });
+  peter = { perUtterance: per, firstCropP50Ms: median(per.map((p) => p.firstCropAfterFirstAudioMs).filter((x): x is number => x !== null)) };
+  console.log("peter:", JSON.stringify(peter));
+  // sample: utterance 1's mouth crops at 25 fps over its audio
+  const st = peterStats.get(1);
+  if (st?.jpegs.size) {
+    const dir = ".smoke/peter-crops";
+    mkdirSync(dir, { recursive: true });
+    const max = Math.max(...st.jpegs.keys());
+    let last: Buffer | undefined;
+    for (let f = 0; f <= max; f++) {
+      last = st.jpegs.get(f) ?? last;
+      if (last) writeFileSync(`${dir}/${String(f).padStart(5, "0")}.jpg`, last);
+    }
+    const r = spawnSync("ffmpeg", ["-y", "-v", "error", "-framerate", "25", "-i", `${dir}/%05d.jpg`, "-i", ".smoke/turn1-reply.wav", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", ".smoke/peter-turn1.mp4"]);
+    peter.sample = r.status === 0 ? ".smoke/peter-turn1.mp4" : `ffmpeg failed: ${r.stderr.toString().slice(0, 120)}`;
+  }
+}
 const lat = rows.map((r) => r.endToFirstAudioMs).filter((x): x is number => typeof x === "number");
 const openers: Record<string, number> = {};
 for (const r of rows) {
@@ -258,6 +317,7 @@ const summary = {
   fileEndToFirstAudioMs: { p50: median(rows.map((r) => r.fileEndToFirstAudioMs).filter((x): x is number => typeof x === "number")) },
   serverSpeechEndToFirstAudioP50: median(rows.map((r) => (r.server as Record<string, number> | undefined)?.speechEndToFirstAudioMs).filter((x): x is number => typeof x === "number")),
   barge,
+  peter,
   savedReplyAudio: ".smoke/turn1-reply.wav",
 };
 console.log("\nSUMMARY " + JSON.stringify(summary, null, 1));
