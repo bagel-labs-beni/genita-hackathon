@@ -635,7 +635,7 @@
   },
   "human": {
    "motion": "v2",
-   "_ref": "B-lane render.py --motion v2, sweep row v33; flags proto/tools/v33.flags + --cornerref 3.36",
+   "_ref": "B-lane render.py v44 (lip rig + teeth layer); flags proto/tools/v44.flags",
    "lookaheadMs": 40,
    "mbp": 2,
    "dissolve": {
@@ -766,7 +766,7 @@
    "motionV2": {
     "springHz": 9.0,
     "amp": 0.35,
-    "unstressed": 0.6,
+    "unstressed": 0.5,
     "lip": 1.6,
     "idle": 0.2,
     "jawAttackMs": 60,
