@@ -62,12 +62,15 @@ struct CameraBoxOverlay: View {
             ZStack(alignment: .topLeading) {
                 // r03 `.a[data-sel] img { filter: brightness(.6) }`: the scene steps back behind the lit box
                 Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
-                ForEach(boxes.boxes) { item in
-                    let rect = CameraBoxes.rect(item.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)
-                    // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
-                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.key,
-                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.key,
-                           mask: CameraBoxes.masksEnabled ? boxes.maskImages(for: item) : nil, mirrored: mirrored) }
+                // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
+                let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
+                    .filter { !CameraBoxes.hidden($0.rect, avoiding: avoid) && !CameraBoxes.aboveView($0.rect, topInset: topInset) }
+                let labeled = CameraBoxes.labelOwners(drawn)
+                ForEach(drawn, id: \.item.id) { d in
+                    PopBox(item: d.item, rect: d.rect, size: g.size, topInset: topInset, lit: boxes.highlighted == d.item.key,
+                           dimmed: boxes.highlighted != nil && boxes.highlighted != d.item.key,
+                           showsLabel: labeled.contains(d.item.id),
+                           mask: CameraBoxes.masksEnabled ? boxes.maskImages(for: d.item) : nil, mirrored: mirrored)
                 }
             }
             .opacity(boxes.visible ? 1 : 0)
@@ -87,6 +90,8 @@ private struct PopBox: View {
     let topInset: CGFloat
     let lit: Bool
     let dimmed: Bool
+    /// one pill per ingredient (CameraBoxes.labelOwners); always true without repeated labels
+    var showsLabel = true
     /// Demo S3 (flag, off by default): the SAM pixel mask drawn instead of the box — soft translucent fill + thin outline.
     var mask: (fill: CGImage, edge: CGImage)? = nil
     var mirrored = false
@@ -107,7 +112,7 @@ private struct PopBox: View {
                 RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
                 RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
             }
-            if item.showsLabel {
+            if showsLabel {
             Text(item.label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(height: 28)
                 .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 12))

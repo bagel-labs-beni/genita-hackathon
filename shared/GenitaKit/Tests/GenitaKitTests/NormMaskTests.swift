@@ -24,6 +24,7 @@ struct NormMaskTests {
         #expect(NormMask(w: 0, h: 2, rle: []).bitmap() == nil)
         #expect(NormMask(w: 2, h: 1, rle: [-1, 3]).bitmap() == nil)
         #expect(NormMask(w: 400, h: 400, rle: [160_000]).bitmap() == nil, "the wire caps the long side at 96")
+        #expect(NormMask(w: 1, h: 1, rle: [Int.max, 1]).bitmap() == nil, "a huge run is refused, not an overflow trap (Codex P2)")
     }
 
     @Test func theOutlineIsTheInsideCellsNextToTheOutside() {

@@ -34,7 +34,14 @@ public struct NormMask: Codable, Equatable, Hashable, Sendable {
 
     /// One byte per cell, 255 = inside. nil when the runs don't add up (a bad mask is dropped, the box still draws).
     public func bitmap() -> [UInt8]? {
-        guard w > 0, h > 0, w <= Self.maxSide, h <= Self.maxSide, rle.allSatisfy({ $0 >= 0 }), rle.reduce(0, +) == w * h else { return nil }
+        guard w > 0, h > 0, w <= Self.maxSide, h <= Self.maxSide else { return nil }
+        // summed run by run so a huge run can't overflow (Codex P2): each must fit in what is left
+        var total = 0
+        for run in rle {
+            guard run >= 0, run <= w * h - total else { return nil }
+            total += run
+        }
+        guard total == w * h else { return nil }
         var out = [UInt8](repeating: 0, count: w * h)
         var i = 0
         for (k, run) in rle.enumerated() {

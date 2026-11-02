@@ -148,7 +148,11 @@ import XCTest
             .init(label: "Tomatoes", box: small, mask: m), .init(label: "Tomatoes", box: big, mask: m), .init(label: "Garlic", box: egg),
         ]))
         XCTAssertEqual(b.boxes.map(\.id), ["tomatoes", "tomatoes#1", "garlic"], "ids stay unique; a single match keeps its old id")
-        XCTAssertEqual(b.boxes.map(\.showsLabel), [false, true, true], "one pill per label, on the largest instance")
+        let view = CGSize(width: 390, height: 844), frame = CGSize(width: 480, height: 854)
+        let drawn = b.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: frame, in: view)) }
+        XCTAssertEqual(CameraBoxes.labelOwners(drawn), ["tomatoes#1", "garlic"], "one pill per label, on the largest instance")
+        XCTAssertEqual(CameraBoxes.labelOwners(drawn.filter { $0.item.id != "tomatoes#1" }), ["tomatoes", "garlic"],
+                       "the biggest one hidden (under the status bar or a card): a drawn one carries the label (Codex P2)")
         XCTAssertEqual(b.boxes[0].mask, m)
         XCTAssertNil(b.boxes[2].mask, "no mask → drawn as a box")
         XCTAssertNotNil(b.maskImages(for: b.boxes[0]), "fill and outline images from the grid")

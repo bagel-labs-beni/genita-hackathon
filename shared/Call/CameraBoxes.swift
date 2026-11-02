@@ -19,8 +19,6 @@ struct LiveBox: Identifiable, Equatable {
     var mask: NormMask? = nil
     /// n-th match of this label in the batch (0 = the first)
     var instance: Int = 0
-    /// The label pill is drawn once per label: on its largest instance.
-    var showsLabel: Bool = true
 }
 
 @MainActor @Observable final class CameraBoxes {
@@ -52,6 +50,17 @@ struct LiveBox: Identifiable, Equatable {
         maskCache[item.id] = (fill, edge)
         return (fill, edge)
     }
+    /// One label pill per label: on its largest match among those actually drawn (a hidden one can't own it).
+    /// `drawn` = the boxes on screen with their view rects. Returns the ids that carry a label.
+    static func labelOwners(_ drawn: [(item: LiveBox, rect: CGRect)]) -> Set<String> {
+        var best: [String: (id: String, area: CGFloat)] = [:]
+        for d in drawn {
+            let area = d.rect.width * d.rect.height
+            if let b = best[d.item.key], b.area >= area { continue }
+            best[d.item.key] = (d.item.id, area)
+        }
+        return Set(best.values.map(\.id))
+    }
     static func grayImage(_ bytes: [UInt8], w: Int, h: Int) -> CGImage? {
         guard bytes.count == w * h, let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
@@ -76,13 +85,6 @@ struct LiveBox: Identifiable, Equatable {
             live.order = isNew ? order : 0
             next.append(live)
             if isNew { order += 1 }
-        }
-        // one label pill per label, on its largest instance
-        let area = { (b: NormBox) in (b.x2 - b.x1) * (b.y2 - b.y1) }
-        for key in Set(next.map(\.key)) {
-            let same = next.indices.filter { next[$0].key == key }
-            guard same.count > 1, let biggest = same.max(by: { area(next[$0].box) < area(next[$1].box) }) else { continue }
-            for i in same { next[i].showsLabel = i == biggest }
         }
         boxes = next
         maskCache = [:]
