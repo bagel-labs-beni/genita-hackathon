@@ -3,7 +3,7 @@
 
 import Foundation
 
-public enum FindKind: String, Codable, Sendable { case recipe, outfit, link }
+public enum FindKind: String, Codable, Sendable { case recipe, outfit, link, product }
 
 /// checking → have (Spark YES + SAM box) | maybe ("맞아?") | buy (recipe only).
 public enum FindTier: String, Codable, Sendable { case checking, have, maybe, buy }

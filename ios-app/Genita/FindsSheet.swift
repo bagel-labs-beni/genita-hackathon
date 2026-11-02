@@ -295,6 +295,8 @@ struct FindsSheet: View {
         case .recipe: "Walk me through it"
         case .outfit: "Show me one more"
         case .link: "Read it with me"
+        // #119 PF-1 draws its own product layout; until then a product card reads like a link card
+        case .product: "Open the first one"
         }
     }
 
@@ -350,7 +352,7 @@ struct FindCardPage: View {
                 switch card.kind {
                 case .recipe: recipe
                 case .outfit: outfit
-                case .link: link
+                case .link, .product: link
                 }
                 if !card.ask.isEmpty { askSection.id("ask") }
                 if !card.sources.isEmpty { sourcesSection.id("sources") }
