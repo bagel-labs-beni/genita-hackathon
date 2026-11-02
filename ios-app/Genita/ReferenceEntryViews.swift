@@ -74,7 +74,13 @@ struct ReferenceSignInView: View {
             #endif
         }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
-            Button("Continue in demo") { model.signedIn(); provider = nil }
+            Button("Continue in demo") {
+                #if DEBUG
+                // Appetize preview: the demo path still goes through the consent screen (CS01)
+                if BrowserPreview.isActive { model.signedIn(consented: false); provider = nil; return }
+                #endif
+                model.signedIn(); provider = nil
+            }
             Button("Cancel", role: .cancel) { provider = nil }
         } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
         .onChange(of: legal) { _, doc in
@@ -124,6 +130,10 @@ struct ReferenceSignInView: View {
     /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
     func signInWithApple() {
         guard !signingIn else { return }
+        #if DEBUG
+        // Appetize preview: no Apple login in a simulator stream, offer the local demo instead
+        if BrowserPreview.isActive { provider = "Apple"; return }
+        #endif
         signingIn = true
         Task { @MainActor in
             defer { signingIn = false }
