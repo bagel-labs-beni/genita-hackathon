@@ -251,33 +251,31 @@ struct MacConsentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Before we start.").font(MacSheetInk.serif(35)).foregroundStyle(MacSheetInk.ink).padding(.top, 36)
+            Text("Before we start.").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
             Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
-                .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 20) {
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 16) {
                 ForEach(rows, id: \.0) { row in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.0).font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
                         Text(row.1).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).fixedSize(horizontal: false, vertical: true)
                     }.accessibilityElement(children: .combine)
                 }
-            }.padding(.top, 32)
-            HStack(spacing: 16) {
-                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
-                Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
-            }.font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
+            }.padding(.top, 24)
+            HStack(spacing: 16) { MacLegalLinks() }.font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline().padding(.top, 16).frame(minHeight: 44)
             Button { agree() } label: {
                 ZStack {
                     if sending { ProgressView().controlSize(.small).tint(MacSheetInk.onInk) } else { Text("Agree and continue") }
                 }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
                     .frame(maxWidth: .infinity).frame(height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(sending).padding(.top, 24).accessibilityIdentifier("macConsentAgree")
+            }.buttonStyle(.plain).disabled(sending).padding(.top, 12).accessibilityIdentifier("macConsentAgree")
             Button("Not now") { call.signOut() }
                 .buttonStyle(.plain).font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
-                .frame(maxWidth: .infinity).frame(height: 50).disabled(sending).padding(.bottom, 20).accessibilityIdentifier("macConsentNotNow")
+                .frame(maxWidth: .infinity).frame(height: 50).disabled(sending).accessibilityIdentifier("macConsentNotNow")
         }
-        .padding(.horizontal, 28).frame(width: 420)
+        // same window system as MAC-1~4: 32 sides and top, 28 bottom
+        .padding(.horizontal, 32).padding(.top, 32).padding(.bottom, 20).frame(width: 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
         .alert("Couldn’t save that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
     }
