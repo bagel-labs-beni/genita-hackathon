@@ -308,30 +308,38 @@ test("hedged search: the first call that lists 2 opened pages wins; the slow one
   const good = (tag: string) => ({ text: JSON.stringify({ items: [{ url: P1 }, { url: P2 }], tag }), output: [OPEN(P1), OPEN(P2)] });
   const one = { text: JSON.stringify({ items: [{ url: P1 }] }), output: [OPEN(P1)] };
   let aborted = 0;
-  const mk = (plan: Array<{ ms: number; r: { text: string; output: OutputItem[] } | null }>): FindsVendors => {
-    let i = 0;
-    return {
-      async spark(_req, signal) {
-        const p = plan[i++];
-        return new Promise((resolve, reject) => {
+  type Search = { text: string; output: OutputItem[] };
+  const mk = () => {
+    const calls: Array<{ resolve: (r: Search) => void; reject: () => void }> = [];
+    const vendor: FindsVendors = {
+      spark(_req, signal) {
+        return new Promise<Search>((resolve, reject) => {
           let settled = false;
-          const t = setTimeout(() => ((settled = true), p.r ? resolve(p.r) : reject(new Error("vendor down"))), p.ms);
-          signal?.addEventListener("abort", () => { if (!settled) (clearTimeout(t), aborted++, reject(new Error("aborted"))); }, { once: true });
+          calls.push({ resolve: (r) => { settled = true; resolve(r); }, reject: () => { settled = true; reject(new Error("vendor down")); } });
+          signal?.addEventListener("abort", () => { if (!settled) { aborted++; reject(new Error("aborted")); } }, { once: true });
         });
       },
-      async *sparkStream() {},
-      async sam() { return []; },
-      async image() { return Buffer.alloc(0); },
+      async *sparkStream() {}, async sam() { return []; }, async image() { return Buffer.alloc(0); },
     };
+    return { vendor, calls };
   };
-  const t0 = performance.now();
-  const r = await hedgedSearch(mk([{ ms: 400, r: good("slow") }, { ms: 20, r: good("fast") }]), "p", 2, new AbortController().signal);
+  const fast = mk();
+  const pending = hedgedSearch(fast.vendor, "p", 2, new AbortController().signal);
+  fast.calls[1].resolve(good("fast"));
+  const r = await pending;
   assert.match(r!.text, /fast/);
-  assert.ok(performance.now() - t0 < 300, "did not wait for the slow call");
   assert.equal(aborted, 1, "the slow call was aborted");
-  const best = await hedgedSearch(mk([{ ms: 10, r: one }, { ms: 30, r: null }]), "p", 2, new AbortController().signal);
-  assert.equal(best, one, "a vendor failure in one call: the other's partial result is used");
-  assert.equal(await hedgedSearch(mk([{ ms: 5, r: null }]), "p", 1, new AbortController().signal), null);
+
+  const partial = mk();
+  const bestPending = hedgedSearch(partial.vendor, "p", 2, new AbortController().signal);
+  partial.calls[0].resolve(one);
+  partial.calls[1].reject();
+  assert.equal(await bestPending, one, "a vendor failure in one call: the other's partial result is used");
+
+  const bad = mk();
+  const none = hedgedSearch(bad.vendor, "p", 1, new AbortController().signal);
+  bad.calls[0].reject();
+  assert.equal(await none, null);
 });
 
 test("searching lines fit one line at 390 pt: short title, whole-word labels, short failure titles", () => {

@@ -39,6 +39,7 @@ import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
 import { configureOps, rejectGeneration } from "./ops/limits.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
+import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
@@ -104,6 +105,7 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  const events = createEventsRoute(log);
   // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
   if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
@@ -111,8 +113,11 @@ export async function startServer(
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
-    // end the user's calls first so no running card or memory job writes after the erase
+    // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
+    // before purging. A late vendor completion must never recreate deleted data.
+    const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+    await findsDeleted;
     await deps.memory?.forget(userId);
     await deps.finds?.store.removeOwner(ownerKey(userId));
   };
@@ -148,6 +153,12 @@ export async function startServer(
     const url = new URL(req.url ?? "/", "http://localhost");
     if (isAppConfigRoute(url.pathname)) return handleAppConfig(req, res, appConfig); // public, before any auth
     if (rejectGeneration(req, res, ops)) return;
+    if (events.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return events.handle(req, res, who.userId);
+    }
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.

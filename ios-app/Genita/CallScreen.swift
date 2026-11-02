@@ -100,6 +100,8 @@ final class LoopingVideoView: UIView {
 struct CallCueView: View {
     let cue: CallCue
     let name: String
+    /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
+    var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     var body: some View {
@@ -125,7 +127,8 @@ struct CallCueView: View {
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
     private var content: Content? {
-        switch cue {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+        return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
         case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)

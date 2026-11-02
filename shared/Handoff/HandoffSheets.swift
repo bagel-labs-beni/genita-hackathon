@@ -50,13 +50,17 @@ struct HandoffWaitingSheet: View {
 /// E01 and E02: microphone or camera permission was denied.
 struct MediaPermissionSheet: View {
     let kind: LocalCallMedia.Kind
+    /// The companion's own name (E01 / E02 never say "Jin" unless that is the name).
+    var name: String = "your companion"
     let openSettings: () -> Void
     let dismiss: () -> Void
     private var title: String { kind == .camera ? "Allow camera access." : "Allow microphone." }
-    private var lines: [String] {
-        kind == .camera
-            ? ["Allow camera access in Settings", "to show Jin what you see.", "You can keep talking without it."]
-            : ["Allow microphone access in Settings", "to talk with Jin.", "Your conversation will stay here."]
+    private var lines: [String] { Self.lines(kind: kind, name: name) }
+    static func lines(kind: LocalCallMedia.Kind, name: String) -> [String] {
+        let who = name.trimmingCharacters(in: .whitespaces).isEmpty ? "your companion" : name
+        return kind == .camera
+            ? ["Allow camera access in Settings", "to show \(who) what you see.", "You can keep talking without it."]
+            : ["Allow microphone access in Settings", "to talk with \(who).", "Your conversation will stay here."]
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
