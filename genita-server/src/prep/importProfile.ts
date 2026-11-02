@@ -413,6 +413,38 @@ function skipList(v: unknown, max: number): string[] | null {
   return out;
 }
 
+/** N3 (PRD v12 D33, Figma 269:2): `n3.{clothes,food,chats}.{like,no}` — each chip off, liked or "no". */
+const N3_GROUPS = ["clothes", "food", "chats"] as const;
+type N3Group = (typeof N3_GROUPS)[number];
+interface N3Answers { like: string[]; no: string[] }
+/** The chat chips' "no" in the user's words (Figma HISY-S3 lines); anything else becomes "Avoid: X". */
+const N3_CHATS_NO: Record<string, string> = {
+  "unasked advice": "No advice you didn't ask for.",
+  "talk about looks": "No comments on your looks.",
+  "lots of questions": "Don't ask too many questions.",
+  jokes: "No jokes.",
+};
+
+function parseN3(v: unknown): Record<N3Group, N3Answers> | null {
+  const empty = (): Record<N3Group, N3Answers> => ({ clothes: { like: [], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } });
+  if (v === undefined || v === null) return empty();
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const out = empty();
+  const src = v as Record<string, unknown>;
+  for (const g of N3_GROUPS) {
+    if (src[g] === undefined || src[g] === null) continue;
+    const grp = src[g];
+    if (typeof grp !== "object" || Array.isArray(grp)) return null;
+    const like = skipList((grp as Record<string, unknown>).like, SKIP_INTEREST_MAX);
+    const no = skipList((grp as Record<string, unknown>).no, SKIP_INTEREST_MAX);
+    if (!like || !no) return null;
+    out[g] = { like, no };
+  }
+  return out;
+}
+
+const lower = (xs: string[]) => xs.map((x) => x.toLowerCase());
+
 /** N1–N3 answers → the same card the import makes, without Spark. null = bad_skip. */
 export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { ok: false } {
   const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
@@ -420,18 +452,30 @@ export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { 
   const interests = skipList(b.interests, SKIP_INTEREST_MAX);
   const avoid = skipList(b.avoid, SKIP_AVOID_MAX);
   const reply = b.replies === undefined || b.replies === null ? null : typeof b.replies === "string" && Object.hasOwn(SKIP_REPLIES, b.replies) ? SKIP_REPLIES[b.replies] : false;
-  if (!interests || !avoid || reply === false) return { ok: false };
+  const n3 = parseN3(b.n3);
+  if (!interests || !avoid || reply === false || !n3) return { ok: false };
   const f = (text: string): Finding => ({ text, label: "explicit", scope: "any" });
+  // N3 likes and "no"s: clothes and food are Likes & dislikes, chat likes shape the communication line, chat "no"s are boundaries
+  const taste: Finding[] = [];
+  if (n3.clothes.like.length) taste.push(f(`Style: ${n3.clothes.like.join(", ")}.`));
+  if (n3.food.like.length) taste.push(f(`Food: ${lower(n3.food.like).join(", ")}.`));
+  if (n3.clothes.no.length) taste.push(f(`Dislikes ${lower(n3.clothes.no).join(", ")} clothes.`));
+  if (n3.food.no.length) taste.push(f(`Dislikes ${lower(n3.food.no).join(", ")}.`));
+  const communication = n3.chats.like.length ? [f(`Likes ${lower(n3.chats.like).join(", ")} in our chats.`)] : [];
+  const boundaries = [
+    ...avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+    ...n3.chats.no.map((a) => f(N3_CHATS_NO[a.toLowerCase()] ?? `Avoid: ${a}`)),
+  ].slice(0, SKIP_MAX_ITEMS);
   const raw: ImportRaw = {
     sections: {
       tendencies: [],
-      communication: [],
+      communication,
       response: reply ? [f(reply)] : [],
       help: [],
       support: [],
       interests: interests.map(f),
-      likes: [],
-      boundaries: avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+      likes: taste,
+      boundaries,
       approach: [],
     },
     rules: [],
