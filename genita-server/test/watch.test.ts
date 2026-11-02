@@ -340,7 +340,6 @@ const config: Config = {
   speculate: false,
   speculateStableMs: 250,  // #157: these session tests exercise server-voice frames
   serverTts: true,
-  kling: false,
 };
 
 class Client implements ClientSink {

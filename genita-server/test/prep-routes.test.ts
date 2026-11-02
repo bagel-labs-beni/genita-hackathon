@@ -12,16 +12,21 @@ import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 
-/** Routes with a real file store and no vendor keys: covers everything that does not call a model. */
+/** Routes with a real file store; upstream failures exercise the local fallback. */
 test("prep routes: prompt, validation, one companion per user, prefs → persona", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-routes-"));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const d: PrepDeps = { metaKey: "", store, voices: DEFAULT_VOICES, log: () => {} };
   const runner = new PrepRunner(d);
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.startsWith(base + "/") ? realFetch(input, init) : Promise.resolve(new Response("stubbed upstream failure", { status: 503 }));
+  });
   t.after(() => {
     http.close();
     rmSync(dir, { recursive: true, force: true });
@@ -62,10 +67,10 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(created.json.name, "Leah"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
-  await runner.run("u1"); // no FAL_KEY here → Meta-only runtime: ready at once, clips off
+  await runner.run("u1"); // fake input has no usable scene; route validation remains available
   const prep = await call("GET", "/v1/companion/prep");
-  assert.equal(prep.json.status, "ready");
-  assert.equal(prep.json.progress.total, 0, "off steps are not counted");
+  assert.equal(prep.json.status, "failed");
+  assert.equal(prep.json.progress.total, 14);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
@@ -83,10 +88,10 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(picked.json.voiceId, DEFAULT_VOICES[2].id);
   assert.equal((await call("GET", "/v1/companion")).json.session.voiceId, DEFAULT_VOICES[2].id);
   assert.equal(((await store.getCompanion("u1"))!.persona!.card as any).voice.id, DEFAULT_VOICES[2].id);
-  // Meta-only (D34): no remote lip worker is suggested
+  // Human face sets animate on the device.
   assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Leah");
-  assert.equal(after.json.prep.status, "ready");
+  assert.equal(after.json.prep.status, "failed");
 });

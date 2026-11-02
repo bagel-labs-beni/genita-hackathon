@@ -8,18 +8,65 @@ import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import { loadConfig } from "../src/config.ts";
 import { startServer, defaultDeps } from "../src/server.ts";
-import { makeScene, voicePreview, type PrepDeps } from "../src/prep/pipeline.ts";
+import { checkImage, makeScene, voicePreview, type PrepDeps } from "../src/prep/pipeline.ts";
 import { FileStore } from "../src/prep/store.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { createPrep } from "../src/prep/index.ts";
+import { PrepRunner, newPrepState, prepView } from "../src/prep/runner.ts";
+import { fakePng } from "./helpers/fakeMedia.ts";
 
 const voice = { url: "https://voice.test", token: "test-token", speakers: { human: 0, animal: 1, character: 2 }, speed: 1, timeoutMs: 1000, model: "seamless" as const };
 function fixture(t: import("node:test").TestContext): PrepDeps {
   const dir = mkdtempSync(join(tmpdir(), "genita-meta-only-"));
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; rmSync(dir, { recursive: true, force: true }); });
-  return { metaKey: "test-meta", falKey: null, store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {} };
+  return { metaKey: "test-meta", store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {} };
 }
+
+test("full human and animal prep only requests Meta hosts", async (t) => {
+  for (const kind of ["human", "animal"] as const) await t.test(kind, async (t) => {
+    const d = fixture(t);
+    const seen: URL[] = [];
+    const models: string[] = [];
+    const image = fakePng(1000, 2000, "meta-scene");
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      seen.push(url);
+      assert.equal(url.hostname, "api.meta.ai", `unexpected prep host: ${url.hostname}`);
+      if (url.pathname === "/v1/images/edits") {
+        models.push(String((init!.body as FormData).get("model")));
+        return Response.json({ data: [{ b64_json: image.toString("base64") }] });
+      }
+      assert.equal(url.pathname, "/v1/responses");
+      const body = JSON.parse(String(init!.body));
+      models.push(body.model);
+      let text: string;
+      if (body.model === "muse-spark-1.3") {
+        text = JSON.stringify({ subject: kind === "human" ? "person" : "animal", face_count: 1, front_facing: true, face_covered: false, sharp: true, well_lit: true, text_on_image: false });
+      } else {
+        assert.equal(body.model, "sam-3.1");
+        const prompt = body.input[0].content[0].text;
+        text = /mouth|lips|muzzle/.test(prompt)
+          ? "<|box;x1=420;y1=760;x2=580;y2=820;w=1000;h=2000|>"
+          : "<|box;x1=300;y1=400;x2=700;y2=900;w=1000;h=2000|>";
+      }
+      return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text }] }] });
+    }) as typeof fetch;
+    const checked = await checkImage(d, "u1", image, true);
+    assert.equal(checked.check.type, kind);
+    assert.equal(checked.check.passed, true);
+    await d.store.putCompanion({ id: "c1", userId: "u1", imageId: checked.id, type: kind, voiceId: "0", name: "Jin", createdAt: new Date().toISOString(), prep: newPrepState() });
+    await new PrepRunner(d).run("u1");
+    const view = prepView((await d.store.getCompanion("u1"))!);
+    assert.equal(view.status, "ready");
+    assert.deepEqual(view.progress, { done: 14, total: 14 });
+    assert.equal(Object.keys(view.face!.visemes).length, 10);
+    assert.equal(models.filter((m) => m === "muse-image-1.0").length, 14);
+    assert.deepEqual([...new Set(models)].sort(), ["muse-image-1.0", "muse-spark-1.3", "sam-3.1"]);
+    assert.ok(seen.length > 14);
+    assert.ok(seen.every((url) => url.hostname === "api.meta.ai"));
+  });
+});
 
 test("MODEL_API_KEY alone boots the server and completes a device-voice session without upstream I/O", async (t) => {
   const prep = fixture(t);
@@ -35,7 +82,7 @@ test("MODEL_API_KEY alone boots the server and completes a device-voice session 
     yield { type: "text", delta: "<warm> Hello there." };
     yield { type: "done", responseId: "test", status: "completed", text: "<warm> Hello there." };
   };
-  assert.equal(createPrep(config, () => {}, { FAL_KEY: "test-unused" }, prep.store).deps.falKey, null);
+  assert.equal(createPrep(config, () => {}, {}, prep.store).deps.metaKey, "test-meta");
   const server = await startServer(config, () => {}, deps, { GENITA_DATA_DIR: (prep.store as FileStore).dir }, null);
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const ws = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/v1/session`);

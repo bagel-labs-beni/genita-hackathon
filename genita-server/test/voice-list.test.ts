@@ -39,7 +39,7 @@ test("GET /v1/companion/voices: list for the image's look, available follows the
   const svc: Server = createServer((req, res) => (req.url === "/healthz" && up ? (res.writeHead(200), res.end('{"ok":true}')) : (res.writeHead(503), res.end())));
   await new Promise<void>((r) => svc.listen(0, "127.0.0.1", r));
   const voice: VoiceConfig = { url: `http://127.0.0.1:${(svc.address() as AddressInfo).port}`, token: "t", speakers: { human: 72, animal: 16, character: 68 }, speed: 1, timeoutMs: 1000, model: "seamless" };
-  const d: PrepDeps = { metaKey: "", falKey: null, store, voice, voices: DEFAULT_VOICES, log: () => {} };
+  const d: PrepDeps = { metaKey: "", store, voice, voices: DEFAULT_VOICES, log: () => {} };
   const routes = createPrepRoutes(d, new PrepRunner(d));
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));

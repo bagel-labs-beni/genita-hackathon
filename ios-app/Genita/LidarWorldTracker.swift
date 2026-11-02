@@ -10,24 +10,26 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
  @Published var centerRightMM:Double=(UserDefaults.standard.object(forKey:"lidar.centerRightMM") as? Double) ?? 0 { didSet { UserDefaults.standard.set(centerRightMM,forKey:"lidar.centerRightMM") } }
  @Published var running=false
  @Published var canLock=false
- @Published var status="맥에서 LiDAR 기준 화면을 전체 화면으로 연 뒤 시작하세요."
+ @Published var status="Show the registration screen on your Mac, then start."
  let session=ARSession()
  private let queue=DispatchQueue(label:"genita.lidar.world")
  private let imageContext=CIContext(options:[.workingColorSpace:NSNull()])
  var onReading: (([String:Any])->Void)?
- private var active=false,last=0.0,generation=0
+ private var active=false,last=0.0,generation=0,startRequest=0
  private var candidate:Screen?,locked:Screen?,stable=0
  private var registrationFrames=[Screen]()
  private var restoring:(Float,Float)?,saving=false,lastSave=0.0,restoreStarted=0.0
  private var originalURL:URL?
  private struct SavedSpace:Codable {let geometryVersion:Int;let map:Data;let width:Float;let height:Float;let host:String}
+ static var supported:Bool {ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)}
+ var hasSavedSpace:Bool {FileManager.default.fileExists(atPath:mapURL.path)}
  private var mapURL:URL {FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("GenitaLidar/space.json")}
  private func configuration()->ARWorldTrackingConfiguration {let c=ARWorldTrackingConfiguration();c.worldAlignment = .gravity;c.frameSemantics = [.sceneDepth];c.planeDetection = [.vertical,.horizontal];return c}
  func resetScreen(){queue.async {
   self.generation+=1;self.locked=nil;self.restoring=nil;self.candidate=nil;self.stable=0;self.registrationFrames=[];self.lastSave=0
   try? FileManager.default.removeItem(at:self.mapURL)
   if self.active {self.session.run(self.configuration(),options:[.resetTracking,.removeExistingAnchors])}
-  self.send(["state":"searching"]);self.publish("청록색 화면 자동 탐색 중")
+  self.send(["state":"searching"]);self.publish("Looking for the teal screen")
   DispatchQueue.main.async{self.canLock=false}
  }}
  private func saveSpace(_ frame:ARFrame){
@@ -42,7 +44,7 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
     try FileManager.default.createDirectory(at:self.mapURL.deletingLastPathComponent(),withIntermediateDirectories:true)
     try JSONEncoder().encode(saved).write(to:self.mapURL,options:.atomic)
 
-   }catch{self.publish("공간 저장 실패 · 현재 추적은 유지됩니다")}
+   }catch{self.publish("Couldn’t save the space. Tracking continues.")}
   }}
  }
  private struct Screen {var pose:simd_float4x4;var width:Float;var height:Float}
@@ -53,28 +55,30 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
  }
  func start(_ original:URL){
   guard !running else{return}
-  guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else{status="이 기기는 LiDAR 깊이 측정을 지원하지 않습니다";return}
+  guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else{status="This iPhone has no LiDAR. Use Move to Mac in the menu.";return}
 
-  AVCaptureDevice.requestAccess(for:.video){ok in guard ok else{self.publish("카메라 권한이 필요합니다");return};self.queue.async{
+  startRequest+=1;let request=startRequest
+  AVCaptureDevice.requestAccess(for:.video){ok in guard ok else{self.publish("Camera access is off. Use Move to Mac in the menu.");return};self.queue.async{
+   guard request==self.startRequest else{return}
    self.generation+=1;self.active=true;self.locked=nil;self.candidate=nil;self.stable=0;self.registrationFrames=[];self.last=0;self.lastSave=0;self.originalURL=original;self.restoring=nil;self.restoreStarted=0
    let config=self.configuration()
    if let data=try? Data(contentsOf:self.mapURL),let saved=try? JSONDecoder().decode(SavedSpace.self,from:data),saved.geometryVersion==2,saved.host==original.host,saved.width>0,saved.height>0,
       let map=try? NSKeyedUnarchiver.unarchivedObject(ofClass:ARWorldMap.self,from:saved.map),map.anchors.contains(where:{$0.name=="genita-lidar-screen"}) {
     config.initialWorldMap=map;self.restoring=(saved.width,saved.height)
    }
-   self.session.run(config,options:[.resetTracking,.removeExistingAnchors]);DispatchQueue.main.async{self.running=true;self.canLock=false};self.publish(self.restoring == nil ? "청록색 테스트 화면 자동 탐색 중" : "저장된 공간 복구 중 · 이전에 본 주변을 비춰 주세요")
+   self.session.run(config,options:[.resetTracking,.removeExistingAnchors]);DispatchQueue.main.async{self.running=true;self.canLock=false};self.publish(self.restoring == nil ? "Looking for the teal screen" : "Restoring the saved space. Point at what you scanned before.")
   }}
  }
  private func registerScreen(_ c:Screen){
   guard active else{return};restoring=nil;locked=c
   for a in session.currentFrame?.anchors ?? [] where a.name=="genita-lidar-screen" {session.remove(anchor:a)}
   session.add(anchor:ARAnchor(name:"genita-lidar-screen",transform:c.pose))
-  publish("화면 자동 등록됨 · 이제 맥 옆으로 이동하세요")
+  publish("Screen registered. Bring your iPhone next to your Mac.")
   DispatchQueue.main.async{self.canLock=false}
  }
- func stop(){queue.async{self.active=false;self.generation+=1;self.session.pause();self.locked=nil;self.send(["state":"stopped"]);DispatchQueue.main.async{self.running=false;self.canLock=false;self.status="중지됨"}}}
+ func stop(){startRequest+=1;queue.async{self.active=false;self.generation+=1;self.session.pause();self.locked=nil;self.send(["state":"stopped"]);DispatchQueue.main.async{self.running=false;self.canLock=false;self.status="Stopped"}}}
  private func publish(_ s:String){DispatchQueue.main.async{self.status=s}}
- func sessionWasInterrupted(_ session:ARSession){queue.async{self.send(["state":"limited","reason":"카메라 중단 · 공간 복구 대기"]);self.publish("카메라 중단 · 공간 복구 대기")}}
+ func sessionWasInterrupted(_ session:ARSession){queue.async{self.send(["state":"limited","reason":"Camera interrupted. Waiting to restore the space."]);self.publish("Camera interrupted. Waiting to restore the space.")}}
  func session(_ session:ARSession,didFailWithError error:Error){publish(error.localizedDescription);stop()}
  func session(_ session:ARSession,didUpdate anchors:[ARAnchor]){guard let a=anchors.first(where:{$0.name=="genita-lidar-screen"}),var s=locked else{return};s.pose=a.transform;locked=s}
  func session(_ session:ARSession,didUpdate frame:ARFrame){
@@ -84,23 +88,23 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
    if frame.timestamp-restoreStarted>12 {
     restoring=nil;locked=nil;candidate=nil;stable=0;generation+=1
     session.run(configuration(),options:[.resetTracking,.removeExistingAnchors])
-    send(["state":"searching","reason":"공간 복구 대기 종료 · 화면 자동 탐색으로 전환"])
-    publish("공간 복구 대기 종료 · 청록색 화면 자동 탐색 중");return
+    send(["state":"searching","reason":"Couldn’t restore the space. Looking for the screen."])
+    publish("Couldn’t restore the space. Looking for the teal screen.");return
    }
   }
   guard case .normal=frame.camera.trackingState else{
    let reason:String
    switch frame.camera.trackingState {
-   case .limited(.excessiveMotion):reason="빠른 움직임 · 천천히 움직여 주세요"
-   case .limited(.insufficientFeatures):reason="주변 특징 부족 · 후면 카메라를 방 쪽으로 향해 주세요"
-   case .limited(.relocalizing):reason="기존 공간 좌표 복구 중"
-   default:reason="공간 추적 초기화 중"
+   case .limited(.excessiveMotion):reason="Moving too fast. Move slowly."
+   case .limited(.insufficientFeatures):reason="Not enough detail. Point the rear camera at the room."
+   case .limited(.relocalizing):reason="Restoring the saved space"
+   default:reason="Starting space tracking"
    }
    send(["state":"limited","reason":reason]);publish(reason);return
   }
   if let dims=restoring {
    guard let anchor=frame.anchors.first(where:{$0.name=="genita-lidar-screen"}) else {
-    send(["state":"limited","reason":"저장된 화면 기준 복구 대기"]);return
+    send(["state":"limited","reason":"Waiting to restore the saved screen"]);return
    }
    locked=Screen(pose:anchor.transform,width:dims.0,height:dims.1);restoring=nil
   }
@@ -117,16 +121,16 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
    // Match physical vertical height, rather than orthogonally projecting onto
    // a tilted screen: the latter mixes front/back distance into screen Y.
    let vertical=s.pose.columns.1.y
-   guard abs(vertical)>0.5 else{send(["state":"limited","reason":"화면 수직 기준 불안정 · 재등록 필요"]);return}
+   guard abs(vertical)>0.5 else{send(["state":"limited","reason":"Screen position is unstable. Register again."]);return}
    let depthHeightCorrection=p.z*s.pose.columns.2.y/vertical
    let alignedY=p.y+depthHeightCorrection
    send(["state":"tracking","x":p.x,"y":alignedY,"z":p.z,"rawPlaneY":p.y,"depthHeightCorrection":depthHeightCorrection,"screenNormalY":s.pose.columns.2.y,"widthM":s.width,"heightM":s.height,"reference":"phone-center-estimate","centerDownMM":offsets.1,"centerRightMM":offsets.0,"spaceSaved":FileManager.default.fileExists(atPath:mapURL.path),"lidarAvailable":frame.sceneDepth != nil])
-   publish(String(format:"공간 추적 중 · 좌우 %+.0f / 높이 %+.0f / 앞뒤 %+.0f cm",p.x*100,alignedY*100,p.z*100));return
+   publish(String(format:"Tracking · side %+.0f / height %+.0f / depth %+.0f cm",p.x*100,alignedY*100,p.z*100));return
   }
   let request=VNDetectRectanglesRequest();request.maximumObservations=6;request.minimumConfidence=0.8;request.minimumSize=0.2;request.minimumAspectRatio=0.2;request.maximumAspectRatio=1.0
   do{try VNImageRequestHandler(cvPixelBuffer:frame.capturedImage,orientation:.up).perform([request])}catch{return}
   let screens=(request.results ?? []).filter{isTestScreen($0,frame)}.compactMap{screen($0,frame)}.sorted{$0.width*$0.height>$1.width*$1.height}
-  guard let next=screens.first else{stable=0;registrationFrames=[];candidate=nil;DispatchQueue.main.async{self.canLock=false};send(["state":"searching"]);publish("청록색 화면 탐색 중 · 색상·깊이·테두리 확인");return}
+  guard let next=screens.first else{stable=0;registrationFrames=[];candidate=nil;DispatchQueue.main.async{self.canLock=false};send(["state":"searching"]);publish("Looking for the teal screen");return}
   if let old=candidate,simd_distance(old.pose.columns.3,next.pose.columns.3)<0.03,abs(old.width-next.width)<0.04,abs(old.height-next.height)<0.04,simd_dot(old.pose.columns.2,next.pose.columns.2)>0.995{stable+=1}else{stable=1}
   candidate=next;if stable==1{registrationFrames=[]};registrationFrames.append(next);if registrationFrames.count>8{registrationFrames.removeFirst()};let ok=registrationFrames.count>=8;DispatchQueue.main.async{self.canLock=ok}
   if ok {
@@ -139,7 +143,7 @@ final class LidarWorldTracker:NSObject,ObservableObject,ARSessionDelegate {
    registerScreen(screen);return
   }
   send(["state":"candidate","widthM":next.width,"heightM":next.height,"stable":ok])
-  publish(String(format:"화면 후보 %.0f × %.0f cm · %@",next.width*100,next.height*100,"자동 등록 확인 중 \(stable)/8"))
+  publish(String(format:"Screen found %.0f × %.0f cm · %@",next.width*100,next.height*100,"confirming \(stable)/8"))
  }
  // Temporary test-screen signature, not a general Mac identity detector.
  private func isTestScreen(_ rect:VNRectangleObservation,_ frame:ARFrame)->Bool {

@@ -13,6 +13,10 @@ export type VoiceOption = {
   tags: string;
   /** companion looks this voice is offered for; none = every look (GENITA_VOICES overrides) */
   kind?: CompanionKind;
+  /** device voices (server TTS off): the app picks a system voice from these */
+  locale?: string;
+  gender?: "female" | "male" | "neutral";
+  style?: string;
 };
 
 /**
@@ -43,6 +47,21 @@ export function voicesForKind(voices: VoiceOption[], kind: CompanionKind | null)
   const k = kind ?? "human";
   return voices.filter((v) => !v.kind || v.kind === k);
 }
+
+/**
+ * Meta voice service unset (the default): the device speaks with
+ * its own system voices, so V04 lists device descriptors. Same
+ * four cards (names, blurbs, order); the app maps each to the best installed
+ * voice for `locale` + `gender` (Premium/Enhanced first) and previews locally.
+ */
+export const DEVICE_VOICES: VoiceOption[] = [
+  { id: "device:en-US:m1", name: "Jin", blurb: "Calm, confident", tags: "male, young, american, confident", locale: "en-US", gender: "male", style: "calm" },
+  { id: "device:en-US:f1", name: "Mira", blurb: "Warm, steady", tags: "female, young, american, warm, conversational", locale: "en-US", gender: "female", style: "warm" },
+  { id: "device:en-US:m2", name: "Theo", blurb: "Easy, playful", tags: "male, young, american, casual, conversational", locale: "en-US", gender: "male", style: "playful" },
+  { id: "device:en-US:f2", name: "Nova", blurb: "Soft, gentle", tags: "female, young, american, soft, smooth", locale: "en-US", gender: "female", style: "soft" },
+];
+
+export const isDeviceVoice = (id: string) => id.startsWith("device:");
 
 export function voicesFromEnv(v: string | undefined): VoiceOption[] {
   if (!v) return DEFAULT_VOICES;

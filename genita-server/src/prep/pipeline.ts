@@ -1,29 +1,33 @@
 /**
  * Onboarding prep services: the vendor calls behind the /v1/import and
  * /v1/companion routes. Pure decisions live in the sibling modules; this file
- * only wires them to Spark, SAM, Muse Image, Meta voice and fal CDN uploads.
+ * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
 import { sparkJson } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
-import { falUpload } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
+import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
+import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
 export type PrepDeps = {
   metaKey: string;
-  falKey: string | null;
   voice?: import("../config.ts").VoiceConfig | null;
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** Muse Image + SAM; tests pass a fake */
+  media?: MediaApi;
 };
+
+export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
+export const mediaOf = (d: PrepDeps): MediaApi => d.media ?? META_MEDIA;
 
 export class PrepError extends Error {
   readonly status: number;
@@ -98,26 +102,25 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
 
 // ---------- F2-L21: call scene ----------
 
-export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number; url: string | null };
+export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number };
 
-/** Muse Image edit, retried once on failure. CDN upload remains for the Kling path (#158). */
+/** Muse Image edit, retried once on failure. */
 export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: CompanionKind, signal?: AbortSignal): Promise<SceneResult> {
   const t0 = performance.now();
   let out: Buffer;
   try {
-    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   } catch (err) {
     if (signal?.aborted) throw err;
     d.log("scene.retry", { reason: "muse_image_failed" });
-    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   }
-  const url = d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
-  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
+  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0) };
 }
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v2" // v2: V04 voices renamed (id 0 was Jin, now Coco);
+export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).
@@ -146,6 +149,8 @@ export const resetVoiceProbe = () => { probe = null; };
 export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer> {
   const v = d.voices.find((x) => x.id === voiceId);
   if (!v) throw new PrepError(404, "unknown_voice");
+  // device voices are previewed by the app with its own synthesizer
+  if (isDeviceVoice(v.id)) throw new PrepError(404, "device_preview", "preview this voice on the device");
   const cached = await d.store.getVoicePreview(v.id, PREVIEW_VERSION);
   if (cached) return cached;
   if (!d.voice) throw new PrepError(503, "voice_unavailable");

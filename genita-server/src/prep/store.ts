@@ -9,30 +9,26 @@
  * from it (F2-L9 "서버 재시작해도 이어짐").
  * Raw pasted import text is never passed in here.
  */
-import { mkdir, readFile, rename, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
 import type { CompanionKind, PrepEmotion } from "./prompts.ts";
+import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-export type StepStatus = "pending" | "running" | "done" | "failed" | "todo";
+/** `skipped` = a legacy video/lip step outside the Meta pipeline */
+export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
   error?: string;
   ms?: number;
-  fal?: FalRequest;
   url?: string;
   source?: string;
-  /** Legacy remote bake job id retained for stored-record compatibility */
-  callId?: string;
-  /** Legacy bake metadata retained for stored-record compatibility; unused by runtime */
-  avatarId?: string;
-  bundleId?: string;
-  nBase?: number;
+  /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
+  face?: FaceState;
 };
 
 export type PrepState = {
@@ -42,8 +38,10 @@ export type PrepState = {
   steps: {
     scene: Step;
     videos: Record<PrepEmotion, Step>;
-    /** Legacy lip prep state retained for stored-record compatibility */
+    /** Legacy lip step retained for persisted records. */
     lips: Step;
+    /** Meta-only face set (expressions + visemes); absent on older persisted records */
+    face?: Step;
   };
   startedAt: string;
   readyAt?: string;
@@ -87,6 +85,15 @@ export interface PrepStore {
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
   putVoicePreview(voiceId: string, version: string, audio: Buffer): Promise<void>;
+  /**
+   * Companion images (scene = `neutral`, face set keys), served by GET /v1/companion/face/:key.
+   * Kept under the user (blob key users/<userId>/companions/<companionId>/face/<name>), so
+   * DELETE /me removes them with the user's other files.
+   */
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
+  getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
+  /** drops every image of a companion, or of every companion of the user when companionId is omitted */
+  deleteAssets(userId: string, companionId?: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -185,5 +192,19 @@ export class FileStore implements PrepStore {
   }
   putVoicePreview(voiceId: string, version: string, audio: Buffer) {
     return this.write(`voices/${safe(voiceId)}-${safe(version)}.wav`, audio);
+  }
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
+  }
+  async deleteAssets(userId: string, companionId?: string) {
+    await rm(join(this.dir, companionId ? `assets/${safe(userId)}/${safe(companionId)}` : `assets/${safe(userId)}`), { recursive: true, force: true });
+  }
+  async getAsset(userId: string, companionId: string, name: string) {
+    try {
+      return await readFile(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
   }
 }

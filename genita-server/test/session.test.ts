@@ -12,7 +12,6 @@ import type { TtsChunk } from "../src/tts/types.ts";
 const config: Config = {
   metaKey: "x",
   serverTts: true,
-  kling: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
