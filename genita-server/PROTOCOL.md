@@ -26,6 +26,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
 | 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
+| 11/3 | Fridge order (#122, D23): a camera cooking turn's reply is now the short line "Let me take a look." (not a full answer from the raw photo); `observe.boxes` follow; then one server-initiated reply names only `have` items ("I can see eggs and tofu. You could make …, if you have kimchi."), also stored as `card.say`. A failed card for such a turn (or a product search) is spoken as its own reply. Same message types; additive. |
 | 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (there, an omitted `start.tts` means `server`). |
@@ -462,6 +463,16 @@ how[], page?{url, opened}, saved?`. Image `url`s are server-relative
 
 When the card lands the companion says `card.say` as its own short reply — only
 into silence, after the current reply, and not if the user starts talking first.
+
+**Fridge order (D23, #122).** A camera cooking turn is answered in three steps:
+① the turn's reply is "Let me take a look." at once (a full answer from the raw
+photo named things that were not there, 7/10 on 11/1); ② `observe.boxes` as each
+item is confirmed; ③ once the checks are in (at most 3 s after the card), one
+reply names only `have` items (Spark YES + SAM box, or a confirmed "맞아?") and the
+dish, qualifying any dish ingredient that is not `have` ("…, if you have kimchi").
+That line is also `card.say`. Real vendors, 10 runs on the test fridge photos:
+names outside the photo 0/10, boxes before the line 10/10, short line p50 8 ms
+after the question (server), first boxes p50 4.0 s, line p50 6.1 s, card p50 4.7 s.
 
 **Product search (F7 PF-1 / MAC-RS, D2 D24 D25).** A shopping ask needs no camera
 ("can we look for a jacket for this weekend?", "find a couple that match my style,
