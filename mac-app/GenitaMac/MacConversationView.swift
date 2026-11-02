@@ -150,6 +150,8 @@ struct MacConversationView: View {
     private var railShift: CGFloat { [.searching, .peek].contains(call.finds.state) && linkOpened == nil ? call.finds.state.macHeight - 26 : 0 }
     private var cueText: String? {
         if linkOpened != nil { return nil }
+        // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
+        if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
         if sheetFull, let say = call.finds.current?.card?.say, !say.isEmpty { return say }
         if call.finds.state == .searching { return "On it…" }
         return MacCallCue.text(call.cue, name: macCall.companionName ?? call.companionName)
