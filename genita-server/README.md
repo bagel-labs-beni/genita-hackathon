@@ -23,7 +23,7 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_VOICE_SPEED` (1) · `GENITA_VOICE_TIMEOUT_MS` (4000; failure falls back to device speech) ·
 `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
 `GENITA_DEFAULT_VOICE_ID` (`seamless:0`) ·
-`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
+`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_APP_CONFIG_FILE` (JSON overrides for `GET /v1/app-config`, PROTOCOL.md) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250).
 
