@@ -321,10 +321,18 @@ def interior_mask(img, mouth_px, scale):
                 keep[lab_ == c] = 1
     cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     hull = np.zeros_like(keep)
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
     if cs:
         cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
-    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
-    inn = cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))
+        inn = cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))
+    else:
+        # no red lips (grey photo): the lowered mouth-box ellipse, only its dark (cavity) or bright near-grey (tooth) pixels (codex P2)
+        bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
+        mh_ = max(1, by2 - by1)
+        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
+        L_ = lab[..., 0]; Lm = float(np.median(L_[hull > 0])) if hull.any() else 128.0
+        hs_ = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+        inn = hull * ((L_ < 0.6 * Lm) | ((hs_[..., 1] < 0.25 * 255) & (L_ > Lm + 15))).astype(np.uint8)
     inn = cv2.dilate(inn, k3).astype(np.float32)
     return cv2.GaussianBlur(inn, (0, 0), max(1.0, scale))
 
