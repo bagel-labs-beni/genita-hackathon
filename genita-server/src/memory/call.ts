@@ -45,14 +45,22 @@ export class MemoryCall {
   readonly userId: string;
   readonly sessionId: string;
   recentReplies: string[] = [];
+  /** Forget notifications seen by this call: a batch from before one is never written */
+  private forgetsSeen = 0;
+  /** resolves once open() has read the persisted Forget revision (batches wait for it, Codex 11/3) */
+  private stateKnown: Promise<void>;
+  private markKnown: () => void = () => {};
   constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId;
-    this.unsubscribe = service.subscribe(userId, (revision) => { this.pending = []; this.recentReplies = []; this.revision = revision; onForget(revision); });
+    this.stateKnown = new Promise<void>((r) => { this.markKnown = r; });
+    this.unsubscribe = service.subscribe(userId, (revision) => { this.forgetsSeen++; this.pending = []; this.recentReplies = []; this.revision = revision; onForget(revision); });
   }
   async open(greet = true): Promise<Memory | null> {
-    const state = await this.service.state.getState(this.userId);
+    let state;
+    try { state = await this.service.state.getState(this.userId); } catch (err) { this.markKnown(); throw err; }
     // A Forget notification can arrive while the persisted state read is in flight.
     this.revision = Math.max(this.revision, state.revision);
+    this.markKnown();
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
     return greet ? within(this.service.opening(this.userId, this.sessionId), OPENING_BUDGET_MS, null) : null;
   }
@@ -69,9 +77,12 @@ export class MemoryCall {
   private flush(): void {
     if (!this.pending.length) return;
     const turns = this.pending.splice(0, 4);
-    const revision = this.revision;
+    const forgets = this.forgetsSeen;
     const before = this.queue;
-    const job = before.catch(() => {}).then(() => this.service.extract(this.userId, this.sessionId, turns, revision));
+    // A slow start (the persisted revision not read yet) holds the batch instead of writing it under a
+    // guessed revision 0, which a past Forget would reject. A Forget since these turns drops them.
+    const job = before.catch(() => {}).then(() => this.stateKnown).then(() =>
+      forgets === this.forgetsSeen ? this.service.extract(this.userId, this.sessionId, turns, this.revision) : undefined);
     this.queue = job;
     this.service.background(() => job);
   }

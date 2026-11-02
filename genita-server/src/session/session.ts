@@ -438,9 +438,8 @@ export class Session {
         // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
         // and the greeting prompt would be sent to the translator
         const item = await memoryCall.open(startMode === "chat");
-        if (abandoned) return;
-        // A Forget during open already cleared these; do not restore its older result.
-        if (this.historyRevision === null) {
+        // A Forget during open already cleared these; do not restore its older result (nor a late one).
+        if (this.historyRevision === null && !abandoned) {
           this.greeting = startMode === "chat" ? { item } : null;
           this.recentReplies = [...memoryCall.recentReplies, ...this.recentReplies].slice(-3);
         }
@@ -449,7 +448,9 @@ export class Session {
         // only server-side turns can continue the conversation (even across a service restart).
         await memory.serial(userId, async () => {
           const revision = (await memory.state.getState(userId)).revision;
-          if (this.closed || abandoned) return;
+          if (this.closed) return;
+          // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
+          if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
           this.historyRevision = revision;
           if (startMode !== "chat" || this.history.length) return;
           const server = this.deps.priorTurns?.(revision) ?? null;
