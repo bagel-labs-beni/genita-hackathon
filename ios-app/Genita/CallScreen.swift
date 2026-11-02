@@ -39,7 +39,7 @@ enum LipSource: Equatable { case none }
 
 struct CompanionFaceView: View {
     let still: Image
-    /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_KLING_FACE=1.
+    /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_CLIP_LOOP_FACE=1.
     let loop: URL?
     /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
     var face: FaceDriver? = nil
@@ -51,7 +51,7 @@ struct CompanionFaceView: View {
             still.resizable().scaledToFill()
             if let face {
                 FaceFrameView(driver: face, still: faceStill)
-            } else if let loop, CompanionFace.klingFace, !CallMotion.reviewStill {
+            } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
                 LoopingVideo(url: loop).allowsHitTesting(false)
             }
             LipLayer(source: lip).allowsHitTesting(false)

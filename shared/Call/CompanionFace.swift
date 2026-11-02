@@ -5,10 +5,10 @@ import SwiftUI
 
 /// L4 · The companion's animated Meta face on the call screen (docs/specs/metaface.md "App").
 enum CompanionFace {
-    /// `GENITA_KLING_FACE=1` (launch env, or an Info.plist bool): the earlier Kling silent loop instead of
+    /// `GENITA_CLIP_LOOP_FACE=1` (launch env, or an Info.plist bool): the earlier silent video loop instead of
     /// the Meta face. Off by default.
-    static var klingFace: Bool {
-        flag(ProcessInfo.processInfo.environment["GENITA_KLING_FACE"]) ?? flag(Bundle.main.object(forInfoDictionaryKey: "GENITA_KLING_FACE")) ?? false
+    static var clipLoopFace: Bool {
+        flag(ProcessInfo.processInfo.environment["GENITA_CLIP_LOOP_FACE"]) ?? flag(Bundle.main.object(forInfoDictionaryKey: "GENITA_CLIP_LOOP_FACE")) ?? false
     }
 
     static func flag(_ value: Any?) -> Bool? {

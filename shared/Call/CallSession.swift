@@ -881,7 +881,7 @@ enum CallStop: Equatable {
         faceReduceMotion = reduceMotion
         face?.reduceMotion = reduceMotion
         if animate { face?.start() }
-        guard !CompanionFace.klingFace else { return }
+        guard !CompanionFace.clipLoopFace else { return }
         faceLoad?.cancel()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }

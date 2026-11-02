@@ -157,12 +157,12 @@ import XCTest
         XCTAssertEqual(CompanionFace.pixelHeight, 1688)
     }
 
-    func testKlingLoopIsOffByDefault() {
+    func testClipLoopIsOffByDefault() {
         XCTAssertFalse(CompanionFace.flag(nil) ?? false)
         XCTAssertEqual(CompanionFace.flag("1"), true)
         XCTAssertEqual(CompanionFace.flag(true), true)
         XCTAssertEqual(CompanionFace.flag("0"), false)
-        XCTAssertFalse(CompanionFace.klingFace, "the Meta face is the default; GENITA_KLING_FACE=1 brings the loop back")
+        XCTAssertFalse(CompanionFace.clipLoopFace, "the Meta face is the default; GENITA_CLIP_LOOP_FACE=1 brings the loop back")
     }
 
     // MARK: loading
