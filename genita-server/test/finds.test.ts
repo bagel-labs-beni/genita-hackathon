@@ -275,11 +275,14 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.equal(last.status, "You have it all");
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
+  // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge
+  assert.equal(card.eyebrow, "From your camera");
+  assert.equal((events.find((e) => e.type === "find.started") as Extract<ServerEvent, { type: "find.started" }>).title, "Looking at your ingredients");
   assert.equal(card.sources[0].domain, "maangchi.com");
   assert.equal(card.steps.length, 3);
   assert.equal(card.steps[0].source, "maangchi.com");
   // D23: the line names only "have" items (kimchi is "맞아?", onion has no box), never the model's own "say"
-  assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi.");
+  assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi. First, fry the kimchi.");
   assert.ok(card.how.some((h) => /illustrations I made/.test(h)));
   assert.equal(events.filter((e) => e.type === "find.image").length, 4);
   assert.ok(events.some((e) => e.type === "observe.boxes"));
@@ -461,7 +464,7 @@ test("fridge order (D23, #122): one line, spoken after the boxes, naming only YE
   const { ctx, events } = ctxFor("recipe", v, { images: false, speak: (text) => spoken.push({ text, at: events.length }) });
   await runRecipe(ctx);
   assert.equal(spoken.length, 1);
-  assert.equal(spoken[0].text, "I can see eggs, tofu, and cooked rice. You could make kimchi fried rice, if you have kimchi.");
+  assert.equal(spoken[0].text, "I can see eggs, tofu, and cooked rice. You could make kimchi fried rice, if you have kimchi. First, fry the kimchi.");
   const boxesBefore = events.slice(0, spoken[0].at).filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
   const boxed = new Set(boxesBefore.flatMap((b) => b.items.map((i) => i.label.toLowerCase())));
   for (const name of ["eggs", "tofu", "cooked rice"]) assert.ok(boxed.has(name), `${name} box is up before it is named`);
