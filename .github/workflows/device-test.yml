@@ -367,16 +367,23 @@ jobs:
         if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
         run: |
           NAME="Genita-Mac-$BUILD_NUMBER.dmg"
-          mkdir -p updates-site/mac
-          cp "$DMG" "updates-site/mac/$NAME"
-          node .github/device-test/appcast.mjs --dir updates-site/mac --dmg "$NAME" --build "$BUILD_NUMBER" --version "$MAC_VERSION" \
-            --signature "$SPARKLE_SIG" --length "$SPARKLE_LEN" --base "$UPDATES_BASE_URL" --commit "$GITHUB_SHA"
+          ROOT="$PWD"
           cd updates-site
           git config user.name "genita-release-bot"
           git config user.email "chelsea@users.noreply.github.com"
-          git add -A mac
-          git commit -q -m "mac: Genita $MAC_VERSION ($BUILD_NUMBER) from ${GITHUB_SHA::7}"
-          for i in 1 2 3; do git push -q origin HEAD:main && break; git pull -q --rebase origin main; done
+          # Another branch may publish at the same time: rebuild the entry on the newest site state each try.
+          published=0
+          for i in 1 2 3 4; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            mkdir -p mac && cp "$ROOT/$DMG" "mac/$NAME"
+            node "$ROOT/.github/device-test/appcast.mjs" --dir mac --dmg "$NAME" --build "$BUILD_NUMBER" --version "$MAC_VERSION" \
+              --signature "$SPARKLE_SIG" --length "$SPARKLE_LEN" --base "$UPDATES_BASE_URL" --commit "$GITHUB_SHA"
+            git add -A mac
+            git commit -q -m "mac: Genita $MAC_VERSION ($BUILD_NUMBER) from ${GITHUB_SHA::7}"
+            if git push -q origin HEAD:main; then published=1; break; fi
+            sleep $((i * 5))
+          done
+          test "$published" = 1 || { echo "::error::could not push the appcast entry after 4 tries"; exit 1; }
           {
             echo "### Sparkle update published"
             echo "Genita $MAC_VERSION ($BUILD_NUMBER) → $UPDATES_BASE_URL/appcast.xml. Pages deploys in about a minute; installed Macs see it at next launch or daily check."

@@ -89,6 +89,12 @@ final class MacUpdater: NSObject {
         self.panel = nil
     }
 
+    @MainActor private func resetPending() {
+        installNow = nil
+        readyVersion = nil
+        hidePill()
+    }
+
     @MainActor private func restart() {
         hidePill()
         installNow?() // Sparkle installs the downloaded update and relaunches
@@ -108,6 +114,19 @@ extension MacUpdater: SPUUpdaterDelegate {
             }
         }
         return true
+    }
+
+    /// Download / install failed (or the cycle ended with an error): drop the dead handler and the pill so
+    /// the next launch, daily or server-requested check can start over.
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let code = (error as NSError).code
+        guard code != Int(SUError.noUpdateError.rawValue) else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.resetPending() } }
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        guard let error, (error as NSError).code != Int(SUError.noUpdateError.rawValue) else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.resetPending() } }
     }
 }
 #endif

@@ -23,7 +23,10 @@ const file = join(args.dir, "appcast.xml");
 const old = existsSync(file) ? readFileSync(file, "utf8") : "";
 const items = [...old.matchAll(/<item>[\s\S]*?<\/item>/g)]
   .map((m) => ({ xml: m[0], build: Number(/<sparkle:version>(\d+)<\/sparkle:version>/.exec(m[0])?.[1] ?? 0) }))
-  .filter((i) => i.build && i.build !== build);
+  .filter((i) => i.build);
+// A published build number is never replaced: Macs already on it would never get the new bytes.
+if (items.some((i) => i.build === build)) throw new Error(`build ${build} is already in the appcast — rerun with a new build number`);
+if (items.length && build < Math.max(...items.map((i) => i.build))) console.warn(`appcast: build ${build} is older than the newest entry; Macs will not move to it`);
 
 const item = `<item>
       <title>Genita ${esc(args.version)} (${build})</title>
