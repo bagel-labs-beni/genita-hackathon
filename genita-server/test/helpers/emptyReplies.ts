@@ -4,6 +4,7 @@ import { Session, type SessionDeps } from "../../src/session/session.ts";
 import type { ServerEvent } from "../../src/protocol.ts";
 import type { AsrEvent } from "../../src/meta/transcribe.ts";
 import { checkServerEvent } from "../../src/protocol.ts";
+import { OpsLimits } from "../../src/ops/limits.ts";
 import assert from "node:assert/strict";
 
 export const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -19,6 +20,9 @@ export async function turn(deps: Partial<SessionDeps>, opts: { history?: string;
     sendJson(e) { assert.deepEqual(checkServerEvent(e), [], JSON.stringify(e)); events.push(e); if (e.type === "reply" || (e.type === "error" && e.code === "spark_unavailable")) resolve(); },
     sendBinary() {}, close() {},
   }, {
+    // Each fixture is independent even when it reuses the memory user "fake".
+    // Preserve real admission checks without consuming the process-wide quota.
+    ops: new OpsLimits(deps.config),
     config: { ...loadConfig({ MODEL_API_KEY: "fake" }), serverTts: false, webSearch: false, sparkHedge: 3, speculate: !!opts.speculative },
     openAsr: () => asr,
     async *spark() { yield { type: "text", delta: "Okay." }; },
