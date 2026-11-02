@@ -86,9 +86,9 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
-    /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     /// The user's latest final words; copied onto the next find.started.
     @ObservationIgnored var latestQuestion: String?
+    /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
     @ObservationIgnored var persistFrames: (String, [Data]) -> Void = { _, _ in }
