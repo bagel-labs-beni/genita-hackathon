@@ -193,6 +193,13 @@ enum CallStop: Equatable {
     @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
     /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
     private(set) var faceStill: CGImage?
+    /// Same presence (Mac): the face set's own rest frame, drawn under the live face so the very first frame on
+    /// arrival is this face in this crop (not the prep still, then a jump). Drawn per face set and reduce-motion setting.
+    private(set) var facePoster: CGImage?
+    /// The live face's seed and the reduce-motion setting its poster was drawn with.
+    @ObservationIgnored private var faceSeed: UInt64 = 1
+    @ObservationIgnored private var posterReduceMotion: Bool?
+    @ObservationIgnored private var faceSetForPoster: FaceSet?
 
     convenience init() {
         self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
@@ -834,9 +841,15 @@ enum CallStop: Equatable {
         faceAudio = [:]
         facePending = []
         faceStill = nil
+        facePoster = nil
+        faceSetForPoster = set
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
+        // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
+        let seed = UInt64.random(in: 1...UInt64.max)
+        faceSeed = seed
+        posterReduceMotion = nil
+        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
@@ -846,6 +859,31 @@ enum CallStop: Equatable {
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
+        #if os(macOS)
+        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        #endif
+    }
+
+    /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
+    private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
+        posterReduceMotion = reduceMotion
+        Task { [weak self] in
+            let image = await Task.detached(priority: .utility) {
+                FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
+            }.value
+            // a newer draw (reduce motion changed meanwhile) wins
+            guard let self, self.face === driver, self.posterReduceMotion == reduceMotion else { return }
+            self.facePoster = image
+        }
+    }
+
+    /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
+    /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
+    func prepareFace(reduceMotion: Bool) {
+        guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
+        faceReduceMotion = reduceMotion
+        faceLoad?.cancel()
+        faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
     private func renderFaceStill(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
@@ -927,6 +965,7 @@ enum CallStop: Equatable {
         faceAnimates = animate
         faceReduceMotion = reduceMotion
         face?.reduceMotion = reduceMotion
+        refreshFacePoster()
         if animate { face?.start() }
         guard !CompanionFace.clipLoopFace else { return }
         faceLoad?.cancel()
@@ -943,6 +982,15 @@ enum CallStop: Equatable {
     func setFaceReduceMotion(_ on: Bool) {
         faceReduceMotion = on
         face?.reduceMotion = on
+        refreshFacePoster()
+    }
+
+    /// Reduce motion changed since the poster was drawn (it sets the overscan): draw it again to match (Codex P2).
+    private func refreshFacePoster() {
+        #if os(macOS)
+        guard let face, let set = faceSetForPoster, let drawn = posterReduceMotion, drawn != faceReduceMotion else { return }
+        renderFacePoster(set, size: CompanionFace.outputSize(for: set), seed: faceSeed, reduceMotion: faceReduceMotion, for: face)
+        #endif
     }
 
     private func loadFace() async {

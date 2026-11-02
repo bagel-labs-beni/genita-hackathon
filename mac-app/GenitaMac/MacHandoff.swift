@@ -2,6 +2,17 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// Same presence (11/3, needs Chelsea OK before it is on by default): the companion fades in on this Mac as the
+/// iPhone hands over by button, and the waiting sheet fades out when the conversation comes back. Off by default;
+/// on with `GENITA_PRESENCE_FADE=1` (launch env) or `defaults write <bundle id> genita.presence.fade -bool YES`.
+enum MacPresenceFade {
+    static var enabled: Bool {
+        if let v = ProcessInfo.processInfo.environment["GENITA_PRESENCE_FADE"] { return ["1", "true", "yes", "on"].contains(v.lowercased()) }
+        return UserDefaults.standard.bool(forKey: "genita.presence.fade")
+    }
+    static let seconds = 0.35
+}
+
 /// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
 private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {true} }
 
@@ -122,7 +133,13 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     /// Once shown, this window stays. The conversation leaving turns it into the waiting screen.
     private func showCompanion() {
-        ensureCompanion();companionVisible=true;companion?.orderFrontRegardless()
+        let first = !companionVisible
+        ensureCompanion();companionVisible=true
+        // Same presence (flag): a move by button (no touch effect) fades the companion in instead of popping up.
+        if first, motion == nil, MacPresenceFade.enabled, let window=companion {
+            window.alphaValue=0;window.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+        } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
     func continueHere() {
