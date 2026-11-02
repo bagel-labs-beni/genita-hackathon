@@ -194,7 +194,7 @@ enum CallStop: Equatable {
     /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
     private(set) var faceStill: CGImage?
     /// Same presence (Mac): the face set's own rest frame, drawn under the live face so the very first frame on
-    /// arrival is this face in this crop (not the prep still, then a jump). Rendered once per face set.
+    /// arrival is this face in this crop (not the prep still, then a jump). Drawn per face set and reduce-motion setting.
     private(set) var facePoster: CGImage?
     /// The live face's seed and the reduce-motion setting its poster was drawn with.
     @ObservationIgnored private var faceSeed: UInt64 = 1
@@ -868,7 +868,8 @@ enum CallStop: Equatable {
             let image = await Task.detached(priority: .utility) {
                 FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
             }.value
-            guard let self, self.face === driver else { return }
+            // a newer draw (reduce motion changed meanwhile) wins
+            guard let self, self.face === driver, self.posterReduceMotion == reduceMotion else { return }
             self.facePoster = image
         }
     }
