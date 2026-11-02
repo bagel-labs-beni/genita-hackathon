@@ -36,6 +36,8 @@ import Foundation
     private var wantsCall = false
     /// Bumped on sign-out: answers to requests started before it are dropped (no call with an old token).
     private var generation = 0
+    /// This Mac's turns, kept when the conversation moves away so coming back resumes it.
+    private var history: [ClientMessage.HistoryItem] = []
 
     var companionName: String? { if case let .ready(plan) = account { return plan.name } else { return nil } }
 
@@ -106,8 +108,19 @@ import Foundation
         generation += 1
         account = .signedOut
         face = nil
+        history = []
         call.end()
-        Task { await auth.logout() }
+        // Clear now and revoke exactly this token, so a sign-in right after can't be undone by a slow logout.
+        let old = auth.store.load()
+        auth.store.clear()
+        guard let old else { return }
+        var req = URLRequest(url: auth.baseURL.appendingPathComponent("auth/logout"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 15
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.setValue("Bearer \(old)", forHTTPHeaderField: "authorization")
+        req.httpBody = Data("{}".utf8)
+        Task.detached { _ = try? await URLSession.shared.data(for: req) }
     }
 
     /// The server closed the call for a reason reconnecting can't fix (4401 / 4403 / 4001).
@@ -116,6 +129,7 @@ import Foundation
         switch stop {
         case .signIn:
             generation += 1
+            history = []
             auth.store.clear()
             account = .signedOut
             face = nil
@@ -143,13 +157,16 @@ import Foundation
     /// while the iPhone talks. Coming back opens a new session.
     func conversationLeft() {
         wantsCall = false
+        if !call.historySnapshot.isEmpty { history = call.historySnapshot }
         call.end()
     }
 
     private func startCall() {
         guard case let .ready(plan) = account else { return }
         call.companionName = plan.name
-        call.begin(plan.start)
+        var start = plan.start
+        start.history = history.isEmpty ? nil : Array(history.suffix(20))
+        call.begin(start)
         // B12: the mic comes back the way the user left it.
         if Self.micRemembered, !call.micOn { call.toggleMic() }
     }

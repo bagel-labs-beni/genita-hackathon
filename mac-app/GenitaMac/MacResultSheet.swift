@@ -129,7 +129,7 @@ struct MacResultSheet: View {
             ZStack(alignment: .bottom) {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
-                        header(card, count: max(finds.entries.filter { $0.card != nil }.count, 1))
+                        header(card)
                         Text(card.title).font(MacSheetInk.serif(30)).foregroundStyle(MacSheetInk.ink).lineLimit(2).padding(.top, 6)
                             .accessibilityIdentifier("macResultTitle")
                         if !card.subtitle.isEmpty {
@@ -177,16 +177,22 @@ struct MacResultSheet: View {
         }.buttonStyle(.plain).padding(.top, 14).accessibilityIdentifier("macNewFind")
     }
 
-    private func header(_ card: FindCard, count: Int) -> some View {
+    private func header(_ card: FindCard) -> some View {
+        // one dot per result card, pointing at its real index (searches that failed have no dot)
+        let carded = finds.entries.indices.filter { finds.entries[$0].card != nil }
+        return headerRow(card, carded: carded)
+    }
+
+    private func headerRow(_ card: FindCard, carded: [Int]) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(card.eyebrow).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
-                HStack(spacing: 4) {
-                    ForEach(0..<min(count, 6), id: \.self) { i in
+                HStack(spacing: 0) {
+                    ForEach(carded.suffix(6), id: \.self) { i in
                         Circle().fill(i == finds.page ? MacSheetInk.ink : MacSheetInk.handle).frame(width: 6, height: 6)
-                            .padding(4).contentShape(Rectangle()).onTapGesture { withAnimation { finds.showPage(i) } }
+                            .padding(2).contentShape(Rectangle()).onTapGesture { withAnimation { finds.showPage(i) } }
                     }
-                }.accessibilityLabel("Find \(finds.page + 1) of \(count)")
+                }.accessibilityLabel("Find \((carded.firstIndex(of: finds.page) ?? 0) + 1) of \(max(carded.count, 1))")
             }
             Spacer()
             Button { finds.toggleSave() } label: { Image(systemName: entry?.saved == true ? "bookmark.fill" : "bookmark").font(.system(size: 16)).frame(width: 44, height: 44) }

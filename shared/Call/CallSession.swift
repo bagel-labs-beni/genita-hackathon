@@ -243,6 +243,10 @@ enum CallStop: Equatable {
         #endif
     }
 
+    /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
+    /// away and back, so the conversation resumes where it was (#118).
+    var historySnapshot: [ClientMessage.HistoryItem] { history }
+
     func end() {
         userEnded = true
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
