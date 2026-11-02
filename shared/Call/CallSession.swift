@@ -60,6 +60,8 @@ struct CallEndpoint {
     private(set) var micOn = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
+    /// The front camera's preview is mirrored, the frames sent to the server are not: boxes need to know (CAM-H).
+    private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat
     private(set) var playing = false
@@ -122,7 +124,16 @@ struct CallEndpoint {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
+        finds.saveChanged = { [weak self] id, saved in
+            guard let self else { return }
+            let api = self.findsAPI
+            Task { try? await api.setSaved(id, saved) }
+        }
     }
+
+    /// REST client for the Finds tab, on the same host and token as the call.
+    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: endpoint, user: Self.installId) }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
     static var installId: String {
@@ -207,11 +218,12 @@ struct CallEndpoint {
     }
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); return }
         cameraDenied = false
         let go = { [weak self] in
             guard let self, self.camera.available else { return }
             self.camera.start()
+            self.cameraFront = self.camera.front
             self.cameraOn = true
         }
         #if DEBUG
@@ -225,7 +237,7 @@ struct CallEndpoint {
         }
     }
 
-    func flipCamera() { camera.flip() }
+    func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
 
     func setInterpreting(_ on: Bool) {
         let next: ConversationMode = on ? .interpret : .chat

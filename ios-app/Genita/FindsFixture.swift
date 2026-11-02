@@ -94,6 +94,15 @@ extension FindsModel {
         case 16: play([(recipe, recipe.events)]); state = .half; offline = true
         case 17: play([(recipe, recipe.events)]); state = .half; close()
         case 19: play([(recipe, recipe.events)]); state = .full; scrollTarget = "how"
+        case 30:
+            // F5-U-CAM CAM-H: boxes over the live preview (the UI test turns the fixture camera on); no sheet
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                for case let .observeBoxes(b) in recipe.events.reversed().prefix(1) { self?.boxes.apply(b) }
+            }
+        case 31:
+            // CAM-H with the card half up: boxes arrive with the card; the test taps an ingredient chip
+            play([(recipe, recipe.events)]); state = .half
         case 20:
             play([(recipe, Array(untilCard(recipe).prefix(1)))])
             if let id = entries.first?.id {
@@ -105,3 +114,43 @@ extension FindsModel {
     }
 }
 #endif
+
+
+/// Debug builds only: the Finds tab from recorded cards (no server). GENITA_FINDS_TAB = list | empty | detail.
+actor FixtureFindsAPI: FindsAPI {
+    private var cards: [FindCard]
+    private(set) var removed: Set<String> = []
+    init(cards: [FindCard]) { self.cards = cards }
+
+    func list() async throws -> [FindCard] { cards.filter { !removed.contains($0.id) } }
+    func delete(_ id: String) async throws { removed.insert(id) }
+    func restore(_ id: String) async throws { removed.remove(id) }
+    func setSaved(_ id: String, _ saved: Bool) async throws {
+        if let i = cards.firstIndex(where: { $0.id == id }) { cards[i].saved = saved }
+    }
+
+    /// r03 F1: Saved (the kimchi rice), today (outfit, a link that would not open), yesterday (a link that did).
+    @MainActor static func recorded(now: Date = Date()) -> (cards: [FindCard], frames: [String: [Data]]) {
+        let iso = ISO8601DateFormatter()
+        let runs = FindsFixtureRun.load()
+        var cards: [FindCard] = []
+        var frames: [String: [Data]] = [:]
+        func card(_ kind: FindKind, hoursAgo: Double, change: (inout FindCard) -> Void = { _ in }) {
+            guard let run = runs.first(where: { $0.kind == kind }) else { return }
+            let m = FindsModel()
+            m.load(recorded: run.events, frames: run.frames)
+            guard var c = m.entries.first?.card else { return }
+            let original = c.id
+            c.createdAt = iso.string(from: now.addingTimeInterval(-hoursAgo * 3600))
+            change(&c)
+            if cards.contains(where: { $0.id == c.id }) { c.id = UUID().uuidString.lowercased() }
+            cards.append(c)
+            frames[c.id] = frames[original] ?? run.frames
+        }
+        card(.recipe, hoursAgo: 3) { $0.saved = true }
+        card(.outfit, hoursAgo: 2)
+        card(.link, hoursAgo: 1) { $0.page?.opened = false; $0.title = "Carry-on packing guide"; $0.status = nil }
+        card(.link, hoursAgo: 27) { $0.title = "Late ramen near Hapjeong" }
+        return (cards, frames)
+    }
+}

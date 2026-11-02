@@ -132,6 +132,8 @@ struct PressScale: ButtonStyle {
 struct FindsSheet: View {
     let call: CallController
     let size: CGSize
+    /// F10-U-FINDS: "Talk about this on a call" on a card reopened from the Finds tab.
+    var talk: (() -> Void)?
     @State private var dragY: CGFloat = 0
     @State private var scrolledPage: Int?
     private var finds: FindsModel { call.finds }
@@ -147,6 +149,7 @@ struct FindsSheet: View {
                 peekLayer.opacity(finds.state == .peek ? 1 : 0)
                 mainLayer.opacity([.half, .full, .rising].contains(finds.state) ? 1 : 0)
                 if finds.newFind != nil, [.half, .full].contains(finds.state) { newFindBanner }
+                if finds.current?.reopened == true, finds.state == .half { talkCTA }
                 if let source = finds.browser, finds.state == .full { browserLayer(source) }
             }.animation(.fade, value: finds.state)
             grab
@@ -159,6 +162,16 @@ struct FindsSheet: View {
         .accessibilityLabel("Finds from this call")
         .accessibilityIdentifier("findsSheet")
         .accessibilityValue(finds.state.rawValue)
+    }
+
+    // r03 F2 `.fcta`: the one button on a card reopened from Finds
+    private var talkCTA: some View {
+        Button { finds.talkAboutThis(); talk?() } label: {
+            Text("Talk about this on a call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
+                .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(PressScale()).padding(.horizontal, 38).padding(.top, 468 - 34 - 50).frame(maxHeight: .infinity, alignment: .top)
+        .accessibilityIdentifier("findTalk")
     }
 
     // r03 `.grab`: 96 × 44 target, 47 × 5 handle 12 from the top. One state per gesture.
@@ -371,12 +384,18 @@ struct FindCardPage: View {
         .accessibilityIdentifier("findPage\(index)")
     }
 
+    /// r03 F2: "From your fridge · Today" when reopened from Finds.
+    private var eyebrow: String {
+        guard entry.reopened, let date = FindsListModel.date(card.createdAt) else { return card.eyebrow }
+        return card.eyebrow + " · " + FindsListModel.dayTitle(Calendar.current.startOfDay(for: date), now: Date(), calendar: .current)
+    }
+
     // r03 `.hd`: eyebrow + dots | save, close
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(card.eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
-                if finds.cardCount > 1 {
+                Text(eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
+                if finds.cardCount > 1, !entry.reopened {
                     HStack(spacing: 4) {
                         ForEach(Array(finds.entries.filter { $0.card != nil }.enumerated()), id: \.element.id) { i, e in
                             Circle().fill(e.id == entry.id ? CallInk.ink : (e.id == finds.newFind ? FindsInk.blue : FindsInk.line)).frame(width: 6, height: 6)
@@ -389,9 +408,11 @@ struct FindCardPage: View {
                 Button { finds.toggleSave() } label: {
                     Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
+                if !entry.reopened {
                 Button { withAnimation(.drawer) { finds.close() } } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
+                }
             }.padding(.trailing, -10)
         }.frame(height: 44)
     }
