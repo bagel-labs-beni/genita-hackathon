@@ -227,7 +227,11 @@ struct SavedSetup: Codable {
         // two accounts on one iPhone: the other account's companion lives on the server, not in this phone's setup
         // (signing in used to land a returning account on A03 until the app was relaunched)
         if userId != nil {
+            #if os(iOS)
             let route = routeAfterSignIn ?? { [weak self] in await self?.routeOnLaunch(afterSignIn: true) }
+            #else
+            let route = routeAfterSignIn ?? {}   // the Mac target has no OnboardingFlow (its own start screen routes)
+            #endif
             signInRouting = Task { await route() }
         }
     }
