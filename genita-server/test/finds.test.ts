@@ -414,3 +414,28 @@ test("recipe titles become sentence case", async () => {
   assert.equal(sentenceCase("kimchi fried rice"), "Kimchi fried rice");
   assert.equal(sentenceCase("Pad Thai"), "Pad thai");
 });
+
+test("recipe pipeline: a stalled first-look stream gets one plain retry; a second failure is an error, not 'unclear'", async () => {
+  const v = fakeVendors({ recipe: RECIPE_JSON });
+  let streamCalls = 0;
+  v.sparkStream = async function* () {
+    streamCalls++;
+    throw new Error("spark first-token timeout");
+  };
+  const spark = v.spark.bind(v);
+  v.spark = async (req, signal) => {
+    if (JSON.stringify(req.input).includes("List every food item")) return { text: "eggs | 6 | carton\n", output: [] };
+    return spark(req, signal);
+  };
+  const { ctx } = ctxFor("recipe", v, { images: false });
+  const r = await runRecipe(ctx);
+  assert.equal(streamCalls, 1);
+  assert.ok(r.card!.items.some((i) => i.name === "eggs"));
+  v.spark = async () => {
+    throw new Error("down");
+  };
+  const bad = ctxFor("recipe", v, { images: false });
+  await runRecipe(bad.ctx);
+  const f = bad.events.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
+  assert.equal(f.reason, "error");
+});

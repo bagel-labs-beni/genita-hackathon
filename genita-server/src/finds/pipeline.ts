@@ -218,6 +218,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   recipeP.catch(() => {});
 
   let seenCount = 0;
+  let seenFailed = false;
   try {
     const split = new LineSplitter();
     const onLine = (line: string) => {
@@ -230,17 +231,31 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       const names = cands.all().filter((c) => c.fromCamera).map((c) => c.name);
       ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${capFirst(names.slice(0, 4).join(", "))} · recipes` });
     };
-    for await (const ev of ctx.vendors.sparkStream({ input: userMessage(SEEN_PROMPT, [frame]), effort: "minimal", maxOutputTokens: 600 }, ctx.signal)) {
-      if (ev.type === "text") split.push(ev.delta).forEach(onLine);
+    const seenReq = { input: userMessage(SEEN_PROMPT, [frame]), effort: "minimal" as const, maxOutputTokens: 600 };
+    try {
+      for await (const ev of ctx.vendors.sparkStream(seenReq, ctx.signal)) {
+        if (ev.type === "text") split.push(ev.delta).forEach(onLine);
+      }
+      split.flush().forEach(onLine);
+    } catch (err) {
+      // a stalled stream (1 of 10 on 11/2: first-token timeout) gets one plain retry
+      if (ctx.signal.aborted || seenCount > 0) throw err;
+      ctx.log("find.seen_retry", { findId: ctx.findId, message: String(err).slice(0, 160) });
+      const r = await ctx.vendors.spark(seenReq, ctx.signal);
+      r.text.split(/\r?\n/).filter((l) => l.trim()).forEach(onLine);
     }
-    split.flush().forEach(onLine);
   } catch (err) {
     if (ctx.signal.aborted) return { card: null, timings };
+    seenFailed = seenCount === 0;
     ctx.log("find.seen_error", { findId: ctx.findId, message: String(err).slice(0, 160) });
   }
   timings.seenDoneMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
 
+  if (seenFailed) {
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "error", message: "I couldn't look just now. Ask me again?" });
+    return { card: null, timings };
+  }
   if (seenCount === 0) {
     // IC-4: blurry or dark — say so, never make a list up
     ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "unclear", message: "I couldn't see the food clearly. Can you show me again with more light?" });
@@ -430,7 +445,8 @@ export async function runOutfit(ctx: PipelineCtx): Promise<PipelineResult> {
     kind: "outfit",
     createdAt: at.toISOString(),
     eyebrow: "From your camera",
-    title: (str(j.title, 60) || `Wear the ${options[pick].label}.`).replace(/^(Wear the )([A-Z])(?=[a-z])/, (_m, a: string, b: string) => a + b.toLowerCase()),
+    // "Wear the beige Trench." → "Wear the beige trench."
+    title: (str(j.title, 60) || `Wear the ${options[pick].label}.`).replace(/(?<=\s)([A-Z])(?=[a-z]+\b)/g, (c: string) => c.toLowerCase()),
     subtitle: str(j.taste, 90),
     status: options[pick].label,
     say: str(j.say, 120) || undefined,

@@ -38,7 +38,7 @@ export function metaVendors(key: string): FindsVendors {
       );
       return { text: outputText(d as Parameters<typeof outputText>[0]), output: d.output ?? [] };
     },
-    sparkStream: (req, signal) => sparkStream(key, req, { signal, firstEventTimeoutMs: 15_000 }),
+    sparkStream: (req, signal) => sparkStream(key, req, { signal, firstEventTimeoutMs: 8000 }),
     sam: (img, prompt, signal) => samDetect(key, img, prompt, signal),
     image: (prompt, signal) => museImageGenerate(key, prompt, "512x512", signal),
   };
