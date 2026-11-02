@@ -149,6 +149,31 @@ SHAPE = {'human': (0.40, 0.30, 0.08), 'animal': (0.30, 0.42, 0.14), 'cat': (0.30
          'character3d': (0.36, 0.30, 0.08), 'character2d': (0.36, 0.30, 0.08)}
 
 
+def feature_init(gN, gK, reg):
+    """Similarity neutral->key from ORB matches in the registration region (identity if too few). Muse sometimes
+    re-frames a key (zoom .93-.96, shift 40-64 px on a plush toy); ECC from identity then lands on a wrong solution."""
+    orb = cv2.ORB_create(1500)
+    a, b = gN.astype(np.uint8), gK.astype(np.uint8)
+    ka, da = orb.detectAndCompute(a, reg)
+    kb, db = orb.detectAndCompute(b, None)
+    I = np.eye(2, 3, dtype=np.float32)
+    if da is None or db is None or len(ka) < 12 or len(kb) < 12:
+        return I
+    m = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True).match(da, db)
+    if len(m) < 12:
+        return I
+    pa = np.float32([ka[x.queryIdx].pt for x in m]); pb = np.float32([kb[x.trainIdx].pt for x in m])
+    A, inl = cv2.estimateAffinePartial2D(pa, pb, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+    if A is None or inl is None or inl.sum() < 10:
+        return I
+    return A.astype(np.float32)
+
+
+def sane(Wm, w, h):
+    sc = np.sqrt(abs(np.linalg.det(Wm[:, :2])))
+    return 0.8 < sc < 1.25 and abs(Wm[0, 2]) < 0.2 * w and abs(Wm[1, 2]) < 0.2 * h
+
+
 def box(s):
     return [float(v) for v in s.split(',')] if s else None
 
@@ -221,12 +246,15 @@ def main():
         if K.shape[:2] != (H, W):
             K = cv2.resize(K, (W, H), interpolation=cv2.INTER_AREA)
         gK = cv2.cvtColor(cv2.resize(K, (w, h), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
-        Wm = np.eye(2, 3, dtype=np.float32)
+        Wm = feature_init(gN, gK, reg)          # ORB + RANSAC similarity first (non-human lane, 11/3)
+        W0 = Wm.copy()
         try:
-            _, Wm = cv2.findTransformECC(gN, gK, Wm, cv2.MOTION_AFFINE,
+            _, Wm = cv2.findTransformECC(gN, gK, Wm.copy(), cv2.MOTION_AFFINE,
                                          (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 80, 1e-6), reg, 5)
         except cv2.error:
-            pass
+            Wm = W0
+        if not sane(Wm, w, h) or np.abs(Wm - W0).max() > 0.05 * h:
+            Wm = W0 if sane(W0, w, h) else np.eye(2, 3, dtype=np.float32)
         Wf = Wm.copy(); Wf[:, 2] /= s
         al = cv2.warpAffine(K, Wf, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE).astype(np.float32)
         ALN[name] = al
@@ -252,7 +280,7 @@ def main():
     base = N.astype(np.float32)
     if prep.get('mask') == 'diff' and ALN:
         fit = {k: float(v) for k, v in (prep.get('fit') or {}).items()}
-        mw = (mouth[2] - mouth[0]) * W
+        mw = max((mouth[2] - mouth[0]) * W, 0.12 * (face[2] - face[0]) * W)   # chibi: a dot-sized closed mouth
         mcx, mcy = (mouth[0] + mouth[2]) / 2 * W, (mouth[1] + mouth[3]) / 2 * H
         Nl = cv2.cvtColor(N, cv2.COLOR_BGR2GRAY).astype(np.float32)
         lim = np.zeros((H, W), np.uint8)
