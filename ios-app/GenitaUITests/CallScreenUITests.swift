@@ -12,6 +12,7 @@ final class CallScreenUITests: XCTestCase {
             "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
             "GENITA_FIXTURE_SCRIPT": "none", // fixture mic: no simulator mic or permission prompt
             "GENITA_CALL_AUTOMIC": "1",
+            "GENITA_REVIEW_STILL": "1", // still face, no wave/spinner motion: the app goes idle between events
         ]
         app.launch()
         let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
