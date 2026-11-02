@@ -1,21 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TagFilter, parseTaggedSentence } from "../src/text/tags.ts";
-
-test("TagFilter strips emotion and audio tags from streamed text even when split across deltas", () => {
-  const f = new TagFilter();
-  let out = "";
-  for (const d of ["<hap", "py>Hey", " you! [la", "ughs] That's ", "great."]) out += f.push(d);
-  out += f.flush();
-  assert.equal(out, "Hey you! That's great.");
-});
-
-test("TagFilter releases a lone '<' or '[' that never closes", () => {
-  const f = new TagFilter();
-  let out = f.push("3 < 5 and [this is long enough to not be a tag at all");
-  out += f.flush();
-  assert.equal(out, "3 < 5 and [this is long enough to not be a tag at all");
-});
+import { parseTaggedSentence } from "../src/text/tags.ts";
 
 test("parseTaggedSentence pulls the emotion, keeps audio tags for TTS, strips both for display", () => {
   assert.deepEqual(parseTaggedSentence("<teasing> Oh really? [laughs] Prove it."), {

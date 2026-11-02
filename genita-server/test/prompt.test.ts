@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { buildInstructions, buildInterpretInstructions, recentOpeningWords, type PersonaCard } from "../src/prompt/persona.ts";
+import { buildInstructions, buildInterpretInstructions, recentOpeningWords, avoidRepeatedOpener, type PersonaCard } from "../src/prompt/persona.ts";
 
 const mina: PersonaCard = {
   name: "Mina",
@@ -20,20 +20,36 @@ test("recentOpeningWords takes the first real word of the last three replies, ig
   assert.deepEqual(recentOpeningWords(["Haha!", "Hmm...", "Okay."]), ["haha", "hmm", "okay"]);
 });
 
-test("instructions carry persona, the opener ban, crisis rule, English default and the emotion tag format", () => {
-  const s = buildInstructions({ persona: mina, recentReplies: ["Oh, hey!", "Oh no.", "Right?"], mode: "chat" });
+test("instructions carry persona, crisis rule, English default and the emotion tag format", () => {
+  const s = buildInstructions({ persona: mina, mode: "chat" });
   assert.match(s, /You are Mina/);
   assert.match(s, /dry humor/);
-  assert.match(s, /Do not start your reply with any of these words: "oh", "right"/);
-  assert.match(s, /real hint/i);
-  assert.match(s, /bad day.*is not a crisis/i);
+  assert.match(s, /self-harm/);
+  assert.match(s, /bad day just needs a friend/);
   assert.match(s, /Reply in English/);
   assert.match(s, /<happy>/);
 });
 
-test("no opener line when there are no recent replies", () => {
+test("the opener ban is enforced in code, not in the prompt (prompt rules cost ~1s of Spark reasoning, measured 11/2)", () => {
   const s = buildInstructions({ persona: mina, mode: "chat" });
   assert.doesNotMatch(s, /Do not start your reply/);
+});
+
+test("avoidRepeatedOpener drops a repeated interjection and recapitalizes", () => {
+  const recent = ["Oh, hey!", "So what now?", "Nice one."];
+  assert.equal(avoidRepeatedOpener("Oh, that's huge!", recent), "That's huge!");
+  assert.equal(avoidRepeatedOpener("Oh wow, really?", recent), "Wow, really?");
+  assert.equal(avoidRepeatedOpener("[laughs] So, you did it.", recent), "[laughs] You did it.");
+  assert.equal(avoidRepeatedOpener("Oh!", recent), "");
+});
+
+test("avoidRepeatedOpener leaves fresh openers and repeated content words alone", () => {
+  const recent = ["Oh, hey!", "Nice one.", "Pasta is great."];
+  assert.equal(avoidRepeatedOpener("Wow, that's huge!", recent), "Wow, that's huge!");
+  assert.equal(avoidRepeatedOpener("Pasta again?", recent), "Pasta again?");
+  assert.equal(avoidRepeatedOpener("Oh, hi.", []), "Oh, hi.");
+  // only the last three replies count
+  assert.equal(avoidRepeatedOpener("Well, sure.", ["Well.", "A.", "B.", "C."]), "Well, sure.");
 });
 
 test("imported user profile and memories are fenced as data and capped", () => {
@@ -74,7 +90,6 @@ test("golden snapshot of the full chat instructions (update with UPDATE_SNAPSHOT
     persona: { ...mina, voice: { id: "7PbNGDB5sJCFnOZuMPNL", description: "bright, mid-20s" } },
     user: { name: "Chelsea", profile: "Founder. Loves spicy food. Lives in Seoul." },
     memories: ["Her sister Jiwoo is visiting next week.", "She is nervous about a demo on Nov 4."],
-    recentReplies: ["Oh, that's huge!", "So how did it go?", "Nice."],
     mode: "chat",
     cameraAttached: false,
   });

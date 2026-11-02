@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { alignmentToMouth, charViseme } from "../src/lips/visemes.ts";
+import { alignmentToMouth, alignmentToWords, charViseme } from "../src/lips/visemes.ts";
 
 test("maps letters to the atlas viseme set", () => {
   assert.equal(charViseme("a"), "A");
@@ -50,4 +50,14 @@ test("merges repeated visemes and always ends at rest", () => {
 
 test("empty alignment yields no cues", () => {
   assert.deepEqual(alignmentToMouth({ chars: [], startsSec: [], endsSec: [] }, 0), []);
+});
+
+test("alignmentToWords groups characters into words with ms times, skipping audio tags", () => {
+  const chars = [..."[laughs] Hi you."];
+  const starts = chars.map((_, i) => i * 0.1);
+  const ends = chars.map((_, i) => i * 0.1 + 0.1);
+  assert.deepEqual(alignmentToWords({ chars, startsSec: starts, endsSec: ends }, 500), [
+    { w: "Hi", s: 1400, e: 1600 },
+    { w: "you.", s: 1700, e: 2100 },
+  ]);
 });

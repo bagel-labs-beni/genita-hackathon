@@ -83,3 +83,34 @@ export function alignmentToMouth(a: Alignment, offsetMs: number): MouthCue[] {
   if (cues.length) push(Math.round(offsetMs + lastEnd * 1000), "X");
   return cues;
 }
+
+export type WordTiming = { w: string; s: number; e: number };
+
+/** Word timings (ms, utterance timeline) for captions; [audio tags] skipped. */
+export function alignmentToWords(a: Alignment, offsetMs: number): WordTiming[] {
+  const out: WordTiming[] = [];
+  let inTag = false;
+  let cur: WordTiming | null = null;
+  for (let i = 0; i < a.chars.length; i++) {
+    const ch = a.chars[i];
+    if (ch === "[") inTag = true;
+    if (inTag) {
+      if (ch === "]") inTag = false;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      cur = null;
+      continue;
+    }
+    const s = Math.round(offsetMs + (a.startsSec[i] ?? 0) * 1000);
+    const e = Math.round(offsetMs + (a.endsSec[i] ?? a.startsSec[i] ?? 0) * 1000);
+    if (!cur) {
+      cur = { w: ch, s, e };
+      out.push(cur);
+    } else {
+      cur.w += ch;
+      cur.e = e;
+    }
+  }
+  return out;
+}
