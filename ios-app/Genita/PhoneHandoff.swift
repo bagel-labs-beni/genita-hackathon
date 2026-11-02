@@ -97,9 +97,7 @@ struct PhoneHandoffOverlay: View {
             if handoff.motionVisible { Color.black.ignoresSafeArea() }
             if handoff.desktop { Color.black.ignoresSafeArea(); VStack(spacing:16) { Image(systemName:"desktopcomputer").font(.largeTitle);Text("Mac에서 이어지는 중");Text("같은 가장자리에 폰을 가져간 뒤\nMac에서 ‘아이폰으로’를 눌러주세요").font(.caption).multilineTextAlignment(.center) }.foregroundStyle(.white).frame(maxHeight:.infinity) }
             if let motion=handoff.motion { DuoTransition(payload:motion,onReady:handoff.effectReady).ignoresSafeArea().allowsHitTesting(false) }
-            if handoff.motion == nil {
-                Button { handoff.settings=true } label: { Text(handoff.link.connected ? handoff.status : "Mac으로 이동").font(.caption).padding(10).background(.ultraThinMaterial,in:Capsule()) }.padding(.top,64)
-            }
+            // Pairing opens from More → Move to Mac; the top of the call is the status line's slot.
         }.onAppear { handoff.attach(model) }
         .onChange(of:phase) { _,new in if new != .active { handoff.pause() } else { handoff.resume() } }
         .sheet(isPresented:$handoff.settings) {
