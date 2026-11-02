@@ -46,8 +46,12 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertTrue(waitCue("Reconnecting"), "S09-R"); capture("S09-R-reconnecting")
         XCTAssertTrue(waitCue("Listening", timeout: 40), "back after reconnect")
 
+        // right after the reconnect the screen redraws; on a loaded runner the first tap can be lost (run 41536584305:
+        // Listening was up, the rail visible, no sheet) — one more tap, then the sheet must be there
+        let moreSheet = app.descendants(matching: .any)["moreSheet"]
         app.buttons["more"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5))
+        if !moreSheet.waitForExistence(timeout: 5) { app.buttons["more"].tap() }
+        XCTAssertTrue(moreSheet.waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
         XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")
