@@ -143,7 +143,7 @@ export class Accounts {
     };
   }
 
-  /** Companion ids = Peter avatar ids (avatars/<id>/ in blob storage, /avatars/<id> on the GPU box). */
+  /** Companion ids identify legacy assets in avatars/<id>/ blob storage. */
   async companionIds(userId: string): Promise<string[]> {
     return (await this.db.query("SELECT id FROM companions WHERE user_id = $1", [userId])).rows.map((r) => String(r.id));
   }

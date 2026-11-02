@@ -1,6 +1,5 @@
 /**
- * Streaming 24 kHz → 16 kHz resampler for s16le mono (TTS audio → Peter,
- * whose MuseTalk/Whisper front end runs at 16 kHz).
+ * Streaming 24 kHz → 16 kHz resampler for s16le mono.
  *
  * Rational 2/3: upsample ×2 (zero-stuff), low-pass at 7 kHz (95-tap
  * Blackman windowed sinc designed at 48 kHz), keep every 3rd sample.
