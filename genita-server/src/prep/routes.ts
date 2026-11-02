@@ -12,7 +12,8 @@
  *   POST /v1/companion/name/suggest {imageId}      F2-L26 NM01 pre-fill: Spark → {name, ms, suggested} (10/min/user)
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
  *   GET  /v1/companion                      companion + prep + persona
- *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, emotionVideos}
+ *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
  *   GET  /v1/profile/story?wait=s           D47 HISY story cards (wait ≤ 10 s for one being written)
@@ -27,6 +28,8 @@ import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { FACE_KEYS, type FaceKey } from "./face.ts";
+import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
 import { PersonalizeError } from "../personalize/service.ts";
@@ -67,18 +70,19 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
+const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
+
 /**
- * Session `lip` for the realtime start message (Meta-only runtime, D34): Peter for humans only when
- * GENITA_PETER=1; the mouth atlas only on the Kling pipeline (GENITA_KLING=1); otherwise "none" (the app
- * animates the face itself). Same rule as lane L4's #158.
+ * Session `lip`: Peter for humans only when GENITA_PETER is on; the mouth atlas
+ * only on the Kling pipeline; otherwise "none" (the device animates the face set).
  */
-function sessionLip(c: CompanionRecord, env: NodeJS.ProcessEnv = process.env) {
-  if (c.type === "human" && env.GENITA_PETER === "1") return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
-  if (c.type !== "human" && env.GENITA_KLING === "1") return "atlas";
+function sessionLip(c: CompanionRecord, flags: { peter?: boolean; kling?: boolean }) {
+  if (c.type === "human" && flags.peter) return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
+  if (c.type !== "human" && flags.kling) return "atlas";
   return "none";
 }
 
-export function companionView(c: CompanionRecord, style: StyleCard | null) {
+export function companionView(c: CompanionRecord, style: StyleCard | null, flags: { peter?: boolean; kling?: boolean } = {}) {
   return {
     id: c.id,
     type: c.type,
@@ -91,7 +95,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c), peter: prepView(c).lips.peter }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c, flags), peter: prepView(c).lips.peter }
       : null,
   };
 }
@@ -193,15 +197,25 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const kind = img && img.rec.userId === user ? img.rec.check.type : null;
       const r = await orderedVoices(d, user, kind);
       return send(res, 200, {
-        voices: r.voices.map((v) => ({ id: v.id, name: v.name, blurb: v.blurb, previewUrl: `/v1/companion/voices/${v.id}/preview` })),
+        voices: r.voices.map((v) =>
+          v.locale
+            ? { id: v.id, name: v.name, blurb: v.blurb, locale: v.locale, gender: v.gender ?? "neutral", style: v.style ?? "", previewUrl: null }
+            : { id: v.id, name: v.name, blurb: v.blurb, previewUrl: `/v1/companion/voices/${v.id}/preview` },
+        ),
         suggested: r.suggested,
         ms: r.ms,
       });
     }
 
-    const pv = p.match(/^\/v1\/companion\/voices\/([A-Za-z0-9_-]{1,64})\/preview$/);
+    const pv = p.match(/^\/v1\/companion\/voices\/([A-Za-z0-9_%:.-]{1,96})\/preview$/);
     if (m === "GET" && pv) {
-      const mp3 = await voicePreview(d, pv[1]);
+      let id = "";
+      try {
+        id = decodeURIComponent(pv[1]);
+      } catch {
+        throw new PrepError(404, "unknown_voice");
+      }
+      const mp3 = await voicePreview(d, id);
       res.writeHead(200, { "content-type": "audio/mpeg", "content-length": mp3.length, "cache-control": "public, max-age=86400" });
       return void res.end(mp3);
     }
@@ -226,12 +240,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voiceId: voice.id,
         name,
         createdAt: new Date().toISOString(),
-        prep: newPrepState(),
+        prep: newPrepState({ kling: d.kling }),
       };
       await d.store.putCompanion(c);
       d.log("voice.selected", { voice_id: voice.id });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user)));
+      return send(res, 201, companionView(c, await d.store.getStyle(user), d));
     }
 
     if (m === "POST" && p === "/v1/companion/name/suggest") {
@@ -254,13 +268,26 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      return send(res, 200, companionView(c, await d.store.getStyle(user)));
+      return send(res, 200, companionView(c, await d.store.getStyle(user), d));
     }
 
     if (m === "GET" && p === "/v1/companion/prep") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       return send(res, 200, prepView(c));
+    }
+
+    const fk = p.match(/^\/v1\/companion\/face\/([A-Za-z]{1,16})$/);
+    if (m === "GET" && fk) {
+      if (!FACE_ASSETS.has(fk[1])) throw new PrepError(404, "not_found");
+      const c = await d.store.getCompanion(user);
+      if (!c) throw new PrepError(404, "no_companion");
+      // only images the manifest lists (a rejected key never is)
+      if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
+      const bytes = await d.store.getAsset(user, c.id, fk[1]);
+      if (!bytes) throw new PrepError(404, "no_image");
+      res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, max-age=86400" });
+      return void res.end(bytes);
     }
 
     if (m === "POST" && p === "/v1/companion/prep/retry") {
@@ -275,7 +302,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       const next = await savePrefs(d, c, b.depth, b.answers);
-      const v = companionView(next, await d.store.getStyle(user));
+      const v = companionView(next, await d.store.getStyle(user), d);
       return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
     }
 
