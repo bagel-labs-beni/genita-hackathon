@@ -90,7 +90,7 @@ enum CallStop: Equatable {
     private(set) var micDenied = false
     private(set) var cameraOn = false
     private(set) var cameraDenied = false
-    private(set) var mode: ConversationMode = .chat
+    private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
     private(set) var playing = false
     private(set) var awaitingFirstAudio = false
     private(set) var interruptedHold = false
@@ -161,6 +161,31 @@ enum CallStop: Equatable {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
+    }
+
+    @ObservationIgnored private var findsOwner: String?
+
+    /// `sub` of a session JWT (the account id); "dev" for the shared dev token; nil when signed out.
+    static func tokenSubject(_ token: String?) -> String? {
+        guard let token, !token.isEmpty else { return nil }
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return "dev" }
+        var b64 = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["sub"] as? String
+    }
+
+    /// POST /v1/finds/:id/save (bookmark), so it survives a restart and shows on the other device.
+    func saveFind(_ id: String, _ saved: Bool) async -> Bool {
+        guard let url = findsURL("/v1/finds/\(id)/save") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["saved": saved])
+        guard let (_, res) = try? await URLSession.shared.data(for: req) else { return false }
+        return (res as? HTTPURLResponse)?.statusCode == 200
     }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
@@ -191,6 +216,9 @@ enum CallStop: Equatable {
         userEnded = false
         stopped = nil
         fixedEndpoint = endpoint
+        // Finds kept in memory belong to whoever was signed in: another account (or a sign-out) starts empty
+        let owner = Self.tokenSubject((endpoint ?? .current()).token)
+        if owner != findsOwner { finds.reset(); findsOwner = owner }
         var s = start
         s.mic = false
         var user = s.user ?? .init()

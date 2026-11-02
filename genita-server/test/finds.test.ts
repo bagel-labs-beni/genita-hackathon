@@ -373,9 +373,8 @@ test("store: saved first then newest; delete + undo; owner isolation; account de
   assert.equal((await s.list("alice")).length, 3);
   await s.remove("alice", "find-0002");
   now += UNDO_MS + 1;
-  assert.equal(await s.restore("alice", "find-0002"), true, "restore still possible before a purge runs");
-  await s.remove("alice", "find-0002");
-  now += UNDO_MS + 1;
+  // PROTOCOL: Undo is 24 h. It used to work until the next purge ran (Codex review 11/2): no longer.
+  assert.equal(await s.restore("alice", "find-0002"), false, "no restore after the undo window, purge or not");
   assert.equal((await s.list("alice")).length, 2);
   assert.equal(await s.restore("alice", "find-0002"), false, "purged after the undo window");
   // re-put keeps saved
@@ -438,4 +437,18 @@ test("recipe pipeline: a stalled first-look stream gets one plain retry; a secon
   await runRecipe(bad.ctx);
   const f = bad.events.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
   assert.equal(f.reason, "error");
+});
+
+test("store: Undo works inside 24 h only, even when /restore is called directly", async () => {
+  const { MemoryFindsStore, UNDO_MS } = await import("../src/finds/store.ts");
+  let t = 1_000_000;
+  const store = new MemoryFindsStore(() => t);
+  const card = { id: "card-0001", kind: "recipe", createdAt: "x", eyebrow: "", title: "T", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] } as any;
+  await store.put("o", card);
+  assert.equal(await store.remove("o", "card-0001"), true);
+  t += UNDO_MS - 1;
+  assert.equal(await store.restore("o", "card-0001"), true, "inside the window");
+  assert.equal(await store.remove("o", "card-0001"), true);
+  t += UNDO_MS + 1;
+  assert.equal(await store.restore("o", "card-0001"), false, "window over");
 });

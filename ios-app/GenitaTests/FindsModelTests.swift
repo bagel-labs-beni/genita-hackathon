@@ -90,4 +90,44 @@ import XCTest
         XCTAssertEqual(m.state, .searching)
         XCTAssertEqual(m.current?.failed?.reason, .unclear)
     }
+
+    func testAskIsOffWhileInterpreting() {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.apply(started("a")); m.apply(created("a")); m.force(.half)
+        m.interpreting = true
+        m.ask("Spicy?")
+        XCTAssertTrue(sent.isEmpty, "a card question would be translated to the other person")
+        m.interpreting = false
+        m.ask("Spicy?")
+        XCTAssertEqual(sent.count, 1)
+    }
+
+    func testBookmarkRevertsWhenTheServerSaveFails() async throws {
+        let m = FindsModel()
+        m.apply(started("a")); m.apply(created("a")); m.force(.half)
+        m.saveRemote = { _, _ in false }
+        m.toggleSave()
+        XCTAssertEqual(m.current?.saved, true, "shows at once")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(m.current?.saved, false, "server said no: back to unsaved")
+        var calls: [(String, Bool)] = []
+        m.saveRemote = { id, saved in calls.append((id, saved)); return true }
+        m.toggleSave()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(m.current?.saved, true)
+        XCTAssertEqual(calls.first?.0, "a"); XCTAssertEqual(calls.first?.1, true)
+    }
+
+    func testTokenSubjectSeparatesAccounts() {
+        func jwt(_ sub: String) -> String {
+            let body = Data(#"{"sub":"\#(sub)"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")
+            return "eyJhbGciOiJIUzI1NiJ9.\(body).sig"
+        }
+        XCTAssertEqual(CallController.tokenSubject(jwt("user-a")), "user-a")
+        XCTAssertNotEqual(CallController.tokenSubject(jwt("user-a")), CallController.tokenSubject(jwt("user-b")))
+        XCTAssertEqual(CallController.tokenSubject("shared-dev-token"), "dev")
+        XCTAssertNil(CallController.tokenSubject(nil))
+    }
 }

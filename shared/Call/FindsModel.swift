@@ -60,8 +60,14 @@ struct FindEntry: Identifiable, Equatable {
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
+    /// Interpretation is on: "Ask about this" would be translated to the other person, so asking is off.
+    var interpreting = false
+    var canAsk: Bool { !interpreting }
+
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
+    /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
+    @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// Frames the controller sent with the latest question (base64 JPEG), attached to the next find.
     @ObservationIgnored var latestFrames: [String] = []
 
@@ -220,7 +226,13 @@ struct FindEntry: Identifiable, Equatable {
 
     func toggleSave() {
         guard let f = current else { return }
-        update(f.id) { $0.saved.toggle() }
+        let id = f.id
+        let want = !f.saved
+        update(id) { $0.saved = want }
+        Task { @MainActor in
+            // server first-class: if the save didn't land, the bookmark goes back
+            if !(await saveRemote(id, want)) { update(id) { $0.saved = !want } }
+        }
     }
 
     func tapItem(_ item: FindItem) {
@@ -243,7 +255,7 @@ struct FindEntry: Identifiable, Equatable {
 
     /// "Ask about this": the question goes out as the user's words, about this card.
     func ask(_ text: String) {
-        guard let f = current else { return }
+        guard canAsk, let f = current else { return }
         send(.text(.init(text: text, frames: nil, findId: f.id)))
     }
 

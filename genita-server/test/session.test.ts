@@ -487,3 +487,53 @@ test("finds: no card for a plain chat turn, and none without the finds deps", as
   assert.ok(!client.json.some((m) => String(m.type).startsWith("find.")));
   session.close();
 });
+
+test("finds: account deletion stops running card pipelines; nothing is written after the call closes", async () => {
+  const { client, session } = setup({ sparkText: "<curious> Let me look." });
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  const store = new MemoryFindsStore();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const vendors = {
+    async spark(req: SparkRequest) {
+      if (JSON.stringify(req.input).includes("clearly visible")) return { text: "YES", output: [] };
+      return { text: '{"dish":"rice","minutes":5,"ingredients":[{"name":"eggs","optional":false}],"steps":["Cook."],"sources":[],"ask":[],"say":"Found one."}', output: [] };
+    },
+    async *sparkStream() {
+      yield { type: "text" as const, delta: "eggs | 6 | carton\n" };
+      yield { type: "done" as const, responseId: null, text: "", status: "completed" };
+    },
+    async sam() {
+      return [{ x1: 1, y1: 1, x2: 9, y2: 9, w: 10, h: 10, nx1: 0.1, ny1: 0.1, nx2: 0.9, ny2: 0.9 }];
+    },
+    async image() {
+      await gate; // pictures still being drawn when the account is deleted
+      return Buffer.from([0xff, 0xd8]);
+    },
+  };
+  const s2 = new Session("f2", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: true, imageBase: "/v1/finds" }, userId: "u-del" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA"] }));
+  const created = await client.waitFor((m) => m.type === "find.created", 3000);
+  await sleep(10);
+  // the server's account delete: end the call (purge), then erase the owner's cards
+  s2.close(4401, "account_deleted");
+  await store.removeOwner(ownerKey("u-del"));
+  release();
+  await sleep(50);
+  assert.deepEqual(await store.list(ownerKey("u-del")), [], "the card is not saved again after the erase");
+  assert.equal(await store.getImage(String(created.findId), "hero"), null, "no picture written after the erase");
+});
+
+test("finds × interpretation: a card line is not spoken while interpreting; 'Ask about this' is not translated", async () => {
+  const { client, session, ttsCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", interpret: { other: "ko" }, mic: false }));
+  (session as unknown as { announce(t: string): void }).announce("Found a recipe.");
+  await session.onClientText(JSON.stringify({ type: "text", text: "Walk me through it", findId: "card-0001" }));
+  await sleep(30);
+  assert.ok(!ttsCalls.some((t) => t.includes("Found a recipe")), "card line stays silent during interpretation");
+  assert.ok(!client.json.some((m) => m.type === "interpret.bubble"), "card question not translated");
+  assert.ok(!client.json.some((m) => m.type === "transcript" && m.text === "Walk me through it"));
+  session.close();
+});

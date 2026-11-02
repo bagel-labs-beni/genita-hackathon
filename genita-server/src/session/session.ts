@@ -238,6 +238,11 @@ export class Session {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
+        if (this.interp && typeof msg.findId === "string") {
+          // "Ask about this" on a card while interpreting would be translated to the other person: not sent
+          this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
+          return;
+        }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
@@ -520,7 +525,8 @@ export class Session {
     this.asr?.end();
     this.peter?.close();
     this.memoryCall?.close();
-    this.finds?.close();
+    // account deleted: Finds stop now and never write again (the delete runs right after)
+    this.finds?.close({ purge: reason === "account_deleted" });
     this.watch?.close();
     this.client.close(code, reason);
   }
@@ -605,6 +611,8 @@ export class Session {
         companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
         conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
         react: (script) => {
+          // interpretation owns the voice: no watch reactions over it
+          if (this.mode === "interpret") return null;
           const before = this.turn.utteranceId;
           this.dispatch({ type: "self_speak", text: script, origin: "watch" });
           return this.turn.utteranceId !== before ? this.turn.utteranceId : null;
@@ -627,7 +635,7 @@ export class Session {
     const r = reduceTurn(this.turn, e, this.bargeCfg);
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
-    if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce) {
+    if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
       const p = this.pendingAnnounce;
       this.pendingAnnounce = null;
       if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "self_speak", text: p.text, origin: "card" });
@@ -636,7 +644,8 @@ export class Session {
 
   /** Say a card's line now if the companion is idle, else right after the current reply. */
   private announce(text: string): void {
-    if (this.closed) return;
+    // interpretation owns the voice: a card that lands mid-interpretation stays on the sheet, unspoken
+    if (this.closed || this.mode === "interpret") return;
     if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "self_speak", text, origin: "card" });
     if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }

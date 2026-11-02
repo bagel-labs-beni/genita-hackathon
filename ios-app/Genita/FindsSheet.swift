@@ -285,7 +285,7 @@ struct FindsSheet: View {
                 Button { if let card { finds.ask(Self.cta(card.kind)) } } label: {
                     Text(card.map { Self.cta($0.kind) } ?? "").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(PressScale()).accessibilityIdentifier("findCTA").accessibilitySortPriority(-10)
+                }.buttonStyle(PressScale()).disabled(!finds.canAsk).opacity(finds.canAsk ? 1 : 0.4).accessibilityIdentifier("findCTA").accessibilitySortPriority(-10)
             }
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
@@ -594,7 +594,7 @@ struct FindCardPage: View {
                             Image(systemName: "waveform").font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute)
                             Text(q).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink)
                         }.padding(.horizontal, 12).frame(height: 44).background(FindsInk.skip, in: RoundedRectangle(cornerRadius: 12))
-                    }.buttonStyle(PressScale()).disabled(offline).accessibilityHint("Asks out loud").accessibilityIdentifier("ask-\(q)")
+                    }.buttonStyle(PressScale()).disabled(offline || !finds.canAsk).accessibilityHint(finds.canAsk ? "Asks out loud" : "Unavailable while interpreting").accessibilityIdentifier("ask-\(q)")
                 }
             }
         }.padding(.top, 8)
