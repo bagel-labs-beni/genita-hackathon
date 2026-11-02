@@ -229,6 +229,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** the account's saved companion voice (same presence), looked up as the socket opens */
+  private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -266,6 +268,8 @@ export class Session {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
+    // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
+    this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
@@ -299,7 +303,8 @@ export class Session {
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
     try {
-      const id = await Promise.race([this.deps.companionVoiceId().catch(() => null), late]);
+      const lookup = this.deps.companionVoiceId;
+      const id = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
       return typeof id === "string" && id.trim() ? id.trim().slice(0, 64) : null;
     } finally {
       clearTimeout(timer);
@@ -486,9 +491,11 @@ export class Session {
       catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
     }
     if (this.closed) return;
-    const owned = await this.companionVoice();
+    const owned = await this.ownedVoice;
     if (this.closed) return;
-    if (owned) this.pickVoice(owned, persona.kind);
+    // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
+    if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
+    else if (owned) this.log("voice.owned_late", {});
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {

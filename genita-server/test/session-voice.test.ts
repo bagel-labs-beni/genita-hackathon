@@ -382,3 +382,23 @@ test("same presence: no companion, a store error or a slow store keeps the clien
     a.session.close();
   }
 });
+
+test("same presence: a turn that starts while the voice lookup is still out keeps one voice for the whole reply (Codex P2)", async () => {
+  // the lookup is slower than the user's first line: that reply and the call keep the client's voice
+  const s = setup({ companionVoiceId: () => new Promise((r) => setTimeout(() => r("17"), 200)), sparkText: "<happy> One. Two. Three." });
+  const started = s.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:2", mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await started;
+  await s.client.waitFor((m) => m.type === "reply");
+  const voices = new Set(s.calls.map((c) => c.voiceId));
+  assert.deepEqual([...voices], ["seamless:2"], "never two voices in one reply");
+  s.session.close();
+  // looked up as the session opens: a start sent a moment later doesn't wait for it
+  const q = setup({ companionVoiceId: () => new Promise((r) => setTimeout(() => r("17"), 150)) });
+  await sleep(200);
+  const t0 = Date.now();
+  await q.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:2", mic: false }));
+  assert.ok(Date.now() - t0 < 100);
+  assert.equal(q.client.of("ready")[0].voiceId, "seamless:17");
+  q.session.close();
+});
