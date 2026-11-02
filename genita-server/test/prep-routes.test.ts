@@ -9,21 +9,25 @@ import { FileStore, type ImageRecord } from "../src/prep/store.ts";
 import { createPrepRoutes } from "../src/prep/routes.ts";
 import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
 import { savePrefs } from "../src/prep/pipeline.ts";
-import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 
-/** Routes with a real file store and no vendor keys: covers everything that does not call a model. Flags on = the earlier ElevenLabs/Kling/Peter setup. */
-test("prep routes (GENITA_KLING/PETER/SERVER_TTS on): prompt, validation, one companion per user, prefs → persona", async (t) => {
+/** Routes with a real file store; upstream failures exercise the local fallback. */
+test("prep routes: prompt, validation, one companion per user, prefs → persona", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-routes-"));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {}, kling: true, peter: true, serverTts: true };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "", store, voices: DEFAULT_VOICES, log: () => {} };
+  const runner = new PrepRunner(d);
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.startsWith(base + "/") ? realFetch(input, init) : Promise.resolve(new Response("stubbed upstream failure", { status: 503 }));
+  });
   t.after(() => {
     http.close();
     rmSync(dir, { recursive: true, force: true });
@@ -64,10 +68,10 @@ test("prep routes (GENITA_KLING/PETER/SERVER_TTS on): prompt, validation, one co
   assert.equal(created.json.name, "Mira"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
-  await runner.run("u1"); // GENITA_KLING=1 without FAL_KEY → every attempt fails (the default Meta-only path is in prep-meta.test.ts)
+  await runner.run("u1"); // fake input has no usable scene; route validation remains available
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
-  assert.equal(prep.json.progress.total, 5);
+  assert.equal(prep.json.progress.total, 14);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
@@ -77,8 +81,8 @@ test("prep routes (GENITA_KLING/PETER/SERVER_TTS on): prompt, validation, one co
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
-  // GENITA_PETER on in this test → a human gets Peter; with it off (Meta-only, D34) the lip is "none"
-  assert.deepEqual(prefs.json.session.lip, { mode: "peter", fallback: "none" });
+  // Human face sets animate on the device.
+  assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Mira");
@@ -92,9 +96,6 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   let sparkCalls = 0;
   const d: PrepDeps = {
     metaKey: "",
-    elevenKey: "",
-    ttsModel: "m",
-    falKey: null,
     store,
     voices: DEFAULT_VOICES,
     log: () => {},
@@ -103,7 +104,7 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
       return { name: "Jin" } as never;
     },
   };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const runner = new PrepRunner(d);
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
@@ -173,7 +174,7 @@ test("prefs (Codex P2): a rename that lands while the persona is being written i
   const dir = mkdtempSync(join(tmpdir(), "prep-prefs-race-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const d: PrepDeps = { metaKey: "", store, voices: DEFAULT_VOICES, log: () => {} };
   const stale = { id: "c1", userId: "u1", imageId: "img1", type: "human" as const, voiceId: DEFAULT_VOICES[0].id, name: "Jin", createdAt: new Date().toISOString(), prep: newPrepState() };
   await store.putCompanion({ ...stale, name: "Max" }); // PATCH landed after savePrefs read the record
   const next = await savePrefs(d, stale, "quick", { help: "Be there", relationship: "Close companion", presence: ["Calm"] });
@@ -184,8 +185,8 @@ test("prefs (Codex P2): a rename that lands while the persona is being written i
 test("POST /v1/import/skip: N1–N3 → style card, no vendor call, readable via GET /v1/import", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-skip-"));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
-  const routes = createPrepRoutes(d, new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() }));
+  const d: PrepDeps = { metaKey: "", store, voices: DEFAULT_VOICES, log: () => {} };
+  const routes = createPrepRoutes(d, new PrepRunner(d));
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;

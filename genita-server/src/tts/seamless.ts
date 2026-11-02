@@ -5,7 +5,7 @@
  *   → NDJSON lines {audio_base64 (PCM s16le 24 kHz), alignment {characters, character_start_times_seconds,
  *     character_end_times_seconds} | null}, then {done, gen_ms, audio_ms}
  *
- * Same chunk shape as the ElevenLabs client, so the session's audio/words/mouth path is unchanged.
+ * Streams PCM and alignment for the session's audio, words and atlas playback.
  *
  * - Text is turned into spoken form first (normalize.ts); captions keep the written text.
  * - Each clause gets a short pause at its end (Seamless trims silence; separate requests would run together).
@@ -15,7 +15,7 @@
  */
 import { UpstreamError } from "../meta/http.ts";
 import type { VoiceConfig } from "../config.ts";
-import type { TtsChunk, TtsRequest } from "./elevenlabs.ts";
+import type { TtsChunk, TtsRequest } from "./types.ts";
 import { pauseAfterMs, spokenText } from "../voice/normalize.ts";
 
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
@@ -43,7 +43,7 @@ export function splitForService(text: string, max = 380): string[] {
   return out;
 }
 
-export type SeamlessRequest = Omit<TtsRequest, "apiKey"> & { lang?: string };
+export type SeamlessRequest = TtsRequest & { lang?: string };
 
 /** BCP-47 / Spark language → Seamless lang code (the two the app uses). */
 export function seamlessLang(lang: string | undefined, text: string): "eng" | "kor" {
