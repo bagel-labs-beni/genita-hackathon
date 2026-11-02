@@ -47,7 +47,8 @@ import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
-import { openerBlock } from "../convo/opener.ts";
+import { daySeed, openerBlock, openerKind, pickOpenerHook, profileHooks } from "../convo/opener.ts";
+import { noteOpenerTopic, recentFromState, recentLocal } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
@@ -231,6 +232,8 @@ export class Session {
   private readonly v1 = convoV1();
   /** ms of the user's last message in an earlier call (memory state); null = never; undefined = unknown */
   private lastMessageAt: number | null | undefined = undefined;
+  /** #341: profile things recent greetings opened on (oldest → newest); undefined = not read yet */
+  private openerRecent: string[] | undefined = undefined;
   /** the companion speaks first mid-call (src/convo/initiative.ts); null = off for this call */
   private initiative: InitiativeGovernor | null = null;
   private initiativeTimer: NodeJS.Timeout | null = null;
@@ -505,7 +508,7 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) this.lastMessageAt = state.last_message_at;
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = recentFromState(userId, state); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -988,9 +991,21 @@ export class Session {
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
   private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
-    const opener = turn.greeting
-      ? openerBlock({ hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, (this.deps.memory?.now ?? Date.now)() - last), hasItem: !!turn.greeting.item })
-      : undefined;
+    let opener: string | undefined;
+    if (turn.greeting) {
+      const now = (this.deps.memory?.now ?? Date.now)();
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item };
+      // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
+      const kind = openerKind(o);
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
+      const recent = this.openerRecent ?? recentLocal(this.deps.userId);
+      const hook = rotates ? pickOpenerHook(profileHooks(this.user?.profile), recent, daySeed(now) + recent.length) : null;
+      opener = openerBlock({ ...o, hook, lastHook: recent.at(-1) ?? null });
+      if (hook) {
+        this.openerRecent = noteOpenerTopic(this.deps.userId, recent, hook, this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
+        this.log("convo.opener", { kind, hooks: profileHooks(this.user?.profile).length, recent: recent.length });
+      }
+    }
     let perception: string | undefined;
     let perceptionHint: string | undefined;
     try {
