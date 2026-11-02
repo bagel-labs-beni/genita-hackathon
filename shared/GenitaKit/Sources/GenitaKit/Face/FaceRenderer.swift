@@ -373,9 +373,11 @@ public final class FaceRenderer: @unchecked Sendable {
         let fr = set.flow?.map.framing
         let human = (set.flow?.kind ?? "human") == "human"
         var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
-        z = min(2, max(1, z))
+        z = z.isFinite ? min(2, max(1, z)) : 1
         let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))
-        return (CGFloat(z), CGPoint(x: f.midX, y: CGFloat(cy)))
+        // the zoom centre stays inside the still, so the zoomed image still covers the frame (no edge smear)
+        let cyIn = min(H, max(0, cy.isFinite ? cy : Double(f.midY)))
+        return (CGFloat(z.isFinite ? z : 1), CGPoint(x: min(set.pixelSize.width, max(0, f.midX)), y: CGFloat(cyIn)))
     }
 
     static func ciRect(_ r: CGRect, height: CGFloat) -> CGRect {

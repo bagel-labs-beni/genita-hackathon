@@ -63,7 +63,8 @@ struct AliveMotion {
             let omega = 14.0
             for _ in 0..<steps {
                 slowOpen += (open - slowOpen) * min(1, h / (0.4 * max(0.25, nodWidth)))   // wider pulse, same peak
-                let target = max(0, open - slowOpen) * 1.6
+                // a wider envelope also raises the peak (~×1.2 at width 2, codex): keep the peak
+                let target = max(0, open - slowOpen) * 1.6 * pow(max(0.25, nodWidth), -0.26)
                 let a = omega * omega * (min(1, target) - nod) - 2 * omega * nodVelocity
                 nodVelocity += a * h
                 nod += nodVelocity * h

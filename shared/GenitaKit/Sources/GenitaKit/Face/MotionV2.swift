@@ -46,7 +46,7 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
-        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }

@@ -354,3 +354,23 @@ struct FramingTests {
         #expect(rig.teethTone?.cavityDark == 0.4 && rig.teethTone?.teethLift == 0.5 && rig.teethExitBeforeClose && rig.blendFloor == [0.12, 0.4])
     }
 }
+
+struct RigRobustnessTests {
+    /// Codex P2: a rig / framing / alive block of the wrong shape keeps the rest of the map.
+    @Test func aBadOptionalBlockKeepsTheMap() throws {
+        var m = FlowMap.standard; m.drive = "open"
+        var j = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as! [String: Any]
+        j["rig"] = "bad"; j["framing"] = [Int](); j["alive"] = 3; j["motionV2"] = "x"
+        let back = try JSONDecoder().decode(FlowMap.self, from: JSONSerialization.data(withJSONObject: j))
+        #expect(back.drive == "open" && back.rig == FlowMap.Rig() && back.framing == FlowMap.Framing())
+    }
+
+    /// Codex P1: an out-of-range percentile does not crash the teeth tone.
+    @Test func teethToneSurvivesABadPercentile() throws {
+        var tone = FlowMap.Rig.TeethTone(); tone.thrPct = -10
+        let w = 12, h = 12
+        let p = [Float](repeating: 120, count: w * h * 3)
+        let inn = (0..<(w * h)).map { i in (2..<10).contains(i % w) && (2..<10).contains(i / w) ? Float(1) : 0 }
+        #expect(FlowMorph.toneTeeth(p, interior: inn, width: w, height: h, tone: tone).count == p.count)
+    }
+}

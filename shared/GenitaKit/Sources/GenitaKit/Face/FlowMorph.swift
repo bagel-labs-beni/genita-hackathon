@@ -179,7 +179,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public init(from decoder: Decoder) throws {
             self.init()
             cheekGain = 1      // a prep that sends alive sends its cheek values as meant
-            let c = try decoder.container(keyedBy: CodingKeys.self)
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
             // prep #266 names: headX (drift ×), headRoll (roll ×), nodPx (px at a full onset; 2.5 = ×1), nodWidth
             if let v = try? c.decodeIfPresent(Double.self, forKey: .headX) { headGain = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .headRoll) { rollGain = v }
@@ -222,7 +222,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             enum CodingKeys: String, CodingKey { case cavityDark, teethLift, band, split, thrPct }
             public init(from decoder: Decoder) throws {
                 self.init()
-                let c = try decoder.container(keyedBy: CodingKeys.self)
+                guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
                 if let v = try? c.decodeIfPresent(Double.self, forKey: .cavityDark) { cavityDark = v }
                 if let v = try? c.decodeIfPresent(Double.self, forKey: .teethLift) { teethLift = v }
                 if let v = try? c.decodeIfPresent(Double.self, forKey: .band) { band = v }
@@ -235,12 +235,14 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var lipFlowPx = 1.2, lipFlowSigma = 0.012, lipTex = 0.15
         /// closed lips (neutral texture) take the open keys' lip tone (0 = off, 1 = full)
         public var lipTone = 1.0
+        /// lip saturation ceiling: × the neutral texture's mean lip saturation (v9.0 review: magenta closed lips); 0 = off
+        public var lipSatMax = 1.05
         public init() {}
-        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, teethTop }
+        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop }
         enum TeethKeys: String, CodingKey { case hyst, min, alpha, tone, exitBeforeClose }
         public init(from decoder: Decoder) throws {
             self.init()
-            let c = try decoder.container(keyedBy: CodingKeys.self)
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
             if let v = try? c.decodeIfPresent(Double.self, forKey: .chinLpHz) { chinLpHz = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .chinGain) { chinGain = v }
             if let v = try? c.decodeIfPresent([Double].self, forKey: .chinRamp), v.count == 2 { chinRamp = v }
@@ -253,6 +255,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipFlowSigma) { lipFlowSigma = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTex) { lipTex = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTone) { lipTone = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .lipSatMax) { lipSatMax = v }
             // prep #266 nests the teeth rules: teethTop {hyst, min, alpha, fade, cavity}
             if let t = try? c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop) {
                 if let v = try? t.decodeIfPresent(Double.self, forKey: .hyst) { teethHyst = v }
@@ -268,7 +271,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             try c.encode(chinLpHz, forKey: .chinLpHz); try c.encode(chinGain, forKey: .chinGain); try c.encode(chinRamp, forKey: .chinRamp)
             try c.encode(blendFloor, forKey: .blendFloor); try c.encode(noTex, forKey: .noTex)
             try c.encode(teethHyst, forKey: .teethHyst); try c.encode(teethMin, forKey: .teethMin); try c.encode(teethAlpha, forKey: .teethAlpha)
-            try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone)
+            try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone); try c.encode(lipSatMax, forKey: .lipSatMax)
             var t = c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop)
             try t.encode(teethHyst, forKey: .hyst); try t.encode(teethMin, forKey: .min); try t.encode(teethAlpha, forKey: .alpha)
             try t.encodeIfPresent(teethTone, forKey: .tone); try t.encode(teethExitBeforeClose ? 1.0 : 0.0, forKey: .exitBeforeClose)
@@ -282,7 +285,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public init(zoom: Double? = nil, cy: Double? = nil) { self.zoom = zoom; self.cy = cy }
         enum CodingKeys: String, CodingKey { case zoom, cy }
         public init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
             zoom = (try? c.decodeIfPresent(Double.self, forKey: .zoom)) ?? nil
             cy = (try? c.decodeIfPresent(Double.self, forKey: .cy)) ?? nil
         }
@@ -509,8 +512,9 @@ final class FlowMorph: @unchecked Sendable {
             let mw = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
             let photo = Self.rgb(neutralStill, crop: data.roi, width: width, height: height)
             if let g = Self.lipToneGain(from: neutral, to: photo, lip: closedLip, mask: mw, strength: Float(rg.lipTone)) {
-                neutral = Self.applyLipGain(neutral, lip: closedLip, interior: nil, gain: g.gain, skinRG: g.skinRG)
-                for (k, p) in kp where lm[k] != nil { keyPix[k] = Self.applyLipGain(p, lip: lm[k]!, interior: ip[k], gain: g.gain, skinRG: g.skinRG) }
+                let sMax = rg.lipSatMax > 0 ? Self.meanLipSat(neutral, lip: closedLip, skinRG: g.skinRG).map { $0 * Float(rg.lipSatMax) } : nil
+                neutral = Self.applyLipGain(neutral, lip: closedLip, interior: nil, gain: g.gain, skinRG: g.skinRG, satMax: sMax)
+                for (k, p) in kp where lm[k] != nil { keyPix[k] = Self.applyLipGain(p, lip: lm[k]!, interior: ip[k], gain: g.gain, skinRG: g.skinRG, satMax: sMax) }
             }
         }
         smooth = [Float](repeating: 0, count: data.keys.count)
@@ -1008,7 +1012,9 @@ final class FlowMorph: @unchecked Sendable {
                 } }
             }
             amC = rigChinX.map { Float(min(1, max(0, $0))) }
-            if !intPix.isEmpty {
+            if !intPix.isEmpty, usedV2, v2Closed {
+                cw = cw.map { _ in 0 }; rigTop = nil          // a closure shows the closed (neutral) lips, never teeth
+            } else if !intPix.isEmpty {
                 let sk = am.indices.map { rg.noTex.contains(order[$0]) ? 0 : am[$0] }
                 let tot = sk.reduce(0, +)
                 let f = Float(min(1, max(0, (Double(tot) - rg.blendFloor[0]) / max(1e-3, rg.blendFloor[1]))))
@@ -1269,7 +1275,7 @@ final class FlowMorph: @unchecked Sendable {
             ys.append(y); xs.append(x); vs.append(max(p[i], p[i + 1], p[i + 2]))
         } }
         guard ys.count > 20, let y0 = ys.min(), let y1 = ys.max(), let x0 = xs.min(), let x1 = xs.max() else { return p }
-        vs.sort(); let thr = vs[min(vs.count - 1, Int(Double(vs.count - 1) * tone.thrPct / 100))]
+        vs.sort(); let thr = vs[min(vs.count - 1, max(0, Int(Double(vs.count - 1) * min(100, max(0, tone.thrPct.isFinite ? tone.thrPct : 50)) / 100)))]
         let cx = Float(x0 + x1) / 2, hw = max(1, Float(x1 - x0) / 2), band = Float(tone.band), split = Float(tone.split)
         func clip(_ v: Float) -> Float { min(1, max(0, v)) }
         var teeth = [Float](repeating: 0, count: w * h)
@@ -1325,7 +1331,16 @@ final class FlowMorph: @unchecked Sendable {
     }
 
     /// Applies a lip gain on the lip pixels only (weighted by how much redder than the skin they are).
-    static func applyLipGain(_ p: [Float], lip: [Float], interior: [Float]?, gain: (Float, Float, Float), skinRG: Float) -> [Float] {
+    static func meanLipSat(_ p: [Float], lip: [Float], skinRG: Float) -> Float? {
+        var s: Float = 0, c: Float = 0
+        for i in 0..<(p.count / 3) where lip[i] > 0.5 && p[3 * i] - p[3 * i + 1] > skinRG + 12 {
+            let mx = max(p[3 * i], p[3 * i + 1], p[3 * i + 2]), mn = min(p[3 * i], p[3 * i + 1], p[3 * i + 2])
+            if mx > 0 { s += (mx - mn) / mx; c += 1 }
+        }
+        return c > 30 ? s / c : nil
+    }
+
+    static func applyLipGain(_ p: [Float], lip: [Float], interior: [Float]?, gain: (Float, Float, Float), skinRG: Float, satMax: Float? = nil) -> [Float] {
         let count = p.count / 3
         guard lip.count == count else { return p }
         var o = p
@@ -1334,6 +1349,15 @@ final class FlowMorph: @unchecked Sendable {
             let w = lip[i] * min(1, max(0, (red - skinRG - 6) / 20)) * (1 - min(1, interior?[i] ?? 0))
             if w <= 0 { continue }
             o[3 * i] *= 1 + (gain.0 - 1) * w; o[3 * i + 1] *= 1 + (gain.1 - 1) * w; o[3 * i + 2] *= 1 + (gain.2 - 1) * w
+            if let sm = satMax {
+                // saturation above the ceiling pulls toward the pixel's own max (grey at the same brightness)
+                let mx = max(o[3 * i], o[3 * i + 1], o[3 * i + 2]), mn = min(o[3 * i], o[3 * i + 1], o[3 * i + 2])
+                let sat = mx > 0 ? (mx - mn) / mx : 0
+                if sat > sm {
+                    let k = 1 - w * (1 - sm / sat)
+                    for c in 0..<3 { o[3 * i + c] = mx - (mx - o[3 * i + c]) * k }
+                }
+            }
         }
         return o
     }
