@@ -188,7 +188,7 @@ struct MacConversationView: View {
                 menuLine("Chat", icon: AnyView(resourceImage("reference-menu-chat").resizable().frame(width: 20, height: 20)), dim: true, id: "macMenuChat") {}.disabled(true)
                 menuLine("Finds", icon: AnyView(Image(systemName: "bookmark").font(.system(size: 17, weight: .light))), trailing: finds > 0 ? "\(finds)" : nil, id: "macMenuFinds") {
                     withAnimation { menuOpen = false }
-                    if call.finds.current != nil, call.finds.state == .idle { call.finds.state = .half }
+                    if call.finds.cardCount > 0 { call.finds.reopenLatest() }
                 }
                 menuLine("Setting", icon: AnyView(resourceImage("reference-menu-settings").resizable().frame(width: 20, height: 20)), id: "macMenuSetting") { menuOpen = false; settingsOpen = true }
                 Rectangle().fill(Color(white: 227.0 / 255)).frame(height: 1).padding(.leading, 32).padding(.trailing, 24).padding(.top, 8)

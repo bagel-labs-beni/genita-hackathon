@@ -312,17 +312,29 @@ struct MacHandoffSurface: View {
 }
 /// The Mac's home window: MAC-2 (no companion yet), MAC-3 (conversation on the iPhone), MAC-4 (conversation here).
 /// Figma rp1wR9pxV0IsgyjvOcwo92 87:2 / 88:2 / 89:2: 420 wide, 32 pt padding, serif 28 title, one status row, 50 pt button.
-enum MacHomeKind { case noCompanion, onPhone, here }
+enum MacHomeKind: Equatable { case noCompanion, onPhone, here, offline(String) }
 struct MacHandoffControls:View {
     @ObservedObject private var handoff=MacHandoff.shared
     @ObservedObject private var call=MacCall.shared
-    var forced:MacHomeKind?=nil
+    private let tick=Timer.publish(every:10,on:.main,in:.common).autoconnect()
     private var kind:MacHomeKind {
-        if let forced {return forced}
-        if case .noCompanion=call.account {return .noCompanion}
-        return handoff.ownership.isOwner && handoff.ownership.state.epoch>0 ? .here : .onPhone
+        switch call.account {
+        case .offline(let reason): return .offline(reason)
+        case .noCompanion,.checking,.signingIn: return .noCompanion   // "Checking for your companion"
+        default: return handoff.ownership.isOwner && handoff.ownership.state.epoch>0 ? .here : .onPhone
+        }
     }
-    var body:some View { MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff) }
+    var body:some View {
+        MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff)
+            // 4401 → MAC-1, 4403 → CS01 (this window is always there, so it sees every stop of the call)
+            .onChange(of:CallController.shared.stopped) { _,stop in if let stop {call.callStopped(stop)} }
+            // MAC-2 / offline: the window coming to the front, and every 10 s while it waits, asks /me again
+            .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in recheck() }
+            .onReceive(tick) { _ in recheck() }
+    }
+    private func recheck() {
+        switch call.account { case .noCompanion,.offline: Task { await call.refresh() }; default: break }
+    }
 }
 struct MacHomeView:View {
     let kind:MacHomeKind
@@ -347,11 +359,7 @@ struct MacHomeView:View {
             case .onPhone:
                 statusRow("Conversation on your iPhone",live:true)
                 button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
-                Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
-                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
-                Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)
-                    .frame(maxWidth:.infinity).padding(.vertical,16).background(Color(white:241.0/255),in:RoundedRectangle(cornerRadius:12))
-                    .accessibilityLabel("Pairing code "+spacedCode).accessibilityIdentifier("macPairingCode")
+                pairingBlock
             case .here:
                 statusRow(paired ? "Paired with your iPhone" : handoff.server.connected ? "Signed in. Moves go through your account." : "No iPhone paired yet",live:paired || handoff.server.connected)
                 HStack(spacing:8) {
@@ -360,13 +368,28 @@ struct MacHomeView:View {
                 }
                 Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
                     .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                if !paired { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable
+            case .offline(let reason):
+                statusRow(reason,live:false)
+                button("Try again",filled:true,id:"macTryAgain") { Task { await MacCall.shared.refresh() } }
             }
+            // Not in the Figma frames: the old window's "Sign out" link, so an account can still be switched on the Mac.
+            Button("Sign out") { MacCall.shared.signOut() }
+                .buttonStyle(.plain).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).underline().accessibilityIdentifier("macSignOut")
         }
         .padding(.horizontal,32).padding(.top,32).padding(.bottom,28).frame(width:420,alignment:.topLeading)
         .background(MacSheetInk.sheet)
     }
     private var title:String {
-        switch kind { case .noCompanion: "Set up on your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac." }
+        switch kind { case .noCompanion: "Set up on your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac."; case .offline: "Can’t reach Genita." }
+    }
+    /// "First time with this iPhone?" + the six digits (MAC-3 88:19 / 88:21).
+    @ViewBuilder private var pairingBlock:some View {
+        Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
+            .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
+        Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)
+            .frame(maxWidth:.infinity).padding(.vertical,16).background(Color(white:241.0/255),in:RoundedRectangle(cornerRadius:12))
+            .accessibilityLabel("Pairing code "+spacedCode).accessibilityIdentifier("macPairingCode")
     }
     private func statusRow(_ text:String,live:Bool)->some View {
         HStack(spacing:8) {
