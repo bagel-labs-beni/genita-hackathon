@@ -78,7 +78,7 @@ struct ConversationView: View {
                         if sheet == .dismissed {
                             FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
-                        if !connecting && !interpreting && handoffEnabled && (handoff.moving || handoff.moveFailed) {
+                        if !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed) {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
                         } else if !connecting && !interpreting {

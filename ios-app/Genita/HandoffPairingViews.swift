@@ -53,7 +53,7 @@ struct PhonePairingView: View {
             TextField("", text: Binding(get: { handoff.code }, set: { entered in
                 let clean = String(entered.filter(\.isNumber).prefix(6))
                 guard clean != handoff.code else { return }
-                handoff.pairingFailed = false
+                handoff.codeEdited()
                 handoff.code = clean
                 if clean.count == 6 { handoff.connect() }
             })).keyboardType(.numberPad).focused($focused).textContentType(.oneTimeCode)
@@ -133,11 +133,6 @@ struct HandoffMoveStatusLine: View {
         Group {
             if handoff.moving { pill(icon: AnyView(CueSpinner()), text: "Moving to your Mac…", id: "moveStatusMoving") }
             else if handoff.moveFailed { pill(icon: AnyView(CueAlert()), text: "Mac not responding. Still here.", id: "moveStatusFailed") }
-        }
-        .task(id: handoff.moveFailed) {
-            guard handoff.moveFailed else { return }
-            try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled { handoff.moveFailed = false }
         }
         .animation(.easeOut(duration: 0.2), value: handoff.moving).animation(.easeOut(duration: 0.2), value: handoff.moveFailed)
     }

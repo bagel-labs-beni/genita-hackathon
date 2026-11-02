@@ -27,13 +27,21 @@ import ARKit
     private var pairingAttempt = 0
     @Published var code = ""
     @Published private(set) var moving = false
-    @Published var moveFailed = false
+    /// MV-E: shown for 3 s as the call's status line, then it clears itself (independent of any view).
+    @Published var moveFailed = false {
+        didSet {
+            guard moveFailed,!oldValue else{return}
+            moveFailedToken+=1;let token=moveFailedToken
+            DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in if self?.moveFailedToken==token {self?.moveFailed=false} }
+        }
+    }
+    private var moveFailedToken = 0
     /// P03: the rear camera is looking for the MAC-REG picture.
     @Published private(set) var registeringVisible = false
     /// P04: the toast after the screen was learned (4 s).
     @Published private(set) var registeredToast = false
     /// Touch to move needs world tracking (A12+) and a known display size. LiDAR only adds precision.
-    var proximitySupported: Bool { ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
+    var proximitySupported: Bool { debugPaired || ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
     var isPaired: Bool { link.remembered != nil }
     private var pending: [String: Any]?
     private var snapshot = ""
@@ -119,7 +127,8 @@ import ARKit
     }
     /// P01: runs by itself when the sixth digit goes in. No Mac within 8 s shows P01-E.
     func connect() {
-        pairingFailed=false;registering=proximitySupported;link.join(code)
+        // Registering the screen waits for Set up touch to move (P02), so Not now leaves no MAC-REG behind.
+        pairingFailed=false;registering=false;link.join(code)
         guard code.count == 6 else{return}
         pairingAttempt+=1;let attempt=pairingAttempt
         DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self] in
@@ -127,6 +136,8 @@ import ARKit
             self.pairingFailed=true
         }
     }
+    /// Editing the digits drops a running search, so its timer can't flag the new input.
+    func codeEdited() { pairingAttempt+=1;pairingFailed=false }
     /// Closes P01/P02. A half-entered code is dropped.
     func closePairing() { pairingAttempt+=1;pairingFailed=false;if !link.connected {code=""};settings=false }
     /// P02 Set up touch to move → P03 here and MAC-REG on the Mac at the same time.
