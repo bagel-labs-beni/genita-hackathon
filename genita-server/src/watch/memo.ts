@@ -110,6 +110,16 @@ export function parseMemoVerdict(raw: string): MemoVerdict | null {
 export type QuestionContext = { instructions: string; images: string[] };
 
 /**
+ * Realtime reactions to someone on screen (11/3, Chelsea: "Oh, it's Karina!" → "Karina's outfit is so pretty").
+ * Policy: no face-based identity recognition of real people. The user's own naming is taken as given; the reply
+ * is grounded only in what is visible right now (outfit, setting, action).
+ */
+export const NAMING_RULE =
+  "If the user names someone on screen (\"oh, it's Karina!\"), react like a friend watching with them: use the name they gave and add one specific thing you can see on that person in the last image right now — what they're wearing, where they are, what they're doing. " +
+  "Never say who anyone is from their face or looks, never confirm or deny it, and add no facts about a real person (group, age, news) that you didn't see or hear. " +
+  "If they name someone and no person is visible in the last image, say you can't spot them right now.";
+
+/**
  * Added to the companion's instructions when the user asks something while
  * sharing: the memo, the latest lines heard and the latest frames. A black
  * screen sends no frames and says so — never guess what can't be seen (MS-3).
@@ -129,7 +139,8 @@ export function buildQuestionContext(c: {
     out.push("The shared screen shows up black to you right now (some apps block capture). You can't see it: say so and don't guess what's on it.");
     return { instructions: out.join("\n"), images: [] };
   }
-  if (c.frames.length) out.push(`The attached images are the latest screen frames, oldest first. For "what did they say", use the lines heard.`);
+  if (c.frames.length) out.push(`The attached images are the shared screen, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
   out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
+  if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: c.frames };
 }
