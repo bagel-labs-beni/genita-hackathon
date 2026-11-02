@@ -1,5 +1,5 @@
 /**
- * Character alignment (ElevenLabs with-timestamps) → mouth cues for the
+ * Character alignment (Meta voice with-timestamps) → mouth cues for the
  * on-device mouth atlas used by animal / character companions.
  *
  * Viseme set (9 shapes, the atlas has one sprite per shape):
@@ -8,7 +8,7 @@
  *   L tongue-teeth (l, t, d, n, th) · S small-open (s, z, k, g, r, h, …)
  *
  * Letter-level, not phoneme-level: good enough for stylised mouths. Humans
- * go through Peter (real lip-sync video), which ignores these cues.
+ * go through lip worker (real lip-sync video), which ignores these cues.
  */
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };

@@ -13,7 +13,7 @@
     "active": "none",
     "reason": "device_tts"
   },
-  "voiceId": "7PbNGDB5sJCFnOZuMPNL",
+  "voiceId": "seamless:0",
   "bargeIn": {
     "minMs": 400,
     "minWords": 2
