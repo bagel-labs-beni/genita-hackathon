@@ -837,7 +837,9 @@ enum CallStop: Equatable {
         facePoster = nil
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
+        // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
+        let seed = UInt64.random(in: 1...UInt64.max)
+        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
@@ -848,14 +850,15 @@ enum CallStop: Equatable {
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
         #if os(macOS)
-        renderFacePoster(set, size: size, for: driver)
+        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
         #endif
     }
 
-    private func renderFacePoster(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
+    /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
+    private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
         Task { [weak self] in
             let image = await Task.detached(priority: .utility) {
-                FaceRenderer(faceSet: set, outputSize: size, seed: 1, reduceMotion: true).render(at: 0, lip: .rest)
+                FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
             }.value
             guard let self, self.face === driver else { return }
             self.facePoster = image
