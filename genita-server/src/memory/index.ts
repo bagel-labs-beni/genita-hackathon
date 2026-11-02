@@ -7,6 +7,7 @@ import { UsPhotoService, metaPhotoVendors } from "./photos.ts";
 
 export { MemoryService } from "./service.ts";
 export { MemoryCall } from "./call.ts";
+export { PgMemoryRepository } from "./pgRepository.ts";
 export { UsPhotoService } from "./photos.ts";
 export type { UserResolver } from "./routes.ts";
 /**
@@ -21,6 +22,6 @@ export function createMemory(key: string, log: (event: string, data: Record<stri
   const gap = Number(process.env.REVISIT_GAP_HOURS ?? 6);
   const crops = new SeenCropStore(process.env.GENITA_MEMORY_FILE ? join(dirname(process.env.GENITA_MEMORY_FILE), "memory-assets") : undefined);
   const features = memoryFeatures();
-  const memory = new MemoryService({ repository: repo, state: repo, seenMemory: features.seenMemory, extract: metaExtractor(key), isSafe: (text) => metaMemorySafety(key, text), deleteCrop: (user, ref) => crops.delete(user, ref), verifyCrop: (user, crop) => crops.verify(user, crop), revisitGapHours: Number.isFinite(gap) && gap >= 0 ? gap : 6, log });
+  const memory = new MemoryService({ repository: repo, state: repo, seenMemory: features.seenMemory, extract: metaExtractor(key), isSafe: (text) => metaMemorySafety(key, text), deleteCrop: (user, ref) => crops.delete(user, ref), verifyCrop: (user, crop) => crops.verify(user, crop), revisitGapHours: Number.isFinite(gap) && gap >= 0 ? gap : 6, ephemeral: !process.env.GENITA_MEMORY_FILE, log });
   return { memory, crops, photos: features.usPhotos ? new UsPhotoService(memory, metaPhotoVendors(key)) : undefined };
 }

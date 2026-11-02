@@ -2,8 +2,8 @@
  "_note": "Nonhuman lane per-category profiles. Merge over faceflow.py BASE_MAP (PROFILE[kind]). New runtime fields: drive, jaw, cap, minHold, onTwos, snap, blink, earTwitch. New prep fields: prep.*",
  "animal": {
   "keys": [
-   "J2",
-   "J3"
+   "AH",
+   "AH2"
   ],
   "drive": "open",
   "jaw": {
@@ -13,11 +13,11 @@
    "mbpClose": 1.0,
    "steps": [
     [
-     "J2",
+     "AH",
      0.4
     ],
     [
-     "J3",
+     "AH2",
      1.0
     ]
    ],
@@ -30,7 +30,7 @@
    }
   },
   "cap": {
-   "J3": 0.85
+   "AH2": 0.85
   },
   "smoothing": {
    "fps": 25,
@@ -39,7 +39,7 @@
   },
   "slew": 0.25,
   "focus": 6.0,
-  "lookaheadMs": 0,
+  "lookaheadMs": 60,
   "dissolve": {
    "mode": "snap",
    "ms": 40,
@@ -92,10 +92,10 @@
   },
   "swayInterp": "cubic",
   "prompts": {
-   "J2": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking, its lower jaw lowered halfway: mouth half open, the tongue stays inside the mouth with only a little of its tip visible behind the small lower front teeth, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo.",
-   "J3": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking with its lower jaw lowered halfway: mouth clearly open, the tongue lying low and flat on the floor of the mouth and mostly hidden behind the lower teeth, small white lower teeth visible, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo.",
    "BLINK": "Edit this exact photo. Keep everything identical: same {species}, same face, fur, mouth, head position, framing, lighting and background. Only change: the eyes are gently closed, as in the middle of a natural blink. Natural photo.",
-   "_notes": "Muse content filter (400 content_policy_violation) trips on 'fangs', 'canines', 'bared', 'hiss' and big-open-mouth cat prompts. Keep 'talking / softly meowing / calm, friendly'. Cats: if J2/J3 is filtered, retry once with the cat override prompt."
+   "_notes": "Muse content filter (400 content_policy_violation) trips on 'fangs', 'canines', 'bared', 'hiss' and big-open-mouth cat prompts. Keep 'talking / softly meowing / calm, friendly'. Cats: if J2/J3 is filtered, retry once with the cat override prompt.",
+   "AH": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking, its lower jaw lowered halfway: mouth half open, the tongue stays inside the mouth with only a little of its tip visible behind the small lower front teeth, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo.",
+   "AH2": "Edit this exact photo. Keep everything identical: the same {species}, same fur, markings, eyes, nose, whiskers, ears, head position and tilt, framing, lighting and background. The nose, upper lip, whiskers and eyes do not move at all. Only change: the {species} is talking with its lower jaw lowered halfway: mouth clearly open, the tongue lying low and flat on the floor of the mouth and mostly hidden behind the lower teeth, small white lower teeth visible, dark pink inside of the mouth. Only the lower jaw and chin move down. Natural unretouched photo."
   },
   "neutralFlow": 0.0,
   "shownFloor": 0.6,
@@ -105,21 +105,95 @@
     0.8
    ],
    "brow": 1.5,
-   "nosePx": 2.0,
+   "nosePx": 3.0,
    "_units": "px at 540 px frame width; cheek = [down, out] at full opening; brow lift on stressed onsets (op > .6 and rise > .25 within 3 frames, ≥0.6 s apart, profile [.5,1,1,.7,.4,.15]); nose lifts with jaw + idle sniff [.6,1,.4,.8,.3] every 2.2–4 s"
+  },
+  "cheek": {
+   "spread": 5.0,
+   "pull": 0.0,
+   "cheekW": 1.2,
+   "nasoW": 0.8,
+   "lift": 3.0
+  },
+  "lipmask": 6,
+  "rampIn": 0.55,
+  "whiskers": 0.8,
+  "motionV2": {
+   "springHz": 4.0,
+   "amp": 0.5,
+   "unstressed": 0.7,
+   "lip": 1.0,
+   "idle": 0.15,
+   "jawAttackMs": 120,
+   "jawReleaseMs": 160,
+   "jawKnee": 0.8,
+   "preemphMs": 40,
+   "anticipation": 0.3
+  },
+  "texMin": 0.2,
+  "head": {
+   "sway": 0.7,
+   "nod": 8,
+   "earTwitchDeg": 8
+  },
+  "lipShape": {
+   "spreadPx": 3.0,
+   "roundPx": 2.0
+  },
+  "chinWarp": {
+   "px": 7,
+   "springMs": 90,
+   "from": "lip",
+   "sideW": 0.2
+  },
+  "smallMuzzle": {
+   "_when": "mouth box < 12 % face width, or cat / rabbit / hamster / persian-like species",
+   "prep": {
+    "squash": 1.6,
+    "widen": 1.3,
+    "shade": 0.5,
+    "_shade": "top 72 % of the opening darkened, tongue tip stays"
+   },
+   "motionV2": {
+    "lip": 1.2
+   }
+  },
+  "bird": {
+   "_when": "species is a bird (beak)",
+   "boxes": "SAM mouth = whole beak -> upper 55 % = nose (locked), lower 45 % = mouth",
+   "prep": {
+    "squash": 1.8,
+    "shade": 0.4
+   },
+   "chinWarp": {
+    "px": 10,
+    "from": "top",
+    "sideW": 0.07
+   },
+   "motionV2": {
+    "lip": 1.2
+   }
+  },
+  "runtime": {
+   "default": "motionV2",
+   "_": "human-teeth layer is wrong for animals; keep v2 path with jaw ladder AH/AH2 + lipShape + chinWarp + cheek"
+  },
+  "rabbitLike": {
+   "lipPartPx": 6,
+   "gap": "inverted triangle, shade .45 × jaw, just below the nose"
   }
  },
  "cat_override": {
   "_when": "species is a cat (or the J3 prompt is filtered): a single open key, small openings drawn by flow only",
   "keys": [
-   "C2"
+   "AH2"
   ],
   "jaw": {
    "gain": 1.4,
    "gamma": 0.85,
    "steps": [
     [
-     "C2",
+     "AH2",
      0.9
     ]
    ],
@@ -137,7 +211,7 @@
    "deg": 8
   },
   "prompts": {
-   "C2": "Edit this exact photo. Keep the same cat, same fur, markings, eyes, nose, whiskers, head position, framing, lighting and background. The nose and the split upper lip under it stay exactly where they are. Only change: the cat is meowing, its small mouth open a bit wider, the rounded lower jaw lowered, pink inner mouth and the pink tongue resting inside the mouth visible, upper lip shape unchanged. Calm, sweet, natural photo."
+   "AH2": "Edit this exact photo. Keep the same cat, same fur, markings, eyes, nose, whiskers, head position, framing, lighting and background. The nose and the split upper lip under it stay exactly where they are. Only change: the cat is meowing, its small mouth open a bit wider, the rounded lower jaw lowered, pink inner mouth and the pink tongue resting inside the mouth visible, upper lip shape unchanged. Calm, sweet, natural photo."
   },
   "neutralFlow": 0.0,
   "prep": {
@@ -211,7 +285,13 @@
    "squash": {
     "AH": 1.15,
     "OH": 0.65
-   }
+   },
+   "interior": [
+    30,
+    38,
+    80
+   ],
+   "_interior": "BGR floor for pitch-black mouth interiors: dark pixels in a mouth ellipse blended toward max(px, colour), weight (1.4*mean(colour) - L)/(1.4*mean) * 0.85"
   },
   "swayInterp": "cubic",
   "prompts": {
@@ -230,7 +310,67 @@
     1.0
    ],
    "brow": 1.0
-  }
+  },
+  "cheek": {
+   "spread": 0.8,
+   "pull": 1.0,
+   "cheekW": 1.7,
+   "nasoW": 0.56,
+   "lift": 2.0
+  },
+  "lipmask": 6,
+  "rampIn": 0.55,
+  "motionV2": {
+   "springHz": 5.0,
+   "amp": 0.43,
+   "unstressed": 0.7,
+   "lip": 0.85,
+   "idle": 0.45,
+   "jawAttackMs": 120,
+   "jawReleaseMs": 160,
+   "jawKnee": 0.8,
+   "preemphMs": 40,
+   "anticipation": 0.3
+  },
+  "lookaheadMs": 40,
+  "texMin": 0.18,
+  "_bigKeysOverride": {
+   "motionV2": {
+    "springHz": 4.0,
+    "amp": 0.13,
+    "unstressed": 0.45,
+    "lip": 0.5
+   },
+   "texMin": 0.15,
+   "cheek": {
+    "spread": 1.8,
+    "pull": 0.6,
+    "cheekW": 2.4,
+    "nasoW": 0.7,
+    "lift": 3.0
+   }
+  },
+  "head": {
+   "sway": 0.6,
+   "nod": 6
+  },
+  "_humanLike": "realistic human-faced 3D (classify: character_style 3d + human face) -> use the HUMAN runtime/profile (v41 flags), not character3d",
+  "runtime": {
+   "default": "humanV41",
+   "_rule": "character3d uses the HUMAN v41 lip rig (render.py + tools/v41.flags: teeth/cavity layer from the top key, continuous lip blend, slow jaw). Critic m18: clay 7.5→8, disney 8 on v41.",
+   "teethLayer": "on only when the open keys show teeth (prep: bright low-saturation pixels inside the opening > 3 % of the hull); otherwise --teethtop 0 (cavity only). Fox mascot showed grey human teeth with it on.",
+   "bigKeys": "pixar-like wide keys on v41: lip ×0.7 (1.6 → 1.12), unstressed ×0.5 (amp 0.35:0.3); if still shouting, fall back to motionV2 (m17 scored 7.5–8)",
+   "perSubjectChoice": {
+    "clay": "humanV41",
+    "disney": "humanV41",
+    "real3d": "humanV41 (human face → human profile)",
+    "pixar": "motionV2",
+    "mascot": "motionV2"
+   },
+   "chooseV2When": "the widest key (AH2) is a shout-size opening (pixar) or the open keys have bright tongue/highlights in the cavity (mascot): the v41 cross-blend spreads them; v2 snap texture keeps a clean dark gap"
+  },
+  "teethTop": true,
+  "_teethTopFalseWhen": "non-human mouths (mascot animals): teethTop false; app: send no interior mask → v2 snap texture"
  },
  "character2d": {
   "keys": [
@@ -242,8 +382,8 @@
   "drive": "snap",
   "snap": {
    "hold": 2,
-   "minHold": 2,
-   "closedBelow": 0.12,
+   "minHold": 4,
+   "closedBelow": 0.18,
    "rules": [
     [
      [
@@ -283,7 +423,12 @@
     ]
    ],
    "default": "SM",
-   "_rule": "[visemes, min loudness, key, optional minRun frames]; rest / MBP / loudness<closedBelow -> neutral (closed line)"
+   "_rule": "[visemes, min loudness, key, optional minRun frames]; rest / MBP / loudness<closedBelow -> neutral (closed line)",
+   "big": [
+    "WD",
+    "EE"
+   ],
+   "bigHold": 6
   },
   "flow": false,
   "blink": {
@@ -295,13 +440,14 @@
   "prep": {
    "mask": "diff",
    "fit": {
-    "SM": 0,
-    "WD": 0.62,
-    "EE": 0.87,
-    "OO": 0
+    "SM": 0.7,
+    "WD": 1.0,
+    "EE": 1.3,
+    "OO": 0.4
    },
    "cleanPlate": true,
-   "mouthWidthMin": 0.08
+   "mouthWidthMin": 0.12,
+   "fitMaxUpscale": 2.0
   },
   "prompts": {
    "SM": "Edit this exact anime illustration. Keep everything identical: the same character, same line art and line weight, same flat colours and cel shading, same hair, eyes, nose, face outline, chin line, pose, framing and background. Only the mouth changes, drawn in the same clean 2D anime style with a crisp outline and flat colour fills, no gradients. The mouth is slightly open, a small soft open mouth shape with a flat dark red-brown inside, no teeth.",
@@ -312,14 +458,26 @@
    "_neutral": "neutral = the scene image (closed mouth line); SM/WD/OO/EE are edits of it"
   },
   "lookaheadMs": 80,
-  "_sizes": "small SM / medium WD (0.62x, loud A >= 2 frames) / wide EE (0.87x, loud EI); base width = max(mouth box, 0.08 x head)"
+  "_sizes": "small SM / medium WD (0.62x, loud A >= 2 frames) / wide EE (0.87x, loud EI); base width = max(mouth box, 0.08 x head)",
+  "secondary": {
+   "brow": 1.0
+  },
+  "head": {
+   "sway": 1.0,
+   "nod": 4,
+   "onTwos": true
+  },
+  "_exclude": "soft-gradient shaded styles (webtoon) break the flat clean plate; skip 2D path or fall back to character3d",
+  "runtime": {
+   "default": "snap2d (coart driver on twos)"
+  }
  },
  "_fields": {
   "neutralFlow": "when the snap shows neutral, scale its flow warp (0 = untouched neutral texture)",
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "v16 04:00 KST — all kinds re-tuned toward 9/10. Critic: anime 8.5, chibi 7.5, dog 7, pixar 7, plush 6.5, clay 6, rabbit 6, cat 5.5",
+ "_status": "m19 final per-subject choice 07:2x",
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
@@ -360,6 +518,372 @@
   },
   "prompts": {
    "AH": "Edit this exact photo of a plush toy. Keep everything identical: same toy, fabric, fur, nose, embroidered details, eyes, pose, framing, lighting and background. Only change: the embroidered mouth line opens slightly into a small felt fabric mouth opening with dark brown felt inside and stitched edges, no lips, no tongue, in the same plush toy style."
+  },
+  "cheek": {
+   "spread": 0.8,
+   "pull": 0.0,
+   "cheek": 1.0,
+   "naso": 0.3,
+   "lift": 1.0,
+   "liftAll": 1,
+   "geometry": [
+    0.08,
+    0.08,
+    0.08,
+    0.07
+   ],
+   "cheekW": 1.0,
+   "nasoW": 0.3
+  },
+  "lipmask": 0,
+  "prep": {
+   "squash": {
+    "AH": 1.05,
+    "AH2": 1.4
+   },
+   "AH2From": "AH"
+  },
+  "motionV2": {
+   "jawAttackMs": 70,
+   "jawReleaseMs": 100,
+   "jawKnee": 0.8,
+   "preemphMs": 40,
+   "anticipation": 0.3,
+   "springHz": 7.5,
+   "amp": 0.85,
+   "unstressed": 0.7,
+   "lip": 1.1,
+   "idle": 0.45
+  },
+  "texMin": 0.2,
+  "runtime": {
+   "default": "motionV2",
+   "_": "plush 8.5 on v2 (lipmask 0)"
+  },
+  "_keysServer": "server prep: AH only until the AH2 squash derivation (non-human faceflow --squash 1.4 from AH) is ported; generating AH2 would inherit the 3D teeth / tongue prompt (codex P2)"
+ },
+ "motion": {
+  "animal": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 60,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 40,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 4.5,
+   "amp": [
+    1.0,
+    0.7
+   ],
+   "lip": 0.85,
+   "texMin": 0.2,
+   "idle": 0.15,
+   "brow": 1.5,
+   "cheek": {
+    "spread": 1.5,
+    "pull": 0,
+    "cheek": 1.2,
+    "naso": 0.8,
+    "lift": 2.0
+   },
+   "_keys": "jaw keys renamed for the v2 ladder: J2→AH, J3→AH2 (cat C2→AH2); fallback OH/O/EH/EI/U/WQ/MID/CDG/TH/L → AH, so the lip shape barely changes between vowels",
+   "lipShape": {
+    "spreadPx": 2.5,
+    "roundPx": 2.0,
+    "_": "corner blobs (σx .6·hw, σy .5·hw, hw = max(mouth half-width, .06 face width)) moved ±x by px × syllable jaw curve; EI/EH spread, O/U round; 5-frame box smoothing"
+   },
+   "chinWarp": {
+    "px": 6,
+    "springMs": 90,
+    "_": "dy = px × jaw × smoothstep((y − (lowerLip − .02fh)) / .06fh) × exp(−max(0, y − lowerLip − .06fh)² / 2(.16fh)²) × exp(−(x − mcx)² / 2(.2fw)²); content moves down (sample at y − dy)"
+   },
+   "smallMouth": {
+    "rule": "mouth box < 12 % face width",
+    "prepSquash": 1.3,
+    "prepShade": 0.5,
+    "_shade": "faceflow --shade: darken the centre of the opening (cat 0.5, rabbit 0.35)"
+   }
+  },
+  "character3d": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 40,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.5,
+   "amp": [
+    0.85,
+    0.7
+   ],
+   "lip": 0.85,
+   "texMin": 0.18,
+   "idle": 0.45,
+   "brow": 2.5,
+   "cheek": {
+    "spread": 0.4,
+    "pull": 1.0,
+    "cheek": 0.85,
+    "naso": 0.28,
+    "lift": 2.0
+   },
+   "_bigKeys": "pixar-like: amp [0.25, 0.45], lip 0.78, texMin 0.15, cheek {spread .9, pull .6, cheek 1.2, naso .35, lift 3.0}"
+  },
+  "toy": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 40,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.5,
+   "amp": [
+    0.85,
+    0.7
+   ],
+   "lip": 1.1,
+   "texMin": 0.2,
+   "idle": 0.45,
+   "brow": 0,
+   "lipmask": 0,
+   "_lipmask": "human lipmask finds lips by redness; felt mouths are brown -> hull empty -> key never shown. Off for toys.",
+   "keys2": "AH (prep squash 1.05) + AH2 = same Muse image, prep squash 1.4 → stressed vowels open taller"
+  },
+  "character2d": {
+   "driver": "coart timing (one shape per syllable, vowel = syllable nucleus, stress = vowel loudness top 30 % / bottom 40 %)",
+   "onTwos": true,
+   "sizeByStress": {
+    "stressed": {
+     "A": "WD",
+     "O": "WD",
+     "U": "OO",
+     "EI": "EE"
+    },
+    "mid": {
+     "O": "OO",
+     "U": "OO",
+     "else": "SM"
+    },
+    "unstressed": {
+     "A": "SM",
+     "EI": "SM",
+     "else": "OO"
+    }
+   },
+   "minHold": 4,
+   "closedBelow": 0.18,
+   "lookaheadMs": 60,
+   "_order": "closed < OO < SM < WD/EE",
+   "stressPct": 80
+  },
+  "human": {
+   "motion": "v2",
+   "_ref": "B-lane render.py v44 (lip rig + teeth layer); flags proto/tools/v44.flags",
+   "lookaheadMs": 40,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "floor": 0.6,
+   "jaw": [
+    60,
+    70,
+    1.8
+   ],
+   "amp": [
+    0.35,
+    0.6
+   ],
+   "faceNorm": {
+    "refFaceHeightPx960": 356,
+    "clip": [
+     0.6,
+     1.2
+    ]
+   },
+   "lip": 1.6,
+   "preemphMs": 40,
+   "shortStressedMin": [
+    0.7,
+    0.5
+   ],
+   "shape": [
+    100,
+    0.5,
+    80
+   ],
+   "antic": 0.3,
+   "ladders": {
+    "round": [
+     [
+      "U",
+      0
+     ],
+     [
+      "OH",
+      0.45
+     ]
+    ],
+    "spread": [
+     [
+      "EI",
+      0
+     ],
+     [
+      "EH",
+      0.45
+     ],
+     [
+      "AH2",
+      0.85
+     ]
+    ],
+    "neutral": [
+     [
+      "MID",
+      0
+     ],
+     [
+      "AH",
+      0.35
+     ],
+     [
+      "AH2",
+      0.7
+     ]
+    ]
+   },
+   "spring": 9,
+   "idle": 0.2,
+   "jitter": 0.03,
+   "hyst": 0.05,
+   "texMin": 0.12,
+   "texFade": [
+    0.04,
+    0.2
+   ],
+   "maxAmount": {
+    "AH2": 0.85
+   },
+   "cheek": {
+    "spread": 0.52,
+    "pull": 0.0,
+    "cheek": 0.85,
+    "naso": 0.28,
+    "lift": 2.0,
+    "_pull": "per face: pull = clip(1 - cornerRef / mean key corner flow (px per 356-px face height), 0, .8)"
+   },
+   "brow": 2.5,
+   "nod": 6,
+   "sway": 0.45,
+   "stressK": 0.6,
+   "preemphCap": 2.5,
+   "consonantDip": 0.1,
+   "closeToPhonemeEnd": true,
+   "closePre": 0.6,
+   "texPreClose": 0.4,
+   "chinScale": {
+    "scale": 0.5,
+    "rampStart": 0.035,
+    "rampLen": 0.03
+   },
+   "noTexture": [
+    "MBP"
+   ],
+   "micro": 0.15,
+   "warmStart": true,
+   "teethFade": [
+    0.1,
+    0.3
+   ],
+   "expression": {
+    "gain": 3.2,
+    "attackMs": 250,
+    "releaseMs": 400,
+    "_spec": "sweep/README.md 'Expression layer' (smile, smileopen, laugh, surprised, concerned)"
+   },
+   "cornerRef": 3.36,
+   "teethFadeMask": "bright low-sat pixels inside lip hull minus lips only (never skin)",
+   "motionV2": {
+    "springHz": 9.0,
+    "amp": 0.35,
+    "unstressed": 0.5,
+    "lip": 1.6,
+    "idle": 0.2,
+    "jawAttackMs": 60,
+    "jawReleaseMs": 70,
+    "jawKnee": 1.8,
+    "preemphMs": 40,
+    "anticipation": 0.3,
+    "stressK": 0.6,
+    "consonantDip": 0.1,
+    "chinScale": 0.5,
+    "shortStressedMin": [
+     0.7,
+     0.5
+    ],
+    "preemphCap": 2.5,
+    "closeToPhonemeEnd": true,
+    "closePre": 0.6,
+    "texPreClose": 0.4,
+    "micro": 0.15,
+    "warmStart": true,
+    "cornerRef": 3.36,
+    "stressedJawGain": 1.3,
+    "unstressedJawGain": 0.75
+   }
   }
- }
+ },
+ "_keyNames": "animal keys use the human names AH (half open) / AH2 (open); cat: AH2 only",
+ "_motionV2": "app field names (L4): written by prep into face.flow.map.motionV2; values = render.py v22 flags used offline (--spring, --amp a:b, --lip, --idle, --jaw a:r:k, --preemph, --antic). texMin = render.py --texmin."
 }
