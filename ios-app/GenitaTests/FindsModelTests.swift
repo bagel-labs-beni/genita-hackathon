@@ -182,19 +182,45 @@ import XCTest
         XCTAssertEqual(calls.count, 1); XCTAssertEqual(calls.first?.0, id); XCTAssertEqual(calls.first?.1, true)
     }
 
-    func testNoMatchFailureSplitsTitleAndBodyAndRetryAsksAgain() throws {
+    private func productStarted(_ id: String) -> ServerEvent {
+        try! ServerEvent.decode(#"{"type":"find.started","findId":"\#(id)","utteranceId":1,"kind":"product","title":"Looking for 2 that match your style…","detail":"Jacket"}"#)
+    }
+    private let noMatch = #"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
+
+    func testNoMatchFailureSplitsTitleAndBodyAndRetryAsksTheSameQuestion() throws {
         let m = FindsModel()
-        var retries = 0
-        m.retryLast = { retries += 1 }
-        m.apply(started("a"))
-        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#))
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.latestQuestion = "Jin, can we look for a jacket for this weekend?"
+        m.apply(productStarted("a"))
+        m.latestQuestion = "Thanks"   // said while it searched: not what Retry asks
+        m.apply(try ServerEvent.decode(noMatch))
         let lines = try XCTUnwrap(m.current?.failureLines)
         XCTAssertEqual(lines.title, "Couldn’t find a good match")
         XCTAssertEqual(lines.body, "Try a color or a price, or ask me again.")
         XCTAssertEqual(m.state, .searching, "stays the collapsed sheet")
         XCTAssertTrue(m.current?.canRetry == true)
         m.retry()
-        XCTAssertEqual(retries, 1); XCTAssertEqual(m.state, .idle)
+        XCTAssertEqual(sent.last, .text(.init(text: "Jin, can we look for a jacket for this weekend?", frames: nil)))
+        XCTAssertEqual(m.state, .idle)
+    }
+
+    func testRetryIsProductOnlyAndOffWhileInterpreting() throws {
+        let m = FindsModel()
+        var sent: [ClientMessage] = []
+        m.send = { sent.append($0) }
+        m.latestQuestion = "What can I make?"
+        m.apply(started("a"))   // recipe: its camera frames are gone
+        m.apply(try ServerEvent.decode(noMatch))
+        XCTAssertFalse(m.current?.canRetry ?? true)
+        m.retry(); XCTAssertTrue(sent.isEmpty)
+
+        let p = FindsModel()
+        p.send = { sent.append($0) }
+        p.latestQuestion = "a jacket"
+        p.apply(productStarted("a")); p.apply(try ServerEvent.decode(noMatch))
+        p.interpreting = true
+        p.retry(); XCTAssertTrue(sent.isEmpty, "interpretation would translate it to the other person")
     }
 
     func testUnclearFailureHasNoRetry() throws {

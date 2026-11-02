@@ -166,10 +166,6 @@ enum CallStop: Equatable {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         finds.send = { [weak self] message in self?.socket?.send(message) }
-        finds.retryLast = { [weak self] in
-            guard let text = self?.lastUserText else { return }
-            self?.socket?.send(.text(.init(text: text, frames: nil)))
-        }
         finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
         finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
     }
@@ -532,6 +528,7 @@ enum CallStop: Equatable {
         case let .transcript(t):
             if t.final {
                 lastUserText = t.text
+                finds.latestQuestion = t.text
                 history.append(.init(role: .user, text: t.text))
                 if t.source == .text { speechEndAt = Date() }
             }

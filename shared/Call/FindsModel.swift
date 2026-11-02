@@ -36,6 +36,8 @@ struct FindEntry: Identifiable, Equatable {
     var saved = false
     /// Opened from the Finds tab (F10-U-FINDS): the card shows "Talk about this on a call" and closing goes back to the list.
     var reopened = false
+    /// The user's words that started this find (PF-1d Retry asks them again, not whatever was said since).
+    var question: String?
 
     /// The collapsed failure line (PF-1d). A server message is "Title. Body" — split on the first ". ".
     /// "I can't see it" (unclear) keeps its fixed title and shows the whole message as the body.
@@ -48,7 +50,8 @@ struct FindEntry: Identifiable, Equatable {
         return (f.message.hasSuffix(".") ? String(f.message.dropLast()) : f.message, "")
     }
     /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
-    var canRetry: Bool { failed != nil && failed?.reason != .unclear && failed?.reason != .stopped }
+    /// Product searches only: a recipe or outfit retry would need the camera frames the server already used.
+    var canRetry: Bool { kind == .product && question?.isEmpty == false && (failed?.reason == .searchFailed || failed?.reason == .error) }
 }
 
 @MainActor @Observable final class FindsModel {
@@ -84,8 +87,8 @@ struct FindEntry: Identifiable, Equatable {
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
     /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
-    /// Wired by CallController: ask again with the user's last words (PF-1d Retry).
-    @ObservationIgnored var retryLast: () -> Void = {}
+    /// The user's latest final words; copied onto the next find.started.
+    @ObservationIgnored var latestQuestion: String?
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
     @ObservationIgnored var persistFrames: (String, [Data]) -> Void = { _, _ in }
@@ -102,7 +105,7 @@ struct FindEntry: Identifiable, Equatable {
         case let .findStarted(s):
             boxEpoch[s.findId] = boxes.epoch
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
-            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames))
+            entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames, question: latestQuestion))
             if state == .idle || state == .dismissed || state == .searching {
                 page = entries.count - 1
                 state = .searching
@@ -244,9 +247,9 @@ struct FindEntry: Identifiable, Equatable {
 
     /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.
     func retry() {
-        guard let f = current, f.canRetry else { return }
+        guard canAsk, let f = current, f.canRetry, let text = f.question else { return }
         state = .idle
-        retryLast()
+        send(.text(.init(text: text, frames: nil)))
     }
 
     func viewNewFind() {
