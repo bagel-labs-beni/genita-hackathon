@@ -294,8 +294,9 @@ func mouthArea(_ pb: CVPixelBuffer) -> [Float] {
 
 func renderFrame(_ i: Int) {
     let t = Double(i) / Double(fps)
-    let lip = timeline.sample(atMs: t * 1000)
-    openness.append(Double(lip.openness))
+    // The rig's spring needs the target a little early (FaceRenderer.rigLookaheadMs).
+    let lip = timeline.sample(atMs: t * 1000 + FaceRenderer.rigLookaheadMs)
+    openness.append(Double(timeline.sample(atMs: t * 1000).openness))
     let r0 = Date()
     let image = renderer.image(at: t, lip: lip)
     var pbOut: CVPixelBuffer?
