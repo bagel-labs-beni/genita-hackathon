@@ -20,6 +20,11 @@
  *            claim no identity beyond the user's name. A no-person frame is
  *            the control. Latency = line sent → first spoken sentence
  *            (server audio or device `say`). --repeat=N runs each case N times.
+ *   --moments[=dir]  proactive reactions on continuous clips (11/3): dance,
+ *            sports (one muted), sitcom-style comedy (moments.json in
+ *            ./_qa-scripts/genita-watch-moments). Per clip: reacted?, delay
+ *            after the salient moment, spoken over a video line (must be 0), and a
+ *            Spark judge for "fits the action" and "invented details".
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -38,7 +43,7 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const SR = 24000;
 const CHUNK = (SR * 2 * 80) / 1000;
 const args = process.argv.slice(2);
-const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming")) ? fixturePath("suite") : undefined;
+const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming") && !args.some((a) => a.startsWith("--moments"))) ? fixturePath("suite") : undefined;
 const outDir = args.find((a) => a.startsWith("--out="))?.slice(6) ?? join(tmpdir(), "genita-watch-sim");
 mkdirSync(outDir, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -47,20 +52,31 @@ const median = (xs: number[]) => {
   return s.length ? s[Math.floor(s.length / 2)] : NaN;
 };
 
-type Media = { pcm: Buffer; frames: Buffer[]; durationSec: number };
+/** like the Mac (11/3): ≤3 fps, long side ≤768 px, each frame with its motion (mean abs luma diff on 32×18) */
+const FPS = Number(args.find((a) => a.startsWith("--fps="))?.slice(6) ?? 3);
+const LONG = 768;
+type Media = { pcm: Buffer; frames: Buffer[]; motion: number[]; durationSec: number };
 
 function prepare(file: string): Media {
-  const key = file.replace(/[^\w]+/g, "_").slice(-80);
+  const key = `${file.replace(/[^\w]+/g, "_").slice(-70)}_${FPS}fps${LONG}`;
   const dir = join(outDir, "frames", key);
   if (!existsSync(join(dir, "0001.jpg"))) {
     mkdirSync(dir, { recursive: true });
-    const r = spawnSync("ffmpeg", ["-v", "error", "-i", file, "-vf", "fps=1,scale='if(gt(iw,ih),min(1024,iw),-2)':'if(gt(iw,ih),-2,min(1024,ih))'", "-q:v", "6", join(dir, "%04d.jpg")]);
+    const r = spawnSync("ffmpeg", ["-v", "error", "-i", file, "-vf", `fps=${FPS},scale='if(gt(iw,ih),min(${LONG},iw),-2)':'if(gt(iw,ih),-2,min(${LONG},ih))'`, "-q:v", "6", join(dir, "%04d.jpg")]);
     if (r.status !== 0) throw new Error(`ffmpeg frames: ${r.stderr.toString().slice(0, 200)}`);
   }
   const frames = readdirSync(dir).filter((f) => f.endsWith(".jpg")).sort().map((f) => readFileSync(join(dir, f)));
   const a = spawnSync("ffmpeg", ["-v", "error", "-i", file, "-vn", "-ac", "1", "-ar", String(SR), "-f", "s16le", "-"], { maxBuffer: 256 << 20 });
   const pcm = a.status === 0 ? a.stdout : Buffer.alloc(0);
-  return { pcm, frames, durationSec: Math.max(frames.length, pcm.length / (SR * 2)) };
+  const g = spawnSync("ffmpeg", ["-v", "error", "-i", file, "-vf", `fps=${FPS},scale=32:18,format=gray`, "-f", "rawvideo", "-"], { maxBuffer: 64 << 20 });
+  const px = 32 * 18;
+  const motion = frames.map((_, i) => {
+    if (i === 0 || g.status !== 0 || g.stdout.length < (i + 1) * px) return 1;
+    let d = 0;
+    for (let k = 0; k < px; k++) d += Math.abs(g.stdout[i * px + k] - g.stdout[(i - 1) * px + k]);
+    return +(d / px / 255).toFixed(3);
+  });
+  return { pcm, frames, motion, durationSec: Math.max(frames.length / FPS, pcm.length / (SR * 2)) };
 }
 
 type Ev = Record<string, unknown> & { type: string; _t: number };
@@ -118,8 +134,8 @@ class Call {
     const totalMs = m.durationSec * 1000;
     while (true) {
       const el = performance.now() - t0;
-      if (nextFrame < m.frames.length && el >= nextFrame * 1000) {
-        this.watch.send(JSON.stringify({ type: "frame", image: m.frames[nextFrame].toString("base64"), blank }));
+      if (nextFrame < m.frames.length && el >= (nextFrame * 1000) / FPS) {
+        this.watch.send(JSON.stringify({ type: "frame", image: m.frames[nextFrame].toString("base64"), blank, motion: m.motion[nextFrame] }));
         nextFrame++;
       }
       const due = Math.min(m.pcm.length, Math.floor((el / 1000) * SR) * 2);
@@ -144,8 +160,8 @@ class Call {
     const endMs = untilSec * 1000;
     while (true) {
       const el = performance.now() - t0;
-      if (nextFrame < m.frames.length && nextFrame <= untilSec && el >= nextFrame * 1000) {
-        this.watch.send(JSON.stringify({ type: "frame", image: m.frames[nextFrame].toString("base64") }));
+      if (nextFrame < m.frames.length && nextFrame <= untilSec * FPS && el >= (nextFrame * 1000) / FPS) {
+        this.watch.send(JSON.stringify({ type: "frame", image: m.frames[nextFrame].toString("base64"), motion: m.motion[nextFrame] }));
         nextFrame++;
       }
       const due = Math.min(m.pcm.length, Math.floor((Math.min(el, endMs) / 1000) * SR) * 2);
@@ -381,7 +397,7 @@ Answer as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":fa
       call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
       await call.playUntil(media, c.at);
       const res = await call.say(c.line);
-      const shown = media.frames[Math.min(c.at, media.frames.length - 1)];
+      const shown = media.frames[Math.min(c.at * FPS, media.frames.length - 1)];
       const v = await judgeNaming(shown, c.visible, c.line, res.a);
       // the reply goes along with the user's naming: it says the name back (deterministic)
       const name = c.line.replace(/[!.?]+$/, "").split(/it's\s+/i)[1]?.split(/\s+/).at(-1) ?? "";
@@ -423,10 +439,86 @@ Answer as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":fa
   };
 }
 
+if (args.includes("--moments")) {
+  // per clip: one share, ~6.5 s of the clip's first frame held still (a share's first seconds never react), then
+  // the clip in real time (3 fps + sound), then its last frame held 7 s for the reaction to land
+  const dir = args.find((a) => a.startsWith("--moments="))?.slice(10) ?? join(homedir(), "genita-fixtures/genita-watch-moments");
+  const spec = JSON.parse(readFileSync(join(dir, "moments.json"), "utf8")) as { clips: { id: string; file: string; kind: string; salientSec: number; truth: string }[] };
+  const LEAD_SEC = 6.5;
+  const rows: Record<string, unknown>[] = [];
+  for (const clip of spec.clips) {
+    const m = prepare(clip.file.startsWith("/") ? clip.file : join(dir, clip.file));
+    const call = new Call(url);
+    await call.open();
+    call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
+    const logFrom = logs.length;
+    for (let i = 0; i < Math.round(LEAD_SEC * FPS); i++) {
+      call.watch.send(JSON.stringify({ type: "frame", image: m.frames[0].toString("base64"), motion: i ? 0 : 1 }));
+      call.watch.send(Buffer.alloc(Math.round((SR * 2) / FPS)));
+      await sleep(1000 / FPS);
+    }
+    const playAt = performance.now();
+    await call.play(m);
+    for (let i = 0; i < 7 * FPS; i++) {
+      call.watch.send(JSON.stringify({ type: "frame", image: m.frames.at(-1)!.toString("base64"), motion: 0 }));
+      await sleep(1000 / FPS);
+    }
+    const reply = call.ev.find((e) => e.type === "reply" && (e._t as number) >= playAt);
+    if (reply) call.main.send(JSON.stringify({ type: "playback_done", utteranceId: reply.utteranceId }));
+    const mine = logs.slice(logFrom);
+    const react = mine.find((l) => l.event === "watch.react");
+    const startLog = mine.find((l) => l.event === "watch.start");
+    // log times are performance.now() of the same process: the reaction's delay after the salient moment
+    const playT = playAt;
+    const delaySec = react ? +(((react.t as number) - playT) / 1000 - clip.salientSec).toFixed(1) : null;
+    let verdict = { correct: false, invented: false };
+    if (react) {
+      for (let i = 0; i < 3; i++) {
+        try {
+          const g = await sparkText(config.metaKey, {
+            input: `A friend watching a video with the user blurted out: "${String(react.line)}".\nWhat the video shows (ground truth): ${clip.truth}\nAnswer as JSON {"correct":bool,"invented":bool}: correct = the line fits what is actually happening (the action or moment); invented = it states something that is not in the ground truth (an invented person, object, event, quote or text).`,
+            effort: "low",
+          });
+          const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
+          if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") { verdict = { correct: o.correct, invented: o.invented }; break; }
+        } catch {
+          await sleep(2000);
+        }
+      }
+    }
+    const memos = mine.filter((l) => l.event === "watch.memo");
+    const row = {
+      clip: clip.id, kind: clip.kind, reacted: !!react, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
+      afterLineMs: react?.afterLineMs ?? null, lineOpen: react?.lineOpen ?? false, held: react?.held ?? false, ...verdict,
+      memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
+      moments: memos.map((l) => l.moment), blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => l.why),
+      shareStartedLogged: !!startLog,
+    };
+    rows.push(row);
+    console.log(`${react && verdict.correct && !verdict.invented && !row.lineOpen ? "✓" : "✗"} ${clip.id} (${clip.kind}) ${react ? `"${react.line}" ${delaySec}s after the moment${react.held ? ", held for a pause" : ""}` : "no reaction"}  memos=${memos.length} moments=${JSON.stringify(row.moments)} ${JSON.stringify(verdict)}`);
+    call.close();
+    await sleep(500);
+  }
+  const reacted = rows.filter((r) => r.reacted);
+  const delays = reacted.map((r) => r.delaySec as number).sort((a, b) => a - b);
+  const memoMs = rows.flatMap((r) => r.memoMs as number[]).sort((a, b) => a - b);
+  result.moments = {
+    clips: rows.length,
+    reacted: reacted.length,
+    correct: reacted.filter((r) => r.correct).length,
+    invented: reacted.filter((r) => r.invented).length,
+    overDialogue: reacted.filter((r) => r.lineOpen).length,
+    delayP50Sec: delays.length ? median(delays) : null,
+    delayMaxSec: delays.length ? delays.at(-1) : null,
+    memoP50Ms: memoMs.length ? median(memoMs) : null,
+    rows,
+  };
+}
+
 const file = join(outDir, `watch-sim-${Date.now()}.json`);
 writeFileSync(file, JSON.stringify({ result, logs }, null, 1));
 const { rows: _r, ...qaSummary } = (result.qa ?? {}) as Record<string, unknown>;
-console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined } }, null, 1));
+console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined }, moments: result.moments && { ...(result.moments as object), rows: undefined } }, null, 1));
 console.log("saved", file);
 server.close();
 process.exit(0);

@@ -27,11 +27,11 @@ const gate = (o: Partial<ReactGate> = {}): ReactGate => ({
   ...o,
 });
 
-test("reaction gate: only while sharing, ≥30 s apart, never over dialogue or talk", () => {
+test("reaction gate: only while sharing, ≥25 s apart, never over dialogue or talk", () => {
   assert.deepEqual(reactionAllowed(gate()), { ok: true });
   assert.equal(reactionAllowed(gate({ sharing: false })).ok, false);
-  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 75_000 })), { ok: false, why: "gap" });
-  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 70_000 })), { ok: true });
+  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 80_000 })), { ok: false, why: "gap" });
+  assert.deepEqual(reactionAllowed(gate({ lastReactionAt: 75_000 })), { ok: true });
   assert.deepEqual(reactionAllowed(gate({ conversationQuiet: false })), { ok: false, why: "conversation" });
   assert.deepEqual(reactionAllowed(gate({ dialogueActive: true })), { ok: false, why: "dialogue" });
   assert.deepEqual(reactionAllowed(gate({ lastDialogueEndAt: 99_600 })), { ok: false, why: "dialogue" });
@@ -41,9 +41,10 @@ test("reaction gate: only while sharing, ≥30 s apart, never over dialogue or t
 });
 
 test("reaction script: funny laughs, tags from Spark are stripped, none says nothing", () => {
-  assert.equal(reactionScript("funny", "He fed the ceiling!"), "<laugh> [laughs] He fed the ceiling!");
-  assert.equal(reactionScript("surprising", "<happy> [gasps] No way"), "<surprised> No way");
-  assert.equal(reactionScript("sweet", "aww look at them"), "<warm> aww look at them");
+  // face: funny → smileopen (laugh draws as smileopen for now), surprising → surprised, sweet → smile
+  assert.equal(reactionScript("funny", "He fed the ceiling!"), "<laugh> [smileopen] [laughs] He fed the ceiling!");
+  assert.equal(reactionScript("surprising", "<happy> [gasps] No way"), "<surprised> [surprised] No way");
+  assert.equal(reactionScript("sweet", "aww look at them"), "<warm> [smile] aww look at them");
   assert.equal(reactionScript("none", "anything"), null);
   assert.equal(reactionScript("funny", "  "), null);
 });
@@ -97,6 +98,7 @@ test("memo request: frames as images, labelled lines, strict JSON schema; parse 
     moment: "funny",
     reaction: "He fed the ceiling!",
     speakers: [{ label: "A", name: "the woman" }],
+    protectedVideo: false,
   });
   assert.equal(parseMemoVerdict("no json"), null);
   assert.equal(parseMemoVerdict('{"memo":"x","moment":"lol","reaction":"","speakers":[]}')!.moment, "none");
@@ -190,7 +192,7 @@ test("watch: start opens a DIARIZATION transcriber; audio only flows while shari
   assert.deepEqual(sink.events.at(-1), { type: "state", sharing: true, blank: false, source: "Safari" });
 });
 
-test("watch: memo after a line → funny moment → one reaction, then the 30 s gap holds", async () => {
+test("watch: memo after a line → funny moment → one reaction, then the 25 s gap holds", async () => {
   const funny = '{"memo":"Pancake stuck to the ceiling.","moment":"funny","reaction":"He fed the ceiling!","speakers":[{"label":"A","name":"the woman"}]}';
   const { c, asr, sink, reacted, sparkCalls, at } = controller([funny, funny]);
   c.onMessage({ type: "start", source: "YouTube" });
@@ -205,14 +207,14 @@ test("watch: memo after a line → funny moment → one reaction, then the 30 s 
   c.tick(); // line + 2 s since start ≥ memoAfterLine? (start at 0 → 9 s) → memo
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(sparkCalls.length, 1);
-  assert.deepEqual(reacted, ["<laugh> [laughs] He fed the ceiling!"]);
+  assert.deepEqual(reacted, ["<laugh> [smileopen] [laughs] He fed the ceiling!"]);
   assert.deepEqual(sink.events.find((e) => e.type === "reaction"), { type: "reaction", utteranceId: 1, moment: "funny" });
   // the question context now carries the memo, the named line and the frame
   const q = c.questionContext()!;
   assert.match(q.instructions, /Pancake stuck to the ceiling/);
   assert.match(q.instructions, /the woman \(voice A\): "Did you just feed the ceiling again\?"/);
   assert.deepEqual(q.images, [frame]);
-  // 10 s later another funny verdict: blocked by the 30 s gap
+  // 12 s later another funny verdict: blocked by the 25 s gap
   at(21_000);
   c.onMessage({ type: "frame", image: frame + "B" });
   c.tick();
@@ -222,16 +224,44 @@ test("watch: memo after a line → funny moment → one reaction, then the 30 s 
   assert.equal(c.stats.blocked.gap, 1);
 });
 
-test("watch: no reaction while the user or companion is talking", async () => {
+test("watch: no reaction while the user or companion is talking; it waits for the pause, then goes stale", async () => {
   const funny = '{"memo":"x","moment":"funny","reaction":"ha","speakers":[]}';
-  const { c, reacted, at } = controller([funny], { quiet: false });
+  const quiet = { quiet: false };
+  const { c, reacted, at } = controller([funny], quiet);
   c.onMessage({ type: "start" });
   at(13_000);
   c.onMessage({ type: "frame", image: frame });
   c.tick();
   await new Promise((r) => setTimeout(r, 5));
-  assert.deepEqual(reacted, []);
-  assert.equal(c.stats.blocked.conversation, 1);
+  assert.deepEqual(reacted, [], "never over the conversation");
+  at(14_000);
+  c.tick();
+  assert.deepEqual(reacted, [], "still talking: still held");
+  at(30_000);
+  quiet.quiet = true;
+  c.tick();
+  assert.deepEqual(reacted, [], "the moment passed (stale): dropped, not said late");
+  assert.equal(c.stats.blocked.stale, 1);
+});
+
+test("watch: a funny moment over the video's dialogue waits for the line to end, then laughs (smileopen)", async () => {
+  const funny = '{"memo":"Pancake on the ceiling.","moment":"funny","reaction":"He fed the ceiling!","speakers":[]}';
+  const { c, asr, reacted, at, sink } = controller([funny]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(10_000);
+  c.onMessage({ type: "frame", image: frame });
+  asr.fire({ type: "speechStart", turnId: 0 });
+  c.tick(); // memo runs (new frames, ≥5 s) while the video is mid-line
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, [], "never over the video's line");
+  at(12_000);
+  asr.fire({ type: "speechComplete", turnId: 0, text: "It was hungry." });
+  c.tick();
+  assert.deepEqual(reacted, [], "the 0.7 s dialogue tail");
+  at(13_000);
+  c.tick();
+  assert.deepEqual(reacted, ["<laugh> [smileopen] [laughs] He fed the ceiling!"], "right after the line, in the pause");
+  assert.equal(sink.events.filter((e) => e.type === "reaction").length, 1);
 });
 
 test("watch: black screen → state blank, spoken once, no frames to Spark", async () => {
@@ -583,7 +613,7 @@ test("realtime: a partial that lags the mic catches up within one update and the
   assert.equal(await c.isEcho("Oh, it's Karina!"), false);
 });
 
-test("realtime: a turn gets the newest frame last plus one ~2 s older, and the naming rule", () => {
+test("realtime: a turn gets the last ~1.4 s as a short sequence (newest last), and the naming rule", () => {
   const { c, at } = controller([]);
   c.onMessage({ type: "start", source: "YouTube" });
   for (let s = 1; s <= 10; s++) {
@@ -591,7 +621,7 @@ test("realtime: a turn gets the newest frame last plus one ~2 s older, and the n
     c.onMessage({ type: "frame", image: `data:image/jpeg;base64,f${s}` });
   }
   const q = c.questionContext()!;
-  assert.deepEqual(q.images, ["data:image/jpeg;base64,f8", "data:image/jpeg;base64,f10"], "2 frames, the screen right now last");
+  assert.deepEqual(q.images, ["data:image/jpeg;base64,f8", "data:image/jpeg;base64,f9", "data:image/jpeg;base64,f10"], "3 frames, the screen right now last");
   assert.match(q.instructions, /the last one is the screen right now/);
   assert.match(q.instructions, /use the name they gave/);
   assert.match(q.instructions, /Never say who anyone is from their face/);
@@ -599,30 +629,86 @@ test("realtime: a turn gets the newest frame last plus one ~2 s older, and the n
   assert.match(q.instructions, /If they name someone and no person is visible/, "only a naming turn looks for a person (Codex P2)");
 });
 
-test("realtime: the scene memo refreshes every 5 s while the screen changes (was 12 s)", async () => {
+test("realtime: the scene timeline (memo) refreshes every 3 s while the screen changes (was 12 s)", async () => {
   const { c, at, sparkCalls } = controller([]);
   c.onMessage({ type: "start", source: "YouTube" });
-  at(4_000);
+  at(2_000);
   c.onMessage({ type: "frame", image: frame });
   c.tick();
   assert.equal(sparkCalls.length, 0);
-  at(5_000);
+  at(3_000);
   c.tick();
   await wait(5);
   assert.equal(sparkCalls.length, 1);
-  at(8_000);
+  at(5_000);
   c.onMessage({ type: "frame", image: frame });
   c.tick();
   await wait(5);
-  assert.equal(sparkCalls.length, 1, "not before 5 s since the last memo");
-  at(10_000);
+  assert.equal(sparkCalls.length, 1, "not before 3 s since the last memo");
+  at(6_000);
   c.tick();
   await wait(5);
   assert.equal(sparkCalls.length, 2);
+});
+
+test("motion: a spike (cut / fall / big move) asks for the memo 0.7 s later, with a 5-frame sequence ~0.6 s apart", async () => {
+  const { c, at, sparkCalls } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(2_500);
+  c.onMessage({ type: "frame", image: frame });
+  at(3_000);
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 1, "the 3 s cadence memo");
+  for (let ms = 3_300; ms <= 4_800; ms += 300) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: ms === 4_200 ? 0.4 : 0.03 });
+  }
+  at(4_800);
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 1, "the spike settles 0.7 s first (4.2 → 4.9 s), and the 3 s cadence isn't due");
+  at(4_950);
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 2, "memo right after the spike, not at the next cadence (6 s)");
+  const images = (sparkCalls[1].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
+  assert.equal(images.length, 3, "≤5 frames, ≥0.6 s apart: 3.3/3.9/4.5 → 3.6/4.2/4.8 picked from 6 fresh frames");
+  assert.match(sparkCalls[1].instructions!, /read the motion across them/);
+});
+
+test("DRM: a black video inside a visible page (Netflix) → the honest line once, never a guess", async () => {
+  const prot = '{"memo":"Video area is black.","moment":"funny","reaction":"lol","speakers":[],"protectedVideo":true}';
+  const { c, at, reacted } = controller([prot, prot]);
+  c.onMessage({ type: "start", source: "Safari" });
+  at(3_500);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  await wait(5);
+  assert.equal(reacted.length, 1);
+  assert.match(reacted[0], /can't see that video, it's protected.*YouTube clip/);
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame + "x" });
+  c.tick();
+  await wait(5);
+  assert.equal(reacted.length, 1, "once per share, and no funny reaction to a black picture");
 });
 
 test("realtime: black screen keeps no naming rule and no frames", () => {
   const black = buildQuestionContext({ source: "Netflix", memo: [], lines: [], names: new Map(), frames: ["f1"], blank: true });
   assert.doesNotMatch(black.instructions, /name they gave/);
   assert.deepEqual(black.images, []);
+});
+
+test("session: a watch reaction's face tag never reaches the voice or the captions", async () => {
+  const { s, client, tts } = session();
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  const watch = s.attachWatch(new FakeSink())!;
+  watch.onMessage({ type: "start", source: "YouTube" });
+  const host = (watch as unknown as { host: WatchHost }).host;
+  const id = host.react("<laugh> [smileopen] [laughs] He fed the ceiling!");
+  await wait(30);
+  assert.deepEqual(tts.at(-1), { text: "[laughs] He fed the ceiling!", emotion: "laugh" });
+  assert.equal(client.json.find((m) => m.type === "reply" && m.utteranceId === id)!.text, "He fed the ceiling!");
+  s.close();
 });

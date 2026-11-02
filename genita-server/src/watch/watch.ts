@@ -63,7 +63,8 @@ export type WatchDeps = {
 type Frame = { at: number; url: string };
 
 const FRAME_KEEP_MS = 20_000;
-const MAX_FRAMES_KEPT = 30;
+/** ~20 s at the Mac's 3 fps (motion-aware vision, 11/3) */
+const MAX_FRAMES_KEPT = 90;
 const MEMO_KEEP_MS = 5 * 60_000;
 const MAX_MEMO = 20;
 const LINES_KEEP_MS = 5 * 60_000;
@@ -74,16 +75,28 @@ const QUESTION_LINES_MS = 90_000;
  * one from ~2 s before for motion. Older context comes from the memo, which keeps up every few seconds.
  * Two images instead of four keep the reply's first word near 2 s.
  */
-const QUESTION_FRAMES = 2;
-const QUESTION_FRAME_SPACING_MS = 2_000;
+const QUESTION_FRAMES = 3;
+const QUESTION_FRAME_SPACING_MS = 700;
 /** the running scene memo refreshes this often while the screen changes (was 12 s) */
-const MEMO_EVERY_MS = 5_000;
-const MEMO_FRAMES = 3;
+const MEMO_EVERY_MS = 3_000;
+/** a finished line of the video (often the punchline) gets its memo this soon, so a laugh lands ~4 s after (was 4 s) */
+const MEMO_AFTER_LINE_MS = 1_200;
+/** a reaction held back by the video's dialogue or by the conversation waits for a pause, until it is stale */
+const HOLD_WHY = new Set(["dialogue", "conversation", "turn"]);
+/** the timeline memo sees a short motion sequence: 5 frames ~0.6 s apart (≈2.4 s), not stills seconds apart */
+const MEMO_FRAMES = 5;
+const MEMO_FRAME_SPACING_MS = 600;
+/** a frame this different from the last one (a cut, a fall, a big move) asks for the memo right away */
+export const MOTION_SPIKE = 0.1;
+/** …after this long, so the frames show what the move turned into */
+const SPIKE_SETTLE_MS = 700;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
 /** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
 const ECHO_SETTLE_MS = 350;
-const BLANK_LINE = "<neutral> Hmm, that window shows up black to me. Some apps block screen capture, so I won't guess what's on it.";
+const BLANK_LINE = "<neutral> Hmm, I can't see that one. It's protected and shows up black to me. Wanna put on a YouTube clip?";
+/** memo: a black video picture inside a visible page (Netflix in a browser): the same honest line, once per share */
+const PROTECTED_LINE = "<neutral> I can't see that video, it's protected and shows up black to me. Wanna put on a YouTube clip?";
 const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 /** Transcribe errors with "Ingress audio slower than real-time" when audio stops (11/2): pad silence */
 const PAD_AFTER_MS = 300;
@@ -111,6 +124,11 @@ export class WatchController {
   private lastDialogueEndAt: number | null = null;
   private lineSinceMemo = false;
   private lastReactionAt: number | null = null;
+  /** last motion spike (scene cut / big move) not yet looked at by a memo */
+  private salientAt: number | null = null;
+  private protectedSpoken = false;
+  /** a funny moment waiting for the video's line (or the conversation) to pause */
+  private held: { v: MemoVerdict; at: number } | null = null;
   private memoInFlight: AbortController | null = null;
   private asr: WatchAsr | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -155,7 +173,7 @@ export class WatchController {
       case "start":
         return this.start(typeof msg.source === "string" ? msg.source.slice(0, 60) : null);
       case "frame":
-        return this.onFrame(msg.image, msg.blank === true);
+        return this.onFrame(msg.image, msg.blank === true, typeof msg.motion === "number" && Number.isFinite(msg.motion) ? msg.motion : null);
       case "stop":
         return this.stop("client");
       case "ping":
@@ -183,6 +201,8 @@ export class WatchController {
     this.lastMemoAt = this.sharingSince;
     this.blank = false;
     this.blankSpoken = false;
+    this.protectedSpoken = false;
+    this.salientAt = null;
     this.lineSinceMemo = false;
     this.openAsr();
     if (!this.deps.manualTick) {
@@ -218,6 +238,7 @@ export class WatchController {
     this.padTimer = null;
     this.memoInFlight?.abort();
     this.memoInFlight = null;
+    this.held = null;
     this.asr?.end();
     this.asr = null;
     this.frames = []; // never kept past the share
@@ -239,13 +260,14 @@ export class WatchController {
     this.sink = null;
   }
 
-  private onFrame(image: unknown, blank: boolean): void {
+  private onFrame(image: unknown, blank: boolean, motion: number | null = null): void {
     if (!this.sharing || typeof image !== "string" || !image) return;
     const url = image.startsWith("data:image/") ? image : `data:image/jpeg;base64,${image}`;
     if (url.length > MAX_FRAME_URL) return this.sink?.send({ type: "error", code: "frame_too_large", message: "Each frame must be under 1.5 MB" });
     const now = this.deps.now();
     this.stats.frames++;
     if (!blank) {
+      if (motion !== null && motion >= MOTION_SPIKE) this.salientAt = now;
       this.frames.push({ at: now, url });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
@@ -329,15 +351,27 @@ export class WatchController {
 
   /** Runs every 500 ms while sharing (tests call it directly). */
   tick(): void {
+    if (this.held && this.sharing && !this.closed) this.tryReact(this.held.v, this.held.at, true);
     if (!this.sharing || this.memoInFlight || this.closed) return this.maybeSpeakBlank();
     const now = this.deps.now();
     const since = now - this.lastMemoAt;
     const newFrames = this.frames.some((f) => f.at > this.lastMemoAt);
+    const spike = this.salientAt !== null && this.salientAt > this.lastMemoAt && now - this.salientAt >= SPIKE_SETTLE_MS;
     const due =
-      (this.lineSinceMemo && since >= (this.deps.memoAfterLineMs ?? 4_000)) ||
+      spike ||
+      (this.lineSinceMemo && since >= (this.deps.memoAfterLineMs ?? MEMO_AFTER_LINE_MS)) ||
       ((newFrames || this.lineSinceMemo) && since >= (this.deps.memoEveryMs ?? MEMO_EVERY_MS));
     if (due) void this.runMemo();
     this.maybeSpeakBlank();
+  }
+
+  /** DRM: a black video inside a page that captures fine (Netflix in a browser). Said once per share, when quiet. */
+  private speakProtected(): void {
+    if (this.protectedSpoken || !this.host.conversationQuiet()) return;
+    if (this.host.react(PROTECTED_LINE) !== null) {
+      this.protectedSpoken = true;
+      this.log("watch.protected.spoken", {});
+    }
   }
 
   /** MS-3: say once per black episode that the window shows up black. */
@@ -353,7 +387,8 @@ export class WatchController {
     const at = this.deps.now();
     const since = this.lastMemoAt;
     const fresh = this.frames.filter((f) => f.at > since);
-    const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, 3_000).map((f) => f.url);
+    const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, MEMO_FRAME_SPACING_MS).map((f) => f.url);
+    const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
     this.lastMemoAt = at;
     this.lineSinceMemo = false;
@@ -395,15 +430,20 @@ export class WatchController {
       this.memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS).slice(-MAX_MEMO);
     }
     for (const s of v.speakers) if (s.label && !this.names.has(s.label)) this.names.set(s.label, s.name);
-    this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length });
+    this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true });
+    if (v.protectedVideo) {
+      this.speakProtected();
+      return v;
+    }
     if (v.moment !== "none") this.tryReact(v, at);
     return v;
   }
 
-  private tryReact(v: MemoVerdict, verdictAt: number): void {
+  private tryReact(v: MemoVerdict, verdictAt: number, retry = false): void {
     if (this.deps.reactions === false) return;
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
+    if (!retry) this.held = null;
     const gate = reactionAllowed({
       now: this.deps.now(),
       sharing: this.sharing,
@@ -416,19 +456,37 @@ export class WatchController {
       verdictAt,
     });
     if (!gate.ok) {
+      // the video is mid-line or someone is talking: hold it and try again on each tick until it is stale
+      if (HOLD_WHY.has(gate.why)) {
+        if (!this.held) this.log("watch.react.held", { why: gate.why, moment: v.moment, reaction: v.reaction });
+        this.held = { v, at: verdictAt };
+        return;
+      }
+      this.held = null;
       this.stats.blocked[gate.why] = (this.stats.blocked[gate.why] ?? 0) + 1;
-      this.log("watch.react.blocked", { why: gate.why, moment: v.moment, reaction: v.reaction });
+      this.log("watch.react.blocked", { why: gate.why, moment: v.moment, reaction: v.reaction, held: retry });
       return;
     }
     const utteranceId = this.host.react(script);
     if (utteranceId === null) {
-      this.stats.blocked.turn = (this.stats.blocked.turn ?? 0) + 1;
+      this.held = { v, at: verdictAt };
+      if (!retry) this.log("watch.react.held", { why: "turn", moment: v.moment, reaction: v.reaction });
       return;
     }
-    this.lastReactionAt = this.deps.now();
+    this.held = null;
+    const now = this.deps.now();
+    this.lastReactionAt = now;
     this.stats.reactions++;
     if (v.moment !== "none") this.sink?.send({ type: "reaction", utteranceId, moment: v.moment });
-    this.log("watch.react", { utteranceId, moment: v.moment, line: v.reaction });
+    this.log("watch.react", {
+      utteranceId,
+      moment: v.moment,
+      line: v.reaction,
+      held: retry,
+      // eval: how long after the video's last line the reaction started, and that no line was open
+      afterLineMs: this.lastDialogueEndAt === null ? null : Math.round(now - this.lastDialogueEndAt),
+      lineOpen: this.dialogueActive,
+    });
   }
 
   // ───────────────────────── session hooks ─────────────────────────
