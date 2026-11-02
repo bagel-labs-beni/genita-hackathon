@@ -140,6 +140,12 @@ export class HandoffHub {
     };
   }
 
+  /** This account has `device` open and active on /v1/presence (app running, not locked). */
+  isPresent(userId: string, device: HandoffDevice): boolean {
+    for (const c of this.users.get(userId)?.conns ?? []) if (c.device === device && c.active) return true;
+    return false;
+  }
+
   /** HTTP: claim/release for a device without a presence socket. */
   claimHttp(userId: string, device: HandoffDevice, epoch: number | null, trigger: Trigger): Promise<ClaimOutcome> {
     return this.claimFor(userId, device, epoch, trigger, null);

@@ -37,6 +37,11 @@ export function isProductAsk(text: string, afterProduct = false): boolean {
   return false;
 }
 
+/** "What should I wear?" — clothes words, not cooking, not a product search (camera or not). */
+export function isOutfitAsk(text: string): boolean {
+  return CLOTHES.test(text) && !COOK.test(text) && !isProductAsk(text);
+}
+
 export type Intent = { kind: FindKind; url?: string } | null;
 
 export function classifyTurn(text: string, hasFrames: boolean, afterProduct = false): Intent {

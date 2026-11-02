@@ -256,7 +256,7 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId);
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url));
         });
       },
       () => reject(500, "Internal Server Error"),
@@ -302,7 +302,7 @@ export async function startServer(
     });
   }
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>) {
     const id = randomUUID();
     const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
@@ -316,7 +316,9 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision) });
+    // Demo S4: an iPhone call may suggest moving to this account's open Mac app
+    const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision), macNearby });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);

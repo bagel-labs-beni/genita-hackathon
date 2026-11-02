@@ -42,6 +42,7 @@ import type { MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { isOutfitAsk } from "../finds/intent.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 
@@ -96,7 +97,13 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** Demo S4: iPhone calls only — the account's Mac app is open, so an outfit ask can move to the Mac's camera */
+  macNearby?: () => boolean;
 };
+
+/** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+export const SUGGEST_MAC_LINE =
+  "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
@@ -123,7 +130,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -225,6 +232,8 @@ export class Session {
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
+  /** Demo S4: the move-to-Mac suggestion was made in this call */
+  private macSuggested = false;
   private asr: AsrLike | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
@@ -937,7 +946,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const instructions = buildInstructions({
+    const base = buildInstructions({
       persona,
       user: this.user,
       memories: this.memories,
@@ -947,12 +956,15 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
     });
+    const suggestMac = !this.macSuggested && isOutfitAsk(text) && this.deps.macNearby?.() === true;
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     return {
       interpret,
       detected: null,
       // Finds get the camera frames only, never the shared screen
       images: camera,
       lang: this.language,
+      suggestMac,
       req: {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
@@ -1112,13 +1124,15 @@ export class Session {
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
     built ??= this.buildRequest(text, renamedFrom);
+    if (built.suggestMac) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!greeting && !self) this.memoryCall?.userMessage();
     if (!interpret && !greeting && !self) this.remember("user", text);
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !self && !greeting && this.finds) {
+    // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
+    if (!interpret && !self && !greeting && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
