@@ -3,7 +3,7 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it"
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21 = reason chips (D48 ③)
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -92,6 +92,14 @@ extension FindsModel {
             }
             play([(recipe, failed)]); state = .full
         case 16: play([(recipe, recipe.events)]); state = .half; offline = true
+        case 21:
+            // D48 ③: the same recipe card with reason chips from the user's taste lines
+            let withReasons = recipe.events.map { e -> ServerEvent in
+                guard case var .findCreated(c) = e else { return e }
+                c.card.reasons = [.init(text: "You said: no cilantro", source: "No cilantro."), .init(text: "Your taste: quick weeknight food", source: "Quick, simple weeknight cooking.")]
+                return .findCreated(c)
+            }
+            play([(recipe, withReasons)]); state = .half
         case 17: play([(recipe, recipe.events)]); state = .half; close()
         case 19: play([(recipe, recipe.events)]); state = .full; scrollTarget = "how"
         case 20:
