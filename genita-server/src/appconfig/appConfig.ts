@@ -137,10 +137,10 @@ export function createAppConfigSource(opts: { file?: string | null; bargeInMs: n
     try {
       const st = statSync(opts.file);
       if (st.mtimeMs === mtime) return;
-      mtime = st.mtimeMs;
       if (st.size > MAX_FILE_BYTES) throw new Error(`file over ${MAX_FILE_BYTES} bytes`);
       overrides = JSON.parse(readFileSync(opts.file, "utf8"));
       cached = render();
+      mtime = st.mtimeMs; // only a good load is remembered; a failed one is retried at the next check
       log("app_config.loaded", { etag: cached.etag });
     } catch (err) {
       // keep the last good config; a missing file means "defaults"
@@ -175,7 +175,7 @@ export function handleAppConfig(req: IncomingMessage, res: ServerResponse, sourc
   const { body, etag } = source.current();
   const headers = { etag, "cache-control": "public, max-age=60, stale-while-revalidate=600" };
   const match = req.headers["if-none-match"];
-  if (match && match.split(",").some((t) => t.trim().replace(/^W\//, "") === etag)) {
+  if (match && (match.trim() === "*" || match.split(",").some((t) => t.trim().replace(/^W\//, "") === etag))) {
     res.writeHead(304, headers);
     return res.end();
   }

@@ -123,3 +123,28 @@ test("app-config: the file is re-read when it changes; a broken file keeps the l
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("app-config: a file that failed to load is retried even if its mtime does not change", () => {
+  const dir = mkdtempSync(join(tmpdir(), "appcfg-"));
+  try {
+    const file = join(dir, "app-config.json");
+    const fixed = new Date(Date.now() - 60_000);
+    writeFileSync(file, "{ broken");
+    utimesSync(file, fixed, fixed);
+    let clock = 0;
+    const src = createAppConfigSource({ file, bargeInMs: 400, now: () => clock });
+    assert.equal(JSON.parse(src.current().body).flags.textChat, false);
+    writeFileSync(file, JSON.stringify({ flags: { textChat: true } }));
+    utimesSync(file, fixed, fixed); // same mtime as the broken version (e.g. a permission fix, or a copy that keeps times)
+    clock += 6_000;
+    assert.equal(JSON.parse(src.current().body).flags.textChat, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("app-config: If-None-Match: * → 304 (RFC 9110 §13.1.2)", async (t) => {
+  const base = await serve(t);
+  const r = await fetch(base + "/v1/app-config", { headers: { "if-none-match": "*" } });
+  assert.equal(r.status, 304);
+});
