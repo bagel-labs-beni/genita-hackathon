@@ -76,8 +76,9 @@ import os
         synthesizer.write(utterance) { [weak self] buffer in
             // Called off the main thread; convert right away (the buffer may be reused after we return).
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-            let out = pcm.frameLength > 0 ? render.convert(pcm) : nil
             let ended = pcm.frameLength == 0
+            // the end buffer drains what the resampler still holds (~30 ms), so sentence tails aren't cut
+            let out = ended ? render.finish() : render.convert(pcm)
             Task { @MainActor in self?.rendered(out, ended: ended, say: s, generation: gen) }
         }
     }
@@ -156,6 +157,21 @@ final class SpeechRender: @unchecked Sendable {
 
     func convert(_ buffer: AVAudioPCMBuffer) -> Output? {
         lock.lock(); defer { lock.unlock() }
+        return run(buffer)
+    }
+
+    /// End of the sentence: flush the samples the converter still holds, plus the last partial level step.
+    func finish() -> Output? {
+        lock.lock(); defer { lock.unlock() }
+        return run(nil)
+    }
+
+    private func run(_ buffer: AVAudioPCMBuffer?) -> Output? {
+        if buffer == nil {
+            guard let converter else { return nil }
+            return drain(converter)
+        }
+        guard let buffer else { return nil }
         if inputFormat != buffer.format {
             inputFormat = buffer.format
             converter = AVAudioConverter(from: buffer.format, to: output)
@@ -174,7 +190,23 @@ final class SpeechRender: @unchecked Sendable {
             return buffer
         }
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return nil }
-        let chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
+        return emit(Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength))), last: false)
+    }
+
+    private func drain(_ converter: AVAudioConverter) -> Output? {
+        var chunk: [Int16] = []
+        for _ in 0..<8 {
+            guard let out = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: 4096) else { break }
+            var error: NSError?
+            let status = converter.convert(to: out, error: &error) { _, s in s.pointee = .endOfStream; return nil }
+            if out.frameLength > 0, let samples = out.int16ChannelData?[0] { chunk += UnsafeBufferPointer(start: samples, count: Int(out.frameLength)) }
+            if error != nil || status != .haveData || out.frameLength == 0 { break }
+        }
+        converter.reset()
+        return emit(chunk, last: true)
+    }
+
+    private func emit(_ chunk: [Int16], last: Bool) -> Output {
         let pcm = chunk.withUnsafeBufferPointer { Data(buffer: $0) }
         // Levels per full step; the remainder waits for the next buffer so steps stay aligned to the audio.
         pending.append(contentsOf: chunk)
@@ -182,6 +214,10 @@ final class SpeechRender: @unchecked Sendable {
         while pending.count >= stepSamples {
             levels.append(Self.level(pending[0..<stepSamples]))
             pending.removeFirst(stepSamples)
+        }
+        if last, !pending.isEmpty {
+            levels.append(Self.level(pending[...]))
+            pending.removeAll()
         }
         return Output(pcm: pcm, levels: levels)
     }
