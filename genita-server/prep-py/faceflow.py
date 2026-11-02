@@ -164,10 +164,11 @@ def lip_hull_mask(img, mouth_px, dilate_px):
     cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if cs:
         cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
-    else:
-        # no redder-than-skin lips (grey / desaturated photo): the mouth box ellipse, so the key's opening still shows
+    if len(cs) < 2:
+        # no or only one lip found (grey photo, pale lower lip): add the mouth box ellipse reaching down, so the key's
+        # opening still shows (codex P2 x2)
         bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
-        mh_ = max(1, by2 - by1)   # reach down: the key's jaw may be lowered by more than the closed mouth's height
+        mh_ = max(1, by2 - by1)   # the key's jaw may be lowered by more than the closed mouth's height
         cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
     d = max(1, int(dilate_px)); dl = max(1, d // 2)
     up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
@@ -442,10 +443,12 @@ def main():
         r_ = max(mw_, 0.2 * fwp_)
         cv2.ellipse(lim_, (int((mouth[0] + mouth[2]) / 2 * W), int((mouth[1] + mouth[3]) / 2 * H + 0.3 * mw_)), (int(r_), int(0.9 * r_)), 0, 0, 360, 1.0, -1)
         lim_ = cv2.GaussianBlur(lim_, (0, 0), 0.05 * fwp_)
+        LN_ = cv2.cvtColor(np.clip(N, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
         for nm in list(ALN):
             al = ALN[nm]
             L = cv2.cvtColor(np.clip(al, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
-            wv = np.clip((tgt.mean() * 1.4 - L) / (tgt.mean() * 1.4), 0, 1) * 0.85 * lim_
+            new_ = np.clip((LN_ - L - 15) / 20, 0, 1)        # only the new opening (darker than the neutral): dark fur / cloth stay
+            wv = np.clip((tgt.mean() * 1.4 - L) / (tgt.mean() * 1.4), 0, 1) * 0.85 * lim_ * new_
             wv = cv2.GaussianBlur(wv, (0, 0), 1.2)[..., None]
             ALN[nm] = al * (1 - wv) + np.maximum(al, tgt) * wv
 
