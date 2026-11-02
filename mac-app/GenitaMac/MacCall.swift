@@ -29,6 +29,12 @@ import Foundation
     }
 
     @Published private(set) var account: Account = .checking
+    /// MAC-1's footnote line after a sign-in that didn't finish (stays on MAC-1, never the home's offline state).
+    @Published private(set) var signInMessage: String?
+    /// Genita ▸ Sign Out is on while an account is signed in on this Mac.
+    var isSignedIn: Bool {
+        switch account { case .checking, .signedOut, .signingIn: false; default: true }
+    }
     /// The companion's scene picture from the server (prep `sceneUrl`), shown as the face until the
     /// Muse Image face layer (#151/#152, lane L4) replaces the still.
     @Published private(set) var face: NSImage?
@@ -61,7 +67,8 @@ import Foundation
     /// /me → StartRouter (Mac) → /v1/companion. Safe to call again (sign-in, wake, retry).
     func refresh() async {
         let gen = generation
-        if account != .signingIn { account = .checking }
+        // keep the screen on view until the answer is in (only the first launch shows the empty window);
+        // the 10 s re-check on MAC-2 must not blink the window
         guard let token = CallEndpoint.current().token, !token.isEmpty else { account = .signedOut; return }
         let next: Account
         var plan: CompanionCallPlan?
@@ -79,7 +86,7 @@ import Foundation
         } catch MacCallError.status(404) {
             next = .noCompanion
         } catch {
-            next = .offline((error as? MacCallError)?.message ?? "Can’t reach Genita")
+            next = .offline((error as? MacCallError)?.message ?? "Check your connection and try again.")
         }
         guard gen == generation else { return } // signed out meanwhile
         account = next
@@ -95,6 +102,7 @@ import Foundation
         let flow = WebSignIn(anchor: anchor)
         signIn = flow
         account = .signingIn
+        signInMessage = nil
         let gen = generation
         Task {
             do {
@@ -105,7 +113,8 @@ import Foundation
             } catch GenitaAuthError.cancelled {
                 account = .signedOut
             } catch {
-                account = .offline("Sign in didn’t finish. Try again.")
+                account = .signedOut
+                signInMessage = "Sign in didn’t finish. Try again."
             }
             signIn = nil
         }
@@ -237,7 +246,7 @@ import Foundation
     enum MacCallError: Error {
         case status(Int)
         case decode
-        var message: String { if case let .status(code) = self { return "Genita answered \(code)" } else { return "Unexpected answer from Genita" } }
+        var message: String { "Genita isn’t answering right now. Try again in a moment." }
     }
 
     private func getData(_ path: String, token: String) async throws -> Data {

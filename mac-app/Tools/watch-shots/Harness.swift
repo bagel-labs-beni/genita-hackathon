@@ -30,7 +30,8 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-4": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings": break
+            case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
             default: setenv("GENITA_MAC_REVIEW", state, 1)
             }
@@ -45,7 +46,11 @@ import CoreText
             // #78: MAC-2 / MAC-3 / MAC-4 home windows (Figma 87:2 / 88:2 / 89:2)
             case "mac-2": page = AnyView(MacHomeView(kind: .noCompanion, name: "Mina", handoff: MacHandoff.shared))
             case "mac-3": page = AnyView(MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared))
-            case "mac-4": MacHandoff.shared.reviewCanMove = true; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
+            case "mac-4": MacHandoff.shared.reviewCanMove = true; MacHandoff.shared.link.connected = true; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
+            case "mac-4-unpaired": MacHandoff.shared.reviewCanMove = false; MacHandoff.shared.link.connected = false; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
+            case "mac-offline": page = AnyView(MacHomeView(kind: .offline("Check your connection and try again."), name: "Mina", handoff: MacHandoff.shared))
+            case "launch": page = AnyView(MacLaunchBlank())
+            case "settings": page = AnyView(MacSettingsSheet())
             default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
             }
             let view = page.environment(\.colorScheme, .light)

@@ -56,7 +56,9 @@ struct MacConversationView: View {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
-                            excluded("glass-more-icon", "More unavailable in demo")
+                            // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
+                            Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
@@ -121,7 +123,7 @@ struct MacConversationView: View {
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
-        .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
+        .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
@@ -176,9 +178,6 @@ struct MacConversationView: View {
         } else {
             resourceImage("selfPreview").resizable().frame(width: 113, height: 211).accessibilityLabel("Your camera is off")
         }
-    }
-    private func excluded(_ icon: String, _ label: String) -> some View {
-        Button {} label: { MacGlassControl(icon: icon, size: 46) }.buttonStyle(MacUnchangedControlStyle()).disabled(true).accessibilityLabel(label)
     }
     /// MC-M (Figma 90:2): Chat (dimmed, text chat is cut), Finds with its count, Setting, a rule, then Move to iPhone
     /// (dimmed while no iPhone is in front, as the Move to Mac row on the iPhone).

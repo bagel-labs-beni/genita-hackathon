@@ -10,12 +10,24 @@ import CoreText
     }
     var body: some Scene {
         WindowGroup("Genita", id: "companion") {
-            MacStartView().preferredColorScheme(.light)
+            // Figma MAC-1~4: the window bar has the traffic lights only, no title text
+            MacStartView().preferredColorScheme(.light).toolbar(removing: .title)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif
         }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
+            .commands { MacAccountCommands() }
+    }
+}
+
+/// Genita ▸ Sign Out (the home windows carry no sign-out link, as in Figma MAC-2/3/4).
+struct MacAccountCommands: Commands {
+    @ObservedObject private var call = MacCall.shared
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Sign Out") { call.signOut() }.disabled(!call.isSignedIn)
+        }
     }
 }
 func resourceImage(_ name: String) -> Image {

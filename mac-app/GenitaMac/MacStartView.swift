@@ -1,14 +1,17 @@
 import SwiftUI
+import AppKit
 
-/// The Mac's first window. Signed out → A02 (Sign in with Apple on the web, or the small Judge access link →
-/// A02-J code sheet, D41). Signed in without consent → CS01. Otherwise Dyno's control window, unchanged.
-/// Same type and ink as the iPhone's A02 / CS01 / A02-J (no new design).
+/// The Mac's first window (ships only Figma screens — Chelsea 11/3, DMG 101 opened the old dev window):
+/// signed out → MAC-1 (86:2), signed in without consent → CS01, otherwise the MAC-2/3/4 home (87:2 / 88:2 / 89:2,
+/// the P01 pairing code sits in MAC-3). While the account is first checked the window stays empty — no screen
+/// flashes before the right one.
 struct MacStartView: View {
     @ObservedObject private var call = MacCall.shared
 
     var body: some View {
         Group {
             switch call.account {
+            case .checking: MacLaunchBlank()
             case .signedOut, .signingIn: MacSignInView()
             case .needsConsent: MacConsentView()
             default: MacHandoffControls()
@@ -21,43 +24,51 @@ struct MacStartView: View {
     }
 }
 
-/// A02 on the Mac.
+/// The first moment after launch while `/me` answers: the window's own background, nothing else.
+struct MacLaunchBlank: View {
+    var body: some View {
+        MacSheetInk.sheet.frame(width: 420, height: 296).accessibilityLabel("Genita").accessibilityIdentifier("macLaunch")
+    }
+}
+
+/// MAC-1 · Mac, signed out (Figma 86:2): title, one line, Continue with Apple (ink), the second way in as the
+/// white button, the browser/terms line, Terms · Privacy Policy. Figma's second button is Google, which the
+/// server doesn't offer; it is Continue with email (#208) in the same white style. Judge access (D41) is the
+/// small link under it.
 struct MacSignInView: View {
     @ObservedObject private var call = MacCall.shared
     @State private var judge = false
-    /// A02-M Continue with email (NEW · design check)
+    /// A02-M Continue with email (#208)
     @State private var email = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Text("Genita").font(MacSheetInk.serif(40)).foregroundStyle(MacSheetInk.ink).padding(.top, 44)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Genita").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
             Text("Sign in with the account you use on your iPhone.")
-                .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).multilineTextAlignment(.center).padding(.top, 12)
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).frame(height: 22, alignment: .leading)
             Button { call.signInWithApple() } label: {
                 ZStack {
                     if call.account == .signingIn { ProgressView().controlSize(.small).tint(MacSheetInk.onInk) }
-                    else { Label("Sign in with Apple", systemImage: "apple.logo") }
+                    else { Text("Continue with Apple") }
                 }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
-                    .frame(width: 320, height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(call.account == .signingIn).padding(.top, 32).accessibilityIdentifier("macSignIn")
+                    .frame(maxWidth: .infinity).frame(height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(call.account == .signingIn).accessibilityIdentifier("macSignIn")
             Button { email = true } label: {
-                Label("Continue with email", systemImage: "envelope")
-                    .font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
-                    .frame(width: 320, height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(call.account == .signingIn).padding(.top, 12).accessibilityIdentifier("macContinueWithEmail")
-            if call.account == .signingIn {
-                Text("Finish signing in in the window that opened.").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).padding(.top, 10)
-            }
-            Button("Judge access") { judge = true }
-                .buttonStyle(.plain).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.mute).underline()
-                .frame(minHeight: 44).padding(.top, 8).accessibilityIdentifier("macJudgeAccess")
+                Text("Continue with email").font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
+                    .frame(maxWidth: .infinity).frame(height: 50).background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(call.account == .signingIn).accessibilityIdentifier("macContinueWithEmail")
+            Text(call.account == .signingIn ? "Finish signing in in the browser window that opened."
+                 : call.signInMessage ?? "Opens your browser. By continuing, you agree to our Terms and Privacy Policy.")
+                .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                .frame(width: 356, alignment: .leading)
             HStack(spacing: 16) {
-                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
-                Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
-            }.font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).padding(.top, 20).padding(.bottom, 28)
+                MacLegalLinks()
+                Spacer(minLength: 0)
+                Button("Judge access") { judge = true }.buttonStyle(.plain).foregroundStyle(MacSheetInk.mute).accessibilityIdentifier("macJudgeAccess")
+            }.font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline().frame(height: 44)
         }
-        .frame(width: 420)
+        .padding(.horizontal, 32).padding(.top, 32).padding(.bottom, 28).frame(width: 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
         .sheet(isPresented: $judge) { MacJudgeCodeSheet() }
         .sheet(isPresented: $email) { MacEmailSheet() }
@@ -279,4 +290,42 @@ struct MacConsentView: View {
             if !(await call.consent()) { failed = true }
         }
     }
+}
+
+/// The call menu's Setting on the Mac: the account and the legal pages, in the Mac sheet's type and ink.
+/// (The iPhone's preference form needs the iPhone's onboarding data, which the Mac doesn't have.)
+struct MacSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var call = MacCall.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Settings").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+            if let name = call.companionName {
+                Text("\(name) is set up on your iPhone. Change their name, voice and setup there.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 16) { MacLegalLinks() }.font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline().frame(height: 44)
+            Button { dismiss(); call.signOut() } label: {
+                Text("Sign out").font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
+                    .frame(maxWidth: .infinity).frame(height: 50).background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).accessibilityIdentifier("macSettingsSignOut")
+            Button { dismiss() } label: {
+                Text("Done").font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
+                    .frame(maxWidth: .infinity).frame(height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).keyboardShortcut(.defaultAction).accessibilityIdentifier("macSettingsDone")
+        }
+        .padding(.horizontal, 32).padding(.top, 32).padding(.bottom, 28).frame(width: 420, alignment: .topLeading)
+        .background(MacSheetInk.sheet)
+    }
+}
+
+/// Terms · Privacy Policy in the default browser (plain buttons, so the review renders draw them too).
+struct MacLegalLinks: View {
+    var body: some View {
+        Button("Terms") { open("https://bagel-labs-beni.github.io/genita-legal/terms/") }.buttonStyle(.plain).accessibilityAddTraits(.isLink)
+        Button("Privacy Policy") { open("https://bagel-labs-beni.github.io/genita-legal/privacy/") }.buttonStyle(.plain).accessibilityAddTraits(.isLink)
+    }
+    private func open(_ s: String) { if let u = URL(string: s) { NSWorkspace.shared.open(u) } }
 }

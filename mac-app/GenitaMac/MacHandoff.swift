@@ -361,21 +361,23 @@ struct MacHomeView:View {
                 button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
                 pairingBlock
             case .here:
-                statusRow(paired ? "Paired with your iPhone" : handoff.server.connected ? "Signed in. Moves go through your account." : "No iPhone paired yet",live:paired || handoff.server.connected)
-                HStack(spacing:8) {
-                    button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() }.disabled(!handoff.canMoveToPhone).opacity(handoff.canMoveToPhone ? 1 : 0.4)
-                    button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() }.disabled(!paired).opacity(paired ? 1 : 0.4)
+                // MAC-4 (89:2). Only what works right now is shown — no greyed-out buttons (Chelsea 11/3).
+                statusRow(paired ? "Paired with your iPhone" : "Signed in on this Mac",live:true)
+                if handoff.canMoveToPhone || paired {
+                    HStack(spacing:8) {
+                        if handoff.canMoveToPhone { button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() } }
+                        if paired { button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() } }
+                    }
                 }
-                Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
-                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
-                if !paired { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable
+                if paired {
+                    Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
+                        .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                } else { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable (MAC-3's block)
             case .offline(let reason):
                 statusRow(reason,live:false)
                 button("Try again",filled:true,id:"macTryAgain") { Task { await MacCall.shared.refresh() } }
             }
-            // Not in the Figma frames: the old window's "Sign out" link, so an account can still be switched on the Mac.
-            Button("Sign out") { MacCall.shared.signOut() }
-                .buttonStyle(.plain).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).underline().accessibilityIdentifier("macSignOut")
+            // Sign out lives in the app menu (Genita ▸ Sign Out) and the call's Settings — not in this window (Figma).
         }
         .padding(.horizontal,32).padding(.top,32).padding(.bottom,28).frame(width:420,alignment:.topLeading)
         .background(MacSheetInk.sheet)
