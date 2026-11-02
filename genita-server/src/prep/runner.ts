@@ -2,7 +2,7 @@
  * F2-L9 (#24): prep job runner (the clip_jobs queue).
  *
  *   scene (Muse Image) → 3 silent clips in parallel (Kling 3.0, 10 s)
- *   → lips (Peter cache / mouth atlas; TODO interfaces in lips.ts)
+ *   → lips (human: Peter avatar cache on Modal, records bundle_id; animal/character: mouth atlas TODO)
  *
  * Every step's state is written to the store before and after it runs, and
  * each fal request id is saved the moment it is submitted. On boot,
@@ -61,7 +61,14 @@ export function prepView(c: CompanionRecord) {
     sceneUrl: p.steps.scene.url ?? null,
     sceneSource: p.steps.scene.source ?? null,
     emotionVideos: emotionVideos(p),
-    lips: { status: p.steps.lips.status, detail: p.steps.lips.error ?? null, url: p.steps.lips.url ?? null },
+    lips: {
+      status: p.steps.lips.status,
+      detail: p.steps.lips.error ?? null,
+      url: p.steps.lips.url ?? null,
+      ms: p.steps.lips.ms ?? null,
+      /** Peter: send `avatar_id` in the worker HELLO; READY.bundle_id should equal bundleId */
+      peter: p.steps.lips.bundleId ? { avatarId: p.steps.lips.avatarId ?? null, bundleId: p.steps.lips.bundleId, nBase: p.steps.lips.nBase ?? null } : null,
+    },
     steps: {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
       videos: Object.fromEntries(PREP_EMOTIONS.map((e) => [e, { status: p.steps.videos[e].status, ms: p.steps.videos[e].ms ?? null }])),
@@ -225,17 +232,26 @@ export class PrepRunner {
     const failed = results.filter((r) => r.status === "rejected");
     if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
 
-    // 3. lips (TODO bakers return `todo`; the call still works with the clip loop)
+    // 3. lips: Peter avatar cache (human) / mouth atlas (TODO); a failure does not block the call
     if (c.prep.steps.lips.status !== "done" && c.prep.steps.lips.status !== "todo") {
       const baker = lipBakerFor(c.type, this.peter, this.atlas);
-      await setStep("lips", { status: "running", attempts: c.prep.steps.lips.attempts + 1 });
+      const prev = c.prep.steps.lips;
+      const resumeId = prev.status === "running" ? prev.callId : undefined;
+      await setStep("lips", { status: "running", attempts: prev.attempts + (resumeId ? 0 : 1), source: baker.name });
+      const t1 = performance.now();
       try {
-        const r = await baker.bake({ companionId: c.id, kind: c.type, sceneUrl, videos: emotionVideos(c.prep), voiceId: c.voiceId });
-        if (r.status === "todo") await setStep("lips", { status: "todo", error: r.reason, source: baker.name });
-        else await setStep("lips", { status: "done", url: r.kind === "peter" ? (r.cacheUrl ?? r.avatarId) : r.atlasUrl, ms: r.ms, source: baker.name });
+        const r = await baker.bake(
+          { companionId: c.id, kind: c.type, sceneUrl, videos: emotionVideos(c.prep), voiceId: c.voiceId },
+          { resumeId, onSubmitted: (callId) => setStep("lips", { callId }) },
+        );
+        if (r.status === "todo") await setStep("lips", { status: "todo", error: r.reason, callId: undefined });
+        else if (r.kind === "peter") {
+          await setStep("lips", { status: "done", avatarId: r.avatarId, bundleId: r.bundleId, nBase: r.nBase, ms: r.ms, error: undefined, callId: undefined });
+          d.log("peter_cache.done", { companion: c.id, bundle_id: r.bundleId, n_base: r.nBase, ms: r.ms, remote_s: r.remoteSeconds });
+        } else await setStep("lips", { status: "done", url: r.atlasUrl, ms: r.ms, error: undefined, callId: undefined });
       } catch (err) {
-        // lips failing must not block the call (photo/clip fallback); record and finish
-        await setStep("lips", { status: "failed", error: String(err).slice(0, 300) });
+        await setStep("lips", { status: "failed", error: String(err).slice(0, 300), ms: Math.round(performance.now() - t1), callId: undefined });
+        d.log("peter_cache.failed", { companion: c.id, reason: String(err).slice(0, 200) });
       }
     }
 

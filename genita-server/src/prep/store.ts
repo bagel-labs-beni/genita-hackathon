@@ -19,7 +19,21 @@ import type { CompanionKind, PrepEmotion } from "./prompts.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
 export type StepStatus = "pending" | "running" | "done" | "failed" | "todo";
-export type Step = { status: StepStatus; attempts: number; error?: string; ms?: number; fal?: FalRequest; url?: string; source?: string };
+export type Step = {
+  status: StepStatus;
+  attempts: number;
+  error?: string;
+  ms?: number;
+  fal?: FalRequest;
+  url?: string;
+  source?: string;
+  /** lips: remote bake job id (Modal FunctionCall), saved before polling */
+  callId?: string;
+  /** lips (human): Peter avatar cache on the Modal Volume; the worker's READY.bundle_id must match */
+  avatarId?: string;
+  bundleId?: string;
+  nBase?: number;
+};
 
 export type PrepState = {
   status: "running" | "ready" | "failed";

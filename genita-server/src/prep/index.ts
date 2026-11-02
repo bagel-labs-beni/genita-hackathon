@@ -5,7 +5,8 @@
  *   FAL_KEY                    Kling 3.0 + gpt-image-2 fallback + CDN upload
  *   GENITA_DATA_DIR            file store root (default ~/.genita-data) until DB/S3 land
  *   GENITA_VOICES              "id:Name:Blurb,…" to override the four V04 voices
- *   GENITA_PETER_PREPARE_URL   Modal Peter prepare endpoint (F2-L22, TODO)
+ *   GENITA_PETER_PREPARE_URL   Modal Peter prepare API (deploy/modal-peter `api`), e.g. https://<ws>--genita-peter-api.modal.run
+ *   GENITA_PETER_TOKEN         bearer for it (= the worker's WORKER_TOKEN); falls back to GENITA_PETER_WORKER_TOKEN
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +30,7 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
     voices: voicesFromEnv(env.GENITA_VOICES),
     log,
   };
-  const runner = new PrepRunner(deps, { peter: new ModalPeterBaker(env.GENITA_PETER_PREPARE_URL || null), atlas: new MouthAtlasBaker() });
+  const runner = new PrepRunner(deps, { peter: new ModalPeterBaker(env.GENITA_PETER_PREPARE_URL || null, env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || null), atlas: new MouthAtlasBaker() });
   void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));
   return { routes: createPrepRoutes(deps, runner), runner, deps };
 }

@@ -88,3 +88,33 @@ test("resumeAll picks up only companions still running", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("ModalPeterBaker: POST /prepare once, persists the call id, polls to done; resume skips the POST", async (t) => {
+  const { createServer } = await import("node:http");
+  const seen: string[] = [];
+  let polls = 0;
+  const http = createServer((req, res) => {
+    seen.push(`${req.method} ${req.url} ${req.headers.authorization}`);
+    res.writeHead(200, { "content-type": "application/json" });
+    if (req.method === "POST") return res.end(JSON.stringify({ call_id: "fc-1" }));
+    polls++;
+    res.end(JSON.stringify(polls < 2 ? { status: "running" } : { status: "done", result: { avatar_id: "c1", bundle_id: "abcd1234abcd1234", n_base: 241, total_s: 90 } }));
+  });
+  await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
+  t.after(() => http.close());
+  const url = `http://127.0.0.1:${(http.address() as import("node:net").AddressInfo).port}/`;
+  const b = new ModalPeterBaker(url, "tok", { pollMs: 5 });
+  const saved: string[] = [];
+  const input = { companionId: "c1", kind: "human" as const, sceneUrl: "s", videos: { neutral: "https://v/n.mp4" }, voiceId: "v" };
+  const r = await b.bake(input, { onSubmitted: async (id) => void saved.push(id) });
+  assert.equal(r.status, "done");
+  assert.ok(r.status === "done" && r.kind === "peter" && r.bundleId === "abcd1234abcd1234" && r.nBase === 241);
+  assert.deepEqual(saved, ["fc-1"]);
+  assert.equal(seen[0], "POST /prepare Bearer tok");
+  assert.equal(seen[1], "GET /prepare/fc-1 Bearer tok");
+  seen.length = 0;
+  await b.bake(input, { resumeId: "fc-1" });
+  assert.ok(seen.every((s) => s.startsWith("GET /prepare/fc-1")));
+  await assert.rejects(() => b.bake({ ...input, videos: {} }), /no neutral clip/);
+  assert.deepEqual(await b.bake({ ...input, kind: "animal" }), { status: "todo", reason: "not_human" });
+});

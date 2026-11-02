@@ -72,7 +72,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: c.type === "human" ? { mode: "peter", fallback: "none" } : "atlas" }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: c.type === "human" ? { mode: "peter", fallback: "none" } : "atlas", peter: prepView(c).lips.peter }
       : null,
   };
 }
