@@ -443,6 +443,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     subtitle: str(j?.subtitle, 60) || `${label}, matched to your style.`,
     status: one ? `1 link · ${domains[0]}` : `${products.length} links · ${domains.join(", ")}`,
     say,
+    pill: say, // already ≤ PILL_MAX
     items: [],
     steps: [],
     options: [],
