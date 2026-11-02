@@ -3,7 +3,7 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120)
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -102,6 +102,14 @@ extension FindsModel {
             Task { [weak self] in
                 for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
                 if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
+            }
+        case 26:
+            // FT-NOSEE: boxes on the camera, no sheet, the check card says the rice is not in view
+            play([(recipe, recipe.events)]); force(.idle)
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
+                self?.showNoSee(NoSeeCheck(title: "For kimchi fried rice", rows: [.init(name: "Eggs", seen: true), .init(name: "Scallions", seen: true), .init(name: "cooked rice", seen: false)]), hold: nil)
             }
         case 31:
             // CAM-H with the card half up: boxes arrive with the card; the test taps an ingredient chip
