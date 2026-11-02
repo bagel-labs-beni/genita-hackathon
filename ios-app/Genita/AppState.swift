@@ -133,7 +133,8 @@ struct SavedSetup: Codable {
         if reset { storage.removeObject(forKey: Self.storageKey); try? FileManager.default.removeItem(at: imageURL) }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
         setup.imageData = try? Data(contentsOf: imageURL)
-        if setup.hasOnboarded { setup.stage = .conversation }
+        if storage.bool(forKey: Self.signedOutKey) { setup.stage = .signIn }
+        else if setup.hasOnboarded { setup.stage = .conversation }
         else if setup.stage == .preparing { setup.stage = .paste }
         else if setup.stage == .connecting { setup.stage = .summary }
         #if DEBUG
@@ -175,6 +176,17 @@ struct SavedSetup: Codable {
         let fallback: [Stage: Stage] = [.signIn: .welcome, .name: .signIn, .prompt: .name, .paste: .prompt, .preferences: .paste, .image: .preferences, .voice: .image, .depth: .voice]
         if let previous = fallback[stage] { setup.stage = previous }
         else if let i = setup.depth.path.firstIndex(of: stage), i > 0 { setup.stage = setup.depth.path[i - 1] }
+    }
+    static let signedOutKey = "genita.signedOut"
+    /// CS01 "Not now" or an expired session: A02, and a restart stays there instead of restoring the call.
+    func signedOut() {
+        storage.set(true, forKey: Self.signedOutKey)
+        returnTo(.signIn)
+    }
+    /// Past A02 again: an onboarded user goes back to the call, a new one on to A03.
+    func signedIn() {
+        storage.removeObject(forKey: Self.signedOutKey)
+        if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
     }
     /// CS01 agreed: back to the call if that's where the user came from, else on to A03 (name).
     func consentAccepted() {

@@ -50,7 +50,7 @@ struct ReferenceSignInView: View {
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
-            Button("Continue in demo") { model.go(.name); provider = nil }
+            Button("Continue in demo") { model.signedIn(); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
         } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
         .alert(legal ?? "", isPresented: Binding(get: { legal != nil }, set: { if !$0 { legal = nil } })) { Button("OK") { legal = nil } } message: { Text("Release documents are not connected in this local demo. No account is created.") }
