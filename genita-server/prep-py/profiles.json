@@ -422,7 +422,7 @@
  "motion": {
   "human": {
    "motion": "v2",
-   "_ref": "B-lane render.py --motion v2, sweep row v30 (critic v28/v29 8.5, phone-visibility weighted); flags proto/tools/v30.flags",
+   "_ref": "B-lane render.py --motion v2, sweep row v31; flags proto/tools/v31.flags + --cornerref 3.36",
    "lookaheadMs": 40,
    "mbp": 2,
    "dissolve": {
@@ -447,7 +447,7 @@
      1.2
     ]
    },
-   "lip": 1.3,
+   "lip": 1.6,
    "preemphMs": 40,
    "shortStressedMin": [
     0.7,
@@ -516,12 +516,13 @@
     "pull": 0.0,
     "cheek": 0.85,
     "naso": 0.28,
-    "lift": 2.0
+    "lift": 2.0,
+    "_pull": "per face: pull = clip(1 - cornerRef / mean key corner flow (px per 356-px face height), 0, .8)"
    },
    "brow": 2.5,
    "nod": 6,
    "sway": 0.45,
-   "stressK": 0.6,
+   "stressK": 0.8,
    "preemphCap": 2.5,
    "consonantDip": 0.1,
    "closeToPhonemeEnd": true,
@@ -546,7 +547,8 @@
     "attackMs": 250,
     "releaseMs": 400,
     "_spec": "sweep/README.md 'Expression layer' (smile, smileopen, laugh, surprised, concerned)"
-   }
+   },
+   "cornerRef": 3.36
   },
   "animal": {
    "motion": "v2",
