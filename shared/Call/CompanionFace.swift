@@ -85,6 +85,14 @@ struct CompanionFaceLoader: Sendable {
         // Every image the manifest names, by its manifest key (also the cache file name).
         var refs: [String: String] = [:]
         for (k, ref) in manifest.images.merging(manifest.visemes, uniquingKeysWith: { a, _ in a }) where Self.safeName(k) { refs[k] = ref }
+        // Option B flow morph files (#226): extension-less refs, decoded by role (key image, f16 flow, mask).
+        var flowNames: Set<String> = []
+        if let flow = manifest.flow {
+            for (k, f) in flow.files where Self.safeName(k) {
+                for (role, ref) in [("key", f.key), ("nk", f.nk), ("kn", f.kn)] { refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)") }
+            }
+            refs["flowmask"] = flow.mask; flowNames.insert("flowmask")
+        }
         guard let neutralRef = refs["neutral"] else { throw LoadError.missingNeutral }
         let dir = cacheRoot.appending(path: key, directoryHint: .isDirectory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -111,8 +119,12 @@ struct CompanionFaceLoader: Sendable {
         guard bytes[neutralRef] != nil else { throw LoadError.missingNeutral }
         Self.prune(cacheRoot, keeping: key)
         let images = bytes
+        // A flow set with any file missing is dropped as a whole: the face uses its key patches.
+        var useManifest = manifest
+        if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.flow = nil }
+        let finalManifest = useManifest
         let set = try await Task.detached(priority: .userInitiated) {
-            try FaceSet(manifest: manifest) { ref in
+            try FaceSet(manifest: finalManifest) { ref in
                 guard let data = images[ref] else { throw FaceSetError.undecodable(ref) }
                 return data
             }

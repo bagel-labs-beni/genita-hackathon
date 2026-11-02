@@ -105,7 +105,7 @@ import os
         if startedUtterances.insert(utteranceId).inserted { onPlaybackStarted?(utteranceId) }
     }
 
-    /// Where the playhead is in this utterance's audio (ms from its first sample), for Peter mouth frames.
+    /// Where the playhead is in this utterance's audio (ms from its first sample), for lip worker mouth frames.
     func playbackPositionMs(utteranceId: Int) -> Double? {
         guard let start = utteranceStart[utteranceId], let now = nowSample() else { return nil }
         return Double(now - start) * 1000 / playFormat.sampleRate

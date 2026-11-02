@@ -90,6 +90,10 @@ struct MacConversationView: View {
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }
+            // {name} comes from the account's companion (named on the iPhone, NM01), never a hard-coded "Jin"
+            if model.onboarding.auth.isSignedIn {
+                Task { if let c = try? await model.onboarding.companion() { model.setup.companionName = c.name; call.companionName = c.name } }
+            }
         }
         .onAppear { call.showFace(reduceMotion: reduceMotion) }
         .onDisappear { call.hideFace() }
@@ -112,7 +116,7 @@ struct MacConversationView: View {
                 .onTapGesture { withAnimation(.easeOut(duration: 0.22)) { interpret.cancel() } }
                 .accessibilityLabel("Close").accessibilityAddTraits(.isButton)
             MacInterpretCallSheet(app: $interpret.app, warning: interpret.headphones ? nil : "No headphones on: the other person would hear my whispers too.") {
-                interpret.start(.companion(name: "Jin", userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
+                interpret.start(.companion(name: model.companionDisplayName, userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
             }
             .frame(width: 390)
             .transition(.move(edge: .bottom))

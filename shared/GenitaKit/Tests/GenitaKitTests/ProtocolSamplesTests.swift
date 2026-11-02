@@ -50,6 +50,16 @@ struct ProtocolSamplesTests {
         #expect(encoded["tts"] as? String == "device")
     }
 
+    /// Server voice timing (MMS forced aligner): words + ARPAbet phonemes, ms on the reply timeline.
+    @Test func testAudioTimingSample() throws {
+        let data = Dictionary(uniqueKeysWithValues: try samples("server")).first { $0.key == "audio.timing.json" }!.value
+        guard case let .audioTiming(t) = try JSONDecoder().decode(ServerEvent.self, from: data) else { Issue.record("audio.timing"); return }
+        #expect(t.utteranceId == 4 && t.sentence == 0 && t.seq == 41)
+        #expect(t.words.first == WordTiming(w: "Oh", s: 40, e: 190))
+        #expect(t.phonemes.map(\.p) == ["AO", "W", "OW"])
+        #expect(t.phonemes.last == PhonemeTiming(p: "OW", s: 260, e: 520))
+    }
+
     @Test func testUnknownServerTypeDoesNotThrow() throws {
         let e = try JSONDecoder().decode(ServerEvent.self, from: Data(#"{"type":"future.event","boxes":[]}"#.utf8))
         #expect(e == .unknown(type: "future.event"))
@@ -60,9 +70,5 @@ struct ProtocolSamplesTests {
         #expect(AudioFrameHeader(frame: h.encoded() + Data([1, 2])) == h)
         #expect(AudioFrameHeader.payload(of: h.encoded() + Data([1, 2])) == Data([1, 2]))
         #expect(AudioFrameHeader(frame: Data("XX123456".utf8)) == nil)
-        let peter = AudioFrameHeader(kind: GenitaProtocol.frameKindPeter, seq: 7).encoded() + Data([3, 0, 0, 0, 0xff, 0xd8])
-        let crop = AudioFrameHeader.peterCrop(of: peter)
-        #expect(crop?.frame == 3)
-        #expect(crop?.jpeg == Data([0xff, 0xd8]))
     }
 }
