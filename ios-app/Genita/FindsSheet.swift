@@ -455,7 +455,8 @@ struct FindCardPage: View {
                 Text(card.title).font(TypeStyle.title(28)).tracking(-0.28).foregroundStyle(CallInk.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
                 if !card.subtitle.isEmpty {
-                    Text(card.subtitle).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true)
+                    Text(entry.reopened ? Self.reopenedSubtitle(card.subtitle) : card.subtitle)
+                        .font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1).truncationMode(.tail)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if card.kind != .link, let hero = card.hero {
@@ -463,6 +464,13 @@ struct FindCardPage: View {
                     .accessibilityLabel("Illustration of \(card.title)")
             }
         }
+    }
+
+    /// A saved recipe describes the camera result as a completed observation (Figma F2 138:2).
+    static func reopenedSubtitle(_ subtitle: String) -> String {
+        subtitle
+            .replacingOccurrences(of: "You have ", with: "You had ")
+            .replacingOccurrences(of: ", need ", with: ", needed ")
     }
 
     // MARK: recipe
