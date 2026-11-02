@@ -104,3 +104,16 @@ extension OnboardingClientTests {
         #expect(OnbStub.seen.last?.url?.path == "/v1/companion/prep/retry" && p.stages[.mouth] == .running)
     }
 }
+
+extension OnboardingClientTests {
+    /// Meta-only `sceneUrl` is a server path (`/v1/companion/face/neutral`) behind the account token, not a public URL.
+    @Test func sceneImageFetchesTheServerPathWithTheToken() async throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        OnbStub.handler = { req in req.httpMethod == "GET" && req.url?.path == "/v1/companion/face/neutral" ? (200, png) : (404, Data()) }
+        let p = try JSONDecoder().decode(PrepProgress.self, from: Data(#"{"status":"running","sceneUrl":"/v1/companion/face/neutral","steps":{"scene":{"status":"done"}}}"#.utf8))
+        let data = try await client.sceneImage(try #require(p.sceneURL))
+        #expect(data == png)
+        #expect(OnbStub.seen.last?.url?.absoluteString == "https://api.test/v1/companion/face/neutral")
+        #expect(OnbStub.seen.last?.value(forHTTPHeaderField: "authorization") == "Bearer tok")
+    }
+}

@@ -155,6 +155,30 @@ final class OnboardingUITests: XCTestCase {
         capture("S09-first-call")
     }
 
+    /// F12 / #86: a returning account whose face is still being made opens straight on the call (no onboarding,
+    /// no PREP-1) with the photo face and the S09-PREP pill (228:543) following the server's prep.
+    func testReturningWhileTheFaceIsStillBeingMade() throws {
+        stubPost("/__companion", json: #"{"name":"Jin","faceMs":5000}"#)
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = [
+            "GENITA_API_URL": "http://127.0.0.1:8790",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_REVIEW_STILL": "1",
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 25), "StartRouter → S07 → S09, no onboarding")
+        XCTAssertFalse(app.buttons["copyPrompt"].exists, "no I01 for an account with a companion")
+        let pill = app.descendants(matching: .any).matching(identifier: "callPrepPill").firstMatch
+        XCTAssertTrue(pill.waitForExistence(timeout: 15), "S09-PREP while prep runs")
+        XCTAssertTrue(pill.label.hasPrefix("Getting the"), pill.label)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-S09-PREP"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     /// V04 with the voice service down or cold: the list is greyed, says "Voice preview is waking up", and the
     /// recommended default stays picked so the user can still continue (PUT saves it; the server default already is it).
     func testVoicePickerWhenTheVoiceServiceIsDown() throws {

@@ -406,12 +406,13 @@ struct BringingView: View {
     private func photoLayer(width: CGFloat) -> some View {
         ZStack {
             uploaded.frame(width: width, height: PrepStyle.photoHeight).clipped()
-            if let url = model.prep?.sceneURL, url.scheme == "https" {
-                AsyncImage(url: url, transaction: Transaction(animation: .easeInOut(duration: PrepStyle.crossfadeSeconds))) { phase in
-                    if let image = phase.image { image.resizable().scaledToFill().transition(.opacity) } else { Color.clear }
-                }.frame(width: width, height: PrepStyle.photoHeight).clipped()
+            if let data = model.sceneImageData, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill().frame(width: width, height: PrepStyle.photoHeight).clipped()
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: PrepStyle.crossfadeSeconds), value: model.sceneImageData != nil)
+        .task(id: model.prep?.sceneURL) { await model.loadScene() }
         .scaleEffect(breathe ? PrepStyle.breathScale : 1)
         .frame(width: width, height: PrepStyle.photoHeight).clipped()
         .overlay(alignment: .top) {
@@ -443,8 +444,9 @@ struct BringingView: View {
                 }.buttonStyle(.plain).disabled(!s.primaryEnabled || model.retryingPrep)
                     .accessibilityLabel(primary).accessibilityIdentifier(s.secondary == nil ? "prepContinue" : "prepRetry")
                 if let secondary = s.secondary {
-                    Button(secondary) { model.startFirstCall() }.buttonStyle(.plain)
-                        .font(TypeStyle.body(15, .medium)).foregroundStyle(.white).frame(height: 18)
+                    // off while Try again is in flight: its answer restarts the polling the call relies on
+                    Button(secondary) { model.startFirstCall() }.buttonStyle(.plain).disabled(model.retryingPrep)
+                        .font(TypeStyle.body(15, .medium)).foregroundStyle(.white.opacity(model.retryingPrep ? 0.46 : 1)).frame(height: 18)
                         .accessibilityIdentifier("prepContinuePhoto")
                 }
                 if let error = model.prepError, s.secondary != nil {

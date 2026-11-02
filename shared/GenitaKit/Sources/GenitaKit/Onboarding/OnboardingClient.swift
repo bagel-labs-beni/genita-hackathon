@@ -300,6 +300,16 @@ public final class OnboardingClient: @unchecked Sendable {
 
     public func prep() async throws -> PrepProgress { try await auth.send("GET", "/v1/companion/prep") }
 
+    /// The companion's call scene for PREP-1 and a new phone. Meta-only `sceneUrl` is a server path
+    /// (`/v1/companion/face/neutral`) behind the account token; an absolute https URL is fetched as is.
+    public func sceneImage(_ url: URL) async throws -> Data {
+        if url.host == nil, url.path.hasPrefix("/v1/") { return try await auth.sendData("GET", url.path, timeout: 30) }
+        guard url.scheme == "https" else { throw GenitaAuthError.badResponse }
+        let (data, res) = try await URLSession.shared.data(from: url)
+        guard (res as? HTTPURLResponse)?.statusCode == 200 else { throw GenitaAuthError.badResponse }
+        return data
+    }
+
     /// PREP-1e Try again: the server redoes only the steps that didn't finish (`202` + the new progress).
     public func retryPrep() async throws -> PrepProgress { try await auth.send("POST", "/v1/companion/prep/retry", timeout: 30) }
 

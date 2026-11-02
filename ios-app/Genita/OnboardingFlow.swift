@@ -42,10 +42,18 @@ extension AppState {
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
-        if setup.imageData == nil, let url = c.prep?.sceneURL, url.scheme == "https",
-           let (data, res) = try? await URLSession.shared.data(from: url), (res as? HTTPURLResponse)?.statusCode == 200, UIImage(data: data) != nil {
+        // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
+        if setup.imageData == nil, let url = c.prep?.sceneURL,
+           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
             setup.imageData = data
         }
+    }
+
+    /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
+    func loadScene() async {
+        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL,
+              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
+        sceneImageData = data
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil) {

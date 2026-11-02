@@ -99,6 +99,8 @@ struct SavedSetup: Codable {
     var retryingPrep = false
     /// PREP-1e: the one line under the buttons when Try again itself failed
     var prepError: String?
+    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands)
+    var sceneImageData: Data?
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
