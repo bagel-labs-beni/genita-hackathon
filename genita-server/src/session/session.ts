@@ -13,6 +13,7 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
+import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
@@ -1204,8 +1205,10 @@ export class Session {
     let sparkError: unknown = null;
     let emptyCause: string | null = null;
     let droppedOpener = false;
+    const narration = new NarrationJudge(!interpret && !self);
+    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
     let onlyOpener: string | null = null;
-    const pushSentences = (list: string[], keepOpener = false) => {
+    const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
@@ -1231,6 +1234,20 @@ export class Session {
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
       }
       waiter.wake?.();
+    };
+    const applyNarration = ({ speak, dropped }: NarrationDecision) => {
+      for (const _raw of dropped) {
+        droppedOpener = true;
+        this.log("reply.narration_dropped", { utteranceId });
+      }
+      enqueueSentences(speak);
+    };
+    const pushSentences = (list: string[]) => {
+      for (const raw of list) {
+        const p = parseTaggedSentence(raw);
+        if (p.emotion) emotion = p.emotion;
+        applyNarration(narration.push(raw));
+      }
     };
 
     // Producer: Spark stream → sentences
@@ -1259,6 +1276,12 @@ export class Session {
                 gotText ||= !!ev.delta.trim();
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
+                if (!interpret) {
+                  // A tool may follow a sentence with no trailing space, or an unfinished clause.
+                  pushSentences(splitter.flush());
+                  // Completion alone is also tool evidence; some streams omit the start event.
+                  applyNarration(narration.onToolCall());
+                }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
               } else if (ev.type === "done") status = ev.status;
@@ -1269,10 +1292,11 @@ export class Session {
           }
           if (signal.aborted) return;
           pushSentences(splitter.flush());
+          applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
-          if (sentences.length) { sparkError = attemptError; break; }
+          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
@@ -1285,6 +1309,7 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
+        if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
         waiter.wake?.();
       }
@@ -1444,7 +1469,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim()) {
+    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });

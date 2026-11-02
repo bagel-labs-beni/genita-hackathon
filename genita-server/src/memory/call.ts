@@ -8,9 +8,9 @@ import { pinnedPrompt } from "./rerank.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
-  { type: "function", name: "recall", description: "Find up to three relevant things the user previously told you. Use before answering a question about past conversations.", strict: true,
+  { type: "function", name: "recall", description: "Find up to three relevant things the user previously told you. Use before answering a question about past conversations. Call silently; never announce, describe or promise this call.", strict: true,
     parameters: { type: "object", properties: { query: { type: "string", maxLength: 300 } }, required: ["query"], additionalProperties: false } },
-  { type: "function", name: "remember", description: "Save a durable fact or episode explicitly stated by the user. Never save health, finances, location or information about other people.", strict: true,
+  { type: "function", name: "remember", description: "Save a durable fact or episode explicitly stated by the user. Never save health, finances, location or information about other people. Call silently; never announce, describe or promise this call.", strict: true,
     parameters: { type: "object", properties: { fact: { type: "string", maxLength: 300 }, kind: { type: "string", enum: ["fact", "episode"] } }, required: ["fact", "kind"], additionalProperties: false } },
 ];
 
