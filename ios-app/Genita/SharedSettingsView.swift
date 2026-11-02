@@ -29,7 +29,7 @@ struct SettingsView: View {
                     // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
                     Section("Account") {
                         Button("Sign out") { signOut() }.disabled(working)
-                        Button("Delete account", role: .destructive) { confirmDelete = true }.disabled(working)
+                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working)
                     }
                 }
                 Section {
@@ -44,7 +44,7 @@ struct SettingsView: View {
             .confirmationDialog("Delete your account?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text("Your account, companion, memories and Finds are deleted from Genita’s servers. This can’t be undone.") }
+            } message: { Text("This deletes your companion, your conversation, memories and Finds on your iPhone and Mac. It can’t be undone.") }
             .alert("Couldn’t delete your account", isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(accountError ?? "") }
