@@ -92,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var micOn = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
+    /// The front camera's preview is mirrored, the frames sent to the server are not: boxes need to know (CAM-H).
+    private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
     private(set) var playing = false
@@ -164,6 +166,7 @@ enum CallStop: Equatable {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
         finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
     }
 
@@ -190,6 +193,9 @@ enum CallStop: Equatable {
         guard let (_, res) = try? await URLSession.shared.data(for: req) else { return false }
         return (res as? HTTPURLResponse)?.statusCode == 200
     }
+
+    /// REST client for the Finds tab, on the same host and token as the call.
+    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: endpoint, user: Self.installId) }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
     static var installId: String {
@@ -281,11 +287,12 @@ enum CallStop: Equatable {
     }
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); return }
         cameraDenied = false
         let go = { [weak self] in
             guard let self, self.camera.available else { return }
             self.camera.start()
+            self.cameraFront = self.camera.front
             self.cameraOn = true
         }
         #if DEBUG
@@ -299,7 +306,7 @@ enum CallStop: Equatable {
         }
     }
 
-    func flipCamera() { camera.flip() }
+    func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
 
     /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
     static var interruptedHoldMs: Int {

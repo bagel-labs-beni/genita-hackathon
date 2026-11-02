@@ -1,6 +1,6 @@
 name: Call client
 
-# F4-L10 / F4-U-S09 / F10-U-SHEET: builds both apps, runs the unit tests, and drives the call screen through its states
+# F4-L10 / F4-U-S09 / F10-U-SHEET / F10-U-FINDS / F5-U-CAM: builds both apps, runs the unit tests, and drives the call screen through its states
 # with a recorded real session (ios-app/Tools/call-replay). Screenshots are uploaded as an artifact.
 on:
   pull_request:
@@ -53,6 +53,7 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/FindsTabUITests \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"

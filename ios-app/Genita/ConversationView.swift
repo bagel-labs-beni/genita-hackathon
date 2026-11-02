@@ -7,6 +7,8 @@ struct ConversationView: View {
     @ObservedObject private var handoff = PhoneHandoff.shared
     private let call = CallController.shared
     @State private var moreOpen = false
+    @State private var findsTabOpen = false
+    @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
     @State private var loopURL: URL?
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
@@ -23,12 +25,15 @@ struct ConversationView: View {
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
+                        // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
+                        if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
-                            .opacity(sheet == .full ? 0 : 1)
+                            .opacity(sheet == .full || call.cameraOn ? 0 : 1)
+                            .allowsHitTesting(!call.cameraOn)
                             .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
                             .animation(.drawer, value: sheet)
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
@@ -36,6 +41,13 @@ struct ConversationView: View {
                         }.buttonStyle(.plain).disabled(connecting).position(x: 47.5, y: 86.5 + top)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
+                        if call.cameraOn && sheet != .full {
+                            // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
+                            CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
+                                .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
+                                .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)").accessibilityIdentifier("cameraPip")
+                        }
                         if interpreting {
                             if !findsOpen {
                                 InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
@@ -43,9 +55,9 @@ struct ConversationView: View {
                                     .transition(.opacity)
                             }
                         } else {
-                        selfView.scaleEffect(sheet == .half || sheet == .rising ? 0.5 : 1)
+                        if !call.cameraOn { selfView.scaleEffect(sheet == .half || sheet == .rising ? 0.5 : 1)
                             .position(x: sheet == .half || sheet == .rising ? 52.25 : 87.5, y: selfY(sheet) + bottom)
-                            .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet)
+                            .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet) }
                         Button { call.toggleCamera() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
@@ -56,8 +68,11 @@ struct ConversationView: View {
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
+                        if findsTabOpen && !connecting {
+                            FindsTabView(call: call, list: findsList, top: top) { closeFindsTab() }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .trailing))
+                        }
                         if findsOpen {
-                            FindsSheet(call: call, size: full.size).frame(width: full.size.width, height: full.size.height, alignment: .top)
+                            FindsSheet(call: call, size: full.size, talk: { closeFindsTab() }).frame(width: full.size.width, height: full.size.height, alignment: .top)
                                 .transition(.move(edge: .bottom))
                         }
                         if sheet == .full {
@@ -89,7 +104,7 @@ struct ConversationView: View {
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
                                 CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
-                                              openFinds: call.finds.cardCount > 0 ? { withAnimation(.drawer) { call.finds.reopenLatest() } } : nil) {
+                                              openFinds: { openFindsTab() }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
@@ -100,7 +115,8 @@ struct ConversationView: View {
                         let title = DesignLibrary.nodes("menu").first { $0.characters == "Genita" }!
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
-                        menuRow("Setting", icon: "reference-menu-settings", y: 165, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
+                        menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
+                        menuRow("Setting", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         Button { withAnimation { model.menuOpen = false } } label: { Color.clear.contentShape(Rectangle()) }
                             .frame(width: full.size.width - panelWidth, height: full.size.height).position(x: panelWidth + (full.size.width - panelWidth) / 2, y: full.size.height / 2).buttonStyle(.plain).accessibilityLabel("Close menu")
                     }
@@ -115,6 +131,7 @@ struct ConversationView: View {
                 call.begin(model.callStart)
                 #if DEBUG
                 call.installFindsFixture()
+                installFindsTabFixture()
                 #endif
             }
         }
@@ -172,15 +189,49 @@ struct ConversationView: View {
             RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).overlay(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.05))).environment(\.colorScheme, .dark)
         }
     }
-    func menuRow(_ title: String, icon: String, y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
+    func menuRow(_ title: String, text: String? = nil, icon: String = "", symbol: String? = nil, badge: String? = nil, y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
         let label = DesignLibrary.nodes("menu").first { $0.characters == title }!
         return Button(action: action) {
             ZStack(alignment: .topLeading) {
                 Color.clear
-                Image(resource: icon).resizable().frame(width: title == "Chat" ? 20.7 : 21.7007, height: 20.7).position(x: 20, y: 22)
-                DesignText(node: label).frame(width: label.w, height: label.h).position(x: label.x - 24 + label.w / 2, y: 22)
+                if let symbol { Image(systemName: symbol).font(.system(size: 18, weight: .regular)).foregroundStyle(CallInk.ink).frame(width: 21, height: 21).position(x: 20, y: 22) }
+                else { Image(resource: icon).resizable().frame(width: title == "Chat" ? 20.7 : 21.7007, height: 20.7).position(x: 20, y: 22) }
+                DesignText(node: label, text: text ?? label.characters).frame(width: label.w, height: label.h).position(x: label.x - 24 + label.w / 2, y: 22)
+                if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
-        }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(title)
+        }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)
+    }
+
+    #if DEBUG
+    /// Screenshots of the Finds tab without a server: GENITA_FINDS_TAB = list | empty | detail (recorded cards).
+    func installFindsTabFixture() {
+        guard let mode = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"] else { return }
+        let recorded = FixtureFindsAPI.recorded()
+        findsList.api = FixtureFindsAPI(cards: mode == "empty" ? [] : recorded.cards)
+        findsList.frames = { recorded.frames[$0] ?? [] }
+        findsList.purge = { _ in }
+        Task { @MainActor in
+            for _ in 0..<80 where call.link != .live { try? await Task.sleep(for: .milliseconds(100)) }
+            try? await Task.sleep(for: .milliseconds(300))
+            openFindsTab()
+            if mode == "detail" {
+                await findsList.load()
+                if let first = findsList.cards.first(where: { $0.saved == true }) {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    withAnimation(.drawer) { call.finds.openSaved(first, frames: findsList.frames(first.id)) }
+                }
+            }
+        }
+    }
+    #endif
+
+    /// M01 Finds / ⋮ Finds → the list. The in-call sheet folds away so the list is not covered.
+    func openFindsTab() {
+        call.finds.state = .idle
+        withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen = false; moreOpen = false; findsTabOpen = true }
+    }
+    func closeFindsTab() {
+        withAnimation(.easeInOut(duration: 0.22)) { findsTabOpen = false }
     }
     var companionImage: Image {
         if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }

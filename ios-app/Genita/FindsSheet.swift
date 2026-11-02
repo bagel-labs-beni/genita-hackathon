@@ -132,6 +132,8 @@ struct PressScale: ButtonStyle {
 struct FindsSheet: View {
     let call: CallController
     let size: CGSize
+    /// F10-U-FINDS: "Talk about this on a call" on a card reopened from the Finds tab.
+    var talk: (() -> Void)?
     @State private var dragY: CGFloat = 0
     @State private var scrolledPage: Int?
     private var finds: FindsModel { call.finds }
@@ -282,10 +284,12 @@ struct FindsSheet: View {
                         Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
-                Button { if let card { finds.ask(Self.cta(card.kind)) } } label: {
-                    Text(card.map { Self.cta($0.kind) } ?? "").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
+                let reopened = finds.current?.reopened == true
+                // r03 F2 `.fcta`: on a card reopened from Finds the one button continues the call about it
+                Button { if reopened { finds.talkAboutThis(); talk?() } else if let card { finds.ask(Self.cta(card.kind)) } } label: {
+                    Text(reopened ? "Talk about this on a call" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(PressScale()).disabled(!finds.canAsk).opacity(finds.canAsk ? 1 : 0.4).accessibilityIdentifier("findCTA").accessibilitySortPriority(-10)
+                }.buttonStyle(PressScale()).disabled(!reopened && !finds.canAsk).opacity(reopened || finds.canAsk ? 1 : 0.4).accessibilityIdentifier(reopened ? "findTalk" : "findCTA").accessibilitySortPriority(-10)
             }
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
@@ -371,12 +375,18 @@ struct FindCardPage: View {
         .accessibilityIdentifier("findPage\(index)")
     }
 
+    /// r03 F2: "From your fridge · Today" when reopened from Finds.
+    private var eyebrow: String {
+        guard entry.reopened, let date = FindsListModel.date(card.createdAt) else { return card.eyebrow }
+        return card.eyebrow + " · " + FindsListModel.dayTitle(Calendar.current.startOfDay(for: date), now: Date(), calendar: .current)
+    }
+
     // r03 `.hd`: eyebrow + dots | save, close
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(card.eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
-                if finds.cardCount > 1 {
+                Text(eyebrow).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
+                if finds.cardCount > 1, !entry.reopened {
                     HStack(spacing: 4) {
                         ForEach(Array(finds.entries.filter { $0.card != nil }.enumerated()), id: \.element.id) { i, e in
                             Circle().fill(e.id == entry.id ? CallInk.ink : (e.id == finds.newFind ? FindsInk.blue : FindsInk.line)).frame(width: 6, height: 6)
@@ -389,9 +399,11 @@ struct FindCardPage: View {
                 Button { finds.toggleSave() } label: {
                     Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
+                if !entry.reopened {
                 Button { withAnimation(.drawer) { finds.close() } } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
+                }
             }.padding(.trailing, -10)
         }.frame(height: 44)
     }
@@ -423,7 +435,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : 132)
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 84 : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
