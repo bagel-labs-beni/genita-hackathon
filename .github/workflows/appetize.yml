@@ -4,21 +4,13 @@ name: Appetize preview
 # browser (no device needed). The link opens the app in its browser-preview mode (launch argument
 # `--browser-preview`, Debug-compiled code only, see shared/Call/BrowserPreview.swift).
 #
-# Needs the repo secret APPETIZE_API_TOKEN. Without it a push or a manual run only prints a notice and stops.
+# Needs the repo secret APPETIZE_API_TOKEN. Without it a run only prints a notice and stops.
 # APPETIZE_PUBLIC_KEY (secret or variable, optional) makes every run update the same Appetize app, so the link stays
-# the same. Pull requests that touch this file only build and zip (a dry run); they never upload.
+# the same.
 
+# Manual only (Chelsea 11/3: CI cost) — run it from main once per build (build 3, build 4).
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/appetize.yml"
-      - "ios-app/**"
-      - "shared/**"
-  pull_request:
-    paths:
-      - ".github/workflows/appetize.yml"
 
 concurrency:
   group: appetize-${{ github.ref }}
