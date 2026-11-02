@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, TWO_SAY, ONE_SAY, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, TWO_SAY, ONE_SAY, searchedLine, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
@@ -209,7 +209,7 @@ test("product pipeline: 2 opened product pages → card with price from the page
   ], "page price wins over the model's; no price when the page didn't show one");
   assert.deepEqual(card.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
   assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
-  assert.match(card.how[1], /^Searched the web · northline\.example\.com, fieldandco\.example\.com$/);
+  assert.equal(card.how[1], "Searched the web · northline.example.com +1", "one line on the card (#214)");
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
   assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
   assert.deepEqual(stored, ["product-1"], "only the product with a page picture gets one");
@@ -378,4 +378,10 @@ test("#199: on the Mac (new call, no search yet) 'match my style' refines the ja
 
 test("#211: pill strings are one-liners (≤ 28 chars): searching title, ack, answer", () => {
   for (const s of [SEARCH_TITLE, TWO_SAY, ONE_SAY, "On it."]) assert.ok(s.length <= PILL_MAX, s);
+});
+
+test("#214: the 'Searched the web' line fits one card line", () => {
+  assert.equal(searchedLine(["quince.com", "target.com"]), "Searched the web · quince.com, target.com");
+  assert.equal(searchedLine(["northline.example.com", "fieldandco.example.com"]), "Searched the web · northline.example.com +1");
+  assert.equal(searchedLine(["onlyone.example.com"]), "Searched the web · onlyone.example.com");
 });
