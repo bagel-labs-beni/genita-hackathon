@@ -59,15 +59,20 @@ export class MemoryCall {
   summaries: CallSummary[] = [];
   /** this call's top stable facts (loaded once at open, in every reply's instructions) */
   pinned: Memory[] = [];
-  /** Forget notifications seen by this call */
-  private forgets = 0;
+  /** Forget notifications seen by this call: a batch or notes from before one are never used */
+  private forgetsSeen = 0;
+  /** resolves once open() has read the persisted Forget revision (batches wait for it, Codex 11/3) */
+  private stateKnown: Promise<void>;
+  private markKnown: () => void = () => {};
   constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId; this.threadId = sessionId;
+    this.stateKnown = new Promise<void>((r) => { this.markKnown = r; });
     this.unsubscribe = service.subscribe(userId, (revision) => {
-      this.forgets++;
+      this.forgetsSeen++;
       this.pinned = [];
       this.pending = []; this.recentReplies = []; this.thread = []; this.covered = 0; this.summarizedAt = 0; this.summaries = [];
-      this.revision = revision; onForget(revision);
+      this.revision = revision;
+      if (!this.closed) onForget(revision);
     });
   }
   /** For the next device (server.ts handoff): this thread, how many pairs it covers, and its kept pairs. */
@@ -98,19 +103,21 @@ export class MemoryCall {
   }
   async open(greet = true): Promise<Memory | null> {
     // Any Forget notification from here on invalidates what the loads below return (Codex P1 11/3).
-    const forgets = this.forgets;
+    const forgets = this.forgetsSeen;
     // Bounded: a slow store never holds the call start; no notes = the old behavior.
     const notes = this.service.sessionMemory
       ? Promise.race([this.service.summaries(this.userId, this.threadId, SUMMARY_INJECT).catch(() => []), new Promise<CallSummary[]>((r) => setTimeout(() => r([]), SUMMARY_LOAD_MS).unref?.())])
       : Promise.resolve([]);
     const facts = within(this.service.stableFacts(this.userId), SUMMARY_LOAD_MS, [] as Memory[]);
-    const state = await this.service.state.getState(this.userId);
+    let state;
+    try { state = await this.service.state.getState(this.userId); } catch (err) { this.markKnown(); throw err; }
     // A Forget notification can arrive while the persisted state read is in flight.
     this.revision = Math.max(this.revision, state.revision);
+    this.markKnown();
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
     const loaded = await notes;
     const pinned = await facts;
-    if (this.forgets === forgets) { this.summaries = loaded.filter((s) => s.thread_id !== this.threadId); this.pinned = pinned; }
+    if (this.forgetsSeen === forgets) { this.summaries = loaded.filter((s) => s.thread_id !== this.threadId); this.pinned = pinned; }
     return greet ? within(this.service.opening(this.userId, this.sessionId), OPENING_BUDGET_MS, null) : null;
   }
   userMessage(): void { this.service.background(() => this.service.noteMessage(this.userId)); }
@@ -131,27 +138,35 @@ export class MemoryCall {
   private summarize(): void {
     if (!this.service.sessionMemory || this.covered <= this.summarizedAt || !this.thread.length) return;
     const turns = [...this.thread];
-    const revision = this.revision;
+    const forgets = this.forgetsSeen;
     const threadId = this.threadId;
     const covered = this.covered;
     this.summarizedAt = covered;
     const before = this.queue;
-    const job = before.catch(() => {}).then(() => this.service.summarizeThread(this.userId, threadId, turns, revision, covered));
+    // same rule as extraction batches: wait for the persisted revision, drop if a Forget came since
+    const job = before.catch(() => {}).then(() => this.stateKnown).then(() =>
+      forgets === this.forgetsSeen ? this.service.summarizeThread(this.userId, threadId, turns, this.revision, covered) : null);
     this.queue = job;
     this.service.background(() => job);
   }
   private flush(): void {
     if (!this.pending.length) return;
     const turns = this.pending.splice(0, 4);
-    const revision = this.revision;
+    const forgets = this.forgetsSeen;
     const before = this.queue;
-    const job = before.catch(() => {}).then(() => this.service.extract(this.userId, this.sessionId, turns, revision));
+    // A slow start (the persisted revision not read yet) holds the batch instead of writing it under a
+    // guessed revision 0, which a past Forget would reject. A Forget since these turns drops them.
+    const job = before.catch(() => {}).then(() => this.stateKnown).then(() =>
+      forgets === this.forgetsSeen ? this.service.extract(this.userId, this.sessionId, turns, this.revision) : undefined);
     this.queue = job;
     this.service.background(() => job);
   }
   close(): void {
     if (this.closed) return;
-    this.flush(); this.summarize(); this.closed = true; this.unsubscribe(); this.service.endCall(this.userId, this.sessionId);
+    this.flush(); this.summarize(); this.closed = true; this.service.endCall(this.userId, this.sessionId);
+    // keep hearing Forget until this call's last batch is written or dropped (Codex 11/3: a batch held for
+    // a slow first state read must still see a Forget that lands after the call ended)
+    void this.queue.catch(() => {}).finally(() => this.unsubscribe());
   }
   private async execute(call: FunctionCall): Promise<unknown> {
     let args: Record<string, unknown>;
