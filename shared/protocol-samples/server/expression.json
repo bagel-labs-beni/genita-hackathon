@@ -1,0 +1,9 @@
+{
+  "type": "expression",
+  "utteranceId": 4,
+  "sentence": 0,
+  "tag": "smile",
+  "intensity": 0.7,
+  "startMs": 40,
+  "endMs": 520
+}
