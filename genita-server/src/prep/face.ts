@@ -125,7 +125,7 @@ const SHAPE: Record<Viseme, [string, string]> = {
   CDG: ["teeth nearly together and lips slightly parted and relaxed, as in the middle of saying 's' or 'k'", "mouth barely open with the teeth nearly together, as if saying 's'"],
 };
 
-/** Conversational mouth keys: [human wording, wording for a muzzle, beak or drawn mouth]. Tested 11/3 on T9 / dog / clay; AH2 re-made 11/3 with the dark-interior wording (critic: grey film gone; applying it to MID/AH/EH/EI made them too big / hid the teeth, so only AH2). */
+/** Conversational mouth keys: [human wording, wording for a muzzle, beak or drawn mouth]. Tested 11/3 on T9 / dog / clay = the v7 demo set (critic 7/10 vs Peter). Dark-interior rewrites were tried and lost (bigger openings, fewer visible teeth); see sweep s25–s31. */
 const MOUTH: Record<MouthKey, [string, string]> = {
   MID: [
     "the person is talking on a video call, caught mid-word with the lips relaxed and slightly parted, the upper front teeth just visible, the jaw lowered very slightly, as in the middle of saying 'uh'",
@@ -136,7 +136,7 @@ const MOUTH: Record<MouthKey, [string, string]> = {
     "caught mid-sound with the mouth open a little, the jaw gently lowered, relaxed",
   ],
   AH2: [
-    "the person is talking on a video call, caught mid-word on an open 'ah' sound, the mouth open about two fingers wide, the jaw clearly lowered, the upper teeth visible, the lower teeth barely visible, a dark mouth interior, lips relaxed, natural speech",
+    "the person is talking on a video call, caught mid-word on an open 'ah' sound, the mouth open about two fingers wide, the jaw clearly lowered, upper and lower teeth visible, lips relaxed, natural speech",
     "caught mid-sound with the mouth moderately open, the jaw lowered, relaxed, natural",
   ],
   EH: [

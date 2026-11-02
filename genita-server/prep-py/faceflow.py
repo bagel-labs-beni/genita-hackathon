@@ -47,8 +47,9 @@ BASE_MAP = {
     # neighbouring vowel frames' key amounts (linear between the nearest vowel frames within windowMs)
     'jawFloor': {'share': 0.6, 'windowMs': 160, 'vowels': ['A', 'O', 'EI', 'U'], 'closed': ['MBP', 'FV', 'rest']},
     'blink': {'mode': 'snap', 'frames': 3},  # eyes fully closed for 3 frames, no half frames
-    # applied LAST (after focus, which would otherwise restore it); the remainder goes to neutral
-    'maxAmount': {'AH2': 0.6},
+    # optional per-key cap applied LAST (after focus, which would otherwise restore it); remainder -> neutral.
+    # Empty for v7 (caps were only needed for the bigger dark-interior keys that lost the sweep).
+    'maxAmount': {},
 }
 PROFILE = {
     'human': {},
