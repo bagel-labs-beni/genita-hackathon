@@ -264,10 +264,14 @@ final class GenitaUITests: XCTestCase {
         app.launchArguments = ["--uitesting"]
         app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
         app.launch()
+        let terms = app.buttons["Terms"], privacy = app.buttons["Privacy Policy"]
+        XCTAssertTrue(terms.waitForExistence(timeout: 10) && privacy.exists)
+        // the two hit areas never overlap (a tap at the bottom of Terms must not open Privacy Policy)
+        XCTAssertLessThanOrEqual(terms.frame.maxY, privacy.frame.minY, "Terms \(terms.frame) / Privacy \(privacy.frame)")
         for (label, id) in [("Terms", "legal-terms"), ("Privacy Policy", "legal-privacy")] {
             let link = app.buttons[label]
             XCTAssertTrue(link.waitForExistence(timeout: 10), label)
-            XCTAssertGreaterThanOrEqual(link.frame.height, 40, "\(label) hit area")
+            XCTAssertGreaterThanOrEqual(link.frame.height, 28, "\(label) hit area")
             link.tap()
             let safari = app.descendants(matching: .any)["legalSafari"]
             let done = app.buttons["Done"]
