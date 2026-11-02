@@ -430,7 +430,9 @@ test("finds: a camera cooking question is answered in voice first, the card land
     async spark(req: SparkRequest) {
       const p = JSON.stringify(req.input);
       if (p.includes("clearly visible")) return { text: "YES", output: [] };
-      await sleep(30); // the recipe search is slower than the spoken answer
+      // the recipe search is slower than the spoken answer: gate it on the first audio frame instead of a
+      // 30 ms sleep (flaked 2/6 on a loaded machine)
+      await client.waitFor((m) => m.type === "audio", 3000);
       return { text: '{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry it."],"sources":[],"ask":["Spicy?","Noodles?"],"say":"Found one, you are one pan away."}', output: [] };
     },
     async *sparkStream() {
