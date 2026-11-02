@@ -80,6 +80,8 @@ test("MODEL_API_KEY alone boots the server and completes a device-voice session 
   // Isolate the real server/session/voice path from unrelated feature services.
   deps.memory = undefined;
   deps.finds = undefined;
+  // connection warm-up opens sockets to api.meta.ai on purpose (latency lane); its hosts are tested in keepalive.test.ts
+  deps.prewarm = undefined;
   deps.openAsr = () => { throw new Error("mic disabled"); };
   deps.spark = async function* () {
     yield { type: "text", delta: "<warm> Hello there." };
