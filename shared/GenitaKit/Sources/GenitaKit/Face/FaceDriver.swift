@@ -48,23 +48,24 @@ public final class FaceDriver: ObservableObject {
     // MARK: events
 
     public func handle(replyDelta d: ServerEvent.ReplyDelta) {
-        switchUtterance(d.utteranceId)
+        guard switchUtterance(d.utteranceId) else { return }
         timeline.appendText(d.text)
     }
 
     public func handle(audio: ServerEvent.Audio, pcm: Data) {
-        switchUtterance(audio.utteranceId)
+        guard switchUtterance(audio.utteranceId) else { return }
         timeline.append(audio, pcm: pcm)
     }
 
     public func handle(speaking s: ServerEvent.Speaking) {
-        if s.on { switchUtterance(s.utteranceId) }
+        if s.on { guard switchUtterance(s.utteranceId) else { return } }
         setEmotion(s.on ? s.emotion : nil)
     }
 
     /// Barge-in or cancel: the mouth goes to rest at once.
     public func cancel(utteranceId: Int? = nil) {
         guard utteranceId == nil || utteranceId == currentUtteranceId else { return }
+        if let id = currentUtteranceId { newestUtteranceId = max(newestUtteranceId ?? id, id + 1) }
         timeline.reset()
         currentUtteranceId = nil
     }
@@ -74,10 +75,17 @@ public final class FaceDriver: ObservableObject {
         queue.async { r.setEmotion(emotion, at: t) }
     }
 
-    private func switchUtterance(_ id: Int) {
-        guard id != currentUtteranceId else { return }
+    /// Utterance ids only grow; events of an older or cancelled reply that arrive late are dropped.
+    private var newestUtteranceId: Int?
+
+    /// False when the event belongs to an older or cancelled utterance.
+    private func switchUtterance(_ id: Int) -> Bool {
+        if id == currentUtteranceId { return true }
+        if let newest = newestUtteranceId, id < newest { return false }
         timeline.reset()
         currentUtteranceId = id
+        newestUtteranceId = id
+        return true
     }
 
     // MARK: frames

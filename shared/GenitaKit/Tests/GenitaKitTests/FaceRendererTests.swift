@@ -197,4 +197,21 @@ struct FaceDriverTests {
         #expect(d.currentUtteranceId == nil)
         #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
     }
+
+    @Test func lateEventsOfAnOldOrCancelledUtteranceAreIgnored() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), reduceMotion: true, seed: 5)
+        func audio(_ id: Int) throws -> ServerEvent.Audio {
+            guard case let .audio(a) = try event(#"{"type":"audio","utteranceId":\#(id),"seq":1,"sentence":0,"offsetMs":0,"durationMs":600,"sampleRate":24000,"model":"m","words":[]}"#) else { throw CocoaError(.coderReadCorrupt) }
+            return a
+        }
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        d.cancel(utteranceId: 9)
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 600))   // late chunk of the cancelled reply
+        #expect(d.currentUtteranceId == nil)
+        #expect(d.timeline.receivedAudioEndMs == 0)
+        d.handle(audio: try audio(10), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        d.handle(audio: try audio(9), pcm: lipTestPCM(amplitude: 0.4, ms: 900))   // older reply
+        #expect(d.currentUtteranceId == 10)
+        #expect(d.timeline.receivedAudioEndMs == 600)
+    }
 }
