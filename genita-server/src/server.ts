@@ -24,6 +24,7 @@ import { Session, type ClientSink, type SessionDeps } from "./session/session.ts
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
+import { createSeamless } from "./tts/seamless.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -52,12 +53,15 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
   const elevenKey = config.serverTts ? config.elevenKey : null;
   const peterUrl = process.env.GENITA_PETER_URL;
   const peterToken = process.env.GENITA_PETER_TOKEN;
+  // Meta voice service (Seamless on our GPU) wins; ElevenLabs only as the legacy flag path; else device mode
+  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
     // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
       config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
