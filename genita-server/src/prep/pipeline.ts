@@ -117,7 +117,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v1";
+export const PREVIEW_VERSION = "meta-v2" // v2: V04 voices renamed (id 0 was Jin, now Coco);
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).
@@ -170,7 +170,7 @@ export async function savePrefs(d: PrepDeps, companion: CompanionRecord, depth: 
   }
   const persona = toPersona(raw, input);
   const prefs = { depth: v.depth, answers: v.answers, updatedAt: new Date().toISOString() };
-  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona }))) ?? { ...companion, prefs, persona };
+  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona: x.voiceId === companion.voiceId ? persona : { ...persona, card: { ...persona.card, voice: { id: x.voiceId } } } }))) ?? { ...companion, prefs, persona };
   d.log("setup.persona_written", { depth: v.depth, ms: since(t0), spark: !!raw });
   return next;
 }
