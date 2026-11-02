@@ -55,7 +55,7 @@ struct ReferenceSignInView: View {
                     }
                     emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
-                    LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 751 + bottom)
+                    LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
@@ -164,26 +164,30 @@ enum LegalPage: String, Identifiable {
     var url: URL { URL(string: "https://bagel-labs-beni.github.io/genita-legal/" + (self == .terms ? "terms/" : "privacy/"))! }
 }
 
-/// "By continuing, you agree to our Terms and / acknowledge our Privacy Policy" (A02, Figma 7:40) as two rows of
-/// text with real Buttons; each row is at least 44 pt tall so the links are easy to hit.
+/// "By continuing, you agree to our Terms and / acknowledge our Privacy Policy" (A02, Figma 7:40) as two lines of
+/// text with real Buttons. The lines sit 18 pt apart like the board; each link's hit area grows away from the other line
+/// (Terms upward, Privacy Policy downward) so the two never overlap (Codex review P2).
 struct LegalLinks: View {
     var open: (LegalPage) -> Void
     private let grey = Color(white: 0.5435), white = Color(white: 0.9652)
     var body: some View {
-        VStack(spacing: -14) {
-            row("By continuing, you agree to our", "Terms", " and", .terms)
-            row("acknowledge our", "Privacy Policy", "", .privacy)
+        VStack(spacing: 2) {
+            HStack(alignment: .lastTextBaseline, spacing: 0) {
+                Text("By continuing, you agree to our ").foregroundStyle(grey)
+                link("Terms", .terms, grow: .top)
+                Text(" and").foregroundStyle(grey)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("acknowledge our ").foregroundStyle(grey)
+                link("Privacy Policy", .privacy, grow: .bottom)
+            }
         }
         .font(TypeStyle.body(13))
     }
-    private func row(_ lead: String, _ link: String, _ tail: String, _ page: LegalPage) -> some View {
-        HStack(spacing: 0) {
-            Text(lead + " ").foregroundStyle(grey)
-            Button { open(page) } label: {
-                Text(link).foregroundStyle(white).padding(.vertical, 15).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityLabel(link).accessibilityAddTraits(.isLink).accessibilityIdentifier("legal-" + page.rawValue)
-            Text(tail).foregroundStyle(grey)
-        }.frame(minHeight: 44)
+    private func link(_ title: String, _ page: LegalPage, grow edge: Edge.Set) -> some View {
+        Button { open(page) } label: {
+            Text(title).foregroundStyle(white).padding(edge, 14).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel(title).accessibilityAddTraits(.isLink).accessibilityIdentifier("legal-" + page.rawValue)
     }
 }
 
