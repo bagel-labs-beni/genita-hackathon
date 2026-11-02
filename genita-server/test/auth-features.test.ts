@@ -123,3 +123,25 @@ test("finds REST: JWT user gets 200 for their own cards and pictures only; X-Gen
   assert.deepEqual(await store.list(ownerKey(a.userId)), [], "Finds erased with the account");
   assert.equal((await store.list(ownerKey(b.userId))).length, 1, "other users untouched");
 });
+
+test("DELETE /me: if memories can't be erased, the account stays (502) and a retry finishes the job", async (t) => {
+  const repo = new InMemoryMemoryRepository();
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  const { call, signIn } = await bootAccounts(t, (d) => {
+    d.memory = memory;
+  });
+  const a = await signIn("001.apple.retry");
+  await memory.remember(a.userId, "I like kimchi jjigae.", "episode", "s1");
+  const realDelete = repo.delete.bind(repo);
+  let fail = true;
+  repo.delete = async (...args: Parameters<typeof repo.delete>) => {
+    if (fail) throw new Error("storage offline");
+    return realDelete(...args);
+  };
+  const first = await call("DELETE", "/me", { token: a.token });
+  assert.equal(first.status, 502);
+  assert.equal((await call("GET", "/me", { token: a.token })).status, 200, "account kept for a retry");
+  fail = false;
+  assert.equal((await call("DELETE", "/me", { token: a.token })).status, 200);
+  assert.deepEqual(await memory.list(a.userId), []);
+});

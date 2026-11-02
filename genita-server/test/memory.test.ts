@@ -258,3 +258,17 @@ test("a mid-generation opt-out suppresses output and identity-check failures nev
   const broken = new UsPhotoService(service, { edit: async () => png(), sameFace: async () => { throw new Error("vendor down"); } });
   await service.settings("a", { photosOfUs: true }); await assert.rejects(broken.generate("a", photoInput("other")));
 });
+
+test("the same seen line with a new crop deletes the old crop (Forget / account delete can't reach it otherwise)", async () => {
+  const deleted: string[] = [];
+  const { service, crops } = setup({ deleteCrop: async (user, ref) => { deleted.push(ref); await crops.delete(user, ref); } });
+  const context = { sessionId: "s", discussedText: "I showed kimchi." };
+  const a = await crops.put("a", png(), { source: "sam-3.1", safeObject: true, box: [0.1, 0.1, 0.4, 0.4] });
+  const b = await crops.put("a", png(), { source: "sam-3.1", safeObject: true, box: [0.2, 0.2, 0.5, 0.5] });
+  assert.ok(await service.rememberSeen("a", context, { object: "kimchi", line: "I showed kimchi.", crop: a }));
+  const second = await service.rememberSeen("a", context, { object: "kimchi", line: "I showed kimchi.", crop: b });
+  assert.equal(second?.image_ref, b.image_ref);
+  assert.deepEqual(deleted, [a.image_ref], "old crop removed when replaced");
+  await service.forget("a");
+  assert.deepEqual(deleted, [a.image_ref, b.image_ref], "Forget removes the current one");
+});

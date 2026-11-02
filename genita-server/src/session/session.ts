@@ -330,8 +330,10 @@ export class Session {
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
       });
       try {
-        const item = await this.memoryCall.open(this.mode === "chat");
-        this.greeting = this.mode === "chat" ? { item } : null;
+        // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
+        // and the greeting prompt would be sent to the translator
+        const item = await this.memoryCall.open(startMode === "chat");
+        this.greeting = startMode === "chat" ? { item } : null;
         this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
       }
       catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
@@ -436,7 +438,8 @@ export class Session {
         this.turn = { ...this.turn, utteranceId: this.turn.utteranceId + 1 };
         return this.turn.utteranceId;
       },
-      translate: (req, signal) => this.sparkSource(req, signal),
+      // no memory context or recall/remember tools in translation (useMemory = false)
+      translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),

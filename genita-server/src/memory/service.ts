@@ -76,7 +76,10 @@ export class MemoryService {
     const now = this.now();
     const old = (await this.repository.list(userId)).find((m) => m.id === memoryId(text));
     const m: Memory = { ...old, id: memoryId(text), text, kind, created_at: old?.created_at ?? now, updated_at: now, last_used_at: old?.last_used_at ?? null, follow_up: followUp, source_session_id: sessionId, ...(imageRef ? { image_ref: imageRef } : {}) };
-    return await this.repository.put(userId, m) ? m : null;
+    if (!await this.repository.put(userId, m)) return null;
+    // same line seen again with a new crop: the old crop would otherwise be unreachable by Forget / account delete
+    if (old?.image_ref && imageRef && old.image_ref !== imageRef) await this.options.deleteCrop?.(userId, old.image_ref).catch(() => {});
+    return m;
   }
   async recall(userId: string, query: string): Promise<Memory[]> {
     if (!query.trim()) return [];
