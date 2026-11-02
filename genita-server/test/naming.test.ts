@@ -64,6 +64,9 @@ test("detectRename: in-call rename phrases → the new name", () => {
     ["Change your name to Max", "Max"],
     ["Hey. Call yourself Max. What's your name?", "Max"],
     ["call yourself max", "max"], // lowercase ASR
+    ["Could I call you Max?", "Max"],
+    ["I’ll call you Max.", "Max"], // curly apostrophe
+    ["Your name’s Max now.", "Max"],
   ];
   for (const [text, name] of yes) assert.equal(detectRename(text), name, text);
 });
@@ -92,6 +95,17 @@ test("detectRename: questions and look-alikes are not renames", () => {
     "Please never call yourself Max!",
     "I won't call you Max.",
     "Stop, you can't call yourself Max",
+    // questions about the companion's habit or opinion are not renames; only a request ("Can I call you Max?") is
+    "Why do you call yourself Max?",
+    "Do you call yourself Max?",
+    "Do you call yourself Max",
+    "Should I call you Max?",
+    "Would you call yourself Max?",
+    "Is your name Max now?",
+    "Your name is Max now?",
+    // curly apostrophes (iOS keyboard / ASR)
+    "Don’t call yourself Max.",
+    "I won’t call you Max.",
   ];
   for (const text of no) assert.equal(detectRename(text), null, text);
 });
