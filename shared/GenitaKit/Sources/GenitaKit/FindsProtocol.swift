@@ -90,6 +90,8 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     public var subtitle: String
     public var status: String?
     public var say: String?
+    /// The status pill's line, ≤ 28 characters (one line on both devices). `say` is spoken; this is shown.
+    public var pill: String?
     public var hero: FindImage?
     public var camera: Camera?
     public var items: [FindItem]
@@ -151,6 +153,8 @@ extension ServerEvent {
         public var findId: String
         public var items: [FindItem]
         public var checking: Bool
+        /// the card's pill line once it is known (fridge: after the checks)
+        public var pill: String?
         public var subtitle: String?
         public var status: String?
     }
