@@ -240,6 +240,11 @@ public final class LipTimeline: @unchecked Sendable {
         guard d.hasSegments else { return .rest }
         let k = firstSegment(endingAfter: ms, in: d.segments)
         if k < d.segments.count, d.segments[k].start <= ms { return d.segments[k].viseme }
+        // Voiced but untimed and untexted: loudness shapes rather than a shut mouth.
+        if !d.voiced.isEmpty {
+            let i = windowIndex(ms) - d.firstWindow
+            if i >= 0, i < d.voiced.count, d.voiced[i] { let o = d.openness[i]; return o > 0.6 ? .A : o > 0.3 ? .EI : .CDG }
+        }
         return .rest
     }
 
@@ -285,12 +290,24 @@ public final class LipTimeline: @unchecked Sendable {
                 return Float(pow(min(1, (r - gate) / (peak - gate)), 0.75))
             }
         }
+        // Timings win only where they are: phonemes over their clause, words elsewhere, the reply
+        // text over the voiced audio nothing timed (a clause the aligner skipped, a gap between
+        // timed words). Voiced audio with no shape at all falls back to loudness shapes.
         var segs: [Segment] = []
+        var covered: [ClosedRange<Double>] = []
         if !phonemes.isEmpty {
-            segs = phonemes.map { Segment(start: Double($0.startMs), end: Double($0.endMs), viseme: LipViseme(phoneme: $0.phoneme)) }
-        } else if !words.isEmpty {
-            for w in words { segs += spread(LipGraphemes.visemes(in: w.text), from: Double(w.startMs), to: Double(w.endMs)) }
-        } else if !cues.isEmpty {
+            let ps = phonemes.sorted { $0.startMs < $1.startMs }
+            segs += ps.map { Segment(start: Double($0.startMs), end: Double($0.endMs), viseme: LipViseme(phoneme: $0.phoneme)) }
+            covered += Self.runs(ps.map { Double($0.startMs)...Double($0.endMs) }, joinGapMs: 300)
+        }
+        if !words.isEmpty {
+            for w in words {
+                for seg in spread(LipGraphemes.visemes(in: w.text), from: Double(w.startMs), to: Double(w.endMs)) {
+                    segs += Self.clip(seg, outside: covered)
+                }
+            }
+        }
+        if phonemes.isEmpty, words.isEmpty, !cues.isEmpty {
             let sorted = cues.sorted { $0.t < $1.t }
             for (k, c) in sorted.enumerated() {
                 let v = LipViseme(legacy: c.v)
@@ -298,16 +315,29 @@ public final class LipTimeline: @unchecked Sendable {
                 let end = k + 1 < sorted.count ? sorted[k + 1].t : c.t + 200
                 if end > c.t { segs.append(Segment(start: Double(c.t), end: Double(end), viseme: v)) }
             }
-        } else if !text.isEmpty, !d.voiced.isEmpty {
-            segs = textSegments(d, tokens: Self.tokens(text), fromWindow: Int.min)
         }
-        // Word timings that stop early (a chunk the voice service could not align): the voiced
-        // audio after the last timed word takes the words of the reply text not timed yet.
-        if phonemes.isEmpty, !words.isEmpty, !text.isEmpty, !d.voiced.isEmpty {
-            let timedEnd = Double(words.map(\.endMs).max() ?? 0)
-            let rest = Array(Self.tokens(text).dropFirst(words.count))
-            let from = Int((timedEnd / Double(Self.windowMs)).rounded(.up))
-            if !rest.isEmpty { segs += textSegments(d, tokens: rest, fromWindow: from) }
+        covered += words.map { Double($0.startMs)...Double($0.endMs) }
+        if !text.isEmpty, !d.voiced.isEmpty, cues.isEmpty || !words.isEmpty || !phonemes.isEmpty {
+            let tokens = Self.tokens(text)
+            if words.isEmpty {
+                // No word anchors: the whole text over whatever voiced audio is not timed.
+                segs += textSegments(d, tokens: tokens, fromMs: -.infinity, toMs: .infinity, covered: covered)
+            } else {
+                // Anchor the text to the timed words; untimed words go to the gaps around them.
+                let timed = words.sorted { $0.startMs < $1.startMs }
+                var j = 0
+                var prevEnd = -Double.infinity
+                for w in timed {
+                    let key = Self.norm(w.text)
+                    guard let m = (j..<min(tokens.count, j + 6)).first(where: { Self.norm(tokens[$0]) == key }) else {
+                        prevEnd = max(prevEnd, Double(w.endMs)); continue
+                    }
+                    if m > j { segs += textSegments(d, tokens: Array(tokens[j..<m]), fromMs: prevEnd, toMs: Double(w.startMs), covered: covered) }
+                    j = m + 1
+                    prevEnd = max(prevEnd, Double(w.endMs))
+                }
+                if j < tokens.count { segs += textSegments(d, tokens: Array(tokens[j...]), fromMs: prevEnd, toMs: .infinity, covered: covered) }
+            }
         }
         d.segments = disjoint(segs)
         d.hasSegments = !d.segments.isEmpty
@@ -334,15 +364,20 @@ public final class LipTimeline: @unchecked Sendable {
     }
 
     /// Text fallback over the voiced windows at or after `fromWindow` (absolute window index).
-    private func textSegments(_ d: Derived, tokens: [String], fromWindow: Int) -> [Segment] {
+    private func textSegments(_ d: Derived, tokens: [String], fromMs: Double, toMs: Double, covered: [ClosedRange<Double>]) -> [Segment] {
         let shaped = tokens.map { (LipGraphemes.visemes(in: $0), max(1, $0.filter { $0.isLetter || $0.isNumber }.count)) }
             .filter { !$0.0.isEmpty }
         guard !shaped.isEmpty else { return [] }
-        let voicedIdx = d.voiced.indices.filter { d.voiced[$0] && d.firstWindow + $0 >= fromWindow }
+        let wms = Double(Self.windowMs)
+        let voicedIdx = d.voiced.indices.filter { i in
+            let mid = (Double(d.firstWindow + i) + 0.5) * wms
+            return d.voiced[i] && mid >= fromMs && mid < toMs && !covered.contains { $0.contains(mid) }
+        }
         guard !voicedIdx.isEmpty else { return [] }
         let letters = Double(shaped.reduce(0) { $0 + $1.1 })
         let v = Double(voicedIdx.count)
-        let denom = audioFinished ? v : max(v, letters * Self.windowsPerLetter)
+        // A gap closed by a later timed word is fully received; an open tail may still grow.
+        let denom = audioFinished || toMs.isFinite ? v : max(v, letters * Self.windowsPerLetter)
         let w = Double(Self.windowMs)
         var out: [Segment] = []
         var cum = 0.0
@@ -366,6 +401,34 @@ public final class LipTimeline: @unchecked Sendable {
             }
         }
         return out
+    }
+
+    static func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+
+    /// Merges ranges closer than `joinGapMs` into runs.
+    static func runs(_ r: [ClosedRange<Double>], joinGapMs: Double) -> [ClosedRange<Double>] {
+        var out: [ClosedRange<Double>] = []
+        for x in r.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = out.last, x.lowerBound - last.upperBound <= joinGapMs {
+                out[out.count - 1] = last.lowerBound...max(last.upperBound, x.upperBound)
+            } else { out.append(x) }
+        }
+        return out
+    }
+
+    /// The parts of `seg` outside every covered range.
+    private static func clip(_ seg: Segment, outside covered: [ClosedRange<Double>]) -> [Segment] {
+        var parts = [seg]
+        for c in covered {
+            parts = parts.flatMap { p -> [Segment] in
+                guard p.end > c.lowerBound, p.start < c.upperBound else { return [p] }
+                var out: [Segment] = []
+                if p.start < c.lowerBound { out.append(Segment(start: p.start, end: c.lowerBound, viseme: p.viseme)) }
+                if p.end > c.upperBound { out.append(Segment(start: c.upperBound, end: p.end, viseme: p.viseme)) }
+                return out
+            }
+        }
+        return parts
     }
 
     /// Sorted, non-overlapping (a later segment wins where two overlap), neighbours merged.

@@ -57,6 +57,14 @@ public final class FaceDriver: ObservableObject {
         timeline.append(audio, pcm: pcm)
     }
 
+    /// Server aligner timings for one clause (`audio.timing`: words + ARPAbet phonemes, ms on the
+    /// reply's audio clock). They override the spelling pass only where they cover.
+    public func handle(timing utteranceId: Int, words: [LipWordTiming], phonemes: [LipPhonemeTiming]) {
+        guard switchUtterance(utteranceId) else { return }
+        timeline.appendWords(words)
+        timeline.appendPhonemes(phonemes)
+    }
+
     public func handle(speaking s: ServerEvent.Speaking) {
         if s.on { guard switchUtterance(s.utteranceId) else { return } }
         setEmotion(s.on ? s.emotion : nil)
