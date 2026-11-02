@@ -1,0 +1,56 @@
+name: Watch together
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/watch-together.yml"
+      - "genita-server/**"
+      - "mac-app/**"
+  push:
+    branches: [feat/watch-together]
+  workflow_dispatch:
+
+concurrency:
+  group: watch-together-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: genita-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: Mac build
+        working-directory: ios-app
+        run: |
+          xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | tail -n 40
+          exit "${PIPESTATUS[0]}"
+      - name: Capture and uplink checks
+        run: mac-app/Tools/watch-shots/check.sh
+      - name: Render watch-together screens
+        run: mac-app/Tools/watch-shots/render.sh build-output/watch-screens
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watch-together-screens
+          path: build-output/watch-screens
+          if-no-files-found: warn

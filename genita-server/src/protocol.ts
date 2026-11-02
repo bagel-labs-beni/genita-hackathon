@@ -174,6 +174,45 @@ export function checkServerEvent(o: Record<string, unknown>): string[] {
   return problems;
 }
 
+// ───────────────────────── watch socket (F5, /v1/watch) ─────────────────────────
+// A second socket per call, opened by the Mac while it shares its screen.
+// See PROTOCOL.md "Watch together". Binary app → server = system audio PCM
+// s16le mono 24 kHz (the shared screen's sound, never the mic).
+
+export type WatchClientMessage =
+  | { type: "start"; source?: string }
+  | { type: "frame"; image: string; blank?: boolean }
+  | { type: "stop" }
+  | { type: "ping"; t?: unknown };
+
+export type WatchServerEvent =
+  | { type: "ready"; protocol: number; sessionId: string }
+  | { type: "state"; sharing: boolean; blank: boolean; source: string | null }
+  | { type: "reaction"; utteranceId: number; moment: "funny" | "surprising" | "sweet" }
+  | { type: "speaker"; on: boolean; label?: string; name?: string }
+  | { type: "error"; code: "unknown_type" | "bad_message" | "frame_too_large" | "asr_unavailable" | "not_started"; message: string }
+  | { type: "pong"; t: unknown };
+
+export type WatchServerEventType = WatchServerEvent["type"];
+
+export const WATCH_EVENT_FIELDS: Record<WatchServerEventType, { required: string[]; optional: string[] }> = {
+  ready: { required: ["protocol", "sessionId"], optional: [] },
+  state: { required: ["sharing", "blank", "source"], optional: [] },
+  reaction: { required: ["utteranceId", "moment"], optional: [] },
+  speaker: { required: ["on"], optional: ["label", "name"] },
+  error: { required: ["code", "message"], optional: [] },
+  pong: { required: ["t"], optional: [] },
+};
+
+export function checkWatchEvent(o: Record<string, unknown>): string[] {
+  const spec = WATCH_EVENT_FIELDS[o.type as WatchServerEventType];
+  if (!spec) return [`unknown watch type ${String(o.type)}`];
+  const problems: string[] = [];
+  for (const k of spec.required) if (!(k in o)) problems.push(`${o.type}: missing ${k}`);
+  for (const k of Object.keys(o)) if (k !== "type" && !spec.required.includes(k) && !spec.optional.includes(k)) problems.push(`${o.type}: extra ${k}`);
+  return problems;
+}
+
 export function encodeFrameHeader(kind: number, seq: number): Buffer {
   const head = Buffer.alloc(FRAME_HEADER_BYTES);
   head.write("GA", 0, "latin1");

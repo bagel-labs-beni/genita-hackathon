@@ -2,6 +2,7 @@
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
+ *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
  *
  * Threat line: callers are the Genita iOS/macOS apps. Auth is a shared
  * bearer token (GENITA_SESSION_TOKEN) until the login ticket lands; with no
@@ -18,6 +19,7 @@ import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
+import { attachWatchSocket } from "./watch/socket.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -27,7 +29,7 @@ export type LogFn = (event: string, data: Record<string, unknown>) => void;
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
   return {
     config,
-    openAsr: (languages) => new TranscribeStream({ key: config.metaKey, languages }),
+    openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: (req) => streamSpeech({ ...req, apiKey: config.elevenKey }),
     // one Peter connection per call = one Modal container = one GPU
@@ -53,6 +55,8 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
     throw new Error("GENITA_SESSION_TOKEN is required when HOST is not loopback");
   }
   const sessions = new Map<string, Session>();
+  /** resets a call's idle timer; watch traffic keeps a muted call alive */
+  const touches = new Map<string, () => void>();
   const http = createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -69,6 +73,16 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
+    if (url.pathname === "/v1/watch") {
+      if (!tokenOk(req, url, config.sessionToken)) return reject(401, "Unauthorized");
+      const id = url.searchParams.get("session") ?? "";
+      const session = sessions.get(id);
+      if (!session) return reject(404, "Not Found");
+      return wss.handleUpgrade(req, socket, head, (ws) => {
+        ws.on("message", () => touches.get(id)?.());
+        attachWatchSocket(ws, session, log);
+      });
+    }
     if (url.pathname !== "/v1/session") return reject(404, "Not Found");
     if (!tokenOk(req, url, config.sessionToken)) return reject(401, "Unauthorized");
     if (sessions.size >= config.maxSessions) return reject(503, "Busy");
@@ -86,10 +100,14 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
     sessions.set(id, session);
     log("session.open", { session: id, sessions: sessions.size });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
-    const life = setTimeout(() => session.close(4001, "max_duration"), config.maxSessionMs);
-    ws.on("message", (data, isBinary) => {
+    const touch = () => {
       clearTimeout(idle);
       idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
+    };
+    touches.set(id, touch);
+    const life = setTimeout(() => session.close(4001, "max_duration"), config.maxSessionMs);
+    ws.on("message", (data, isBinary) => {
+      touch();
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
       if (isBinary) session.onClientAudio(buf);
       else void session.onClientText(buf.toString("utf8")).catch((err) => log("session.error", { session: id, message: String(err).slice(0, 200) }));
@@ -99,6 +117,7 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
       clearTimeout(life);
       session.close();
       sessions.delete(id);
+      touches.delete(id);
       log("session.close", { session: id, sessions: sessions.size });
     });
     ws.on("error", () => ws.terminate());

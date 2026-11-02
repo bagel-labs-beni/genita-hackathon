@@ -19,6 +19,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
+| 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 
 ```
 wss://<host>/v1/session
@@ -133,6 +134,48 @@ persona, profile, memories and recent history itself; the server stores nothing.
 
 - `words`: always sent (captions/karaoke). A word can rarely split across two chunks.
 - `mouth`: only when `lip.active` is `atlas`. Visemes: `X` rest, `A` open, `E` wide, `O` round, `U` small round, `M` closed (m/b/p), `F` lip-teeth, `L` tongue, `S` small open. Apply each cue at its time against the audio clock. F4-L20 will swap these for legacy-engine atlas cell ids (`{f, cell}`); the field position stays.
+
+## Watch together (F5, Mac screen share)
+
+A second WebSocket per call, opened by the Mac only while it shares its screen.
+Same auth as the call socket. Kept separate so ~100 KB frames never queue in
+front of mic audio and the mic's binary format stays unchanged.
+
+```
+wss://<host>/v1/watch?session=<ready.sessionId>     Authorization: Bearer … (or &token=…)
+```
+
+`404` at upgrade = no such call. Closes `4409` when a newer watch socket replaces it,
+`1000` when the call ends. Closing it (or `stop`) ends the share; nothing is kept but a
+few minutes of 1–2 line story notes for this call. Watch traffic keeps a muted call
+from hitting the 120 s idle close.
+
+| Direction | Frame | Content |
+|---|---|---|
+| app → server | text | `start {source?}` first (source = shared app name, "Safari"), then `frame {image, blank?}`, `stop`, `ping {t}` |
+| app → server | binary | the shared screen's **system audio**, PCM s16le mono 24 kHz, real time (ScreenCaptureKit `capturesAudio`, `excludesCurrentProcessAudio` so Genita's voice is never in it). Gaps are padded with silence on the server. |
+| server → app | text | events below |
+
+`frame.image`: base64 JPEG (or data URL), long side ≤ 1024 px, < 1.5 MB, sent **only when the
+picture changed** (≤ 1 per second). `blank: true` when the frame is (almost) black — protected
+windows capture black; the app decides (≥ 1 s of black).
+
+| event | fields | meaning |
+|---|---|---|
+| `ready` | `protocol`, `sessionId` | socket attached to the call |
+| `state` | `sharing`, `blank`, `source` | `blank:true` → MS-3 card. The companion also says once that the window shows up black. |
+| `reaction` | `utteranceId`, `moment` (`funny`\|`surprising`\|`sweet`) | the companion is reacting first (MS-2 "Reacting" 1.5 s). Its voice arrives on the call socket as utterance `utteranceId`; `funny` speaks with `speaking.emotion: "laugh"`. |
+| `speaker` | `on`, `label?`, `name?` | FT-SPK chip: who is talking in the video ("the chef", or `Voice A` when unsure). Only after two voices were heard; `on:false` after 3 s of quiet. Never the words. |
+| `error` | `code`, `message` | `frame_too_large`, `asr_unavailable` (frames still work), `bad_message`, `unknown_type`, `not_started` |
+| `pong` | `t` | |
+
+Server side (genita-server/src/watch): the system audio gets its own Muse Transcribe session
+(DIARIZATION), so the video never becomes a user turn; a user turn that repeats a line the
+video just said (speakers, no earphones) is dropped. Every ~12 s, or 4 s after a new line,
+Spark writes a 1–2 line memo from the new frames and lines and judges whether a friend would
+react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
+the user or companion talks or the video's dialogue is running. A question while sharing gets
+the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
 
 ## Lip source (`start.lip`)
 

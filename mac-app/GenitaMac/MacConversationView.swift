@@ -14,7 +14,7 @@ struct MacConversationView: View {
         ""
         #endif
     }
-    private var displaySharing: Bool { sharing.isSharing || reviewState == "sharing" }
+    private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
     private let ink = Color(white: 17.0 / 255)
@@ -44,6 +44,7 @@ struct MacConversationView: View {
                     Text("화면 공유").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
                         .frame(width: 61, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
                 }
+                WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
             if permissionVisible { permissionPanel }

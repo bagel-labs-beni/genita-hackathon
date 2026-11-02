@@ -17,6 +17,7 @@ import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
 import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
+import { WatchController, type WatchSink } from "../watch/watch.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -50,7 +51,8 @@ export interface PeterLike {
 
 export type SessionDeps = {
   config: Config;
-  openAsr: (languages: string[]) => AsrLike;
+  /** mode: the Mac's shared-screen sound uses DIARIZATION (watch together) */
+  openAsr: (languages: string[], mode?: "ENDPOINTING" | "DIARIZATION") => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
@@ -134,6 +136,7 @@ export class Session {
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
   private peter: PeterLike | null = null;
+  private watch: WatchController | null = null;
   private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
@@ -319,6 +322,7 @@ export class Session {
     }
     this.asr?.end();
     this.peter?.close();
+    this.watch?.close();
     this.client.close(code, reason);
   }
 
@@ -340,11 +344,52 @@ export class Session {
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
         this.metrics.completeAt = t;
-        this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
-        this.dispatch({ type: "speech_complete", text: e.text });
-        // not consumed by a reply (backchannel / empty): stop the guess
-        return this.dropSpeculation();
+        if (this.watch?.isSharing && e.text.trim()) return void this.completeUnlessEcho(e.turnId, e.text);
+        return this.completeTurn(e.turnId, e.text);
     }
+  }
+
+  private completeTurn(turnId: number, text: string): void {
+    this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
+    this.dispatch({ type: "speech_complete", text });
+    // not consumed by a reply (backchannel / empty): stop the guess
+    this.dropSpeculation();
+  }
+
+  /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
+  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+    const echo = (await this.watch?.isEcho(text)) ?? false;
+    if (this.closed) return;
+    if (!echo) return this.completeTurn(turnId, text);
+    this.log("watch.echo_dropped", { text: text.slice(0, 120) });
+    this.dispatch({ type: "speech_complete", text: "" });
+    this.dropSpeculation();
+  }
+
+  // ───────────────────────── watch together (F5) ─────────────────────────
+
+  /** The Mac opened /v1/watch for this call. Null until `start`. */
+  attachWatch(sink: WatchSink): WatchController | null {
+    if (!this.started || this.closed) return null;
+    this.watch ??= new WatchController(
+      {
+        companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
+        conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        react: (script) => {
+          const before = this.turn.utteranceId;
+          this.dispatch({ type: "react", text: script });
+          return this.turn.utteranceId !== before ? this.turn.utteranceId : null;
+        },
+      },
+      {
+        now: this.now,
+        openAsr: (mode) => this.deps.openAsr(this.deps.config.asrLanguages, mode),
+        spark: this.deps.spark,
+        log: (event, data) => this.log(event, data),
+      },
+    );
+    this.watch.attach(sink);
+    return this.watch;
   }
 
   private dispatch(e: TurnEvent): void {
@@ -369,7 +414,7 @@ export class Session {
       case "cancel_reply":
         return this.cancelReply(fx.utteranceId, fx.reason);
       case "start_reply":
-        void this.runReply(fx.text, fx.utteranceId);
+        void this.runReply(fx.text, fx.utteranceId, fx.script ?? false);
         return;
     }
   }
@@ -431,7 +476,9 @@ export class Session {
         req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
       };
     }
-    const images = this.takeFrames();
+    const camera = this.takeFrames();
+    const watch = this.watch?.questionContext() ?? null;
+    const images = [...camera, ...(watch?.images ?? [])];
     const content: string | ContentPart[] = images.length
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
@@ -445,12 +492,17 @@ export class Session {
       memories: this.memories,
       mode: "chat",
       language: this.language,
-      cameraAttached: images.length > 0,
+      cameraAttached: camera.length > 0,
     });
     return {
       interpret,
       detected: null,
-      req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
+      req: {
+        instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
+        input,
+        maxOutputTokens: 800,
+        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+      },
     };
   }
 
@@ -493,7 +545,8 @@ export class Session {
     this.spec = null;
   }
 
-  private async runReply(text: string, utteranceId: number): Promise<void> {
+  /** script: a scripted line (watch reaction) — spoken as is, no Spark, no user turn. */
+  private async runReply(text: string, utteranceId: number, script = false): Promise<void> {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -522,10 +575,11 @@ export class Session {
         spec.abort.abort();
       }
     }
+    if (script) built = { req: { input: "" }, interpret: false, detected: null };
     built ??= this.buildRequest(text);
     const { req, interpret } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!interpret) this.remember("user", text);
+    if (!interpret && !script) this.remember("user", text);
 
     const splitter = new SentenceSplitter();
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
@@ -538,7 +592,7 @@ export class Session {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
         let tts = p.ttsText;
-        if (!sentences.length && !interpret) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        if (!sentences.length && !interpret && !script) tts = avoidRepeatedOpener(tts, this.recentReplies);
         if (!tts) continue;
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
@@ -552,6 +606,12 @@ export class Session {
     // Producer: Spark stream → sentences
     const producer = (async () => {
       try {
+        if (script) {
+          m.firstTokenAt = this.now();
+          pushSentences(splitter.push(text));
+          pushSentences(splitter.flush());
+          return;
+        }
         // An answer with no text (seen once on 11/2 after a web search) gets
         // one retry without tools rather than silence.
         for (let attempt = 0; attempt < 2; attempt++) {

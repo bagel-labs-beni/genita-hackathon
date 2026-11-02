@@ -9,6 +9,9 @@
  * words of partial transcript. A short "yeah" that ends first is ignored
  * (no cancel, no new reply). bargeInMinMs = 0 cancels on speechStart.
  * Typed text and an explicit client barge_in cancel immediately.
+ *
+ * react (F5-L14 watch together): the companion speaks first with a scripted
+ * line, only from an idle state — never over the user or its own reply.
  */
 export type Phase = "listening" | "thinking" | "speaking";
 export type EmittedPhase = Phase | "interrupted";
@@ -30,12 +33,13 @@ export type TurnEvent =
   | { type: "speech_complete"; text: string }
   | { type: "barge_timer" }
   | { type: "text"; text: string }
+  | { type: "react"; text: string }
   | { type: "client_barge_in" }
   | { type: "first_audio"; utteranceId: number }
   | { type: "reply_done"; utteranceId: number };
 
 export type Effect =
-  | { type: "start_reply"; text: string; utteranceId: number }
+  | { type: "start_reply"; text: string; utteranceId: number; script?: boolean }
   | { type: "cancel_reply"; utteranceId: number; reason: CancelReason }
   | { type: "arm_barge_timer"; ms: number }
   | { type: "emit_state"; phase: EmittedPhase };
@@ -60,12 +64,12 @@ function cancel(s: TurnState, reason: CancelReason): { state: TurnState; effects
   };
 }
 
-function start(s: TurnState, text: string): { state: TurnState; effects: Effect[] } {
+function start(s: TurnState, text: string, script = false): { state: TurnState; effects: Effect[] } {
   const utteranceId = s.utteranceId + 1;
   return {
     state: { ...s, phase: "thinking", utteranceId, pendingBargeIn: false, backchannel: false },
     effects: [
-      { type: "start_reply", text, utteranceId },
+      script ? { type: "start_reply", text, utteranceId, script } : { type: "start_reply", text, utteranceId },
       { type: "emit_state", phase: "thinking" },
     ],
   };
@@ -109,6 +113,9 @@ export function reduceTurn(s: TurnState, e: TurnEvent, cfg: TurnConfig): { state
       }
       return start(s, e.text);
     }
+    case "react":
+      if (!e.text.trim() || busy(s) || s.userSpeaking || s.pendingBargeIn) return none();
+      return start(s, e.text, true);
     case "client_barge_in":
       return busy(s) ? cancel(s, "client") : none();
     case "first_audio":

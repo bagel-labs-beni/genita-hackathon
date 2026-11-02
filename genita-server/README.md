@@ -9,6 +9,9 @@ npm run typecheck   # tsc --noEmit
 npm start           # ws://127.0.0.1:8787/v1/session
 npm run smoke -- --turns=20   # real vendors: end-of-speech → first-audio + barge-in timing (needs ffmpeg)
 npm run check:meta  # one live call each: Spark JSON, SAM 3.1, files, Muse Image
+npm run watch-sim -- --qa            # watch together on the T5 clips: accuracy + question → first audio
+npm run watch-sim -- --react a.mp4 … # one long share: proactive reactions and rule checks
+npm run watch-sim -- --blank         # black screen: answers that claim to see something
 ```
 
 Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA_ENV_FILE` is loaded):
@@ -21,4 +24,4 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 
 Swift types: `shared/GenitaKit` (`shared/GenitaKit/test.sh` runs its tests, also with Command Line Tools only).
 
-Layout: `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language).
+Layout: `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language), `src/watch` (Mac screen share: memo, video sound, reactions, speaker chip — F5).
