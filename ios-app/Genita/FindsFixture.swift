@@ -98,7 +98,7 @@ extension FindsModel {
             // F5-U-CAM CAM-H: boxes over the live preview (the UI test turns the fixture camera on); no sheet
             Task { [weak self] in
                 for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
-                for case let .observeBoxes(b) in recipe.events.reversed().prefix(1) { self?.boxes.apply(b) }
+                if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
             }
         case 31:
             // CAM-H with the card half up: boxes arrive with the card; the test taps an ingredient chip

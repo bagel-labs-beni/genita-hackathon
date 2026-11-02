@@ -166,12 +166,15 @@ struct FindsSheet: View {
 
     // r03 F2 `.fcta`: the one button on a card reopened from Finds
     private var talkCTA: some View {
-        Button { finds.talkAboutThis(); talk?() } label: {
+        VStack(spacing: 0) { Button { finds.talkAboutThis(); talk?() } label: {
             Text("Talk about this on a call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
                 .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
         }
-        .buttonStyle(PressScale()).padding(.horizontal, 38).padding(.top, 468 - 34 - 50).frame(maxHeight: .infinity, alignment: .top)
-        .accessibilityIdentifier("findTalk")
+        .buttonStyle(PressScale()).padding(.horizontal, 38).padding(.top, 8).accessibilityIdentifier("findTalk")
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity).frame(height: 468 - (468 - 34 - 50 - 8)).background(CallInk.sheet)
+        .padding(.top, 468 - 34 - 50 - 8).frame(maxHeight: .infinity, alignment: .top)
     }
 
     // r03 `.grab`: 96 × 44 target, 47 × 5 handle 12 from the top. One state per gesture.
@@ -444,7 +447,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : 132)
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 96 : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }

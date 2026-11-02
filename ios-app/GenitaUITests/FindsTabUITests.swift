@@ -98,7 +98,7 @@ final class FindsTabUITests: XCTestCase {
         let chip = app.buttons["chip-egg"]
         XCTAssertTrue(chip.waitForExistence(timeout: 5))
         Thread.sleep(forTimeInterval: 0.5)
-        chip.tap()
+        chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         Thread.sleep(forTimeInterval: 0.6)
         capture(app, "cam-H-chip-egg")
     }

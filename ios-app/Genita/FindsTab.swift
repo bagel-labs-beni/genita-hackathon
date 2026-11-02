@@ -76,7 +76,8 @@ struct FindsTabView: View {
                 Text("Back to our call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
                     .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(PressScale()).accessibilityIdentifier("findsBackToCall").padding(.bottom, 62)
-        }.padding(.horizontal, 38).frame(maxWidth: .infinity, maxHeight: .infinity).accessibilityIdentifier("findsEmpty")
+        }.padding(.horizontal, 38).frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .contain).accessibilityIdentifier("findsEmpty")
     }
 
     private var rows: some View {
@@ -103,6 +104,7 @@ struct FindsTabView: View {
             Color.clear.frame(height: 40).listRowSeparator(.hidden).listRowBackground(Color.clear)
         }
         .listStyle(.plain).scrollContentBackground(.hidden).environment(\.defaultMinListRowHeight, 1)
+        .padding(.top, 20)
         .accessibilityIdentifier("findsList")
     }
 
