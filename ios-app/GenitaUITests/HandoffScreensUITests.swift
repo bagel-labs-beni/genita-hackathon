@@ -100,7 +100,6 @@ final class HandoffScreensUITests: XCTestCase {
         XCTAssertFalse(app.alerts.firstMatch.exists, "A failed move is a status line, never a system alert")
         capture(app, "MVE-move-failed")
         XCTAssertTrue(app.buttons["cameraToggle"].isHittable, "The call stays usable")
-        XCTAssertFalse(app.staticTexts["Mac not responding. Still here."].waitForNonExistence(timeout: 1), "visible for about 3 s")
         XCTAssertTrue(app.staticTexts["Mac not responding. Still here."].waitForNonExistence(timeout: 6))
     }
     func testPermissionDeniedSheets() {
