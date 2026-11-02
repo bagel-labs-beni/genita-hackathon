@@ -195,7 +195,7 @@ enum CallStop: Equatable {
     }
 
     /// REST client for the Finds tab, on the same host and token as the call.
-    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: endpoint, user: Self.installId) }
+    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: fixedEndpoint ?? .current(), user: Self.installId) }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
     static var installId: String {
