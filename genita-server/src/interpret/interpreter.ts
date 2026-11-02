@@ -26,6 +26,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import { SPARK_MODEL } from "../meta/spark.ts";
 import type { TtsChunk } from "../tts/elevenlabs.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
+import { speechLang } from "../text/language.ts";
 import type { Alignment } from "../lips/visemes.ts";
 import type { BubbleReason, BubbleStatus, BubbleVia, InterpretBubbleEvent, InterpretSource, MouthCue, Phase, ServerEvent, WordTiming } from "../protocol.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -44,6 +45,11 @@ export interface InterpretHost {
   nextUtteranceId(): number;
   translate(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent>;
   tts(text: string, signal: AbortSignal): AsyncIterable<TtsChunk>;
+  /**
+   * Device voice mode (PROTOCOL.md): when set, each translated sentence goes out as `say` for the app to
+   * speak instead of server TTS audio.
+   */
+  say?(utteranceId: number, sentence: number, text: string, lang: string): void;
   timing(alignment: Alignment | null, offsetMs: number): { words: WordTiming[]; mouth?: MouthCue[] };
   /** Peter lips: true if this utterance's audio goes to the worker */
   lipBegin(utteranceId: number): boolean;
@@ -98,6 +104,8 @@ type Job = {
 
 const LOOKS_FINAL = /[.?!。？！…]["'”’)\]]*$/;
 const PLAYBACK_SLACK_MS = 250;
+/** device voice estimate per character (same as session.ts deviceSpeechEstimateMs) */
+const DEVICE_MS_PER_CHAR = 70;
 /** a heard line this similar to something Genita said in the echo window is her own voice */
 const ECHO_CONTAINMENT = 0.6;
 const ECHO_TAIL_MS = 4000;
@@ -471,6 +479,16 @@ export class Interpreter {
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
       if (ttsFailed) {
+        job.spoken.push(sentences[i]);
+        continue;
+      }
+      if (this.host.say) {
+        // device voice: the app speaks it; timing is an estimate (~70 ms per character, like the chat path)
+        if (job.playStart === null) this.firstAudio(job);
+        this.host.say(utteranceId, i, sentences[i], speechLang(sentences[i], job.bubble?.translation?.lang ?? ""));
+        ttsModel = "device";
+        job.audioMs += sentences[i].length * DEVICE_MS_PER_CHAR;
+        this.playEndAt = job.playStart! + job.audioMs;
         job.spoken.push(sentences[i]);
         continue;
       }

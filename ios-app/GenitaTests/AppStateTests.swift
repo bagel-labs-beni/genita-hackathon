@@ -47,6 +47,28 @@ import UIKit
         XCTAssertEqual(restarted.stage, .conversation)
         XCTAssertEqual(AppState(storage: store).stage, .conversation)
     }
+    func testAnotherAccountStartsWithAFreshLocalProfile() {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a")
+        model.setup.name = "A"; model.setup.hasOnboarded = true
+        model.signedOut()
+        model.signedIn(userId: "user-a")
+        XCTAssertEqual(model.setup.name, "A", "same account keeps its profile")
+        XCTAssertEqual(model.stage, .conversation)
+        model.signedOut()
+        model.signedIn(userId: "user-b", consented: false)
+        XCTAssertEqual(model.setup.name, "", "another account never sees A's profile")
+        XCTAssertFalse(model.setup.hasOnboarded)
+        XCTAssertEqual(model.stage, .consent)
+    }
+    func testPendingConsentSurvivesARestart() {
+        let model = AppState(storage: store)
+        model.setup.hasOnboarded = true; model.go(.conversation); model.save()
+        model.route(.consent)
+        XCTAssertEqual(AppState(storage: store).stage, .consent, "4403 then restart: still CS01, not the call")
+        model.consentAccepted()
+        XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
         model.go(.prompt); model.go(.paste); model.go(.preparing); model.go(.preferences)

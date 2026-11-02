@@ -29,6 +29,10 @@ const config: Config = {
   sparkHedge: 1,
   speculate: false,
   speculateStableMs: 250,
+  // #157: these interpretation tests exercise server-voice frames
+  serverTts: true,
+  kling: false,
+  peter: false,
 };
 
 class FakeAsr extends EventEmitter {
