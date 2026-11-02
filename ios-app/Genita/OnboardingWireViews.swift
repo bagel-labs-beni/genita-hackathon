@@ -31,14 +31,13 @@ struct WirePage<Content: View>: View {
                         Button(action: back) { Image(resource: "reference-back").resizable().frame(width: 8.8, height: 15.8).frame(width: 44, height: 44) }
                             .buttonStyle(.plain).position(x: 38, y: 74 + top).accessibilityLabel("Back").accessibilityIdentifier("back")
                     }
-                    Text(title).font(TypeStyle.title(35)).kerning(-0.35).foregroundStyle(CallInk.ink).lineSpacing(0)
-                        .frame(width: full.size.width - 62, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                        .position(x: 31 + (full.size.width - 62) / 2, y: 118 + top).accessibilityAddTraits(.isHeader)
-                        .accessibilityIdentifier(pageID ?? "pageTitle")
-                    if let subtitle {
-                        Text(subtitle).font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
-                            .frame(width: full.size.width - 62, alignment: .leading).position(x: 31 + (full.size.width - 62) / 2, y: 160 + top)
-                    }
+                    // title top at y 98, subtitle 10 pt under it (Figma NM01 152:2 / V02 30:2); a multi-line title pushes the subtitle down
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(title).font(TypeStyle.title(35)).kerning(-0.35).foregroundStyle(CallInk.ink)
+                            .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                            .accessibilityIdentifier(pageID ?? "pageTitle")
+                        if let subtitle { Text(subtitle).font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true) }
+                    }.frame(width: full.size.width - 62, alignment: .leading).offset(x: 31, y: 98 + top)
                     content(full.size.width, top, footerY)
                     if let primary {
                         Button(action: action) {
