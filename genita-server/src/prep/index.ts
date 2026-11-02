@@ -3,7 +3,8 @@
  * matching HTTP requests to `routes`. Env (all optional except FAL_KEY for
  * clip generation):
  *   FAL_KEY                    Kling 3.0 + gpt-image-2 fallback + CDN upload
- *   GENITA_DATA_DIR            file store root (default ~/.genita-data) until DB/S3 land
+ *   GENITA_DATA_DIR            file store root (default ~/.genita-data) when DATABASE_URL is unset;
+ *                              with DATABASE_URL, server.ts passes the Postgres store (src/prep/pgStore.ts)
  *   GENITA_VOICES              "id:Name:Blurb,…" to override the four V04 voices
  *   GENITA_PETER_PREPARE_URL   Modal Peter prepare API (deploy/modal-peter `api`), e.g. https://<ws>--genita-peter-api.modal.run
  *   GENITA_PETER_TOKEN         bearer for it (= the worker's WORKER_TOKEN); falls back to GENITA_PETER_WORKER_TOKEN
