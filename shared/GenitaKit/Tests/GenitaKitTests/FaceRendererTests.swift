@@ -80,6 +80,16 @@ struct FaceSetTests {
         #expect(r.blinkAmount(at: 3) == 0)
     }
 
+    @Test func boxesOutsideTheImageDoNotCrash() throws {
+        var manifest = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: fixture.appendingPathComponent("manifest.json")))
+        manifest.mouthBox = [1.1, 0.55, 1.2, 0.6]
+        manifest.boxes = ["A": .init(face: nil, mouth: [.nan, 0.5, 2, 0.6])]
+        let set = try FaceSet(manifest: manifest) { try Data(contentsOf: fixture.appendingPathComponent($0)) }
+        for p in set.patches.values {
+            #expect(CGRect(origin: .zero, size: set.pixelSize).contains(p.rect))
+        }
+    }
+
     @Test func aManifestWithoutNeutralIsRejected() {
         let m = FaceManifest(version: 1, size: nil, faceBox: [0, 0, 1, 1], mouthBox: [0.4, 0.5, 0.6, 0.6], images: [:], visemes: [:], boxes: nil, rejected: nil)
         #expect(throws: FaceSetError.missingNeutral) { try FaceSet(manifest: m) { _ in Data() } }
@@ -153,6 +163,18 @@ struct FaceRendererTests {
         #expect(r.expressionWeights(at: 1.3) == [.smile: 1])
         r.setEmotion("tender", at: 2)
         #expect(r.expressionWeights(at: 2.5) == [.warm: 1])
+    }
+
+    @Test func aNewExpressionMidFadeStartsFromTheCurrentMix() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size)
+        r.setEmotion("happy", at: 1)
+        let before = r.expressionWeights(at: 1.125)
+        r.setEmotion("warm", at: 1.125)
+        let after = r.expressionWeights(at: 1.125)
+        #expect(abs((after[.neutral] ?? 0) - (before[.neutral] ?? 0)) < 1e-6)
+        #expect(abs((after[.smile] ?? 0) - (before[.smile] ?? 0)) < 1e-6)
+        #expect(abs(after.values.reduce(0, +) - 1) < 1e-6)
+        #expect(r.expressionWeights(at: 1.4) == [.warm: 1])
     }
 
     @Test func throughputAt540x960() {

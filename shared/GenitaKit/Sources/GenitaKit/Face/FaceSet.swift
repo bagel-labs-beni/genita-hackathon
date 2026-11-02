@@ -114,9 +114,9 @@ public final class FaceSet: @unchecked Sendable {
     public convenience init(directory: URL) throws {
         let manifest = try JSONDecoder().decode(FaceManifest.self, from: Data(contentsOf: directory.appendingPathComponent("manifest.json")))
         try self.init(manifest: manifest) { ref in
-            let direct = directory.appendingPathComponent(ref)
-            if FileManager.default.fileExists(atPath: direct.path) { return try Data(contentsOf: direct) }
+            // Only file names inside the directory (a URL's last component), never paths out of it.
             let name = URL(string: ref)?.lastPathComponent ?? (ref as NSString).lastPathComponent
+            guard !name.isEmpty, name != "..", name != "." else { throw FaceSetError.undecodable(ref) }
             return try Data(contentsOf: directory.appendingPathComponent(name))
         }
     }
@@ -128,8 +128,10 @@ public final class FaceSet: @unchecked Sendable {
         let w = neutral.width, h = neutral.height
         pixelSize = CGSize(width: w, height: h)
         func rect(_ b: [Double]?) -> CGRect? {
-            guard let b, b.count == 4, b[2] > b[0], b[3] > b[1] else { return nil }
-            return CGRect(x: b[0] * Double(w), y: b[1] * Double(h), width: (b[2] - b[0]) * Double(w), height: (b[3] - b[1]) * Double(h))
+            guard let b, b.count == 4, b.allSatisfy(\.isFinite) else { return nil }
+            let c = b.map { min(1, max(0, $0)) }
+            guard c[2] - c[0] > 0.002, c[3] - c[1] > 0.002 else { return nil }
+            return CGRect(x: c[0] * Double(w), y: c[1] * Double(h), width: (c[2] - c[0]) * Double(w), height: (c[3] - c[1]) * Double(h))
         }
         faceBox = rect(manifest.faceBox) ?? CGRect(x: 0, y: 0, width: w, height: h)
         mouthBox = rect(manifest.mouthBox) ?? CGRect(x: Double(w) * 0.4, y: Double(h) * 0.55, width: Double(w) * 0.2, height: Double(h) * 0.03)
@@ -154,13 +156,21 @@ public final class FaceSet: @unchecked Sendable {
         self.expressions = expressions
         self.expressionShift = exprShift
 
+        // Patches also cover the smile/warm mouths (aligned) so no expression mouth shows round them.
+        var cover = mouthBox
+        for e in [FaceExpression.smile, .warm] where expressions[e] != nil {
+            guard let m = rect(manifest.boxes?[e.rawValue]?.mouth), let s = exprShift[e] else { continue }
+            cover = cover.union(m.offsetBy(dx: CGFloat(-s.dx), dy: CGFloat(-s.dy)))
+        }
         var patches: [LipViseme: FaceMouthPatch] = [:]
         for v in LipViseme.shapes {
             guard let ref = manifest.visemes[v.rawValue] else { notes.append("\(v.rawValue): missing"); continue }
             do {
                 let pix = PixelBuffer(try Self.decode(try load(ref), name: v.rawValue), width: w, height: h)
                 let own = rect(manifest.boxes?[v.rawValue]?.mouth) ?? mouthBox
-                let patch = Self.makePatch(base: base, baseGray: baseGray, viseme: pix, ownMouth: own, mouth: mouthBox, face: faceBox)
+                guard let patch = Self.makePatch(base: base, baseGray: baseGray, viseme: pix, ownMouth: own, mouth: mouthBox, cover: cover, face: faceBox) else {
+                    notes.append("\(v.rawValue): mouth box outside the image"); continue
+                }
                 if patch.surroundDiff > Self.maxSurroundDiff {
                     notes.append(String(format: "%@: rejected, surroundings differ %.3f after alignment", v.rawValue, patch.surroundDiff))
                     continue
@@ -188,7 +198,7 @@ public final class FaceSet: @unchecked Sendable {
 
     // MARK: patch building
 
-    static func makePatch(base: PixelBuffer, baseGray: AnalysisImage, viseme: PixelBuffer, ownMouth: CGRect, mouth: CGRect, face: CGRect) -> FaceMouthPatch {
+    static func makePatch(base: PixelBuffer, baseGray: AnalysisImage, viseme: PixelBuffer, ownMouth: CGRect, mouth: CGRect, cover: CGRect, face: CGRect) -> FaceMouthPatch? {
         let union = ownMouth.union(mouth)
         // Align on the skin above and beside the mouth; below it the jaw moves on purpose.
         let shift = align(baseGray, viseme.analysis(), around: surround(of: union, face: face), excluding: union.insetBy(dx: -union.width * 0.15, dy: -union.height * 0.3), imageWidth: base.width)
@@ -229,8 +239,10 @@ public final class FaceSet: @unchecked Sendable {
         let surroundDiff = dn > 0 ? diff / dn / 255 : 1
 
         // Patch rect: the union mouth with margin, clipped to the image, integral.
-        let r = union.insetBy(dx: -union.width * 0.35, dy: -union.height * 0.8)
+        let covered = union.union(cover)
+        let r = covered.insetBy(dx: -covered.width * 0.35, dy: -covered.height * 0.8)
             .intersection(CGRect(x: 0, y: 0, width: base.width, height: base.height)).integral
+        guard !r.isNull, r.width >= 4, r.height >= 4 else { return nil }
         let pw = Int(r.width), ph = Int(r.height), ox = Int(r.minX), oy = Int(r.minY)
         var out = [UInt8](repeating: 0, count: pw * ph * 4)
         let cx = Double(pw) / 2, cy = Double(ph) / 2

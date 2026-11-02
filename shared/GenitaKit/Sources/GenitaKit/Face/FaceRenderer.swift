@@ -28,7 +28,8 @@ public final class FaceRenderer: @unchecked Sendable {
     public var reduceMotion: Bool
 
     private let lock = NSLock()
-    private var exprFrom: FaceExpression = .neutral
+    /// Expression mix when the last change began; it fades into `exprTo`.
+    private var exprFrom: [FaceExpression: Double] = [.neutral: 1]
     private var exprTo: FaceExpression = .neutral
     private var exprChangedAt = -Double.infinity
     private var rng: SplitMix64
@@ -92,8 +93,7 @@ public final class FaceRenderer: @unchecked Sendable {
         let e = faceSet.expressions[requested] != nil ? requested : .neutral
         lock.lock(); defer { lock.unlock() }
         guard e != exprTo else { return }
-        let w = weightsLocked(at: t)
-        exprFrom = (w[exprFrom] ?? 0) > (w[exprTo] ?? 0) ? exprFrom : exprTo
+        exprFrom = weightsLocked(at: t)   // a change mid-fade starts from the mix on screen
         exprTo = e
         exprChangedAt = t
     }
@@ -106,13 +106,10 @@ public final class FaceRenderer: @unchecked Sendable {
 
     private func weightsLocked(at t: Double) -> [FaceExpression: Double] {
         let a = smoothstep(0, 1, (t - exprChangedAt) / Self.expressionFade)
-        if a >= 1 || exprFrom == exprTo { return [exprTo: 1] }
-        return [exprFrom: 1 - a, exprTo: a]
-    }
-
-    private func expressionMix(at t: Double) -> (from: FaceExpression, to: FaceExpression, amount: Double) {
-        lock.lock(); defer { lock.unlock() }
-        return (exprFrom, exprTo, smoothstep(0, 1, (t - exprChangedAt) / Self.expressionFade))
+        if a >= 1 { return [exprTo: 1] }
+        var w = exprFrom.mapValues { $0 * (1 - a) }
+        w[exprTo, default: 0] += a
+        return w.filter { $0.value > 1e-9 }
     }
 
     /// Eyelid closure 0…1 at `t` (0 with Reduce Motion or without a blink still).
@@ -138,14 +135,17 @@ public final class FaceRenderer: @unchecked Sendable {
     /// The frame as a Core Image graph with extent (0, 0, outputSize).
     public func image(at t: Double, lip: LipFrame) -> CIImage {
         let h = extent.height
-        // 1. expression
-        let mix = expressionMix(at: t)
-        var img: CIImage = bases[mix.to] ?? bases[.neutral]!
-        if mix.amount < 1, mix.from != mix.to {
+        // 1. expression: running weighted average of the stills in the mix
+        var img: CIImage = bases[.neutral]!
+        var cumulative = 0.0
+        for (e, w) in expressionWeights(at: t).sorted(by: { $0.key.rawValue < $1.key.rawValue }) where w > 0 {
+            let still = bases[e] ?? bases[.neutral]!
+            cumulative += w
+            if cumulative == w { img = still; continue }
             let f = CIFilter.dissolveTransition()
-            f.inputImage = bases[mix.from] ?? bases[.neutral]!
-            f.targetImage = img
-            f.time = Float(mix.amount)
+            f.inputImage = img
+            f.targetImage = still
+            f.time = Float(w / cumulative)
             img = f.outputImage!.cropped(to: extent)
         }
 
@@ -155,11 +155,13 @@ public final class FaceRenderer: @unchecked Sendable {
         var restWeight = 0.0
         for (v, w) in lip.weights where w > 0 {
             guard v != .rest, let key = faceSet.resolved[v] ?? nil else { restWeight += Double(w); continue }
-            let shown = v.isOpenVowel ? min(1, 0.35 + 1.1 * open) : 1
+            // Open vowels need sound: they fade out only on the quiet tail (a half-shown mouth
+            // over another reads as a double mouth, so the ramp is short).
+            let shown = v.isOpenVowel ? min(1, open / 0.12) : 1
             patchWeight[key, default: 0] += Double(w) * shown
             restWeight += Double(w) * (1 - shown)
         }
-        var cumulative = restWeight
+        cumulative = restWeight
         for v in LipViseme.shapes {
             guard let w = patchWeight[v], w > 0.004, let patch = patchImages[v] else { continue }
             cumulative += w
