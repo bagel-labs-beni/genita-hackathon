@@ -62,7 +62,7 @@ struct EmailSignInSheet: View {
                     if sending { ProgressView().tint(CallInk.onInk) } else { Text(step == .address ? "Send code" : "Continue") }
                 }.font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                     .frame(maxWidth: .infinity).frame(height: 50)
-                    .background(canContinue ? CallInk.ink : CallInk.ink.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+                    .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(.plain).disabled(sending || !canContinue).accessibilityIdentifier("emailContinue")
             if step == .code {
                 HStack {
