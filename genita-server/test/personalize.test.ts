@@ -356,3 +356,13 @@ test("Codex round 2: a removed line isn't brought back by an older analysis; a n
   assert.equal(mergeUpdates(imported, [{ field: "interests", text: "Into chess.", replaces: [], label: "explicit", asOf: "2026-11-03T01:00:00Z" }], "2026-11-03T03:00:00Z").applied.length, 0);
   assert.equal(mergeUpdates(imported, [{ field: "interests", text: "Into chess.", replaces: [], label: "explicit", asOf: "2026-11-03T02:30:00Z" }], "2026-11-03T03:00:00Z").applied.length, 1);
 });
+
+test("Codex round 3: a slow removal spares a line saved after it; a removal blocks older analyses of that field in any wording", () => {
+  const card = rawCard({ likes: [{ text: "Loves cilantro.", label: "explicit", scope: "any", at: "2026-11-03T02:00:00Z" }] });
+  const slow = mergeUpdates(card, [{ field: "likes", text: "", replaces: ["Loves cilantro."], label: "explicit", asOf: "2026-11-03T01:00:00Z" }], "2026-11-03T03:00:00Z");
+  assert.deepEqual(slow.card.sections.likes.map((x) => x.text), ["Loves cilantro."]);
+  const removed = mergeUpdates(card, [{ field: "likes", text: "", replaces: ["Loves cilantro."], label: "explicit", asOf: "2026-11-03T02:30:00Z" }], "2026-11-03T03:00:00Z").card;
+  assert.deepEqual(removed.sections.likes, []);
+  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T02:45:00Z" }], "2026-11-03T04:00:00Z").applied.length, 0);
+  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T03:30:00Z" }], "2026-11-03T04:00:00Z").applied.length, 1, "said after the removal: kept");
+});

@@ -77,9 +77,9 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
       const removed: string[] = [];
       for (const key of PROFILE_FIELDS) {
         const l = sections[key];
-        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text))) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); }
+        // a slow removal can't take out a line (re)saved after the user asked for it (Codex round 3)
+        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text)) && !(u.asOf && l[i].at && l[i].at! > u.asOf)) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); tombs.push({ text: removed[0], at, field: key }); }
       }
-      for (const r of removed) tombs.push({ text: r, at });
       if (removed.length) applied.push({ field: u.field, text: "", label: "explicit", removed, ...(u.chip ? { chip: u.chip } : {}) });
       continue;
     }
@@ -92,9 +92,10 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
     if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
     // …nor bring back (or contradict) a line the user removed after it
-    if (u.asOf && text && tombs.some((t) => t.at > u.asOf! && (norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
+    // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
+    if (u.asOf && text && tombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
-    for (const r of removed) tombs.push({ text: r, at });
+    for (const r of removed) tombs.push({ text: r, at, field: u.field });
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
     list.unshift({ text, label, scope: same?.scope ?? "any", at });

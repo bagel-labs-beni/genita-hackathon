@@ -237,7 +237,7 @@ export type StyleCard = {
   /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
   importedAt?: string;
   /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
-  removed?: Array<{ text: string; at: string }>;
+  removed?: Array<{ text: string; at: string; field?: string }>;
 };
 
 type FindingKey = Exclude<SectionKey, "to_confirm">;
