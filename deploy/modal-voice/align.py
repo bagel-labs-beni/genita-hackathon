@@ -24,10 +24,10 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 
-REV = "11/3-uroman-snap"  # reported by /healthz, so a deploy can be checked against the running container
+REV = "11/3-uroman-snap-hold50"  # reported by /healthz, so a deploy can be checked against the running container
 FILL_S = 0.12  # gaps up to this are held by the previous phoneme (connected speech)
 TAIL_S = 0.04  # before a pause, without level data: held this much longer than its CTC span
-HOLD_S = 0.30  # before a pause: held while voiced, at most this long after its CTC span
+HOLD_S = 0.50  # before a pause: held while voiced, at most this long after its CTC span (Korean final 요 runs ~0.4 s)
 LEAD_S = 0.12  # after a pause: starts at the speech onset, at most this much before its CTC spike
 # Mean letter probability below this = the text does not match the audio: no timing. Low on purpose: the text is
 # what was synthesized, and silent letters (the h in "oh", the w in "wow") score near 0 even when the alignment is

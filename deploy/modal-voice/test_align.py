@@ -3,7 +3,7 @@
 """
 import unittest
 
-from align import FILL_S, MIN_SCORE, build_timing, hangul_units, latin_units, letters_of, plan
+from align import FILL_S, HOLD_S, MIN_SCORE, build_timing, hangul_units, latin_units, letters_of, plan
 
 
 def labels(units):
@@ -153,7 +153,7 @@ class Timing(unittest.TestCase):
         t = build_timing(words, spans, self.FRAME, 2.0, voiced=voiced)
         hey, you = t["words"]
         self.assertLessEqual(hey["e"], you["s"])
-        self.assertLessEqual(hey["e"], 180 + 300)
+        self.assertLessEqual(hey["e"], 180 + round(HOLD_S * 1000))
         self.assertGreaterEqual(you["s"], 600 - 120)
 
     def test_a_voiced_gap_is_split_not_double_booked(self):
