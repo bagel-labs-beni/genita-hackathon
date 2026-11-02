@@ -22,7 +22,16 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     /// True for the connection that was made with the six-digit code.
     private(set) var pairedWithCode = false
     // ProcessInfo.hostName does a blocking reverse-DNS lookup on the main thread (37 s on launch).
-    private let peer = MCPeerID(displayName: String(HandoffLink.deviceName.prefix(40)))
+    private let peer = MCPeerID(displayName: HandoffLink.peerName(HandoffLink.deviceName))
+    /// MCPeerID throws when the name is over 63 UTF-8 bytes; Korean device names hit that fast.
+    static func peerName(_ name: String) -> String {
+        var out = ""
+        for ch in name {
+            if (out + String(ch)).utf8.count > 60 { break }
+            out.append(ch)
+        }
+        return out.isEmpty ? "Genita" : out
+    }
     private static var deviceName: String {
         #if os(macOS)
         return Host.current().localizedName ?? "Mac"
