@@ -98,7 +98,15 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /**
+   * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
+   * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
+   */
+  companionVoiceId?: () => Promise<string | null | undefined>;
 };
+
+/** A slow prep store never holds up `ready`: past this the client's voice stays. */
+const COMPANION_VOICE_WAIT_MS = 800;
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
@@ -223,6 +231,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** the account's saved companion voice (same presence), looked up as the socket opens */
+  private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -260,6 +270,8 @@ export class Session {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
+    // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
+    this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
@@ -274,6 +286,27 @@ export class Session {
   /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
   get hasStarted(): boolean {
     return this.started && !this.closed;
+  }
+
+  private pickVoice(id: string | undefined, kind: PersonaCard["kind"]): void {
+    this.voiceId = id ?? this.deps.config.defaultVoiceId;
+    const voice = this.deps.config.voice;
+    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
+    if (voice) this.voiceId = `seamless:${resolveSpeaker(id, kind, voice)}`;
+  }
+
+  /** The account's saved companion voice, or null (none, store error, or slower than COMPANION_VOICE_WAIT_MS). */
+  private async companionVoice(): Promise<string | null> {
+    if (!this.deps.companionVoiceId) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
+    try {
+      const lookup = this.deps.companionVoiceId;
+      const id = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
+      return typeof id === "string" && id.trim() ? id.trim().slice(0, 64) : null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -402,10 +435,7 @@ export class Session {
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
-    this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
-    const voice = this.deps.config.voice;
-    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
-    if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
+    this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "atlas" || v === "none" ? v : v === undefined ? d : "none");
     const mode = asLip(lip.mode, persona.kind === "human" ? "none" : "atlas");
@@ -478,6 +508,11 @@ export class Session {
       }
     }
     if (this.closed) return;
+    const owned = await this.ownedVoice;
+    if (this.closed) return;
+    // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
+    if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
+    else if (owned) this.log("voice.owned_late", {});
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {

@@ -62,7 +62,7 @@ jobs:
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -resultBundlePath build-output/ios.xcresult \
-            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
       - name: Replay server log, app log, crash reports
