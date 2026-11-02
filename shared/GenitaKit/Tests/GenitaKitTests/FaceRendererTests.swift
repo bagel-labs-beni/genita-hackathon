@@ -237,3 +237,81 @@ struct FaceDriverTests {
         #expect(d.timeline.receivedAudioEndMs == 600)
     }
 }
+
+/// v2 mouth quality: one mouth at a time, and no shading band where the patch meets the skin.
+struct MouthQualityTests {
+    private let size = CGSize(width: 180, height: 320)
+
+    @Test func midCrossfadeShowsOneMouthNotTwo() {
+        #expect(animalSet.patches[.A] != nil && animalSet.patches[.O] != nil)
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
+        let mixed = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 0.55, .O: 0.45], openness: 0.9)))
+        let pureA = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.9)))
+        #expect(meanDiff(mixed, pureA) < 0.001)
+    }
+
+    @Test func anOpenVowelWithoutSoundIsTheRestMouth() {
+        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
+        let quiet = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.01)))
+        let rest = bytes(r.render(at: 1, lip: LipFrame(weights: [.rest: 1], openness: 0.01)))
+        #expect(meanDiff(quiet, rest) < 0.001)
+    }
+
+    /// A Muse edit that also darkened the skin just above the lip (seen on the human set as a grey
+    /// band) must not carry that shading onto the base face.
+    @Test func localShadingAboveTheLipIsCorrected() throws {
+        let w = 200, h = 200
+        func image(_ paint: (Int, Int) -> (UInt8, UInt8, UInt8)) -> PixelBuffer {
+            var d = [UInt8](repeating: 255, count: w * h * 4)
+            for y in 0..<h { for x in 0..<w { let p = paint(x, y); let i = (y * w + x) * 4; d[i] = p.0; d[i + 1] = p.1; d[i + 2] = p.2 } }
+            return PixelBuffer(PixelBuffer.makeImage(d, width: w, height: h), width: w, height: h)
+        }
+        let skin: (UInt8, UInt8, UInt8) = (200, 160, 140)
+        let base = image { x, y in (80..<120).contains(x) && (120..<135).contains(y) ? (180, 90, 90) : skin }
+        let band = { (x: Int, y: Int) in (70..<130).contains(x) && (100..<118).contains(y) }
+        let vis = image { x, y in
+            if (85..<115).contains(x) && (118..<140).contains(y) { return (60, 30, 30) }
+            if band(x, y) { return (170, 130, 110) }
+            return skin
+        }
+        let mouth = CGRect(x: 80, y: 120, width: 40, height: 15), own = CGRect(x: 85, y: 118, width: 30, height: 22)
+        let patch = try #require(FaceSet.makePatch(base: base, baseGray: base.analysis(), viseme: vis, ownMouth: own, mouth: mouth, cover: mouth, face: CGRect(x: 40, y: 40, width: 120, height: 140)))
+        let p = PixelBuffer(patch.image, width: patch.image.width, height: patch.image.height)
+        let ox = Int(patch.rect.minX), oy = Int(patch.rect.minY)
+        func composited(_ x: Int, _ y: Int, _ c: Int) -> Double {
+            let px = x - ox, py = y - oy
+            guard p.contains(px, py) else { return Double(base.at(x, y, c)) }
+            let a = Double(p.at(px, py, 3)) / 255
+            return Double(p.at(px, py, c)) + Double(base.at(x, y, c)) * (1 - a)
+        }
+        var s = 0.0, n = 0.0
+        for y in 100..<118 { for x in 70..<130 { for c in 0..<3 { s += abs(composited(x, y, c) - Double(base.at(x, y, c))); n += 1 } } }
+        let bandDiff = s / n
+        print(String(format: "band diff after patch: %.2f / 255", bandDiff))
+        #expect(bandDiff < 4.5)   // global colour match alone: 7.55 (hard-edged band; real shading is smoother)
+        // the new mouth itself stays dark (the correction is shading, not content)
+        var m = 0.0, mn = 0.0
+        for y in 124..<136 { for x in 92..<108 { m += composited(x, y, 0); mn += 1 } }
+        #expect(m / mn < 100)
+    }
+
+    /// Teeth in an edit whose skin came out warmer than the base stay white (no hue shift).
+    @Test func contentKeepsItsHue() throws {
+        let w = 200, h = 200
+        func image(_ paint: (Int, Int) -> (UInt8, UInt8, UInt8)) -> PixelBuffer {
+            var d = [UInt8](repeating: 255, count: w * h * 4)
+            for y in 0..<h { for x in 0..<w { let p = paint(x, y); let i = (y * w + x) * 4; d[i] = p.0; d[i + 1] = p.1; d[i + 2] = p.2 } }
+            return PixelBuffer(PixelBuffer.makeImage(d, width: w, height: h), width: w, height: h)
+        }
+        let base = image { x, y in (80..<120).contains(x) && (120..<135).contains(y) ? (180, 90, 90) : (200, 160, 140) }
+        let vis = image { x, y in (88..<112).contains(x) && (122..<132).contains(y) ? (235, 235, 235) : (225, 160, 140) }
+        let mouth = CGRect(x: 80, y: 120, width: 40, height: 15)
+        let patch = try #require(FaceSet.makePatch(base: base, baseGray: base.analysis(), viseme: vis, ownMouth: mouth, mouth: mouth, cover: mouth, face: CGRect(x: 40, y: 40, width: 120, height: 140)))
+        let p = PixelBuffer(patch.image, width: patch.image.width, height: patch.image.height)
+        let px = 100 - Int(patch.rect.minX), py = 127 - Int(patch.rect.minY)
+        let a = Double(p.at(px, py, 3)) / 255
+        let r = Double(p.at(px, py, 0)) / a, g = Double(p.at(px, py, 1)) / a, b = Double(p.at(px, py, 2)) / a
+        print(String(format: "tooth after patch: %.0f %.0f %.0f", r, g, b))
+        #expect(abs(r - g) < 3 && abs(g - b) < 3)
+    }
+}

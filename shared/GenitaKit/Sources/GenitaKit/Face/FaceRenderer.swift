@@ -1,6 +1,6 @@
 // L4 face · Draws one frame of the companion from a face set, a mouth frame and a time.
-// Layer order: expression still (crossfade on emotion) → mouth patches (weighted by the lip
-// frame) → jaw warp (lower face stretched down by openness, strip warp) → blink (eye band from
+// Layer order: expression still (crossfade on emotion) → one mouth patch (the lip frame's
+// strongest shape; changes are cuts) → jaw warp (lower face stretched down by openness, strip warp) → blink (eye band from
 // the blink still) → idle motion (breathing scale, sway) → aspect-fill to the output size.
 // Same inputs, same seed, same call order → same pixels. No Metal library, no platform UI.
 
@@ -149,23 +149,12 @@ public final class FaceRenderer: @unchecked Sendable {
             img = f.outputImage!.cropped(to: extent)
         }
 
-        // 2. mouth patches: a running weighted average, rest = the expression's own mouth.
+        // 2. mouth: one shape at a time. Blending two different mouths shows two outlines, so a
+        // shape change is a cut on the frame where the new shape's weight overtakes the old one;
+        // the jaw warp (driven by the continuous openness) carries the motion across the cut.
         let open = Double(min(1, max(0, lip.openness)))
-        var patchWeight: [LipViseme: Double] = [:]
-        var restWeight = 0.0
-        for (v, w) in lip.weights where w > 0 {
-            guard v != .rest, let key = faceSet.resolved[v] ?? nil else { restWeight += Double(w); continue }
-            // Open vowels need sound: they fade out only on the quiet tail (a half-shown mouth
-            // over another reads as a double mouth, so the ramp is short).
-            let shown = v.isOpenVowel ? min(1, open / 0.12) : 1
-            patchWeight[key, default: 0] += Double(w) * shown
-            restWeight += Double(w) * (1 - shown)
-        }
-        cumulative = restWeight
-        for v in LipViseme.shapes {
-            guard let w = patchWeight[v], w > 0.004, let patch = patchImages[v] else { continue }
-            cumulative += w
-            img = Self.withOpacity(patch, w / cumulative).composited(over: img)
+        if let v = Self.mouthShape(lip: lip, resolved: faceSet.resolved), let patch = patchImages[v] {
+            img = patch.composited(over: img)
         }
 
         // 3. jaw
@@ -209,6 +198,28 @@ public final class FaceRenderer: @unchecked Sendable {
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via
     /// `CIContext.render(_:to:)` in the app or the render tool).
     public var ciContext: CIContext { context }
+
+    /// Openness below which an open vowel shows the rest mouth (no sound, no open mouth).
+    public static let openVowelMinOpenness = 0.06
+
+    /// The one mouth shape drawn for a lip frame (nil = the expression's own mouth): the shape with
+    /// the largest weight after fallbacks, open vowels counting as rest while quiet. Ties go to
+    /// the earlier shape in `LipViseme.shapes`, so the choice is deterministic.
+    static func mouthShape(lip: LipFrame, resolved: [LipViseme: LipViseme?]) -> LipViseme? {
+        let open = Double(min(1, max(0, lip.openness)))
+        var rest = 0.0
+        var score: [LipViseme: Double] = [:]
+        for (v, w) in lip.weights where w > 0 {
+            guard v != .rest, let key = resolved[v] ?? nil, !(key.isOpenVowel && open < openVowelMinOpenness) else {
+                rest += Double(w); continue
+            }
+            score[key, default: 0] += Double(w)
+        }
+        var best: LipViseme?
+        var bestScore = rest
+        for v in LipViseme.shapes { if let s = score[v], s > bestScore { best = v; bestScore = s } }
+        return best
+    }
 
     // MARK: jaw warp
 
