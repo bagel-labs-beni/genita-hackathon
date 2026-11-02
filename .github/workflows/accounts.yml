@@ -1,0 +1,74 @@
+name: Accounts and storage
+
+# genita-server tests on a real Postgres (the local default is PGlite) and the
+# GenitaKit Swift package tests (auth client, start routing, protocol samples).
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/accounts.yml"
+      - "genita-server/**"
+      - "shared/GenitaKit/**"
+      - "shared/protocol-samples/**"
+  workflow_dispatch:
+
+concurrency:
+  group: accounts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: genita
+          POSTGRES_DB: genita_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: genita-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: genita-server/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: tests (PGlite)
+        run: npm test
+      - name: tests (Postgres 16)
+        env:
+          TEST_DATABASE_URL: postgres://postgres:genita@localhost:5432/genita_test
+        run: node --experimental-strip-types --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/db-schema.test.ts test/auth.test.ts test/prep-store-contract.test.ts
+      - name: migrate up/down via the CLI
+        env:
+          DATABASE_URL: postgres://postgres:genita@localhost:5432/genita_test
+          GENITA_ENV_FILE: /dev/null
+        run: |
+          psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+          npm run -s db:migrate
+          npm run -s db:migrate -- down all
+          npm run -s db:migrate
+
+  genitakit:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+      - name: swift test (macOS)
+        working-directory: shared/GenitaKit
+        run: swift test
+      - name: build for iOS
+        working-directory: shared/GenitaKit
+        run: xcodebuild -scheme GenitaKit -destination "generic/platform=iOS Simulator" -derivedDataPath "$RUNNER_TEMP/dd" build CODE_SIGNING_ALLOWED=NO | tail -3

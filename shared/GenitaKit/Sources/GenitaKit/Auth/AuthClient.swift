@@ -1,0 +1,158 @@
+import Foundation
+import CryptoKit
+import Security
+
+/// F1-L7 · app side of genita-server accounts. Keeps the session JWT in the
+/// token store; any 401 clears it (the app routes to A02). Also hands the
+/// token to the realtime call (`Authorization: Bearer`, F1-L5).
+public final class GenitaAuthClient: @unchecked Sendable {
+    public let baseURL: URL
+    public let store: GenitaTokenStore
+    private let http: URLSession
+
+    public init(baseURL: URL = GenitaAuthClient.defaultBaseURL(), store: GenitaTokenStore = KeychainTokenStore(), session: URLSession = .shared) {
+        self.baseURL = baseURL
+        self.store = store
+        self.http = session
+    }
+
+    /// GENITA_API_URL env → `genita.api.url` default → production host.
+    public static func defaultBaseURL(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> URL {
+        let raw = environment["GENITA_API_URL"] ?? defaults.string(forKey: "genita.api.url") ?? "https://genita-api.thebeni.ai"
+        return URL(string: raw) ?? URL(string: "https://genita-api.thebeni.ai")!
+    }
+
+    /// The bearer for `wss://…/v1/session`.
+    public var token: String? { store.load() }
+    public var isSignedIn: Bool { store.load() != nil }
+
+    // MARK: sign in
+
+    /// iPhone: after `ASAuthorizationAppleIDCredential` (see AppleSignIn.swift).
+    @discardableResult
+    public func signInWithApple(identityToken: String, rawNonce: String, authorizationCode: String?, givenName: String?, familyName: String?, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        var body: [String: Any] = ["identityToken": identityToken, "nonce": rawNonce, "device": device.rawValue]
+        if let authorizationCode { body["authorizationCode"] = authorizationCode }
+        var name: [String: String] = [:]
+        if let givenName, !givenName.isEmpty { name["givenName"] = givenName }
+        if let familyName, !familyName.isEmpty { name["familyName"] = familyName }
+        if !name.isEmpty { body["fullName"] = name }
+        let r: GenitaSignInResponse = try await send("POST", "/auth/apple", json: body, authorized: false)
+        store.save(r.token)
+        return r
+    }
+
+    /// Mac: the URL ASWebAuthenticationSession opens (server 302s to Apple).
+    public func macStartURL(challenge: String, device: GenitaDevice = .mac) -> URL {
+        var c = URLComponents(url: baseURL.appendingPathComponent("auth/apple/start"), resolvingAgainstBaseURL: false)!
+        c.queryItems = [URLQueryItem(name: "challenge", value: challenge), URLQueryItem(name: "device", value: device.rawValue)]
+        return c.url!
+    }
+
+    /// Mac: one-time code from `genita://auth?code=…` + the PKCE verifier → session.
+    @discardableResult
+    public func exchange(code: String, verifier: String) async throws -> GenitaSignInResponse {
+        let r: GenitaSignInResponse = try await send("POST", "/auth/exchange", json: ["code": code, "verifier": verifier], authorized: false)
+        store.save(r.token)
+        return r
+    }
+
+    // MARK: account
+
+    public func me() async throws -> GenitaMe { try await send("GET", "/me") }
+
+    /// Never throws: signed out / expired / offline / active, for StartRouter.
+    public func sessionState() async -> GenitaSessionState {
+        guard isSignedIn else { return .signedOut }
+        do { return .active(try await me()) } catch GenitaAuthError.unauthorized { return .expired } catch GenitaAuthError.offline { return .offline } catch { return .offline }
+    }
+
+    @discardableResult public func consent(version: String = "v1") async throws -> GenitaMe {
+        try await send("POST", "/me/consent", json: ["kind": "ai_data", "version": version])
+    }
+
+    @discardableResult public func setName(_ name: String) async throws -> GenitaMe {
+        try await send("PATCH", "/me", json: ["displayName": name])
+    }
+
+    /// Best effort on the server; the local token is always cleared.
+    public func logout() async {
+        _ = try? await send("POST", "/auth/logout", json: [:]) as EmptyReply
+        store.clear()
+    }
+
+    /// Server revokes Apple, deletes files and rows. Clears the token on success.
+    public func deleteAccount() async throws -> GenitaDeleteResult {
+        let r: GenitaDeleteResult = try await send("DELETE", "/me")
+        store.clear()
+        return r
+    }
+
+    // MARK: transport
+
+    private struct EmptyReply: Decodable {}
+    private struct ErrorReply: Decodable { var error: String? }
+
+    private func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, authorized: Bool = true) async throws -> T {
+        var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
+        req.httpMethod = method
+        req.timeoutInterval = 20
+        if let json {
+            req.setValue("application/json", forHTTPHeaderField: "content-type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        }
+        if authorized {
+            guard let token = store.load() else { throw GenitaAuthError.unauthorized }
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        }
+        let data: Data, response: URLResponse
+        do { (data, response) = try await http.data(for: req) } catch let e as URLError where [.notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut, .dataNotAllowed].contains(e.code) {
+            throw GenitaAuthError.offline
+        }
+        guard let status = (response as? HTTPURLResponse)?.statusCode else { throw GenitaAuthError.badResponse }
+        if status == 401 {
+            if authorized { store.clear() }
+            throw GenitaAuthError.unauthorized
+        }
+        let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
+        if status == 403, code == "consent_required" { throw GenitaAuthError.consentRequired }
+        guard (200..<300).contains(status) else { throw GenitaAuthError.server(status: status, code: code) }
+        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+    }
+}
+
+/// Random secret + its digest, for Apple's nonce (sha256 hex) and PKCE (sha256 base64url).
+public struct AuthSecret: Sendable {
+    public let raw: String
+    public init(raw: String? = nil) {
+        if let raw { self.raw = raw; return }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        self.raw = Data(bytes).genitaBase64URL
+    }
+    /// what goes into `ASAuthorizationAppleIDRequest.nonce` (server checks sha256 hex of `raw`)
+    public var sha256Hex: String { SHA256.hash(data: Data(raw.utf8)).map { String(format: "%02x", $0) }.joined() }
+    /// PKCE S256 challenge for `/auth/apple/start`
+    public var sha256Base64URL: String { Data(SHA256.hash(data: Data(raw.utf8))).genitaBase64URL }
+}
+
+/// `genita://auth?code=…` | `genita://auth?error=…`
+public enum AuthCallback: Equatable, Sendable {
+    case code(String)
+    case error(String)
+
+    public static let scheme = "genita"
+
+    public static func parse(_ url: URL) -> AuthCallback? {
+        guard url.scheme == scheme, url.host == "auth", let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
+        if let code = items.first(where: { $0.name == "code" })?.value, !code.isEmpty { return .code(code) }
+        if let error = items.first(where: { $0.name == "error" })?.value { return .error(error) }
+        return nil
+    }
+}
+
+extension Data {
+    var genitaBase64URL: String {
+        base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}

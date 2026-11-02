@@ -19,16 +19,17 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
+| 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 
 ```
 wss://<host>/v1/session
-Authorization: Bearer <GENITA_SESSION_TOKEN>     (or ?token=… ; replaced by the user JWT in F1-L5)
+Authorization: Bearer <session JWT>     (or ?token=… ; dev fallback: GENITA_SESSION_TOKEN)
 ```
 
-Without `GENITA_SESSION_TOKEN` the server only binds to loopback (local dev).
-Rejections happen at upgrade: `401` bad token, `503` server full.
-Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default).
+With neither accounts (`DATABASE_URL`) nor `GENITA_SESSION_TOKEN` the server only binds to loopback (local dev).
+Rejections at upgrade: `503` server full. Auth is checked after the upgrade and closes with `4401` (no/bad/expired/revoked token → sign in again) or `4403` (signed in, no AI-data consent yet → CS01).
+Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required.
 
 ## Frames
 
@@ -148,6 +149,8 @@ persona, profile, memories and recent history itself; the server stores nothing.
 | `none` | anyone | audio + `words` only; app plays its speaking clip |
 
 Default: `atlas` for animal/character personas, `none` for humans. Always read `ready.lip.active`.
+
+`start.lip.avatarId` (optional, `peter` only): the companion's baked Peter cache, from `GET /v1/companion/prep` → `lips.peter.avatarId` (PREP_API.md). The server passes it in the worker HELLO, and `lip.changed.peter.bundleId` then equals `lips.peter.bundleId`. If it is omitted, the worker uses its demo avatar.
 
 ## Turn-taking and barge-in
 

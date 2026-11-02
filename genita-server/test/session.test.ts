@@ -313,6 +313,7 @@ test("speculation: an unpunctuated partial waits until it has been stable for sp
 
 class FakePeter extends EventEmitter {
   isReady = false;
+  avatarId: string | undefined;
   calls: string[] = [];
   audioBytes = 0;
   private readonly fail: boolean;
@@ -350,7 +351,7 @@ function peterSetup(fail = false, ttsChunks = 2, ttsDelayMs = 1) {
   const session = new Session("peter", client, {
     config,
     openAsr: () => asr,
-    openPeter: () => peter,
+    openPeter: (o) => ((peter.avatarId = o?.avatarId), peter),
     async *spark(): AsyncGenerator<SparkStreamEvent> {
       yield { type: "text", delta: "<warm> Hi there. How are you today? Tell me." };
       yield { type: "done", responseId: "r", text: "x", status: "completed" };
@@ -407,4 +408,17 @@ test("peter: a worker that fails to connect leaves the fallback with reason pete
   const changed = await client.waitFor((m) => m.type === "lip.changed");
   assert.deepEqual(changed.lip, { requested: "peter", active: "none", reason: "peter_unavailable" });
   session.close();
+});
+
+test("peter: start.lip.avatarId reaches the worker connection; bad ids are dropped", async () => {
+  const ok = peterSetup();
+  await ok.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mira", kind: "human" }, lip: { mode: "peter", fallback: "none", avatarId: "c1_ab-2" }, mic: false }));
+  await ok.client.waitFor((m) => m.type === "lip.changed");
+  assert.equal(ok.peter.avatarId, "c1_ab-2");
+  ok.session.close();
+  const bad = peterSetup();
+  await bad.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mira", kind: "human" }, lip: { mode: "peter", avatarId: "../x" }, mic: false }));
+  await bad.client.waitFor((m) => m.type === "lip.changed");
+  assert.equal(bad.peter.avatarId, undefined);
+  bad.session.close();
 });
