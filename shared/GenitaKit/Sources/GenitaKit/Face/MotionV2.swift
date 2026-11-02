@@ -32,7 +32,7 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// v25: loudness onset micro-movement added to the jaw (×amp)
     public var micro = 0.15
     /// v25: how much the chin follows the key flows below the lower lip (applied to the flows at load)
-    public var chinScale = 0.5
+    public var chinScale = 0.92  // chin follows the key flows 8% below the lower lip (face.py jaw speed 3.9× → 0.9× Peter)
     /// 11/3 (Chelsea: "barely moves"): opening gain by stress — stressed vowels open more, unstressed less.
     public var stressedGain = 1.0, unstressedGain = 1.0
     public var stressedJawGain = 1.0, unstressedJawGain = 1.0

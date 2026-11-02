@@ -32,6 +32,9 @@ struct AliveMotion {
     private var slowOpen = 0.0
     private var lastT: Double?
 
+    /// Per-face gains (map.alive): head sway/drift and the speech nod.
+    var headGain = 1.0, nodGain = 1.0
+
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
         phases = (0..<30).map { _ in rng.nextUnit() * 2 * .pi }
@@ -90,9 +93,9 @@ struct AliveMotion {
 
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
         let neck = CGPoint(x: face.midX, y: face.minY - face.height * 0.15)
-        let roll = Self.headRollDegrees * .pi / 180 * noise(6, hz: 0.11, t)
-        let dx = Self.headDriftX * noise(7, hz: 0.08, t) * k
-        let dy = (Self.headDriftY * noise(8, hz: 0.13, t) - Self.nodPixels * nod) * k
+        let roll = Self.headRollDegrees * headGain * .pi / 180 * noise(6, hz: 0.11, t)
+        let dx = Self.headDriftX * headGain * noise(7, hz: 0.08, t) * k
+        let dy = (Self.headDriftY * headGain * noise(8, hz: 0.13, t) - Self.nodPixels * nodGain * nod) * k
         let pitch = 1 - Self.nodPitch * nod
         let headLocal = CGAffineTransform(translationX: -neck.x, y: -neck.y)
             .concatenating(CGAffineTransform(scaleX: 1, y: pitch))

@@ -166,6 +166,22 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public var maxAmount: [String: Double]? = nil
     public var consonantOverride: [String: Double]? = nil
     public var cheek: Cheek? = nil
+    /// Whole-face life (11/3 "botox + electrocuted mouth" review): head sway/drift and nod gains for
+    /// the alive base, a cheek-coupling gain, and loudness-driven lip micro-motion (px at 540 wide).
+    public struct Alive: Codable, Equatable, Sendable {
+        public var headGain = 1.5, nodGain = 1.5, cheekGain = 1.8, lipLifePx = 0.4
+        public init() {}
+        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx }
+        public init(from decoder: Decoder) throws {
+            self.init()
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            if let v = try c.decodeIfPresent(Double.self, forKey: .headGain) { headGain = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .nodGain) { nodGain = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .cheekGain) { cheekGain = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .lipLifePx) { lipLifePx = v }
+        }
+    }
+    public var alive: Alive? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
     /// spring instead of stepping with the texture snap; amplitude scaled by stress; the next shape is
     /// blended in ahead; only closures are fast. Texture snap keeps its own hysteresis.
@@ -374,7 +390,10 @@ final class FlowMorph: @unchecked Sendable {
         smooth = [Float](repeating: 0, count: data.keys.count)
         snapW = smooth
         let cheekRules = data.map.cheek ?? (data.kind == "human" ? FlowMap.Cheek(spread: 0.52, pull: 1.0, cheek: 1.2, naso: 0.35, lift: 2.0) : nil)
-        if let c = cheekRules, let face, let mouth, data.map.drive != "snap" {
+        let aliveP = data.map.alive ?? (data.kind == "human" ? FlowMap.Alive() : nil)
+        if var c = cheekRules, let face, let mouth, data.map.drive != "snap" {
+            let g = aliveP?.cheekGain ?? 1
+            c.spread *= g; c.cheek *= g; c.naso *= g
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width),
                                 expressions: expressions)
         } else { cheekRig = nil }
@@ -821,7 +840,10 @@ final class FlowMorph: @unchecked Sendable {
         // Micro-motion: a tiny smooth drift of the whole lower-face warp (people / motion profiles).
         if let mo = motion, mo.microPx > 0 {
             let w = 2 * Double.pi * t
-            let px = mo.microPx * workScale * stillWidth / 540     // px at 540 wide → working px
+            // lip life: loudness drives it (a talking mouth's skin never sits still)
+            let life = (data.map.alive ?? (data.kind == "human" ? FlowMap.Alive() : nil))?.lipLifePx ?? 0
+            let amp = mo.microPx * 0.5 + life * Double(min(1, max(0, lip.openness))) * 2
+            let px = amp * workScale * stillWidth / 540     // px at 540 wide → working px
             let jx = Float(px * (sin(w * 2.3 + 0.7) * 0.6 + sin(w * 3.7 + 2.1) * 0.4))
             let jy = Float(px * (sin(w * 2.9 + 1.9) * 0.6 + sin(w * 4.1 + 0.3) * 0.4))
             for q in stride(from: 0, to: n2, by: 2) { gn[q] += jx; gn[q + 1] += jy }

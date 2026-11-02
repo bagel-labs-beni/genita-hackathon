@@ -77,6 +77,9 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
+            motion.headGain = a.headGain; motion.nodGain = a.nodGain
+        }
         // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
         let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
         flowMorph = faceSet.flow.flatMap { d in
