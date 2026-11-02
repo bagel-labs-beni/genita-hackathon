@@ -731,6 +731,9 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+        case .expression:
+            // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
+            break
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
         }

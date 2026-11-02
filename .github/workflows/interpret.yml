@@ -5,6 +5,7 @@ name: Interpretation
 # interpret session (ios-app/Tools/call-replay/session-int.json). Screens are uploaded.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/interpret.yml"
       - "genita-server/**"
@@ -14,8 +15,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: interpret-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server:
@@ -35,6 +36,7 @@ jobs:
       - run: node --experimental-strip-types --no-warnings=ExperimentalWarning --test test/interpret.test.ts test/protocol.test.ts test/session.test.ts test/turn-machine.test.ts
 
   apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 45
     steps:
