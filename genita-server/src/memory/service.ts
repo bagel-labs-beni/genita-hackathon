@@ -12,6 +12,8 @@ export type MemoryOptions = {
   /** Storage owner must delete the crop, not just its DB reference. */
   deleteCrop?: (userId: string, ref: string) => Promise<void>;
   verifyCrop?: (userId: string, crop: SeenCandidate["crop"]) => Promise<boolean>;
+  /** Seen memory (SM-1~3). Off in the hackathon build via createMemory (D40); defaults on for direct use/tests. */
+  seenMemory?: boolean;
   isSafe?: (text: string) => Promise<boolean>;
   log?: Log;
 };
@@ -117,6 +119,7 @@ export class MemoryService {
     });
   }
   async rememberSeen(userId: string, context: SeenContext, candidate: SeenCandidate): Promise<Memory | null> {
+    if (this.options.seenMemory === false) return null;
     const revision = (await this.state.getState(userId)).revision;
     if (!this.options.deleteCrop || !this.options.verifyCrop || !validSeen(candidate, context) || !await this.options.verifyCrop(userId, candidate.crop)) return null;
     return this.serial(userId, async () => {

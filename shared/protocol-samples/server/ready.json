@@ -17,5 +17,6 @@
   "bargeIn": {
     "minMs": 400,
     "minWords": 2
-  }
+  },
+  "tts": "server"
 }
