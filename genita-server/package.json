@@ -1,0 +1,25 @@
+{
+  "name": "genita-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Genita realtime conversation core: Muse Transcribe -> Muse Spark -> ElevenLabs, over one WebSocket.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types --no-warnings=ExperimentalWarning src/main.ts",
+    "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test 'test/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke.ts",
+    "check:meta": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-meta.ts"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "5.9"
+  }
+}

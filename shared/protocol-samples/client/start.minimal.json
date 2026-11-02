@@ -1,0 +1,8 @@
+{
+  "type": "start",
+  "persona": {
+    "name": "Pip",
+    "kind": "animal"
+  },
+  "lip": "atlas"
+}
