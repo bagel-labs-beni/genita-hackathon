@@ -25,6 +25,8 @@ import type { Config } from "./config.ts";
 import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
+import { META_BASE, metaHeaders } from "./meta/http.ts";
+import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
@@ -67,6 +69,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
+    prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
     // Construct once with the process's voice client; all sessions share these seats.
     voiceSeats: voice ? createVoiceSeats(config.voiceMaxCalls ?? 3) : undefined,
     finds: findsFromEnv(config.metaKey),
@@ -95,6 +99,7 @@ export async function startServer(
   injected?: AccountsService | null, // tests
 ): Promise<Server> {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  if (config.httpKeepAliveMs) log("http.keepalive", { ms: config.httpKeepAliveMs, on: await installKeepAlive(config.httpKeepAliveMs) });
   const accounts = injected !== undefined ? injected : await createAccounts(env, log, { loopback }); // null without DATABASE_URL
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
@@ -118,6 +123,7 @@ export async function startServer(
     const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     await findsDeleted;
+    await prep.runner.forgetUser(userId);
     await deps.memory?.forget(userId);
     await deps.finds?.store.removeOwner(ownerKey(userId));
   };
@@ -129,7 +135,6 @@ export async function startServer(
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
     for (const [close, u] of presence) if (u === userId) close();
     handoff.forget(userId);
-    void prep.runner.forgetUser(userId).catch((err) => log("prep.forget_failed", { message: String(err).slice(0, 200) }));
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
@@ -260,17 +265,41 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; at: number }>();
-  function priorTurns(userId: string, self: string): HistoryItem[] | null {
+  const lastTurns = new Map<string, { turns: HistoryItem[]; revision: number | null; at: number; unsubscribe?: () => void }>();
+  function dropLastTurns(userId: string) {
+    lastTurns.get(userId)?.unsubscribe?.();
+    lastTurns.delete(userId);
+  }
+  function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
-      const t = sessions.get(sid)?.historySnapshot();
+      const session = sessions.get(sid);
+      const t = session?.historyForgetRevision === revision ? session.historySnapshot() : null;
       if (t?.length && (!best || t.length >= best.length)) best = t;
     }
     if (best) return best;
     const c = lastTurns.get(userId);
-    return c && Date.now() - c.at < 10 * 60_000 ? c.turns : null;
+    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) return c.turns;
+    dropLastTurns(userId);
+    return null;
+  }
+  async function cacheTurns(userId: string, session: Session): Promise<void> {
+    const turns = session.historySnapshot();
+    const revision = session.historyForgetRevision;
+    if (!turns.length) return;
+    const save = () => {
+      dropLastTurns(userId);
+      const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
+      lastTurns.set(userId, { turns, revision, at: Date.now(), unsubscribe });
+    };
+    if (!deps.memory) return save();
+    // Session.close unsubscribes before the socket closes. Keep the snapshot's ORIGINAL revision and
+    // refuse a late pre-Forget close, including when newer safe turns are already cached.
+    if (revision === null) return;
+    await deps.memory.serial(userId, async () => {
+      if ((await deps.memory!.state.getState(userId)).revision === revision) save();
+    });
   }
 
   function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
@@ -288,7 +317,7 @@ export async function startServer(
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id), personalize: deps.personalize ?? prep.deps.personalize });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision), personalize: deps.personalize ?? prep.deps.personalize });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -324,16 +353,19 @@ export async function startServer(
       clearTimeout(life);
       session.close();
       gated?.call.close();
-      const turns = session.historySnapshot();
-      if (turns.length) lastTurns.set(who.userId, { turns, at: Date.now() });
       sessions.delete(id);
       sessionUsers.delete(id);
       touches.delete(id);
-      log("session.close", { session: id, sessions: sessions.size });
+      void cacheTurns(who.userId, session)
+        .catch(() => log("history.unavailable", { session: id }))
+        .finally(() => log("session.close", { session: id, sessions: sessions.size }));
     });
     ws.on("error", () => ws.terminate());
   }
 
-  http.on("close", () => void accounts?.close().catch(() => {}));
+  http.on("close", () => {
+    for (const userId of lastTurns.keys()) dropLastTurns(userId);
+    void accounts?.close().catch(() => {});
+  });
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }

@@ -14,7 +14,8 @@
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
  *   GET  /v1/companion                      companion + prep + persona
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
- *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes), this user's companion only
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes, mouth keys) or
+ *                                           face-flow asset (flow_*: ROI keys, float16 flows, mask), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
  *   GET  /v1/profile/story?wait=s           D47 HISY story cards (wait ≤ 10 s for one being written)
@@ -29,7 +30,8 @@ import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
-import { FACE_KEYS, type FaceKey } from "./face.ts";
+import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
+import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
@@ -71,7 +73,7 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
+const FACE_ASSETS = new Set<string>(["neutral", ...ALL_FACE_KEYS]);
 
 /** All companion kinds animate the Meta face set on the device. */
 function sessionLip(_c: CompanionRecord): "none" {
@@ -300,13 +302,16 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       return send(res, 200, prepView(c));
     }
 
-    const fk = p.match(/^\/v1\/companion\/face\/([A-Za-z]{1,16})$/);
+    const fk = p.match(/^\/v1\/companion\/face\/([A-Za-z0-9_]{1,24})$/);
     if (m === "GET" && fk) {
-      if (!FACE_ASSETS.has(fk[1])) throw new PrepError(404, "not_found");
+      const isFlow = fk[1].startsWith("flow_");
+      if (!isFlow && !FACE_ASSETS.has(fk[1])) throw new PrepError(404, "not_found");
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      // only images the manifest lists (a rejected key never is)
-      if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
+      // only files the manifest lists (a rejected key never is)
+      if (isFlow) {
+        if (!flowAssets(c.prep.steps.face?.face?.flow).has(fk[1])) throw new PrepError(404, "no_image");
+      } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
       const bytes = await d.store.getAsset(user, c.id, fk[1]);
       if (!bytes) throw new PrepError(404, "no_image");
       res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, max-age=86400" });
