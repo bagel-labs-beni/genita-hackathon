@@ -49,7 +49,7 @@ BASE_MAP = {
     'blink': {'mode': 'snap', 'frames': 3, 'perTenSeconds': 5},  # eyes fully closed for 3 frames, no half frames
     # optional per-key cap applied LAST (after focus, which would otherwise restore it); remainder -> neutral.
     'maxAmount': {'AH2': 0.85},
-    # --- v16 (critic 8.5/10 vs Peter; reference render.py flags in sweep/README.md row v16) ---
+    # --- v16 (critic 8.5/10 vs the old lip-sync baseline; prototype runtime flags row v16) ---
     # key colour only inside files[k].lip (lips + opening hull, prep-baked); outside it the neutral texture,
     # warped by the same output->neutral flow GN (skin / beard / wrinkles never pop between keys)
     'lipMask': True,
