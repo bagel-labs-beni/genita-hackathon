@@ -448,3 +448,54 @@ test("session: while sharing, one final transcript per utterance — the interpr
   assert.equal(sparkCalls.filter((r) => JSON.stringify(r.input).includes("interpret for me")).length, 0, "not answered as a chat turn");
   s.close();
 });
+
+test("session: a question waiting on the echo check is dropped if interpretation starts meanwhile; questions keep their order", async () => {
+  const { s, client, asrs, sparkCalls } = session();
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  const watch = s.attachWatch(new FakeSink())!;
+  watch.onMessage({ type: "start" });
+  const video = asrs[1];
+  const mic = asrs[0];
+  // the video is talking: echo checks wait for its line
+  video.fire({ type: "speechStart", turnId: 0 });
+  mic.fire({ type: "speechStart", turnId: 0 });
+  mic.fire({ type: "speechComplete", turnId: 0, text: "Who ordered the taco?" });
+  mic.fire({ type: "speechStart", turnId: 1 });
+  mic.fire({ type: "speechComplete", turnId: 1, text: "And the burrito?" });
+  setTimeout(() => video.fire({ type: "speechComplete", turnId: 0, text: "Two tacos for table nine." }), 20);
+  await wait(80);
+  const finals = client.json.filter((m) => m.type === "transcript" && m.final === true).map((m) => m.text);
+  assert.deepEqual(finals, ["Who ordered the taco?", "And the burrito?"], "in the order they were said");
+
+  // now: a question waits on the echo check, then the interpret command arrives
+  const before = sparkCalls.length;
+  video.fire({ type: "speechStart", turnId: 1 });
+  mic.fire({ type: "speechStart", turnId: 2 });
+  mic.fire({ type: "speechComplete", turnId: 2, text: "What did she just say?" });
+  mic.fire({ type: "speechStart", turnId: 3 });
+  mic.fire({ type: "speechComplete", turnId: 3, text: "Can you interpret for me?" });
+  setTimeout(() => video.fire({ type: "speechComplete", turnId: 1, text: "Nothing at all." }), 20);
+  await wait(80);
+  assert.ok(!sparkCalls.slice(before).some((r) => JSON.stringify(r.input).includes("What did she just say")), "no chat reply after interpretation started");
+  s.close();
+});
+
+test("session: self speech (watch reaction / card line) never feeds memory extraction", async () => {
+  const { InMemoryMemoryRepository } = await import("../src/memory/repository.ts");
+  const { MemoryService } = await import("../src/memory/service.ts");
+  const repo = new InMemoryMemoryRepository();
+  const seen: { user: string; assistant: string }[] = [];
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async (turns) => { seen.push(...turns); return []; } });
+  const { s, tts } = session();
+  (s as unknown as { deps: SessionDeps }).deps.memory = memory;
+  (s as unknown as { deps: SessionDeps }).deps.userId = "u1";
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  for (let i = 0; i < 4; i++) {
+    (s as unknown as { announce(t: string): void }).announce(`Found card ${i}.`);
+    await wait(400); // each line plays out (20 ms of audio + the server's 250 ms playback slack)
+  }
+  assert.ok(tts.filter((x) => x.text.startsWith("Found card")).length >= 4, "the card lines were spoken");
+  s.close();
+  await memory.drain();
+  assert.ok(!seen.some((t) => t.user.startsWith("Found card")), "a card line is not something the user said");
+});
