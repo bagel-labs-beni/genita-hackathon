@@ -35,7 +35,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
 
   // SUB-8 (#125): an upload without the rights acknowledgement is a 400 and nothing is stored or checked
   const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
-  const raw = (path: string, body: Buffer) => fetch(base + path, { method: "POST", headers: { "x-genita-user": "u1", "content-type": "image/jpeg" }, body });
+  const raw = (path: string, body: Buffer) => fetch(base + path, { method: "POST", headers: { "x-genita-user": "u1", "content-type": "image/jpeg" }, body: new Uint8Array(body) });
   const noAck = await raw("/v1/companion/image", jpeg);
   assert.equal(noAck.status, 400);
   assert.equal(((await noAck.json()) as Record<string, any>).error, "rights_required");
