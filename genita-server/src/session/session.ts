@@ -31,6 +31,9 @@ import {
 import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
+import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
+import type { Memory } from "../memory/repository.ts";
+import type { CompanionFaceResolver } from "../memory/photos.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -68,6 +71,11 @@ export type SessionDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** Identity is assigned by the authenticated upgrade, never by start.user. */
+  userId?: string;
+  memory?: MemoryService;
+  photos?: UsPhotoService;
+  resolveCompanionFace?: CompanionFaceResolver;
   /** Peter worker connection factory; unset = Peter not deployed */
   openPeter?: (opts?: { avatarId?: string }) => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
@@ -90,7 +98,7 @@ type Reply = {
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null };
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent> };
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -148,6 +156,8 @@ export class Session {
   private persona: PersonaCard | null = null;
   private user: UserProfile | undefined;
   private memories: string[] = [];
+  private memoryCall: MemoryCall | null = null;
+  private greeting: { item: Memory | null } | null = null;
   private mode: Mode = "chat";
   private language = "English";
   private voiceId: string;
@@ -271,8 +281,8 @@ export class Session {
     this.persona = persona;
     const u = msg.user && typeof msg.user === "object" ? (msg.user as Record<string, unknown>) : {};
     this.user = { name: str(u.name, 80), profile: str(u.profile, 4000) };
-    this.memories = Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
-    if (Array.isArray(msg.history)) {
+    this.memories = !this.deps.memory && Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
+    if (Array.isArray(msg.history) && !this.deps.memory) {
       for (const h of msg.history.slice(-MAX_HISTORY)) {
         const item = h as Record<string, unknown>;
         const text = str(item?.text, 1000);
@@ -292,6 +302,21 @@ export class Session {
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
     this.started = true;
+    if (this.deps.memory && this.deps.userId) {
+      this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
+        this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
+        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+      });
+      try {
+        // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
+        // and the greeting prompt would be sent to the translator
+        const item = await this.memoryCall.open(startMode === "chat");
+        this.greeting = startMode === "chat" ? { item } : null;
+        this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+      }
+      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
+    }
+    if (this.closed) return;
     if (this.micOn) {
       try {
         await this.ensureAsr();
@@ -299,6 +324,7 @@ export class Session {
         this.error("asr_unavailable", "Speech recognition could not connect; text still works", true);
       }
     }
+    if (this.closed) return;
     this.client.sendJson({
       type: "ready",
       protocol: PROTOCOL_VERSION,
@@ -312,6 +338,7 @@ export class Session {
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
+    if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
   }
 
   // ───────────────────────── F8 interpretation ─────────────────────────
@@ -387,7 +414,8 @@ export class Session {
         this.turn = { ...this.turn, utteranceId: this.turn.utteranceId + 1 };
         return this.turn.utteranceId;
       },
-      translate: (req, signal) => this.sparkSource(req, signal),
+      // no memory context or recall/remember tools in translation (useMemory = false)
+      translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
@@ -464,6 +492,7 @@ export class Session {
     this.dropCallAsr();
     this.asr?.end();
     this.peter?.close();
+    this.memoryCall?.close();
     this.client.close(code, reason);
   }
 
@@ -626,9 +655,12 @@ export class Session {
     };
   }
 
-  private sparkSource(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent> {
+  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>): AsyncIterable<SparkStreamEvent> {
     const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
-    return hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(req, { ...opts, signal: sig }), signal, (e) => e.type === "text");
+    const source = (request: SparkRequest, parent: AbortSignal) => hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent, (e) => e.type === "text" || e.type === "function_call");
+    const last = typeof req.input === "string" ? req.input : req.input.at(-1);
+    const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
+    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed) : source(req, signal);
   }
 
   // ───────────────────────── speculation ─────────────────────────
@@ -655,7 +687,10 @@ export class Session {
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
-    this.spec = { norm, abort, built, stream: new Eager(this.sparkSource(built.req, abort.signal)) };
+    let confirm!: () => void;
+    const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
+    abort.signal.addEventListener("abort", confirm, { once: true });
+    this.spec = { norm, abort, built, confirm, stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
   }
 
   private dropSpeculation(): void {
@@ -666,6 +701,8 @@ export class Session {
   }
 
   private async runReply(text: string, utteranceId: number): Promise<void> {
+    const greeting = this.greeting;
+    this.greeting = null;
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -686,6 +723,7 @@ export class Session {
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
+        spec.confirm();
         built = spec.built;
         pre = spec.stream;
         signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
@@ -697,7 +735,8 @@ export class Session {
     built ??= this.buildRequest(text);
     const { req, interpret } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!interpret) this.remember("user", text);
+    if (!greeting) this.memoryCall?.userMessage();
+    if (!interpret && !greeting) this.remember("user", text);
 
     const splitter = new SentenceSplitter();
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
@@ -729,7 +768,7 @@ export class Session {
         for (let attempt = 0; attempt < 2; attempt++) {
           let gotText = false;
           let status = "";
-          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal)) : this.sparkSource({ ...req, tools: undefined }, signal);
+          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource({ ...req, tools: undefined }, signal, greeting?.item, !interpret);
           for await (const ev of stream) {
             if (signal.aborted) return;
             if (ev.type === "text") {
@@ -738,7 +777,7 @@ export class Session {
               pushSentences(splitter.push(ev.delta));
             } else if (ev.type === "tool") {
               this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
-            } else status = ev.status;
+            } else if (ev.type === "done") status = ev.status;
           }
           if (gotText || !req.tools?.length) break;
           this.log("spark.empty", { utteranceId, status, retry: attempt === 0 });
@@ -845,7 +884,8 @@ export class Session {
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     const full = reply.spoken.join(" ").trim();
-    if (full && !interpret) this.remember("assistant", full);
+    if (full && !interpret) { this.remember("assistant", full); this.memoryCall?.assistantMessage(full); }
+    if (full && !interpret && !greeting) this.memoryCall?.completedTurn(text, full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
