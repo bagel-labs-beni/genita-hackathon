@@ -160,7 +160,13 @@ enum CallStop: Equatable {
     @ObservationIgnored var fixture: FixtureMic?
     /// Debug tap on everything the server sends (session recording for replay tests).
     @ObservationIgnored var onServerMessage: ((CallSocket.Incoming) -> Void)?
+    /// Tests: reply PCM goes here instead of the speaker.
+    @ObservationIgnored var playbackSink: ((Data, Int) -> Void)?
     #endif
+
+    /// L4: the companion's animated Meta face (nil → the still). Fed from the reply events below.
+    private(set) var face: FaceDriver?
+    @ObservationIgnored private var faceKey: String?
 
     init() {
         audio.onMicFrame = { [uplink] frame in uplink.send(frame) }
@@ -587,6 +593,9 @@ enum CallStop: Equatable {
             routeInterpretAudio(AudioFrameHeader.payload(of: data), route, utterance)
             return
         }
+        #if DEBUG
+        if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
+        #endif
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
@@ -647,6 +656,16 @@ enum CallStop: Equatable {
         #if DEBUG
         fixture?.utteranceDone()
         #endif
+    }
+
+    // MARK: face (L4)
+
+    /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
+    func useFace(_ set: FaceSet?, key: String?, reduceMotion: Bool) {
+        face?.stop()
+        faceKey = key
+        guard let set else { face = nil; return }
+        face = FaceDriver(faceSet: set, outputSize: CompanionFace.outputSize(for: set), reduceMotion: reduceMotion)
     }
 
     #if DEBUG

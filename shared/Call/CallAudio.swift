@@ -125,7 +125,7 @@ import os
     /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
     func flush() {
         generation += 1
-        player.stop()
+        if player.engine != nil { player.stop() }   // before start() the node has no engine
         queuedBuffers = 0
         queuedByUtterance.removeAll()
         completeUtterances.removeAll()
