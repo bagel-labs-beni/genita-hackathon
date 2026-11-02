@@ -24,7 +24,7 @@ async function waitFor(check: () => boolean, ms = 3000) { const end = Date.now()
 const MAC_LINE = /move this call to their Mac/;
 const ASK = "I have no idea what to wear today. Rio, can you help me pick an outfit?";
 
-function setup(macNearby?: () => boolean) {
+function setup(macNearby?: () => boolean, fail?: { on: boolean }) {
   const requests: SparkRequest[] = [];
   const events: ServerEvent[] = [];
   const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
@@ -37,7 +37,7 @@ function setup(macNearby?: () => boolean) {
   };
   const deps: SessionDeps = {
     config, openAsr: () => asr, userId: "acct",
-    async *spark(req) { requests.push(req); yield { type: "text", delta: "Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *spark(req) { requests.push(req); if (fail?.on) throw new Error("upstream 503"); yield { type: "text", delta: "Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
     async *tts() {},
     macNearby,
   };
@@ -49,7 +49,9 @@ const replies = (events: ServerEvent[]) => events.filter((e) => e.type === "repl
 test("isOutfitAsk: the S4 phone line and 'what should I wear' count; cooking, shopping and small talk do not", () => {
   assert.equal(isOutfitAsk(ASK), true);
   assert.equal(isOutfitAsk("What should I wear to the party tonight?"), true);
-  assert.equal(isOutfitAsk("Which one looks better on me, the white one or the black one?"), true);
+  assert.equal(isOutfitAsk("What should I wear to dinner tonight?"), true, "dinner is the occasion, not cooking (Codex P2)");
+  assert.equal(isOutfitAsk("Which one is better, Python or JavaScript?"), false, "a bare comparison is not about clothes (Codex P2)");
+  assert.equal(isOutfitAsk("What can I cook for dinner?"), false);
   assert.equal(isOutfitAsk("What can I make with these ingredients?"), false);
   assert.equal(isOutfitAsk("Can you find me some dark brown shoes?"), false, "a product search, not an outfit ask");
   assert.equal(isOutfitAsk("How was your day?"), false);
@@ -65,6 +67,23 @@ test("iPhone call, Mac app open: an outfit ask gets the move-to-Mac line, once p
   await s.onClientText(JSON.stringify({ type: "text", text: "Just tell me what to wear here." }));
   await waitFor(() => replies(events) >= 2);
   assert.doesNotMatch(requests.at(-1)!.instructions ?? "", MAC_LINE, "asked once; the user can say no");
+  s.close();
+});
+
+test("a failed first reply does not use up the suggestion: the retry asks again (Codex P2)", async () => {
+  const fail = { on: true };
+  const { deps, sink, requests, events } = setup(() => true, fail);
+  const s = new Session("p4", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => events.some((e) => e.type === "reply" || e.type === "error"));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(events.filter((e) => e.type === "reply" && e.text).length, 0, "every attempt failed: nothing was said");
+  fail.on = false;
+  const n = requests.length;
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => requests.length > n);
+  assert.match(requests.at(-1)!.instructions ?? "", MAC_LINE, "nothing was said the first time");
   s.close();
 });
 

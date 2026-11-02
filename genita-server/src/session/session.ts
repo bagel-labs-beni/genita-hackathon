@@ -1124,7 +1124,6 @@ export class Session {
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
     built ??= this.buildRequest(text, renamedFrom);
-    if (built.suggestMac) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!greeting && !self) this.memoryCall?.userMessage();
@@ -1413,6 +1412,8 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
+    // Demo S4: counted as asked only once the suggestion was actually said (a failed reply can ask again)
+    if (full && built.suggestMac) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
