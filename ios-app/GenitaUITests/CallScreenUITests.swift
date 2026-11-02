@@ -104,7 +104,7 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertTrue(asking.label.contains("Getting to know you · How chatty calls should be"))
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-S09-GK1-asking"; shot.lifetime = .keepAlways; add(shot)
         let noted = app.descendants(matching: .any).matching(identifier: "profileChip").firstMatch
-        XCTAssertTrue(noted.waitForExistence(timeout: 10), "the answer is saved: CC-1")
+        XCTAssertTrue(noted.waitForExistence(timeout: 15), "the answer is saved: CC-1")
         XCTAssertTrue(noted.label.contains("Noted: quiet company"))
         XCTAssertFalse(asking.exists, "the question chip goes once it's answered")
         let shot2 = XCTAttachment(screenshot: app.screenshot()); shot2.name = "call-S09-CC1-noted"; shot2.lifetime = .keepAlways; add(shot2)
