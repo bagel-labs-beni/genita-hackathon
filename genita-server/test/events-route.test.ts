@@ -26,12 +26,14 @@ test("POST /v1/events authenticates, filters properties, drops unknown names, an
   assert.equal((await post({ events: [{ name: "setup.summary_viewed", props: { screen: "summary", ignored: { text: "never log" }, tooLong: "x".repeat(81), n: 3, ok: true } }] })).status, 204);
   assert.deepEqual(logs.find((x) => x.event === "setup.summary_viewed")?.data, { source: "app", userId: "demo", screen: "summary", n: 3, ok: true });
   assert.equal((await post({ events: [{ name: "not.allowed", props: { body: "never logged" } }] })).status, 204);
-  assert.equal(logs.filter((x) => x.event === "not.allowed").length, 0);
+  // server-owned events cannot be forged by an app
+  assert.equal((await post({ events: [{ name: "turn.answered", props: { first_audio_ms: 1 } }, { name: "call.greeted" }] })).status, 204);
+  assert.equal(logs.filter((x) => x.event === "not.allowed" || x.event === "turn.answered" || x.event === "call.greeted").length, 0);
   assert.equal(logs.find((x) => x.event === "events.unknown")?.data.count, 1);
   assert.equal((await post({ events: Array.from({ length: 21 }, () => ({ name: "app.reopened" })) })).status, 400);
   assert.equal((await post({ events: [{ name: "app.reopened" }] }, "")).status, 401);
 
   for (let i = 0; i < 5; i++) assert.equal((await post({ events: Array.from({ length: 20 }, () => ({ name: "app.reopened" })) })).status, 204);
-  assert.equal((await post({ events: Array.from({ length: 18 }, () => ({ name: "app.reopened" })) })).status, 204);
+  assert.equal((await post({ events: Array.from({ length: 16 }, () => ({ name: "app.reopened" })) })).status, 204);
   assert.equal((await post({ events: [{ name: "app.reopened" }] })).status, 429);
 });

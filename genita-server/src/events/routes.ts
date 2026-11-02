@@ -4,16 +4,19 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+/**
+ * Only events the server cannot see itself. Server-owned events (auth.*, turn.answered, call.greeted, tts.*,
+ * limit.reached, onboarding.ready, ...) are logged by the server and are NOT accepted from apps, so a client
+ * cannot forge funnel steps or latency numbers.
+ */
 export const APP_EVENT_NAMES = new Set([
-  "auth.signed_in", "auth.failed", "consent.accepted", "name.entered", "auth.logged_out", "account.deleted",
-  "import.prompt_copied", "import.submitted", "import.applied", "import.failed", "import.backgrounded", "import.cancelled", "import.skipped",
-  "prep.progress", "face.uploaded", "face.checked", "face.confirmed", "voice.previewed", "voice.selected", "companion.named", "expressions.started", "expressions.completed", "mouth.started", "mouth.completed", "mouth.failed", "onboarding.ready",
+  "import.prompt_copied", "import.submitted", "import.cancelled", "import.skipped",
+  "face.confirmed", "voice.previewed",
   "setup.depth_selected", "setup.answered", "setup.abandoned", "setup.summary_viewed", "setup.summary_cancelled",
-  "call.greeted", "turn.answered", "tts.first_audio", "tts.fallback_device", "tool.called", "utterance.cancelled", "mode.changed", "limit.reached",
-  "camera.toggled", "screen.share_started", "screen.share_stopped", "screen.memo_written", "screen.asked", "observe.boxes_shown",
-  "find.created", "find.opened", "find.failed", "product.search_started", "product.links_opened",
-  "handoff.preparing", "handoff.committed", "handoff.failed", "product.search_handed_off",
-  "memory.extracted", "memory.recalled", "interpret.started", "interpret.detected", "interpret.relayed", "app.reopened",
+  "camera.toggled", "screen.share_started", "screen.share_stopped", "screen.asked", "observe.boxes_shown",
+  "find.opened", "product.links_opened",
+  "handoff.preparing", "handoff.committed", "handoff.failed",
+  "app.reopened",
 ]);
 
 const MAX_EVENTS = 20;
