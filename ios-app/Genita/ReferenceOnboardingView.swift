@@ -313,7 +313,7 @@ import UniformTypeIdentifiers
             .accessibilityIdentifier(waking ? "voiceWaking" : "voiceHint")
         ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
             if i < voiceList.count {
-                voiceCard(voiceList[i], index: i, waking: waking || (player.loading && !referenceViewport)).designSlot(n, width: width, top: top, stretch: stretch)
+                voiceCard(voiceList[i], index: i, waking: waking || (player.loading && !referenceViewport) || model.savingVoice).designSlot(n, width: width, top: top, stretch: stretch)
             }
         }
     }

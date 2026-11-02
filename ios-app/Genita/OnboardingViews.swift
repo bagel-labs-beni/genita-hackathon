@@ -41,6 +41,8 @@ struct RootView: View {
     private var audio: AVAudioPlayer?
     private var cache: [String: Data] = [:]
     private var task: Task<Void, Never>?
+    private var endTimer: Task<Void, Never>?
+    private var generation = 0
 
     /// Where a call's device speech reads the silent fallback voice (shared/Call device TTS, lane L4).
     static let deviceFallbackKey = "genita.voice.device"
@@ -90,13 +92,15 @@ struct RootView: View {
                 try? AVAudioSession.sharedInstance().setActive(true)
                 let p = try AVAudioPlayer(data: data)
                 p.delegate = self
+                // UI tests run on a simulator with no audio route: play() can say no there, the clip length still drives the state
+                guard p.play() || ProcessInfo.processInfo.arguments.contains("--uitesting") else { fetching = nil; available = false; return }
                 audio = p
                 fetching = nil
                 playing = voice.id
-                p.play()
-                // the delegate can miss on a device with no audio route (CI); the clip's own length ends "Playing" too
-                let id = voice.id, seconds = p.duration + 0.3
-                Task { try? await Task.sleep(for: .seconds(seconds)); if playing == id { playing = nil } }
+                generation += 1
+                let mine = generation, seconds = p.duration + 0.3
+                // the delegate can miss on a device with no audio route; the clip's own length ends "Playing" too
+                endTimer = Task { try? await Task.sleep(for: .seconds(seconds)); if generation == mine { playing = nil } }
             } catch {
                 if Task.isCancelled { return }
                 fetching = nil
@@ -104,6 +108,6 @@ struct RootView: View {
             }
         }
     }
-    func stop() { task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }
-    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in self.playing = nil } }
+    func stop() { generation += 1; endTimer?.cancel(); task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in if self.audio === player { self.playing = nil } } }
 }
