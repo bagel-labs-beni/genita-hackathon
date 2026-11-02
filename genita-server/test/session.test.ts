@@ -258,7 +258,7 @@ test("a reply opening with the same interjection as a recent reply is spoken and
   session.close();
 });
 
-test("an empty Spark answer (e.g. a web search that never produced text) is retried once without tools", async () => {
+test("an empty Spark answer (e.g. a web search that never produced text) is retried once with the same tools", async () => {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: SparkRequest[] = [];
@@ -285,7 +285,7 @@ test("an empty Spark answer (e.g. a web search that never produced text) is retr
   assert.equal(reply.text, "Try a comedy special tonight.");
   assert.equal(calls.length, 2);
   assert.ok(calls[0].tools?.length);
-  assert.equal(calls[1].tools, undefined);
+  assert.deepEqual(calls[1], calls[0]);
   session.close();
 });
 
@@ -381,7 +381,7 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   // ③ only checked items, after their boxes ②
-  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi.";
+  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi. First, fry it.";
   const said = await client.waitFor((m) => m.type === "reply" && m.text === line, 5000);
   const boxes = client.json.findIndex((m) => m.type === "observe.boxes");
   const lineStart = client.json.findIndex((m) => m.type === "reply.delta" && m.utteranceId === said.utteranceId);

@@ -128,12 +128,19 @@ for (const all of [false, true]) {
 
 test("client handoff history is ignored after persisted Forget, including after a service restart", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "genita-forget-history-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "memories.json");
   const repo = new JsonMemoryRepository(file);
   const old = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  // after hooks run in registration order. Removing the dir before setup's hook (close the server, drain memory
+  // writes) failed ~1 in 3 runs (ENOTEMPTY) and left the server open, so the files go last; if setup never
+  // finishes, the early hook still removes them (nothing else is running then).
+  let started = false;
+  const removeDir = async () => { await old.drain(); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); };
+  t.after(async () => { if (!started) await removeDir(); });
   await old.forget("synthetic-a");
   const { open, requests } = await setup(t, new JsonMemoryRepository(file));
+  started = true;
+  t.after(removeDir);
   const mac = await open("synthetic-a", { handoff: true, history: [{ role: "user", text: FACT }], historyRevision: 0 });
   await mac.say("What is my favorite instrument?");
   assert.doesNotMatch(JSON.stringify(requests), /oboe/);

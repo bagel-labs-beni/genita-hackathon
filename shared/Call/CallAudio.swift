@@ -122,6 +122,12 @@ import os
         checkDone(utteranceId)
     }
 
+    /// Utterance IDs are unique only within a server session, unlike an ordinary barge-in flush.
+    func resetSession() {
+        flush()
+        startedUtterances.removeAll()
+    }
+
     /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
     func flush() {
         generation += 1

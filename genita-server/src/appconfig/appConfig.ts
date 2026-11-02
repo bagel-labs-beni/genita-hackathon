@@ -64,7 +64,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     "prep.title": "Bringing {name} to life",
     "prep.stage.scene": "Setting the scene",
     "prep.stage.expressions": "Learning expressions",
-    "prep.stage.mouth": "Finding the voice",
+    "prep.stage.mouth": "Mouth",
     "call.thinking": "{name} is thinking",
   },
   assets: {},
