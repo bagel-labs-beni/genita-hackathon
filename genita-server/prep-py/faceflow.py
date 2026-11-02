@@ -225,11 +225,15 @@ def align_excluding(neutral, key, exclude):
     reg = (cv2.resize(exclude, (int(W * s), int(H * s))) < 0.02).astype(np.uint8) * 255
     Wm = np.eye(2, 3, dtype=np.float32)
     try:
-        _, Wm = cv2.findTransformECC(g(neutral), g(key), Wm, cv2.MOTION_AFFINE,
+        _, Wt = cv2.findTransformECC(g(neutral), g(key), np.eye(2, 3, dtype=np.float32), cv2.MOTION_AFFINE,
                                      (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-6), reg, 5)
+        sv = np.linalg.svd(Wt[:, :2], compute_uv=False)
+        # keep it only when sane: near-unit scale, shift within 10 % of the frame (a failed ECC leaves garbage)
+        if np.all(np.isfinite(Wt)) and sv.min() > 0.8 and sv.max() < 1.25 and np.abs(Wt[:, 2]).max() < 0.1 * 480.0:
+            Wm = Wt
     except cv2.error:
         pass
-    Wm[:, 2] /= s
+    Wm = Wm.copy(); Wm[:, 2] /= s
     return cv2.warpAffine(key, Wm, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
 
 
@@ -250,7 +254,11 @@ def blink_2d(neutral, key, eyes, thr=40):
         skin = np.median(rv[rl >= np.percentile(rl, 60)], 0)
         hair = (np.abs(N - K).max(2) < 18) & (Nl < np.median(rl[rl >= np.percentile(rl, 60)]) - 45)
         R = (R > 0) & ~hair
-        line = (R & (Kl < skin.mean() - thr)).astype(np.float32)
+        # line = clearly darker than the skin; relative on dark skin (a fixed 40 would miss a black line on dark skin)
+        t_ = min(float(thr), 0.33 * float(skin.mean()))
+        line = (R & (Kl < skin.mean() - max(6.0, t_))).astype(np.float32)
+        if line.sum() < max(6.0, 0.01 * R.sum()):
+            continue                                   # no closed-eye line found: leave this eye untouched
         line = cv2.GaussianBlur(cv2.dilate(line, np.ones((2, 2), np.uint8)), (0, 0), 0.7)[..., None]
         reg = R.astype(np.float32)[..., None]
         img = img * (1 - reg) + (skin * (1 - line) + K * line) * reg
