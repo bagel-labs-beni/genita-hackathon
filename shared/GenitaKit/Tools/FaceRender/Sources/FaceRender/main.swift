@@ -323,7 +323,8 @@ func renderFrame(_ i: Int) {
     let r0 = Date()
     if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
     let ahead = renderer.lipAheadMs > 0 ? timeline.sample(atMs: t * 1000 + renderer.lipLookaheadMs + renderer.lipAheadMs) : nil
-    let image = renderer.image(at: t, lip: lip, ahead: ahead)
+    let ctx = LipContext(audioMs: t * 1000 + renderer.lipLookaheadMs, timeline: timeline)
+    let image = renderer.image(at: t, lip: lip, ahead: ahead, context: ctx)
     if o.dumpAmounts != nil, let keys = faceSet.flow?.keys { let a = renderer.flowAmounts; amountRows.append(keys.map { a[$0] ?? 0 }) }
     var pbOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pbOut)
@@ -341,7 +342,7 @@ func renderFrame(_ i: Int) {
     }
     var metricOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &metricOut)
-    renderer.ciContext.render(metricRenderer.image(at: t, lip: lip, ahead: ahead), to: metricOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
+    renderer.ciContext.render(metricRenderer.image(at: t, lip: lip, ahead: ahead, context: ctx), to: metricOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
     let area = mouthArea(metricOut!)
     var d = 0.0
     for k in 0..<min(area.count, restMouth!.count) { d += Double(abs(area[k] - restMouth![k])) }

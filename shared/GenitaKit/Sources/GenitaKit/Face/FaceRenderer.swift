@@ -168,7 +168,7 @@ public final class FaceRenderer: @unchecked Sendable {
     // MARK: drawing
 
     /// The frame as a Core Image graph with extent (0, 0, outputSize).
-    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CIImage {
+    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, context: LipContext? = nil) -> CIImage {
         let h = extent.height
         // 1. expression: running weighted average of the stills in the mix
         var img: CIImage = bases[.neutral]!
@@ -190,7 +190,7 @@ public final class FaceRenderer: @unchecked Sendable {
         let open = Double(min(1, max(0, lip.openness)))
         if useFlow, let fm = flowMorph {
             // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
-            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, at: t) }()
+            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, context: context, at: t) }()
             let r = fm.outputRect
             img = CIImage(cgImage: cg)
                 .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(cg.width), y: r.height / CGFloat(cg.height)))
@@ -242,8 +242,8 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// Rendered RGBA frame (sRGB).
-    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CGImage? {
-        context.createCGImage(image(at: t, lip: lip, ahead: ahead), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, lipContext: LipContext? = nil) -> CGImage? {
+        context.createCGImage(image(at: t, lip: lip, ahead: ahead, context: lipContext), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via

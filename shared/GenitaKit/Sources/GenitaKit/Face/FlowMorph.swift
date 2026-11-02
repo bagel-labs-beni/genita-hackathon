@@ -168,6 +168,8 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var microPx: Double = 0.5
     }
     public var motion: Motion? = nil
+    /// v2 coarticulated motion (needs aligner phonemes; human lane v23). Absent → v2 defaults for people.
+    public var motionV2: MotionV2Params? = nil
 
     /// The v7 rules (prep faceflow.py BASE_MAP, 11/3) for a manifest without a map.
     public static let standard = FlowMap(
@@ -323,8 +325,11 @@ final class FlowMorph: @unchecked Sendable {
         if let c = cheekRules, let face, let mouth, data.map.drive != "snap" {
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width))
         } else { cheekRig = nil }
+        if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
     }
     let workScale: Double
+    /// v2: 356 px face-box height at 960 tall = 1 (clip .6…1.2).
+    var faceNorm: Double = 1
     let stillWidth: Double
     /// Cheek / nasolabial coupling (people); nil = the morph ROI is the output.
     let cheekRig: CheekRig?
@@ -409,6 +414,9 @@ final class FlowMorph: @unchecked Sendable {
     }
 
     private var motionX: [Float] = [], motionV: [Float] = []
+    private var v2: MotionV2?
+    private var v2Closed = false
+    private var v2Shown: Int?
     private var motionT: Double?
     private var loudPeak: Float = 0.3
     /// Texture amounts of the last motion step (focused, before amplitude), for the snap.
@@ -576,6 +584,7 @@ final class FlowMorph: @unchecked Sendable {
         smooth = smooth.map { _ in 0 }; snapW = smooth
         lastT = nil; snapT = nil; closeStart = nil; lastVowel = nil
         motionX = []; motionV = []; motionT = nil; loudPeak = 0.3
+        v2?.reset()
         dominant = nil; dominantSince = -.infinity; candidate = nil; candidateRun = 0; shownHeld = 0
         snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
         cornerD = [(0, 0), (0, 0)]
@@ -584,12 +593,12 @@ final class FlowMorph: @unchecked Sendable {
     /// Parity checks: use these amounts (in `keys` order) instead of the lip timeline once.
     var amountsOverride: [Float]?
 
-    func render(_ lip: LipFrame, ahead: LipFrame? = nil, at t: Double) -> CGImage {
+    func render(_ lip: LipFrame, ahead: LipFrame? = nil, context: LipContext? = nil, at t: Double) -> CGImage {
         let fps = data.map.smoothing.fps
         let frame = Int((t * fps).rounded())
         // On twos (3D characters): odd frames repeat the previous mouth (replacement-mouth look).
         if data.map.onTwos == true, frame % 2 == 1, let last = lastImage, lastFrame == frame - 1 { lastFrame = frame; return last }
-        let image = data.map.drive == "snap" ? render2D(lip, at: t, frame: frame) : renderFlow(lip, ahead: ahead, at: t)
+        let image = data.map.drive == "snap" ? render2D(lip, at: t, frame: frame) : renderFlow(lip, ahead: ahead, context: context, at: t)
         lastImage = image; lastFrame = frame
         return image
     }
@@ -641,13 +650,38 @@ final class FlowMorph: @unchecked Sendable {
 
     // MARK: flow morph
 
-    private func renderFlow(_ lip: LipFrame, ahead: LipFrame?, at t: Double) -> CGImage {
+    private func renderFlow(_ lip: LipFrame, ahead: LipFrame?, context: LipContext?, at t: Double) -> CGImage {
         let mo = motion
-        var am = mo.map { stepMotion(lip, ahead: ahead, at: t, $0) } ?? step(lip, at: t)
+        var am: [Float]
+        var usedV2 = false
+        if mo != nil, let ctx = context, let p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil),
+           case let ph = ctx.timeline.phonemeTimings, !ph.isEmpty {
+            if v2 == nil { v2 = MotionV2(params: p, faceNorm: faceNorm) }
+            if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { Double(ctx.timeline.sample(atMs: $0).openness) },
+                                order: order, resolve: resolve) {
+                am = r.amounts; v2Closed = r.closed; usedV2 = true
+                textureAmounts = am
+                lastAmounts = Dictionary(uniqueKeysWithValues: zip(order, am))
+            } else { am = stepMotion(lip, ahead: ahead, at: t, mo!) }
+        } else {
+            am = mo.map { stepMotion(lip, ahead: ahead, at: t, $0) } ?? step(lip, at: t)
+        }
+        if let cap = data.map.cap, usedV2 { for (k, c) in cap { if let j = order.firstIndex(of: k) { am[j] = min(am[j], Float(c)) } } }
         var overridden = false
         if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil; overridden = true }
         var (cw, shown) = colourWeights(mo == nil || overridden ? am : textureAmounts, at: t)
-        if mo != nil, !overridden {
+        if usedV2, !overridden {
+            // v2 texture: the leading key above .12 (hysteresis .05 for the one shown), fading in with
+            // its amount; a closure is geometry only (neutral texture).
+            var j = am.indices.max { am[$0] < am[$1] }
+            if let jj = j, am[jj] < 0.12 { j = nil }
+            if let d = v2Shown, let jj = j, jj != d, am[d] >= 0.12, am[jj] - am[d] < 0.05 { j = d }
+            v2Shown = v2Closed ? nil : j
+            cw = am.indices.map { i in
+                guard i == v2Shown else { return 0 }
+                return Float(min(1, max(0, (Double(am[i]) - 0.04) / 0.16)))
+            }
+        } else if mo != nil, !overridden {
             // Teeth/cavity texture only where the lips are really apart (a 1–2 px gap showed the
             // warped teeth as a silver wire); a closure shows the closed texture.
             let mbp = order.firstIndex(of: "MBP")
@@ -979,5 +1013,13 @@ final class CheekRig: @unchecked Sendable {
         }
         return PixelBuffer.makeImage(out, width: width, height: height)
     }
+}
+
+/// What the v2 motion needs beyond one lip frame: the reply's audio clock (lookahead included) and
+/// the timeline with its aligner phonemes.
+public struct LipContext: @unchecked Sendable {
+    public let audioMs: Double
+    public let timeline: LipTimeline
+    public init(audioMs: Double, timeline: LipTimeline) { self.audioMs = audioMs; self.timeline = timeline }
 }
 

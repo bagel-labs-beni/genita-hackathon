@@ -172,6 +172,12 @@ public final class LipTimeline: @unchecked Sendable {
         cache = nil
     }
 
+    /// Aligner phonemes received so far (ms on the reply clock, sorted).
+    public var phonemeTimings: [LipPhonemeTiming] {
+        lock.lock(); defer { lock.unlock() }
+        return phonemes.sorted { $0.startMs < $1.startMs }
+    }
+
     /// True when the shapes come from timings (phonemes, words or mouth cues), not the text fallback.
     public var hasTimings: Bool {
         lock.lock(); defer { lock.unlock() }

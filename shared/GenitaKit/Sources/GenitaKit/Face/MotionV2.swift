@@ -1,0 +1,165 @@
+// L4 face · Coarticulated motion v2 (human lane v23, reference genita-mouth-proto render.py `--motion v2`).
+// Needs aligner phonemes (#210 `audio.timing`); without them FlowMorph keeps its v1 motion.
+//   jaw   — one continuous curve from loudness: stress boost, short-vowel pre-emphasis, attack/release,
+//           soft knee; closures (m/b/p) shut it
+//   shape — a slow per-vowel channel (round / spread / neutral), unstressed and short vowels undershoot,
+//           leaning toward the next vowel within 150 ms
+//   keys  — each shape's jaw ladder interpolated at the jaw value, scaled by the lip aperture; then a
+//           critically damped spring (7.5 Hz); closures land fast; a short vowel's centre frame reaches
+//           ≥ 60 % of its target; a little living jitter and an idle jaw keep it from freezing
+// Everything is computed per frame from what has arrived so far (the aligner sends each clause's
+// phonemes before that clause finishes playing), so it works while the reply streams.
+
+import Foundation
+
+public struct MotionV2Params: Codable, Equatable, Sendable {
+    public var jawAttackMs = 70.0, jawReleaseMs = 100.0, jawKnee = 0.8
+    public var shapeTauMs = 100.0, weakShape = 0.5, shortVowelMs = 80.0
+    public var anticipation = 0.3
+    public var amp = 0.3, unstressed = 0.7, lip = 0.9
+    public var preemphMs = 40.0
+    public var closureFrames = 2
+    public var springHz = 7.5
+    public var idle = 0.2
+    public var stressPercentile = 70.0
+    public var shortStressedMs = 150.0
+    public init() {}
+}
+
+struct MotionV2 {
+    static let round: Set<String> = ["AO", "OW", "OY", "UW", "UH", "W"]
+    static let spread: Set<String> = ["IY", "IH", "EY", "EH", "Y"]
+    static let open: Set<String> = ["AA", "AH", "AE", "AY", "AW", "ER"]
+    static var vowels: Set<String> { round.union(spread).union(open) }
+    static let ladders: [[(String, Double)]] = [
+        [("U", 0), ("OH", 0.45)],
+        [("EI", 0), ("EH", 0.45), ("AH2", 0.85)],
+        [("MID", 0), ("AH", 0.35), ("AH2", 0.7)],
+    ]
+
+    var p: MotionV2Params
+    var faceNorm: Double
+    private var jv = 0.0
+    private var shape: [Double] = [0, 0, 1]
+    private var x: [Double] = [], v: [Double] = []
+    private var lastMs: Double?
+    private var rng = SplitMix64(seed: 9)
+    private var jitter: [Double] = [0, 0, 0]
+    private var idleNoise: [Double] = Array(repeating: 0, count: 12)
+
+    init(params: MotionV2Params, faceNorm: Double) { p = params; self.faceNorm = faceNorm }
+
+    mutating func reset() { jv = 0; shape = [0, 0, 1]; x = []; v = []; lastMs = nil }
+
+    /// Key amounts at audio time `ms` (lookahead already added). `phonemes`: everything received so far
+    /// for this reply (ms, sorted); `openness(ms)`: loudness 0…1. Returns nil when there are no phonemes.
+    mutating func step(ms: Double, phonemes: [LipPhonemeTiming], openness: (Double) -> Double,
+                       order: [String], resolve: (String) -> String?) -> (amounts: [Float], closed: Bool)? {
+        guard !phonemes.isEmpty else { return nil }
+        let dt = lastMs.map { min(500, max(0, ms - $0)) } ?? 40
+        lastMs = ms
+        let ph = phonemes.map { (p: $0.phoneme.uppercased().trimmingCharacters(in: CharacterSet(charactersIn: "012")), s: Double($0.startMs), e: Double($0.endMs)) }
+        let vow = ph.filter { Self.vowels.contains($0.p) }
+        func peak(_ s: Double, _ e: Double) -> Double {
+            var m = 0.0, t = s
+            repeat { m = max(m, openness(t)); t += 40 } while t < e
+            return m
+        }
+        let peaks = vow.map { peak($0.s, $0.e) }
+        let thr: Double = {
+            guard !peaks.isEmpty else { return 1 }
+            let sorted = peaks.sorted(); let idx = Int((Double(sorted.count - 1) * p.stressPercentile / 100).rounded())
+            return sorted[min(sorted.count - 1, max(0, idx))]
+        }()
+        // where are we
+        let curVowel = vow.indices.first { vow[$0].s <= ms && ms < vow[$0].e }
+        let stressed = curVowel.map { peaks[$0] >= thr } ?? false
+        let shortStressed = curVowel.map { stressed && vow[$0].e - vow[$0].s < p.shortStressedMs } ?? false
+        // closure (m/b/p), with a 1-frame minimum next to a short vowel
+        var closed = false
+        for q in ph where ["M", "B", "P"].contains(q.p) {
+            let nearShort = vow.contains { (abs($0.s - q.e) < 30 || abs($0.e - q.s) < 30) && $0.e - $0.s < 120 }
+            let minMs = Double(nearShort ? 1 : p.closureFrames) * 40
+            if ms >= q.s && ms < max(q.e, q.s + minMs) { closed = true; break }
+        }
+        // shape target: the current (or last) vowel, leaning toward the next one within 150 ms
+        func shapeOf(_ i: Int) -> [Double] {
+            let q = vow[i]
+            let cls = Self.round.contains(q.p) ? 0 : Self.spread.contains(q.p) ? 1 : 2
+            var st = peaks[i] >= thr ? 1.0 : p.weakShape
+            if q.e - q.s < p.shortVowelMs { st *= 0.5 }
+            var t = [0.0, 0, 1 - st]; t[cls] += st
+            if cls == 1, peaks[i] >= thr { t = [0.6 * t[0], 0.6 * t[1], 0.6 * t[2] + 0.4] }
+            return t
+        }
+        var target = shape
+        if let i = curVowel { target = shapeOf(i) }
+        else if let last = vow.lastIndex(where: { $0.e <= ms }) { target = shapeOf(last) }
+        if let n = vow.firstIndex(where: { $0.s > ms }), vow[n].s - ms < 150, p.anticipation > 0 {
+            let nt = shapeOf(n)
+            let a = p.anticipation * (nt.max()! >= 0.99 ? 0.66 : 1)
+            target = zip(target, nt).map { (1 - a) * $0 + a * $1 }
+        }
+        let al = 1 - exp(-dt / p.shapeTauMs)
+        shape = zip(shape, target).map { $0 + al * ($1 - $0) }
+        // jaw
+        var pre = 1.0
+        if let i = curVowel, p.preemphMs > 0 { pre = min(2, 1 / (1 - exp(-max(vow[i].e - vow[i].s, 20) / p.preemphMs))) }
+        let st = stressed ? 1.0 : 0.0
+        let amp = p.amp * faceNorm
+        let xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (0.85 + 0.3 * st)
+        let aa = 1 - exp(-dt / p.jawAttackMs), ar = 1 - exp(-dt / p.jawReleaseMs)
+        jv = closed ? 0 : jv + (xj > jv ? aa : ar) * (xj - jv)
+        var J = tanh(jv * p.jawKnee)
+        if p.idle > 0, !closed { J = max(0, J + 0.15 * p.idle * sin(2 * .pi * 0.3 * ms / 1000 + 0.7)) }
+        var A = p.lip > 0 ? min(1, jv / max(p.amp, 1e-3) * p.lip) : J
+        if shortStressed { A = max(A, 0.6); J = max(J, 0.4) }
+        // key targets
+        var tgt = [Double](repeating: 0, count: order.count)
+        let mbp = order.firstIndex(of: "MBP")
+        if closed { if let m = mbp { tgt[m] = 1 } } else {
+            for c in 0..<3 where shape[c] > 1e-3 {
+                let steps = Self.ladders[c].compactMap { k, x -> (Int, Double)? in
+                    guard let r = resolve(k), let i = order.firstIndex(of: r) else { return nil }
+                    return (i, x)
+                }
+                guard !steps.isEmpty else { continue }
+                var w: [(Int, Double)] = []
+                if J <= steps[0].1 || steps.count == 1 { w = [(steps[0].0, 1)] } else {
+                    w = [(steps[steps.count - 1].0, 1)]
+                    for k in 0..<(steps.count - 1) where J <= steps[k + 1].1 {
+                        let u = (J - steps[k].1) / (steps[k + 1].1 - steps[k].1)
+                        w = [(steps[k].0, 1 - u), (steps[k + 1].0, u)]; break
+                    }
+                }
+                for (i, wi) in w { tgt[i] += A * shape[c] * wi }
+            }
+            // living jitter on the leading key, idle jaw when little is open
+            jitter.removeFirst(); jitter.append(Double(rng.nextUnit() * 2 - 1))
+            if tgt.reduce(0, +) > 0.2, let lead = tgt.indices.max(by: { tgt[$0] < tgt[$1] }) {
+                tgt[lead] = max(0, tgt[lead] + 0.03 * jitter.reduce(0, +) / 3)
+            }
+            idleNoise.removeFirst(); idleNoise.append(Double(rng.nextUnit() * 2 - 1) * 1.7)
+            if p.idle > 0, let mid = order.firstIndex(of: "MID"), tgt.reduce(0, +) < 0.9 {
+                let n = idleNoise.reduce(0, +) / 12
+                tgt[mid] += max(0, p.idle * (0.6 + 0.4 * sin(2 * .pi * 0.3 * ms / 1000) + 0.6 * n))
+            }
+        }
+        let target0 = tgt
+        // spring (closures fast)
+        if x.count != order.count { x = tgt; v = tgt.map { _ in 0 } }
+        if closed { for i in x.indices { x[i] += 0.7 * (tgt[i] - x[i]); v[i] = 0 } } else {
+            let w0 = 2 * Double.pi * p.springHz, sub = 8, h = dt / 1000 / Double(sub)
+            for _ in 0..<sub { for i in x.indices {
+                let acc = w0 * w0 * (tgt[i] - x[i]) - 2 * w0 * v[i]
+                v[i] += h * acc; x[i] += h * v[i]
+            } }
+        }
+        var out = x.map { min(1, max(0, $0)) }
+        // a short vowel's centre reaches ≥ 60 % of its own target
+        if let i = curVowel, !closed, vow[i].e - vow[i].s <= 160, abs(ms - (vow[i].s + vow[i].e) / 2) <= 20 {
+            out = zip(out, target0).map { max($0, 0.6 * $1) }
+        }
+        return (out.map(Float.init), closed)
+    }
+}

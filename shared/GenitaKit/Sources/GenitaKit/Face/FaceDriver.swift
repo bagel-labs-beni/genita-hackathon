@@ -153,9 +153,10 @@ public final class FaceDriver: ObservableObject {
         let ms = currentUtteranceId == nil ? nil : playbackClock()
         let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
         let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
+        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
         let r = renderer, t = now()
         queue.async { [weak self] in
-            let image = r.render(at: t, lip: lip, ahead: ahead)
+            let image = r.render(at: t, lip: lip, ahead: ahead, lipContext: ctx)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rendering = false

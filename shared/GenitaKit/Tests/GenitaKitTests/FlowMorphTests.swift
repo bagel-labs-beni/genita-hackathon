@@ -241,3 +241,29 @@ struct FlowMotionTests {
         #expect(closed[mbp] > 0.7)
     }
 }
+
+struct MotionV2Tests {
+    /// v2 from aligner phonemes: an m/b/p shuts the mouth, a stressed vowel opens it, nothing is held still.
+    @Test func phonemesDriveJawAndClosures() throws {
+        let set = try Synth.faceSet()
+        let order = set.flow!.keys
+        var m = MotionV2(params: MotionV2Params(), faceNorm: 1)
+        let ph = [LipPhonemeTiming(phoneme: "M", startMs: 0, endMs: 80), LipPhonemeTiming(phoneme: "AA1", startMs: 80, endMs: 400),
+                  LipPhonemeTiming(phoneme: "B", startMs: 400, endMs: 480), LipPhonemeTiming(phoneme: "IY0", startMs: 480, endMs: 560)]
+        var frames: [[Float]] = []
+        var closedAt: [Bool] = []
+        for i in 0..<16 {
+            let ms = Double(i) * 40
+            let step = m.step(ms: ms, phonemes: ph, openness: { $0 >= 80 && $0 < 400 ? 0.8 : 0.3 }, order: order, resolve: { order.contains($0) ? $0 : nil })
+            let r = try #require(step)
+            frames.append(r.amounts); closedAt.append(r.closed)
+        }
+        let mbp = order.firstIndex(of: "MBP")!
+        #expect(closedAt[0] && frames[0][mbp] > 0.6)
+        let openMid = frames[6].enumerated().filter { $0.offset != mbp }.map(\.element).reduce(0, +)
+        #expect(openMid > 0.3)
+        #expect(closedAt[10])
+        var empty = MotionV2(params: MotionV2Params(), faceNorm: 1)
+        #expect(empty.step(ms: 0, phonemes: [], openness: { _ in 0 }, order: order, resolve: { $0 }) == nil)
+    }
+}
