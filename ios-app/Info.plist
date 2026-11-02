@@ -39,6 +39,7 @@
 	<array>
 		<string>KMU80TTFSungkokSemiSerif.ttf</string>
 		<string>PretendardVariable.ttf</string>
+		<string>NotoSerifKR-Regular-Latin.ttf</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

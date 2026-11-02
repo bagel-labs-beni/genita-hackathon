@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreText
 import Speech
 import SwiftUI
 import UIKit
@@ -195,14 +196,85 @@ struct HISYView: View {
 
 // MARK: - pieces
 
-/// Serif 35/39 headline (Figma Noto Serif KR → the app's serif, as on every reference screen).
+/// Noto Serif KR Regular 35/39, tracking -0.35 (Figma HISY / S / C1 headlines), drawn like Figma: every line box is
+/// exactly 39 pt with the font's ascent centred in it (SwiftUI can't set a line height below the font's own 50 pt).
 struct HISYTitle: View {
     let text: String
     var size: CGFloat = 35
+    var line: CGFloat = 39
     var body: some View {
-        Text(text).font(HISYType.serif(size)).tracking(-0.35).lineSpacing(HISYType.serifSpacing(size, line: 39))
-            .foregroundStyle(HISYInk.ink).fixedSize(horizontal: false, vertical: true)
-            .accessibilityAddTraits(.isHeader)
+        HISYSerifText(text: text, size: size, line: line).padding(.vertical, -HISYSerifText.overflow)
+    }
+}
+
+struct HISYSerifText: UIViewRepresentable {
+    let text: String
+    var size: CGFloat = 35
+    var line: CGFloat = 39
+    var tracking: CGFloat = -0.35
+    /// room above and below the 39 pt boxes for ascenders and descenders that reach past them
+    static let overflow: CGFloat = 8
+
+    static func font(_ size: CGFloat) -> UIFont {
+        UIFont(name: "NotoSerifKR-Regular", size: size) ?? UIFont(name: "KMUTTF-SungkokSemiSerif", size: size) ?? .systemFont(ofSize: size)
+    }
+
+    func makeUIView(context: Context) -> SerifLabel {
+        let v = SerifLabel(); v.isOpaque = false; v.backgroundColor = .clear; v.contentMode = .redraw
+        v.isAccessibilityElement = true; v.accessibilityTraits = [.staticText, .header]
+        return v
+    }
+    func updateUIView(_ v: SerifLabel, context: Context) {
+        v.text = text; v.size = size; v.line = line; v.tracking = tracking; v.accessibilityLabel = text
+        v.setNeedsDisplay()
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: SerifLabel, context: Context) -> CGSize? {
+        let width = proposal.width ?? 328
+        let lines = SerifLabel.lineRanges(text: text, size: size, tracking: tracking, width: width).count
+        return CGSize(width: width, height: CGFloat(max(1, lines)) * line + 2 * Self.overflow)
+    }
+}
+
+final class SerifLabel: UIView {
+    var text = ""
+    var size: CGFloat = 35
+    var line: CGFloat = 39
+    var tracking: CGFloat = -0.35
+
+    static func attributed(_ text: String, size: CGFloat, tracking: CGFloat) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): CTFontCreateWithName(HISYSerifText.font(size).fontName as CFString, size, nil),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): UIColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1).cgColor,
+            .kern: tracking,
+        ])
+    }
+    static func lineRanges(text: String, size: CGFloat, tracking: CGFloat, width: CGFloat) -> [CFRange] {
+        let a = attributed(text, size: size, tracking: tracking)
+        let typesetter = CTTypesetterCreateWithAttributedString(a)
+        var out: [CFRange] = [], start = 0
+        while start < a.length {
+            let count = CTTypesetterSuggestLineBreak(typesetter, start, Double(width) + 0.5)
+            guard count > 0 else { break }
+            out.append(CFRange(location: start, length: count)); start += count
+        }
+        return out
+    }
+    override func draw(_ rect: CGRect) {
+        guard let cg = UIGraphicsGetCurrentContext() else { return }
+        let font = HISYSerifText.font(size)
+        let a = Self.attributed(text, size: size, tracking: tracking)
+        let typesetter = CTTypesetterCreateWithAttributedString(a)
+        cg.saveGState(); cg.textMatrix = .identity
+        cg.translateBy(x: 0, y: bounds.height); cg.scaleBy(x: 1, y: -1)
+        // Figma: the font's ascent + descent centred in each line box
+        var baseline = bounds.height - HISYSerifText.overflow - font.ascender - (line - font.lineHeight) / 2
+        for r in Self.lineRanges(text: text, size: size, tracking: tracking, width: bounds.width) {
+            let l = CTTypesetterCreateLine(typesetter, r)
+            cg.textPosition = CGPoint(x: 0, y: baseline)
+            CTLineDraw(l, cg)
+            baseline -= line
+        }
+        cg.restoreGState()
     }
 }
 
