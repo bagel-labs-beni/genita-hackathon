@@ -363,11 +363,14 @@
    "perSubjectChoice": {
     "clay": "humanV41",
     "disney": "humanV41",
-    "real3d": "humanV41 (human face)",
-    "pixar": "motionV2 (m17) unless v41-tuned wins",
-    "mascot": "motionV2 (m17) unless v41 teeth-off wins"
-   }
-  }
+    "real3d": "humanV41 (human face → human profile)",
+    "pixar": "motionV2",
+    "mascot": "motionV2"
+   },
+   "chooseV2When": "the widest key (AH2) is a shout-size opening (pixar) or the open keys have bright tongue/highlights in the cavity (mascot): the v41 cross-blend spreads them; v2 snap texture keeps a clean dark gap"
+  },
+  "teethTop": true,
+  "_teethTopFalseWhen": "non-human mouths (mascot animals): teethTop false; app: send no interior mask → v2 snap texture"
  },
  "character2d": {
   "keys": [
@@ -474,7 +477,7 @@
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "m19 07:1x KST — per-kind runtime choice | merged into prep-py by human B lane 11/3 07:2x (motion.human, toy AH-only on the server)",
+ "_status": "m19 final per-subject choice 07:2x",
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
