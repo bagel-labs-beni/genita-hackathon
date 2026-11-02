@@ -129,6 +129,7 @@ const PLAYBACK_SLACK_MS = 250;
 const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
+const ASR_RETRY_MS = 2000;
 
 /**
  * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
@@ -212,6 +213,10 @@ export class Session {
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
   private callAsr: AsrLike | null = null;
+  private readonly asrRetry = {
+    mic: { connecting: false, retryAt: 0, failed: false },
+    call: { connecting: false, retryAt: 0, failed: false },
+  };
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
@@ -337,16 +342,22 @@ export class Session {
       pcm = frame.subarray(FRAME_HEADER_BYTES);
       if (frame[2] === CLIENT_FRAME_KIND_CALL) {
         if (this.interp?.source !== "call") return;
-        if (!this.callAsr?.isOpen) void this.ensureCallAsr();
-        this.callAsr?.sendAudio(pcm);
+        if (!this.callAsr?.isOpen) {
+          void this.ensureCallAsr();
+          return; // live frames are dropped while connecting or cooling down
+        }
+        this.callAsr.sendAudio(pcm);
         return;
       }
     }
     if (!this.micOn) return;
     // "Hold to reply": outside the hold the mic is silence, which also ends the held turn quickly
     if (this.interp?.micGated) pcm = Buffer.alloc(pcm.length);
-    if (!this.asr?.isOpen) void this.ensureAsr();
-    this.asr?.sendAudio(pcm);
+    if (!this.asr?.isOpen) {
+      void this.ensureAsr();
+      return;
+    }
+    this.asr.sendAudio(pcm);
   }
 
   // ───────────────────────── lifecycle ─────────────────────────
@@ -424,11 +435,7 @@ export class Session {
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
-      try {
-        await this.ensureAsr();
-      } catch {
-        this.error("asr_unavailable", "Speech recognition could not connect; text still works", true);
-      }
+      await this.ensureAsr();
     }
     if (this.closed) return;
     this.client.sendJson({
@@ -506,7 +513,7 @@ export class Session {
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
-    if (this.interp.source === "call") void this.ensureCallAsr().catch(() => this.error("asr_unavailable", "Could not listen to the call's sound", true));
+    if (this.interp.source === "call") void this.ensureCallAsr();
     else this.dropCallAsr();
   }
 
@@ -519,24 +526,13 @@ export class Session {
   private dropCallAsr(): void {
     const a = this.callAsr;
     this.callAsr = null;
+    this.asrRetry.call.failed = false;
+    this.asrRetry.call.retryAt = 0;
     a?.end();
   }
 
-  private async ensureCallAsr(): Promise<void> {
-    if (this.closed || this.callAsr) return;
-    const asr = this.deps.openAsr(this.deps.config.asrLanguages);
-    this.callAsr = asr;
-    asr.on("event", (e) => {
-      if (this.callAsr !== asr || !this.interp) return;
-      if (e.type === "partial") this.interp.partial("call", e.text);
-      else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.interp.final("call", e.text);
-    });
-    asr.on("status", (s) => {
-      if (s === "closed" && this.callAsr === asr) this.callAsr = null;
-    });
-    asr.on("error", (err) => this.log("asr.call.error", { message: err.message.slice(0, 200) }));
-    await asr.connect();
+  private ensureCallAsr(): Promise<void> {
+    return this.connectAsr("call");
   }
 
   private interpretHost(): InterpretHost {
@@ -564,19 +560,60 @@ export class Session {
     };
   }
 
-  private async ensureAsr(): Promise<void> {
-    if (this.closed || (this.asr && this.asr.isOpen)) return;
-    if (!this.asr) {
-      const asr = this.deps.openAsr(this.deps.config.asrLanguages);
-      asr.on("event", (e) => this.onAsr(e));
-      asr.on("status", (s) => {
+  private ensureAsr(): Promise<void> {
+    return this.connectAsr("mic");
+  }
+
+  /** All entry points (start, unmute, interpretation and live frames) contain provider failures here. */
+  private async connectAsr(source: "mic" | "call"): Promise<void> {
+    const retry = this.asrRetry[source];
+    const current = () => source === "mic" ? this.asr : this.callAsr;
+    if (this.closed || current() || retry.connecting || this.now() < retry.retryAt) return;
+    if (source === "call" && this.interp?.source !== "call") return;
+    retry.connecting = true;
+    let asr: AsrLike | null = null;
+    try {
+      asr = this.deps.openAsr(this.deps.config.asrLanguages);
+      const stream = asr;
+      if (source === "mic") this.asr = stream;
+      else this.callAsr = stream;
+      stream.on("event", (e) => {
+        if (this.closed || current() !== stream) return;
+        if (source === "mic") return this.onAsr(e);
+        if (e.type === "partial") this.interp?.partial("call", e.text);
+        else if (e.type === "speechEnd") this.interp?.speechEnd("call");
+        else if (e.type === "speechComplete") this.interp?.final("call", e.text);
+      });
+      stream.on("status", (s) => {
+        if (this.closed || current() !== stream) return;
+        if (s === "closed") {
+          if (source === "mic") this.asr = null;
+          else this.callAsr = null;
+        }
+        if (source !== "mic") return;
         if (s === "reconnecting") this.client.sendJson({ type: "asr.status", status: "reconnecting" });
         if (s === "connected") this.client.sendJson({ type: "asr.status", status: "connected" });
-        if (s === "closed" && this.asr === asr) this.asr = null;
       });
-      asr.on("error", (err) => this.log("asr.error", { message: err.message.slice(0, 200) }));
-      this.asr = asr;
-      await asr.connect();
+      stream.on("error", (err) => this.log(source === "mic" ? "asr.error" : "asr.call.error", { message: err.message.slice(0, 200) }));
+      await stream.connect();
+      if (current() === stream) {
+        retry.failed = false;
+        retry.retryAt = 0;
+      }
+    } catch {
+      if (source === "mic" && this.asr === asr) this.asr = null;
+      if (source === "call" && this.callAsr === asr) this.callAsr = null;
+      // Stop the failed stream's own reconnect timers before allowing a replacement.
+      try { asr?.end(); } catch { /* already unusable */ }
+      if (this.closed || (source === "call" && this.interp?.source !== "call")) return;
+      retry.retryAt = this.now() + ASR_RETRY_MS;
+      const reported = this.asrRetry.mic.failed || this.asrRetry.call.failed;
+      retry.failed = true;
+      if (!reported) this.error("asr_unavailable", source === "mic"
+        ? "Speech recognition could not connect; text still works"
+        : "Could not listen to the call's sound", true);
+    } finally {
+      retry.connecting = false;
     }
   }
 
