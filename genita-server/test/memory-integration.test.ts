@@ -222,3 +222,49 @@ test("call start + recall tool: a memory lock held by a stalled write never hold
   assert.ok(toolTurn); assert.ok(Date.now() - t1 < 2500, `tool answer in ${Date.now() - t1}ms`);
   release(); await held; session.close(); await memory.drain();
 });
+
+test("slow start (Codex 11/3): once the store recovers, the call's new turns are extracted under the real revision and can hand off", { timeout: 20_000 }, async () => {
+  const repo = new InMemoryMemoryRepository();
+  const extracted: number[] = [];
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async (turns) => { extracted.push(turns.length); return [{ text: "I like hiking on foggy mornings.", kind: "fact", sensitive: "none", follow_up: false }]; } });
+  await memory.forget("trusted"); // persisted revision 1
+  let slow = true; let releaseState!: () => void; const stateGate = new Promise<void>((r) => { releaseState = r; });
+  const getState = repo.getState.bind(repo);
+  repo.getState = async (u) => { if (slow) { slow = false; await stateGate; } return getState(u); };
+  const { deps } = setup(); deps.memory = memory;
+  const c = client(); const session = new Session("slow-start", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready"));
+  for (let i = 0; i < 4; i++) {
+    const n = c.replies().length;
+    await session.onClientText(JSON.stringify({ type: "text", text: `Turn ${i}: I like hiking on foggy mornings.` }));
+    await waitFor(() => c.replies().length > n);
+  }
+  releaseState(); // the store recovers after the 4-turn batch was already cut
+  await waitFor(() => session.historyForgetRevision === 1);
+  session.close(); await memory.drain();
+  assert.deepEqual(extracted, [4], "the batch waited for the real revision instead of being dropped under 0");
+  assert.equal((await memory.list("trusted")).length, 1);
+});
+
+test("slow start (Codex 11/3): a turn from an ended call that waits for the first state read is dropped by a Forget made after the call ended", { timeout: 20_000 }, async () => {
+  const repo = new InMemoryMemoryRepository();
+  let extracted = 0;
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => { extracted++; return [{ text: "I like hiking on foggy mornings.", kind: "fact", sensitive: "none", follow_up: false }]; } });
+  let slow = true; let releaseState!: () => void; const stateGate = new Promise<void>((r) => { releaseState = r; });
+  const getState = repo.getState.bind(repo);
+  repo.getState = async (u) => { if (slow) { slow = false; await stateGate; } return getState(u); };
+  const { deps } = setup(); deps.memory = memory;
+  const c = client(); const session = new Session("slow-forget", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready"));
+  const n = c.replies().length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "I like hiking on foggy mornings." }));
+  await waitFor(() => c.replies().length > n);
+  session.close();
+  await memory.forget("trusted");
+  releaseState();
+  await memory.drain();
+  assert.equal(extracted, 0, "the pre-Forget turn never reached extraction");
+  assert.deepEqual(await memory.list("trusted"), []);
+});

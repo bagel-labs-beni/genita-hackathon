@@ -36,6 +36,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
+| 11/3 | Expression layer: new event `expression {utteranceId, sentence, tag, intensity, startMs, endMs}` (tag `smile\|smileopen\|laugh\|surprised\|concerned`), at most one per reply clause, server voice only, after that clause's audio. Nothing for neutral clauses. `GENITA_EXPRESSION=0` turns it off. Additive: unknown to old builds → ignored. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 
@@ -217,6 +218,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
 | `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
 | `audio.timing` | `utteranceId`, `sentence`, `seq`, `words`, `phonemes` | server voice with `GENITA_VOICE_ALIGN=1`: forced-aligner timing of one clause, after its audio (below) |
+| `expression` | `utteranceId`, `sentence`, `tag`, `intensity`, `startMs`, `endMs` | server voice: the face expression of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
@@ -319,6 +321,21 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
   - Fallback: if the aligner fails, is late (> 250 ms after the clause's last audio) or is not confident, no
     `audio.timing` comes for that clause; keep using `audio.words` / text + loudness for it. Nothing comes for a
     cancelled utterance.
+- **Face expression (`expression`, 11/3)**: at most one per clause of a chat reply, never for a neutral clause, never in
+  interpretation or device mode. Sent after the clause's audio (and after its `audio.timing` when the aligner is on):
+
+  ```json
+  { "type": "expression", "utteranceId": 4, "sentence": 0, "tag": "smile", "intensity": 0.7, "startMs": 40, "endMs": 520 }
+  ```
+  - `tag` = `smile` | `smileopen` | `laugh` | `surprised` | `concerned`. `intensity` 0…1: 0.7, `laugh` 1.0.
+  - `startMs`/`endMs` = ms on the reply's audio timeline (the `audio.offsetMs` clock): the clause's first word start →
+    last word end from the aligner when it is on, else the clause's audio span. The app eases in before `startMs`
+    and out after `endMs` (envelope in the app spec).
+  - Where it comes from: Spark may start a clause with `[smile]`, `[laugh]`, … (the server strips it: never spoken,
+    never in captions). Without a tag, laughing words ("haha") → `laugh`, "oh no / sorry / long day" → `concerned`,
+    else the reply's leading `<emotion>` on its first clause (`happy`/`warm`/`teasing` → `smile`, `excited` →
+    `smileopen`, `surprised` → `surprised`, `sad` → `concerned`; `curious`/`whisper`/`neutral` → none).
+  - `GENITA_EXPRESSION=0` on the server sends none.
 - Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
   everything else in English (`eng`). Same speaker as the companion.
 - Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →

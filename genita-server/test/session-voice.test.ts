@@ -351,3 +351,84 @@ test("voice timing: nothing for a cancelled utterance", async () => {
   assert.equal(after.filter((m) => m.type === "audio.timing" && m.utteranceId === cancelled.utteranceId).length, 0);
   session.close();
 });
+
+// ---------- expression layer (11/3): one face per clause, timed on the reply's audio timeline ----------
+test("expression: Spark's [smile] → one event for that clause, the tag never reaches TTS or captions; neutral clauses send nothing", async () => {
+  const { client, session, calls } = setup({ timing: timingFor, sparkText: "<curious> [smile] That sounds lovely, tell me more. What did you cook?" });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "dinner" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.ok(calls.every((c) => !/\[|\]/.test(c.text)), `no tag in TTS: ${calls.map((c) => c.text).join(" | ")}`);
+  assert.ok(!/smile/.test(String(client.of("reply")[0].text)), "no tag in the reply text");
+  const ex = client.of("expression");
+  assert.equal(ex.length, 1, JSON.stringify(ex));
+  const audio0 = client.of("audio").find((a) => a.sentence === 0)!;
+  assert.deepEqual(ex[0], { type: "expression", utteranceId: audio0.utteranceId, sentence: 0, tag: "smile", intensity: 0.7, startMs: 10, endMs: 35 + 30 * (calls[0].text.split(" ").length - 1) });
+  assert.ok(client.json.indexOf(ex[0]) > client.json.indexOf(audio0), "after the clause's audio");
+  session.close();
+});
+
+test("expression: without aligner timing the clause's audio span is used; laugh words → laugh at 1.0", async () => {
+  const { client, session } = setup({ sparkText: "<neutral> Okay then. Haha, that's so you!" });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "joke" }));
+  await client.waitFor((m) => m.type === "reply");
+  const ex = client.of("expression");
+  assert.equal(ex.length, 1, JSON.stringify(ex));
+  const audio = client.of("audio").filter((a) => a.sentence === ex[0].sentence);
+  assert.equal(ex[0].tag, "laugh");
+  assert.equal(ex[0].intensity, 1);
+  assert.equal(ex[0].startMs, audio[0].offsetMs);
+  assert.equal(ex[0].endMs, (audio.at(-1)!.offsetMs as number) + (audio.at(-1)!.durationMs as number));
+  session.close();
+});
+
+test("expression: GENITA_EXPRESSION=0 (voice.expressions false) sends none; the tag is still stripped", async () => {
+  const asr = new FakeAsr();
+  const client = new FakeClient();
+  const calls: string[] = [];
+  const session = new Session("v1", client, {
+    config: { ...config, serverTts: true, voice: { ...voice, expressions: false } },
+    openAsr: () => asr,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<happy> [laugh] Ha, nice one." };
+      yield { type: "done", responseId: "r1", text: "", status: "completed" };
+    },
+    async *tts(req): AsyncGenerator<TtsChunk> {
+      calls.push(req.text);
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+    },
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "joke" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(client.of("expression").length, 0);
+  assert.deepEqual(calls, ["Ha,", "nice one."]);
+  session.close();
+});
+
+test("expression: a clause voiced in several service requests keeps the whole clause's word span (Codex P2)", async () => {
+  const client = new FakeClient();
+  const session = new Session("v1", client, {
+    config: { ...config, serverTts: true, voice },
+    openAsr: () => new FakeAsr(),
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<neutral> [smile] That is a very long thought." };
+      yield { type: "done", responseId: "r1", text: "", status: "completed" };
+    },
+    async *tts(): AsyncGenerator<TtsChunk> {
+      // two pieces of one clause, each followed by its own aligner timing (ms from the clause's audio start)
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+      yield { audio: Buffer.alloc(0), alignment: null, model: "seamless-m4t-v2", timing: { words: [{ w: "That", s: 10, e: 60 }], phonemes: [] } };
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+      yield { audio: Buffer.alloc(0), alignment: null, model: "seamless-m4t-v2", timing: { words: [{ w: "thought.", s: 110, e: 180 }], phonemes: [] } };
+    },
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "go" }));
+  await client.waitFor((m) => m.type === "reply");
+  const ex = client.of("expression");
+  assert.equal(ex.length, 1);
+  assert.deepEqual([ex[0].tag, ex[0].startMs, ex[0].endMs], ["smile", 10, 180]);
+  session.close();
+});
