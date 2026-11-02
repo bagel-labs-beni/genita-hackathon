@@ -146,9 +146,12 @@ struct FindsSheet: View {
     @State private var scrolledPage: Int?
     private var finds: FindsModel { call.finds }
     private var offline: Bool { call.link == .reconnecting || call.finds.offline }
+    /// Figma F2 (138:2): a card reopened from Finds is 520 tall (picture 196, CTA 58 above the bottom), not the call's 468.
+    static let reopenedHeight: CGFloat = 520
+    private var reopenedHalf: Bool { finds.state == .half && finds.current?.reopened == true }
 
     var body: some View {
-        let visible = finds.state.height
+        let visible = reopenedHalf ? Self.reopenedHeight : finds.state.height
         ZStack(alignment: .top) {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(CallInk.sheet)
                 .shadow(color: CallInk.ink.opacity(0.18), radius: 16, y: -8)
@@ -258,13 +261,14 @@ struct FindsSheet: View {
 
     private var mainLayer: some View {
         let full = finds.state == .full
+        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 396 : 344
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(Array(finds.entries.enumerated()), id: \.element.id) { i, entry in
                         if let card = entry.card {
                             FindCardPage(call: call, entry: entry, card: card, index: i, full: full, offline: offline, openFinds: openFinds)
-                                .frame(width: size.width, height: full ? 612 : 344, alignment: .top)
+                                .frame(width: size.width, height: pageHeight, alignment: .top)
                                 .id(i)
                         }
                     }
@@ -276,14 +280,14 @@ struct FindsSheet: View {
             .onChange(of: scrolledPage) { _, p in if let p, p != finds.page { finds.showPage(p) } }
             .onChange(of: finds.page) { _, p in if scrolledPage != p { withAnimation(.drawer) { scrolledPage = p } } }
             .onAppear { scrolledPage = finds.page }
-            .frame(height: full ? 612 : 344)
+            .frame(height: pageHeight)
             if full {
                 // r03 `.main::before/after`: clean top and bottom edges under the face window
                 CallInk.sheet.frame(height: 64).allowsHitTesting(false)
                 LinearGradient(colors: [CallInk.sheet.opacity(0), CallInk.sheet], startPoint: .top, endPoint: .bottom).frame(height: 32).offset(y: 580).allowsHitTesting(false)
             }
             // r03 `.foot` top 620, translateY(-260) unless full; while rising it sits below the visible part
-            foot.offset(y: full ? 620 : 360)
+            foot.offset(y: full ? 620 : reopenedHalf ? 412 : 360)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -348,14 +352,21 @@ struct FindsSheet: View {
     // r03 #8: the source opens inside the sheet, Done goes back to the card.
     private func browserLayer(_ source: FindCard.Source) -> some View {
         VStack(spacing: 0) {
-            HStack {
+            // Figma F10-8 (125:357): left 38, top 72, 324 wide: Done (underlined) · lock + domain · Open in Safari 44 × 44
+            HStack(spacing: 0) {
+                Button("Done") { withAnimation(.fade) { finds.browser = nil } }.font(TypeStyle.body(16)).underline().foregroundStyle(CallInk.ink)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .leading).accessibilityIdentifier("browserDone")
+                Spacer(minLength: 8)
                 HStack(spacing: 4) {
                     Image(systemName: "lock.fill").font(.system(size: 11, weight: .medium))
-                    Text(source.domain).font(TypeStyle.body(14, .medium))
+                    Text(source.domain).font(TypeStyle.body(14, .medium)).lineLimit(1)
                 }.foregroundStyle(CallInk.ink)
-                Spacer()
-                Button("Done") { withAnimation(.fade) { finds.browser = nil } }.font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("browserDone")
-            }.frame(height: 44).padding(.leading, 38).padding(.trailing, 28).padding(.top, 72)
+                Spacer(minLength: 8)
+                if let url = URL(string: source.url) {
+                    Link(destination: url) { Image(systemName: "arrow.up.right.square").font(.system(size: 17)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44) }
+                        .accessibilityLabel("Open in Safari").accessibilityIdentifier("browserOpenExternal")
+                }
+            }.frame(height: 44).padding(.horizontal, 38).padding(.top, 72)
             FindsBrowser(url: URL(string: source.url)).padding(.top, 16)
         }.background(CallInk.sheet).transition(.opacity).accessibilityIdentifier("findBrowser")
     }
@@ -429,11 +440,10 @@ struct FindCardPage: View {
                 Button { finds.toggleSave() } label: {
                     Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
-                if !entry.reopened {
+                // Figma F2: the X is there on a reopened card too (it goes back to the list)
                 Button { withAnimation(.drawer) { finds.close() } } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
-                }
+                }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.reopened ? "Close" : "Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
             }.padding(.trailing, -10)
         }.frame(height: 44)
     }
@@ -465,7 +475,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 84 : 132))
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
@@ -894,6 +904,26 @@ struct FindsToast: View {
     }
 }
 
+/// IC-4 · "안 보임 (실패)" (Figma rp1wR9…, frame 102:2): rgba(17,17,17,.84) card, radius 16, padding 16, 310 wide.
+/// Title 15/20 medium, body 14/20 at 76 %, a white 44 pt "Look again". Nothing is guessed: no ingredient is named.
+struct FindUnclearCard: View {
+    let call: CallController
+    var finds: FindsModel { call.finds }
+    var body: some View {
+        let lines = finds.current?.failureLines
+        VStack(alignment: .leading, spacing: 4) {
+            Text(lines?.title ?? "I can’t see it clearly").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.onInk)
+            Text(lines?.body ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk.opacity(0.76)).fixedSize(horizontal: false, vertical: true)
+            Button { withAnimation(.fade) { call.lookAgain() } } label: {
+                Text("Look again").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
+                    .frame(maxWidth: .infinity).frame(height: 44).background(CallInk.onInk, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(PressScale()).padding(.top, 8).accessibilityIdentifier("findLookAgain")
+        }
+        .padding(16).frame(width: 342, alignment: .leading)
+        .background(Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84), in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .contain).accessibilityIdentifier("findUnclear")
+    }
+}
 
 /// A status line that stays on one line: the whole text when it fits, else the given alternates, else the text
 /// shortened by whole words with "…" — never a cut word, never a smaller font. VoiceOver reads the whole text.

@@ -86,7 +86,7 @@ export class FindsRunner {
 
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(t: TurnInput): TurnStarted | null {
-    if (this.closed) return null;
+    if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     const afterProduct =
       (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
       // a call continued on the other device: the search was asked on the first one (#199)
@@ -119,8 +119,8 @@ export class FindsRunner {
         if (!this.closed) this.hooks.announce(text);
       },
       putImage: async (slot, bytes) => {
-        if (this.purged) throw new Error("account deleted");
-        await this.deps.store.putImage(findId, slot, bytes);
+        if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) throw new Error("account deleted");
+        await this.deps.store.work.write(this.owner, () => this.deps.store.putImage(findId, slot, bytes));
         return `${this.deps.imageBase}/${findId}/images/${slot}`;
       },
     };
@@ -143,19 +143,22 @@ export class FindsRunner {
         return r;
       };
     } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "outfit" ? runOutfit : runLink;
+    const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
         this.onEvent({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
         this.hooks.log("find.error", { findId, message: String(err).slice(0, 200) });
       }
       return { card: null, timings: {} } as PipelineResult;
+    }).then(async (r) => {
+      if (r.card) await this.persist(r.card);
+      this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
+      return r;
+    }).finally(() => {
+      this.running.delete(findId);
+      release();
     });
     this.running.set(findId, { abort, done });
-    void done.then((r) => {
-      this.running.delete(findId);
-      this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
-      if (r.card) void this.persist(r.card);
-    });
     if (ACK[intent.kind]) this.acked.add(findId);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
@@ -166,6 +169,7 @@ export class FindsRunner {
   }
 
   private onEvent(e: ServerEvent): void {
+    if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return;
     // after the call ends, finished cards still get their pictures saved
     if (e.type === "find.created") {
       this.cards.set(e.findId, e.card);
@@ -192,8 +196,9 @@ export class FindsRunner {
 
   private async persist(card: FindCard): Promise<void> {
     if (!this.owner || this.purged) return;
+    const owner = this.owner;
     try {
-      await this.deps.store.put(this.owner, card);
+      await this.deps.store.work.write(owner, () => this.deps.store.put(owner, card));
     } catch (err) {
       this.hooks.log("find.store_error", { findId: card.id, message: String(err).slice(0, 160) });
     }

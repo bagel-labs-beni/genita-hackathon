@@ -21,8 +21,8 @@ WORK_H = 960          # flow / registration working height
 RAMP_PX = 8           # lock ramp below the subnasale line, at WORK_H
 FLOW_SCALE = 0.5      # stored flow grid vs working ROI
 
-# How a LipTimeline frame maps onto keys (runtime reads this; reference: _qa-scripts/genita-mouth-proto/render.py).
-# 11/3 sweep winner (critic-ranked vs Peter, sweep s21 + snap blink; _qa-scripts/genita-mouth-compare/sweep/README.md):
+# How a LipTimeline frame maps onto keys (runtime reads this; reference: the prototype runtime render.py).
+# 11/3 sweep winner (critic-ranked against the old lip-sync baseline; sweep s21 + snap blink):
 # vowel keys as the backbone, stability from timing: MMS phoneme timings, lookahead 40 ms, slew 0.25/frame,
 # MBP fully closed >= 2 frames, jaw-open floor 0.6 between syllables, snap dissolve (no cross-dissolve
 # between vowels), focus 6, no yawn-sized A for humans. Keys a set lacks resolve through `fallback`.
@@ -39,7 +39,7 @@ BASE_MAP = {
     'instantKeys': ['MBP'],       # attack 1 (closures land on the frame)
     'holdFrames': {'MBP': 2},     # a closure stays fully closed at least this long
     'focus': 6.0,                 # winner-take-most across keys (total kept)
-    'gain': 1.3,                  # vowel amount scale (Peter-like opening)
+    'gain': 1.3,                  # vowel amount scale (baseline-like opening)
     'lookaheadMs': 40,            # mouth leads the sound
     'dissolve': {'mode': 'snap', 'ms': 40, 'minAmount': 0.3},  # one texture at a time, 1-frame switch (no grey teeth)
     'colourEdge': 0.35,           # only for mode 'smooth'
@@ -110,7 +110,7 @@ def lip_map(kind):
     return m
 
 
-# Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs Peter): same transform on every key and the neutral
+# Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs the old baseline): same transform on every key and the neutral
 # ROI, so it never flickers. Lifts grey teeth inside the lip hull, pulls the lips toward the photo's pink.
 COLORFIX = {'human': (1.15, 0.88, 1.0)}
 LIP_MATCH = True   # key lips take the neutral's lip colour (all skin tones)
