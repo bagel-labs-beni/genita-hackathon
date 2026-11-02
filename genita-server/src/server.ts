@@ -113,8 +113,11 @@ export async function startServer(
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
-    // end the user's calls first so no running card or memory job writes after the erase
+    // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
+    // before purging. A late vendor completion must never recreate deleted data.
+    const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+    await findsDeleted;
     await prep.runner.forgetUser(userId);
     await deps.memory?.forget(userId);
     await deps.finds?.store.removeOwner(ownerKey(userId));
