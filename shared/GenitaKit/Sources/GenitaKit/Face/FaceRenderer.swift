@@ -72,7 +72,9 @@ public final class FaceRenderer: @unchecked Sendable {
         motion = AliveMotion(seed: seed)
         // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
         let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
-        flowMorph = faceSet.flow.flatMap { d in faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale) } }
+        flowMorph = faceSet.flow.flatMap { d in
+            faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox) }
+        }
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
         extent = CGRect(x: 0, y: 0, width: w, height: h)
@@ -190,9 +192,9 @@ public final class FaceRenderer: @unchecked Sendable {
         if useFlow, let fm = flowMorph {
             // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
             let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, at: t) }()
-            let r = fm.data.roi
+            let r = fm.outputRect
             img = CIImage(cgImage: cg)
-                .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(fm.width), y: r.height / CGFloat(fm.height)))
+                .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(cg.width), y: r.height / CGFloat(cg.height)))
                 .transformed(by: CGAffineTransform(translationX: r.minX, y: h - r.maxY))
                 .composited(over: img)
         } else {

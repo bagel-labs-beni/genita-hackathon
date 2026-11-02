@@ -113,6 +113,12 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var hold: Int?; public var minHold: Int?; public var closedBelow: Double; public var rules: [SnapRule]; public var `default`: String
     }
     public var snap: Snap2D? = nil
+    /// People: cheeks and the nasolabial fold follow the mouth corners (one frame late), corners are
+    /// pulled back by the same amount, spread vowels lift the cheeks (px at 540 wide). s40 (11/3).
+    public struct Cheek: Codable, Equatable, Sendable {
+        public var spread: Double; public var pull: Double; public var cheek: Double; public var naso: Double; public var lift: Double
+    }
+    public var cheek: Cheek? = nil
 
     /// The v7 rules (prep faceflow.py BASE_MAP, 11/3) for a manifest without a map.
     public static let standard = FlowMap(
@@ -133,6 +139,9 @@ public final class FaceFlowData: @unchecked Sendable {
     public let size: (w: Int, h: Int)
     public let flowSize: (w: Int, h: Int)
     public let keys: [String]
+    public let kind: String?
+    /// Nose-base line (0…1 of the still's height), from prep.
+    public let lockY: Double?
     public let map: FlowMap
     let keyImages: [String: CGImage]
     let nk: [String: [Float]]
@@ -148,6 +157,8 @@ public final class FaceFlowData: @unchecked Sendable {
         let W = Double(stillSize.width), H = Double(stillSize.height)
         roi = CGRect(x: m.roi[0] * W, y: m.roi[1] * H, width: (m.roi[2] - m.roi[0]) * W, height: (m.roi[3] - m.roi[1]) * H)
         size = (m.size[0], m.size[1]); flowSize = (fsz[0], fsz[1])
+        kind = m.kind
+        lockY = m.lockY
         var rules = m.map ?? .standard
         // People: the full "A" key is yawn-sized (review 11/3: a 2-frame yawn pop on "Oh"); the
         // ladder stops at AH2 when that key exists.
@@ -223,9 +234,10 @@ final class FlowMorph: @unchecked Sendable {
     private var dominant: Int?
     private var dominantSince = -Double.infinity
 
-    init(data: FaceFlowData, neutralStill: CGImage, scale: Double) {
+    init(data: FaceFlowData, neutralStill: CGImage, scale: Double, face: CGRect? = nil, mouth: CGRect? = nil) {
         self.data = data
         let s = min(1, max(0.1, scale))
+        workScale = s
         width = max(8, Int((Double(data.roi.width) * s).rounded()))
         height = max(8, Int((Double(data.roi.height) * s).rounded()))
         kx = Float(width) / Float(data.size.w); ky = Float(height) / Float(data.size.h)
@@ -244,7 +256,18 @@ final class FlowMorph: @unchecked Sendable {
         order = data.keys
         smooth = [Float](repeating: 0, count: data.keys.count)
         snapW = smooth
+        let cheekRules = data.map.cheek ?? (data.kind == "human" ? FlowMap.Cheek(spread: 0.4, pull: 1.0, cheek: 1.2, naso: 0.35, lift: 2.0) : nil)
+        if let c = cheekRules, let face, let mouth, data.map.drive != "snap" {
+            cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width))
+        } else { cheekRig = nil }
     }
+    let workScale: Double
+    /// Cheek / nasolabial coupling (people); nil = the morph ROI is the output.
+    let cheekRig: CheekRig?
+    /// Where the last output sits (still px, y down).
+    var outputRect: CGRect { cheekRig?.region ?? data.roi }
+    /// Corner displacement of the last frame per side (still px), from the neutral warp field.
+    private var cornerD: [(Double, Double)] = [(0, 0), (0, 0)]
 
     // MARK: amounts
 
@@ -402,6 +425,7 @@ final class FlowMorph: @unchecked Sendable {
         lastT = nil; snapT = nil; closeStart = nil; lastVowel = nil
         dominant = nil; dominantSince = -.infinity; candidate = nil; candidateRun = 0; shownHeld = 0
         snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
+        cornerD = [(0, 0), (0, 0)]
     }
 
     /// Parity checks: use these amounts (in `keys` order) instead of the lip timeline once.
@@ -534,7 +558,18 @@ final class FlowMorph: @unchecked Sendable {
                 out[o + 3] = UInt8(min(255, max(0, 255 * m)).rounded())
             }
         }
-        return PixelBuffer.makeImage(out, width: width, height: height)
+        guard let rig = cheekRig else { return PixelBuffer.makeImage(out, width: width, height: height) }
+        // Corner displacement this frame (still px): −GN at each corner (GN maps output → neutral).
+        var d: [(Double, Double)] = []
+        for c in rig.cornersROI {
+            let fx = Float(c.x * workScale + 0.5) * sx - 0.5, fy = Float(c.y * workScale + 0.5) * sy - 0.5
+            let g = act.isEmpty ? (Float(0), Float(0)) : Self.bilinear2(gn, fw, fh, fx, fy)
+            d.append((-Double(g.0) / workScale, -Double(g.1) / workScale))
+        }
+        let lift = ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
+        let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift))
+        cornerD = d
+        return image
     }
 
     /// Snap: only the dominant key's texture shows (one-frame cross-fade), so no half-dissolved
@@ -625,3 +660,118 @@ final class FlowMorph: @unchecked Sendable {
         return out
     }
 }
+
+/// Cheek and nasolabial coupling (reference: genita-mouth-proto render.py `--cheek`). After the mouth
+/// morph, a smooth backward warp over the lower face: the cheek apples and the nasolabial fold follow the
+/// mouth corners one frame late (`spread`), the corners are pulled back by their own move (`pull`), and
+/// spread vowels lift the cheeks. The nose and everything above the lower eyelids are locked.
+final class CheekRig: @unchecked Sendable {
+    let region: CGRect           // still px, y down
+    let width: Int, height: Int  // working px
+    /// Mouth corners in ROI still px (for sampling the morph's warp field).
+    let cornersROI: [(x: Double, y: Double)]
+    private let scale: Double, stillToOut: Double
+    private let rules: FlowMap.Cheek
+    private let neutral: [Float]
+    private let wCorner: [[Float]], wCheek: [[Float]]
+    private let alpha: [Float]
+    private let roiOrigin: (x: Int, y: Int)
+
+    init(rules: FlowMap.Cheek, data: FaceFlowData, neutralStill: CGImage, scale s: Double, face: CGRect, mouth: CGRect, stillWidth: Double) {
+        self.rules = rules
+        scale = s
+        stillToOut = 540 / stillWidth           // the rules' pixel values are at 540 px wide
+        let fw = Double(face.width), fh = Double(face.height)
+        let cy = Double(mouth.midY)
+        let corners = [(Double(mouth.minX), cy, -1.0), (Double(mouth.maxX), cy, 1.0)]
+        var r = data.roi
+        for (cx, cy, sx) in corners {
+            r = r.union(CGRect(x: cx - 0.15 * fw, y: cy - 0.12 * fh, width: 0.3 * fw, height: 0.24 * fh))
+            let kx = cx + sx * 0.12 * fw, ky = cy - 0.24 * fh
+            r = r.union(CGRect(x: kx - 0.3 * fw, y: ky - 0.24 * fh, width: 0.6 * fw, height: 0.48 * fh))
+        }
+        region = r.intersection(CGRect(x: 0, y: 0, width: neutralStill.width, height: neutralStill.height)).integral
+        width = max(8, Int((Double(region.width) * s).rounded())); height = max(8, Int((Double(region.height) * s).rounded()))
+        neutral = FlowMorph.rgb(neutralStill, crop: region, width: width, height: height)
+        cornersROI = corners.map { ($0.0 - Double(data.roi.minX), $0.1 - Double(data.roi.minY)) }
+        roiOrigin = (Int(((Double(data.roi.minX) - Double(region.minX)) * s).rounded()), Int(((Double(data.roi.minY) - Double(region.minY)) * s).rounded()))
+        // Lock: the nose column down to the lock line, and everything above the lower eyelids.
+        let lockY = (data.lockY ?? Double(data.roi.minY) / Double(neutralStill.height)) * Double(neutralStill.height)
+        let noseX = Double(mouth.midX)
+        let noseBottom = lockY + 6 / stillToOut
+        let eyeLine = Double(face.minY) + 0.42 * fh
+        let feather = 0.03 * fw
+        func soft(_ inside: Double) -> Double { smoothstep(-feather, feather, inside) }   // 1 inside, 0 outside
+        var wc: [[Float]] = [], wk: [[Float]] = []
+        var total = [Float](repeating: 0, count: width * height)
+        for (cx, cy, sx) in corners {
+            var a = [Float](repeating: 0, count: width * height), b = a
+            for j in 0..<height {
+                let Y = Double(region.minY) + (Double(j) + 0.5) / s
+                for i in 0..<width {
+                    let X = Double(region.minX) + (Double(i) + 0.5) / s
+                    let inNose = soft(min(0.13 * fw - abs(X - noseX), noseBottom - Y))
+                    let keep = max(inNose, soft(eyeLine - Y))
+                    let free = 1 - keep
+                    func g(_ x0: Double, _ y0: Double, _ sgx: Double, _ sgy: Double) -> Double {
+                        exp(-(pow((X - x0) / sgx, 2) + pow((Y - y0) / sgy, 2)) / 2)
+                    }
+                    let k = j * width + i
+                    a[k] = Float(g(cx, cy, 0.05 * fw, 0.04 * fh) * free)
+                    b[k] = Float((rules.cheek * g(cx + sx * 0.12 * fw, cy - 0.24 * fh, 0.15 * fw, 0.12 * fh)
+                                  + rules.naso * g(cx + sx * 0.04 * fw, cy - 0.09 * fh, 0.05 * fw, 0.06 * fh)) * free)
+                    total[k] += a[k] + b[k]
+                }
+            }
+            wc.append(a); wk.append(b)
+        }
+        wCorner = wc; wCheek = wk
+        // Output coverage: the morph's mask plus wherever the warp reaches (the rest stays the base).
+        let m = FlowMorph.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height),
+                              width: max(1, Int((Double(data.roi.width) * s).rounded())), height: max(1, Int((Double(data.roi.height) * s).rounded())))
+        let mw = max(1, Int((Double(data.roi.width) * s).rounded())), mh = max(1, Int((Double(data.roi.height) * s).rounded()))
+        var al = total.map { min(1, 4 * $0) }
+        for y in 0..<mh { for x in 0..<mw {
+            let X = x + roiOrigin.x, Y = y + roiOrigin.y
+            guard X >= 0, Y >= 0, X < width, Y < height else { continue }
+            al[Y * width + X] = max(al[Y * width + X], m[(y * mw + x) * 3] / 255)
+        } }
+        alpha = al
+    }
+
+    /// The warped lower face over `region` (premultiplied RGBA, alpha = coverage).
+    func render(morph: [UInt8], morphWidth mw: Int, morphHeight mh: Int, d: [(Double, Double)], dPrev: [(Double, Double)], lift: Double) -> CGImage {
+        // Frame = neutral with the morph composited in.
+        var frame = neutral
+        for y in 0..<mh { for x in 0..<mw {
+            let X = x + roiOrigin.x, Y = y + roiOrigin.y
+            guard X >= 0, Y >= 0, X < width, Y < height else { continue }
+            let o = (y * mw + x) * 4, k = (Y * width + X) * 3
+            let a = Float(morph[o + 3]) / 255
+            for c in 0..<3 { frame[k + c] = Float(morph[o + c]) + frame[k + c] * (1 - a) }
+        } }
+        let up = rules.lift * lift / stillToOut       // still px
+        var out = [UInt8](repeating: 0, count: width * height * 4)
+        for j in 0..<height {
+            for i in 0..<width {
+                let k = j * width + i
+                var vx = 0.0, vy = 0.0
+                for side in 0..<2 {
+                    let wk = Double(wCheek[side][k]), wc = Double(wCorner[side][k])
+                    vx += wk * rules.spread * dPrev[side].0 - wc * rules.pull * d[side].0
+                    vy += wk * (rules.spread * dPrev[side].1 - up) - wc * rules.pull * d[side].1
+                }
+                var c: (Float, Float, Float)
+                if abs(vx) + abs(vy) < 0.01 { c = (frame[k * 3], frame[k * 3 + 1], frame[k * 3 + 2]) }
+                else { c = FlowMorph.bilinear3(frame, width, height, Float(Double(i) - vx * scale), Float(Double(j) - vy * scale)) }
+                let a = alpha[k], o = k * 4
+                out[o] = UInt8(min(255, max(0, c.0 * a)).rounded())
+                out[o + 1] = UInt8(min(255, max(0, c.1 * a)).rounded())
+                out[o + 2] = UInt8(min(255, max(0, c.2 * a)).rounded())
+                out[o + 3] = UInt8(min(255, max(0, 255 * a)).rounded())
+            }
+        }
+        return PixelBuffer.makeImage(out, width: width, height: height)
+    }
+}
+
