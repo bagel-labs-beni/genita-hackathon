@@ -62,7 +62,25 @@ jobs:
         run: |
           cat replay.log || true
           xcrun simctl spawn "${{ steps.simulator.outputs.id }}" log show --last 15m --style compact --predicate 'subsystem == "ai.thebeni.genita"' | tail -n 80 || true
-          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Genita* 2>/dev/null | head -2); do echo "== $f"; head -c 6000 "$f"; echo; done
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Genita* 2>/dev/null | head -2); do
+            echo "== $f"
+            python3 - "$f" <<'PY' || head -c 6000 "$f"
+          import json, sys
+          raw = open(sys.argv[1]).read().split("\n", 1)[1]
+          d = json.loads(raw)
+          print("exception:", d.get("exception"), "termination:", d.get("termination", {}).get("indicator"))
+          print("asi:", json.dumps(d.get("asi"))[:3000])
+          imgs = d.get("usedImages", [])
+          for t in d.get("threads", []):
+              if t.get("triggered") or t.get("queue") == "com.apple.main-thread":
+                  print("-- thread", t.get("queue"), "triggered" if t.get("triggered") else "")
+                  for fr in t.get("frames", [])[:40]:
+                      img = imgs[fr["imageIndex"]].get("name", "?") if fr.get("imageIndex", -1) < len(imgs) else "?"
+                      print("  ", img, fr.get("symbol", hex(fr.get("imageOffset", 0))), fr.get("sourceFile", ""), fr.get("sourceLine", ""))
+          for fr in (d.get("lastExceptionBacktrace") or [])[:30]:
+              print("  exc", imgs[fr["imageIndex"]].get("name", "?") if fr.get("imageIndex", -1) < len(imgs) else "?", fr.get("symbol", ""))
+          PY
+          done
 
       - name: Export call screenshots
         if: always()

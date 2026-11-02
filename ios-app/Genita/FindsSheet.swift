@@ -240,7 +240,6 @@ struct FindsSheet: View {
 
     private var mainLayer: some View {
         let full = finds.state == .full
-        let visible = finds.state.height
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
@@ -265,7 +264,8 @@ struct FindsSheet: View {
                 CallInk.sheet.frame(height: 64).allowsHitTesting(false)
                 LinearGradient(colors: [CallInk.sheet.opacity(0), CallInk.sheet], startPoint: .top, endPoint: .bottom).frame(height: 32).offset(y: 580).allowsHitTesting(false)
             }
-            foot.offset(y: visible - 108)
+            // r03 `.foot` top 620, translateY(-260) unless full; while rising it sits below the visible part
+            foot.offset(y: full ? 620 : 360)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
