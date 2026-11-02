@@ -6,16 +6,21 @@ import {
   VISEMES,
   driftCheck,
   faceEditPrompt,
+  faceSoftPrompt,
   faceManifest,
   imageSize,
   makeFaceSet,
   samPrompt,
+  MOUTH_PROMPTS,
   type FaceKey,
 } from "../src/prep/face.ts";
 import { FACE, MOUTH, box, fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
 
 const keyOf = (kind: "human" | "animal" | "character") => (prompt: string) => {
-  for (const k of FACE_KEYS) for (const strict of [false, true]) if (faceEditPrompt(k, kind, strict) === prompt) return strict ? `${k}!` : k;
+  for (const k of FACE_KEYS) {
+    for (const strict of [false, true]) if (faceEditPrompt(k, kind, strict) === prompt) return strict ? `${k}!` : k;
+    if (faceSoftPrompt(k, kind) === prompt) return `${k}~`;
+  }
   throw new Error(`unknown prompt: ${prompt.slice(0, 60)}`);
 };
 const scene = () => fakePng(1000, 2000, "scene");
@@ -25,6 +30,16 @@ test("face keys: blink/smile/warm + the ten visemes, rest is the scene", () => {
   assert.deepEqual([...FACE_EXPRESSIONS], ["blink", "smile", "warm"]);
   assert.deepEqual([...VISEMES], ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"]);
   assert.equal(FACE_KEYS.length, 13);
+});
+
+test("soft prompt (content-policy retry): speech framing, same keep line, distinct per key", () => {
+  for (const kind of ["human", "animal", "character"] as const) {
+    const all = FACE_KEYS.map((k) => faceSoftPrompt(k, kind));
+    assert.equal(new Set(all).size, all.length);
+    for (const v of VISEMES) assert.match(faceSoftPrompt(v, kind), /mid-word/);
+    for (const k of FACE_KEYS) assert.match(faceSoftPrompt(k, kind), /lighting, background, framing and camera exactly the same/);
+  }
+  assert.doesNotMatch(faceSoftPrompt("A", "human"), /wide|jaw|tongue/);
 });
 
 test("face prompts: one scaffold, a distinct shape line per key, kind-aware wording, stricter retry", () => {
@@ -141,7 +156,7 @@ test("makeFaceSet: drift → one stricter retry; still drifting / no mouth → r
   const retried = calls.edits.filter((e) => e.key.endsWith("!")).map((e) => e.key).sort();
   assert.deepEqual(retried, ["A!", "O!", "TH!", "U!"]);
   assert.ok(calls.edits.filter((e) => e.key === "TH!").every((e) => /same position and size/.test(e.prompt)));
-  assert.ok(calls.sam.every((s) => s.prompt.startsWith("the animal's")));
+  assert.ok(calls.sam.every((s) => s.prompt.startsWith("the animal's") || s.prompt === "mouth"));
   const m = faceManifest(st, urlFor);
   assert.ok(m.visemes.TH, "TH passed on the retry");
   assert.equal(m.visemes.A, undefined);
@@ -162,7 +177,7 @@ test("makeFaceSet: an edit error is retried once, then rejected; all edits faili
   const policy = new Error('meta 400: {"error":{"code":"content_policy_violation"}}');
   const one = fakeMedia({ keyOf: keyOf("human"), fail: (t) => (t.startsWith("EI") ? policy : null) });
   const st = await makeFaceSet({ metaKey: "k", media: one.media, scene: scene(), kind: "human", size: "1024x1820" });
-  assert.equal(one.calls.edits.filter((e) => e.key.startsWith("EI")).length, 2);
+  assert.deepEqual(one.calls.edits.filter((e) => e.key.startsWith("EI")).map((e) => e.key), ["EI", "EI~"], "a content-policy refusal is retried with the softer speech framing");
   assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "EI", reason: "content_policy", retried: true }]);
 
   const all = fakeMedia({ keyOf: keyOf("human"), fail: () => new Error("meta 503: down") });
@@ -207,4 +222,19 @@ test("makeFaceSet: at most 6 edits in flight; resume skips settled keys", async 
   assert.ok(!b.calls.sam.some((s) => s.tag === "scene"), "scene boxes come from the saved state");
   assert.equal(Object.keys(st.items).length, 13);
   assert.equal(st.items.TH?.status, "rejected");
+});
+
+test("makeFaceSet: SAM misses 'the person's mouth' → falls back to the lips / plain 'mouth' prompts (11/2 e2e)", async () => {
+  const { media, calls } = fakeMedia({
+    keyOf: keyOf("human"),
+    sam: (_tag, part) => (part === "face" ? [FACE] : []),
+  });
+  // the fake answers by part; make only the fallback prompt find the mouth
+  const real = media.samDetect;
+  media.samDetect = async (k, url, prompt, signal) => (prompt === "the person's lips" ? [MOUTH] : real(k, url, prompt, signal));
+  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820" });
+  assert.deepEqual(faceManifest(st, urlFor).mouthBox, [0.42, 0.38, 0.58, 0.41]);
+  assert.equal(faceManifest(st, urlFor).rejected.length, 0);
+  assert.ok(calls.sam.some((s) => s.prompt === "the person's mouth"), "the primary prompt is tried first");
+  assert.deepEqual(MOUTH_PROMPTS("animal"), ["the animal's mouth", "the animal's muzzle", "mouth"]);
 });

@@ -17,7 +17,8 @@
  * Muse Image has no mask input (11/2 probe: `mask` → 400 unsupported_parameter),
  * so the prompt alone keeps the edit local. It also refused "mouth wide open …
  * jaw dropped … tongue" as a content-policy hit, so the viseme lines describe
- * speech ("in the middle of saying …").
+ * speech ("in the middle of saying …"), and a refused edit is retried once with
+ * a softer "caught mid-word saying …" prompt instead of the stricter one.
  */
 import type { SamBox } from "../meta/sam.ts";
 import type { CompanionKind } from "./prompts.ts";
@@ -62,6 +63,14 @@ export function samPrompt(kind: CompanionKind, part: "face" | "mouth"): string {
   return `the ${NOUN[kind]}'s ${part}`;
 }
 
+/**
+ * SAM 3.1 sometimes finds nothing for "the person's mouth" on closed lips while
+ * "the person's lips" and plain "mouth" hit (11/2 e2e). Tried in order, only on a miss.
+ */
+export function MOUTH_PROMPTS(kind: CompanionKind): string[] {
+  return [samPrompt(kind, "mouth"), kind === "animal" ? "the animal's muzzle" : `the ${NOUN[kind]}'s lips`, "mouth"];
+}
+
 /** Mouth shape per viseme: [human lips wording, wording for a muzzle, beak or drawn mouth]. */
 const SHAPE: Record<Viseme, [string, string]> = {
   MBP: ["lips closed and pressed lightly together, as in the middle of saying 'm' in 'mom'", "mouth fully closed, lips together, as if humming 'mm'"],
@@ -98,6 +107,22 @@ export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolea
   const base = `Edit only the ${s}'s ${part}: ${line}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
   if (!strict) return base;
   return `${base} Do not move, resize, rotate, re-crop or redraw anything else: the head stays at exactly the same position and size in the frame, and everything outside the ${key === "blink" ? "eyes" : key in SHAPE ? "mouth" : "mouth and eyes"} stays identical.`;
+}
+
+/** The sound each viseme is caught on, for the soft prompt. */
+const SOUND: Record<Viseme, string> = { MBP: "'mm'", FV: "'f'", TH: "'th'", L: "'l'", WQ: "'w'", O: "'oh'", EI: "'ee'", A: "'ah'", U: "'oo'", CDG: "'s'" };
+
+/**
+ * Retry prompt after a content-policy refusal (11/2: the same shape line can
+ * pass on one scene and be refused on the next). It describes a moment of
+ * speech instead of a mouth shape: "caught mid-word saying 'ah'".
+ */
+export function faceSoftPrompt(key: FaceKey, kind: CompanionKind): string {
+  const s = NOUN[kind];
+  const { part, keep } = region(key, kind);
+  const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
+  const moment = key in SOUND ? `the ${s} is talking on a video call, caught mid-word saying ${SOUND[key as Viseme]}` : `the ${s} on a video call with ${EXPRESSION[key as FaceExpression][kind === "human" ? 0 : 1]}`;
+  return `Photo edit of the same video call frame: ${moment}. Change only the ${part}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
 }
 
 // ---------- pure helpers ----------
@@ -206,10 +231,15 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     const url = dataUrl(img);
     const size = imageSize(img);
     if (!size) throw new Error("face set: unreadable image");
-    const [faces, mouths] = await Promise.all([
+    const [primary, ...fallback] = MOUTH_PROMPTS(o.kind);
+    let [faces, mouths] = await Promise.all([
       o.media.samDetect(o.metaKey, url, samPrompt(o.kind, "face"), o.signal),
-      o.media.samDetect(o.metaKey, url, samPrompt(o.kind, "mouth"), o.signal),
+      o.media.samDetect(o.metaKey, url, primary, o.signal),
     ]);
+    for (const p of fallback) {
+      if (mouths.length) break;
+      mouths = await o.media.samDetect(o.metaKey, url, p, o.signal);
+    }
     ms.sam += Math.round(performance.now() - t);
     return { size, ...pickBoxes(faces.map((b) => normBox(b, size)), mouths.map((b) => normBox(b, size))) };
   };
@@ -225,11 +255,11 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
   const ref = state.ref;
   const aspect = state.size[0] / state.size[1];
 
-  const attempt = async (key: FaceKey, strict: boolean): Promise<{ bytes: Buffer; box: FaceBoxes } | FaceReject> => {
+  const attempt = async (key: FaceKey, prompt: string): Promise<{ bytes: Buffer; box: FaceBoxes } | FaceReject> => {
     const t = performance.now();
     let out: Buffer;
     try {
-      out = await o.media.imageEdit(o.metaKey, o.scene, faceEditPrompt(key, o.kind, strict), { size: o.size, mime: mimeOf(o.scene), signal: o.signal });
+      out = await o.media.imageEdit(o.metaKey, o.scene, prompt, { size: o.size, mime: mimeOf(o.scene), signal: o.signal });
     } catch (err) {
       if (o.signal?.aborted) throw err;
       throw new EditError(/content_policy/.test(String(err)) ? "content_policy" : "edit_failed", err);
@@ -245,12 +275,14 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
   const upstream: Array<[FaceKey, FaceItem]> = [];
   const one = async (key: FaceKey) => {
     const t = performance.now();
-    let last: FaceReject = "edit_failed";
-    for (const strict of [false, true]) {
+    let last: FaceReject | null = null;
+    for (const retry of [false, true]) {
+      // first try: the shape prompt; retry: stricter after drift, speech framing after a content-policy refusal
+      const prompt = !retry ? faceEditPrompt(key, o.kind, false) : last === "content_policy" ? faceSoftPrompt(key, o.kind) : faceEditPrompt(key, o.kind, true);
       try {
-        const r = await attempt(key, strict);
+        const r = await attempt(key, prompt);
         if (typeof r !== "string") {
-          const item: FaceItem = { status: "done", box: r.box, retried: strict, ms: Math.round(performance.now() - t) };
+          const item: FaceItem = { status: "done", box: r.box, retried: retry, ms: Math.round(performance.now() - t) };
           await o.onItem?.(key, item, r.bytes);
           state.items[key] = item;
           return;
@@ -260,9 +292,9 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
         if (!(err instanceof EditError)) throw err;
         last = err.reason;
       }
-      o.log?.("face.edit_rejected", { key, reason: last, strict });
+      o.log?.("face.edit_rejected", { key, reason: last, retry });
     }
-    const item: FaceItem = { status: "rejected", reason: last, retried: true };
+    const item: FaceItem = { status: "rejected", reason: last ?? "edit_failed", retried: true };
     if (last === "edit_failed") return void upstream.push([key, item]); // saved only if the set is usable, else redone on the next attempt
     await o.onItem?.(key, item, null);
     state.items[key] = item;

@@ -66,7 +66,7 @@ export function fakeMedia(o: FakeMediaOpts) {
     async samDetect(_key, dataUrl, prompt) {
       const tag = tagOf(Buffer.from(dataUrl.split(",")[1], "base64"));
       calls.sam.push({ tag, prompt });
-      const part = /mouth/.test(prompt) ? "mouth" : "face";
+      const part = /mouth|lips|muzzle/.test(prompt) ? "mouth" : "face";
       return o.sam ? o.sam(tag, part) : [part === "face" ? FACE : MOUTH];
     },
   };
