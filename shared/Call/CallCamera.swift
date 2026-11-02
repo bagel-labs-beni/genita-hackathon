@@ -48,8 +48,6 @@ import UniformTypeIdentifiers
     func flip() {
         guard canFlip else { return }
         front.toggle()
-        // Codex P1 (11/3): no frame from the old camera after a flip (a rear-camera face must never go out as "the user")
-        worker.beginSwitch()
         worker.switchDevice(session: session, device: Self.device(front: front))
     }
 
@@ -63,13 +61,14 @@ import UniformTypeIdentifiers
         return Self.jpeg(image)?.base64EncodedString()
     }
 
-    /// PERC-2: the latest frame as an image (nil when off or no frame yet), for the perception face crop.
-    func latestImage() -> CIImage? {
+    /// PERC-2: the latest frame for the perception face crop, only if it came from the front camera (iPhone).
+    /// The frame carries its own camera, so a flip or a quick off/on can never pass a rear-camera face as the user's.
+    func latestFrontImage() -> CIImage? {
         guard isOn else { return nil }
         #if DEBUG
         if let fixture { return CIImage(cgImage: fixture) }
         #endif
-        return worker.latest()
+        return worker.latestFront()
     }
 
     nonisolated static func jpeg(_ image: CIImage, maxSide: CGFloat = 768, quality: CGFloat = 0.6) -> Data? {
@@ -97,8 +96,8 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var input: AVCaptureDeviceInput?
     private let lock = NSLock()
     private var frame: CIImage?
-    /// true from a flip until the new camera is attached: frames still coming from the old camera are dropped
-    private var switching = false
+    /// which camera `frame` came from
+    private var framePosition: AVCaptureDevice.Position = .unspecified
 
     func start(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
@@ -126,21 +125,25 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
     }
 
-    /// Synchronous: from now on `latest()` is nil until the new camera's first frame.
-    func beginSwitch() { lock.withLock { frame = nil; switching = true } }
-
     func switchDevice(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
             session.beginConfiguration()
             self.attach(session: session, device: device)
             self.orient()
             session.commitConfiguration()
-            // from here on only the new input's buffers are kept (captureOutput checks the source input)
-            self.lock.withLock { self.frame = nil; self.switching = false }
         }
     }
 
     func latest() -> CIImage? { lock.withLock { frame } }
+
+    func latestFront() -> CIImage? {
+        lock.withLock { () -> CIImage? in
+            #if os(iOS)
+            guard framePosition == .front else { return nil }
+            #endif
+            return frame // the Mac has one camera, facing the user
+        }
+    }
 
     private func attach(session: AVCaptureSession, device: AVCaptureDevice?) {
         if let input { session.removeInput(input); self.input = nil }
@@ -158,10 +161,9 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // a buffer from the camera we just switched away from (queued behind the switch) is not the current camera's
-        guard connection.inputPorts.first?.input === input else { return }
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let image = CIImage(cvPixelBuffer: pixels)
-        lock.withLock { if !switching { frame = image } }
+        let position = (connection.inputPorts.first?.input as? AVCaptureDeviceInput)?.device.position ?? .unspecified
+        lock.withLock { frame = image; framePosition = position }
     }
 }

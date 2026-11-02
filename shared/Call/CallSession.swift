@@ -372,7 +372,7 @@ enum CallStop: Equatable {
     private func startPerception() {
         guard !perception.isRunning else { return }
         perception.start(
-            frame: { [weak self] in self?.camera.latestImage() },
+            frame: { [weak self] in self?.camera.latestFrontImage() },
             active: { [weak self] in
                 guard let self else { return false }
                 return PerceptionGate.active(serverOn: self.perceptionOn, cameraOn: self.cameraOn, front: self.camera.front, mode: self.mode, live: self.link == .live)
