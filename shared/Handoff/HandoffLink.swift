@@ -1,6 +1,9 @@
 import Foundation
 import MultipeerConnectivity
 import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// A Mac this iPhone paired with once. Later moves reconnect with the token, not the code.
 struct RememberedMac: Codable, Equatable { let mac: String; let token: String }
@@ -18,7 +21,15 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     var autoReconnect = false
     /// True for the connection that was made with the six-digit code.
     private(set) var pairedWithCode = false
-    private let peer = MCPeerID(displayName: String(ProcessInfo.processInfo.hostName.prefix(40)))
+    // ProcessInfo.hostName does a blocking reverse-DNS lookup on the main thread (37 s on launch).
+    private let peer = MCPeerID(displayName: String(HandoffLink.deviceName.prefix(40)))
+    private static var deviceName: String {
+        #if os(macOS)
+        return Host.current().localizedName ?? "Mac"
+        #else
+        return UIDevice.current.name
+        #endif
+    }
     private lazy var session = makeSession()
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
