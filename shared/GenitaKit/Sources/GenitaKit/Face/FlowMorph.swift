@@ -14,16 +14,19 @@ import Foundation
 public struct FaceFlowManifest: Codable, Equatable, Sendable {
     public struct Files: Codable, Equatable, Sendable {
         public var key: String
-        public var nk: String
-        public var kn: String
+        public var nk: String?
+        public var kn: String?
     }
     public var version: Int?
     public var roi: [Double]
     public var size: [Int]
-    public var flowSize: [Int]
+    /// Absent for 2D snap faces (no flows).
+    public var flowSize: [Int]?
     public var keys: [String]
     public var files: [String: Files]
     public var mask: String
+    /// The neutral still's ROI as prep corrected it (colour fix); absent → cropped from the still.
+    public var neutralRoi: String?
     public var lockY: Double?
     /// Companion type the keys were made for (human | animal | character).
     public var kind: String?
@@ -74,8 +77,42 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public struct JawFloor: Codable, Equatable, Sendable { public var share: Double; public var windowMs: Double; public var vowels: [String]; public var closed: [String] }
     /// Co-articulation: frames led by a non-closing consonant keep `share` of the nearby vowel's amounts.
     public var jawFloor: JawFloor? = nil
-    public struct Blink: Codable, Equatable, Sendable { public var mode: String; public var frames: Int }
+    public struct Blink: Codable, Equatable, Sendable { public var mode: String; public var frames: Int? }
     public var blink: Blink? = nil
+
+    // Non-human profiles (prep merges PROFILE[kind] over the base map; reference render_nh.py).
+    /// "viseme" (default), "open" (one jaw parameter, animals) or "snap" (2D replacement mouths, no flows).
+    public var drive: String? = nil
+    public struct Jaw: Codable, Equatable, Sendable {
+        public var floor: Double; public var gain: Double; public var gamma: Double?; public var mbpClose: Double?
+        public var steps: [FlowKeyValue]; public var vowel: [String: Double]?
+    }
+    public var jaw: Jaw? = nil
+    /// Per-key amount ceiling after focus (the flow pulls the shape back toward neutral).
+    public var cap: [String: Double]? = nil
+    /// Snap: a shown key stays at least this many frames; a new key must win minHold−1 frames in a row.
+    public var minHold: Int? = nil
+    /// Hold every other frame (12.5 fps replacement-mouth look).
+    public var onTwos: Bool? = nil
+    public var snapMin: Double? = nil
+    public var shownFloor: Double? = nil
+    public var neutralFlow: Double? = nil
+    public struct SnapRule: Codable, Equatable, Sendable {
+        public var visemes: [String]; public var minLoudness: Double; public var key: String; public var minRun: Int?
+        public init(from decoder: Decoder) throws {
+            var c = try decoder.unkeyedContainer()
+            visemes = try c.decode([String].self); minLoudness = try c.decode(Double.self); key = try c.decode(String.self)
+            minRun = c.isAtEnd ? nil : try c.decode(Int.self)
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.unkeyedContainer(); try c.encode(visemes); try c.encode(minLoudness); try c.encode(key)
+            if let minRun { try c.encode(minRun) }
+        }
+    }
+    public struct Snap2D: Codable, Equatable, Sendable {
+        public var hold: Int?; public var minHold: Int?; public var closedBelow: Double; public var rules: [SnapRule]; public var `default`: String
+    }
+    public var snap: Snap2D? = nil
 
     /// The v7 rules (prep faceflow.py BASE_MAP, 11/3) for a manifest without a map.
     public static let standard = FlowMap(
@@ -101,28 +138,39 @@ public final class FaceFlowData: @unchecked Sendable {
     let nk: [String: [Float]]
     let kn: [String: [Float]]
     let mask: CGImage
+    let neutralROI: CGImage?
 
     init(manifest m: FaceFlowManifest, stillSize: CGSize, load: (String) throws -> Data) throws {
-        guard m.roi.count == 4, m.size.count == 2, m.flowSize.count == 2, m.size.allSatisfy({ $0 > 4 }), m.flowSize.allSatisfy({ $0 > 2 }) else {
+        let fsz = m.flowSize ?? [4, 4]
+        guard m.roi.count == 4, m.size.count == 2, fsz.count == 2, m.size.allSatisfy({ $0 > 4 }), fsz.allSatisfy({ $0 > 2 }) else {
             throw FaceSetError.undecodable("flow")
         }
         let W = Double(stillSize.width), H = Double(stillSize.height)
         roi = CGRect(x: m.roi[0] * W, y: m.roi[1] * H, width: (m.roi[2] - m.roi[0]) * W, height: (m.roi[3] - m.roi[1]) * H)
-        size = (m.size[0], m.size[1]); flowSize = (m.flowSize[0], m.flowSize[1])
+        size = (m.size[0], m.size[1]); flowSize = (fsz[0], fsz[1])
         var rules = m.map ?? .standard
         // People: the full "A" key is yawn-sized (review 11/3: a 2-frame yawn pop on "Oh"); the
         // ladder stops at AH2 when that key exists.
         if m.kind == "human", m.keys.contains("AH2") { rules.ladder.steps.removeAll { $0.key == "A" } }
         map = rules
         mask = try FaceSet.decode(try load(m.mask), name: "flow.mask")
+        neutralROI = try m.neutralRoi.map { try FaceSet.decode(try load($0), name: "flow.neutral") }
         var keys: [String] = [], imgs: [String: CGImage] = [:], nk: [String: [Float]] = [:], kn: [String: [Float]] = [:]
         let n = flowSize.w * flowSize.h * 2
+        let flows = rules.drive != "snap"     // 2D snap mouths are composited as they are
+        if flows, m.flowSize == nil { throw FaceSetError.undecodable("flow: no flowSize") }
         for k in m.keys {
             guard let f = m.files[k] else { continue }
-            let a = Self.f16(try load(f.nk)), b = Self.f16(try load(f.kn))
-            guard a.count == n, b.count == n else { throw FaceSetError.undecodable("flow \(k)") }
+            if flows {
+                guard let fn = f.nk, let fk = f.kn else { throw FaceSetError.undecodable("flow \(k)") }
+                let a = Self.f16(try load(fn)), b = Self.f16(try load(fk))
+                guard a.count == n, b.count == n else { throw FaceSetError.undecodable("flow \(k)") }
+                nk[k] = a; kn[k] = b
+            } else {
+                nk[k] = [Float](repeating: 0, count: n); kn[k] = nk[k]
+            }
             imgs[k] = try FaceSet.decode(try load(f.key), name: "flow.\(k)")
-            nk[k] = a; kn[k] = b; keys.append(k)
+            keys.append(k)
         }
         guard !keys.isEmpty else { throw FaceSetError.undecodable("flow: no keys") }
         self.keys = keys; keyImages = imgs; self.nk = nk; self.kn = kn
@@ -181,7 +229,11 @@ final class FlowMorph: @unchecked Sendable {
         width = max(8, Int((Double(data.roi.width) * s).rounded()))
         height = max(8, Int((Double(data.roi.height) * s).rounded()))
         kx = Float(width) / Float(data.size.w); ky = Float(height) / Float(data.size.h)
-        neutral = Self.rgb(neutralStill, crop: data.roi, width: width, height: height)
+        if let n = data.neutralROI {
+            neutral = Self.rgb(n, crop: CGRect(x: 0, y: 0, width: n.width, height: n.height), width: width, height: height)
+        } else {
+            neutral = Self.rgb(neutralStill, crop: data.roi, width: width, height: height)
+        }
         var kp: [String: [Float]] = [:]
         for (key, img) in data.keyImages {
             kp[key] = Self.rgb(img, crop: CGRect(x: 0, y: 0, width: img.width, height: img.height), width: width, height: height)
@@ -207,6 +259,7 @@ final class FlowMorph: @unchecked Sendable {
     /// How far toward each key (before smoothing), from a lip frame (the prep `map` rules).
     func amounts(_ lip: LipFrame) -> [String: Float] {
         let m = data.map
+        if m.drive == "open", let jw = m.jaw { return openAmounts(lip, jw) }
         var amt: [String: Float] = [:]
         func add(_ key: String, _ v: Double) {
             guard v > 0, let k = resolve(key) else { return }
@@ -238,6 +291,33 @@ final class FlowMorph: @unchecked Sendable {
         }
         let s = amt.values.reduce(0, +)
         if s > 1 { for (k, v) in amt { amt[k] = v / s } }
+        return amt
+    }
+
+    /// Animals: one jaw parameter from loudness × the vowel's openness, mapped onto the jaw keys
+    /// (neutral at 0, then each step's key) by linear interpolation between neighbours.
+    func openAmounts(_ lip: LipFrame, _ jw: FlowMap.Jaw) -> [String: Float] {
+        let op = Double(min(1, max(0, lip.openness)))
+        let w = lip.weights.mapValues(Double.init)
+        let voiced = 1 - (w[.rest] ?? 0) - (w[.MBP] ?? 0) * (jw.mbpClose ?? 1)
+        var f = 1.0
+        if let vf = jw.vowel {
+            let shaped = w.filter { $0.key != .rest && $0.key != .MBP }
+            let tot = shaped.values.reduce(0, +)
+            f = tot > 0 ? shaped.reduce(0) { $0 + $1.value * (vf[$1.key.rawValue] ?? vf["other"] ?? 0.5) } / tot : 0
+        }
+        let o = pow(max(0, min(1, (jw.floor + jw.gain * (data.map.gain ?? 1) * op) * f * max(0, voiced))), jw.gamma ?? 1)
+        let steps: [(String?, Double)] = [(nil, 0)] + jw.steps.filter { resolve($0.key) == $0.key }.map { ($0.key, $0.value) }
+        var amt: [String: Float] = [:]
+        guard steps.count > 1 else { return amt }
+        for i in 0..<(steps.count - 1) where o <= steps[i + 1].1 {
+            let u = (o - steps[i].1) / max(1e-9, steps[i + 1].1 - steps[i].1)
+            if let ka = steps[i].0 { amt[ka, default: 0] += Float(1 - u) }
+            amt[steps[i + 1].0!, default: 0] += Float(u)
+            return amt
+        }
+        let last = steps[steps.count - 1]
+        amt[last.0!] = Float(last.1 > 0 ? min(1, o / last.1) : 1)
         return amt
     }
 
@@ -295,13 +375,17 @@ final class FlowMorph: @unchecked Sendable {
         let tot = sm.reduce(0, +)
         if tot > 1 { sm = sm.map { $0 / tot } }
         let t2 = sm.reduce(0, +)
-        if data.map.focus <= 1 { return sm }
-        if t2 > 1e-4 {
-            let focus = Float(data.map.focus)
-            let pw = sm.map { pow($0, focus) }
-            let ps = max(1e-9, pw.reduce(0, +))
-            sm = pw.map { t2 * $0 / ps }
-        } else { sm = sm.map { _ in 0 } }
+        if data.map.focus > 1 {
+            if t2 > 1e-4 {
+                let focus = Float(data.map.focus)
+                let pw = sm.map { pow($0, focus) }
+                let ps = max(1e-9, pw.reduce(0, +))
+                sm = pw.map { t2 * $0 / ps }
+            } else { sm = sm.map { _ in 0 } }
+        }
+        if let cap = data.map.cap {
+            for (k, c) in cap { if let j = order.firstIndex(of: k) { sm[j] = min(sm[j], Float(c)) } }
+        }
         lastAmounts = Dictionary(uniqueKeysWithValues: zip(order, sm))
         return sm
     }
@@ -316,10 +400,73 @@ final class FlowMorph: @unchecked Sendable {
     var amountsOverride: [Float]?
 
     func render(_ lip: LipFrame, at t: Double) -> CGImage {
+        let fps = data.map.smoothing.fps
+        let frame = Int((t * fps).rounded())
+        // On twos (3D characters): odd frames repeat the previous mouth (replacement-mouth look).
+        if data.map.onTwos == true, frame % 2 == 1, let last = lastImage, lastFrame == frame - 1 { lastFrame = frame; return last }
+        let image = data.map.drive == "snap" ? render2D(lip, at: t, frame: frame) : renderFlow(lip, at: t)
+        lastImage = image; lastFrame = frame
+        return image
+    }
+    private var lastImage: CGImage?
+    private var lastFrame = Int.min
+
+    // MARK: 2D snap mouths (no flows)
+
+    private var snapKey: String?
+    private var snapHeld = 99
+    private var recentOpen: [Float] = []
+
+    /// Which replacement mouth a 2D face shows (nil = the still's own closed line).
+    func snapShape(_ lip: LipFrame) -> String? {
+        guard let sn = data.map.snap else { return nil }
+        let op = lip.openness
+        if (lip.weights[.rest] ?? 0) >= 0.5 || Double(op) < sn.closedBelow { return nil }
+        guard let dom = lip.weights.filter({ $0.key != .rest }).max(by: { $0.value < $1.value })?.key, dom != .MBP else { return nil }
+        for r in sn.rules where r.visemes.contains(dom.rawValue) && Double(op) >= r.minLoudness {
+            // minRun: loud for n frames in a row (causal: the frames ending now).
+            if let n = r.minRun, recentOpen.suffix(n).count < n || recentOpen.suffix(n).contains(where: { Double($0) < r.minLoudness }) { continue }
+            return resolve(r.key)
+        }
+        return resolve(sn.default)
+    }
+
+    private func render2D(_ lip: LipFrame, at t: Double, frame: Int) -> CGImage {
+        let sn = data.map.snap
+        recentOpen.append(lip.openness); if recentOpen.count > 16 { recentOpen.removeFirst() }
+        if frame % max(1, sn?.hold ?? 2) == 0 {
+            var k = snapShape(lip)
+            if k != snapKey, snapHeld < (sn?.minHold ?? 2) { k = snapKey }
+            if k != snapKey { snapHeld = 0 }
+            snapKey = k
+        }
+        snapHeld += 1
+        lastAmounts = Dictionary(uniqueKeysWithValues: order.map { ($0, $0 == snapKey ? Float(1) : 0) })
+        let src = snapKey.flatMap { keyPix[$0] } ?? neutral
+        var out = [UInt8](repeating: 0, count: width * height * 4)
+        for i in 0..<(width * height) {
+            let m = maskW[i], o = i * 4
+            out[o] = UInt8(min(255, max(0, src[i * 3] * m)).rounded())
+            out[o + 1] = UInt8(min(255, max(0, src[i * 3 + 1] * m)).rounded())
+            out[o + 2] = UInt8(min(255, max(0, src[i * 3 + 2] * m)).rounded())
+            out[o + 3] = UInt8(min(255, max(0, 255 * m)).rounded())
+        }
+        return PixelBuffer.makeImage(out, width: width, height: height)
+    }
+
+    // MARK: flow morph
+
+    private func renderFlow(_ lip: LipFrame, at t: Double) -> CGImage {
         var am = step(lip, at: t)
         if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil }
+        let (cw, shown) = colourWeights(am, at: t)
+        // With a minimum hold the geometry follows the shown key too (no one-frame flow pops).
+        if let n = data.map.minHold, n > 1 {
+            let top = am.max() ?? 0
+            if let j = shown { am = am.indices.map { $0 == j ? max(am[j], top, Float(data.map.shownFloor ?? 0)) : 0 } }
+            else { am = am.map { min($0, Float(data.map.snapMin ?? 0.3)) * Float(data.map.neutralFlow ?? 1) } }
+        }
         let act = order.indices.filter { am[$0] > 1e-3 }
-        let cw = colourWeights(am, at: t)
         let a0 = max(0, 1 - cw.reduce(0, +))
         let fw = data.flowSize.w, fh = data.flowSize.h, n2 = fw * fh * 2
         let sx = Float(fw) / Float(width), sy = Float(fh) / Float(height)
@@ -384,25 +531,39 @@ final class FlowMorph: @unchecked Sendable {
     /// closures excepted. Smooth: the prototype's S-curve weights.
     static let minHoldMs = 80.0
 
-    func colourWeights(_ am: [Float], at t: Double) -> [Float] {
+    private var shownHeld = 0
+    private var candidate: Int?
+    private var candidateRun = 0
+
+    func colourWeights(_ am: [Float], at t: Double) -> (cw: [Float], shown: Int?) {
         let dz = data.map.dissolve ?? FlowMap.standard.dissolve!
         if dz.mode != "snap" {
             let e0 = Float(data.map.colourEdge), e1 = 1 - e0
             var cw = am.map { a -> Float in let u = min(1, max(0, (a - e0) / (e1 - e0))); return u * u * (3 - 2 * u) }
             let cs = cw.reduce(0, +)
             if cs > 1 { cw = cw.map { $0 / cs } }
-            return cw
+            return (cw, nil)
         }
         let fps = data.map.smoothing.fps
         let dt = snapT.map { t - $0 } ?? (1 / fps)
         snapT = t
         let frames = Float(max(0, min(0.5, dt)) * fps)
         var j = am.indices.max { am[$0] < am[$1] }
-        if let jj = j, am[jj] < Float(dz.minAmount) { j = nil }
-        let isClosure = j.map { order[$0] == "MBP" } ?? false
-        if j != dominant {
-            if !isClosure, dominant != nil, (t - dominantSince) * 1000 < Self.minHoldMs, dt > 0 { j = dominant }
-            else { dominant = j; dominantSince = t }
+        if let jj = j, am[jj] < Float(data.map.snapMin ?? dz.minAmount) { j = nil }
+        if let n = data.map.minHold, n > 1 {
+            // Profiles with minHold: a shown key stays ≥ n frames; a new one must lead n−1 frames running.
+            candidateRun = j == candidate ? candidateRun + 1 : 1
+            candidate = j
+            if j != dominant {
+                if shownHeld < n || candidateRun < n - 1 { j = dominant } else { dominant = j; shownHeld = 0 }
+            }
+            shownHeld += 1
+        } else {
+            let isClosure = j.map { order[$0] == "MBP" } ?? false
+            if j != dominant {
+                if !isClosure, dominant != nil, (t - dominantSince) * 1000 < Self.minHoldMs, dt > 0 { j = dominant }
+                else { dominant = j; dominantSince = t }
+            }
         }
         let step = Float(min(1, 1000 / fps / max(1, dz.ms))) * max(1, frames)
         for i in snapW.indices {
@@ -410,7 +571,7 @@ final class FlowMorph: @unchecked Sendable {
             snapW[i] += min(step, max(-step, target - snapW[i]))
         }
         if dt <= 0 || dt > 0.5 { snapW = snapW.indices.map { $0 == j ? 1 : 0 } }
-        return snapW
+        return (snapW, j)
     }
 
     // MARK: helpers

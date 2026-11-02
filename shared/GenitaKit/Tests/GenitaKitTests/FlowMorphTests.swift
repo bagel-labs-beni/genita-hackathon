@@ -57,7 +57,7 @@ private enum Synth {
             files["\(k).kn"] = k == breakKey ? Data([1, 2, 3]) : f16(Synth.flowSize[0] * Synth.flowSize[1] * 2, dx: 0, dy: k == "MBP" ? 0 : -1)
             fm[k] = .init(key: "\(k).png", nk: "\(k).nk", kn: "\(k).kn")
         }
-        let flow = FaceFlowManifest(version: 1, roi: roi, size: size, flowSize: flowSize, keys: keys, files: fm, mask: "mask.png", lockY: 0.55, kind: "human", map: nil)
+        let flow = FaceFlowManifest(version: 1, roi: roi, size: size, flowSize: flowSize, keys: keys, files: fm, mask: "mask.png", neutralRoi: nil, lockY: 0.55, kind: "human", map: nil)
         let manifest = FaceManifest(version: 1, size: [w, h], faceBox: [0.1, 0.25, 0.9, 0.85], mouthBox: [0.4, 0.62, 0.6, 0.66],
                                     images: ["neutral": "neutral.png"], visemes: [:], boxes: nil, rejected: nil, flow: flow)
         return try FaceSet(manifest: manifest) { ref in
