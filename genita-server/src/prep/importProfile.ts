@@ -347,7 +347,12 @@ export function styleProfileText(card: StyleCard, max = 2000): string {
   // Likes & dislikes get more room (Finds reads them): up to 5 likes and every dislike up to 3
   const likes = list("likes").filter((f) => f.label !== "suggested");
   const taste = [...likes.filter((f) => !isDislike(f.text)).slice(0, 5), ...likes.filter((f) => isDislike(f.text)).slice(0, 3)].map((f) => line("likes", f));
-  const main = [...taste, ...facts(PROFILE_ORDER.filter((k) => k !== "likes"), PROFILE_PER_SECTION)];
+  const main = [
+    ...taste,
+    ...facts(["interests", "communication", "response", "help"], PROFILE_PER_SECTION),
+    // a boundary the user set is never dropped for space (up to the 8 N3 allows)
+    ...facts(["boundaries"], 8),
+  ];
   const more = facts(PROFILE_MORE, PROFILE_PER_SECTION);
   const sugg = [...PROFILE_ORDER, ...PROFILE_MORE].flatMap((k) => list(k).filter((f) => f.label === "suggested").slice(0, 2).map((f) => line(k, f)));
   const rules = Array.isArray(card.rules) ? card.rules.slice(0, 5) : [];

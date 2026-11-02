@@ -253,3 +253,11 @@ test("persona card request gets the full profile: Likes & dislikes, all 6 fields
   const input = String(r.input);
   for (const label of ["Taste: Dislikes cilantro.", "Interests:", "Talk:", "Replies:", "Help:", "Boundaries:", "Rules:", "do the helpful thing number 3"]) assert.ok(input.includes(label), label);
 });
+
+test("profile text: every boundary reaches the call (all four N3 chips, Codex 11/2)", () => {
+  const r = skipStyleCard({ interests: ["Design"], replies: null, avoid: ["Unasked advice", "Too many questions", "Jokes when I'm serious", "Comments on my looks"] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const text = styleProfileText(r.card);
+  for (const b of ["Don't give advice I didn't ask for.", "Don't ask too many questions.", "No jokes when I'm being serious.", "Don't comment on my looks."]) assert.ok(text.includes(`- Boundaries: ${b}`), b);
+});
