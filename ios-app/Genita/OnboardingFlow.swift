@@ -167,7 +167,7 @@ extension AppState {
             }
             storyChanged[cardId] = r.changed
             if !r.rows.isEmpty { setup.styleRows = r.rows; setup.stylePartial = r.rows.contains { $0.items.isEmpty } }
-            if !r.profile.isEmpty { setup.styleProfile = r.profile }
+            setup.styleProfile = r.profile   // "" too: the last line was taken out, the call mustn't bring it back
             return nil
         } catch {
             route(error)

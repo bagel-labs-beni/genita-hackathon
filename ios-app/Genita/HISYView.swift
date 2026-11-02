@@ -71,7 +71,7 @@ struct HISYView: View {
                     .transition(.asymmetric(insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
                                             removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)))
                     if let fixing {
-                        HISYFixSheet(model: model, card: fixing, width: w, onCancel: { close() }, onSaved: { saved() })
+                        HISYFixSheet(model: model, card: fixing, width: w, onCancel: { close() }, onSaved: { saved(fixing.id) })
                             .transition(.identity)
                     }
                 }
@@ -93,7 +93,8 @@ struct HISYView: View {
     private func close() { withAnimation(.easeOut(duration: 0.22)) { fixing = nil } }
 
     /// C3: back on the same card, the new texts with the blue border, "Got it. I'll remember that." for 2.5 s.
-    private func saved() {
+    private func saved(_ cardId: String) {
+        guard fixing?.id == cardId else { return }
         close()
         toastTask?.cancel()
         withAnimation(.easeOut(duration: 0.2)) { toast = "Got it. I’ll remember that." }
@@ -540,7 +541,12 @@ struct HISYFixSheet: View {
     @State private var dictation = HoldToSay()
     @FocusState private var typing: Bool
 
-    private var canSave: Bool { !saving && (!picked.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+    private var typed: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// unknowns = answering one open topic: the answer is required (server: `items[0]` + `text`)
+    private var answering: Bool { card.id == "unknowns" }
+    private var canSave: Bool { !saving && (answering ? typed : (!picked.isEmpty || typed)) }
+    /// PATCH /v1/profile takes at most 12 `items`
+    static let maxPicks = 12
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -551,6 +557,7 @@ struct HISYFixSheet: View {
             }
         }
         .onAppear { withAnimation(.easeOut(duration: 0.28)) { shown = true } }
+        .onDisappear { dictation.stop() }
         .onChange(of: dictation.text) { _, t in if !t.isEmpty { text = OnboardingClient.correctionText(t, trim: false) } }
     }
 
@@ -600,14 +607,16 @@ struct HISYFixSheet: View {
         .frame(width: width, alignment: .leading)
         .background(HISYInk.canvas, in: UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24))
         .gesture(DragGesture().onChanged { v in drag = v.translation.height }.onEnded { v in
-            if v.translation.height > 90 { cancel() } else { withAnimation(.easeOut(duration: 0.2)) { drag = 0 } }
+            if v.translation.height > 90 && !saving { cancel() } else { withAnimation(.easeOut(duration: 0.2)) { drag = 0 } }
         })
     }
 
     private func chip(_ c: String) -> some View {
         let on = picked.contains(c)
         return Button {
-            if on { picked.removeAll { $0 == c } } else { picked.append(c) }
+            if on { picked.removeAll { $0 == c } }
+            else if answering { picked = [c] }   // one open topic at a time
+            else if picked.count < Self.maxPicks { picked.append(c) }
             error = nil
         } label: {
             HStack(spacing: 5) {
@@ -640,6 +649,7 @@ struct HISYFixSheet: View {
     }
 
     private func cancel() {
+        guard !saving else { return }   // the answer decides: the sheet closes on success, stays with the error line
         dictation.stop()
         typing = false
         withAnimation(.easeIn(duration: 0.22)) { shown = false }
@@ -675,6 +685,8 @@ struct HISYFixSheet: View {
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
     @ObservationIgnored private var fakeStop: Task<Void, Never>?
+    /// the finger is still on the mic: the permission callbacks only start recording while this is true
+    @ObservationIgnored private var held = false
 
     private var fake: String? {
         #if DEBUG
@@ -687,6 +699,7 @@ struct HISYFixSheet: View {
     func start(prefix: String) {
         self.prefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         note = nil
+        held = true
         if let fake {
             fakeStop?.cancel()
             listening = true
@@ -700,6 +713,7 @@ struct HISYFixSheet: View {
                 AVAudioApplication.requestRecordPermission { ok in
                     Task { @MainActor in
                         guard ok else { self.starting = false; self.note = "Turn on the microphone for Genita in Settings to say it."; return }
+                        guard self.held else { self.starting = false; return }   // let go while the prompt was up
                         self.begin()
                     }
                 }
@@ -742,6 +756,7 @@ struct HISYFixSheet: View {
     }
 
     func stop() {
+        held = false
         if fake != nil {
             guard listening else { return }
             fakeStop?.cancel()
