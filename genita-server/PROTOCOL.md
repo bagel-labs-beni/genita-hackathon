@@ -17,6 +17,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | date | change |
 |---|---|
 | 11/2 | v1 published. |
+| 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
@@ -116,7 +117,12 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 Only `persona.name` is required. Without the memory dependency the app still sends
 persona, profile, memories and recent history itself. With server memory enabled,
 `start.memories` and `start.history` are ignored so stale app snapshots cannot
-restore forgotten memories. The server uses its authenticated user identity and
+restore forgotten memories. **Handoff exception:** a chat call that starts while the
+same account has another live call (or one that ended < 10 min ago) begins with that
+call's turns (server-side, never another account's) and skips the greeting — the
+conversation continues on the new device. A `start` with `handoff: true` uses its own
+`history` only when the server has no such turns. Turns seeded this way are context
+only, never written as memories. The server uses its authenticated user identity and
 retains new conversation history only for this call. New calls receive an ordinary
 greeting, or one qualifying past episode (seen crops first after six hours).
 Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;

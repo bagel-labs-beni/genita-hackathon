@@ -82,6 +82,11 @@ export type SessionDeps = {
   voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  /**
+   * Handoff: this account's turns from its other live call, or from a call that ended in the last few minutes
+   * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
+   */
+  priorTurns?: () => HistoryItem[] | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -93,7 +98,7 @@ export type SessionDeps = {
 };
 
 type Mode = "chat" | "interpret";
-type HistoryItem = { role: "user" | "assistant"; text: string };
+export type HistoryItem = { role: "user" | "assistant"; text: string };
 type Frames = { images: string[]; at: number };
 
 type Reply = {
@@ -397,6 +402,21 @@ export class Session {
       catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
     }
     if (this.closed) return;
+    // Handoff (D24 scene 5, #199): with server memory on, start.history is ignored (stale snapshots must not restore
+    // forgotten memories), so a call continuing on the other device started with no turns ("Things · searching
+    // shops"). Seed this call's turns from the account's other/just-ended call (server-side, trusted); a start
+    // marked `handoff: true` with no server-side turns falls back to its own history (context only, never stored as memory).
+    if (this.memoryCall && startMode === "chat" && !this.history.length) {
+      const server = this.deps.priorTurns?.() ?? null;
+      const claimed = msg.handoff === true ? parseHistory(msg.history) : [];
+      const seed = server?.length ? server : claimed;
+      if (seed.length) {
+        this.history = seed.slice(-MAX_HISTORY);
+        this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
+        this.greeting = null; // continuing a conversation: no fresh hello on the new device
+        this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
+      }
+    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
@@ -769,6 +789,11 @@ export class Session {
     this.frames = null;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     return f.images;
+  }
+
+  /** This call's turns (copy) — for the account's next device after a handoff. */
+  historySnapshot(): HistoryItem[] {
+    return this.history.map((h) => ({ ...h }));
   }
 
   private remember(role: "user" | "assistant", text: string): void {
@@ -1174,4 +1199,16 @@ export class Session {
   private log(event: string, data: Record<string, unknown>): void {
     this.deps.log?.(event, { session: this.id, ...data });
   }
+}
+
+/** `start.history` from the app: role + text only, capped. */
+function parseHistory(v: unknown): HistoryItem[] {
+  if (!Array.isArray(v)) return [];
+  const out: HistoryItem[] = [];
+  for (const h of v.slice(-MAX_HISTORY)) {
+    const item = h as Record<string, unknown>;
+    const text = typeof item?.text === "string" ? item.text.replace(/\s+/g, " ").trim().slice(0, 1000) : "";
+    if (text && (item.role === "user" || item.role === "assistant")) out.push({ role: item.role, text });
+  }
+  return out;
 }
