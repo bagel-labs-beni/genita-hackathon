@@ -208,7 +208,8 @@ struct SavedSetup: Codable {
     }
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
-    func signedIn(userId: String? = nil, consented: Bool = true) {
+    /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
+    func signedIn(userId: String? = nil, consented: Bool) {
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
