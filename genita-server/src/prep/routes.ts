@@ -33,6 +33,7 @@ import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
+import { getOps } from "../ops/limits.ts";
 
 const JSON_LIMIT = 256 * 1024;
 
@@ -171,6 +172,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         uploadedAt = Date.now();
       }
       const uploadAt = new Date(uploadedAt).toISOString();
+      if (!await getOps().reserveUpload(user)) return send(res, 429, { error: "limit_reached", limit: "user_uploads" });
       const rec = await checkImage(d, user, bytes, rights, uploadAt);
       d.log("face.uploaded", { imageId: rec.id, userId: user, bytes: bytes.length, check_ms: rec.ms.check, at: uploadAt });
       return send(res, 200, {

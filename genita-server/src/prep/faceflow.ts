@@ -28,7 +28,11 @@ export const FLOW_KEYS: readonly FaceKey[] = [...VISEMES, ...MOUTH_KEYS, ...PROF
 export function flowAssetName(file: string): string | null {
   if (file === "BLINK.jpg") return "flow_blink";
   if (file === "BLINKMASK.png") return "flow_blinkmask";
-  let m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
+  let m = file.match(/^([A-Za-z0-9]{1,8})\.lip\.png$/);
+  if (m) return `flow_${m[1]}_lip`;
+  m = file.match(/^([A-Za-z0-9]{1,8})\.interior\.png$/);   // lip rig teeth layer (v41)
+  if (m) return `flow_${m[1]}_int`;
+  m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
   if (m) return `flow_${m[1]}_${m[2]}`;
   m = file.match(/^([A-Za-z0-9]{1,8})\.jpg$/);
   if (m) return m[1] === "neutral" ? "flow_neutral" : `flow_${m[1]}_key`;
@@ -42,7 +46,7 @@ export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   if (!flow) return out;
   out.add(flow.mask).add(flow.neutralRoi);
   if (flow.blink) out.add(flow.blink.image).add(flow.blink.mask);
-  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn]) if (a) out.add(a);
+  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn, f.lip, f.interior]) if (a) out.add(a);
   return out;
 }
 
@@ -149,7 +153,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       return a;
     };
     const files: FaceFlow["files"] = {};
-    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}) };
+    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}), ...(f.lip ? { lip: rename(f.lip) } : {}), ...(f.interior ? { interior: rename(f.interior) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);

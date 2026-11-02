@@ -14,6 +14,9 @@ final class CallScreenUITests: XCTestCase {
             "GENITA_CALL_AUTOMIC": "1",
             "GENITA_INTERRUPT_HOLD_MS": "5000", // the workflow also replays at --scale 3
             "GENITA_REVIEW_STILL": "1", // still face, no wave/spinner motion: the app goes idle between events
+            // L4: GenitaKit's fixture face set from the checkout, so the shots show the rendered Meta face
+            "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
         ]
         app.launch()
         let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
@@ -49,6 +52,7 @@ final class CallScreenUITests: XCTestCase {
         app.buttons["more"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
+        XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")
         // INT-0: switching interpretation on closes the sheet and shows INT-1 over the face
         app.buttons["moreInterpret"].tap()

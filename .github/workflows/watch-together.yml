@@ -2,17 +2,20 @@ name: Watch together
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/watch-together.yml"
       - "genita-server/**"
+      - "ios-app/**"
       - "mac-app/**"
+      - "shared/**"
   push:
     branches: [feat/watch-together]
   workflow_dispatch:
 
 concurrency:
-  group: watch-together-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server:
@@ -32,6 +35,7 @@ jobs:
         timeout-minutes: 8
 
   mac:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 30
     steps:

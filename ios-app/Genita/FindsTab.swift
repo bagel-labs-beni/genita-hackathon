@@ -146,9 +146,6 @@ struct FindRowView: View {
                 Text(row.title).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 Text(row.subtitle).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
-            if row.saved {
-                Image(systemName: "bookmark.fill").font(.system(size: 13, weight: .medium)).foregroundStyle(FindsInk.blueText).accessibilityHidden(true)
-            }
         }
         .frame(minHeight: 72)
         .overlay(alignment: .top) { FindsInk.line.frame(height: 1) }

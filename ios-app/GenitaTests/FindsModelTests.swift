@@ -69,6 +69,17 @@ import XCTest
         XCTAssertEqual(m.current?.card?.steps.first?.image?.url, "/v1/finds/a/images/step-1")
     }
 
+    func testReopenedRecipeSubtitleUsesPastTense() {
+        XCTAssertEqual(
+            FindCardPage.reopenedSubtitle("About 15 min · You have 4, need cooked rice"),
+            "About 15 min · You had 4, needed cooked rice"
+        )
+        XCTAssertEqual(
+            FindCardPage.reopenedSubtitle("About 15 min · You have 4, nothing to buy"),
+            "About 15 min · You had 4, nothing to buy"
+        )
+    }
+
     func testConfirmStopAndAskSendTheRightMessages() {
         let m = FindsModel()
         var sent: [ClientMessage] = []
