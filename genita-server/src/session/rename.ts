@@ -37,6 +37,9 @@ const NEGATED = /\b(?:don't|dont|do not|doesn't|never|not|won't|wont|will not|ca
 const QUESTION_LEAD = /\b(?:why|what|how|when|where|who|do|does|did|should|shall|would|will|are|is|was|were)\b/i;
 const REQUEST = /\b(?:can|could|may) i call you\s/i;
 
+/** Reported speech (Codex 11/2): "My friend said your name is Max", "I think your name is Max" — not the user's own request */
+const REPORTED = /\b(?:say|says|said|saying|tell|tells|told|telling|think|thinks|thought|heard|hear|hears|believe|believes|guess|claims?|claimed|reckons?|apparently|that)\b/i;
+
 const STOP = new Set(
   "out back later tomorrow tonight soon again now today sometime sometimes then when if in on at up a an the my your his her their that this it what whatever something anything maybe lucky so how anytime every after before about because yourself myself me him them us ok okay yes no please by".split(" "),
 );
@@ -47,7 +50,7 @@ export function detectRename(text: string): string | null {
     const m = s.match(RENAME);
     if (!m) continue;
     const before = s.slice(0, m.index! + m[0].search(/\S/));
-    if (NEGATED.test(before) || QUESTION_LEAD.test(before)) continue;
+    if (NEGATED.test(before) || QUESTION_LEAD.test(before) || REPORTED.test(before)) continue;
     if (/\?\s*$/.test(s) && !REQUEST.test(m[0])) continue;
     const name = m[1];
     if (STOP.has(name.split(/\s+/)[0].toLowerCase())) continue;
