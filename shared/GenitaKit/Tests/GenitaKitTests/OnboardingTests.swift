@@ -90,6 +90,29 @@ final class OnbStub: URLProtocol, @unchecked Sendable {
         #expect(patch["name"] as? String == "Jin")
     }
 
+    @Test func voiceListPreviewAndSaveGoToTheServer() async throws {
+        let wav = Data([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0])
+        OnbStub.handler = { req in
+            switch (req.httpMethod, req.url?.path) {
+            case ("GET", "/v1/companion/voices"):
+                return (200, Data(#"{"voices":[{"id":"72","name":"Tara","blurb":"Warm, bright","label":"Tara · warm","previewUrl":"/v1/companion/voices/72/preview"},{"id":"120","name":"Leah","blurb":"Soft, steady"}],"suggested":"72","available":false}"#.utf8))
+            case ("GET", "/v1/companion/voices/72/preview"): return (200, wav)
+            case ("GET", "/v1/companion/voices/9/preview"): return (503, Data(#"{"error":"voice_unavailable"}"#.utf8))
+            case ("PUT", "/v1/companion/voice"): return (200, Data(#"{"id":"c1","name":"Jin","voiceId":"120"}"#.utf8))
+            default: return (404, Data())
+            }
+        }
+        let list = try await client.voices(imageId: "img 1")
+        #expect(OnbStub.seen.last?.url?.query == "imageId=img%201")
+        #expect(list.suggested == "72" && list.available == false && list.voices.map(\.name) == ["Tara", "Leah"] && list.voices[0].label == "Tara · warm")
+        #expect(try await client.voicePreview(id: "72") == wav)
+        await #expect(throws: GenitaAuthError.server(status: 503, code: "voice_unavailable")) { try await client.voicePreview(id: "9") }
+        let saved = try await client.saveVoice("120")
+        #expect(saved.voiceId == "120")
+        let put = try JSONSerialization.jsonObject(with: try #require(OnbStub.seen.last?.httpBody)) as! [String: Any]
+        #expect(OnbStub.seen.last?.httpMethod == "PUT" && put["voiceId"] as? String == "120")
+    }
+
     @Test func consentAndExpiryAreTyped() async {
         OnbStub.handler = { _ in (403, Data(#"{"error":"consent_required"}"#.utf8)) }
         await #expect(throws: GenitaAuthError.consentRequired) { try await client.prep() }
