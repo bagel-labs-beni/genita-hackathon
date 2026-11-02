@@ -119,14 +119,9 @@ import CoreMedia
     private func handle(_ event: WatchUplink.Event) {
         switch event {
         case .state(_, let isBlank): blank = isBlank || blank
-        case .reaction:
-            reacting = true
-            reactingTask?.cancel()
-            reactingTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(1500))
-                if !Task.isCancelled { self.reacting = false }
-            }
-        case .speaker(let name): speakerName = name
+        // D40: share + ask only. First reactions (MS-2) and the speaker chip (FT-SPK) are cut for the
+        // submission, so their events change nothing on screen.
+        case .reaction, .speaker: break
         case .closed: speakerName = nil
         }
     }

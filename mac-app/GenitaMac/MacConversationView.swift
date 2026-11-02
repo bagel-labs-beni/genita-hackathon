@@ -9,12 +9,18 @@ struct MacConversationView: View {
     @State private var interpret = MacInterpretController()
     /// The live call owns camera and mic on the Mac too (one owner; #2's LocalCallMedia only keeps the permission UI).
     private let call = CallController.shared
+    /// #118: account, companion and when the call runs on this Mac.
+    @ObservedObject private var macCall = MacCall.shared
+    /// #121 MAC-LINK: the product page just opened in the browser.
+    @State private var linkOpened: ProductPick?
     @State private var menuOpen = false
     @State private var settingsOpen = false
     @State private var hoverShare = false
+    /// Debug review renders one state per screenshot without the env (MacHandoff.renderReviewScreens).
+    var reviewOverride: String? = nil
     private var reviewState: String {
         #if DEBUG
-        ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW"] ?? ""
+        reviewOverride ?? ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW"] ?? ""
         #else
         ""
         #endif
@@ -30,14 +36,17 @@ struct MacConversationView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                    .contentShape(Rectangle()).onTapGesture { faceTapped() }
+                    .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
+                if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
-                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).accessibilityIdentifier("macOpenMenu")
+                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).opacity(sheetFull ? 0 : 1).allowsHitTesting(!sheetFull).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
-                    selfView.position(x: 87.5, y: 700.5)
+                    selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
                     VStack(spacing: 13) {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
@@ -45,9 +54,9 @@ struct MacConversationView: View {
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
                         Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
-                    }.position(x: 334, y: 724)
+                    }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
-                if waitingCopy == nil && handoff.motion == nil {
+                if waitingCopy == nil && handoff.motion == nil && !sheetFull {
                 Button { sharing.requestSharing() } label: {
                     if displaySharing || permissionVisible {
                         Circle().fill(Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255)).frame(width: 47, height: 47)
@@ -69,6 +78,23 @@ struct MacConversationView: View {
                         MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
+                if waitingCopy == nil && !interpret.isLive {
+                    if linkOpened == nil {
+                        MacResultSheet(finds: call.finds) { pick in withAnimation(.easeOut(duration: 0.22)) { linkOpened = pick } }
+                            .frame(width: 390, height: 844, alignment: .topLeading)
+                    }
+                    if sheetFull {
+                        companionImage.resizable().scaledToFill().frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(MacSheetInk.onInk, lineWidth: 2))
+                            .position(x: 278 + 48, y: 48 + 64).onTapGesture { withAnimation { call.finds.pipTapped() } }
+                            .accessibilityLabel("Back to half height").accessibilityAddTraits(.isButton)
+                    }
+                    if let text = cueText { MacCallCue(text: text).frame(maxWidth: sheetFull ? 250 : 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        .position(x: sheetFull ? 16 + 125 : 195, y: sheetFull ? 86 : 142).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false) }
+                    if linkOpened != nil {
+                        MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
+                    }
+                }
                 WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
@@ -81,11 +107,15 @@ struct MacConversationView: View {
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }
+            #if DEBUG
+            if reviewState == "link" { linkOpened = MacResultFixture.firstPick }
+            #endif
         }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
+        .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
         .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
@@ -100,7 +130,7 @@ struct MacConversationView: View {
                 .onTapGesture { withAnimation(.easeOut(duration: 0.22)) { interpret.cancel() } }
                 .accessibilityLabel("Close").accessibilityAddTraits(.isButton)
             MacInterpretCallSheet(app: $interpret.app, warning: interpret.headphones ? nil : "No headphones on: the other person would hear my whispers too.") {
-                interpret.start(.companion(name: "Jin", userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
+                interpret.start(.companion(name: call.companionName, userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
             }
             .frame(width: 390)
             .transition(.move(edge: .bottom))
@@ -109,7 +139,25 @@ struct MacConversationView: View {
         .accessibilityIdentifier("macInterpretSheet")
     }
     private var companionImage: Image {
+        if let face = macCall.face { return Image(nsImage: face) }
         if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
+    }
+    // MARK: #118 / #121 call + sheet layout
+    private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
+    /// half / full: the sheet covers the self view and the controls (r03).
+    private var sheetCovers: Bool { [.rising, .half, .full].contains(call.finds.state) && linkOpened == nil }
+    /// r03 rail rule on the Mac: searching (198) and peek (148) lift the self view and controls above the sheet.
+    private var railShift: CGFloat { [.searching, .peek].contains(call.finds.state) && linkOpened == nil ? call.finds.state.macHeight - 26 : 0 }
+    private var cueText: String? {
+        if linkOpened != nil { return nil }
+        if sheetFull, let say = call.finds.current?.card?.say, !say.isEmpty { return say }
+        if call.finds.state == .searching { return "On it…" }
+        return MacCallCue.text(call.cue, name: macCall.companionName ?? call.companionName)
+    }
+    /// Face tap: folds an open sheet (r03), otherwise stops the companion mid-sentence.
+    private func faceTapped() {
+        if withAnimation(.spring(response: 0.42, dampingFraction: 0.86), { call.finds.faceTapped() }) { return }
+        call.interrupt()
     }
     /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
     private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
