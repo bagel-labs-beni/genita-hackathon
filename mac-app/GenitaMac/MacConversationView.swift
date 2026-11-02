@@ -71,6 +71,10 @@ struct MacConversationView: View {
             if reviewState == "menu" { menuOpen = true }
         }
         .onDisappear { sharing.stop() }
+        // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
+        .onChange(of: call.sessionId) { _, id in
+            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+        }
         .onChange(of: handoff.motion?.id) { _, id in if id != nil {sharing.stop()} }
         .onChange(of: handoff.desktop) { _, value in if !value { sharing.stop() } }
         .overlay(alignment:.bottom) { Button("아이폰으로") { handoff.returnToPhone() }.disabled(!handoff.canReturn).buttonStyle(.borderedProminent).padding(.bottom,20) }
