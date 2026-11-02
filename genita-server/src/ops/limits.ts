@@ -29,6 +29,9 @@ export class OpsLimits {
   private calls = 0;
   private images = 0;
   private turns = new Map<string, number>();
+  private synced = new Set<string>();
+  private priming = new Set<string>();
+  private turnErrors = new Set<string>();
   private reached = new Set<Limit>();
   private pausedLogs = new Map<string, number>();
   private usageLoggedAt = -Infinity;
@@ -46,6 +49,9 @@ export class OpsLimits {
       this.day = day;
       this.calls = this.images = 0;
       this.turns.clear();
+      this.synced.clear();
+      this.priming.clear();
+      this.turnErrors.clear();
       this.reached.clear();
     }
     return day;
@@ -122,7 +128,30 @@ export class OpsLimits {
   canSpeculate(userId?: string | null): boolean {
     const day = this.today();
     if (!userId || this.cap("user_turns") <= 0) return true;
-    return !this.exhausted("user_turns", this.turns.get(userId) ?? 0, day);
+    return !this.unconfirmed(userId) && !this.exhausted("user_turns", this.turns.get(userId) ?? 0, day);
+  }
+
+  /** Warm today's stored count when a call starts, without delaying the call or its first turn. */
+  prime(userId?: string | null): void {
+    const day = this.today();
+    if (!userId || !this.db || this.synced.has(userId) || this.priming.has(userId)) return;
+    this.priming.add(userId);
+    this.track(this.loadTurns(userId, day));
+  }
+
+  private async loadTurns(userId: string, day: string): Promise<void> {
+    try {
+      const r = await this.db!.query("SELECT turns FROM usage_daily WHERE user_id=$1 AND day=$2::date", [userId, day]);
+      this.mergeTurns(userId, day, Number(r.rows[0]?.turns ?? 0));
+    } catch (err) {
+      this.turnError(userId, day, err);
+    } finally {
+      if (this.day === day) this.priming.delete(userId);
+    }
+  }
+
+  private unconfirmed(userId: string): boolean {
+    return !!this.db && !this.synced.has(userId) && (this.turns.get(userId) ?? 0) > 0;
   }
 
   /**
@@ -134,14 +163,33 @@ export class OpsLimits {
     const day = this.today();
     if (!userId) return true; // shared dev sessions without an authenticated user
     const count = this.turns.get(userId) ?? 0;
-    if (this.cap("user_turns") > 0 && this.exhausted("user_turns", count, day)) return false;
+    if (this.cap("user_turns") > 0 && (this.unconfirmed(userId) || this.exhausted("user_turns", count, day))) return false;
     this.turns.set(userId, count + 1);
-    this.pending = this.persistTurn(userId, day);
+    this.track(this.persistTurn(userId, day));
     return true;
   }
 
-  /** Last background usage_daily write (tests await it). */
+  /** All background usage_daily work started so far (tests await it, never the reply path). */
   pending: Promise<void> = Promise.resolve();
+
+  private track(work: Promise<void>): void {
+    this.pending = Promise.all([this.pending, work]).then(() => {});
+  }
+
+  private mergeTurns(userId: string, day: string, stored: number): void {
+    if (this.day !== day) return;
+    if (Number.isFinite(stored)) this.turns.set(userId, Math.max(this.turns.get(userId) ?? 0, stored));
+    this.synced.add(userId);
+  }
+
+  private turnError(userId: string, day: string, err: unknown): void {
+    if (this.day !== day) return;
+    // Fail open at the memory count once the DB has answered, even if it failed.
+    this.synced.add(userId);
+    if (this.turnErrors.has(userId)) return;
+    this.turnErrors.add(userId);
+    this.log("ops.turn_error", { message: String(err).slice(0, 120) });
+  }
 
   private async persistTurn(userId: string, day: string): Promise<void> {
     if (!this.db) return;
@@ -152,10 +200,9 @@ export class OpsLimits {
          RETURNING turns`,
         [userId, day],
       );
-      const stored = Number(r.rows[0]?.turns);
-      if (Number.isFinite(stored) && this.day === day) this.turns.set(userId, Math.max(this.turns.get(userId) ?? 0, stored));
+      this.mergeTurns(userId, day, Number(r.rows[0]?.turns));
     } catch (err) {
-      this.log("ops.turn_error", { message: String(err).slice(0, 120) });
+      this.turnError(userId, day, err);
     }
   }
 

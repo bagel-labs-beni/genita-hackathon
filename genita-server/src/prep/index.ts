@@ -18,6 +18,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
+import { getOps } from "../ops/limits.ts";
 import { FileStore, type PrepStore } from "./store.ts";
 import { PrepRunner } from "./runner.ts";
 import { createPrepRoutes, type PrepRoutes } from "./routes.ts";
@@ -46,6 +47,6 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
   const peterBaker = peter ? new ModalPeterBaker(env.GENITA_PETER_PREPARE_URL || null, env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || null) : new ModalPeterBaker(null);
   const runner = new PrepRunner(deps, { peter: peterBaker, atlas: new MouthAtlasBaker() });
   log("prep.pipeline", { pipeline: kling ? "kling" : "meta", peter, serverTts });
-  if (!config.paused) void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));
+  if (!getOps().isPaused("prep.resume")) void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));
   return { routes: createPrepRoutes(deps, runner), runner, deps };
 }

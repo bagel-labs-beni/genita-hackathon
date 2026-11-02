@@ -280,7 +280,7 @@ export class Session {
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
-        if (this.interp) return this.limitInterpret(() => this.interp?.typed(text));
+        if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -374,6 +374,7 @@ export class Session {
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
     this.started = true;
+    (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
       this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
@@ -470,7 +471,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.limitInterpret(() => this.interp?.final("call", e.text));
+      else if (e.type === "speechComplete") this.interp.final("call", e.text);
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -482,6 +483,7 @@ export class Session {
   private interpretHost(): InterpretHost {
     return {
       now: this.now,
+      admitTurn: () => this.admitTurn(),
       send: (e) => this.client.sendJson(e),
       sendAudio: (seq, pcm) => this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), pcm])),
       nextSeq: () => ++this.seq,
@@ -629,7 +631,7 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        this.limitInterpret(() => interp.final("mic", e.text));
+        interp.final("mic", e.text);
         return;
     }
   }
@@ -690,6 +692,17 @@ export class Session {
     if (this.closed) return;
     if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
     const r = reduceTurn(this.turn, e, this.bargeCfg);
+    const reply = r.effects.find((fx) => fx.type === "start_reply");
+    // The reducer is pure: admit only actual user replies before committing thinking or running effects.
+    // Preserve any barge-in cancellation, but never start a reply or emit thinking on a cap rejection.
+    if (reply?.type === "start_reply" && !reply.self && !this.greeting && !this.admitTurn()) {
+      this.dropSpeculation();
+      this.metrics = {};
+      this.turn = { ...r.state, phase: "listening" };
+      for (const fx of r.effects) if (fx.type === "cancel_reply") this.run(fx);
+      this.client.sendJson({ type: "state", state: "listening" });
+      return;
+    }
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
@@ -882,13 +895,8 @@ export class Session {
     this.reply = reply;
     const signal = reply.abort.signal;
     const spec = self ? null : this.spec;
-    if (!self) this.spec = null; // keep the accepted turn's guess alive across async admission
+    if (!self) this.spec = null; // this turn was admitted synchronously before start_reply
     if (spec) signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
-    if (!self && !greeting && this.limitUserId()) {
-      let admitted = false;
-      (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
-      if (!admitted) { spec?.abort.abort(); this.dropSpeculation(); return this.finishReply(reply); }
-    }
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
       firstTokenAt?: number;
@@ -1174,8 +1182,11 @@ export class Session {
     return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
   }
 
-  private limitInterpret(accepted: () => void): void {
-    (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { if (!this.closed) accepted(); }, (message) => this.error("spark_unavailable", message, false));
+  private admitTurn(): boolean {
+    if (this.closed) return false;
+    let admitted = false;
+    (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+    return admitted;
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {

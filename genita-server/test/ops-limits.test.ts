@@ -2,7 +2,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import { EventEmitter, once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -55,13 +55,13 @@ function http(base: string, path: string, method = "GET"): Promise<{ status: num
     req.end();
   });
 }
-function fakeSession(c = config(), userId?: string, ops?: SessionDeps["ops"]) {
+function fakeSession(c = config(), userId?: string, ops?: SessionDeps["ops"], replyText = "Hi.") {
   const events: ServerEvent[] = [];
   const asr = Object.assign(new EventEmitter(), { isOpen: true, connect: async () => {}, sendAudio: () => {}, end: () => {} });
   let calls = 0;
   const deps: SessionDeps = {
     config: c, userId, ops, openAsr: () => asr,
-    async *spark() { calls++; yield { type: "text", delta: "Hi." }; yield { type: "done", responseId: "r", text: "Hi.", status: "completed" }; },
+    async *spark() { calls++; yield { type: "text", delta: replyText }; yield { type: "done", responseId: "r", text: replyText, status: "completed" }; },
     async *tts() {}, log,
   };
   const session = new Session("synthetic", { sendJson: (e) => events.push(e), sendBinary: () => {}, close: () => {} }, deps);
@@ -193,6 +193,8 @@ test("database turns: admission never waits on the DB; usage_daily totals flow b
     let now = Date.parse("2026-11-04T00:00:01Z");
     const c = config({ GENITA_USER_DAILY_TURNS: "2" });
     const ops = new OpsLimits(c, { db, now: () => now, log });
+    ops.prime(a);
+    await ops.pending;
     // synchronous: no promise, order kept
     assert.deepEqual([ops.acceptUserTurn(a), ops.acceptUserTurn(a), ops.acceptUserTurn(a)], [true, true, false]);
     await ops.pending;
@@ -205,6 +207,7 @@ test("database turns: admission never waits on the DB; usage_daily totals flow b
     assert.equal(ops.acceptUserTurn(b), true);
     now += 86_400_000;
     assert.equal(ops.acceptUserTurn(a), true);
+    await ops.pending;
   } finally { await db.close(); }
 });
 
@@ -212,9 +215,12 @@ test("database errors neither block nor bypass the per-user cap (memory still co
   const { OpsLimits } = await import("../src/ops/limits.ts");
   const logs: string[] = [];
   const broken = new OpsLimits(config({ GENITA_USER_DAILY_TURNS: "2" }), { log: (e) => logs.push(e), db: { query: async () => { throw new Error("synthetic db failure"); } } as never });
-  assert.deepEqual([broken.acceptUserTurn("u"), broken.acceptUserTurn("u"), broken.acceptUserTurn("u")], [true, true, false]);
+  broken.prime("u");
+  assert.deepEqual([broken.acceptUserTurn("u"), broken.acceptUserTurn("u")], [true, false], "only one turn while the DB is unconfirmed");
   await broken.pending;
-  assert.ok(logs.includes("ops.turn_error"));
+  assert.deepEqual([broken.acceptUserTurn("u"), broken.acceptUserTurn("u")], [true, false], "a DB error unlocks admission at the memory count");
+  await broken.pending;
+  assert.equal(logs.filter((e) => e === "ops.turn_error").length, 1);
 });
 
 test("pause file: generation pauses while the file exists, without a restart", async () => {
@@ -397,7 +403,7 @@ test("capped voice users reuse a matching speculative stream while turn admissio
 });
 
 test("paused restart leaves persisted prep jobs queued without resuming generation", async () => {
-  await limits();
+  await limits({ GENITA_PAUSED: "1" });
   const dir = await mkdtemp(join(tmpdir(), "genita-ops-"));
   const store = new FileStore(dir);
   let scans = 0;
@@ -406,8 +412,105 @@ test("paused restart leaves persisted prep jobs queued without resuming generati
     createPrep(config({ GENITA_PAUSED: "1" }), log, {}, store);
     await tick();
     assert.equal(scans, 0);
+    await limits();
     createPrep(config(), log, {}, store);
     await tick();
     assert.equal(scans, 1);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("round 2: pause file at startup skips prep resume and logs its kind", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "genita-ops-pause-start-"));
+  const file = join(dir, "PAUSED");
+  const store = new FileStore(dir);
+  let scans = 0;
+  store.listCompanions = async () => { scans++; return []; };
+  try {
+    await writeFile(file, "");
+    const c = config({ GENITA_PAUSE_FILE: file });
+    assert.equal(c.paused, false);
+    await limits({ GENITA_PAUSE_FILE: file });
+    createPrep(c, log, {}, store);
+    await tick();
+    assert.equal(scans, 0, "a pause file must prevent resuming persisted generation");
+    assert.ok(logs.some((l) => l.event === "ops.paused" && l.data.kind === "prep.resume"));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("round 2: slow DB after restart allows only one unconfirmed turn while priming", async () => {
+  const { OpsLimits } = await import("../src/ops/limits.ts");
+  const queries: Array<{ sql: string; params?: unknown[]; resolve: (r: { rows: { turns: number }[]; rowCount: number }) => void }> = [];
+  const db = { query: (sql: string, params?: unknown[]) => new Promise((resolve) => queries.push({ sql, params, resolve })) };
+  const ops = new OpsLimits(config({ GENITA_USER_DAILY_TURNS: "3" }), { db: db as never });
+  const s = fakeSession(config(), "restart-user", ops);
+  try {
+    await s.session.onClientText(start);
+    ops.prime("restart-user");
+    assert.deepEqual([ops.acceptUserTurn("restart-user"), ops.acceptUserTurn("restart-user"), ops.acceptUserTurn("restart-user")], [true, false, false]);
+    assert.equal(queries.filter((q) => q.sql.startsWith("SELECT")).length, 1, "overlapping calls share one primer");
+    assert.equal(ops.canSpeculate("restart-user"), false, "an unconfirmed extra turn cannot speculate");
+    const read = queries.find((q) => q.sql.startsWith("SELECT"));
+    assert.ok(read, "session start must prime usage_daily without waiting");
+    assert.equal(read.params?.[0], "restart-user");
+    assert.match(read.sql, /day\s*=\s*\$2::date/);
+    read.resolve({ rows: [{ turns: 3 }], rowCount: 1 });
+    await tick();
+    assert.equal(ops.acceptUserTurn("restart-user"), false, "stored cap is enforced before the write answers");
+    const write = queries.find((q) => q.sql.includes("INSERT INTO usage_daily"));
+    assert.ok(write);
+    write.resolve({ rows: [{ turns: 4 }], rowCount: 1 });
+    await ops.pending;
+    assert.equal(ops.acceptUserTurn("restart-user"), false);
+  } finally { s.session.close(); }
+});
+
+test("round 2: an interpretation echo does not spend the second real utterance's turn", async () => {
+  const ops = await limits({ GENITA_USER_DAILY_TURNS: "2" });
+  const s = fakeSession(config(), "interpreter", ops, "Hello there.");
+  try {
+    await s.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Synthetic" }, mode: "interpret", greeting: false }));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "The other language is not known yet." }));
+    s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "   " });
+    s.asr.emit("event", { type: "speechComplete", turnId: 0, text: "…" });
+    s.asr.emit("event", { type: "speechComplete", turnId: 1, text: "이거 얼마예요?" });
+    await tick();
+    assert.equal(s.calls(), 1);
+    s.asr.emit("event", { type: "speechComplete", turnId: 2, text: "Hello there." });
+    await tick();
+    assert.equal(s.calls(), 1, "the translation echo must be dropped");
+    s.asr.emit("event", { type: "speechComplete", turnId: 3, text: "혹시 이 근처에 약국 있어요?" });
+    await tick();
+    assert.equal(s.calls(), 2, "the next real utterance still has a turn");
+    assert.ok(!s.events.some((e) => e.type === "error"));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "This is a third real utterance." }));
+    await tick();
+    assert.equal(s.calls(), 2);
+    assert.ok(s.events.some((e) => e.type === "error" && e.message.includes("daily_cap:user_turns") && !e.retryable));
+  } finally { s.session.close(); }
+});
+
+test("round 2: capped text and voice turns leave listening as the last state, without thinking", async () => {
+  for (const [source, busy] of [["text", false], ["voice", false], ["text", true], ["voice", true]] as const) {
+    const ops = await limits({ GENITA_USER_DAILY_TURNS: "1" });
+    const s = fakeSession(config(), source, ops);
+    try {
+      await s.session.onClientText(start);
+      if (busy) {
+        await s.session.onClientText(JSON.stringify({ type: "text", text: "First." }));
+        await tick();
+      } else await textTurn(s, "First.");
+      const before = s.events.length;
+      if (source === "text") await s.session.onClientText(JSON.stringify({ type: "text", text: "Over cap." }));
+      else {
+        await s.session.onClientText(JSON.stringify({ type: "audio_start" }));
+        s.asr.emit("event", { type: "speechComplete", turnId: 2, text: "Over cap." });
+      }
+      await tick();
+      assert.ok(s.events.slice(before).some((e) => e.type === "error" && e.message.includes("daily_cap:user_turns") && !e.retryable));
+      assert.equal(s.calls(), 1);
+      assert.equal(s.events.filter((e) => e.type === "state").at(-1)?.state, "listening");
+      assert.ok(!s.events.slice(before).some((e) => e.type === "state" && e.state === "thinking"));
+      if (busy) assert.ok(s.events.slice(before).some((e) => e.type === "utterance.cancelled"));
+    } finally { s.session.close(); }
+  }
 });
