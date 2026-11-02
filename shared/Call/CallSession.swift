@@ -173,6 +173,16 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceAnimates = true
     @ObservationIgnored private var faceReduceMotion = false
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
+    /// The account the face set belongs to (JWT `sub`); another account never sees it.
+    @ObservationIgnored private var faceOwner: String?
+    /// Utterance ids restart with each session; the face sees `faceIdBase + id` so they only grow.
+    @ObservationIgnored private var faceIdBase = 0
+    @ObservationIgnored private var faceIdMax = -1
+    /// Events of a later reply held while the face's current reply is still being heard (queued
+    /// interpretations): switching early would close the mouth on audio that is still playing.
+    @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
+    /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
+    private(set) var faceStill: CGImage?
 
     init() {
         audio.onMicFrame = { [uplink] frame in uplink.send(frame) }
@@ -265,7 +275,7 @@ enum CallStop: Equatable {
         micOn = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
-        face?.cancel(); faceAudio = [:]
+        restFace()
         finds.callEnded()
         phase = .listening; awaitingFirstAudio = false; interruptedHold = false; answerFailed = false
         #if DEBUG
@@ -280,7 +290,7 @@ enum CallStop: Equatable {
         if cameraOn { toggleCamera() }
         if playing || phase == .speaking || phase == .thinking { socket?.send(.bargeIn) }
         audio.flush()
-        face?.cancel()
+        restFace()
         playing = false
     }
 
@@ -369,7 +379,7 @@ enum CallStop: Equatable {
     func interrupt() {
         guard playing || phase == .speaking || phase == .thinking else { return }
         audio.flush()
-        face?.cancel()   // the mouth rests at once, before the server's utterance.cancelled
+        restFace()   // the mouth rests at once, before the server's utterance.cancelled
         playing = false
         socket?.send(.bargeIn)
     }
@@ -460,7 +470,7 @@ enum CallStop: Equatable {
         socket = nil
         pingTask?.cancel()
         audio.flush()
-        face?.cancel(); faceAudio = [:]
+        restFace()
         playing = false
         awaitingFirstAudio = false
         guard !userEnded else { return }
@@ -510,6 +520,7 @@ enum CallStop: Equatable {
         switch event {
         case let .ready(r):
             link = .live
+            if r.sessionId != sessionId { faceIdBase = faceIdMax + 1 }   // the new session counts utterances from the start
             sessionId = r.sessionId
             reconnectSince = nil
             answerFailed = false
@@ -558,8 +569,9 @@ enum CallStop: Equatable {
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
             mouth.cancel(c.utteranceId)
-            face?.cancel(utteranceId: c.utteranceId)
+            face?.cancel(utteranceId: faceId(c.utteranceId))
             faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
+            facePending.removeAll { $0.utterance == c.utteranceId }
             audio.flush()
             if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
@@ -567,7 +579,7 @@ enum CallStop: Equatable {
             log.info("cancelled utterance=\(c.utteranceId) reason=\(c.reason.rawValue, privacy: .public)")
         case let .speaking(s):
             if s.on { emotion = s.emotion }
-            if !cancelled.contains(s.utteranceId) { face?.handle(speaking: s) }
+            if !cancelled.contains(s.utteranceId) { var e = s; e.utteranceId = faceId(s.utteranceId); feedFace(s.utteranceId) { $0.handle(speaking: e) } }
         case let .turnMetrics(m):
             log.info("turn.metrics utterance=\(m.utteranceId) server speechEnd→firstAudio=\(m.speechEndToFirstAudioMs ?? -1)ms firstToken=\(m.replyStartToFirstTokenMs ?? -1)ms audio=\(m.audioMs)ms speculative=\(m.speculative ?? "-", privacy: .public)")
         case let .tool(t):
@@ -591,7 +603,10 @@ enum CallStop: Equatable {
             finds.apply(event)
         case let .replyDelta(d):
             // Text shapes the mouth until (or unless) the audio brings word timings.
-            if !cancelled.contains(d.utteranceId), !routed.contains(d.utteranceId) { face?.handle(replyDelta: d) }
+            if !cancelled.contains(d.utteranceId), !routed.contains(d.utteranceId) {
+                var e = d; e.utteranceId = faceId(d.utteranceId)
+                feedFace(d.utteranceId) { $0.handle(replyDelta: e) }
+            }
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
         }
@@ -615,7 +630,11 @@ enum CallStop: Equatable {
             return
         }
         // The face moves with what plays on this speaker; its clock is the same player's playhead.
-        if let timing, timing.utteranceId == utterance { face?.handle(audio: timing, pcm: AudioFrameHeader.payload(of: data)) }
+        if let timing, timing.utteranceId == utterance {
+            var e = timing; e.utteranceId = faceId(utterance)
+            let pcm = AudioFrameHeader.payload(of: data)
+            feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
+        }
         #if DEBUG
         if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
         #endif
@@ -675,6 +694,7 @@ enum CallStop: Equatable {
         mouth.finish(utteranceId)
         if playingUtterance == utteranceId { playingUtterance = nil }
         playing = audio.isPlaying
+        flushFacePending()
         socket?.send(.playbackDone(utteranceId: utteranceId))
         #if DEBUG
         fixture?.utteranceDone()
@@ -684,23 +704,86 @@ enum CallStop: Equatable {
     // MARK: face (L4)
 
     /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
-    func useFace(_ set: FaceSet?, key: String?, reduceMotion: Bool) {
+    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool) {
         face?.stop()
         faceKey = key
+        faceOwner = owner
         faceAudio = [:]
+        facePending = []
+        faceStill = nil
         guard let set else { face = nil; return }
-        let driver = FaceDriver(faceSet: set, outputSize: CompanionFace.outputSize(for: set), reduceMotion: reduceMotion)
+        let size = CompanionFace.outputSize(for: set)
+        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
         driver.playbackClock = { [weak self, weak driver] in
-            guard let self, let id = driver?.currentUtteranceId else { return nil }
-            return self.audio.playbackPositionMs(utteranceId: id)
+            guard let self, let driver else { return nil }
+            self.flushFacePending()
+            guard let id = driver.currentUtteranceId else { return nil }
+            return self.audio.playbackPositionMs(utteranceId: id - self.faceIdBase)
         }
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
+        if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
+    }
+
+    private func renderFaceStill(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
+        Task { [weak self] in
+            let image = await Task.detached(priority: .userInitiated) {
+                FaceRenderer(faceSet: set, outputSize: size, seed: 1, reduceMotion: true).render(at: 0, lip: .rest)
+            }.value
+            guard let self, self.face === driver else { return }
+            self.faceStill = image
+        }
+    }
+
+    /// Barge-in, background, socket loss, hang-up: the mouth rests now and nothing queued for it stays.
+    private func restFace() {
+        face?.cancel()
+        faceAudio = [:]
+        facePending = []
+    }
+
+    /// The id the face driver sees for a server utterance id (grows across sessions).
+    private func faceId(_ utterance: Int) -> Int {
+        let id = faceIdBase + utterance
+        faceIdMax = max(faceIdMax, id)
+        return id
+    }
+
+    /// The server utterance the face is on now.
+    private var faceUtterance: Int? { face?.currentUtteranceId.map { $0 - faceIdBase } }
+
+    private func feedFace(_ utterance: Int, _ apply: @escaping (FaceDriver) -> Void) {
+        guard let face else { return }
+        if facePending.contains(where: { $0.utterance == utterance }) || stillHearing(before: utterance) {
+            if facePending.count > 512 { facePending.removeAll() }
+            facePending.append((utterance, apply))
+            return
+        }
+        apply(face)
+    }
+
+    /// True while the face's current reply is still audible and `utterance` is a later one whose own audio
+    /// hasn't started yet.
+    private func stillHearing(before utterance: Int) -> Bool {
+        guard let current = faceUtterance, utterance > current,
+              let heard = audio.playbackPositionMs(utteranceId: current), heard >= 0 else { return false }
+        if let next = audio.playbackPositionMs(utteranceId: utterance), next >= 0 { return false }
+        return true
+    }
+
+    /// Hands the earliest held reply to the face once its audio is what plays.
+    private func flushFacePending() {
+        guard let face, let first = facePending.first, !stillHearing(before: first.utterance) else { return }
+        let ready = facePending.filter { $0.utterance == first.utterance }
+        facePending.removeAll { $0.utterance == first.utterance }
+        ready.forEach { $0.apply(face) }
     }
 
     /// The call screen appeared: load the companion's face set (if it has one) and animate it while the screen
     /// is up. `animate: false` (UI review stills) draws one frame and no display link.
     func showFace(reduceMotion: Bool, animate: Bool = true) {
+        // Another account (or signed out) never sees the face set loaded for the one before.
+        if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
         faceOnScreen = true
         faceAnimates = animate
         faceReduceMotion = reduceMotion
@@ -724,6 +807,7 @@ enum CallStop: Equatable {
     }
 
     private func loadFace() async {
+        let owner = Self.tokenSubject(currentEndpoint.token)
         do {
             let outcome: CompanionFaceLoader.Outcome
             #if DEBUG
@@ -743,7 +827,7 @@ enum CallStop: Equatable {
             case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
-                useFace(set, key: key, reduceMotion: faceReduceMotion)
+                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
             }
         } catch {
             // Offline or the server said no: keep what is on screen (the still, or the face from before).

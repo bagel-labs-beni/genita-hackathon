@@ -31,20 +31,18 @@ enum CompanionFace {
 }
 
 /// Draws the face driver's latest frame above the still, aspect-filled like the still. Layers (face → mouth →
-/// blink) are composed inside the renderer. `animate: false` (UI review stills) draws one frame instead.
+/// blink) are composed inside the renderer. `still` (UI review stills) is drawn instead when given.
 struct FaceFrameView: View {
     @ObservedObject var driver: FaceDriver
-    var animate = true
-    @State private var still: CGImage?
+    var still: CGImage?
     var body: some View {
         ZStack {
-            if let image = animate ? driver.frame : (still ?? driver.frame) {
+            if let image = still ?? driver.frame {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
             }
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-        .task(id: ObjectIdentifier(driver)) { if !animate { still = driver.renderFrame(at: 0, playbackMs: nil) } }
     }
 }
 

@@ -43,12 +43,14 @@ struct CompanionFaceView: View {
     let loop: URL?
     /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
     var face: FaceDriver? = nil
+    /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
+    var faceStill: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
             if let face {
-                FaceFrameView(driver: face, animate: !CallMotion.reviewStill)
+                FaceFrameView(driver: face, still: faceStill)
             } else if let loop, CompanionFace.klingFace, !CallMotion.reviewStill {
                 LoopingVideo(url: loop).allowsHitTesting(false)
             }
