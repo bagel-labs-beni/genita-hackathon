@@ -301,6 +301,11 @@ export class PrepRunner {
             const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "nose"), signal);
             return size && boxes[0] ? normBox(boxes[0], size) : null;
           },
+          eyes: async () => {
+            const size = imageSize(scene!);
+            const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "eyes"), signal);
+            return size ? boxes.slice(0, 2).map((b) => normBox(b, size)) : [];
+          },
           log: (e, x) => d.log(e, { companion: companionId, ...x }),
           signal,
         });

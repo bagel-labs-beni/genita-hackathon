@@ -206,6 +206,58 @@ def build_mask(h, w, face, mouth, lock_y, kind, scale):
     return m
 
 
+# ---- 2D blink (non-human lane, secondary.py): clean plate over the open eyes + only the key's closed-eye line art ----
+def ellipse_mask(H, W, boxes, grow=1.6, feather=0.25):
+    m = np.zeros((H, W), np.float32)
+    for b in boxes:
+        cx, cy = (b[0] + b[2]) / 2 * W, (b[1] + b[3]) / 2 * H
+        rx, ry = (b[2] - b[0]) / 2 * W * grow, (b[3] - b[1]) / 2 * H * grow * 1.3
+        cv2.ellipse(m, (int(cx), int(cy)), (int(rx), int(ry)), 0, 0, 360, 1.0, -1)
+    sig = max(1.0, feather * np.mean([(b[2] - b[0]) * W for b in boxes]))
+    return cv2.GaussianBlur(m, (0, 0), sig)
+
+
+def align_excluding(neutral, key, exclude):
+    """ECC affine of key onto neutral, ignoring `exclude` (float mask, >0 = ignore)."""
+    H, W = neutral.shape[:2]
+    s = 480.0 / H
+    g = lambda im: cv2.cvtColor(cv2.resize(im, (int(W * s), int(H * s)), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    reg = (cv2.resize(exclude, (int(W * s), int(H * s))) < 0.02).astype(np.uint8) * 255
+    Wm = np.eye(2, 3, dtype=np.float32)
+    try:
+        _, Wm = cv2.findTransformECC(g(neutral), g(key), Wm, cv2.MOTION_AFFINE,
+                                     (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-6), reg, 5)
+    except cv2.error:
+        pass
+    Wm[:, 2] /= s
+    return cv2.warpAffine(key, Wm, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+
+
+def blink_2d(neutral, key, eyes, thr=40):
+    N = np.clip(neutral, 0, 255).astype(np.float32); K = np.clip(key, 0, 255).astype(np.float32)
+    H, W = N.shape[:2]
+    img = N.copy(); mask = np.zeros((H, W), np.float32)
+    Nl = cv2.cvtColor(N.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    Kl = cv2.cvtColor(K.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    for b in eyes:
+        R = np.zeros((H, W), np.uint8); ring = np.zeros((H, W), np.uint8)
+        cx, cy = (b[0] + b[2]) / 2 * W, (b[1] + b[3]) / 2 * H; rx, ry = (b[2] - b[0]) / 2 * W, (b[3] - b[1]) / 2 * H
+        cv2.ellipse(R, (int(cx), int(cy)), (int(rx * 1.2), int(ry * 1.45)), 0, 0, 360, 1, -1)
+        cv2.ellipse(ring, (int(cx), int(cy)), (int(rx * 1.6), int(ry * 2.0)), 0, 0, 360, 1, -1); ring &= (1 - R)
+        if not ring.any():
+            continue
+        rv = N[ring > 0]; rl = Nl[ring > 0]
+        skin = np.median(rv[rl >= np.percentile(rl, 60)], 0)
+        hair = (np.abs(N - K).max(2) < 18) & (Nl < np.median(rl[rl >= np.percentile(rl, 60)]) - 45)
+        R = (R > 0) & ~hair
+        line = (R & (Kl < skin.mean() - thr)).astype(np.float32)
+        line = cv2.GaussianBlur(cv2.dilate(line, np.ones((2, 2), np.uint8)), (0, 0), 0.7)[..., None]
+        reg = R.astype(np.float32)[..., None]
+        img = img * (1 - reg) + (skin * (1 - line) + K * line) * reg
+        mask = np.maximum(mask, R.astype(np.float32))
+    return img, cv2.GaussianBlur(mask, (0, 0), 1.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--neutral', required=True)
@@ -216,6 +268,8 @@ def main():
     ap.add_argument('--kind', default='human', help='profile: human | animal | cat | character3d | character2d | toy (character = character3d)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--jpeg', type=int, default=90)
+    ap.add_argument('--blink', help='character2d: Muse blink still -> BLINK.jpg + BLINKMASK.png (eye rect only)')
+    ap.add_argument('--eyes', help='character2d: eye boxes x1,y1,x2,y2;x1,y1,x2,y2 (SAM)')
     a = ap.parse_args()
     t0 = time.time()
     kind = 'character3d' if a.kind == 'character' else a.kind
@@ -415,6 +469,21 @@ def main():
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
             'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': lip_map(kind)}
+    if a.blink and a.eyes and kind == 'character2d':
+        eyes = [box(e) for e in a.eyes.split(';') if e]
+        BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)
+        if BKr is not None and eyes:
+            EM = ellipse_mask(H, W, eyes)
+            low = np.zeros((H, W), np.float32); low[Y1:] = 1
+            BK = align_excluding(N, cv2.resize(BKr, (W, H), interpolation=cv2.INTER_AREA), np.maximum(EM, low)).astype(np.float32)
+            img, bm = blink_2d(N.astype(np.float32), BK, eyes)
+            yy, xx = np.where(bm > 0.01)
+            if len(yy):
+                bx1, by1, bx2, by2 = xx.min(), yy.min(), xx.max() + 1, yy.max() + 1
+                cv2.imwrite(os.path.join(a.out, 'BLINK.jpg'), np.clip(img[by1:by2, bx1:bx2], 0, 255).astype(np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 92])
+                cv2.imwrite(os.path.join(a.out, 'BLINKMASK.png'), np.clip(bm[by1:by2, bx1:bx2] * 255 + 0.5, 0, 255).astype(np.uint8))
+                flow['blink'] = {'mode': 'snap2d', 'image': 'BLINK.jpg', 'mask': 'BLINKMASK.png', 'frames': 3,
+                                 'rect': [round(bx1 / W, 5), round(by1 / H, 5), round(bx2 / W, 5), round(by2 / H, 5)]}
     json.dump(flow, open(os.path.join(a.out, 'flow.json'), 'w'), indent=1)
     print(json.dumps({'ok': True, 'ms': int((time.time() - t0) * 1000), 'flowBytes': nbytes, 'keys': len(files),
                       'lockY': flow['lockY'], 'lockSource': lock_src, 'kind': kind, 'diag': diag}))
