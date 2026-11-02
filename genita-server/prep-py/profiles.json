@@ -361,7 +361,7 @@
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "v17 04:2x KST — s40 cheek coupling per kind, 3D interior lift",
+ "_status": "v23 / m3 05:0x KST — per-kind motion v2 runtime coefficients (map.motion)",
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
@@ -418,5 +418,276 @@
    ]
   },
   "lipmask": 6
+ },
+ "motion": {
+  "human": {
+   "motion": "v2",
+   "_ref": "B-lane render.py --motion v2, sweep row v23 (critic 7.5)",
+   "lookaheadMs": 40,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "amp": [
+    0.3,
+    0.7
+   ],
+   "faceNorm": {
+    "refFaceHeightPx960": 356,
+    "clip": [
+     0.6,
+     1.2
+    ]
+   },
+   "lip": 0.9,
+   "preemphMs": 40,
+   "shortStressedMin": [
+    0.6,
+    0.4
+   ],
+   "shape": [
+    100,
+    0.5,
+    80
+   ],
+   "antic": 0.3,
+   "ladders": {
+    "round": [
+     [
+      "U",
+      0
+     ],
+     [
+      "OH",
+      0.45
+     ]
+    ],
+    "spread": [
+     [
+      "EI",
+      0
+     ],
+     [
+      "EH",
+      0.45
+     ],
+     [
+      "AH2",
+      0.85
+     ]
+    ],
+    "neutral": [
+     [
+      "MID",
+      0
+     ],
+     [
+      "AH",
+      0.35
+     ],
+     [
+      "AH2",
+      0.7
+     ]
+    ]
+   },
+   "spring": 7.5,
+   "idle": 0.2,
+   "jitter": 0.03,
+   "hyst": 0.05,
+   "texMin": 0.12,
+   "texFade": [
+    0.04,
+    0.2
+   ],
+   "maxAmount": {
+    "AH2": 0.85
+   },
+   "cheek": {
+    "spread": 0.4,
+    "pull": 0.55,
+    "cheek": 0.85,
+    "naso": 0.28,
+    "lift": 2.0
+   },
+   "brow": 2.5,
+   "nod": 6,
+   "sway": 0.45
+  },
+  "animal": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 60,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.2,
+   "amp": [
+    0.8,
+    0.7
+   ],
+   "lip": 0.7,
+   "texMin": 0.2,
+   "idle": 0.6,
+   "brow": 1.5,
+   "cheek": {
+    "spread": 1.5,
+    "pull": 0,
+    "cheek": 1.2,
+    "naso": 0.8,
+    "lift": 2.0
+   },
+   "_keys": "the v2 ladder names its jaw steps AH / AH2; this profile's stored keys stay J2 / J3 (ladderKeys maps them, no re-prep of existing companions). Fallback OH/O/EH/EI/U/WQ/MID/CDG/TH/L -> AH, so the lip shape barely changes between vowels",
+   "ladderKeys": {
+    "AH": "J2",
+    "AH2": "J3"
+   }
+  },
+  "cat": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 60,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.2,
+   "amp": [
+    0.8,
+    0.7
+   ],
+   "lip": 0.7,
+   "texMin": 0.2,
+   "idle": 0.6,
+   "brow": 1.5,
+   "cheek": {
+    "spread": 1.5,
+    "pull": 0,
+    "cheek": 1.2,
+    "naso": 0.8,
+    "lift": 2.0
+   },
+   "_keys": "cat: one jaw key C2 serves both ladder steps (amount scales it)",
+   "ladderKeys": {
+    "AH": "C2",
+    "AH2": "C2"
+   }
+  },
+  "character3d": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 60,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.2,
+   "amp": [
+    0.7,
+    0.7
+   ],
+   "lip": 0.65,
+   "texMin": 0.18,
+   "idle": 0.45,
+   "brow": 2.5,
+   "cheek": {
+    "spread": 0.4,
+    "pull": 1.0,
+    "cheek": 0.85,
+    "naso": 0.28,
+    "lift": 2.0
+   },
+   "_bigKeys": "for subjects whose keys open wide (pixar-like): amp [0.25, 0.6], lip 0.85, texMin 0.15"
+  },
+  "toy": {
+   "motion": "v2",
+   "slew": 0.25,
+   "mbp": 2,
+   "dissolve": {
+    "mode": "snap",
+    "ms": 40
+   },
+   "focus": 6,
+   "lookaheadMs": 40,
+   "gain": 1.3,
+   "floor": 0.6,
+   "jaw": [
+    70,
+    100,
+    0.8
+   ],
+   "antic": 0.3,
+   "hyst": 0.1,
+   "preemphMs": 60,
+   "sway": 0.45,
+   "nod": 6,
+   "_ref": "flags of B-lane render.py motion v2 (human v18/v19); nonhuman copy = nonhuman/render_h.py + runh.py; texMin = key amount at which its texture shows (human hard-codes 0.3)",
+   "spring": 7.2,
+   "amp": [
+    0.65,
+    0.7
+   ],
+   "lip": 0.85,
+   "texMin": 0.2,
+   "idle": 0.45,
+   "brow": 0
+  },
+  "character2d": {
+   "_": "unchanged: coart timing driver on twos (one shape per syllable: vowel class of the syllable, WD/EE only for stressed loud syllables), lookahead 60"
+  }
  }
 }

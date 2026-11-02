@@ -106,6 +106,11 @@ def lip_map(kind):
     m.update(json.loads(json.dumps(PROFILE.get(kind, {}))))
     if kind != 'human':
         m.update({k: v for k, v in profile_of(kind).items() if k not in NON_MAP and not k.startswith('_')})
+    mo = profiles().get('motion', {})
+    if isinstance(mo, dict):
+        mk = kind if kind in mo else {'cat': 'animal', 'toy': 'character3d', 'character': 'character3d'}.get(kind)
+        if mk in mo:
+            m['motion'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}   # v2 runtime coefficients (FaceDriver)
     m['profile'] = kind
     return m
 
