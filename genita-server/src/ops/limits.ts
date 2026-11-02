@@ -131,15 +131,20 @@ export class OpsLimits {
     return true;
   }
 
-  /** Fail closed on DB errors and use the session's existing non-retryable error path. */
+  /**
+   * Over the cap → the session's existing non-retryable error path. A DB error fails OPEN (the turn goes on):
+   * a database hiccup must not mute every call; the global Meta budget above still bounds spend.
+   */
   async userTurn(userId: string | null | undefined, accepted: () => void, rejected: (message: string) => void): Promise<void> {
+    let ok: boolean;
     try {
-      if (await this.acceptUserTurn(userId)) accepted();
-      else rejected("daily_cap:user_turns");
-    } catch {
-      this.log("ops.turn_error", {});
-      rejected("Daily usage could not be checked");
+      ok = await this.acceptUserTurn(userId);
+    } catch (err) {
+      this.log("ops.turn_error", { message: String(err).slice(0, 120) });
+      ok = true;
     }
+    if (ok) accepted();
+    else rejected("daily_cap:user_turns");
   }
 
   /** Interpreter guesses cannot be charged as accepted final user turns. */

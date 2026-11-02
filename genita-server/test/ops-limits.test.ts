@@ -278,7 +278,7 @@ test("config: D46 defaults, overrides and invalid numeric fallbacks", () => {
   assert.equal(config({ GENITA_META_DAILY_CALLS: "NaN" }).metaDailyCalls, 20_000);
 });
 
-test("user memory counters roll over at UTC midnight; DB errors fail closed without Spark", async () => {
+test("user memory counters roll over at UTC midnight; DB errors fail open (the call keeps answering)", async () => {
   let now = Date.parse("2026-11-03T23:59:59Z");
   const ops = await limits({ GENITA_USER_DAILY_TURNS: "1" }, () => now);
   assert.equal(await ops.acceptUserTurn("a"), true);
@@ -291,8 +291,8 @@ test("user memory counters roll over at UTC midnight; DB errors fail closed with
   try {
     await s.session.onClientText(start);
     await textTurn(s, "hello");
-    assert.equal(s.calls(), 0);
-    assert.ok(s.events.some((e) => e.type === "error" && e.retryable === false));
+    assert.equal(s.calls(), 1);
+    assert.ok(!s.events.some((e) => e.type === "error"));
   } finally { s.session.close(); }
 });
 
