@@ -51,7 +51,7 @@ The iPhone shows the R1 sheet and stops ARKit, the rear camera, the microphone a
 
 Because tracking is off in R1, the Duo effect does not play on the way back to the iPhone in practice. It remains available when the Mac taps **Continue here** with the phone tracking at the recorded edge.
 
-The accepted LiDAR plane, perspective-corner intersection, tilt correction and saved AR world-map algorithm are ported from `handoff-effects-lab`. Camera-centre calibration persists in UserDefaults; it is device-specific. For the current test phone, launch with `--lidar-center-down 28 --lidar-center-right -6` to migrate the accepted values. Other devices retain adjustable defaults, not that phone's calibration.
+The coordinate tracker uses LiDAR planes, perspective-corner intersections, tilt correction and a saved AR world map. Camera-centre calibration persists in UserDefaults and is device-specific. Set `--lidar-center-down <millimetres>` and `--lidar-center-right <millimetres>` for your device after measuring its camera offset.
 
 `--handoff-demo` opens the existing conversation without changing onboarding/profile state. `--handoff-code <Mac code>` pairs the test installation automatically. Normal launches preserve the onboarding flow. The actual companion image is transferred only to the paired local Mac.
 

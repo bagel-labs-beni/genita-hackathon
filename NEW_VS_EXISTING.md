@@ -4,7 +4,6 @@ What in this repository predates the hackathon, and what does not.
 
 ## Existing (pre-hackathon)
 
-- `existing/peter-engine/`: Peter lip-sync engine bundle, native Swift compositor, demo character cache, model weights, vendored MuseTalk and Earlier source snapshots (`vendor/`), and test media. Offline only. The apps do not call it.
 - `shared/Handoff/EffectSource/` and the built `shared/Handoff/handoff-effect.{js,html}`: Duo blur shader, sampler and payload compositor from `handoff-effects-lab`. Upstream license is kept next to the sources. Three.js is MIT.
 - `ios-app/Genita/LidarWorldTracker.swift`: plane, corner and world-map algorithm ported from `handoff-effects-lab`.
 
@@ -12,8 +11,8 @@ What in this repository predates the hackathon, and what does not.
 
 ## Removed
 
-The earlier account gateway in `server/index.mjs`, `src/api.js`, `src/persona-call.js` and `src/original-call.js` were not used by any screen, so they were deleted. They remain in git history.
+The earlier account gateway (`server/index.mjs`, `src/api.js`, `src/persona-call.js`, `src/original-call.js`), the web design prototype and the Peter lip-sync engine bundle (`peter-engine/`) were not used by the submitted apps, so they were deleted.
 
 ## New
 
-Everything else: the iOS and Mac apps, the web design prototype, device ownership (`shared/Handoff/ConversationOwnership.swift`), the handoff sheets, local camera and microphone controls, and the Genita sounds.
+Everything else: the iOS and Mac apps, genita-server, device ownership (`shared/Handoff/ConversationOwnership.swift`), the handoff sheets, local camera and microphone controls, and the Genita sounds.
