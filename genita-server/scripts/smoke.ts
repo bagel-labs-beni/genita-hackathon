@@ -1,5 +1,5 @@
 /**
- * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge]
+ * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge] [--url=wss://…/v1/session]
  *
  * Real keys, real vendors. Starts the server in-process on loopback, then acts
  * like the app: streams mic PCM (24 kHz s16le) in real time, 80 ms frames,
@@ -68,10 +68,13 @@ const median = (xs: number[]) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// --url=wss://host/v1/session runs against a deployed server (token from GENITA_SMOKE_TOKEN, never printed)
+const remoteUrl = args.find((a) => a.startsWith("--url="))?.slice(6);
 const config = { ...loadConfig(), host: "127.0.0.1", port: 0, sessionToken: null };
-const server = await startServer(config, () => {});
-const port = (server.address() as { port: number }).port;
-const ws = new WebSocket(`ws://127.0.0.1:${port}/v1/session`);
+const server = remoteUrl ? null : await startServer(config, () => {});
+const ws = remoteUrl
+  ? new WebSocket(remoteUrl, { perMessageDeflate: false, headers: { authorization: `Bearer ${process.env.GENITA_SMOKE_TOKEN ?? ""}`, "x-genita-user": "smoke" } })
+  : new WebSocket(`ws://127.0.0.1:${(server!.address() as { port: number }).port}/v1/session`);
 await new Promise((r, j) => (ws.once("open", r), ws.once("error", j)));
 
 // ── client state ──
@@ -325,5 +328,5 @@ writeFileSync(".smoke/last.json", JSON.stringify({ rows, summary }, null, 1));
 micRunning = false;
 await mic;
 ws.close();
-server.close();
+server?.close();
 process.exit(0);
