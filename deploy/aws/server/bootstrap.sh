@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs ON the genita-server box (Amazon Linux 2023, arm64) as root, sent by deploy.sh via SSM.
-#   bash bootstrap.sh <release-id>
-# Installs Node 22 once, unpacks s3://$BUCKET/server/releases/<id>.tgz, writes the env file
-# from SSM Parameter Store /genita/server/* (SecureStrings decrypted on the box, never echoed),
-# restarts the systemd unit and waits for /healthz.
+#   GENITA_BUCKET=... AWS_REGION=... bash bootstrap.sh <release-id>
+# Installs Node 22 once, unpacks s3://$BUCKET/server/releases/<id>.tgz, switches `current`,
+# restarts the unit (start.mjs reads SSM /genita/server/* at boot, keys never on disk) and
+# waits for /healthz; an unhealthy release rolls back to the previous one.
 set -euo pipefail
 REL=$1
 BUCKET=${GENITA_BUCKET:-genita-data-343474957003}
@@ -19,28 +19,25 @@ if ! command -v node >/dev/null || ! node -v | grep -q '^v22'; then
 fi
 NODE=$(command -v node); NPM=$(command -v npm)
 id genita >/dev/null 2>&1 || useradd --system --home /var/lib/genita --shell /sbin/nologin genita
-mkdir -p $APP/releases /var/lib/genita /etc/genita
+mkdir -p $APP/releases /var/lib/genita
 chown genita:genita /var/lib/genita
 [ -f /opt/genita/rds-ca.pem ] || curl -fsSL -o /opt/genita/rds-ca.pem https://truststore.pki.rds.amazonaws.com/us-east-1/us-east-1-bundle.pem
 
-# release
+# release (the previous one is kept to roll back to)
+PREV=$(readlink -f $APP/current 2>/dev/null || true)
 D=$APP/releases/$REL
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 rm -rf "$D" && mkdir -p "$D"
-aws s3 cp --only-show-errors "s3://$BUCKET/server/releases/$REL.tgz" /tmp/genita-server.tgz
-tar -xzf /tmp/genita-server.tgz -C "$D" && rm -f /tmp/genita-server.tgz
+aws s3 cp --only-show-errors "s3://$BUCKET/server/releases/$REL.tgz" "$TMP/server.tgz"
+tar -xzf "$TMP/server.tgz" -C "$D"
+aws s3 cp --only-show-errors "s3://$BUCKET/server/releases/$REL.start.mjs" "$D/start.mjs"
 (cd "$D" && $NPM ci --omit=dev --no-audit --no-fund --loglevel=error)
+# parameters must be readable with the instance role before we switch
+aws ssm get-parameters-by-path --path /genita/server --with-decryption --query 'length(Parameters)' --output text >/dev/null
 ln -sfn "$D" $APP/current
+rm -f /etc/genita/server.env   # older releases wrote keys here; start.mjs reads SSM instead
 
-# env from SSM (names = env var names)
-umask 077
-aws ssm get-parameters-by-path --path /genita/server --with-decryption --recursive \
-  --query 'Parameters[].[Name,Value]' --output text \
-  | awk -F'\t' '{ n=$1; sub(".*/","",n); print n "=" $2 }' > /etc/genita/server.env.new
-mv /etc/genita/server.env.new /etc/genita/server.env
-chmod 600 /etc/genita/server.env
-umask 022
-
-cat > /etc/systemd/system/genita-server.service <<EOF
+cat > /etc/systemd/system/genita-server.service <<UNIT
 [Unit]
 Description=Genita server (Node 22, ws)
 After=network-online.target
@@ -49,25 +46,37 @@ Wants=network-online.target
 [Service]
 User=genita
 WorkingDirectory=$APP/current
-EnvironmentFile=/etc/genita/server.env
-Environment=GENITA_ENV_FILE=/nonexistent NODE_ENV=production
-ExecStart=$NODE --experimental-strip-types --no-warnings=ExperimentalWarning src/main.ts
+Environment=GENITA_ENV_FILE=/nonexistent NODE_ENV=production AWS_REGION=$AWS_DEFAULT_REGION NODE_EXTRA_CA_CERTS=/opt/genita/rds-ca.pem
+ExecStart=$NODE --experimental-strip-types --no-warnings=ExperimentalWarning start.mjs
 Restart=always
 RestartSec=2
 LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
-EOF
+UNIT
 systemctl daemon-reload
 systemctl enable genita-server >/dev/null 2>&1
-systemctl restart genita-server
-for i in $(seq 1 60); do
-  if curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1; then
-    echo "healthy release=$REL node=$($NODE -v)"; curl -s http://127.0.0.1:8787/healthz; echo
-    ls -1dt $APP/releases/* | tail -n +6 | xargs -r rm -rf   # keep 5 releases
-    exit 0
-  fi
-  sleep 1
-done
-journalctl -u genita-server -n 40 --no-pager; exit 1
+
+healthy() {
+  systemctl restart genita-server
+  for i in $(seq 1 60); do
+    curl -fsS http://127.0.0.1:8787/healthz >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+if healthy; then
+  echo "healthy release=$REL node=$($NODE -v)"; curl -s http://127.0.0.1:8787/healthz; echo
+  journalctl -u genita-server -n 6 --no-pager -o cat | grep -E "ssm:|listening|migrated" || true
+  ls -1dt $APP/releases/* | tail -n +6 | xargs -r rm -rf   # keep 5 releases
+  exit 0
+fi
+journalctl -u genita-server -n 40 --no-pager -o cat
+if [ -n "$PREV" ] && [ -d "$PREV" ] && [ "$PREV" != "$D" ]; then
+  echo "ROLLBACK to $(basename "$PREV")"
+  ln -sfn "$PREV" $APP/current
+  if [ ! -f "$PREV/start.mjs" ]; then cp "$D/start.mjs" "$PREV/start.mjs"; fi
+  healthy && echo "rolled back, healthy" || echo "rollback also unhealthy"
+fi
+exit 1

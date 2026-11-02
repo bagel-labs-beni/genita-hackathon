@@ -18,12 +18,13 @@ IID=${SERVER_INSTANCE_ID:-$(aws ec2 describe-instances --filters Name=tag:Name,V
 TMP=$(mktemp -t genita-server).tgz
 git -C "$REPO" archive --format=tar.gz -o "$TMP" "$SHA:genita-server"
 aws s3 cp --only-show-errors "$TMP" "s3://$BUCKET/server/releases/$REL.tgz"
+aws s3 cp --only-show-errors "$HERE/start.mjs" "s3://$BUCKET/server/releases/$REL.start.mjs"
 aws s3 cp --only-show-errors "$HERE/bootstrap.sh" "s3://$BUCKET/server/bootstrap.sh"
 rm -f "$TMP"
 echo "release $REL ($REF) -> $IID"
 
 CID=$(aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript --comment "genita-server $REL" \
-  --parameters "commands=[\"aws s3 cp --only-show-errors s3://$BUCKET/server/bootstrap.sh /tmp/genita-server-bootstrap.sh --region $AWS_REGION && bash /tmp/genita-server-bootstrap.sh $REL\"],executionTimeout=[\"900\"]" \
+  --parameters "commands=[\"aws s3 cp --only-show-errors s3://$BUCKET/server/bootstrap.sh /tmp/genita-server-bootstrap.sh --region $AWS_REGION && GENITA_BUCKET=$BUCKET AWS_REGION=$AWS_REGION bash /tmp/genita-server-bootstrap.sh $REL\"],executionTimeout=[\"900\"]" \
   --query Command.CommandId --output text)
 while :; do
   S=$(aws ssm get-command-invocation --command-id "$CID" --instance-id "$IID" --query Status --output text 2>/dev/null || echo Pending)
