@@ -44,8 +44,8 @@ const GARMENT =
   /\b(jacket|coat|blazer|dress|shirt|skirt|pants|jeans|shoes|sweater|hoodie)\b|코트|자켓|재킷|원피스|셔츠|바지|신발/i;
 
 /** "What should I wear?" without a camera: wearing words, or a garment that isn't about cooking; never a product search. */
-export function isOutfitAsk(text: string): boolean {
-  if (isProductAsk(text)) return false;
+export function isOutfitAsk(text: string, afterProduct = false): boolean {
+  if (isProductAsk(text, afterProduct)) return false;
   return WEAR.test(text) || (GARMENT.test(text) && !COOK.test(text));
 }
 

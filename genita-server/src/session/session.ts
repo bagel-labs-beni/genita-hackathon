@@ -42,7 +42,7 @@ import type { MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
-import { isOutfitAsk } from "../finds/intent.ts";
+import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 
@@ -956,7 +956,9 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
     });
-    const suggestMac = !this.macSuggested && isOutfitAsk(text) && this.deps.macNearby?.() === true;
+    // a refine after a product search in this call ("another one in black…") stays a search (Finds #199 rule)
+    const afterProduct = this.history.slice(-6).some((h) => h.role === "user" && isProductAsk(h.text));
+    const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
     const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     return {
       interpret,
@@ -1413,7 +1415,7 @@ export class Session {
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
     // Demo S4: counted as asked only once the suggestion was actually said (a failed reply can ask again)
-    if (full && built.suggestMac) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
+    if (full && built.suggestMac && !sparkError && !signal.aborted) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
