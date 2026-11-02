@@ -428,6 +428,9 @@ struct NoSeeCheck: Equatable {
     var rows: [Row]
     var hint = "Move the camera if it’s there."
 
+    /// Card height: padding 12 + title 16 + 8 + rows 20 (gap 4) + 8 + hint 16 + 12.
+    var cardHeight: CGFloat { CGFloat(12 + 16 + 8 + 8 + 16 + 12 + 20 * rows.count + 4 * max(0, rows.count - 1)) }
+
     /// From a recipe card made with the camera on: `have` = in frame, `maybe`/`buy` = not seen. Nil when everything was seen.
     static func from(card: FindCard, maxRows: Int = 4) -> NoSeeCheck? {
         guard card.kind == .recipe else { return nil }

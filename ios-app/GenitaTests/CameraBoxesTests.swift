@@ -115,4 +115,21 @@ import XCTest
         sheet.apply(.observeBoxes(event(find: "new-1", [("Egg", egg)])))
         XCTAssertEqual(sheet.boxes.boxes.count, 1)
     }
+
+    func testLabelNeverAboveTheTopInset() {
+        // a box that starts off the top edge: its label goes below the box and is pushed under the status area
+        let off = CGRect(x: 0, y: -40, width: 60, height: 50)
+        XCTAssertGreaterThanOrEqual(off.minY + CameraBoxes.labelOffsetY(off, topInset: 120), 120)
+        let normal = CGRect(x: 10, y: 300, width: 60, height: 50)
+        XCTAssertEqual(CameraBoxes.labelOffsetY(normal, topInset: 120), -32)
+    }
+
+    func testBoxesUnderTheNoSeeCardAreHidden() {
+        let card = CGRect(x: 24, y: 124, width: 220, height: 140)
+        XCTAssertTrue(CameraBoxes.hidden(CGRect(x: 40, y: 200, width: 50, height: 50), avoiding: card))
+        XCTAssertTrue(CameraBoxes.hidden(CGRect(x: 40, y: 290, width: 50, height: 50), avoiding: card), "its label (above) would reach the card")
+        XCTAssertFalse(CameraBoxes.hidden(CGRect(x: 250, y: 400, width: 50, height: 50), avoiding: card))
+        XCTAssertFalse(CameraBoxes.hidden(CGRect(x: 40, y: 200, width: 50, height: 50), avoiding: nil))
+        XCTAssertEqual(NoSeeCheck(title: "t", rows: [.init(name: "a", seen: true), .init(name: "b", seen: true), .init(name: "c", seen: false)]).cardHeight, 140, "Figma 59:35: 12 + 16 + 8 + 68 + 24 + 12")
+    }
 }

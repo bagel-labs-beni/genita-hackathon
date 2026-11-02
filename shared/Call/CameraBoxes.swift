@@ -88,4 +88,17 @@ struct LiveBox: Identifiable, Equatable {
 
     /// Label height 28 + 4 gap above the box; below it when the box is too near the top of the view.
     static func labelAbove(_ rect: CGRect, topInset: CGFloat) -> Bool { rect.minY - 32 >= topInset }
+
+    /// Label offset from the box top. Never lets the label sit above `topInset` (status bar, menu button): a box that
+    /// starts off the top edge gets its label pushed down instead of onto the clock.
+    static func labelOffsetY(_ rect: CGRect, topInset: CGFloat) -> CGFloat {
+        let y = labelAbove(rect, topInset: topInset) ? -32 : rect.height + 4
+        return max(y, topInset - rect.minY)
+    }
+
+    /// FT-NOSEE: a box (with its label) under the card is not drawn, so the card stays readable.
+    static func hidden(_ rect: CGRect, avoiding card: CGRect?) -> Bool {
+        guard let card else { return false }
+        return rect.insetBy(dx: -2, dy: -32).intersects(card)
+    }
 }
