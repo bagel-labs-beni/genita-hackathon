@@ -104,7 +104,7 @@ export type SessionDeps = {
 };
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
-const COMPANION_VOICE_WAIT_MS = 1_500;
+const COMPANION_VOICE_WAIT_MS = 800;
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
