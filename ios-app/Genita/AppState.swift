@@ -99,8 +99,11 @@ struct SavedSetup: Codable {
     var retryingPrep = false
     /// PREP-1e: the one line under the buttons when Try again itself failed
     var prepError: String?
-    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands)
-    var sceneImageData: Data?
+    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
+    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
+    var sceneImage: (key: String, data: Data)?
+    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
+    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
@@ -186,6 +189,7 @@ struct SavedSetup: Codable {
     /// CS01 "Not now" or an expired session: A02, and a restart stays there instead of restoring the call.
     func signedOut() {
         storage.set(true, forKey: Self.signedOutKey)
+        prep = nil; sceneImage = nil
         returnTo(.signIn)
     }
     /// Past A02 again: an onboarded user goes back to the call, a new one on to A03.
@@ -201,6 +205,7 @@ struct SavedSetup: Codable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
+            prep = nil; sceneImage = nil
         }
         setup.accountId = id
     }

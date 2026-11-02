@@ -51,9 +51,10 @@ extension AppState {
 
     /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
     func loadScene() async {
-        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL,
+        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
               let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
-        sceneImageData = data
+        // the account or companion may have changed while the image was on its way
+        if sceneKey == key { sceneImage = (key, data) }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil) {
