@@ -762,19 +762,22 @@ export class Session {
    * took for the end of the turn): it waits until they stop — a backchannel — or the barge-in cancels
    * it. Resolves at once when the user is quiet; never waits longer than HOLD_MAX_MS.
    */
-  private untilUserQuiet(signal: AbortSignal): Promise<void> | null {
-    if (!this.turn.userSpeaking || signal.aborted) return null;
-    return new Promise<void>((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", done);
-        this.quietWaiters = this.quietWaiters.filter((w) => w !== done);
-        resolve();
-      };
-      const timer = setTimeout(done, HOLD_MAX_MS);
-      signal.addEventListener("abort", done, { once: true });
-      this.quietWaiters.push(done);
-    });
+  private async untilUserQuiet(signal: AbortSignal): Promise<void> {
+    const deadline = Date.now() + HOLD_MAX_MS;
+    // re-check after every wake: the user may have stopped and started again before this resumed
+    while (this.turn.userSpeaking && !signal.aborted && Date.now() < deadline) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", done);
+          this.quietWaiters = this.quietWaiters.filter((w) => w !== done);
+          resolve();
+        };
+        const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
+        signal.addEventListener("abort", done, { once: true });
+        this.quietWaiters.push(done);
+      });
+    }
   }
 
   private cancelReply(utteranceId: number, reason: CancelReason): void {
@@ -1179,7 +1182,11 @@ export class Session {
           if (this.deps.config.voice) {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
-            if (!sentAudio) sayOnDevice(i, s);
+            if (!sentAudio) {
+              if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
+              if (signal.aborted) break;
+              sayOnDevice(i, s);
+            }
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
               // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
