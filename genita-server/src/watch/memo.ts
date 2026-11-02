@@ -130,6 +130,6 @@ export function buildQuestionContext(c: {
     return { instructions: out.join("\n"), images: [] };
   }
   if (c.frames.length) out.push(`The attached images are the latest screen frames, oldest first. For "what did they say", use the lines heard.`);
-  out.push("Answer the question itself first, only with what you saw or heard; don't add details you didn't see.");
+  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
   return { instructions: out.join("\n"), images: c.frames };
 }

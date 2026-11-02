@@ -177,6 +177,13 @@ react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 
 the user or companion talks or the video's dialogue is running. A question while sharing gets
 the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
 
+Measured 11/2 (`npm run watch-sim`, local server, real vendors; T5 clips played in real time, then asked as typed turns):
+T5 set 38/50 correct (T5 video-file baseline 42/50; same judge re-run: 37 vs 42 strict, 39 vs 45 tone-tolerant — most misses are
+where the generated video differs from its prompt, e.g. range hood vs "ceiling"); dialogue questions 7/7 on clips that have
+dialogue; question → first audio p50 2.73 s (max 4.47 s; T5 was 3.4 s to text without voice); memo call p50 ≈ 3.2 s.
+Reactions over a 250 s share: 3 (3.6 per 5 min), min gap 33 s, 0 rule violations, 2 with the laugh. Black screen: 5/5 answers
+say it can't see, 0 claim to see something.
+
 ## Lip source (`start.lip`)
 
 | mode | who | what the server sends |
