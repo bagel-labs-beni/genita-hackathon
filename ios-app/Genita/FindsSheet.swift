@@ -255,7 +255,7 @@ struct FindsSheet: View {
 
     private var mainLayer: some View {
         let full = finds.state == .full
-        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 396 : 344
+        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 412 : 344
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
@@ -468,7 +468,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 20 ? 196 : 150) : 132))
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
