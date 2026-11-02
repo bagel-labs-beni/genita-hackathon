@@ -63,9 +63,9 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(created.json.name, "Mira"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
-  await runner.run("u1"); // no FAL_KEY here → ends failed after the attempt cap
+  await runner.run("u1"); // no FAL_KEY here → Meta-only runtime: ready at once, clips off
   const prep = await call("GET", "/v1/companion/prep");
-  assert.equal(prep.json.status, "failed");
+  assert.equal(prep.json.status, "ready");
   assert.equal(prep.json.progress.total, 5);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
