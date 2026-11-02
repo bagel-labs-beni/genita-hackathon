@@ -13,7 +13,16 @@ import type { SparkRequest } from "../meta/spark.ts";
 import type { CompanionKind } from "./prompts.ts";
 import type { StyleCard } from "./importProfile.ts";
 
-export type VoiceOption = { id: string; name: string; blurb: string; tags: string };
+export type VoiceOption = {
+  id: string;
+  name: string;
+  blurb: string;
+  tags: string;
+  /** device voices (server TTS off): the app picks a system voice from these */
+  locale?: string;
+  gender?: "female" | "male" | "neutral";
+  style?: string;
+};
 
 export const DEFAULT_VOICES: VoiceOption[] = [
   { id: "7PbNGDB5sJCFnOZuMPNL", name: "Jin", blurb: "Calm, confident", tags: "male, young, american, confident (demo voice)" },
@@ -21,6 +30,21 @@ export const DEFAULT_VOICES: VoiceOption[] = [
   { id: "ZoiZ8fuDWInAcwPXaVeq", name: "Theo", blurb: "Easy, playful", tags: "male, young, american, casual, conversational" },
   { id: "WAhoMTNdLdMoq1j3wf3I", name: "Nova", blurb: "Soft, gentle", tags: "female, young, american, soft, smooth" },
 ];
+
+/**
+ * Server TTS off (GENITA_SERVER_TTS unset, the default): the device speaks with
+ * its own system voices, so V04 lists descriptors, not ElevenLabs ids. Same
+ * four cards (names, blurbs, order); the app maps each to the best installed
+ * voice for `locale` + `gender` (Premium/Enhanced first) and previews locally.
+ */
+export const DEVICE_VOICES: VoiceOption[] = [
+  { id: "device:en-US:m1", name: "Jin", blurb: "Calm, confident", tags: "male, young, american, confident", locale: "en-US", gender: "male", style: "calm" },
+  { id: "device:en-US:f1", name: "Mira", blurb: "Warm, steady", tags: "female, young, american, warm, conversational", locale: "en-US", gender: "female", style: "warm" },
+  { id: "device:en-US:m2", name: "Theo", blurb: "Easy, playful", tags: "male, young, american, casual, conversational", locale: "en-US", gender: "male", style: "playful" },
+  { id: "device:en-US:f2", name: "Nova", blurb: "Soft, gentle", tags: "female, young, american, soft, smooth", locale: "en-US", gender: "female", style: "soft" },
+];
+
+export const isDeviceVoice = (id: string) => id.startsWith("device:");
 
 export function voicesFromEnv(v: string | undefined): VoiceOption[] {
   if (!v) return DEFAULT_VOICES;
