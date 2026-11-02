@@ -37,10 +37,10 @@ struct ConversationView: View {
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
                         if call.cameraOn && sheet != .full {
-                            // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border
+                            // r01 CAM-H `.pip`: right 20, top 120, 96 × 128, 2 px light border; moves left while the sheet is half up (the rail rises into its place)
                             CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                 .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
-                                .position(x: full.size.width - 68, y: 184 + top)
+                                .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
                                 .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)").accessibilityIdentifier("cameraPip")
                         }
                         if !call.cameraOn { selfView.scaleEffect(sheet == .half || sheet == .rising ? 0.5 : 1)

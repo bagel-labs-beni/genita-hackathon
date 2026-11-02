@@ -149,7 +149,6 @@ struct FindsSheet: View {
                 peekLayer.opacity(finds.state == .peek ? 1 : 0)
                 mainLayer.opacity([.half, .full, .rising].contains(finds.state) ? 1 : 0)
                 if finds.newFind != nil, [.half, .full].contains(finds.state) { newFindBanner }
-                if finds.current?.reopened == true, finds.state == .half { talkCTA }
                 if let source = finds.browser, finds.state == .full { browserLayer(source) }
             }.animation(.fade, value: finds.state)
             grab
@@ -162,19 +161,6 @@ struct FindsSheet: View {
         .accessibilityLabel("Finds from this call")
         .accessibilityIdentifier("findsSheet")
         .accessibilityValue(finds.state.rawValue)
-    }
-
-    // r03 F2 `.fcta`: the one button on a card reopened from Finds
-    private var talkCTA: some View {
-        VStack(spacing: 0) { Button { finds.talkAboutThis(); talk?() } label: {
-            Text("Talk about this on a call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
-                .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
-        }
-        .buttonStyle(PressScale()).padding(.horizontal, 38).padding(.top, 8).accessibilityIdentifier("findTalk")
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity).frame(height: 468 - (468 - 34 - 50 - 8)).background(CallInk.sheet)
-        .padding(.top, 468 - 34 - 50 - 8).frame(maxHeight: .infinity, alignment: .top)
     }
 
     // r03 `.grab`: 96 × 44 target, 47 × 5 handle 12 from the top. One state per gesture.
@@ -298,10 +284,12 @@ struct FindsSheet: View {
                         Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
-                Button { if let card { finds.ask(Self.cta(card.kind)) } } label: {
-                    Text(card.map { Self.cta($0.kind) } ?? "").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
+                let reopened = finds.current?.reopened == true
+                // r03 F2 `.fcta`: on a card reopened from Finds the one button continues the call about it
+                Button { if reopened { finds.talkAboutThis(); talk?() } else if let card { finds.ask(Self.cta(card.kind)) } } label: {
+                    Text(reopened ? "Talk about this on a call" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
                         .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(PressScale()).accessibilityIdentifier("findCTA").accessibilitySortPriority(-10)
+                }.buttonStyle(PressScale()).accessibilityIdentifier(reopened ? "findTalk" : "findCTA").accessibilitySortPriority(-10)
             }
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
@@ -447,7 +435,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 96 : 132))
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 84 : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
