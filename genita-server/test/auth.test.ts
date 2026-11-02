@@ -291,6 +291,22 @@ test("WS: a garbage frame on a 4401-closing socket does not crash the server", a
   assert.equal((await call("GET", "/healthz")).status, 200, "server still up");
 });
 
+test("#294: malformed upgrade targets get 400 without ending the server", async (t) => {
+  const { call, base } = await boot(t);
+  const net = await import("node:net");
+  const { port } = new URL(base);
+  const sock = net.connect(Number(port), "127.0.0.1");
+  await new Promise<void>((resolve) => sock.once("connect", resolve));
+  const reply = new Promise<string>((resolve, reject) => {
+    sock.once("data", (data) => resolve(data.toString("utf8")));
+    sock.once("error", reject);
+  });
+  sock.write(`GET //[ HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`);
+  assert.match(await reply, /^HTTP\/1\.1 400 Bad Request\r?\n/);
+  sock.destroy();
+  assert.equal((await call("GET", "/healthz")).status, 200, "server stays up for subsequent calls");
+});
+
 test("WS: the session cap holds when several upgrades finish auth at the same time", async (t) => {
   const { base, apple, call, accounts } = await boot(t, { maxSessions: 1 });
   const tokens: string[] = [];

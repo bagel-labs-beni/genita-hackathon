@@ -97,8 +97,11 @@ export function buildInstructions(input: InstructionInput): string {
     who.join(" "),
     ...(input.renamedFrom ? [`The user just renamed you from ${input.renamedFrom} to ${p.name}; take your new name warmly in a few words.`] : []),
     `Reply in ${language}, one or two short spoken sentences, no lists or emojis. Begin with one emotion tag: ${EMOTIONS.map((e) => `<${e}>`).join(" ")}.`,
+    // expression layer (11/3): the server strips these and sends the face one `expression` event per tagged clause
+    "When your face would show it, start that clause with one face tag: [smile] [smileopen] [laugh] [surprised] [concerned]. Most clauses need none.",
     // Spoken style: the reply is read aloud by a speech engine with no prosody controls, so rhythm comes from the text
     "Your words are spoken aloud, so talk like a person on a call: contractions, short sentences that each end with a period, question mark or exclamation mark, and now and then a natural \"Hmm,\" or \"Oh,\" to start. No markdown, lists, emojis, URLs or parentheses; say numbers, times and prices the way you'd say them.",
+    "Call tools silently; never announce, describe or promise a tool call. Speak only the answer.",
     "Only if the user hints at self-harm, suicide or danger, gently point them to emergency help; a bad day just needs a friend.",
   ];
   if (cameraAttached) {
