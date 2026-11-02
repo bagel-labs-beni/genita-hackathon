@@ -259,13 +259,18 @@ class MmsEngine:
         return (np.clip(out, -1, 1) * 32767).astype("<i2").tobytes(), None, (time.perf_counter() - t0) * 1000, len(out) / OUT_SR * 1000
 
 
-def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, chunk_ms=1000):
-    """NDJSON lines: audio in <= chunk_ms pieces; each piece carries the characters that start in it
-    (times stay relative to the start of this request's audio, like ElevenLabs)."""
+def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, first_ms=300, chunk_ms=1000):
+    """NDJSON lines: a short first piece (first_ms, so playback can start after a few KB even over a slow
+    link), then <= chunk_ms pieces; each piece carries the characters that start in it (times stay
+    relative to the start of this request's audio, like ElevenLabs)."""
+    first = int(OUT_SR * first_ms / 1000) * 2
     step = int(OUT_SR * chunk_ms / 1000) * 2
-    n = max(1, (len(pcm) + step - 1) // step)
+    bounds = [0, min(len(pcm), first)]
+    while bounds[-1] < len(pcm):
+        bounds.append(min(len(pcm), bounds[-1] + step))
+    n = len(bounds) - 1
     for i in range(n):
-        a, b = i * step, min(len(pcm), (i + 1) * step)
+        a, b = bounds[i], bounds[i + 1]
         t0, t1 = a / 2 / OUT_SR, b / 2 / OUT_SR
         al = None
         if alignment:
