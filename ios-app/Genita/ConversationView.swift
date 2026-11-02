@@ -76,8 +76,9 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
-                        if !connecting, let chip = call.profileChip {
-                            ProfileChipView(text: chip).id(chip)
+                        // CC-1 wins over GK-1 (a "Noted: …" answers the question)
+                        if !connecting, let chip = call.profileChip ?? call.askingChip {
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : 184) + top)
                         }

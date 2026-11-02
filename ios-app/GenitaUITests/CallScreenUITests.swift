@@ -84,4 +84,29 @@ final class CallScreenUITests: XCTestCase {
         add(shot)
         XCTAssertTrue(chip.waitForNonExistence(timeout: 15), "and goes after its time")
     }
+
+    /// GK-1: `profile.asking` shows the soft "Getting to know you · {topic}" chip; the saved answer replaces it with
+    /// CC-1 "Noted: …".
+    func testProfileAskingChipThenNoted() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = [
+            "GENITA_REVIEW_STAGE": "conversation",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8789/v1/session",
+            "GENITA_PROFILE_CHIP": "asking",
+            "GENITA_ASKING_CHIP_MS": "20000",
+            "GENITA_PROFILE_CHIP_MS": "6000",
+            "GENITA_REVIEW_STILL": "1",
+        ]
+        app.launch()
+        let asking = app.descendants(matching: .any).matching(identifier: "askingChip").firstMatch
+        XCTAssertTrue(asking.waitForExistence(timeout: 20), "GK-1 shows")
+        XCTAssertTrue(asking.label.contains("Getting to know you · How chatty calls should be"))
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "call-S09-GK1-asking"; shot.lifetime = .keepAlways; add(shot)
+        let noted = app.descendants(matching: .any).matching(identifier: "profileChip").firstMatch
+        XCTAssertTrue(noted.waitForExistence(timeout: 10), "the answer is saved: CC-1")
+        XCTAssertTrue(noted.label.contains("Noted: quiet company"))
+        XCTAssertFalse(asking.exists, "the question chip goes once it's answered")
+        let shot2 = XCTAttachment(screenshot: app.screenshot()); shot2.name = "call-S09-CC1-noted"; shot2.lifetime = .keepAlways; add(shot2)
+    }
 }

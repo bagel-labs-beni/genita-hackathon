@@ -89,13 +89,18 @@ struct SavedSetup: Codable {
     var prep: PrepProgress?
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
-    /// D47 "How I see you" cards at I04. Transient: after a relaunch they're read again (`GET /v1/profile/story`).
+    /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
+    /// again (`GET /v1/profile/story`).
     var story: [StoryCard]?
+    /// import | skip — which opener (HISY-0 or S0) and copy the cards get
+    var storySource: String?
     var storyLoading = false
-    /// no story could be had: I04 falls back to the six rows as text
+    /// no story could be had: HISY-0 "Show me" goes straight to HISY-7
     var storyFailed = false
-    /// "Got it. I'll remember that." under a card the user just corrected, by card id
-    var storyAck: [String: String] = [:]
+    /// C3: the texts the last correction made new, by card id (drawn with the blue border)
+    var storyChanged: [String: [String]] = [:]
+    /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
+    var hisyPage = 0
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
@@ -205,7 +210,7 @@ struct SavedSetup: Codable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
-            story = nil; storyAck = [:]; storyFailed = false
+            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         }
         setup.accountId = id
     }
@@ -226,7 +231,7 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
-        story = nil; storyAck = [:]; storyFailed = false
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {

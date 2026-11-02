@@ -96,7 +96,7 @@ extension FindsModel {
             // D48 ③: the same recipe card with reason chips from the user's taste lines
             let withReasons = recipe.events.map { e -> ServerEvent in
                 guard case var .findCreated(c) = e else { return e }
-                c.card.reasons = [.init(text: "You said: no cilantro", source: "No cilantro."), .init(text: "Your taste: quick weeknight food", source: "Quick, simple weeknight cooking.")]
+                c.card.reasons = [.init(text: "Your taste: quick weeknight food", source: "Quick, simple weeknight cooking.", from: "profile"), .init(text: "You said: no cilantro", source: "no cilantro", from: "call")]
                 return .findCreated(c)
             }
             play([(recipe, withReasons)]); state = .half

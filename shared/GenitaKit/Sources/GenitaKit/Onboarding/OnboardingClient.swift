@@ -195,7 +195,9 @@ public final class OnboardingClient: @unchecked Sendable {
             style = try c.decodeIfPresent(StyleWire.self, forKey: .style)
             profile = try c.decodeIfPresent(String.self, forKey: .profile)
             // the story is extra: one the app can't read never fails the import (it's read again later)
-            story = (try? c.decodeIfPresent([StoryCard].self, forKey: .story)).flatMap { $0.isEmpty ? nil : StoryCard.ordered($0) }
+            // (one card it can't read is left out, not the whole story)
+            let cards = ((try? c.decodeIfPresent([Lenient<StoryCard>].self, forKey: .story)) ?? []).compactMap(\.value)
+            story = cards.isEmpty ? nil : StoryCard.ordered(cards)
         }
     }
 

@@ -69,7 +69,7 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertTrue(sheet(app).waitForExistence(timeout: 15))
         let chips = app.descendants(matching: .any)["findReasons"]
         XCTAssertTrue(chips.waitForExistence(timeout: 5), "reason chips on the recipe card")
-        XCTAssertEqual(chips.label, "Why this: You said: no cilantro, Your taste: quick weeknight food")
+        XCTAssertEqual(chips.label, "Why this: Your taste: quick weeknight food, You said: no cilantro")
         Thread.sleep(forTimeInterval: 1.2)
         capture(app, 21)
     }

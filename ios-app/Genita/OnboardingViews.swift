@@ -12,7 +12,9 @@ struct RootView: View {
                 case .welcome: ReferenceWelcomeView { model.go(.signIn) }
                 case .signIn: ReferenceSignInView(model: model)
                 case .consent: ConsentView(model: model)
-                case .name, .prompt, .paste, .preparing, .preferences, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
+                // D47 HISY v2: I03 / N3 → HISY-0 (S0) → cards → HISY-7 (the six I04 rows are still saved)
+                case .preferences: HISYView(model: model)
+                case .name, .prompt, .paste, .preparing, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
                 case .imageCheck: ImageCheckView(model: model)
                 case .companionName: CompanionNameView(model: model)
                 case .bringing: BringingView(model: model)

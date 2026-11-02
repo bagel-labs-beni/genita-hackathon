@@ -119,6 +119,9 @@ enum CallStop: Equatable {
     /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
     /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
     private(set) var profileChip: String?
+    /// GK-1 "Getting to know you · {topic}": the companion just asked this call's question (`profile.asking`).
+    /// A soft chip for `askingChipMs`, or until the answer is saved (CC-1 "Noted: …").
+    private(set) var askingChip: String?
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
@@ -161,6 +164,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var profileChipTask: Task<Void, Never>?
+    @ObservationIgnored private var askingChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
@@ -270,7 +274,7 @@ enum CallStop: Equatable {
 
     func end() {
         userEnded = true
-        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil
+        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
         voice.cancel()
@@ -621,11 +625,12 @@ enum CallStop: Equatable {
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
         case let .profileUpdated(p):
+            // CC-1 "Updated: …" / "Noted: …" (it answers the GK-1 question, so that chip goes)
+            askingChip = nil; askingChipTask?.cancel()
             showProfileChip(p.text)
+        case let .profileAsking(a):
+            showAskingChip(a.topic)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
-            break
-        case .profileUpdated, .profileAsking:
-            // lane 개인화 chips (CC-1, GK-1): drawn by the app PR (#195)
             break
         }
     }
@@ -655,6 +660,27 @@ enum CallStop: Equatable {
         if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
         #endif
         return 2500
+    }
+
+    /// GK-1 time on screen. Debug UI tests can change it (GENITA_ASKING_CHIP_MS).
+    static var askingChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_ASKING_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 6000
+    }
+
+    private func showAskingChip(_ raw: String) {
+        let topic = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else { return }
+        askingChip = "Getting to know you · " + String(topic.prefix(48))
+        askingChipTask?.cancel()
+        askingChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.askingChipMs))
+            guard !Task.isCancelled else { return }
+            self?.askingChip = nil
+        }
+        log.info("profile.asking chip")
     }
 
     private func showProfileChip(_ raw: String) {

@@ -159,6 +159,17 @@ import XCTest
         XCTAssertNil(call.profileChip, "an empty text shows nothing")
     }
 
+    /// GK-1: `profile.asking` sets the soft chip; the saved answer (`profile.updated` "Noted: …") clears it.
+    func testProfileAskingShowsTheSoftChipUntilTheAnswerIsSaved() {
+        let call = CallController()
+        call.handle(#"{"type":"profile.asking","topic":"How chatty calls should be"}"#)
+        XCTAssertEqual(call.askingChip, "Getting to know you · How chatty calls should be")
+        XCTAssertNil(call.profileChip)
+        call.handle(#"{"type":"profile.updated","text":"Noted: quiet company","fields":["communication"]}"#)
+        XCTAssertNil(call.askingChip)
+        XCTAssertEqual(call.profileChip, "Noted: quiet company")
+    }
+
     func testLipChangedReplacesTheReadyPlan() {
         let call = CallController()
         call.handle(#"{"type":"lip.changed","lip":{"requested":"peter","active":"peter","reason":null},"peter":{"bundleId":"genita-demo-native","pasteDy":12,"fps":25}}"#)
