@@ -207,6 +207,7 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
+    var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
@@ -222,7 +223,9 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            if textChatEnabled {
+                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
