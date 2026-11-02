@@ -93,6 +93,13 @@ public final class FaceDriver: ObservableObject {
         newestUtteranceId = nil
     }
 
+    /// Server `expression` (per clause, reply audio clock). Behind `FaceRenderer.expressionLayer`.
+    public func handle(expression tag: String, intensity: Double, startMs: Int, endMs: Int, utteranceId: Int) {
+        guard switchUtterance(utteranceId) else { return }
+        let r = renderer, e = FaceExpressionEvent(tag: tag, intensity: intensity, startMs: startMs, endMs: endMs)
+        queue.async { r.addExpression(e) }
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }
@@ -153,9 +160,10 @@ public final class FaceDriver: ObservableObject {
         let ms = currentUtteranceId == nil ? nil : playbackClock()
         let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
         let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
+        let ctx = ms.map { LipContext(audioMs: $0 + lookaheadMs, timeline: timeline) }
         let r = renderer, t = now()
         queue.async { [weak self] in
-            let image = r.render(at: t, lip: lip, ahead: ahead)
+            let image = r.render(at: t, lip: lip, ahead: ahead, lipContext: ctx)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rendering = false

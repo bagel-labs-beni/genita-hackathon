@@ -46,6 +46,9 @@ public final class FaceRenderer: @unchecked Sendable {
     public var useFlow = true
     /// Callers sample the lip timeline this far ahead so smoothing lands on the sound.
     public static let defaultLipLookaheadMs = 40.0
+    /// Expression layer (smile / laugh / surprised / concerned warps). Off until the server's
+    /// `expression` event ships; turn on for tests and the render tool.
+    nonisolated(unsafe) public static var expressionLayer = false
     /// Flow-morph working resolution relative to the output (1 = output pixels).
     nonisolated(unsafe) public static var flowDensity = 1.5   // 1 was soft on the lips (review 11/3); 2 costs ~35% more
     /// This face's lookahead (the flow map's `lookaheadMs`, else the default).
@@ -58,6 +61,8 @@ public final class FaceRenderer: @unchecked Sendable {
         let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
         return max(m.lookaheadMs ?? 0, hold)
     }
+    /// Expression events for the current reply (audio-clock ms). Ignored when the layer is off.
+    public func addExpression(_ e: FaceExpressionEvent) { lock.lock(); flowMorph?.expressionEvents.append(e); lock.unlock() }
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame.
     public func resetMouth() { lock.lock(); flowMorph?.reset(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
@@ -72,10 +77,15 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
+            motion.headGain = a.headGain; motion.nodGain = a.nodGain
+            motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth
+        }
         // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
         let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
         flowMorph = faceSet.flow.flatMap { d in
-            faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox) }
+            faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox,
+                                                         expressions: Self.expressionLayer) }
         }
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
@@ -168,7 +178,7 @@ public final class FaceRenderer: @unchecked Sendable {
     // MARK: drawing
 
     /// The frame as a Core Image graph with extent (0, 0, outputSize).
-    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CIImage {
+    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, context: LipContext? = nil) -> CIImage {
         let h = extent.height
         // 1. expression: running weighted average of the stills in the mix
         var img: CIImage = bases[.neutral]!
@@ -190,7 +200,7 @@ public final class FaceRenderer: @unchecked Sendable {
         let open = Double(min(1, max(0, lip.openness)))
         if useFlow, let fm = flowMorph {
             // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
-            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, at: t) }()
+            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, context: context, at: t) }()
             let r = fm.outputRect
             img = CIImage(cgImage: cg)
                 .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(cg.width), y: r.height / CGFloat(cg.height)))
@@ -224,7 +234,13 @@ public final class FaceRenderer: @unchecked Sendable {
                                      tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
-        let m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        // laugh: the head bobs with the "ha-ha" (4.5 Hz), 2.5 px at 960 high
+        if let lw = flowMorph?.lastLaugh, lw.w > 0.01 {
+            // bob plus a 4 px tilt back (v30)
+            let bob = (2.5 * pow(sin(2 * Double.pi * 4.5 * lw.ms / 1000), 2) - 4) * lw.w * Double(extent.height) / 960
+            m.head = m.head.concatenating(CGAffineTransform(translationX: 0, y: -CGFloat(bob)))
+        }
         let inv = fill.inverted()
         func inOutput(_ a: CGAffineTransform) -> CGAffineTransform { inv.concatenating(a).concatenating(fill) }
         let bodyT = inOutput(m.body), headT = inOutput(m.head)
@@ -242,8 +258,8 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// Rendered RGBA frame (sRGB).
-    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CGImage? {
-        context.createCGImage(image(at: t, lip: lip, ahead: ahead), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, lipContext: LipContext? = nil) -> CGImage? {
+        context.createCGImage(image(at: t, lip: lip, ahead: ahead, context: lipContext), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via
