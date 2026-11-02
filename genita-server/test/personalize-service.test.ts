@@ -249,8 +249,9 @@ test("Codex #3: a story written while the profile changed stays stale (the next 
   await first;
   await h.p.voiceCorrection("u1", "Actually I don't eat mushrooms anymore.");
   release();
-  await new Promise((r) => setTimeout(r, 30));
-  const stored = (await h.store.getStyle("u1"))!;
+  // wait for the write (file store; a fixed 30 ms flaked on a busy machine)
+  let stored = (await h.store.getStyle("u1"))!;
+  for (let i = 0; i < 100 && !stored.story; i++) { await new Promise((r) => setTimeout(r, 20)); stored = (await h.store.getStyle("u1"))!; }
   assert.ok(stored.story, "the story was saved");
   assert.ok((stored.story!.stale ?? []).includes("taste"), "but marked stale");
 });
@@ -287,4 +288,14 @@ test("Codex round 2: a slow earlier sheet correction can't undo a later one", as
   const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
   assert.ok(likes.includes("Dislikes cilantro, really."));
   assert.ok(!likes.includes("Loves cilantro."));
+});
+
+test("S1: noteShorter saves an observed line, never over an explicit one about the same thing", async (t) => {
+  const h = harness(() => null);
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  const r = await h.p.noteShorter("u1");
+  assert.equal(r!.text, "Updated: shorter replies");
+  const resp = (await h.store.getStyle("u1"))!.sections.response;
+  assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
 });

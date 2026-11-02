@@ -21,6 +21,7 @@
  * has no extra wait) or the stored card (skip users, corrections, stale cards).
  */
 import type { SparkRequest } from "../meta/spark.ts";
+import { SENSITIVE_RULE, isSensitiveDetail } from "./sensitive.ts";
 import { looksLikeInjection, redactSensitive, type EvidenceLabel, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import { shortTaste } from "./reasons.ts";
 
@@ -176,7 +177,7 @@ export function storyInstructions(only?: SparkStoryId[]): string {
     "promise: one short sentence starting \"So I'll\" for think and talk; \"\" for the others. evidence: the strongest evidence behind the card.",
     "Never name a personality type or trait label, never diagnose, never praise or flatter, never guess beyond the profile. If the profile has nothing for a card, return it with headline \"\", items [], tags [], help [].",
     "topics: for each still-to-confirm item, {item: copied exactly, topic: what to learn in 3-6 words (\"How chatty calls should be\"), sub: a short either/or question (\"Quiet company, or lots of talk?\")}.",
-    "Leave out names of people, places, employers, and anything about health, money, sexuality, religion or politics.",
+    `${SENSITIVE_RULE} Never show income, debt or finances; a "Budget:" line is a taste tag (e.g. "Under $100").`,
   ].join("\n");
 }
 
@@ -217,6 +218,7 @@ export function storyTextProblem(s: string): "label" | "flattery" | "too_long" |
   // case-sensitive: "INTJ", "ADD" are labels; "add detail" is not (11/3 eval: 3/8 talk promises were thrown away)
   if (LABEL_WORDS.test(s) || /\b(?:[IE][NS][TF][JP]|ADD)\b/.test(s)) return "label";
   if (FLATTERY.test(s)) return "flattery";
+  if (isSensitiveDetail(s)) return "unsafe";
   const sentences = s.split(/(?<=[.!?…])\s+/).filter((x) => x.trim()).length;
   if (sentences > 2 || s.length > 220) return "too_long";
   return null;
@@ -319,6 +321,7 @@ function fallbackCard(id: SparkStoryId, card: StyleCard): StoryCard | null {
 function tasteFallback(card: StyleCard, base: StoryCard): StoryCard {
   const tags: StoryTag[] = [];
   for (const f of card.sections.likes.filter((x) => x.label !== "suggested")) {
+    if (/^\s*budget:/i.test(f.text)) { const t = budgetTag(f.text); if (t) tags.push({ group: "style", text: t, dislike: false }); continue; }
     const text = shortTaste(f.text);
     if (!text || storyTextProblem(text)) continue;
     const dislike = /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(f.text);
@@ -351,6 +354,7 @@ export function skipTasteTags(card: StyleCard): StoryTag[] {
     let m: RegExpMatchArray | null;
     if ((m = f.text.match(/^Style:\s*(.+)$/i))) splitList(m[1]).forEach((x) => add("style", x, false));
     else if ((m = f.text.match(/^Food:\s*(.+)$/i))) splitList(m[1]).forEach((x) => add("food", x, false));
+    else if (/^\s*budget:/i.test(f.text)) add("style", budgetTag(f.text), false);
     else if ((m = f.text.match(/^Dislikes\s+(.+?)\s+clothes\.?$/i))) splitList(m[1]).forEach((x) => add("style", x, true));
     else if ((m = f.text.match(/^(?:Dislikes|Avoids)\s+(.+)$/i))) splitList(m[1]).forEach((x) => add("food", x, true));
     else {
@@ -360,6 +364,13 @@ export function skipTasteTags(card: StyleCard): StoryTag[] {
   }
   return tags;
 }
+/** "Budget: usually under $100 for clothes." → "Under $100" (a taste tag, Chelsea 11/3). */
+export const budgetTag = (t: string): string => {
+  // a price range only ("Under $100"); anything sensitive or not money-shaped is never shown (Codex round 6)
+  if (isSensitiveDetail(t)) return "";
+  const tag = cap(t.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim()).slice(0, 28);
+  return /[$€£₩¥]\s?\d|\d+\s?(?:dollars|usd|eur|euros|won|krw)\b/i.test(tag) && !/\d\s?k\b|salary|income/i.test(tag) && !storyTextProblem(tag) ? tag : "";
+};
 const isDislikeLine = (t: string) => /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(t);
 
 type RawItem = { text?: unknown; evidence?: unknown };
@@ -408,6 +419,10 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
       .map((t) => ({ group: (groups.includes(t?.group as string) ? t.group : "style") as StoryTag["group"], text: clean(t?.text, 40), dislike: t?.dislike === true }))
       .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && lineEvidence(t.text, card, id) !== null && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
       .slice(0, 14);
+    // a shopping budget the user gave is always on the card (Spark may leave it out)
+    const budget = card.sections.likes.find((x) => x.label !== "suggested" && /^\s*budget:/i.test(x.text));
+    const bt = budget ? budgetTag(budget.text) : "";
+    if (bt && !sc.tags.some((t) => t.text.toLowerCase() === bt.toLowerCase())) sc.tags.push({ group: "style", text: bt, dislike: false });
     if (!sc.tags.length) return null;
     if (!card.sections.likes.some((x) => x.label !== "suggested")) sc.note = NO_FAVORITES;
   }

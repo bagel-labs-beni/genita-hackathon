@@ -11,6 +11,7 @@
  * "You said" only for explicit lines; other labels read "Your taste".
  */
 import type { FindCard } from "../protocol.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 import { isDislike, type EvidenceLabel, type StyleCard } from "../prep/importProfile.ts";
 
 /** fromCall = said in this call (a voice correction) → grey "You said: …" chip */
@@ -83,7 +84,7 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   const want: Kind = card.kind === "recipe" ? "food" : card.kind === "outfit" || card.kind === ("product" as FindCard["kind"]) ? "style" : null;
   if (!want || !lines.length) return [];
   const text = cardText(card);
-  const mine = lines.filter((l) => kindOf(l.text) === want);
+  const mine = lines.filter((l) => kindOf(l.text) === want && !/^\s*budget:/i.test(l.text));
   const out: FindReason[] = [];
   const respected = (l: TasteLine) => !contentWords(shortTaste(l.text)).some((w) => text.includes(w));
   const echoed = (l: TasteLine) => contentWords(shortTaste(l.text)).some((w) => text.includes(w));
@@ -103,5 +104,34 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   const general = (l: TasteLine) => want === "style" || GENERAL_FOOD.test(l.text);
   push(likes.find(echoed) ?? likes.find(general), want === "style" ? "Your style" : "Your taste", "profile");
   if (out.length < 2) push(stored.find((l) => isDislike(l.text) && respected(l)), "Your taste", "profile");
+  // Knows-Me (Chelsea 11/3: a shopping price range is a taste): only when every priced product is within it
+  if (card.kind === ("product" as FindCard["kind"])) {
+    const b = lines.find((l) => /^\s*budget:/i.test(l.text));
+    const chip = b ? budgetChip(b.text, card) : null;
+    if (b && chip) {
+      if (out.length >= 2) out.pop();
+      out.push({ text: chip, source: b.text, from: b.fromCall ? "call" : "profile" });
+    }
+  }
   return out.slice(0, 2);
+}
+
+const CUR: Record<string, string> = { $: "USD", dollars: "USD", usd: "USD", "€": "EUR", eur: "EUR", euros: "EUR", "£": "GBP", "₩": "KRW", won: "KRW", krw: "KRW", "¥": "JPY" };
+/** "$89.00" → {amount 89, cur USD}; null when there's no amount or no currency. */
+const money = (t: string): { amount: number; cur: string } | null => {
+  const m = t.replace(/,/g, "").match(/([$€£₩¥])\s?(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s?(dollars|usd|eur|euros|won|krw)\b/i);
+  if (!m) return null;
+  return m[1] ? { amount: Number(m[2]), cur: CUR[m[1]] } : { amount: Number(m[3]), cur: CUR[m[4].toLowerCase()] };
+};
+
+/** "Budget: usually under $100 for clothes." → "Your budget: under $100" when every priced product fits (none priced → null). */
+export function budgetChip(line: string, card: FindCard): string | null {
+  const body = line.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim();
+  const max = money(body);
+  if (!body || max === null || isSensitiveDetail(line)) return null;
+  // every product priced, in the same currency, within it — else no claim (Codex round 6)
+  const products = (card as FindCard & { products?: Array<{ price?: string }> }).products ?? [];
+  const prices = products.map((p) => (p.price ? money(p.price) : null));
+  if (!prices.length || prices.some((p) => p === null || p.cur !== max.cur || p.amount > max.amount)) return null;
+  return `Your budget: ${body[0].toLowerCase()}${body.slice(1)}`.slice(0, 48);
 }

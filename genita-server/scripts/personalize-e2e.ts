@@ -28,7 +28,7 @@ const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/m
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 const args = process.argv.slice(2);
 const arg = (k: string, d: string) => args.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? d;
-const parts = new Set(arg("part", "story,voice,ask,reasons").split(","));
+const parts = new Set(arg("part", "story,voice,ask,reasons,knows").split(","));
 const config = { ...loadConfig(), serverTts: false, webSearch: false, speculate: false, sparkHedge: 1 };
 if (!config.metaKey) throw new Error("MODEL_API_KEY missing");
 const dir = mkdtempSync(join(tmpdir(), "personalize-e2e-"));
@@ -315,6 +315,42 @@ if (parts.has("reasons")) {
     console.error(`reasons ${c.user}: ${created?.card?.kind} ${JSON.stringify(created?.card?.reasons ?? [])}`);
   }
   report.reasons = { rows, with_chips: rows.filter((r) => (r.reasons as string[]).length > 0).length, n: rows.length };
+}
+
+if (parts.has("knows")) {
+  // Knows-Me Map: call 1 greeting nod + local time (no place named), forget / budget / income by voice, first-token cost
+  const seed = await store.getStyle("u-maya");
+  if (!seed) throw new Error("run --part=story first");
+  const greets: Record<string, unknown>[] = [];
+  for (let i = 0; i < 4; i++) {
+    const user = `u-greet-${i}`;
+    await store.putStyle(user, { ...seed, growth: undefined });
+    const sink = new Sink();
+    const session = new Session(`g-${i}`, sink, { config, openAsr: () => { throw new Error("mic off"); }, spark: (req, opts) => sparkStream(config.metaKey, req, opts), async *tts() {}, userId: user, personalize: p });
+    const t0 = ms();
+    await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human", traits: ["warm"] }, mic: false, tts: "device", user: { timeZone: "Asia/Seoul", name: "Summer" }, greetAfterMs: 0 }));
+    await sink.until(() => sink.json.some((m) => m.type === "reply"));
+    const firstDelta = sink.json.find((m) => m.type === "turn.metrics") as { firstTokenMs?: number } | undefined;
+    const text = String(sink.json.find((m) => m.type === "reply")!.text);
+    session.close();
+    greets.push({ text, ms: Math.round(ms() - t0), metrics: firstDelta ?? null, nods: /clean|minimal|simple|two or three|options|short/i.test(text), place: /seoul|korea|where you are/i.test(text) });
+    console.error(`greet ${i}: ${text}`);
+  }
+  await store.putStyle("u-k", { ...seed });
+  const lines = [
+    { say: "Forget that I said I listen to lo-fi.", want: (a: { removed: string[] }[]) => a.some((x) => x.removed.some((r) => /lo-fi/i.test(r))) },
+    { say: "I usually spend under 100 dollars on clothes.", want: (a: { text: string }[]) => a.some((x) => /^budget:/i.test(x.text)) },
+    { say: "Actually I make about 80k a year, and I'm paying off student loans.", want: (a: unknown[]) => a.length === 0 },
+  ];
+  const voice: Record<string, unknown>[] = [];
+  for (const l of lines) {
+    const r = await p.voiceCorrection("u-k", l.say, "Want me to find a jacket?");
+    const applied = r?.applied ?? [];
+    voice.push({ say: l.say, ok: l.want(applied as never), chips: r?.events.map((e) => e.text) ?? [], applied: applied.map((a) => `${a.field}: ${a.text}${a.removed.length ? ` (removed ${a.removed.join(" | ")})` : ""}`) });
+    console.error(`knows voice: ${l.say} → ${JSON.stringify(applied)}`);
+  }
+  const after = (await store.getStyle("u-k"))!;
+  report.knows = { greets, voice, budget_on_card: (await p.story("u-k", 10_000)).cards.find((c) => c.id === "taste")?.tags?.map((t) => t.text), no_income_stored: !JSON.stringify(after.sections).match(/80k|loan/i) };
 }
 
 report.failures = logs.filter(([e]) => e.endsWith("failed")).map(([e, d]) => ({ e, ...d }));

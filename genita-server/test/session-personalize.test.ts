@@ -34,7 +34,7 @@ class Client implements ClientSink {
   }
 }
 
-function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number; reply?: string } = {}) {
+function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number; reply?: string; longReply?: boolean } = {}) {
   const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
   const client = new Client();
   const sparkCalls: SparkRequest[] = [];
@@ -62,10 +62,16 @@ function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number; rep
   const deps: SessionDeps = {
     config,
     openAsr: () => asr,
-    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+    async *spark(req, opts): AsyncGenerator<SparkStreamEvent> {
       sparkCalls.push(req);
       log.push({ ev: "reply", at: Date.now() });
-      yield { type: "text", delta: p.reply ?? "<happy> Sure thing." };
+      if (p.longReply) {
+        // a long reply: the first sentence is out, the rest takes a while (the user talks over it)
+        yield { type: "text", delta: "<happy> So there are a few ways to look at this one. Let me walk you through all of them slowly. " };
+        await sleep(400);
+        if (opts?.signal?.aborted) return;
+        yield { type: "text", delta: "First, think about the timing. Second, the cost." };
+      } else yield { type: "text", delta: p.reply ?? "<happy> Sure thing." };
       yield { type: "done", responseId: "r", text: "", status: "completed" };
     },
     async *tts() {},
@@ -217,4 +223,59 @@ test("security #4: small talk doesn't use up the per-call correction budget", as
   await say(s, "Actually I don't like mushrooms anymore.", 14);
   await s.client.waitFor((m) => m.type === "profile.updated");
   s.session.close();
+});
+
+test("Knows-Me: the local time rides every turn; call 1's nod only the greeting", async () => {
+  const s = setup({ async startCall() { return { profile: "- Taste: Clean, minimal.", nod: "NOD-LINE", taste: [] }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { timeZone: "Asia/Seoul" }, greetAfterMs: 0 }));
+  await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply").length === 1);
+  await sleep(30);
+  await say(s, "Hi.", 2);
+  assert.match(s.sparkCalls[0].instructions!, /NOD-LINE/);
+  assert.doesNotMatch(s.sparkCalls[1].instructions!, /NOD-LINE/);
+  for (const c of s.sparkCalls) assert.match(c.instructions!, /for the user\. Use it only for timing/);
+  s.session.close();
+});
+
+test("S1: two long replies cut off → Updated: shorter replies, the next reply says it once; one cut is nothing", async () => {
+  let noted = 0;
+  const s = setup({ longReply: true, async noteShorter() { noted++; return { text: "Updated: shorter replies", fields: ["response"], profile: "- Short replies." }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  const cut = async (i: number) => {
+    await s.session.onClientText(JSON.stringify({ type: "text", text: `Question ${i}, tell me.` }));
+    await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply.delta").length >= i);
+    await sleep(60);
+  };
+  await cut(1);
+  await cut(2); // typing over reply 1 = cut 1
+  assert.equal(noted, 0);
+  await cut(3); // cut 2
+  const ev = await s.client.waitFor((m) => m.type === "profile.updated");
+  assert.deepEqual(ev, { type: "profile.updated", text: "Updated: shorter replies", fields: ["response"] });
+  assert.equal(noted, 1);
+  assert.match(s.sparkCalls[2].instructions!, /cut you off twice/);
+  await sleep(500);
+  await say(s, "Ok.", s.client.json.filter((m) => m.type === "reply").length + 1);
+  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /cut you off twice/, "said once");
+  s.session.close();
+});
+
+test("Codex round 6: short replies cut off don't count; 'forget' can empty the taste lines; long-answer profile skips S1", async () => {
+  let noted = 0;
+  const s = setup({ async noteShorter() { noted++; return { text: "Updated: shorter replies", fields: ["response"], profile: "x" }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  for (let i = 1; i <= 3; i++) { await s.session.onClientText(JSON.stringify({ type: "text", text: `Hey ${i} there.` })); await sleep(5); }
+  await sleep(100);
+  assert.equal(noted, 0, "'Sure thing.' is not a long reply");
+  s.session.close();
+
+  const l = setup({ longReply: true, async startCall() { return { profile: "- Response: Long, detailed answers please.", taste: [] }; }, async noteShorter() { noted++; return null; } });
+  await l.session.onClientText(JSON.stringify({ type: "start", persona }));
+  for (let i = 1; i <= 3; i++) {
+    await l.session.onClientText(JSON.stringify({ type: "text", text: `Question ${i}, tell me.` }));
+    await l.client.waitFor(() => l.client.json.filter((m) => m.type === "reply.delta").length >= i);
+    await sleep(60);
+  }
+  assert.ok(!l.sparkCalls.some((c) => /cut you off twice/.test(c.instructions!)));
+  l.session.close();
 });
