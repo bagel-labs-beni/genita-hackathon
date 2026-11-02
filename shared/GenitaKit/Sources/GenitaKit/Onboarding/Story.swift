@@ -130,11 +130,24 @@ extension OnboardingClient {
     public func correct(cardId: String, pick: String?, text: String?) async throws -> ProfileCorrection {
         var body: [String: Any] = ["cardId": cardId]
         if let pick, !pick.isEmpty { body["pick"] = pick }
-        let t = String((text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.correctionMaxLength))
+        let t = Self.correctionText(text ?? "")
         if !t.isEmpty { body["text"] = t }
         return try await auth.send("PATCH", "/v1/profile", json: body, timeout: 45)
     }
 
-    /// PATCH /v1/profile `text` limit.
+    /// PATCH /v1/profile `text` limit, counted like the server (`text.length`, UTF-16 units).
     public static let correctionMaxLength = 200
+
+    /// Trimmed and cut to `correctionMaxLength` UTF-16 units on a whole character (an emoji is 2 there).
+    public static func correctionText(_ raw: String, trim: Bool = true) -> String {
+        let trimmed = trim ? raw.trimmingCharacters(in: .whitespacesAndNewlines) : raw
+        guard trimmed.utf16.count > correctionMaxLength else { return trimmed }
+        var out = "", units = 0
+        for ch in trimmed {
+            let n = String(ch).utf16.count
+            if units + n > correctionMaxLength { break }
+            out.append(ch); units += n
+        }
+        return out
+    }
 }

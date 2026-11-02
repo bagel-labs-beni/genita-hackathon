@@ -16,13 +16,14 @@ struct StoryArea: View {
         Group {
             if let cards = model.story, !cards.isEmpty {
                 StoryDeck(model: model, cards: cards, width: width, height: height)
-            } else if model.storyFailed || !model.serverWired {
+            } else if !model.importing && (model.storyFailed || !model.serverWired) {
                 StoryFallback(text: model.styleText, width: width, height: height)
             } else {
                 StoryLoading(width: width, height: height)
             }
         }
-        .task { await model.loadStory() }
+        // again when a background import lands without a story (I03 "Continue in the background", then back to I04)
+        .task(id: model.importing) { await model.loadStory() }
     }
 }
 
@@ -78,6 +79,8 @@ struct StoryDeck: View {
     let height: CGFloat
     @State private var page: Int? = 0
     @State private var correcting: StoryCard?
+    /// cards whose content scrolls inside: a vertical swipe there scrolls, it doesn't page
+    @State private var scrolling: Set<String> = []
 
     private var index: Int { min(max(0, page ?? 0), cards.count - 1) }
 
@@ -86,7 +89,8 @@ struct StoryDeck: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 0) {
                     ForEach(Array(cards.enumerated()), id: \.element.id) { i, card in
-                        StoryCardView(card: card, number: i + 1, total: cards.count, ack: model.storyAck[card.id]) { correcting = card }
+                        StoryCardView(card: card, number: i + 1, total: cards.count, ack: model.storyAck[card.id],
+                                      scrolls: { on in if on { scrolling.insert(card.id) } else { scrolling.remove(card.id) } }) { correcting = card }
                             .frame(width: width, height: height - 20)
                             .contentShape(Rectangle())
                             .onTapGesture { go(i + 1) }
@@ -101,7 +105,7 @@ struct StoryDeck: View {
             // vertical swipes page too (up = next, down = back)
             .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { v in
                 let dx = v.translation.width, dy = v.translation.height
-                guard abs(dy) > abs(dx) * 1.3, abs(dy) > 40 else { return }
+                guard abs(dy) > abs(dx) * 1.3, abs(dy) > 40, !scrolling.contains(cards[index].id) else { return }
                 go(index + (dy < 0 ? 1 : -1))
             })
             dots
@@ -136,28 +140,22 @@ struct StoryCardView: View {
     let number: Int
     let total: Int
     var ack: String?
+    var scrolls: (Bool) -> Void = { _ in }
     var notMe: () -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             StoryCardSurface()
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(card.title).font(TypeStyle.body(15, .semibold)).foregroundStyle(CallInk.ink)
-                    Spacer(minLength: 8)
-                    Text("\(number) / \(total)").font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).monospacedDigit()
+                // fits → as is (a vertical swipe pages the deck); too tall → it scrolls inside, "That's not me" stays put
+                ViewThatFits(in: .vertical) {
+                    content.onAppear { scrolls(false) }
+                    ScrollView(.vertical, showsIndicators: true) { content }.scrollBounceBehavior(.basedOnSize).onAppear { scrolls(true) }
                 }
-                Text(card.observation).font(TypeStyle.title(23)).foregroundStyle(card.later ? CallInk.mute : CallInk.ink)
-                    .lineSpacing(3).minimumScaleFactor(0.8).fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 16).accessibilityIdentifier("storyObservation")
-                Text(card.promise).font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 10).accessibilityIdentifier("storyPromise")
-                if !card.later { EvidenceMark(label: card.evidence).padding(.top, 10) }
-                extras.padding(.top, 14)
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
                 if let ack {
                     Label(ack, systemImage: "checkmark.circle.fill").font(TypeStyle.body(14, .medium)).foregroundStyle(StoryInk.blueText)
-                        .labelStyle(.titleAndIcon).padding(.bottom, 6).accessibilityIdentifier("storyAck")
+                        .labelStyle(.titleAndIcon).padding(.top, 6).accessibilityIdentifier("storyAck")
                         .transition(.opacity)
                 }
                 Button(action: notMe) {
@@ -172,6 +170,23 @@ struct StoryCardView: View {
         .animation(.easeInOut(duration: 0.25), value: ack)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("storyCard-\(card.id)")
+    }
+
+    private var content: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(card.title).font(TypeStyle.body(15, .semibold)).foregroundStyle(CallInk.ink)
+                    Spacer(minLength: 8)
+                    Text("\(number) / \(total)").font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).monospacedDigit()
+                }
+                Text(card.observation).font(TypeStyle.title(23)).foregroundStyle(card.later ? CallInk.mute : CallInk.ink)
+                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 16).accessibilityIdentifier("storyObservation")
+                Text(card.promise).font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 10).accessibilityIdentifier("storyPromise")
+                if !card.later { EvidenceMark(label: card.evidence).padding(.top, 10) }
+                extras.padding(.top, 14)
+            }.frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder private var extras: some View {
@@ -298,13 +313,13 @@ struct StoryCorrectionSheet: View {
                 }
                 TextField("", text: $text, axis: .vertical).font(TypeStyle.body(15)).foregroundStyle(CallInk.ink).lineLimit(3...5)
                     .focused($typing).padding(.horizontal, 14).padding(.vertical, 12)
-                    .onChange(of: text) { _, t in if t.count > OnboardingClient.correctionMaxLength { text = String(t.prefix(OnboardingClient.correctionMaxLength)) }; error = nil }
+                    .onChange(of: text) { _, t in if t.utf16.count > OnboardingClient.correctionMaxLength { text = OnboardingClient.correctionText(t, trim: false) }; error = nil }
                     .accessibilityIdentifier("storyCorrectionText")
             }
             .background(.white, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(StoryInk.border, lineWidth: 1))
             .padding(.top, 16)
-            Text("\(text.count)/\(OnboardingClient.correctionMaxLength)").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 6)
+            Text("\(text.utf16.count)/\(OnboardingClient.correctionMaxLength)").font(TypeStyle.body(12)).foregroundStyle(CallInk.mute).frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 6)
             if let error {
                 Text(error).font(TypeStyle.body(13)).foregroundStyle(StoryInk.error).padding(.top, 4).accessibilityIdentifier("storyCorrectionError")
             }

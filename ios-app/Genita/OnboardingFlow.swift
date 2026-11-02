@@ -128,7 +128,9 @@ extension AppState {
         setup.styleRows = style.rows
         setup.styleProfile = style.profile
         setup.stylePartial = style.partial
-        if let cards = style.story, !cards.isEmpty { story = cards; storyFailed = false }
+        // a new import / N1–N3 answers: the old cards and acks are gone (nil → I04 reads the new story)
+        story = style.story?.isEmpty == false ? style.story : nil
+        storyAck = [:]; storyFailed = false
     }
 
     // MARK: I04 "How I see you" (D47)

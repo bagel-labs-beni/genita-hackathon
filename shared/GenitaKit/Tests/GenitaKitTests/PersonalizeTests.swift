@@ -121,6 +121,17 @@ final class PersonalizeStub: URLProtocol, @unchecked Sendable {
         #expect(body2["pick"] == nil && body2["text"] as? String == "shorter please")
     }
 
+    /// The server counts `text.length` (UTF-16): 101 emoji are 202 there, so the app cuts at 100.
+    @Test func correctionTextIsCappedInUTF16LikeTheServer() async throws {
+        #expect(OnboardingClient.correctionText(String(repeating: "😀", count: 101)).utf16.count == 200)
+        #expect(OnboardingClient.correctionText(String(repeating: "😀", count: 101)).count == 100)
+        #expect(OnboardingClient.correctionText("  hi  ") == "hi")
+        PersonalizeStub.handler = { _ in (400, Data()) }
+        _ = try? await client.correct(cardId: "talk", pick: nil, text: String(repeating: "😀", count: 150))
+        let body = try JSONSerialization.jsonObject(with: try #require(PersonalizeStub.seen.last?.httpBody)) as! [String: Any]
+        #expect((body["text"] as? String)?.utf16.count == 200)
+    }
+
     @Test func badCorrectionIsAServerError() async {
         PersonalizeStub.handler = { _ in (400, Data(#"{"error":"bad_correction"}"#.utf8)) }
         await #expect(throws: GenitaAuthError.self) { try await client.correct(cardId: "talk", pick: "Nope", text: nil) }

@@ -51,6 +51,9 @@ import UniformTypeIdentifiers
                             .frame(width: viewport.width, height: max(footerY - 24, (stage == .summary ? 680 : 704) + top + stretch + headingExtra(width: viewport.width)), alignment: .topLeading)
                     }.frame(height: max(1, footerY - 16)).scrollDismissesKeyboard(.interactively)
                         .scrollDisabled(stage == .prompt || stage == .preferences)
+                    // D47: the story deck sits beside the page's ScrollView, not in it (that one is scroll-disabled here
+                    // and `.scrollDisabled` would reach the deck's own paging and card scrolling)
+                    if stage == .preferences { storyArea(width: viewport.width, top: top + headingExtra(width: viewport.width), contentBottom: footerY - 24) }
                     if stage != .paste || keyboardTop == .greatestFiniteMagnitude { primary(width: viewport.width).frame(width: viewport.width - 77, height: 50).position(x: (viewport.width - 1) / 2, y: footerY + 25) }
                     if stage == .preparing {
                         Button { model.cancelImport() } label: {
@@ -222,14 +225,16 @@ import UniformTypeIdentifiers
             }
         }
     }
-    /// I04 → D47 "How I see you": the heading stays, the six-row card becomes the story deck (the rows are still saved).
+    /// I04 → D47 "How I see you": the heading stays, the six-row card becomes the story deck (`storyArea`, the rows are still saved).
     @ViewBuilder func storyContent(width: CGFloat, top: CGFloat, contentBottom: CGFloat) -> some View {
         if let sub = texts.first(where: { $0.id != title.id && $0.y > 150 && $0.y < 250 }) {
             DesignText(node: sub, text: model.setup.styleRows?.isEmpty == false && model.setup.response.isEmpty ? "From the answers you picked." : "From the reply you pasted.").designSlot(sub, width: width, top: top)
         }
+    }
+    func storyArea(width: CGFloat, top: CGFloat, contentBottom: CGFloat) -> some View {
         let cardTop: CGFloat = 240
         let cardHeight = max(320, contentBottom - cardTop - top - 24)
-        StoryArea(model: model, width: width - 62, height: cardHeight)
+        return StoryArea(model: model, width: width - 62, height: cardHeight)
             .frame(width: width - 62, height: cardHeight + 12, alignment: .top)
             .position(x: width / 2, y: cardTop + top + (cardHeight + 12) / 2)
     }
