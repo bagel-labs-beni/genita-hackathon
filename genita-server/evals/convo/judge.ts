@@ -36,6 +36,8 @@ export function judgePrompt(s: Scenario, transcript: string): string {
   const parts = [
     `SCENARIO: ${s.title}`,
     `Call number: ${s.callNumber}${s.gapHours != null ? `, ${s.gapHours}h since last call` : ""}`,
+    // the companion is given the user's name: saying it is not an invented fact (judge flagged "invents the name Summer" 11/3)
+    `User's name (given to the companion): ${s.user.name ?? "(none)"}`,
     `User profile:\n${s.user.profile ?? "(none)"}`,
     `Stored memories: ${JSON.stringify(s.memories ?? [])}`,
     `Episode chosen for the greeting: ${JSON.stringify(s.opening ?? null)}`,
