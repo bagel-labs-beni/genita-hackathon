@@ -174,3 +174,13 @@ test("faceflow.py lock line: SAM nose bottom when plausible, else upper lip − 
   assert.deepEqual(run("[0.45,0.40,0.55,0.484]"), [0.484, "sam"]);
   assert.equal(run("[0.45,0.30,0.55,0.35]")[1], "face-geometry", "a nose box far above the lip is ignored");
 });
+
+test("2D blink assets (character2d): BLINK.jpg / BLINKMASK.png are store-safe and served only when listed", () => {
+  assert.equal(flowAssetName("BLINK.jpg"), "flow_blink");
+  assert.equal(flowAssetName("BLINKMASK.png"), "flow_blinkmask");
+  const f = { ...FLOW, blink: { mode: "snap2d", image: "flow_blink", mask: "flow_blinkmask", frames: 3, rect: [0.3, 0.4, 0.7, 0.5] as [number, number, number, number] } };
+  assert.ok(flowAssets(f).has("flow_blink") && flowAssets(f).has("flow_blinkmask"));
+  assert.ok(!flowAssets(FLOW).has("flow_blink"));
+  const m = faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`);
+  assert.equal(m.flow!.blink!.image, "/f/flow_blink");
+});

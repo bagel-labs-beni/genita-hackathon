@@ -361,21 +361,23 @@ struct MacHomeView:View {
                 button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
                 pairingBlock
             case .here:
-                statusRow(paired ? "Paired with your iPhone" : handoff.server.connected ? "Signed in. Moves go through your account." : "No iPhone paired yet",live:paired || handoff.server.connected)
-                HStack(spacing:8) {
-                    button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() }.disabled(!handoff.canMoveToPhone).opacity(handoff.canMoveToPhone ? 1 : 0.4)
-                    button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() }.disabled(!paired).opacity(paired ? 1 : 0.4)
+                // MAC-4 (89:2). Only what works right now is shown — no greyed-out buttons (Chelsea 11/3).
+                statusRow(paired ? "Paired with your iPhone" : "Signed in on this Mac",live:true)
+                if handoff.canMoveToPhone || paired {
+                    HStack(spacing:8) {
+                        if handoff.canMoveToPhone { button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() } }
+                        if paired { button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() } }
+                    }
                 }
-                Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
-                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
-                if !paired { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable
+                if paired {
+                    Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
+                        .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                } else { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable (MAC-3's block)
             case .offline(let reason):
                 statusRow(reason,live:false)
                 button("Try again",filled:true,id:"macTryAgain") { Task { await MacCall.shared.refresh() } }
             }
-            // Not in the Figma frames: the old window's "Sign out" link, so an account can still be switched on the Mac.
-            Button("Sign out") { MacCall.shared.signOut() }
-                .buttonStyle(.plain).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).underline().accessibilityIdentifier("macSignOut")
+            // Sign out lives in the app menu (Genita ▸ Sign Out) and the call's Settings — not in this window (Figma).
         }
         .padding(.horizontal,32).padding(.top,32).padding(.bottom,28).frame(width:420,alignment:.topLeading)
         .background(MacSheetInk.sheet)
@@ -426,11 +428,11 @@ extension MacHandoff {
         // #118 / #121: the call window's cue and MAC-RS / MAC-LINK, from wire events (no server)
         let call=CallController.shared
         call.companionName="Mina"
-        for (name,results,state,review) in [("C01-mac-thinking",false,SheetState.idle,""),("MAC-RS-a",false,.searching,""),("MAC-RS-b",true,.full,""),("MAC-RS-half",true,.half,""),("MAC-LINK-prompt",true,.half,"link")] {
+        for (name,scene,state,review) in [("C01-mac-thinking",MacResultFixture.Scene.searching,SheetState.idle,""),("MAC-RS-a",.searching,.searching,""),("MAC-RS-a-why",.refining,.searching,""),("MAC-RS-b",.results,.full,""),("MAC-RS-half",.results,.half,""),("MAC-RS-failed",.failed,.searching,""),("MAC-LINK-prompt",.results,.half,"link")] {
             surface = .active;sharingStopped=false
             if let ready=try? ServerEvent.decode(#"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#) {call.handle(ready)}
             if let thinking=try? ServerEvent.decode(#"{"type":"state","state":"thinking"}"#) {call.handle(thinking)}
-            if state == .idle {call.finds.reset()} else {call.finds.load(recorded:MacResultFixture.events(results:results),frames:[]);call.finds.force(state)}
+            if state == .idle {call.finds.reset()} else {MacResultFixture.load(scene,into:call.finds,state:state)}
             let host=NSHostingView(rootView:MacConversationView(reviewOverride:review).frame(width:390,height:844))
             let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
             window.contentView=host;window.orderFront(nil)

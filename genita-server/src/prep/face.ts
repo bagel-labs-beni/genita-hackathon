@@ -99,6 +99,8 @@ export type FaceFlow = {
   lockSource: string;
   kind: string;
   map: Record<string, unknown>;
+  /** character2d: snap blink = paste `image` through `mask` inside `rect` (normalised) for `frames` frames */
+  blink?: { mode: string; image: string; mask: string; frames: number; rect: [number, number, number, number] };
   ms?: number;
 };
 
@@ -112,7 +114,7 @@ export type MediaApi = {
 /** Same nouns as classify.headPrompt. */
 const NOUN: Record<CompanionKind, string> = { human: "person", animal: "animal", character: "character" };
 
-export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose"): string {
+export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose" | "eyes"): string {
   return `the ${NOUN[kind]}'s ${part}`;
 }
 
@@ -493,6 +495,7 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) =>
         ),
         mask: flowUrl(s.flow.mask),
         neutralRoi: flowUrl(s.flow.neutralRoi),
+        ...(s.flow.blink ? { blink: { ...s.flow.blink, image: flowUrl(s.flow.blink.image), mask: flowUrl(s.flow.blink.mask) } } : {}),
       }
     : null;
   return { version: 1, size: s.size, faceBox: s.ref.face, mouthBox: s.ref.mouth, images, visemes, mouthKeys, flow, boxes, rejected, ms: s.ms };

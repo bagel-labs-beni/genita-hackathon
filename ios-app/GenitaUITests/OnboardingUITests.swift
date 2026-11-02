@@ -140,7 +140,7 @@ final class OnboardingUITests: XCTestCase {
         // Start talking lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 15)
-        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped Peter lips don't mark Mouth done")
+        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped lip step doesn't mark Mouth done")
         capture("PREP1-scene-done")
         // PREP-1e: the stub fails the face step at 7/13 (expressions done, mouth failed)
         XCTAssertTrue(app.buttons["prepRetry"].waitForExistence(timeout: 20), "PREP-1e Try again")
@@ -233,6 +233,60 @@ final class OnboardingUITests: XCTestCase {
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
         capture("I04-S")
+    }
+
+    private func launchToI01(_ app: XCUIApplication) {
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
+        app.launch()
+    }
+
+    /// I01 "Open ChatGPT": one tap copies the prompt ("Prompt copied"), opens the AI app, and coming back lands on I02
+    /// with the system paste button ready. Named so it runs before the tests that create a companion on the stub.
+    func testAOpenChatGPTCopiesThenReturnsToPaste() throws {
+        let app = XCUIApplication()
+        launchToI01(app)
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
+        app.buttons["openChatGPT"].tap()
+        XCTAssertTrue(element("promptCopiedToast").waitForExistence(timeout: 3), "Prompt copied")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
+        // leave the app (ChatGPT or its site opens; home makes sure) and come back
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 15))
+        app.activate()
+        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
+        XCTAssertTrue(element("responseInput").exists)
+        XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
+        let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
+    }
+
+    /// D01: people who skipped the import (N1–N3) start on Quick start (setUp resets the stub companion).
+    func testZSkipperGetsQuickAtD01() throws {
+        let app = XCUIApplication()
+        launchToI01(app)
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        let primary = app.buttons["primaryCTA"]
+        XCTAssertTrue(app.buttons["skipImport"].waitForExistence(timeout: 15)); app.buttons["skipImport"].tap()
+        XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("skipReplies").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5)); primary.tap()
+        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S"); primary.tap()
+        XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        if app.buttons["rightsAck"].exists { app.buttons["rightsAck"].tap() }   // V01 rights line (#197)
+        primary.tap()
+        XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
+        XCTAssertTrue(app.buttons["play1"].waitForExistence(timeout: 10)); app.buttons["play1"].tap()
+        expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"]); waitForExpectations(timeout: 15)
+        primary.tap()
+        let name = app.textFields["companionNameInput"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "value != %@ AND value != %@", "", "Name"), evaluatedWith: name); waitForExpectations(timeout: 10)
+        primary.tap()
+        let quick = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Quick start'")).firstMatch
+        XCTAssertTrue(quick.waitForExistence(timeout: 10), "D01")
+        XCTAssertTrue(quick.isSelected, "skippers start on Quick start")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-D01-quick-for-skippers"; shot.lifetime = .keepAlways; add(shot)
     }
 
     /// V04 with the voice service down or cold: the list is greyed, says "Voice preview is waking up", and the
