@@ -68,10 +68,10 @@ struct ReferenceSignInView: View {
             Button("Cancel", role: .cancel) { provider = nil }
         } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
         .onChange(of: legal) { _, doc in
-            // PRD v12 D16: Genita's own pages
+            // PRD v12 D16: Genita's own pages (live)
             guard let doc else { return }
             legal = nil
-            if let url = URL(string: doc == "Terms" ? "https://thebeni.ai/genita/terms" : "https://thebeni.ai/genita/privacy") { UIApplication.shared.open(url) }
+            if let url = URL(string: doc == "Terms" ? "https://bagel-labs-beni.github.io/genita-legal/terms/" : "https://bagel-labs-beni.github.io/genita-legal/privacy/") { UIApplication.shared.open(url) }
         }
     }
     func providerButton(_ name: String, width: CGFloat) -> some View {
@@ -93,7 +93,7 @@ struct ReferenceSignInView: View {
             defer { signingIn = false }
             do {
                 let r = try await AppleSignInFlow().signIn()
-                if r.me.consented { model.signedIn() } else { model.go(.consent) }
+                model.signedIn(userId: r.me.user.id, consented: r.me.consented)
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02
             } catch {
