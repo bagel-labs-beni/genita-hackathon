@@ -147,7 +147,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const kind = img && img.rec.userId === user ? img.rec.check.type : null;
       const r = await orderedVoices(d, user, kind);
       return send(res, 200, {
-        voices: r.voices.map((v) => ({ id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb}`, previewUrl: `/v1/companion/voices/${v.id}/preview` })),
+        voices: r.voices.map((v) => ({ id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${v.id}/preview` })),
         suggested: r.suggested,
         available: r.available,
         ms: r.ms,

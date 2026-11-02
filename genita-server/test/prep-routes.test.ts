@@ -59,7 +59,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
 
   const created = await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id });
   assert.equal(created.status, 201);
-  assert.equal(created.json.name, "Leo"); // card name = companion name
+  assert.equal(created.json.name, "Leah"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
   await runner.run("u1"); // no FAL_KEY here → Meta-only runtime: ready at once, clips off
@@ -71,7 +71,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   // no Meta key → Spark fails → deterministic persona fallback still answers
   const prefs = await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } });
   assert.equal(prefs.status, 200);
-  assert.equal(prefs.json.persona.name, "Leo");
+  assert.equal(prefs.json.persona.name, "Leah");
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
@@ -87,6 +87,6 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
-  assert.equal(after.json.persona.card.name, "Leo");
+  assert.equal(after.json.persona.card.name, "Leah");
   assert.equal(after.json.prep.status, "ready");
 });

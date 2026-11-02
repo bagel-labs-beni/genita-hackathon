@@ -15,7 +15,7 @@ import type { VoiceConfig } from "../src/config.ts";
 
 const sweep = { human: 72, animal: 16, character: 68 };
 
-test("voices: each look gets 4-6 curated Seamless speakers, recommended default first", () => {
+test("voices: each look gets 4-6 (4) curated Seamless speakers, recommended default first", () => {
   for (const kind of ["human", "animal", "character"] as const) {
     const list = voicesForKind(DEFAULT_VOICES, kind);
     assert.ok(list.length >= 4 && list.length <= 6, `${kind}: ${list.length}`);
@@ -27,6 +27,7 @@ test("voices: each look gets 4-6 curated Seamless speakers, recommended default 
   }
   assert.equal(new Set(DEFAULT_VOICES.map((v) => v.id)).size, DEFAULT_VOICES.length, "ids are unique across looks");
   assert.equal(voicesForKind(DEFAULT_VOICES, null)[0].id, "72", "unknown look → human list");
+  assert.deepEqual(voicesForKind(DEFAULT_VOICES, "human").map((v) => v.name), ["Tara", "Leah", "Leo", "Dan"], "names as in the Figma V04 frames");
   // GENITA_VOICES overrides have no look and show for every look
   assert.equal(voicesForKind([{ id: "a", name: "A", blurb: "", tags: "" }], "animal").length, 1);
 });

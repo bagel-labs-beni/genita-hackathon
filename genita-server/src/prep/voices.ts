@@ -16,28 +16,26 @@ export type VoiceOption = {
 };
 
 /**
- * Curated Seamless speakers per companion look (V04 lists 5 for the look the face check found).
+ * Curated Seamless speakers per companion look (V04 lists 4, as in the Figma frames, for the look the face check found).
  * Picked from the 11/2 speaker sweep (UTMOS, WER ~0 on English; results/speaker_sweep.json).
  * The first of each look is the recommended default: human 72, animal 16, character 68.
- * Names and tone words are ours (from pitch/range in the sweep), not Seamless metadata.
+ * Names and tone words follow the Figma V04 frames (Tara, Leah, Leo, Dan) and are ours, picked
+ * from pitch/range in the sweep, not Seamless metadata; nobody has auditioned each one yet.
  */
-const pick = (kind: CompanionKind, id: number, name: string, tone: string, tags: string): VoiceOption => ({ id: String(id), name, blurb: tone, tags, kind });
+const pick = (kind: CompanionKind, id: number, name: string, blurb: string, tags: string): VoiceOption => ({ id: String(id), name, blurb, tags, kind });
 export const DEFAULT_VOICES: VoiceOption[] = [
-  pick("human", 72, "Tara", "warm", "warm, steady, mid pitch"),
-  pick("human", 36, "Leo", "calm", "calm, low pitch, wide range"),
-  pick("human", 120, "Mia", "bright", "bright, light, even"),
-  pick("human", 24, "Sam", "steady", "steady, low pitch"),
-  pick("human", 196, "Nia", "easy", "easy, bright, even"),
-  pick("animal", 16, "Pip", "cheery", "cheery, mid-high, lively"),
-  pick("animal", 22, "Mochi", "soft", "soft, even, gentle"),
-  pick("animal", 34, "Juno", "lively", "lively, high, wide range"),
-  pick("animal", 56, "Fig", "gentle", "gentle, mid-high"),
-  pick("animal", 80, "Rue", "mellow", "mellow, mid pitch"),
-  pick("character", 68, "Nova", "bright", "bright, high, even"),
-  pick("character", 64, "Ivy", "sparkly", "sparkly, high, even"),
-  pick("character", 44, "Wren", "dreamy", "dreamy, soft, steady"),
-  pick("character", 0, "Coco", "playful", "playful, high, wide range"),
-  pick("character", 168, "Dot", "cheerful", "cheerful, mid-high"),
+  pick("human", 72, "Tara", "Warm, bright", "warm, bright, mid pitch"),
+  pick("human", 120, "Leah", "Soft, steady", "soft, steady, even"),
+  pick("human", 36, "Leo", "Calm, low", "calm, low pitch, wide range"),
+  pick("human", 24, "Dan", "Easygoing", "easygoing, low pitch"),
+  pick("animal", 16, "Pip", "Cheery, light", "cheery, mid-high, lively"),
+  pick("animal", 22, "Mochi", "Soft, gentle", "soft, even, gentle"),
+  pick("animal", 34, "Juno", "Lively, bright", "lively, high, wide range"),
+  pick("animal", 80, "Rue", "Mellow, easy", "mellow, mid pitch"),
+  pick("character", 68, "Nova", "Bright, clear", "bright, high, even"),
+  pick("character", 64, "Ivy", "Sparkly, light", "sparkly, high, even"),
+  pick("character", 44, "Wren", "Dreamy, soft", "dreamy, soft, steady"),
+  pick("character", 0, "Coco", "Playful, quick", "playful, high, wide range"),
 ];
 
 /** The voices V04 shows for a companion look, recommended default first (voices without a look show for all). */

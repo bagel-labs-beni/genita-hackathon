@@ -29,7 +29,7 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | call | body | answer |
 |---|---|---|
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
-| `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, label, previewUrl}], suggested, available}`: 5 curated Seamless speakers for the image's look (human/animal/character), recommended default first (72 / 16 / 68), `label` = "Tara · warm"; `available` = voice service answers /healthz (cached 15 s) |
+| `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, label, previewUrl}], suggested, available}`: 4 curated Seamless speakers for the image's look (human/animal/character), recommended default first (72 / 16 / 68), `label` = "Tara · warm"; `available` = voice service answers /healthz (cached 15 s) |
 | `GET /v1/companion/voices/{id}/preview` | | `audio/wav` from the Meta voice service, cached; `503 voice_unavailable` without it |
 | `PUT /v1/companion/voice` | `{voiceId}` | saves the V04 pick on the companion + persona card; `400 unknown_voice`, `404 no_companion` |
 | `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists` |
