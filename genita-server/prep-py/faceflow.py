@@ -44,12 +44,14 @@ def box(s):
 
 
 def lock_line(face, mouth, nose):
-    """Normalised y of the subnasale (nose base): SAM nose box bottom, else geometry from the mouth box."""
-    mh = mouth[3] - mouth[1]
-    est = mouth[1] - 0.9 * mh
-    if nose and mouth[1] - 0.12 * (face[3] - face[1]) < nose[3] < mouth[1] + 0.25 * mh:
-        return min(nose[3], mouth[1] - 0.2 * mh), 'sam'
-    return est, 'mouth-geometry'
+    """Normalised y of the subnasale (nose base): SAM nose box bottom, else the upper-lip top minus 6.5%
+    of the face height (T9 human, dog and clay: within 0.002 of the SAM / hand-measured nose base).
+    Never below the upper lip, never more than 12% of the face above it."""
+    fh = face[3] - face[1]
+    est = mouth[1] - 0.065 * fh
+    if nose and mouth[1] - 0.12 * fh < nose[3] < mouth[1]:
+        return float(nose[3]), 'sam'
+    return est, 'face-geometry'
 
 
 def build_mask(h, w, face, mouth, lock_y, kind, scale):
@@ -118,6 +120,8 @@ def main():
     gNr = cv2.cvtColor(cv2.resize(N[roiF], (rw, rh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
     fw_, fh_ = max(8, int(rw * FLOW_SCALE)), max(8, int(rh * FLOW_SCALE))
     to_size = np.array([RW / rw, RH / rh], np.float32)   # work px -> `size` px
+    # flow grid rows whose cell lies entirely above the lock line (cell j spans Y1 + [j, j+1] * RH / fh_)
+    lock_rows = max(0, int(np.floor((lock_y * H - Y1) / (RH / fh_))))
     files, diag, nbytes = {}, {}, 0
     mask_w3 = Mw[..., None]
     for spec in a.keys.split(','):
@@ -146,6 +150,7 @@ def main():
             f = dis.calc(src, dst, None)
             f = cv2.GaussianBlur(f, (0, 0), 2.0) * mask_w3      # zero outside the lower face and above the lock line
             f = cv2.resize(f, (fw_, fh_), interpolation=cv2.INTER_AREA) * to_size
+            f[:lock_rows] = 0                                  # exact lock: no grid row above the subnasale line moves
             b = f.astype('<f2').tobytes()
             open(os.path.join(a.out, f'{name}.{tag}.f16'), 'wb').write(b)
             nbytes += len(b); ent[tag] = f'{name}.{tag}.f16'

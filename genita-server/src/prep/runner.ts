@@ -5,7 +5,8 @@
 import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
-import { FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
+import { FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
+const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
@@ -285,6 +286,12 @@ export class PrepRunner {
           kind: c.type,
           image: (k) => d.store.getAsset(userId, companionId, k),
           put: (asset, bytes) => d.store.putAsset(userId, companionId, asset, bytes),
+          // subnasale line for the nose lock (SAM misses human noses at times; the script then estimates it)
+          nose: async () => {
+            const size = imageSize(scene!);
+            const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "nose"), signal);
+            return size && boxes[0] ? normBox(boxes[0], size) : null;
+          },
           log: (e, x) => d.log(e, { companion: companionId, ...x }),
           signal,
         });

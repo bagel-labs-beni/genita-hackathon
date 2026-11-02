@@ -85,7 +85,7 @@ export type MediaApi = {
 /** Same nouns as classify.headPrompt. */
 const NOUN: Record<CompanionKind, string> = { human: "person", animal: "animal", character: "character" };
 
-export function samPrompt(kind: CompanionKind, part: "face" | "mouth"): string {
+export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose"): string {
   return `the ${NOUN[kind]}'s ${part}`;
 }
 

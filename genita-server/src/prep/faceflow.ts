@@ -67,12 +67,15 @@ export type FaceflowInput = {
   image: (key: FaceKey) => Promise<Buffer | null>;
   put: (asset: string, bytes: Buffer) => Promise<void>;
   timeoutMs?: number;
+  /** nose box on the scene (SAM), normalised; null = the script estimates the subnasale line from the face box */
+  nose?: () => Promise<readonly [number, number, number, number] | null>;
   signal?: AbortSignal;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
 
 function run(cmd: string, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason ?? new Error("faceflow: aborted"));
     const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
@@ -85,7 +88,8 @@ function run(cmd: string, args: string[], timeoutMs: number, signal?: AbortSigna
     p.on("close", (code) => {
       clearTimeout(t);
       signal?.removeEventListener("abort", kill);
-      if (code === 0) resolve(out);
+      if (signal?.aborted) reject(signal.reason ?? new Error("faceflow: aborted"));
+      else if (code === 0) resolve(out);
       else reject(new Error(`faceflow: exit ${code}: ${err.trim().slice(-300)}`));
     });
   });
@@ -100,6 +104,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     const ext = extOf(o.scene);
     await writeFile(join(dir, `neutral.${ext}`), o.scene);
     for (const k of FLOW_KEYS) {
+      o.signal?.throwIfAborted();
       if (o.state.items[k]?.status !== "done") continue;
       const b = await o.image(k);
       if (!b) continue;
@@ -111,6 +116,9 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     // keys may differ in format from the scene: pass full paths
     const args = faceflowArgs({ dir, out, keys: [], ext, state: o.state, kind: o.kind });
     args[3] = keys.map((f) => `${f.split(".")[0]}=${join(dir, f)}`).join(",");
+    const nose = o.nose ? await o.nose().catch(() => null) : null;
+    if (nose) args.push("--nose", fmt(nose));
+    o.signal?.throwIfAborted();
     const stdout = await run(o.python, [o.script ?? FACEFLOW_SCRIPT, ...args], o.timeoutMs ?? FACEFLOW_TIMEOUT_MS, o.signal);
     const res = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { ok?: boolean };
     if (!res.ok) throw new Error("faceflow: no ok line");
@@ -125,7 +133,9 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);
-      if (a) await o.put(a, await readFile(join(out, file)));
+      if (!a) continue;
+      o.signal?.throwIfAborted();
+      await o.put(a, await readFile(join(out, file)));
     }
     const ms = Math.round(performance.now() - t0);
     const flow: FaceFlow = { ...raw, files, mask: rename(raw.mask), neutralRoi: rename(raw.neutralRoi), ms };

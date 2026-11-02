@@ -151,3 +151,26 @@ test("faceflow.py ships inside genita-server (the release tarball is genita-serv
   assert.match(FACEFLOW_SCRIPT, /genita-server\/prep-py\/faceflow\.py$/);
   assert.match(readFileSync(FACEFLOW_SCRIPT, "utf8"), /DISOpticalFlow_create/);
 });
+
+test("makeFaceFlow (codex P2): an abort before the script or during the uploads stores nothing more and rethrows", async () => {
+  const ac = new AbortController();
+  const put: string[] = [];
+  ac.abort(new Error("cancelled"));
+  await assert.rejects(
+    makeFaceFlow({ python: "/bin/sh", script: "/dev/null", scene: pngOf(8, 8), state: state(), kind: "human", image: async () => pngOf(8, 8), put: async (a) => void put.push(a), signal: ac.signal }),
+    /cancelled/,
+  );
+  assert.deepEqual(put, []);
+});
+
+test("faceflow.py lock line: SAM nose bottom when plausible, else upper lip − 6.5% of the face height (codex P2: thick lips)", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const run = (nose: string) =>
+    JSON.parse(execFileSync(py, ["-c", `import sys; sys.path.insert(0, ${JSON.stringify(FACEFLOW_SCRIPT.replace(/\/faceflow\.py$/, ""))}); import faceflow; print(__import__('json').dumps(faceflow.lock_line([0.2,0.25,0.8,0.62],[0.42,0.50,0.58,0.54],${nose})))`]).toString());
+  const [y0, src0] = run("None");
+  assert.equal(src0, "face-geometry");
+  assert.ok(Math.abs(y0 - (0.5 - 0.065 * 0.37)) < 1e-9);
+  assert.ok(y0 < 0.47 + 0.01 && y0 > 0.46, "above a nose base at 0.47–0.48 would be wrong for thick lips only if it came from the mouth height");
+  assert.deepEqual(run("[0.45,0.40,0.55,0.484]"), [0.484, "sam"]);
+  assert.equal(run("[0.45,0.30,0.55,0.35]")[1], "face-geometry", "a nose box far above the lip is ignored");
+});
