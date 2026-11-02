@@ -29,6 +29,10 @@ import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 export const PRODUCT_COUNT = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
 export const SEARCH_TITLE = "Finding 2 for your style…";
+/** The answer pill (card.say) is one line on both devices: ≤ 28 characters (#211). */
+export const PILL_MAX = 28;
+export const TWO_SAY = "Found two for you.";
+export const ONE_SAY = "Found one that fits.";
 
 /** The searching line's item label: whole words only, at most 16 characters ("Simple crewneck sweater" → "Simple crewneck"). */
 export function shortLabel(label: string, max = 16): string {
@@ -237,7 +241,7 @@ export function productPrompt(o: { question: string; recent: string[]; taste: st
 2. Open each candidate's own product page with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. Open ${PRODUCT_COUNT + 1} candidates so ${PRODUCT_COUNT} survive.
 3. Only if they named a day or a trip ("this weekend", "next week"), search once for the forecast${o.city ? ` in ${o.city}` : ""}.
 Be quick: at most 2 product searches, then open the pages.`,
-    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "one short spoken line under 10 words with the shared taste reason and no product names, e.g. Two options. Simple cuts, like you prefer."}`,
+    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "a spoken line of at most 28 characters with the shared taste reason and no product names, e.g. Two, both simple cuts."}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -421,7 +425,9 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const domains = [...new Set(products.map((p) => p.domain))];
   const one = products.length < PRODUCT_COUNT;
-  const say = one ? `I could only open one page that fits. Here it is.` : str(j?.say, 80) || "Two options that fit your style.";
+  // the status pill shows this line on one line (iPhone and Mac, ≤ 28 chars, #211); a longer model line is replaced
+  const modelSay = str(j?.say, 80);
+  const say = one ? ONE_SAY : modelSay && modelSay.length <= PILL_MAX ? modelSay : TWO_SAY;
   const card: FindCard = {
     id: ctx.findId,
     kind: "product",

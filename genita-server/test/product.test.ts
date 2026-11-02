@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, TWO_SAY, ONE_SAY, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { FindsRunner } from "../src/finds/runner.ts";
@@ -208,7 +208,7 @@ test("product pipeline: 2 opened product pages → card with price from the page
     ["Linen overshirt", P2, null, "Understated color", "Easy to layer"],
   ], "page price wins over the model's; no price when the page didn't show one");
   assert.deepEqual(card.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
-  assert.equal(card.say, "Two options. Simple cuts, like you prefer.");
+  assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
   assert.match(card.how[1], /^Searched the web · northline\.example\.com, fieldandco\.example\.com$/);
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
   assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
@@ -230,7 +230,7 @@ test("product pipeline: an invented URL and a category page are dropped; with on
   const { ctx } = ctxFor(v);
   const card = (await runProduct(ctx)).card!;
   assert.deepEqual(card.products!.map((p) => p.url), [P1]);
-  assert.equal(card.say, "I could only open one page that fits. Here it is.");
+  assert.equal(card.say, ONE_SAY);
   assert.match(card.status!, /^1 link/);
   assert.ok(card.how.some((h) => /Only one product page opened/.test(h)));
   assert.equal(card.products![0].price, undefined, "the page was read and had no price: the model's $70 is not used");
@@ -374,4 +374,8 @@ test("#199: on the Mac (new call, no search yet) 'match my style' refines the ja
   const fresh = new FindsRunner({ vendors: v, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: () => {}, announce: () => {}, log: () => {}, now: () => 0 });
   fresh.configure({ owner: "acct", memories: [] });
   assert.equal(fresh.onTurn({ text: "Can you make them match my style?", frames: [], utteranceId: 1, replyText: Promise.resolve(null), recent: [] }), null);
+});
+
+test("#211: pill strings are one-liners (≤ 28 chars): searching title, ack, answer", () => {
+  for (const s of [SEARCH_TITLE, TWO_SAY, ONE_SAY, "On it."]) assert.ok(s.length <= PILL_MAX, s);
 });
