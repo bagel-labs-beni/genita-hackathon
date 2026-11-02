@@ -83,7 +83,7 @@ type TtsReq = { voiceId: string; text: string; lang?: string; signal?: AbortSign
 
 type Timing = NonNullable<TtsChunk["timing"]>;
 
-function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: number; timing?: (text: string) => Timing | null; timingDelayMs?: number } = {}) {
+function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: number; timing?: (text: string) => Timing | null; timingDelayMs?: number; companionVoiceId?: () => Promise<string | null | undefined> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: TtsReq[] = [];
@@ -114,6 +114,7 @@ function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: numbe
       }
     },
     voicePrefetch: (s) => prefetched.push(s),
+    companionVoiceId: opts.companionVoiceId,
   });
   return { asr, client, session, calls, prefetched };
 }
@@ -350,6 +351,56 @@ test("voice timing: nothing for a cancelled utterance", async () => {
   const after = client.json.slice(client.json.indexOf(cancelled));
   assert.equal(after.filter((m) => m.type === "audio.timing" && m.utteranceId === cancelled.utteranceId).length, 0);
   session.close();
+});
+
+test("same presence: the account's saved companion voice wins over each device's start, so iPhone and Mac match", async () => {
+  // the iPhone sends its persona card (stale voice), the Mac sends start.voiceId; both end on the saved voice 17
+  const phone = setup({ companionVoiceId: async () => "17" });
+  await phone.session.onClientText(JSON.stringify({ type: "start", persona: { ...persona, kind: "human", voice: { id: "4" } }, mic: false }));
+  const mac = setup({ companionVoiceId: async () => "17" });
+  await mac.session.onClientText(JSON.stringify({ type: "start", persona: { ...persona, kind: "human" }, voiceId: "seamless:9", mic: false }));
+  assert.equal(phone.client.of("ready")[0].voiceId, "seamless:17");
+  assert.equal(mac.client.of("ready")[0].voiceId, "seamless:17");
+  assert.deepEqual(mac.prefetched, [17]);
+  phone.session.close(); mac.session.close();
+  // first audio of a reply uses that voice too
+  const s = setup({ companionVoiceId: async () => "17" });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:2", mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await s.client.waitFor((m) => m.type === "reply");
+  assert.ok(s.calls.length > 0 && s.calls.every((c) => c.voiceId === "seamless:17"), JSON.stringify(s.calls.map((c) => c.voiceId)));
+  s.session.close();
+});
+
+test("same presence: no companion, a store error or a slow store keeps the client's voice", async () => {
+  for (const companionVoiceId of [async () => null, async () => { throw new Error("db down"); }, () => new Promise<string>((r) => setTimeout(() => r("17"), 5_000))]) {
+    const a = setup({ companionVoiceId });
+    const t0 = Date.now();
+    await a.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:42", mic: false }));
+    assert.equal(a.client.of("ready")[0].voiceId, "seamless:42");
+    assert.ok(Date.now() - t0 < 2_500, "ready is never held past the wait");
+    a.session.close();
+  }
+});
+
+test("same presence: a turn that starts while the voice lookup is still out keeps one voice for the whole reply (Codex P2)", async () => {
+  // the lookup is slower than the user's first line: that reply and the call keep the client's voice
+  const s = setup({ companionVoiceId: () => new Promise((r) => setTimeout(() => r("17"), 200)), sparkText: "<happy> One. Two. Three." });
+  const started = s.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:2", mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await started;
+  await s.client.waitFor((m) => m.type === "reply");
+  const voices = new Set(s.calls.map((c) => c.voiceId));
+  assert.deepEqual([...voices], ["seamless:2"], "never two voices in one reply");
+  s.session.close();
+  // looked up as the session opens: a start sent a moment later doesn't wait for it
+  const q = setup({ companionVoiceId: () => new Promise((r) => setTimeout(() => r("17"), 150)) });
+  await sleep(200);
+  const t0 = Date.now();
+  await q.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:2", mic: false }));
+  assert.ok(Date.now() - t0 < 100);
+  assert.equal(q.client.of("ready")[0].voiceId, "seamless:17");
+  q.session.close();
 });
 
 // ---------- expression layer (11/3): one face per clause, timed on the reply's audio timeline ----------

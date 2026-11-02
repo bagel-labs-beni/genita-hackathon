@@ -17,7 +17,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
 import { buildMemoRequest, buildQuestionContext, parseMemoVerdict, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { echoNow, isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -69,11 +69,20 @@ const MAX_MEMO = 20;
 const LINES_KEEP_MS = 5 * 60_000;
 const MAX_LINES = 60;
 const QUESTION_LINES_MS = 90_000;
-const QUESTION_FRAMES = 4;
+/**
+ * Realtime (11/3): a turn sees the screen as it is now — the newest frame (≤1 s old while a video plays) plus
+ * one from ~2 s before for motion. Older context comes from the memo, which keeps up every few seconds.
+ * Two images instead of four keep the reply's first word near 2 s.
+ */
+const QUESTION_FRAMES = 2;
 const QUESTION_FRAME_SPACING_MS = 2_000;
+/** the running scene memo refreshes this often while the screen changes (was 12 s) */
+const MEMO_EVERY_MS = 5_000;
 const MEMO_FRAMES = 3;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
+/** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
+const ECHO_SETTLE_MS = 350;
 const BLANK_LINE = "<neutral> Hmm, that window shows up black to me. Some apps block screen capture, so I won't guess what's on it.";
 const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 /** Transcribe errors with "Ingress audio slower than real-time" when audio stops (11/2): pad silence */
@@ -97,6 +106,8 @@ export class WatchController {
   private labelsSeen: { label: string; at: number }[] = [];
   private pendingLabel: string | null = null;
   private dialogueActive = false;
+  /** the video's line in progress (partial transcript), for the echo check */
+  private openLine = "";
   private lastDialogueEndAt: number | null = null;
   private lineSinceMemo = false;
   private lastReactionAt: number | null = null;
@@ -211,6 +222,7 @@ export class WatchController {
     this.asr = null;
     this.frames = []; // never kept past the share
     this.dialogueActive = false;
+    this.openLine = "";
     this.pendingLabel = null;
     this.flushWaiters();
     this.setSpeaker(null);
@@ -253,6 +265,7 @@ export class WatchController {
     switch (e.type) {
       case "speechStart":
         this.dialogueActive = true;
+        this.openLine = "";
         if (this.speakerOffTimer) clearTimeout(this.speakerOffTimer);
         this.speakerOffTimer = null;
         return;
@@ -271,6 +284,7 @@ export class WatchController {
         const text = e.text.trim();
         const label = this.pendingLabel;
         this.pendingLabel = null;
+        this.openLine = "";
         if (text) {
           this.lines.push({ at: now, label, text: text.slice(0, 400) });
           this.lines = this.lines.filter((l) => now - l.at <= LINES_KEEP_MS).slice(-MAX_LINES);
@@ -287,6 +301,8 @@ export class WatchController {
         return;
       }
       case "partial":
+        if (this.dialogueActive) this.openLine = e.text.slice(0, 400);
+        this.flushWaiters();
         return;
     }
   }
@@ -319,7 +335,7 @@ export class WatchController {
     const newFrames = this.frames.some((f) => f.at > this.lastMemoAt);
     const due =
       (this.lineSinceMemo && since >= (this.deps.memoAfterLineMs ?? 4_000)) ||
-      ((newFrames || this.lineSinceMemo) && since >= (this.deps.memoEveryMs ?? 12_000));
+      ((newFrames || this.lineSinceMemo) && since >= (this.deps.memoEveryMs ?? MEMO_EVERY_MS));
     if (due) void this.runMemo();
     this.maybeSpeakBlank();
   }
@@ -434,24 +450,37 @@ export class WatchController {
 
   /**
    * Is this "user turn" really the video's sound in the mic? If the video is
-   * mid-line, wait (≤1.5 s) for that line before deciding.
+   * mid-line, its partial transcript decides within 350 ms; only a partial
+   * too short to tell waits (≤ 1.5 s) for the line.
    */
   async isEcho(userText: string): Promise<boolean> {
     if (!this.sharing) return false;
-    if (this.dialogueActive) {
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, ECHO_WAIT_MS);
-        this.lineWaiters.push(() => {
-          clearTimeout(t);
-          resolve();
-        });
-      });
+    const recent = () => this.lines.filter((l) => this.deps.now() - l.at <= ECHO_WINDOW_MS).map((l) => l.text);
+    const t0 = Date.now();
+    let settleUntil: number | null = null;
+    while (this.sharing && this.dialogueActive) {
+      const v = echoNow(userText, this.openLine);
+      if (v === "echo") return true;
+      // A mismatching partial may lag the mic by a word or two: keep re-checking its updates for 350 ms before
+      // the turn counts as the user's (Codex P2 ×2). A partial too short to tell waits up to the full 1.5 s.
+      const now = Date.now();
+      if (v === "user") settleUntil ??= now + ECHO_SETTLE_MS;
+      const until = Math.min(t0 + ECHO_WAIT_MS, settleUntil ?? Infinity);
+      if (until - now <= 0) break;
+      await this.nextSound(until - now);
     }
-    const now = this.deps.now();
-    return isVideoEcho(
-      userText,
-      this.lines.filter((l) => now - l.at <= ECHO_WINDOW_MS).map((l) => l.text),
-    );
+    return isVideoEcho(userText, recent());
+  }
+
+  /** Resolves on the video's next partial or finished line, or after `ms`. */
+  private nextSound(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms);
+      this.lineWaiters.push(() => {
+        clearTimeout(t);
+        resolve();
+      });
+    });
   }
 
   summary(): Record<string, unknown> {

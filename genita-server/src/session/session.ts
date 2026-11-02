@@ -13,6 +13,7 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
+import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
@@ -38,7 +39,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -93,6 +94,8 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
+  priorThread?: (revision: number) => ThreadState | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -101,7 +104,15 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /**
+   * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
+   * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
+   */
+  companionVoiceId?: () => Promise<string | null | undefined>;
 };
+
+/** A slow prep store never holds up `ready`: past this the client's voice stays. */
+const COMPANION_VOICE_WAIT_MS = 800;
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
@@ -241,6 +252,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** the account's saved companion voice (same presence), looked up as the socket opens */
+  private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -278,6 +291,8 @@ export class Session {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
+    // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
+    this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
@@ -292,6 +307,27 @@ export class Session {
   /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
   get hasStarted(): boolean {
     return this.started && !this.closed;
+  }
+
+  private pickVoice(id: string | undefined, kind: PersonaCard["kind"]): void {
+    this.voiceId = id ?? this.deps.config.defaultVoiceId;
+    const voice = this.deps.config.voice;
+    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
+    if (voice) this.voiceId = `seamless:${resolveSpeaker(id, kind, voice)}`;
+  }
+
+  /** The account's saved companion voice, or null (none, store error, or slower than COMPANION_VOICE_WAIT_MS). */
+  private async companionVoice(): Promise<string | null> {
+    if (!this.deps.companionVoiceId) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
+    try {
+      const lookup = this.deps.companionVoiceId;
+      const id = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
+      return typeof id === "string" && id.trim() ? id.trim().slice(0, 64) : null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -422,10 +458,7 @@ export class Session {
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
-    this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
-    const voice = this.deps.config.voice;
-    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
-    if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
+    this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "atlas" || v === "none" ? v : v === undefined ? d : "none");
     const mode = asLip(lip.mode, persona.kind === "human" ? "none" : "atlas");
@@ -483,6 +516,8 @@ export class Session {
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
           this.history = seed.slice(-MAX_HISTORY);
+          // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
+          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
@@ -499,6 +534,11 @@ export class Session {
       }
     }
     if (this.closed) return;
+    const owned = await this.ownedVoice;
+    if (this.closed) return;
+    // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
+    if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
+    else if (owned) this.log("voice.owned_late", {});
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
@@ -1026,6 +1066,11 @@ export class Session {
     return picked.map((m) => m.text);
   }
 
+  /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
+  threadInfo(): ThreadState | null {
+    return this.memoryCall?.threadState() ?? null;
+  }
+
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
     return this.history.map((h) => ({ ...h }));
@@ -1282,12 +1327,14 @@ export class Session {
     let sparkError: unknown = null;
     let emptyCause: string | null = null;
     let droppedOpener = false;
+    const narration = new NarrationJudge(!interpret && !self);
+    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null } = { first: null };
     let laughs = 0;
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text };
-    const pushSentences = (list: string[], keepOpener = false) => {
+    const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
@@ -1325,6 +1372,20 @@ export class Session {
       }
       waiter.wake?.();
     };
+    const applyNarration = ({ speak, dropped }: NarrationDecision) => {
+      for (const _raw of dropped) {
+        droppedOpener = true;
+        this.log("reply.narration_dropped", { utteranceId });
+      }
+      enqueueSentences(speak);
+    };
+    const pushSentences = (list: string[]) => {
+      for (const raw of list) {
+        const p = parseTaggedSentence(raw);
+        if (p.emotion) emotion = p.emotion;
+        applyNarration(narration.push(raw));
+      }
+    };
 
     // Producer: Spark stream → sentences
     const producer = (async () => {
@@ -1352,6 +1413,12 @@ export class Session {
                 gotText ||= !!ev.delta.trim();
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
+                if (!interpret) {
+                  // A tool may follow a sentence with no trailing space, or an unfinished clause.
+                  pushSentences(splitter.flush());
+                  // Completion alone is also tool evidence; some streams omit the start event.
+                  applyNarration(narration.onToolCall());
+                }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
               } else if (ev.type === "done") status = ev.status;
@@ -1362,15 +1429,16 @@ export class Session {
           }
           if (signal.aborted) return;
           pushSentences(splitter.flush());
+          applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!sentences.length && guarded.first) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
-            pushSentences(splitter.push(fb ?? guarded.first.raw).concat(splitter.flush()), true);
+            enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
-          if (sentences.length) { sparkError = attemptError; break; }
+          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
@@ -1385,6 +1453,7 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
+        if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
         waiter.wake?.();
       }
@@ -1544,7 +1613,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim()) {
+    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
