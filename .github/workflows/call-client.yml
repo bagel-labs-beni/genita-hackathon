@@ -54,6 +54,7 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/EmailSignInUITests \
             -only-testing:GenitaUITests/FindsTabUITests \
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
@@ -99,7 +100,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith("call-") or name.startswith("onb-"):
+                  if name.startswith(("call-", "auth-", "onb-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens
