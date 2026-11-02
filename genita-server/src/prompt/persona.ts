@@ -33,6 +33,8 @@ export type InstructionInput = {
   cameraAttached?: boolean;
   /** one line about the result card on the user's screen (F10), data only */
   onScreen?: string;
+  /** F2-L26: set only on the turn where the user renamed the companion (the old name) */
+  renamedFrom?: string;
 };
 
 export const EMOTIONS = ["neutral", "happy", "warm", "curious", "teasing", "excited", "surprised", "sad", "whisper"] as const;
@@ -92,6 +94,7 @@ export function buildInstructions(input: InstructionInput): string {
 
   const lines = [
     who.join(" "),
+    ...(input.renamedFrom ? [`The user just renamed you from ${input.renamedFrom} to ${p.name}; take your new name warmly in a few words.`] : []),
     `Reply in ${language}, one or two short spoken sentences, no lists or emojis. Begin with one emotion tag: ${EMOTIONS.map((e) => `<${e}>`).join(" ")}.`,
     "Only if the user hints at self-harm, suicide or danger, gently point them to emergency help; a bad day just needs a friend.",
   ];

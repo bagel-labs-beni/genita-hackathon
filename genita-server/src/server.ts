@@ -26,6 +26,7 @@ import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
+import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
@@ -209,7 +210,9 @@ export async function startServer(
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
       close: (code, reason) => ws.readyState === ws.OPEN && ws.close(code, reason),
     };
-    const session = new Session(id, sink, { ...deps, userId: who.userId });
+    // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
+    const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
+    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
