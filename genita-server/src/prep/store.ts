@@ -9,7 +9,7 @@
  * from it (F2-L9 "서버 재시작해도 이어짐").
  * Raw pasted import text is never passed in here.
  */
-import { mkdir, readFile, rename, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
@@ -73,6 +73,8 @@ export type CompanionRecord = {
   prep: PrepState;
   prefs?: { depth: Depth; answers: SetupAnswers; updatedAt: string };
   persona?: PersonaResult;
+  /** D41: the ready-made "Jin" a judge account starts with (src/prep/demo.ts); POST /v1/companion replaces it */
+  demo?: boolean;
 };
 
 export interface PrepStore {
@@ -87,6 +89,8 @@ export interface PrepStore {
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
   putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
+  /** removes the user's companion (and, on Postgres, its photo and users/<id>/companions/<cid>/ files); false if none */
+  deleteCompanion(userId: string): Promise<boolean>;
 }
 
 const safe = (id: string) => {
@@ -185,5 +189,13 @@ export class FileStore implements PrepStore {
   }
   putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
     return this.write(`voices/${safe(voiceId)}-${safe(version)}.mp3`, mp3);
+  }
+  async deleteCompanion(userId: string) {
+    const key = safe(userId);
+    await (this.locks.get(key) ?? Promise.resolve()).catch(() => {});
+    const c = await this.getCompanion(key);
+    if (!c) return false;
+    await rm(join(this.dir, `companions/${key}.json`), { force: true });
+    return true;
   }
 }

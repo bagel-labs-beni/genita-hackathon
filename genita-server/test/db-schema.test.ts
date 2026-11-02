@@ -25,12 +25,16 @@ const USER_TABLES = [
 test("F1-L4: migrations go up and down on an empty database", async () => {
   const db = await testDb(false);
   try {
-    assert.deepEqual(await migrateUp(db), ["001_init"]);
+    assert.deepEqual(await migrateUp(db), ["001_init", "002_companion_demo"]);
     assert.deepEqual(await migrateUp(db), [], "second up is a no-op");
     assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES);
+    const demoCol = () => db.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'companions' AND column_name = 'demo'").then((r) => r.rows.length);
+    assert.equal(await demoCol(), 1);
+    assert.deepEqual(await migrateDown(db), ["002_companion_demo"]);
+    assert.equal(await demoCol(), 0, "002 down drops only the demo column");
     assert.deepEqual(await migrateDown(db), ["001_init"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), []);
-    assert.deepEqual(await migrateUp(db), ["001_init"], "up again after down");
+    assert.deepEqual(await migrateUp(db), ["001_init", "002_companion_demo"], "up again after down");
   } finally {
     await db.close();
   }
