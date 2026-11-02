@@ -107,3 +107,22 @@ test("prewarm: one Meta socket per Spark lane, the voice only when asked, at mos
   prewarm({ voice: true });
   assert.deepEqual([count("meta"), count("voice")], [6, 2]);
 });
+
+test("prewarm (server wiring): only the Meta API and the configured Meta voice service are contacted", async () => {
+  const { defaultDeps } = await import("../src/server.ts");
+  const original = globalThis.fetch;
+  const hosts: string[] = [];
+  globalThis.fetch = (async (url: string | URL) => {
+    hosts.push(new URL(String(url)).host);
+    return new Response("{}");
+  }) as typeof fetch;
+  try {
+    const config = loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://voice.test", GENITA_VOICE_TOKEN: "t" });
+    defaultDeps(config, () => {}).prewarm!({ voice: true });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual([...new Set(hosts)].sort(), ["api.meta.ai", "voice.test"]);
+    assert.equal(hosts.filter((h) => h === "api.meta.ai").length, config.sparkHedge);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
