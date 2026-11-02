@@ -11,6 +11,16 @@ export const MEMORY_TOOLS: Tool[] = [
     parameters: { type: "object", properties: { fact: { type: "string", maxLength: 300 }, kind: { type: "string", enum: ["fact", "episode"] } }, required: ["fact", "kind"], additionalProperties: false } },
 ];
 
+/** reply-path budgets for memory reads (a store that is slower just means no memory this turn) */
+export const RECALL_BUDGET_MS = 400;
+export const OPENING_BUDGET_MS = 1000;
+export function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    (t as { unref?: () => void }).unref?.();
+    p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
+  });
+}
 export type SparkSource = (req: SparkRequest, signal: AbortSignal) => AsyncIterable<SparkStreamEvent>;
 /** Per-turn continuation, shared with a speculative hit and its empty-answer retry. */
 export type MemoryRetryState = { request?: SparkRequest };
@@ -40,7 +50,7 @@ export class MemoryCall {
     // A Forget notification can arrive while the persisted state read is in flight.
     this.revision = Math.max(this.revision, state.revision);
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
-    return greet ? this.service.opening(this.userId, this.sessionId) : null;
+    return greet ? within(this.service.opening(this.userId, this.sessionId), OPENING_BUDGET_MS, null) : null;
   }
   userMessage(): void { this.service.background(() => this.service.noteMessage(this.userId)); }
   assistantMessage(text: string): void {
@@ -79,7 +89,9 @@ export class MemoryCall {
   async *stream(req: SparkRequest, signal: AbortSignal, source: SparkSource, query: string, opening?: Memory | null, confirmed?: Promise<void>, retryState?: MemoryRetryState): AsyncGenerator<SparkStreamEvent> {
     let next = retryState?.request;
     if (!next) {
-      const items = opening === undefined ? await this.service.recall(this.userId, query).catch(() => []) : opening ? [opening] : [];
+      // Bounded (Codex 11/3): the per-user memory lock can sit behind a slow store write; the reply never waits
+      // more than RECALL_BUDGET_MS for memories — past it, it answers without them.
+      const items = opening === undefined ? await within(this.service.recall(this.userId, query).catch(() => []), RECALL_BUDGET_MS, [] as Memory[]) : opening ? [opening] : [];
       next = { ...req, instructions: (req.instructions ?? "") + memoryPrompt(items, opening !== undefined), tools: [...req.tools ?? [], ...MEMORY_TOOLS] };
     }
     for (let round = 0; round < 4; round++) {
