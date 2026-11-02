@@ -26,6 +26,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_SERVER_TTS=1`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_SERVER_TTS=1` (there, an omitted `start.tts` means `server`). |
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
+| 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 
 ```
 wss://<host>/v1/session
@@ -380,8 +381,8 @@ person → the speaker the call app's mic hears.
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
 decided in those tickets and will be added here as additive changes.
 
-`mouth {f, cell}` (F4-L20 atlas cells) ·
-`camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
+`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`camera`, `frame` (F5) · `claim`, `ownership` (handoff: now defined, see **Handoff**) ·
 `interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
 
 ## Finds (result cards, F10)
@@ -426,6 +427,52 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 | DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
 
 Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
+
+## Handoff (F6-L7): which device has the sound
+
+One conversation per user, stored as `conversations.active_device` (`iphone` | `mac` | null) and `epoch`.
+The rule is the apps' `ConversationOwnership`: **the highest epoch wins; equal epochs with different owners → the Mac**.
+Opening an app is never a claim. A lock, a background or a dropped socket never changes the owner.
+
+```
+wss://<host>/v1/presence?device=iphone|mac     (same auth as /v1/session; consent not needed)
+```
+
+The device is the JWT's device when it is `iphone`/`mac`, else `?device=`. Missing → close `4400`.
+The server pings every 2 s and drops a socket silent for 6 s, so the other device learns "not responding" (R1-E / R2-E) within ~6 s.
+
+| app → server | fields | meaning |
+|---|---|---|
+| `hello` | `owner?`, `epoch?`, `active?` | first message: the device's last known owner/epoch (`phone` accepted for `iphone`). A newer one than the server's (a tap made offline) is applied as a claim with trigger `sync`; otherwise nothing moves. |
+| `claim` | `epoch?`, `trigger?` | this device takes the conversation. Without `epoch` the server uses current + 1 (no-op if it already owns it). `trigger`: `button` \| `touch` \| `continue` \| `start` \| `move` |
+| `release` | `epoch?` | the owner gives it up → owner null until the next call `start` or claim |
+| `move.request` | `to` | Move to Mac / Move to iPhone. Relayed to the other device, which answers by sending `claim`. |
+| `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
+| `ping` | `t` | → `pong {t}` |
+
+| server → app | fields | meaning |
+|---|---|---|
+| `ownership` | `owner`, `epoch`, `conversationId`, `by`, `trigger` | the owner now (sent on connect, on hello, and to every device on each change). `trigger: "current"` = no change. |
+| `claim.result` | `accepted`, `owner`, `epoch` | answer to this device's `claim`/`release`. `accepted` = this device holds the sound now. |
+| `peer` | `device`, `online`, `active` | the other device's presence |
+| `move.request` | `from` | the other device asked to move here: claim if the app is in front |
+| `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
+| `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
+
+What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
+device's reply (`utterance.cancelled`, reason `client`), (2) writes the row, (3) sends `ownership` to every
+presence and call socket of the user, (4) opens the gate for the new owner after a 250 ms handover lease
+(the apps don't acknowledge the cancel, so the lease covers its delivery and the queue flush). Between (1) and (4) nobody plays.
+
+On `/v1/session?device=…` (the query opts in; a JWT's device alone does not gate an older build): `audio` events and binary frames go only to the owner; mic audio from a non-owner is dropped;
+captions and state still flow. A `start` on a conversation nobody holds (fresh, or released) makes that device the owner;
+a `start` while the other device owns it does not move it.
+
+HTTP (same auth): `GET /v1/handoff` → `{owner, epoch, conversationId}` ·
+`POST /v1/handoff/claim {device, epoch?, trigger?}` / `POST /v1/handoff/release {device, epoch?}` → `{accepted, owner, epoch, conversationId}` (400 on a bad device or an epoch outside int4).
+
+Events for analytics: the server logs `handoff.preparing {from, to, trigger}`, `handoff.committed {from, to, total_ms, trigger, epoch}`, `handoff.failed {reason}`.
+One process holds the gate (in memory); several server instances would need a shared channel for it.
 
 ## Errors
 
