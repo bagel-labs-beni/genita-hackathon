@@ -125,7 +125,9 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
     else if (s === "late") d.personalize.trackLate(userId, storyJob);
   }
-  await d.store.putStyle(userId, card);
+  // under the personalize lock: a call starting at the same moment can't write the old card back
+  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   return card;
 }

@@ -109,6 +109,8 @@ const SUGGEST_PER_MIN = 10;
 /** a profile correction is up to two Spark calls: same budget */
 const CORRECT_PER_MIN = 10;
 const STORY_WAIT_MAX_S = 10;
+/** a story read can start a Spark write: 20 reads per user per minute (the app polls at most 3 times) */
+const STORY_PER_MIN = 20;
 const PROFILE_JSON_LIMIT = 2048;
 
 export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
@@ -127,6 +129,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   };
   const allowSuggest = limiter(SUGGEST_PER_MIN);
   const allowCorrect = limiter(CORRECT_PER_MIN);
+  const allowStory = limiter(STORY_PER_MIN);
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
@@ -157,7 +160,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/import/skip") {
       const r = skipStyleCard(await readJson(req));
       if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
-      await d.store.putStyle(user, r.card);
+      if (d.personalize) await d.personalize.replaceStyle(user, r.card);
+      else await d.store.putStyle(user, r.card);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
       return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });
     }
@@ -308,6 +312,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "GET" && p === "/v1/profile/story") {
       if (!d.personalize) throw new PrepError(404, "not_found");
+      if (!allowStory(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
       const w = Number(url.searchParams.get("wait") ?? 0);
       const waitMs = Number.isFinite(w) ? Math.round(Math.min(STORY_WAIT_MAX_S, Math.max(0, w)) * 1000) : 0;
       return send(res, 200, await d.personalize.story(user, waitMs));

@@ -136,7 +136,7 @@ test("GK-1: a reply that asks the planned question → profile.asking; the next 
   await say(s, "Mostly I sleep in.", 2);
   const noted = await s.client.waitFor((m) => m.type === "profile.updated");
   assert.deepEqual(noted, { type: "profile.updated", text: "Noted: slow weekends", fields: ["interests"] });
-  assert.deepEqual(s.asks, [null, "Weekend rhythm"]);
+  assert.deepEqual(s.asks, ["Weekend rhythm"], "small talk never reaches the side-call; the line after the question does");
   assert.doesNotMatch(s.sparkCalls[1].instructions!, /learn about: Weekend rhythm/, "asked once; the line stops riding along");
   assert.equal(s.client.json.filter((m) => m.type === "profile.asking").length, 1);
   s.session.close();
@@ -193,4 +193,28 @@ test("finds: a recipe card carries reason chips from the user's taste lines (E)"
   const card = created.card as { reasons?: Array<{ text: string; source: string }> };
   assert.deepEqual(card.reasons?.map((r) => r.text), ["Your taste: Korean comfort food", "Your taste: no cilantro"]);
   session.close();
+});
+
+test("Codex #7/#8: a slow profile store never holds up ready; an empty stored profile clears the app's stale copy", async () => {
+  const slow = setup({ async startCall() { await sleep(5000); return null; } });
+  const t0 = Date.now();
+  await slow.session.onClientText(JSON.stringify({ type: "start", persona }));
+  assert.ok(slow.client.json.some((m) => m.type === "ready"));
+  assert.ok(Date.now() - t0 < 2500, `ready after ${Date.now() - t0} ms`);
+  slow.session.close();
+
+  const empty = setup({ async startCall() { return { profile: "", taste: [] }; } });
+  await empty.session.onClientText(JSON.stringify({ type: "start", persona, user: { profile: "- Taste: Loves cilantro." } }));
+  await say(empty, "Hi.", 1);
+  assert.doesNotMatch(empty.sparkCalls[0].instructions!, /Loves cilantro/);
+  empty.session.close();
+});
+
+test("security #4: small talk doesn't use up the per-call correction budget", async () => {
+  const s = setup();
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  for (let i = 1; i <= 13; i++) await say(s, `Turn ${i}, just chatting.`, i);
+  await say(s, "Actually I don't like mushrooms anymore.", 14);
+  await s.client.waitFor((m) => m.type === "profile.updated");
+  s.session.close();
 });

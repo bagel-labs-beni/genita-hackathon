@@ -30,6 +30,8 @@ export type ProfileUpdate = {
   answers?: string;
   /** short "Updated: …" chip text (calls) */
   chip?: string;
+  /** when the user said it (ISO). A line saved after this wins: the update can't remove or contradict it */
+  asOf?: string;
 };
 export type AppliedUpdate = { field: ProfileField; text: string; label: "explicit" | "observed"; removed: string[]; chip?: string };
 
@@ -46,9 +48,10 @@ export function contradicts(a: string, b: string): boolean {
   const wa = words(a);
   const wb = words(b);
   if (!wa.size || !wb.size) return false;
-  let shared = 0;
-  for (const w of wa) if (wb.has(w)) shared++;
-  return shared / Math.min(wa.size, wb.size) >= 0.5;
+  // the same thing: every content word of the shorter line is in the longer one ("spicy noodles" ≠ "spicy curry")
+  const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
 }
 
 function safe(text: string): boolean {
@@ -81,6 +84,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     // an observed pattern can't touch what the user said
     const target = (x: Finding) => x !== same && (replaces.has(norm(x.text)) || contradicts(x.text, text));
     if (u.label === "observed" && list.some((x) => x.label === "explicit" && target(x))) continue;
+    // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
+    if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;

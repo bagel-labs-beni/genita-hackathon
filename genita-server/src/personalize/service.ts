@@ -15,7 +15,7 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -28,6 +28,7 @@ export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCom
 export const ACK = "Got it. I'll remember that.";
 export const CORRECTION_TEXT_MAX = 200;
 const STORY_TIMEOUT_MS = 20_000;
+const STORY_BACKOFF_MS = 5 * 60_000;
 const CALL_SIDE_MAX = 12;
 
 export class PersonalizeError extends Error {
@@ -47,6 +48,8 @@ export class Personalize {
   private readonly now: () => Date;
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly storyJobs = new Map<string, Promise<void>>();
+  /** a failed story write isn't retried for STORY_BACKOFF_MS (each try is a Spark call) */
+  private readonly storyFailedAt = new Map<string, number>();
 
   constructor(o: { store: PersonalizeStore; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date }) {
     this.store = o.store;
@@ -73,8 +76,20 @@ export class Personalize {
     });
   }
 
-  private timed<T>(p: Promise<T>, ms = STORY_TIMEOUT_MS): Promise<T> {
-    return Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms).unref?.())]);
+  /** A Spark call that is aborted (not just abandoned) after `ms`. */
+  private timedJson<T>(req: Parameters<JsonFn>[0], ms = STORY_TIMEOUT_MS): Promise<T> {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error("timeout")), ms);
+    timer.unref?.();
+    return Promise.race([
+      this.json<T>(req, ac.signal),
+      new Promise<T>((_, rej) => ac.signal.addEventListener("abort", () => rej(new Error("timeout")), { once: true })),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
+  async replaceStyle(userId: string, card: StyleCard): Promise<void> {
+    await this.serial(userId, () => this.store.putStyle(userId, card));
   }
 
   // ───────────── D47 story ─────────────
@@ -83,7 +98,7 @@ export class Personalize {
   async storyFromText(text: string): Promise<{ raw: unknown; ms: number } | null> {
     const t0 = performance.now();
     try {
-      const raw = await this.timed(this.json<unknown>(buildStoryRequest({ text })));
+      const raw = await this.timedJson<unknown>(buildStoryRequest({ text }));
       return { raw, ms: Math.round(performance.now() - t0) };
     } catch (err) {
       this.log("story.failed", { from: "text", message: String(err).slice(0, 160) });
@@ -108,7 +123,13 @@ export class Personalize {
 
   /** Save a story that landed after the import response went out (only if the card has none yet). */
   async attachLate(userId: string, r: { raw: unknown; ms: number }): Promise<void> {
-    await this.update(userId, (card) => (card.story ? null : { card: this.withStory(card, r), out: true }));
+    await this.update(userId, (card) => {
+      if (card.story) return null;
+      const next = this.withStory(card, r);
+      // corrected before the paste's story landed: the story was written from the old text
+      if (card.updatedAt && next.story) next.story.stale = [...SPARK_STORY_IDS];
+      return { card: next, out: true };
+    });
   }
 
   private async summaryLines(userId: string): Promise<string[]> {
@@ -135,16 +156,23 @@ export class Personalize {
       if (!need) return;
       const only = need === "all" ? undefined : need;
       const t0 = performance.now();
-      const raw = await this.timed(this.json<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only)));
+      const basis = card.updatedAt;
+      const raw = await this.timedJson<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only));
       const ms = Math.round(performance.now() - t0);
       await this.update(userId, (latest) => {
         const prev = latest.story?.version === 2 ? latest.story : undefined;
         const { cards, topics } = toStory(raw as { cards?: unknown }, latest, prev?.cards, only);
-        this.log("story.written", { from: "card", cards: only?.length ?? cards.length - 1, ms });
-        return { card: { ...latest, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ms } }, out: true };
+        // the profile changed while Spark wrote: what was written may be old → stays stale, the next read rewrites it
+        const moved = latest.updatedAt !== basis;
+        const stale = moved ? [...new Set([...(prev?.stale ?? []), ...(only ?? SPARK_STORY_IDS)])] : (prev?.stale ?? []).filter((id) => !(only ?? SPARK_STORY_IDS).includes(id as SparkStoryId));
+        this.log("story.written", { from: "card", cards: only?.length ?? cards.length - 1, ms, moved });
+        return { card: { ...latest, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ms, ...(stale.length ? { stale } : {}) } }, out: true };
       });
     })()
-      .catch((err) => this.log("story.failed", { from: "card", message: String(err).slice(0, 160) }))
+      .catch((err) => {
+        this.storyFailedAt.set(userId, Date.now());
+        this.log("story.failed", { from: "card", message: String(err).slice(0, 160) });
+      })
       .finally(() => this.storyJobs.delete(userId));
     this.storyJobs.set(userId, job);
     return job;
@@ -159,7 +187,9 @@ export class Personalize {
   async story(userId: string, waitMs = 0): Promise<{ status: "ready" | "processing" | "none"; source?: StyleCard["source"]; cards: StoryCard[]; ms?: number }> {
     let card = await this.store.getStyle(userId);
     if (!card) return { status: "none", cards: [] };
-    if (Personalize.needsWrite(card)) {
+    const failed = this.storyFailedAt.get(userId);
+    const backoff = failed !== undefined && Date.now() - failed < STORY_BACKOFF_MS && !this.storyJobs.has(userId);
+    if (Personalize.needsWrite(card) && !backoff) {
       const job = this.writeStory(userId);
       if (waitMs > 0) await Promise.race([job, new Promise((r) => setTimeout(r, waitMs).unref?.())]);
       card = (await this.store.getStyle(userId)) ?? card;
@@ -218,21 +248,23 @@ export class Personalize {
           return { card: m.card, out: m.applied };
         })) ?? [])
       : [];
-    let latest = (await this.store.getStyle(userId))!;
+    let latest = await this.store.getStyle(userId);
+    if (!latest) throw new PersonalizeError(404, "no_profile");
     // C3: the same card comes back rewritten now; other cards the change touched are rewritten on the next read
     if (applied.length && cardId !== "unknowns") {
       try {
-        const raw = await this.timed(this.json<unknown>(buildStoryRequest({ card: latest }, [cardId])));
+        const basis = latest.updatedAt;
+        const raw = await this.timedJson<unknown>(buildStoryRequest({ card: latest }, [cardId]));
         await this.update(userId, (c) => {
           const prev = c.story?.version === 2 ? c.story : undefined;
           const { cards, topics } = toStory(raw as { cards?: unknown }, c, prev?.cards, prev ? [cardId] : undefined);
-          const stale = (prev?.stale ?? []).filter((id) => id !== cardId);
+          const stale = c.updatedAt !== basis ? (prev?.stale ?? []) : (prev?.stale ?? []).filter((id) => id !== cardId);
           return { card: { ...c, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ...(prev?.ms ? { ms: prev.ms } : {}), stale } }, out: true };
         });
       } catch (err) {
         this.log("story.failed", { from: "correction", message: String(err).slice(0, 160) });
       }
-      latest = (await this.store.getStyle(userId))!;
+      latest = (await this.store.getStyle(userId)) ?? latest;
     }
     const card = Personalize.current(latest).find((c) => c.id === cardId) ?? null;
     const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
@@ -249,7 +281,7 @@ export class Personalize {
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
       return {
         card: r.card,
-        out: { profile: styleProfileText(r.card, 2000, { toConfirm: false }) || undefined, ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
+        out: { profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
       };
     });
   }
@@ -263,9 +295,10 @@ export class Personalize {
     const card = await this.store.getStyle(userId);
     if (!card) return null;
     const t0 = performance.now();
+    const asOf = this.now().toISOString();
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
-    const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)];
+    const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)].map((u) => ({ ...u, asOf }));
     if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return null; }
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
@@ -284,14 +317,15 @@ export class Personalize {
   }
 
   /** After a call: grow the profile. Returns how many updates were applied. */
-  async endCall(userId: string, turns: CallTurn[], asked: string | null): Promise<number> {
+  async endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
     const userTurns = turns.filter((t) => t.role === "user" && t.text.trim());
     if (userTurns.length < 2) return 0;
     const card = await this.store.getStyle(userId);
     if (!card) return 0;
     const t0 = performance.now();
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCallExtractRequest(card, turns, asked));
-    const updates: ProfileUpdate[] = toCallUpdates(raw, asked);
+    const asOf = startedAt ?? new Date(this.now().getTime() - 60 * 60_000).toISOString();
+    const updates: ProfileUpdate[] = toCallUpdates(raw, asked).map((u) => ({ ...u, asOf }));
     const n = (await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       const answered = m.applied.length && asked && updates.some((u) => u.answers === asked);

@@ -322,3 +322,26 @@ test("label check is not fooled by everyday words (\"add detail\")", () => {
   assert.equal(storyTextProblem("You might have ADD."), "label");
   assert.equal(storyTextProblem("Classic INFP energy."), "label");
 });
+
+// ---------- Codex review 11/3 ----------
+
+test("Codex #4: different things that share a word are not a contradiction", () => {
+  const card = rawCard({ likes: [f("Dislikes spicy noodles.")] });
+  const r = mergeUpdates(card, [{ field: "likes", text: "Loves spicy curry.", replaces: [], label: "explicit" }], "2026-11-03T01:00:00Z");
+  assert.deepEqual(r.card.sections.likes.map((x) => x.text), ["Loves spicy curry.", "Dislikes spicy noodles."]);
+});
+
+test("Codex #1: a late call analysis can't undo a correction saved after the call started", () => {
+  const card = rawCard({ likes: [{ text: "Dislikes cilantro.", label: "explicit", scope: "any", at: "2026-11-03T02:00:00Z" }] });
+  const r = mergeUpdates(card, [{ field: "likes", text: "Loves cilantro.", replaces: ["Dislikes cilantro."], label: "explicit", asOf: "2026-11-03T01:00:00Z" }], "2026-11-03T03:00:00Z");
+  assert.deepEqual(r.card.sections.likes.map((x) => x.text), ["Dislikes cilantro."]);
+  const fresh = mergeUpdates(card, [{ field: "likes", text: "Loves cilantro.", replaces: ["Dislikes cilantro."], label: "explicit", asOf: "2026-11-03T02:30:00Z" }], "2026-11-03T03:00:00Z");
+  assert.deepEqual(fresh.card.sections.likes.map((x) => x.text), ["Loves cilantro."]);
+});
+
+test("Codex #5: a line that only echoes a suggestion is not shown, and evidence follows the line it echoes", () => {
+  const card = rawCard({ communication: [f("Warm, direct and informal.")], response: [f("Long, detailed answers.", "suggested"), f("Quick replies in the morning.", "observed")] });
+  const { cards } = toStory({ cards: [sc("talk", { headline: "Warm and direct.", items: [{ text: "You like long, detailed answers.", evidence: "explicit" }, { text: "You want it warm and direct.", evidence: "explicit" }, { text: "Mornings, you want quick replies.", evidence: "explicit" }] })], topics: [] }, card);
+  const talk = cards.find((c) => c.id === "talk")!;
+  assert.deepEqual(talk.items.map((i) => [i.text, i.evidence]), [["You want it warm and direct.", "explicit"], ["Mornings, you want quick replies.", "observed"]]);
+});

@@ -44,6 +44,7 @@ import { detectRename } from "./rename.ts";
 import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
+import { mightBeCorrection } from "../personalize/corrections.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 
@@ -106,8 +107,10 @@ export type SessionDeps = {
 export type SessionPersonalize = {
   startCall(userId: string): Promise<CallStart | null>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
-  endCall(userId: string, turns: CallTurn[], asked: string | null): Promise<number>;
+  endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
 };
+/** the call starts with the app's profile if the store takes longer than this */
+const STARTCALL_TIMEOUT_MS = 1500;
 /** at most this many correction checks per call, one at a time */
 const MAX_CORRECTION_CHECKS = 12;
 
@@ -249,6 +252,7 @@ export class Session {
   /** the companion just asked this call's question: the next user line is checked for the answer */
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
+  private callStartedAt: string | null = null;
   private taste: TasteLine[] = [];
   private correcting: AbortController | null = null;
   private correctionChecks = 0;
@@ -434,8 +438,14 @@ export class Session {
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
-        const p = await this.deps.personalize.startCall(this.deps.userId);
-        if (p?.profile) this.user = { ...this.user, profile: p.profile };
+        // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
+        const p = await Promise.race([
+          this.deps.personalize.startCall(this.deps.userId),
+          new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
+        ]);
+        this.callStartedAt = new Date().toISOString();
+        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
+        if (p) this.user = { ...this.user, profile: p.profile || undefined };
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
@@ -655,7 +665,7 @@ export class Session {
     // lane 개인화: the call's turns grow the profile (not after an account delete)
     if (this.deps.personalize && this.deps.userId && reason !== "account_deleted" && this.userTurns > 0) {
       const turns: CallTurn[] = this.history.map((h) => ({ role: h.role, text: h.text }));
-      void this.deps.personalize.endCall(this.deps.userId, turns, this.ask?.item ?? null).then(
+      void this.deps.personalize.endCall(this.deps.userId, turns, this.ask?.item ?? null, this.callStartedAt ?? undefined).then(
         (n) => this.log("profile.grown", { applied: n }),
         (err) => this.log("profile.grow_failed", { message: String(err).slice(0, 120) }),
       );
@@ -860,7 +870,8 @@ export class Session {
     const userId = this.deps.userId;
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
-    if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS) return;
+    // only lines that will reach Spark count toward the per-call budget
+    if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
     const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
     const abort = new AbortController();
     this.correcting = abort;
