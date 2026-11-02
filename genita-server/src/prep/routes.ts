@@ -7,6 +7,7 @@
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
  *   GET  /v1/companion/voices?imageId=      F2-L8  4–6 curated voices for the look, recommended first; available = voice service up
  *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached; device speech if voice service is unset)
+ *   PUT  /v1/companion/voice {voiceId}      V04: the picked voice is saved on the companion (404 no companion, 400 unknown_voice)
  *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
  *   GET  /v1/companion                      companion + prep + persona
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, emotionVideos}
@@ -158,6 +159,20 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const wav = await voicePreview(d, pv[1]);
       res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length, "cache-control": "public, max-age=86400" });
       return void res.end(wav);
+    }
+
+    if (m === "PUT" && p === "/v1/companion/voice") {
+      const b = await readJson(req);
+      const voice = typeof b.voiceId === "string" ? d.voices.find((v) => v.id === b.voiceId) : undefined;
+      if (!voice) throw new PrepError(400, "unknown_voice");
+      const c = await d.store.patchCompanion(user, (x) => ({
+        ...x,
+        voiceId: voice.id,
+        persona: x.persona ? { ...x.persona, card: { ...x.persona.card, voice: { id: voice.id } } } : x.persona,
+      }));
+      if (!c) throw new PrepError(404, "no_companion");
+      d.log("voice.selected", { voice_id: voice.id });
+      return send(res, 200, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "POST" && p === "/v1/companion") {

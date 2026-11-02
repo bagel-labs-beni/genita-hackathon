@@ -75,6 +75,14 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
+  // V04 save: PUT /v1/companion/voice changes the companion and the persona card, rejects ids outside the list
+  assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: "nope" })).json.error, "unknown_voice");
+  assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: DEFAULT_VOICES[2].id }, "nobody")).json.error, "no_companion");
+  const picked = await call("PUT", "/v1/companion/voice", { voiceId: DEFAULT_VOICES[2].id });
+  assert.equal(picked.status, 200);
+  assert.equal(picked.json.voiceId, DEFAULT_VOICES[2].id);
+  assert.equal((await call("GET", "/v1/companion")).json.session.voiceId, DEFAULT_VOICES[2].id);
+  assert.equal(((await store.getCompanion("u1"))!.persona!.card as any).voice.id, DEFAULT_VOICES[2].id);
   // Meta-only (D34): no remote lip worker is suggested
   assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
