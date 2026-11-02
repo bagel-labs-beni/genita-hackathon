@@ -23,9 +23,14 @@ final class FindsTabUITests: XCTestCase {
 
     private func any(_ app: XCUIApplication, _ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
 
+    private func assertNoCallCue(_ app: XCUIApplication, _ screen: String) {
+        XCTAssertFalse(any(app, "callCue").exists, "\(screen): the call-only cue is not shown over Finds")
+    }
+
     func testFindsListFrame() throws {
         let app = launch(["GENITA_FINDS_TAB": "list"])
         XCTAssertTrue(any(app, "findsList").waitForExistence(timeout: 20), "F1: the list")
+        assertNoCallCue(app, "F1")
         XCTAssertTrue(app.buttons["findsRow-Kimchi fried rice with tofu and egg"].waitForExistence(timeout: 5), "saved card")
         XCTAssertTrue(any(app, "findsDay-Saved").exists, "Saved heading")
         XCTAssertTrue(any(app, "findsDay-From today’s call").exists)
@@ -48,6 +53,7 @@ final class FindsTabUITests: XCTestCase {
         let app = launch(["GENITA_FINDS_TAB": "detail"])
         let sheet = any(app, "findsSheet")
         XCTAssertTrue(sheet.waitForExistence(timeout: 25), "F2: card in the sheet over the list")
+        assertNoCallCue(app, "F2")
         Thread.sleep(forTimeInterval: 1.5)
         XCTAssertEqual(sheet.value as? String, "half")
         XCTAssertTrue(any(app, "findCamera").exists, "the camera moment is kept with the card")
@@ -59,6 +65,7 @@ final class FindsTabUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertFalse(any(app, "findsTab").exists, "tab closed, the card stays over the call")
         XCTAssertEqual(sheet.value as? String, "half")
+        XCTAssertTrue(any(app, "callCue").waitForExistence(timeout: 5), "back on the call: current cue returns")
         capture(app, "finds-tab-F2-talk")
     }
 

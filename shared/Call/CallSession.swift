@@ -143,9 +143,10 @@ enum CallStop: Equatable {
     let finds = FindsModel()
 
     @ObservationIgnored let camera = CallCamera()
-    @ObservationIgnored private let audio = CallAudio()
-    @ObservationIgnored private let voice = DeviceVoice()
-    @ObservationIgnored private var socket: CallSocket? { didSet { uplink.socket = socket } }
+    @ObservationIgnored private let audio: any CallAudioPlaying
+    @ObservationIgnored private let voice: any CallVoiceRendering
+    @ObservationIgnored private let makeSocket: () -> any CallConnection
+    @ObservationIgnored private var socket: (any CallConnection)? { didSet { uplink.socket = socket } }
     /// The mic thread's way to the socket.
     @ObservationIgnored private let uplink = Uplink()
     @ObservationIgnored private var start: ClientMessage.Start?
@@ -177,7 +178,14 @@ enum CallStop: Equatable {
     @ObservationIgnored var onServerMessage: ((CallSocket.Incoming) -> Void)?
     #endif
 
-    init() {
+    convenience init() {
+        self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
+    }
+
+    init(audio: any CallAudioPlaying, voice: any CallVoiceRendering, makeSocket: @escaping () -> any CallConnection) {
+        self.audio = audio
+        self.voice = voice
+        self.makeSocket = makeSocket
         audio.onMicFrame = { [uplink] frame in uplink.send(frame) }
         audio.onPlaybackStarted = { [weak self] id in self?.playbackStarted(id) }
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
@@ -484,7 +492,7 @@ enum CallStop: Equatable {
     // MARK: connection
 
     private func connect() {
-        let socket = CallSocket()
+        let socket = makeSocket()
         self.socket = socket
         link = reconnectSince == nil ? .connecting : .reconnecting
         socket.onOpen = { [weak self, weak socket] in
@@ -565,6 +573,26 @@ enum CallStop: Equatable {
     func handle(_ event: ServerEvent) {
         switch event {
         case let .ready(r):
+            // The new server session numbers utterances and audio sequences from the start again.
+            // Cancel old render/player callbacks before clearing the previous session's tombstones.
+            voice.cancel()
+            audio.resetSession()
+            flushRoutedAudio?()
+            cancelled.removeAll()
+            seqToUtterance.removeAll()
+            saidOnDevice.removeAll()
+            routed.removeAll()
+            lookedUp.removeAll()
+            currentUtterance = nil
+            playingUtterance = nil
+            playing = false
+            awaitingFirstAudio = false
+            speechEndAt = nil
+            userAudioEndAt = nil
+            firstFrame = nil
+            emotion = nil
+            holdTask?.cancel()
+            interpretBoard = InterpretBoard(companionName: companionName)
             link = .live
             start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
@@ -789,9 +817,9 @@ enum CallStop: Equatable {
 
 final class Uplink: @unchecked Sendable {
     private let lock = NSLock()
-    private var _socket: CallSocket?
+    private var _socket: (any CallConnection)?
     private var _callFraming = false
-    var socket: CallSocket? {
+    var socket: (any CallConnection)? {
         get { lock.withLock { _socket } }
         set { lock.withLock { _socket = newValue } }
     }

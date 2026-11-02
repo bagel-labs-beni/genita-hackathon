@@ -34,6 +34,7 @@ test("app-config: public GET (no token) returns the defaults with an ETag and a 
   assert.equal(body.flags.watchReactions, true);
   assert.equal(body.tuning.bargeInMs, 400);
   assert.equal(body.copy["prep.title"], "Bringing {name} to life");
+  assert.equal(body.copy["prep.stage.mouth"], "Mouth");
 });
 
 test("app-config: If-None-Match with the current ETag → 304 and no body", async (t) => {
