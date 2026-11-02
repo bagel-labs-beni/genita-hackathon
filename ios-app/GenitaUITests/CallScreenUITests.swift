@@ -52,6 +52,7 @@ final class CallScreenUITests: XCTestCase {
         app.buttons["more"].tap()
         XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
+        XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")
         // INT-0: switching interpretation on closes the sheet and shows INT-1 over the face
         app.buttons["moreInterpret"].tap()
