@@ -1122,7 +1122,7 @@ final class CheekRig: @unchecked Sendable {
         // the outer quarter of the lips, gently: a smile mostly widens (×1.5 out, ×.6 up); a narrow
         // tip warp hooked the corners up like an emoji, a wide central one curled the lip line
         func corner(_ kx: Double, _ ky: Double, _ inward: Bool = false, dx0: Double = 3, dy0: Double = -4) -> [Part] {
-            corners.map { (c) in (c.0, c.1, 0.09 * W, 0.03 * H, (inward ? -c.2 : c.2) * dx0 * kx * 1.5, dy0 * ky * 0.6) }
+            corners.map { (c) in (c.0, c.1, 0.09 * W, 0.03 * H, (inward ? -c.2 : c.2) * dx0 * kx * 1.5, dy0 * ky * 0.9) }
         }
         func cheekApple(_ k: Double) -> [Part] { eyes.map { e in (e.0 + 0.15 * (e.0 - mcx), eyeY + 0.17 * H, 0.09 * W, 0.06 * H, 0, -3 * k) } }
         func lowerLid(_ k: Double, _ dy: Double = -1.6, _ off: Double = 0.9) -> [Part] { eyes.map { e in (e.0, eyeY + off * eh, 0.07 * W, 0.6 * eh, 0, dy * k) } }
@@ -1132,7 +1132,9 @@ final class CheekRig: @unchecked Sendable {
         var tags: [String: [Part]] = [:]
         tags["smile"] = smile
         tags["smileopen"] = smile.map { ($0.cx, $0.cy, $0.sx, $0.sy, $0.dx * 1.15, $0.dy * 1.15) }
+        // laugh: the lower lip drops a little with the open mouth (it read as curled in)
         tags["laugh"] = corner(1.4, 1.5) + cheekApple(1.2) + lowerLid(1.9 * 1.5) + brows(-1.5)
+            + [(mcx, Double(mouth.maxY), 0.12 * W, 0.025 * H, 0, 1.0)]
         tags["surprised"] = brows(-5) + eyes.map { e in (e.0, eyeY - 0.6 * eh, 0.06 * W, 0.35 * eh, 0, -1.6) } + lowerLid(1, 0.8, 0.7)
         tags["concerned"] = eyes.map { e in (e.0 + 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.035 * W, 0.8 * eh, (mcx - e.0 > 0 ? 1.6 : -1.6), -2.6) }
             + eyes.map { e in (e.0 - 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.05 * W, 0.8 * eh, 0, 1.2) }
