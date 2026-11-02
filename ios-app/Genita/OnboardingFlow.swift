@@ -110,11 +110,16 @@ extension AppState {
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
 
-    /// What N1–N3 send: N1 interests plus the N3 likes as interests, the N3 avoids as things to avoid
-    /// (the server takes at most 8 of each).
+    /// What N1–N3 send (server `POST /v1/import/skip`, at most 8 of each): N1 topics, then the N3 likes, as interests;
+    /// the N3 "no"s as things to avoid, the chat ones first and in the server's own wording so they become the boundary lines.
+    /// Per-group payload (like / no per group, a "Jokes" communication line) needs a server change: follow-up.
     static func skipAnswers(_ s: SavedSetup) -> (interests: [String], avoid: [String]) {
         func unique(_ xs: [String]) -> [String] { var seen = Set<String>(); return xs.filter { seen.insert($0).inserted } }
-        return (Array(unique((s.skipInterests ?? []) + (s.skipLikes ?? [])).prefix(8)), Array(unique(s.skipAvoid ?? []).prefix(8)))
+        let serverWording = ["Lots of questions": "Too many questions", "Talk about looks": "Comments on my looks"]
+        let no = s.skipAvoid ?? []
+        let chats = no.filter { SkipImportView.chats.contains($0) }.map { serverWording[$0] ?? $0 }
+        let rest = no.filter { !SkipImportView.chats.contains($0) }
+        return (Array(unique((s.skipInterests ?? []) + (s.skipLikes ?? [])).prefix(8)), Array(unique(chats + rest).prefix(8)))
     }
 
     /// N1–N3 Continue → I04-S (same rows, from the chips).

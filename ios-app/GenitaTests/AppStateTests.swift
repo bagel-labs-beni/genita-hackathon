@@ -218,13 +218,14 @@ import UIKit
         XCTAssertTrue(AppState.prompt.contains("How Genita can help"))
     }
 
-    /// N1–N3 answers → what the skip import sends (N3 = taste picker: likes and things to avoid).
+    /// N1–N3 answers → what the skip import sends: likes join the interests, "no"s become avoid lines (chat ones first, server wording).
     func testSkipAnswersFromTheTastePicker() {
         var s = SavedSetup()
-        s.skipInterests = ["Design", "Food"]; s.skipLikes = ["Minimal", "Spicy", "Food"]; s.skipAvoid = ["Seafood"]
+        s.skipInterests = ["Design", "Food"]; s.skipLikes = ["Minimal", "Jokes", "Food"]
+        s.skipAvoid = ["Colorful", "Talk about looks", "Unasked advice"]
         let a = AppState.skipAnswers(s)
-        XCTAssertEqual(a.interests, ["Design", "Food", "Minimal", "Spicy"])
-        XCTAssertEqual(a.avoid, ["Seafood"])
+        XCTAssertEqual(a.interests, ["Design", "Food", "Minimal", "Jokes"])
+        XCTAssertEqual(a.avoid, ["Comments on my looks", "Unasked advice", "Colorful"])
         s.skipLikes = (1...10).map { "c\($0)" }
         XCTAssertEqual(AppState.skipAnswers(s).interests.count, 8, "the server takes at most 8")
     }
