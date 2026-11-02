@@ -317,9 +317,12 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const vendors: FindsVendors = ctx.vendors;
   const at = new Date();
   const label0 = guessLabel(ctx.question, ctx.previous ? guessLabel(ctx.previous, "Things") : "Things");
-  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label0)} · searching shops` });
-
   const taste = tasteLines(ctx.likes, ctx.profile, ctx.memories);
+  // #199: the sheets show the import line the search follows from the first moment (the top Likes line until
+  // the search picks one)
+  const startStyle = taste[0] ?? "";
+  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label0)} · searching shops`, ...(startStyle ? { evidence: { style: startStyle, situation: "" } } : {}) });
+
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today });
 
@@ -363,15 +366,18 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
   }
-  if (cands.length) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops` });
+  const styleLine = groundStyle(str(j?.style_line, 200), taste);
+  const situationLine = str(j?.situation_line, 120);
+  if (cands.length) {
+    const style = styleLine || startStyle;
+    ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops`, ...(style ? { evidence: { style, situation: situationLine } } : {}) });
+  }
 
   // read each page (in parallel, capped): one product? price? picture?
   const facts = await Promise.all(cands.map((p) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : Promise.resolve(null))));
   timings.pagesMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
 
-  const styleLine = groundStyle(str(j?.style_line, 200), taste);
-  const situationLine = str(j?.situation_line, 120);
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
   cands.forEach((p, i) => {
