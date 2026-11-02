@@ -41,7 +41,7 @@ struct MacConversationView: View {
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
-                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).opacity(sheetFull ? 0 : 1).allowsHitTesting(!sheetFull).accessibilityIdentifier("macOpenMenu")
+                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).opacity(sheetFull || linkOpened != nil ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
@@ -56,7 +56,7 @@ struct MacConversationView: View {
                             .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
-                if waitingCopy == nil && handoff.motion == nil && !sheetFull {
+                if waitingCopy == nil && handoff.motion == nil && !sheetFull && linkOpened == nil {
                 Button { sharing.requestSharing() } label: {
                     if displaySharing || permissionVisible {
                         Circle().fill(Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255)).frame(width: 47, height: 47)
@@ -101,7 +101,7 @@ struct MacConversationView: View {
             if menuOpen { menu }
             if interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
-            MacDemoSystemBar(onDark: waitingCopy != nil).allowsHitTesting(false).accessibilityHidden(true)
+            MacDemoSystemBar(onDark: waitingCopy != nil || sheetFull).allowsHitTesting(false).accessibilityHidden(true)
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
                 .accessibilityLabel("Drag to move the window")
         }.frame(width: 390, height: 844).clipped().ignoresSafeArea()
@@ -146,7 +146,8 @@ struct MacConversationView: View {
     // MARK: #118 / #121 call + sheet layout
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
     /// half / full: the sheet covers the self view and the controls (r03).
-    private var sheetCovers: Bool { [.rising, .half, .full].contains(call.finds.state) && linkOpened == nil }
+    /// half / full cover the self view and controls; MAC-LINK shows only the face, the line and its two buttons.
+    private var sheetCovers: Bool { linkOpened != nil || [.rising, .half, .full].contains(call.finds.state) }
     /// r03 rail rule on the Mac: searching (198) and peek (148) lift the self view and controls above the sheet.
     private var railShift: CGFloat { [.searching, .peek].contains(call.finds.state) && linkOpened == nil ? call.finds.state.macHeight - 26 : 0 }
     private var cueText: String? {

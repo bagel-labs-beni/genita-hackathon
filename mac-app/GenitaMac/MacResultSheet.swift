@@ -127,7 +127,7 @@ struct MacResultSheet: View {
             let picks = card.kind == .product ? ProductPicks.picks(from: card) : []
             let evidence = ProductPicks.evidence(from: card)
             ZStack(alignment: .bottom) {
-                ScrollView(.vertical, showsIndicators: false) {
+                MacScroll {
                     VStack(alignment: .leading, spacing: 0) {
                         header(card)
                         Text(card.title).font(MacSheetInk.serif(30)).foregroundStyle(MacSheetInk.ink).lineLimit(2).padding(.top, 6)
@@ -281,6 +281,8 @@ struct MacLinkPrompt: View {
     let notNow: () -> Void
     var body: some View {
         ZStack(alignment: .topLeading) {
+            LinearGradient(colors: [MacSheetInk.ink.opacity(0), MacSheetInk.ink.opacity(0.55)], startPoint: .top, endPoint: .bottom)
+                .frame(width: 390, height: 260).position(x: 195, y: 844 - 130).allowsHitTesting(false)
             Text("Opened it in your browser. Want me to look at it with you?")
                 .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.onInk).lineSpacing(4)
                 .padding(.horizontal, 12).padding(.vertical, 9)
@@ -362,5 +364,18 @@ struct MacScanLine: View {
             withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) { x = 314 - 126 }
         }
         .accessibilityHidden(true)
+    }
+}
+
+/// A vertical scroll view. Review renders (ImageRenderer, GENITA_MAC_REVIEW_OUT) can't draw AppKit's scroll view,
+/// so they get the plain stack — the same content, top-aligned.
+struct MacScroll<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil {
+            content.frame(maxHeight: .infinity, alignment: .top)
+        } else {
+            ScrollView(.vertical, showsIndicators: false) { content }
+        }
     }
 }
