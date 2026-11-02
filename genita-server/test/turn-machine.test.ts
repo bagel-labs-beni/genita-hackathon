@@ -101,3 +101,13 @@ test("an empty final transcript does not start a reply", () => {
   assert.equal(r.state.phase, "listening");
   assert.ok(!kinds(r.effects).includes("start_reply"));
 });
+
+test("announce starts a reply only into silence", () => {
+  const idle = reduceTurn(initialTurnState(), { type: "announce", text: "Found one." }, cfg);
+  assert.equal(idle.effects[0].type, "start_reply");
+  assert.equal((idle.effects[0] as { announce?: boolean }).announce, true);
+  const busy = reduceTurn(idle.state, { type: "announce", text: "Another." }, cfg);
+  assert.deepEqual(busy.effects, []);
+  const talking = reduceTurn(initialTurnState(), { type: "speech_start" }, cfg);
+  assert.deepEqual(reduceTurn(talking.state, { type: "announce", text: "x" }, cfg).effects, []);
+});

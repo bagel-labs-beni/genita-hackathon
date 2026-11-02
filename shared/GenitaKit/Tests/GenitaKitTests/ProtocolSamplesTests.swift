@@ -51,8 +51,8 @@ struct ProtocolSamplesTests {
     }
 
     @Test func testUnknownServerTypeDoesNotThrow() throws {
-        let e = try JSONDecoder().decode(ServerEvent.self, from: Data(#"{"type":"observe.boxes","boxes":[]}"#.utf8))
-        #expect(e == .unknown(type: "observe.boxes"))
+        let e = try JSONDecoder().decode(ServerEvent.self, from: Data(#"{"type":"future.event","boxes":[]}"#.utf8))
+        #expect(e == .unknown(type: "future.event"))
     }
 
     @Test func testFrameHeader() {

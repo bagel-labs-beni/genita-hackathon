@@ -15,7 +15,9 @@
   },
   "user": {
     "name": "Chelsea",
-    "profile": "Founder. Loves spicy food."
+    "profile": "Founder. Loves spicy food.",
+    "id": "device-3F2A9C",
+    "timeZone": "Asia/Seoul"
   },
   "memories": [
     "Her sister Jiwoo visits next week."

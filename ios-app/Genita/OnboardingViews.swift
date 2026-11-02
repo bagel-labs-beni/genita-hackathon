@@ -11,6 +11,7 @@ struct RootView: View {
                 switch model.stage {
                 case .welcome: ReferenceWelcomeView { model.go(.signIn) }
                 case .signIn: ReferenceSignInView(model: model)
+                case .consent: ConsentView(model: model)
                 case .name, .prompt, .paste, .preparing, .preferences, .image, .voice, .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary: ReferenceOnboardingView(model: model)
                 case .connecting: ConnectingView(model: model)
                 case .conversation: ConversationView(model: model)

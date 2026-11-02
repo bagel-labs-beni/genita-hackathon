@@ -32,10 +32,12 @@ export type TurnEvent =
   | { type: "text"; text: string }
   | { type: "client_barge_in" }
   | { type: "first_audio"; utteranceId: number }
-  | { type: "reply_done"; utteranceId: number };
+  | { type: "reply_done"; utteranceId: number }
+  /** the server wants the companion to say a line on its own (a result card landed) */
+  | { type: "announce"; text: string };
 
 export type Effect =
-  | { type: "start_reply"; text: string; utteranceId: number }
+  | { type: "start_reply"; text: string; utteranceId: number; announce?: true }
   | { type: "cancel_reply"; utteranceId: number; reason: CancelReason }
   | { type: "arm_barge_timer"; ms: number }
   | { type: "emit_state"; phase: EmittedPhase };
@@ -114,6 +116,13 @@ export function reduceTurn(s: TurnState, e: TurnEvent, cfg: TurnConfig): { state
     case "first_audio":
       if (e.utteranceId !== s.utteranceId || s.phase !== "thinking") return none();
       return { state: { ...s, phase: "speaking" }, effects: [{ type: "emit_state", phase: "speaking" }] };
+    case "announce": {
+      // only into silence: never over the user or over another reply
+      if (busy(s) || s.userSpeaking || s.pendingBargeIn || !e.text.trim()) return none();
+      const st = start(s, e.text);
+      st.effects[0] = { ...(st.effects[0] as Extract<Effect, { type: "start_reply" }>), announce: true };
+      return st;
+    }
     case "reply_done":
       if (e.utteranceId !== s.utteranceId || !busy(s)) return none();
       return { state: { ...s, phase: "listening" }, effects: [{ type: "emit_state", phase: "listening" }] };

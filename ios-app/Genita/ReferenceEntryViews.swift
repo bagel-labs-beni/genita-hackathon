@@ -24,6 +24,10 @@ struct ReferenceSignInView: View {
     @Bindable var model: AppState
     @State private var provider: String?
     @State private var legal: String?
+    /// A02 Apple: the sheet is up / the server is answering.
+    @State private var signingIn = false
+    /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
+    @State private var signInFailed = false
     var referenceViewport = false
     var nodes: [DesignNode] { DesignLibrary.nodes("signIn") }
     var body: some View {
@@ -49,20 +53,54 @@ struct ReferenceSignInView: View {
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
+        .overlay(alignment: .top) {
+            if signInFailed {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.circle").font(.system(size: 16, weight: .medium))
+                    Text("Couldn’t reach Apple. Check your connection and try again.").font(TypeStyle.body(14, .medium))
+                }.foregroundStyle(.white).padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(Color.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 16).padding(.top, 72)
+                    .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
+            }
+        }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
-            Button("Continue in demo") { model.go(.name); provider = nil }
+            Button("Continue in demo") { model.signedIn(); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
         } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
-        .alert(legal ?? "", isPresented: Binding(get: { legal != nil }, set: { if !$0 { legal = nil } })) { Button("OK") { legal = nil } } message: { Text("Release documents are not connected in this local demo. No account is created.") }
+        .onChange(of: legal) { _, doc in
+            // PRD v12 D16: Genita's own pages (live)
+            guard let doc else { return }
+            legal = nil
+            if let url = URL(string: doc == "Terms" ? "https://bagel-labs-beni.github.io/genita-legal/terms/" : "https://bagel-labs-beni.github.io/genita-legal/privacy/") { UIApplication.shared.open(url) }
+        }
     }
     func providerButton(_ name: String, width: CGFloat) -> some View {
         let label = nodes.first { $0.characters == "Continue with " + name }!
-        return Button { provider = name } label: {
+        return Button { if name == "Apple" { signInWithApple() } else { provider = name } } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
                 Image(resource: name.lowercased()).resizable().frame(width: 20, height: name == "Apple" ? 22 : 20).position(x: name == "Apple" ? 76 : 70, y: name == "Apple" ? 23 : 24)
                 DesignText(node: label).frame(width: label.w, height: label.h).position(x: (width - 390) / 2 + label.x - 38 + label.w / 2, y: name == "Apple" ? 24 : 24)
             }
-        }.buttonStyle(.plain).accessibilityLabel("Continue with " + name)
+        }.buttonStyle(.plain).disabled(signingIn).accessibilityLabel("Continue with " + name)
+    }
+
+    /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
+    func signInWithApple() {
+        guard !signingIn else { return }
+        signingIn = true
+        Task { @MainActor in
+            defer { signingIn = false }
+            do {
+                let r = try await AppleSignInFlow().signIn()
+                model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+            } catch GenitaAuthError.cancelled {
+                // cancel stays quietly on A02
+            } catch {
+                withAnimation(.easeOut(duration: 0.2)) { signInFailed = true }
+                try? await Task.sleep(for: .seconds(4))
+                withAnimation(.easeOut(duration: 0.2)) { signInFailed = false }
+            }
+        }
     }
 }

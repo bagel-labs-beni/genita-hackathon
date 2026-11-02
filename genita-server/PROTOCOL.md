@@ -18,8 +18,11 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 |---|---|
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
+| 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
+| 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_SERVER_TTS=1`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_SERVER_TTS=1` (there, an omitted `start.tts` means `server`). |
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
 
@@ -37,7 +40,7 @@ Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call l
 | Direction | Frame | Content |
 |---|---|---|
 | app → server | text | JSON control message (below) |
-| app → server | binary | mic PCM **s16le, mono, 24 kHz**, any size; 80 ms (3,840 B) frames recommended. Send in real time, echo-cancelled (F4-L10). |
+| app → server | binary | mic PCM **s16le, mono, 24 kHz**, any size; 80 ms (3,840 B) frames recommended. Send in real time, echo-cancelled (F4-L10). Mac call interpretation only: prefix each frame with the 8-byte header below, kind `3` = mic, kind `4` = the call's sound (seq 0). |
 | server → app | text | JSON event (below) |
 | server → app | binary | TTS audio: 8-byte header + PCM **s16le, mono, 24 kHz** |
 
@@ -71,9 +74,15 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `frames` | `images: [jpeg]` (≤2) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
 | `barge_in` | — | user tapped to interrupt; cancels immediately |
 | `playback_done` | `utteranceId` | app finished playing the reply; ends `speaking` earlier than the server's estimate |
-| `mode` | `mode: "chat" \| "interpret"` | interpret = translate every turn (Korean → English for the user, English → Korean for the other person) |
+| `mode` | `mode: "chat" \| "interpret"`, optional `interpret {source?, other?, app?}` | interpret = Genita interprets between the user and someone else (F8, see below). `source`: `face` (default, iPhone between two people) or `call` (Mac FaceTime/Zoom). `other`: fix the other language instead of detecting it. `app`: shown back in `interpret.pair`. |
+| `hold` | `on: boolean` | F8 "Hold to talk / Hold to reply": while held, the mic is the user ("me") whatever the language; in `call` mode the mic is only listened to while held. |
 | `ping` | `t` | server answers `pong {t}` |
 | `stop` | — | end the call |
+| `find.confirm` | `findId`, `itemId`, `yes` | the user answered "맞아?" on a maybe ingredient (IC-3): yes → have, no → buy (or gone if no recipe needs it) |
+| `find.stop` | `findId` | Stop on the searching sheet; answered with `find.failed {reason:"stopped"}` |
+
+`text` may carry `findId` ("Ask about this" chip): that card becomes the context of the reply.
+`start.user` may carry `id` (stable per install until login; owner of saved Finds) and `timeZone` (IANA, for "7:12 PM" in cards).
 
 `start`:
 
@@ -97,12 +106,54 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
   "lip": { "mode": "peter", "fallback": "none" },   // or just "atlas"
   "bargeIn": { "minMs": 400, "minWords": 2 },
   "mic": true,
-  "tts": "device"                          // server | device (see "Device voice mode")
+  "tts": "device",                         // server | device (see "Device voice mode")
+  "interpret": { "source": "face" }          // only read when mode is "interpret"
 }
 ```
 
-Only `persona.name` is required. Until login/DB land (F1, F4-L12) the app sends
-persona, profile, memories and recent history itself; the server stores nothing.
+Only `persona.name` is required. Without the memory dependency the app still sends
+persona, profile, memories and recent history itself. With server memory enabled,
+`start.memories` and `start.history` are ignored so stale app snapshots cannot
+restore forgotten memories. The server uses its authenticated user identity and
+retains new conversation history only for this call. New calls receive an ordinary
+greeting, or one qualifying past episode (seen crops first after six hours).
+Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;
+there is no synthetic user `transcript` event.
+
+## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
+
+All routes require the same bearer token as the session. Before F1/JWT integration,
+one token means **one local user**, not multiple accounts. The server's injected
+`resolveUser(req)` must verify JWTs to support multiple users; caller-supplied
+`userId`, `start.user.id` and `X-User-ID` never select an account.
+
+| method | path | result |
+|---|---|---|
+| GET | `/v1/memories` | `{memories:[{id,text,kind,created_at,updated_at,last_used_at,follow_up,source_session_id,image_ref?}]}`; timestamps are epoch milliseconds |
+| DELETE | `/v1/memories/:id` | `204`, idempotent Forget; `/me/memories/:id` is an alias |
+| DELETE | `/v1/memories` | `204`, Forget all; optional `?id=mem_…` deletes just that item |
+| GET / PATCH | `/v1/memory-settings` | `{rememberSeen:boolean,photosOfUs:boolean}`; PATCH accepts either/both boolean fields; switching off prevents new items |
+| POST | `/v1/us-photos` | `{scene_id,companion_id,scene_description,scene_ended:true,card_closed:true}` → `{status:"ready",mime,image_base64}` or a non-ready status |
+
+Us-photo inputs contain no image bytes/URLs. `resolveCompanionFace(userId,id)` must
+resolve the user's approved **companion** reference from prep/storage; until it is
+wired the route returns `503 companion_storage_unavailable`. Unknown companions
+return `404`. The edit sends that reference and scene text only, one image at a time.
+It reserves at most three attempts per UTC day, deduplicates scene IDs, and discards
+face-check failures. Finds should save only a `ready` result after the card closes.
+
+Memory/setting responses have `Cache-Control: no-store`. JSON body limit is 2.1 MB.
+Forget invalidates pending extraction and active replies, removes crop bytes and
+keeps a content-hash tombstone so a stale upsert cannot restore the item. Crop
+deletion/storage errors return `503`; retries can complete the deletion.
+`GENITA_MEMORY_FILE=./.memory/memories.json` enables atomic local JSON persistence;
+unset means in-memory only. `REVISIT_GAP_HOURS` defaults to `6` (seen crops always
+require six hours), and revisit openers are limited to one per UTC day.
+
+The trusted vision adapter supplies only a <=480px SAM crop plus a safe one-line
+summary to `src/memory/`; original camera frames are never persisted. Its pixel
+safety check must exclude faces/people, documents, money and addresses. Integration
+contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md).
 
 ## Server → app events
 
@@ -112,7 +163,9 @@ persona, profile, memories and recent history itself; the server stores nothing.
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
-| `interpret.detected` | `from`, `to` | a Korean turn in chat mode is being interpreted (F8) |
+| `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
+| `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |
+| `interpret.bubble` | `bubbleId`, `speaker`, `via`, `status`, `original {lang, text}`, `translation? {lang, text}`, `utteranceId?`, `reason?` | one two-language bubble; sent again on every change — **upsert by `bubbleId`**. See below. |
 | `tool` | `utteranceId`, `name`, `status` | e.g. `web_search` `searching` — show a hint if you like |
 | `reply.delta` | `utteranceId`, `text` | caption text, one sentence at a time (append) |
 | `speaking` | `on`, `utteranceId`, `emotion?` | `on:true` with the emotion when a sentence's audio (device mode: its `say`) starts and the emotion changed (switch the face, F4-L13); `on:false` when done or cancelled |
@@ -126,6 +179,13 @@ persona, profile, memories and recent history itself; the server stores nothing.
 | `lip.changed` | `lip {requested, active, reason}`, `peter? {bundleId, pasteDy, fps}` | Peter worker became ready (`active: "peter"`) or is unavailable (`reason: "peter_unavailable"`, back on the fallback) |
 | `error` | `code`, `message`, `retryable` | see below |
 | `pong` | `t` | |
+| `find.started` | `findId`, `utteranceId`, `kind: recipe \| outfit \| link`, `title`, `detail` | open the sheet in "searching" (r03 #1) |
+| `find.progress` | `findId`, `detail` | update the searching line ("Kimchi, eggs, tofu · recipes") |
+| `find.items` | `findId`, `items`, `checking`, `subtitle?`, `status?` | full ingredient list each time; replace, don't merge. `checking:false` = all checks done |
+| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s) |
+| `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
+| `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
+| `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
 
 `audio` timing (all ms on the reply's own audio timeline, 0 = first sample of the reply):
 
@@ -231,6 +291,39 @@ Default: `atlas` for animal/character personas, `none` for humans. Always read `
 - `speaking` lasts until the reply's audio should have finished playing (first audio + audio length + 250 ms;
   device mode: the estimate above) or `playback_done`, so barge-in keeps working while the app is still playing.
 
+## Interpretation (F8)
+
+Turn it on with `mode {mode:"interpret"}` (⋮ → Interpret a conversation), `start.mode`, or by voice: in chat mode
+"Can you interpret for me?" switches (`mode.changed {by:"model"}`) and Genita says a one-line OK; "Stop interpreting"
+switches back. Genita only passes on what was said — no answers, no advice; Korean output stays 존댓말.
+
+**Who is talking (`speaker`).** The user's language is `start.language` (default English). Face to face (`source: face`),
+the language of each utterance decides: the user's language = `me`, anything else = `them`. Muse Transcribe has no
+language field, so the script decides (Hangul → Korean, kana → Japanese, Han → Chinese, Latin → the user's language).
+The first non-user language heard becomes `other` (`interpret.pair`, `by:"auto"`). While `hold` is on the mic is `me`.
+On the Mac (`source: call`) the call's sound (frame kind 4, its own ASR stream) is always `them` and the mic is `me`
+only while held — otherwise it is replaced by silence.
+
+**Bubble lifecycle.** `hearing` (original growing from partial transcripts; `speaker` can still change) →
+`translating` (utterance ended; `translation.text` empty, `utteranceId` set) → `speaking` (its audio started;
+`translation.text` grows sentence by sentence) → `done`. Other ends:
+
+| status | reason | app |
+|---|---|---|
+| `unknown` | `language_unclear` | INT-6: show "Couldn't tell the language", nothing was spoken |
+| `unknown` | `empty` | translation came back empty (also sent as `error spark_unavailable`) |
+| `skipped` | `no_other_language` | the user spoke before the other language was known — nothing to translate into; hide it |
+| `skipped` | `same_language` | call sound in the user's own language; hide it |
+| `skipped` | `echo` | Genita heard her own translation through the speaker; hide it |
+| `cancelled` | — | `barge_in` tap or leaving the mode |
+
+**Audio.** A bubble's translation is a normal utterance: `reply.delta`, `speaking`, `audio` + binary frames, `reply
+{interpret:true}`, `turn.metrics`, all with the bubble's `utteranceId`. Translations start as soon as an utterance
+ends (in parallel) but their audio goes out strictly in order; new speech never cancels them. `barge_in` cancels the
+one playing and the queued ones (`utterance.cancelled {reason:"client"}` for each). On the Mac, route by the bubble's
+speaker: `them` → the translation is for the user → whisper in the user's headphones only; `me` → for the other
+person → the speaker the call app's mic hears.
+
 ## Reserved names (not emitted yet)
 
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
@@ -238,7 +331,50 @@ decided in those tickets and will be added here as additive changes.
 
 `mouth {f, cell}` (F4-L20 atlas cells) ·
 `camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
-`interpret.*` beyond `interpret.detected` (F8) · `prep.progress` (F2-L3).
+`interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
+
+## Finds (result cards, F10)
+
+A user turn whose text has a link, or that has camera frames and asks about
+cooking or clothes, gets a result card **after** the spoken answer (the answer
+is the normal reply; the card never delays it). Sequence:
+
+```
+find.started → find.items (every name "checking", IC-1) → find.progress …
+→ find.created (card text, pictures pending) → find.items / observe.boxes as checks land
+→ find.items {checking:false} → find.image × n
+```
+
+Ingredient tiers (PRD 22): `have` = Spark re-check YES + SAM box for the name;
+`maybe` = YES without a box ("맞아?"; `hint` may carry a look-alike box, e.g. the
+kimchi jar), or the first look saw it and SAM boxes it but the re-check said NO;
+`buy` = recipe only. Recipe names merge into what the camera saw ("onion" into
+"green onions"). Boxes are 0..1 of `card.camera.frame` = the index of the frame
+the app sent (the last one); the server never stores frames, so the app keeps
+that frame with the card if it wants to show it later.
+
+Card fields (`FindCard`): `id, kind, createdAt, eyebrow, title, subtitle,
+status?, say?, hero?, camera?, items[], steps[{text, source?, image?}],
+options[{label, frame, picked, box?}], why[], ask[], sources[{title,url,domain}],
+how[], page?{url, opened}, saved?`. Image `url`s are server-relative
+(`/v1/finds/<id>/images/<slot>`); fetch with the same bearer token.
+
+When the card lands the companion says `card.say` as its own short reply — only
+into silence, after the current reply, and not if the user starts talking first.
+
+REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
+
+| method | path | |
+|---|---|---|
+| GET | `/v1/finds` | `{finds}` saved first, then newest |
+| GET | `/v1/finds/:id` | `{find}` |
+| DELETE | `/v1/finds/:id` | soft delete; `{ok, undo}` |
+| POST | `/v1/finds/:id/restore` | undo a delete (24 h) |
+| POST | `/v1/finds/:id/save` | `{saved: bool}` pin to top |
+| GET | `/v1/finds/:id/images/:slot` | illustration bytes (`?token=` also accepted) |
+| DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
+
+Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
 
 ## Errors
 
@@ -264,3 +400,16 @@ End of voice = last voiced 20 ms of the user's audio; "file end" = end of the au
 - Barge-in: ASR speechStart → `utterance.cancelled` ≈ 400 ms (= the 400 ms min-speech rule); user voice start → cancelled ≈ 620 ms; 0 audio frames after cancel.
 - First words over 20 replies: most repeated = 3 (opener guard on).
 - Peter (live A10G worker on Modal, `npm run smoke -- --turns=4 --lip=peter`): `lip.changed` 30.6 s after start (cold start); first mouth crop 350–684 ms after the reply's first TTS audio (p50 385 ms); crops arrive at 36–38 fps (faster than the 25 fps playback), max gap 200–320 ms (worker sends batches of 8); 102–113 crops per reply = audio length / 40 ms (±1); a barge-in stopped crops for that utterance (24 of 116).
+
+### Interpretation (11/2, `npm run smoke:interpret`, real vendors, the T7 clips: 5 Korean + 5 English alternating)
+
+| run | turns relayed | speaker right | no mixing | voice end → first audio p50 | file end → first audio p50 | speculation hit |
+|---|---|---|---|---|---|---|
+| face (`source: face`, by language) | 10/10 | 10/10 | 10/10 | 1.65 s (1.68 s without turn 9*) | 1.37 s (1.44 s*) | 8/10 |
+| face, run 2 | 10/10 | 10/10 | 10/10 | 1.57 s (max 1.90 s) | 1.27 s | 10/10 |
+| Mac call (`source: call`, Korean as call sound, English held mic) | 10/10 | 10/10 | 10/10 | 1.68 s | 1.33 s | 9/10 |
+
+Reference: 11/1 T7 (DIARIZATION) 3.9 s, T7b (ENDPOINTING + first sentence + v4 turbo) 2.2 s, both "file end". Target ≤ 2.5 s.
+*Turn 9 ("It is on the second floor, next to the elevator.") was cut by ASR endpointing at the comma pause, so its
+first half was translated before the clip ended (0.26 s); the second half became its own bubble.
+
