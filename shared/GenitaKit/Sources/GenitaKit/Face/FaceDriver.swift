@@ -128,7 +128,7 @@ public final class FaceDriver: ObservableObject {
         guard !rendering else { return }   // drop a frame rather than queue them up
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
-        let lip = ms.map { timeline.sample(atMs: $0) } ?? .rest
+        let lip = ms.map { timeline.sample(atMs: $0 + FaceRenderer.rigLookaheadMs) } ?? .rest
         let r = renderer, t = now()
         queue.async { [weak self] in
             let image = r.render(at: t, lip: lip)
