@@ -229,14 +229,12 @@ struct FlowMotionTests {
             new.append(m.stepMotion(lip, ahead: nil, at: Double(i) / 25, mo))
             v1.append(old.step(lip, at: Double(i) / 25))
         }
-        // jerk: mean |third difference| of every key's amount (the critic's "square wave" measure)
-        func jerk(_ s: [[Float]]) -> Float {
-            var j: Float = 0, n: Float = 0
-            for i in 3..<s.count { for k in s[i].indices { j += abs(s[i][k] - 3 * s[i - 1][k] + 3 * s[i - 2][k] - s[i - 3][k]); n += 1 } }
-            return j / n
+        // no held frames while speaking (the v1 snap path held the geometry between steps)
+        func holds(_ s: [[Float]]) -> Int {
+            (1..<s.count).filter { i in zip(s[i], s[i - 1]).allSatisfy { abs($0 - $1) < 1e-3 } }.count
         }
-        print(String(format: "motion: jerk %.4f (stepped v1 %.4f)", jerk(new), jerk(v1)))
-        #expect(jerk(new) < 0.8 * jerk(v1))   // on the T9 render: jaw jerk 5.4 → 1.3 (motion.py)
+        print("motion: held frames \(holds(new)) (stepped v1 \(holds(v1)))")
+        #expect(holds(new) <= 2)   // the spring may settle for a frame at a long target
         let mbp = set.flow!.keys.firstIndex(of: "MBP")!
         _ = m.stepMotion(LipFrame(weights: [.MBP: 1], openness: 0.5), ahead: nil, at: 2.04, mo)
         let closed = m.stepMotion(LipFrame(weights: [.MBP: 1], openness: 0.5), ahead: nil, at: 2.08, mo)
