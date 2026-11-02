@@ -319,7 +319,8 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           test "$STATUS" = "Accepted"
-          xcrun stapler staple "$DMG"
+          # stapler fetches the ticket from Apple's CDN; retry its network flakes (error 68)
+          for i in 1 2 3 4; do xcrun stapler staple "$DMG" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
           xcrun stapler validate "$DMG"
 
       - name: Verify Gatekeeper
