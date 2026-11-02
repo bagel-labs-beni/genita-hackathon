@@ -5,6 +5,7 @@ name: Accounts and storage
 # and a FaceRender sample mp4 from the fixture face set (artifact face-kit-sample).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/accounts.yml"
       - "genita-server/**"
@@ -13,8 +14,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: accounts-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server:
