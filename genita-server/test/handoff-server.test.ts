@@ -12,7 +12,7 @@ import { startServer } from "../src/server.ts";
 import { loadConfig } from "../src/config.ts";
 import type { SessionDeps } from "../src/session/session.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DEV = "dev-token-handoff";
@@ -32,7 +32,7 @@ class FakeAsr extends EventEmitter {
 }
 
 async function boot(t: import("node:test").TestContext) {
-  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e", GENITA_SERVER_TTS: "1" }) /* #157: the gate is about audio frames */, port: 0, sessionToken: DEV };
+  const config = { ...loadConfig({ MODEL_API_KEY: "m", GENITA_VOICE_URL: "http://voice.invalid", GENITA_VOICE_TOKEN: "t" }) /* #157: the gate is about audio frames */, port: 0, sessionToken: DEV };
   const asrs: FakeAsr[] = [];
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => events.push({ event, data });

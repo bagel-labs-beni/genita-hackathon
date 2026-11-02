@@ -25,10 +25,9 @@ import type { Config } from "./config.ts";
 import { Session, type ClientSink, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
-import { streamSpeech } from "./tts/elevenlabs.ts";
 import { createSeamless } from "./tts/seamless.ts";
-import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
+import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
@@ -56,21 +55,14 @@ async function* serverTtsOff(): AsyncGenerator<never> {
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
-  const elevenKey = config.serverTts ? config.elevenKey : null;
-  const peterUrl = process.env.GENITA_PETER_URL;
-  const peterToken = process.env.GENITA_PETER_TOKEN;
-  // Meta voice service (Seamless on our GPU) wins; ElevenLabs only as the legacy flag path; else device mode
   const voice = config.voice ? createSeamless(config.voice, { log }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
-    // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
-    openPeter:
-      config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };
@@ -256,7 +248,9 @@ export async function startServer(
     const ref: { session?: Session } = {};
     const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
     const sink = gated?.sink ?? raw;
-    const session = new Session(id, sink, { ...deps, userId: who.userId });
+    // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
+    const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
+    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);

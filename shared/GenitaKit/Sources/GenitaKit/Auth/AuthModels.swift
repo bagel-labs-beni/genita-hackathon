@@ -24,13 +24,16 @@ public struct GenitaMe: Codable, Equatable, Sendable {
     public var hasCompanion: Bool
     public var prepStatus: PrepStatus
     public var conversation: Conversation?
+    /// the account's companion is the ready-made judge one (PR #178)
+    public var companionDemo: Bool?
 
-    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?) {
+    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?, companionDemo: Bool? = nil) {
         self.user = user
         self.consented = consented
         self.hasCompanion = hasCompanion
         self.prepStatus = prepStatus
         self.conversation = conversation
+        self.companionDemo = companionDemo
     }
 }
 

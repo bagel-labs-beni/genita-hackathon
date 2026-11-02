@@ -60,9 +60,5 @@ struct ProtocolSamplesTests {
         #expect(AudioFrameHeader(frame: h.encoded() + Data([1, 2])) == h)
         #expect(AudioFrameHeader.payload(of: h.encoded() + Data([1, 2])) == Data([1, 2]))
         #expect(AudioFrameHeader(frame: Data("XX123456".utf8)) == nil)
-        let peter = AudioFrameHeader(kind: GenitaProtocol.frameKindPeter, seq: 7).encoded() + Data([3, 0, 0, 0, 0xff, 0xd8])
-        let crop = AudioFrameHeader.peterCrop(of: peter)
-        #expect(crop?.frame == 3)
-        #expect(crop?.jpeg == Data([0xff, 0xd8]))
     }
 }
