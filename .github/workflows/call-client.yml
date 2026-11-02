@@ -1,0 +1,92 @@
+name: Call client
+
+# F4-L10 / F4-U-S09: builds both apps, runs the unit tests, and drives the call screen through its states
+# with a recorded real session (ios-app/Tools/call-replay). Screenshots are uploaded as an artifact.
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/call-client.yml"
+      - "ios-app/**"
+      - "mac-app/**"
+      - "shared/**"
+  workflow_dispatch:
+
+concurrency:
+  group: call-client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = [d for runtime, group in json.load(sys.stdin)["devices"].items() if "iOS-26" in runtime for d in group if d["name"].startswith("iPhone")]
+          pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
+          print((pro or devices)[-1]["udid"])')"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$ID"
+
+      - name: Start the call replay server
+        run: |
+          node ios-app/Tools/call-replay/server.mjs > replay.log 2>&1 &
+          for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8788/healthz && break; sleep 0.5; done
+
+      - name: iOS build, unit tests, call screen states
+        run: |
+          xcodebuild test \
+            -project ios-app/Genita.xcodeproj -scheme Genita \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -only-testing:GenitaTests \
+            -only-testing:GenitaUITests/CallScreenUITests \
+            -resultBundlePath build-output/ios.xcresult \
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Replay server log
+        if: always()
+        run: cat replay.log || true
+
+      - name: Export call screenshots
+        if: always()
+        run: |
+          if [ -d build-output/ios.xcresult ]; then
+            mkdir -p build-output/raw build-output/screens
+            xcrun xcresulttool export attachments --path build-output/ios.xcresult --output-path build-output/raw
+            python3 - <<'PY'
+          import json, pathlib, shutil
+          raw = pathlib.Path("build-output/raw"); screens = pathlib.Path("build-output/screens")
+          for test in json.loads((raw / "manifest.json").read_text()):
+              for item in test["attachments"]:
+                  name = item["suggestedHumanReadableName"].split("_")[0]
+                  if name.startswith("call-"):
+                      shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
+          PY
+            ls build-output/screens
+          fi
+
+      - name: Mac build
+        working-directory: ios-app
+        run: |
+          xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | grep -E "error:|warning: .*shared/Call|\*\* BUILD" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-screens
+          path: build-output/screens
+          if-no-files-found: warn
