@@ -92,7 +92,7 @@ final class OnboardingUITests: XCTestCase {
         waitForExpectations(timeout: 10)
         XCTAssertFalse(primary.isEnabled, "V04-P: Continue waits for the clip")
         capture("V04-P")
-        // when the 1.6 s clip ends the card stays picked
+        // when the 4 s stub clip ends the card stays picked
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"])
         waitForExpectations(timeout: 10)
         XCTAssertTrue(primary.isEnabled)
@@ -296,6 +296,8 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
         XCTAssertTrue(app.buttons["play1"].waitForExistence(timeout: 10)); app.buttons["play1"].tap()
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"]); waitForExpectations(timeout: 15)
+        // Continue waits for the clip (V04-P): tap it once it is on, not while the preview still plays
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: primary); waitForExpectations(timeout: 15)
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
