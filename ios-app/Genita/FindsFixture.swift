@@ -3,7 +3,7 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21 = reason chips (D48 ③)
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21 = reason chips (D48 ③), 22 = budget reason chip (Knows-Me Map)
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -100,6 +100,24 @@ extension FindsModel {
                 return .findCreated(c)
             }
             play([(recipe, withReasons)]); state = .half
+        case 22:
+            // Knows-Me Map: a budget reason chip from the profile ("Your budget: under $100"). The PF-1 product card
+            // (kind "product") isn't on this branch (#171/#174), so the two priced picks ride on the outfit card.
+            guard let outfit else { return }
+            let picks = outfit.events.compactMap { e -> ServerEvent? in
+                if case .observeBoxes = e { return nil }
+                guard case var .findCreated(c) = e else { return e }
+                c.card.eyebrow = "From what you said"
+                c.card.title = "Two for the weekend"
+                c.card.subtitle = "Two picks, $89 and $64"
+                c.card.camera = nil
+                c.card.options = []
+                c.card.why = ["Cotton chore jacket, $89: clean lines, no logos.", "Linen overshirt, $64: an understated color."]
+                c.card.reasons = [.init(text: "Your style: clean, minimal clothes", source: "Style: Clean, minimal clothes.", from: "profile"),
+                                  .init(text: "Your budget: under $100", source: "Budget: usually under $100 for clothes.", from: "profile")]
+                return .findCreated(c)
+            }
+            play([(outfit, picks)]); state = .half
         case 17: play([(recipe, recipe.events)]); state = .half; close()
         case 19: play([(recipe, recipe.events)]); state = .full; scrollTarget = "how"
         case 20:

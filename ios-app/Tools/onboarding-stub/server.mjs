@@ -33,7 +33,7 @@ const importStory = () => [
     items: [it("You like a friendly tone, but you want the answer first. Long replies lose you.", "explicit"), it("You switch to Korean when you’re relaxed.", "observed")],
     promise: "So I'll lead with the answer, keep it to a few sentences, and go deeper only when you ask." },
   { id: "taste", eyebrow: "What you're into", headline: "Clean lines, slow stories, home cooking.", evidence: "memory", items: [],
-    tags: [tag("style", "Clean, minimal"), tag("style", "Understated colors"), tag("style", "Linen"), tag("style", "Loud logos", true),
+    tags: [tag("style", "Clean, minimal"), tag("style", "Understated colors"), tag("style", "Linen"), tag("style", "Under $100"), tag("style", "Loud logos", true),
       tag("food", "Korean home cooking"), tag("food", "Quick weeknight meals"), tag("food", "Cilantro", true),
       tag("watch", "Slow-burn dramas"), tag("watch", "Lo-fi while working"), tag("watch", "Laugh tracks", true)] },
   { id: "help", eyebrow: "How I can help", headline: "Where I'll actually be useful.", evidence: "observed", items: [],

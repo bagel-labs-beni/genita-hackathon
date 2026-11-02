@@ -79,6 +79,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(waitLabel(dots, "Card 2 of 6"), "right tap goes on")
         tapSettled("hisyNext")
         XCTAssertTrue(waitLabel(dots, "Card 3 of 6"), "HISY-3")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyTag' AND label == 'Under $100'")).firstMatch.exists, "budget as a style tag")
         Thread.sleep(forTimeInterval: 0.4)
         capture("HISY-3")
 

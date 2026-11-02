@@ -7,7 +7,7 @@ final class FindsSheetUITests: XCTestCase {
     private let names = [
         1: "searching", 2: "rising", 3: "half", 4: "chip-box", 5: "missing", 6: "full-steps", 7: "ask", 8: "source",
         9: "peek", 10: "user-talks", 11: "new-find", 12: "next-card", 13: "link", 14: "link-failed", 15: "picture-failed",
-        16: "offline", 17: "closed-undo", 18: "voiceover", 19: "how", 20: "IC4-unclear", 21: "reasons",
+        16: "offline", 17: "closed-undo", 18: "voiceover", 19: "how", 20: "IC4-unclear", 21: "reasons", 22: "budget",
     ]
 
     private func launch(_ state: Int) -> XCUIApplication {
@@ -72,6 +72,17 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertEqual(chips.label, "Why this: Your taste: quick weeknight food, You said: no cilantro")
         Thread.sleep(forTimeInterval: 1.2)
         capture(app, 21)
+    }
+
+    /// Knows-Me Map: "Your budget: under $100" (from the profile, blue) beside the style chip, two priced picks.
+    func testBudgetReasonChip() throws {
+        let app = launch(22)
+        XCTAssertTrue(sheet(app).waitForExistence(timeout: 15))
+        let chips = app.descendants(matching: .any)["findReasons"]
+        XCTAssertTrue(chips.waitForExistence(timeout: 5), "reason chips on the card")
+        XCTAssertEqual(chips.label, "Why this: Your style: clean, minimal clothes, Your budget: under $100")
+        Thread.sleep(forTimeInterval: 1.2)
+        capture(app, 22)
     }
 
     /// Fold and close rules: face tap folds (not interrupt), swipe down from peek closes with Undo, Undo restores.
