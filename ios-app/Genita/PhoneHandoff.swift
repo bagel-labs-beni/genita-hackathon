@@ -324,6 +324,10 @@ private struct CameraFeed: UIViewRepresentable {
     let session: ARSession
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
+        // Black until the first camera frame (ARKit then draws the camera image as the scene background),
+        // so the light Cancel button and the white corners always have contrast.
+        view.backgroundColor = .black
+        view.scene.background.contents = UIColor.black
         view.automaticallyUpdatesLighting = false
         view.rendersCameraGrain = false
         // Assigning the session keeps the tracker as its delegate; the view only draws the camera image.
