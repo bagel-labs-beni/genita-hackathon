@@ -117,6 +117,10 @@ struct MacConversationView: View {
             #if DEBUG
             if reviewState == "link" { linkOpened = MacResultFixture.firstPick }
             #endif
+            // {name} comes from the account's companion (named on the iPhone, NM01), never a hard-coded "Jin"
+            if model.onboarding.auth.isSignedIn {
+                Task { if let c = try? await model.onboarding.companion() { model.setup.companionName = c.name; call.companionName = c.name } }
+            }
         }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in

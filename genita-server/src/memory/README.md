@@ -157,5 +157,4 @@ The main session can commit these reviewable groups with its normal Git access:
 3. `evals/memory/`, `scripts/{eval-memory,check-memory}.ts`,
    `test/memory-eval.test.ts`, `package.json`, `.gitignore`, this README (eval/handoff).
 
-Use `git -c user.name=summerlee -c user.email=chelsea@users.noreply.github.com commit` and end each
-message with `Co-Authored-By: Codex <noreply@openai.com>`. No push or PR was made.
+Commit with your own Git identity.

@@ -9,30 +9,26 @@
  * from it (F2-L9 "서버 재시작해도 이어짐").
  * Raw pasted import text is never passed in here.
  */
-import { mkdir, readFile, rename, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
 import type { CompanionKind, PrepEmotion } from "./prompts.ts";
+import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-export type StepStatus = "pending" | "running" | "done" | "failed" | "todo";
+/** `skipped` = a legacy video/lip step outside the Meta pipeline */
+export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
   error?: string;
   ms?: number;
-  fal?: FalRequest;
   url?: string;
   source?: string;
-  /** lips: remote bake job id (Modal FunctionCall), saved before polling */
-  callId?: string;
-  /** lips (human): Peter avatar cache on the Modal Volume; the worker's READY.bundle_id must match */
-  avatarId?: string;
-  bundleId?: string;
-  nBase?: number;
+  /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
+  face?: FaceState;
 };
 
 export type PrepState = {
@@ -42,8 +38,10 @@ export type PrepState = {
   steps: {
     scene: Step;
     videos: Record<PrepEmotion, Step>;
-    /** human: Peter avatar cache (F2-L22) · animal/character: mouth atlas (F2-L23) */
+    /** Legacy lip step retained for persisted records. */
     lips: Step;
+    /** Meta-only face set (expressions + visemes); absent on older persisted records */
+    face?: Step;
   };
   startedAt: string;
   readyAt?: string;
@@ -86,7 +84,16 @@ export interface PrepStore {
   patchCompanion(userId: string, fn: (c: CompanionRecord) => CompanionRecord): Promise<CompanionRecord | null>;
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
+  putVoicePreview(voiceId: string, version: string, audio: Buffer): Promise<void>;
+  /**
+   * Companion images (scene = `neutral`, face set keys), served by GET /v1/companion/face/:key.
+   * Kept under the user (blob key users/<userId>/companions/<companionId>/face/<name>), so
+   * DELETE /me removes them with the user's other files.
+   */
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
+  getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
+  /** drops every image of a companion, or of every companion of the user when companionId is omitted */
+  deleteAssets(userId: string, companionId?: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -178,12 +185,26 @@ export class FileStore implements PrepStore {
   }
   async getVoicePreview(voiceId: string, version: string) {
     try {
-      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.mp3`));
+      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.wav`));
     } catch {
       return null;
     }
   }
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.write(`voices/${safe(voiceId)}-${safe(version)}.mp3`, mp3);
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.write(`voices/${safe(voiceId)}-${safe(version)}.wav`, audio);
+  }
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
+  }
+  async deleteAssets(userId: string, companionId?: string) {
+    await rm(join(this.dir, companionId ? `assets/${safe(userId)}/${safe(companionId)}` : `assets/${safe(userId)}`), { recursive: true, force: true });
+  }
+  async getAsset(userId: string, companionId: string, name: string) {
+    try {
+      return await readFile(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
   }
 }
