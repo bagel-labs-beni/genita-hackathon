@@ -111,10 +111,11 @@ type Reply = {
   fellBack: boolean;
 };
 
-type TurnMetrics = { speechEndAt?: number; completeAt?: number };
+/** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
+type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void };
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void; at: number };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -591,14 +592,16 @@ export class Session {
     if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
+        this.metrics = {};
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
+        this.metrics.lastPartialAt = t;
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
-        this.metrics = { speechEndAt: t };
+        this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
@@ -862,7 +865,7 @@ export class Session {
     let confirm!: () => void;
     const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
     abort.signal.addEventListener("abort", confirm, { once: true });
-    this.spec = { norm, abort, built, confirm, stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
+    this.spec = { norm, abort, built, confirm, at: this.now(), stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
   }
 
   private dropSpeculation(): void {
@@ -888,6 +891,8 @@ export class Session {
       firstTokenAt?: number;
       firstSentenceAt?: number;
       firstAudioAt?: number;
+      toolsBeforeText?: number;
+      firstSentenceChars?: number;
     };
     this.metrics = {};
     let speculative: "hit" | "miss" | "none" = "none";
@@ -900,6 +905,7 @@ export class Session {
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
+        m.specStartAt = spec.at;
         spec.confirm();
         built = spec.built;
         pre = spec.stream;
@@ -943,7 +949,10 @@ export class Session {
         }
         if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
-        if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
+        if (m.firstSentenceAt === undefined) {
+          m.firstSentenceAt = this.now();
+          m.firstSentenceChars = tts.length;
+        }
         sentences.push({ tts, display, emotion });
         // captions go out per sentence: the opener guard may rewrite the first one
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
@@ -974,6 +983,7 @@ export class Session {
               gotText = true;
               pushSentences(splitter.push(ev.delta));
             } else if (ev.type === "tool") {
+              if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
               this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
             } else if (ev.type === "done") status = ev.status;
           }
@@ -1148,7 +1158,20 @@ export class Session {
       speculative,
     };
     this.client.sendJson({ type: "turn.metrics", ...metrics });
-    this.log("turn.answered", metrics);
+    // stage timeline for the latency breakdown (ms from the ASR's speechEnd; server clock; log only)
+    const rel = (x?: number) => (x !== undefined && m.speechEndAt !== undefined ? Math.round(x - m.speechEndAt) : null);
+    const stages = {
+      lastPartial: rel(m.lastPartialAt),
+      specStart: rel(m.specStartAt),
+      complete: rel(m.completeAt),
+      replyStart: rel(m.replyStartAt),
+      firstToken: rel(m.firstTokenAt),
+      firstSentence: rel(m.firstSentenceAt),
+      firstAudio: rel(m.firstAudioAt),
+      toolsBeforeText: m.toolsBeforeText ?? 0,
+      firstSentenceChars: m.firstSentenceChars ?? null,
+    };
+    this.log("turn.answered", { ...metrics, stages });
 
     // The app is still playing what we sent faster than real time; stay in
     // "speaking" (so barge-in still works) until playback should be over or
