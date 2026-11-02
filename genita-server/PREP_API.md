@@ -22,7 +22,7 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | `POST /v1/import` | `{text, background:true}` | `202 {status:"processing"}` ("Continue in the background") |
 | `GET /v1/import` | | `{status:"none"\|"processing"\|"failed"\|"ready", style?, profile?}` |
 
-`style.display` = I04's five rows `[{key, title, items:[{text, label}]}]`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
+`style.display` = I04's six rows in order `communication` Communication style · `response` Response preferences · `help` How Genita can help · `interests` Interests · `likes` Likes & dislikes · `boundaries` Boundaries, each `{key, title, items:[{text, label}]}` (max 3 items). `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
 
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 

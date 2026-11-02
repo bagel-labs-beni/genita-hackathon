@@ -82,7 +82,7 @@ test("import request wraps the paste as data and strips fake closing tags", () =
   assert.equal((String(r.input).match(/<\/pasted_profile>/g) ?? []).length, 1);
 });
 
-test("style card: 8 sections → I04's 5 rows, suggestions never become facts, filters drop bad items", () => {
+test("style card: 8 sections → I04's 6 rows, suggestions never become facts, filters drop bad items", () => {
   const card = toStyleCard({
     sections: {
       tendencies: [{ text: "Sketches two options before deciding.", label: "observed", scope: "work" }],
@@ -99,14 +99,16 @@ test("style card: 8 sections → I04's 5 rows, suggestions never become facts, f
     rules: [{ when: "When the user is deciding", then: "Genita should give two options and pick one", label: "suggested" }],
     to_confirm: ["Humor in serious moments", "a", "b", "c", "d"],
   });
-  assert.deepEqual(card.display.map((r) => r.title), ["Communication style", "Response preferences", "Interests", "Likes & dislikes", "Boundaries"]);
+  assert.deepEqual(card.display.map((r) => r.title), ["Communication style", "Response preferences", "How Genita can help", "Interests", "Likes & dislikes", "Boundaries"]);
   assert.deepEqual(card.dropped, { injection: 1, sensitive: 1 });
   assert.equal(card.sections.approach[0].label, "suggested"); // section 7 is always a suggestion
-  assert.equal(card.display[2].items.length, 0);
+  assert.equal(card.display[3].items.length, 0); // Interests: the only item had an email → dropped
+  assert.equal(card.display[2].items[0].text, "Two options first when deciding."); // row 3 = help findings
   assert.equal(card.partial, true); // I04-P
   assert.equal(card.toConfirm.length, 4);
   const resp = card.display[1].items;
-  assert.equal(resp[0].label, "explicit"); // facts before suggestions
+  assert.ok(!resp.some((i) => i.text === "Two options first when deciding.")); // help moved to its own row
+  assert.equal(resp[0].label, "suggested"); // approach + rules are suggestions only
   assert.ok(resp.some((i) => i.text === "When the user is deciding, give two options and pick one." && i.label === "suggested"));
   const text = styleProfileText(card);
   assert.match(text, /How the user wants to be treated:[\s\S]*Suggestions \(not confirmed by the user\):[\s\S]*candid creative partner/);
@@ -117,7 +119,7 @@ test("style card: 8 sections → I04's 5 rows, suggestions never become facts, f
 test("style card survives garbage from the model", () => {
   const card = toStyleCard({ sections: { communication: "nope" } as never, rules: null as never });
   assert.equal(card.itemCount, 0);
-  assert.equal(card.display.length, 5);
+  assert.equal(card.display.length, 6);
 });
 
 test("ruleLine normalizes casing and 'Genita should'", () => {
@@ -137,4 +139,25 @@ test("voices: Spark order applied safely", () => {
     { id: "a1", name: "Ann", blurb: "Soft", tags: "Soft" },
     { id: "b2", name: "Ben", blurb: "", tags: "" },
   ]);
+});
+
+test("style card: a reply with no help section → partial, empty 'How Genita can help'", () => {
+  const card = toStyleCard({
+    sections: {
+      tendencies: [{ text: "Likes a plan.", label: "observed", scope: "any" }],
+      communication: [{ text: "Warm and direct.", label: "explicit", scope: "any" }],
+      help: [],
+      support: [{ text: "Honest feedback.", label: "explicit", scope: "any" }],
+      interests: [{ text: "Design.", label: "explicit", scope: "any" }],
+      boundaries: [{ text: "No unasked advice.", label: "explicit", scope: "any" }],
+      approach: [{ text: "Be brief.", label: "suggested", scope: "any" }],
+    },
+    rules: [],
+    to_confirm: [],
+  });
+  assert.equal(card.display.length, 6);
+  const help = card.display.find((r) => r.key === "help")!;
+  assert.equal(help.title, "How Genita can help");
+  assert.equal(help.items.length, 0);
+  assert.equal(card.partial, true);
 });

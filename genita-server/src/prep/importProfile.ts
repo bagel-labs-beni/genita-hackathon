@@ -7,8 +7,9 @@
  *   - all 8 sections, each finding with its evidence label
  *   - "When …, Genita should …" rules
  *   - up to 4 things to confirm (asked on the first call, PRD F3 [결정])
- * then this file groups it into the 5 rows of I04 (r02): Communication style,
- * Response preferences, Interests, Likes & dislikes, Boundaries.
+ * then this file groups it into the 6 rows of I04 (PRD v12 F2): Communication style,
+ * Response preferences, How Genita can help, Interests, Likes & dislikes,
+ * Boundaries.
  *
  * Safety (PRD F3 경험 정책):
  *   - The pasted text is data. It goes in a delimited block, the instructions
@@ -167,7 +168,7 @@ export type StyleCard = {
   sections: ImportRaw["sections"];
   rules: ConditionalRule[];
   toConfirm: string[];
-  /** I04: five rows; empty rows render "Not enough information yet" (I04-P) */
+  /** I04: six rows; empty rows render "Not enough information yet" (I04-P) */
   display: DisplayRow[];
   partial: boolean;
   itemCount: number;
@@ -177,7 +178,8 @@ export type StyleCard = {
 
 const ROWS: Array<{ key: string; title: string; from: Array<Exclude<SectionKey, "to_confirm">>; rules?: boolean }> = [
   { key: "communication", title: "Communication style", from: ["communication"] },
-  { key: "response", title: "Response preferences", from: ["help", "approach"], rules: true },
+  { key: "response", title: "Response preferences", from: ["approach"], rules: true },
+  { key: "help", title: "How Genita can help", from: ["help"] },
   { key: "interests", title: "Interests", from: ["interests"] },
   { key: "likes", title: "Likes & dislikes", from: ["support", "tendencies"] },
   { key: "boundaries", title: "Boundaries", from: ["boundaries"] },
@@ -277,3 +279,4 @@ export function styleProfileText(card: StyleCard, max = 2000): string {
   if (out.length > max) out = out.slice(0, out.lastIndexOf("\n", max));
   return out;
 }
+
