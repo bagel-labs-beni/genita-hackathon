@@ -249,7 +249,53 @@ export type ProductCtx = PipelineCtx & {
   /** the previous product search in this call, when this turn refines it */
   previous?: string;
   region?: string;
+  /** identical search calls raced (GENITA_PRODUCT_HEDGE, default 2): first with 2 opened pages wins */
+  hedge?: number;
 };
+
+type SearchResult = Awaited<ReturnType<FindsVendors["spark"]>>;
+
+/** opened pages the answer actually lists (how good a search result is) */
+function provenCount(r: SearchResult): number {
+  const j = lastJsonObject<ProductJson>(r.text);
+  const opened = completedOpens(r.output);
+  const items = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
+  return items.filter((i) => matchOpened(str(i?.url, 600), opened)).length;
+}
+
+/**
+ * Spark's search time varies a lot (10–35 s for the same kind of ask, one timeout in 10 on 11/2), so n
+ * identical calls race: the first that lists ${PRODUCT_COUNT} opened pages wins and the rest are aborted;
+ * if none does, the best one (most opened pages listed, then most opens) is used.
+ */
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal): Promise<SearchResult | null> {
+  const runs = Array.from({ length: Math.max(1, Math.min(3, n)) }, () => new AbortController());
+  const stopAll = () => runs.forEach((a) => a.abort());
+  signal.addEventListener("abort", stopAll, { once: true });
+  const done: SearchResult[] = [];
+  try {
+    return await new Promise<SearchResult | null>((resolve) => {
+      let left = runs.length;
+      const finish = () => {
+        if (--left > 0) return;
+        done.sort((a, b) => provenCount(b) - provenCount(a) || completedOpens(b.output).length - completedOpens(a.output).length);
+        resolve(done[0] ?? null);
+      };
+      for (const a of runs) {
+        withTimeout(vendors.spark({ input: userMessage(prompt), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {
+          if (r) {
+            done.push(r);
+            if (provenCount(r) >= PRODUCT_COUNT) return resolve(r);
+          }
+          finish();
+        });
+      }
+    });
+  } finally {
+    stopAll();
+    signal.removeEventListener("abort", stopAll);
+  }
+}
 
 export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { label?: string }> {
   const t0 = ctx.now();
@@ -264,11 +310,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today });
 
-  const res = await withTimeout(
-    vendors.spark({ input: userMessage(prompt), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, ctx.signal),
-    SEARCH_TIMEOUT_MS,
-    ctx.signal,
-  );
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal);
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
@@ -330,6 +372,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     if (!p.inTrace) serverOpened++;
     if (!isProductPage(p.url, f)) {
       dropped.notProduct++;
+      ctx.log("product.not_product", { findId: ctx.findId, url: p.url.slice(0, 200), page: f?.kind ?? "unread" });
       return;
     }
     const domain = domainOf(p.url);
