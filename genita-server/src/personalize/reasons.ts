@@ -51,6 +51,9 @@ function kindOf(text: string): Kind {
   return food && !style ? "food" : style && !food ? "style" : null;
 }
 
+const GENERAL_FOOD =
+  /\b(?:korean|italian|mexican|japanese|thai|indian|chinese|sichuan|french|spanish|greek|vietnamese|mediterranean|middle eastern|comfort|home cooking|home-cooked|weeknight|quick|easy|one-pot|healthy|light|hearty|spicy|mild|vegetarian|vegan|pescatarian|plant-based|low-carb|cuisine)\b/i;
+
 const CUT = /\s+(?:in|with|for|from|over|that|when|which|because|especially|like|and)\s+|[.;:]\s*/i;
 
 /** A chip-sized phrase: "Style: Clean, minimal clothes in black and grey." → "clean, minimal clothes". */
@@ -95,7 +98,10 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   // blue "Your style / Your taste: …" — the stored profile (import, HISY corrections)
   const stored = mine.filter((l) => !l.fromCall);
   const likes = stored.filter((l) => !isDislike(l.text));
-  push(likes.find(echoed) ?? likes[0], want === "style" ? "Your style" : "Your taste", "profile");
+  // style lines always speak to an outfit; for a dish, a cuisine / diet / way-of-cooking line does (the recipe was picked
+  // with it), an ingredient line only when the dish has it ("noodles" on fried rice reads wrong)
+  const general = (l: TasteLine) => want === "style" || GENERAL_FOOD.test(l.text);
+  push(likes.find(echoed) ?? likes.find(general), want === "style" ? "Your style" : "Your taste", "profile");
   if (out.length < 2) push(stored.find((l) => isDislike(l.text) && respected(l)), "Your taste", "profile");
   return out.slice(0, 2);
 }

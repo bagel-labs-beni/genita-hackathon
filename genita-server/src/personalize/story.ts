@@ -206,14 +206,15 @@ export function buildStoryRequest(
 }
 
 const LABEL_WORDS =
-  /\b(?:introvert(?:ed)?|extravert(?:ed)?|extrovert(?:ed)?|ambivert|[IE][NS][TF][JP]|MBTI|myers[- ]briggs|enneagram|big five|type [AB]\b|personality type|perfectionist|people[- ]pleaser|empath|narcissis\w*|anxious|anxiety|depress\w*|ADHD|ADD|autis\w*|OCD|bipolar|trauma\w*|disorder|diagnos\w*|neurodivergent|neurotic\w*|highly sensitive|overthink\w*|insecur\w*|attachment style|codependen\w*|avoidant|melancholic|choleric|sanguine|phlegmatic)\b/i;
+  /\b(?:introvert(?:ed)?|extravert(?:ed)?|extrovert(?:ed)?|ambivert|MBTI|myers[- ]briggs|enneagram|big five|type [AB]\b|personality type|perfectionist|people[- ]pleaser|empath|narcissis\w*|anxious|anxiety|depress\w*|ADHD|autis\w*|OCD|bipolar|trauma\w*|disorder|diagnos\w*|neurodivergent|neurotic\w*|highly sensitive|overthink\w*|insecur\w*|attachment style|codependen\w*|avoidant|melancholic|choleric|sanguine|phlegmatic)\b/i;
 const FLATTERY =
   /\b(?:amazing|brilliant|genius|incredible|wonderful|awesome|impressive|so smart|talented|gifted|remarkable|extraordinary|fantastic|admire|love that about you|special person|one of a kind|beautiful mind|inspiring)\b/i;
 
 /** null = fine; else why the text can't be shown. */
 export function storyTextProblem(s: string): "label" | "flattery" | "too_long" | "unsafe" | null {
   if (looksLikeInjection(s) || redactSensitive(s) !== s) return "unsafe";
-  if (LABEL_WORDS.test(s)) return "label";
+  // case-sensitive: "INTJ", "ADD" are labels; "add detail" is not (11/3 eval: 3/8 talk promises were thrown away)
+  if (LABEL_WORDS.test(s) || /\b(?:[IE][NS][TF][JP]|ADD)\b/.test(s)) return "label";
   if (FLATTERY.test(s)) return "flattery";
   const sentences = s.split(/(?<=[.!?…])\s+/).filter((x) => x.trim()).length;
   if (sentences > 2 || s.length > 220) return "too_long";
@@ -247,6 +248,14 @@ function bestFact(card: StyleCard, keys: Array<keyof StyleCard["sections"]>): Ev
 }
 const clamp = (claimed: unknown, best: Evidence): Evidence => (EVIDENCE.includes(claimed as Evidence) && RANK[claimed as Evidence] <= RANK[best] ? (claimed as Evidence) : best);
 
+/** "Reminder frequency" (the parsed card) and "Reminder frequency: unknown whether…" (the paste) are the same item. */
+function sameItem(a: string, b: string): boolean {
+  const key = (s: string) => s.toLowerCase().replace(/[:(—-].*$/, "").replace(/[^\p{L}\p{N} ]/gu, "").trim();
+  const x = key(a);
+  const y = key(b);
+  return !!x && !!y && (x === y || x.startsWith(y) || y.startsWith(x));
+}
+
 /** Open topics: Spark-mapped still-to-confirm items, empty I04 rows, missing cards (≤ 4, declined ones out). */
 export function unknownItems(card: StyleCard, missing: SparkStoryId[] = [], topics: UnknownItem[] = []): UnknownItem[] {
   const declined = new Set((card.growth?.asked ?? []).filter((a) => a.declined).map((a) => a.item.toLowerCase()));
@@ -257,7 +266,7 @@ export function unknownItems(card: StyleCard, missing: SparkStoryId[] = [], topi
     out.push({ item, topic, sub: t?.sub ?? "" });
   };
   if (missing.includes("think")) add("think", TOPIC.think);
-  for (const t of card.toConfirm ?? []) add(t, TOPIC[t.toLowerCase()] ?? topics.find((x) => x.item.toLowerCase() === t.toLowerCase()));
+  for (const t of card.toConfirm ?? []) add(t, TOPIC[t.toLowerCase()] ?? topics.find((x) => sameItem(x.item, t)));
   for (const row of card.display ?? []) if (!row.items.length) add(row.title, TOPIC[row.title.toLowerCase()]);
   return out.slice(0, UNKNOWNS_MAX);
 }

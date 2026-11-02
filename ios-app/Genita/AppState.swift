@@ -12,7 +12,7 @@ enum Stage: String, Codable, CaseIterable {
     case companionName
     /// PREP-1 "Bringing {name} to life" (D38): after SUM, before S07
     case bringing
-    /// N1–N3: the I01 "I don't use ChatGPT or Claude" path (D33)
+    /// N1–N3: the I01 "I don’t use an AI assistant" path (D33, D44)
     case skipTopics, skipReplies, skipAvoid
 }
 enum SetupDepth: String, Codable, CaseIterable { case quick, right, deep

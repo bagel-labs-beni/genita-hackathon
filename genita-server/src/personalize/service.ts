@@ -97,6 +97,15 @@ export class Personalize {
     return { ...card, story: { version: 2, cards, topics, at: this.now().toISOString(), from, ms: r.ms } };
   }
 
+  /** The paste's story is still being written after the import answered: GET story waits for it instead of writing another. */
+  trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>): void {
+    const j = job
+      .then((r) => (r ? this.attachLate(userId, r) : undefined))
+      .catch(() => {})
+      .finally(() => { if (this.storyJobs.get(userId) === j) this.storyJobs.delete(userId); });
+    this.storyJobs.set(userId, j);
+  }
+
   /** Save a story that landed after the import response went out (only if the card has none yet). */
   async attachLate(userId: string, r: { raw: unknown; ms: number }): Promise<void> {
     await this.update(userId, (card) => (card.story ? null : { card: this.withStory(card, r), out: true }));

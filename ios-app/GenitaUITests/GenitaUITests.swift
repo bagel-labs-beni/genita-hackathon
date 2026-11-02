@@ -55,7 +55,9 @@ final class GenitaUITests: XCTestCase {
         let app = XCUIApplication()
         func open(_ stage: String) {
             app.launchArguments = ["--uitesting"]
-            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage]
+            // Not the deployed server: with no session token it closes 4401 and the app routes to A02 sign-in (#155),
+            // so the conversation stage would never show its rail. A closed local port just keeps reconnecting.
+            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage, "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session"]
             app.launch()
         }
         func capture(_ name: String) {
@@ -82,6 +84,8 @@ final class GenitaUITests: XCTestCase {
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
+        XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 15), "camera toggle on the call rail")
+        XCTAssertTrue(app.buttons["cameraToggle"].isEnabled)
         XCTAssertTrue(app.buttons["micToggle"].isEnabled)
         app.buttons["more"].tap(); XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)); capture("31a-더보기")
         app.descendants(matching: .any)["closeMore"].tap()
