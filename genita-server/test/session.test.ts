@@ -127,6 +127,7 @@ test("start → ready with lip plan; a voice turn streams reply text, framed aud
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "atlas" }));
   const ready = client.json.find((m) => m.type === "ready")!;
   assert.deepEqual(ready.lip, { requested: "atlas", active: "atlas", reason: null });
+  assert.equal(ready.tts, "server");
 
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
