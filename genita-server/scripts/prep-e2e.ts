@@ -34,7 +34,7 @@ const dataDir = process.env.GENITA_DATA_DIR ?? mkdtempSync(join(tmpdir(), "genit
 const events: string[] = [];
 const d: PrepDeps = {
   metaKey: config.metaKey,
-  elevenKey: config.elevenKey,
+  elevenKey: config.elevenKey ?? "",
   ttsModel: config.ttsModel,
   falKey: process.env.FAL_KEY || null,
   store: new FileStore(dataDir),

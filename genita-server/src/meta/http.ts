@@ -2,9 +2,9 @@ export const META_BASE = "https://api.meta.ai/v1";
 
 /** A vendor call failed. Carries status and a short vendor message, never the key. */
 export class UpstreamError extends Error {
-  readonly vendor: "meta" | "elevenlabs";
+  readonly vendor: "meta" | "elevenlabs" | "voice";
   readonly status: number | null;
-  constructor(vendor: "meta" | "elevenlabs", status: number | null, detail: string) {
+  constructor(vendor: "meta" | "elevenlabs" | "voice", status: number | null, detail: string) {
     super(`${vendor} ${status ?? "network"}: ${detail.slice(0, 300)}`);
     this.name = "UpstreamError";
     this.vendor = vendor;
