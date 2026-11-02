@@ -178,6 +178,74 @@ def lip_hull_mask(img, mouth_px, dilate_px):
     return cv2.GaussianBlur(up.astype(np.float32), (0, 0), max(1.0, 0.6 * d))
 
 
+# Mouth interior tone (critic 11/3, sweep v25/v26: 7.5 -> 8.5 vs the reference): the Muse open keys show grey teeth and
+# a grey cavity. Inside each key's lip hull (lips excluded), the upper 60 % low-saturation teeth lift halfway to white
+# (a band 70 % of the hull width, dimmer off-centre), everything else in the opening becomes a warm dark maroon with a
+# faint tongue tone in the lower third. Colour only; no geometry. Teeth white scales with skin lightness.
+INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 0.85, 'lumHi': 1.0}}
+
+
+def interior_tone(img, mouth_px, spec, scale):
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cs:
+        return img
+    hull = np.zeros_like(keep)
+    cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
+    inn = (cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))).astype(np.float32)
+    # never on lip-coloured skin: a big lip hull can cover part of the lower lip (critic: dark tick on darkskin / woman)
+    bx1, by1, bx2, by2 = mouth_px
+    mw_, mh_ = bx2 - bx1, max(1, by2 - by1)
+    box = np.zeros(inn.shape, bool); box[max(0, by1 - mh_):by2 + 3 * mh_, max(0, bx1 - mw_ // 6):bx2 + mw_ // 6] = True
+    skin_a = float(np.median(lab[..., 1][box])) if box.any() else 128.0
+    lipL = float(np.median(lab[..., 0][keep > 0]))
+    hsv0 = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+    lipish = (lab[..., 1] > skin_a + 6) & (hsv0[..., 1] > 0.2 * 255) & (lab[..., 0] > 0.7 * lipL)
+    inn = inn * (1 - lipish).astype(np.float32)
+    ys, xs = np.where(inn > 0)
+    if len(ys) < 10:
+        return img
+    H, W = inn.shape
+    fe = max(0.8, 0.8 * scale)
+    hsv = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
+    S, V = hsv[..., 1] / 255, hsv[..., 2]
+    skinL = np.median(lab[max(0, by1 - (by2 - by1)):max(1, by1), max(0, bx1):max(1, bx2), 0]) if by1 > 0 else 170
+    vhi = spec['vhi'] - 40 * (1 - float(np.clip(skinL / 170.0, 0.3, 1.0)))       # darker skin: less glaring white
+    # teeth threshold relative to this key: top 30 % of the low-saturation interior (dim teeth on older / glasses faces)
+    cand = V[(inn > 0) & (S < 0.42)]
+    vlo = float(np.clip(min(spec['vlo'], np.percentile(cand, 70)) if len(cand) > 20 else spec['vlo'], 60, spec['vlo']))
+    r = ((np.arange(H, dtype=np.float32) - ys.min()) / max(1, ys.max() - ys.min()))[:, None]
+    up = np.clip((spec['split'] - r) / 0.15, 0, 1)
+    cx, hw = (xs.min() + xs.max()) / 2, max(1, (xs.max() - xs.min()) / 2)
+    dx = (np.abs(np.arange(W, dtype=np.float32) - cx) / hw)[None, :]
+    band = np.clip((spec['band'] - dx) / 0.1, 0, 1) * (1 - 0.45 * np.clip(dx / spec['band'], 0, 1))
+    th = np.clip((0.38 - S) / 0.1, 0, 1) * np.clip((V - vlo) / 12, 0, 1) * inn
+    th = np.maximum(th, band * np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - (vlo - 30)) / 12, 0, 1) * inn) * up
+    cav = np.clip((vlo - V) / 12, 0, 1) * inn
+    th = cv2.GaussianBlur(th, (0, 0), fe); cav = cv2.GaussianBlur(cav, (0, 0), fe)
+    hsv[..., 2] = np.clip(V + (vhi - V) * spec['lift'] * th, 0, 255)
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1 - 0.4 * th), 0, 255)
+    out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)
+    # lower opening -> cavity tone only where it is already darker than the lips or is a (lower) tooth
+    darker = np.clip((lipL - lab[..., 0]) / 25.0, 0, 1) + np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - vlo + 30) / 12, 0, 1)
+    low = cv2.GaussianBlur(inn * (1 - up) * np.clip(darker, 0, 1), (0, 0), fe)
+    g = np.clip(low + cav * (1 - th), 0, 1)[..., None]
+    r3 = (np.clip((r - 0.62) / 0.25, 0, 1) * 0.6)[..., None]
+    tgt = np.array([25, 25, 45], np.float32) * (1 - r3) + np.array([60, 60, 110], np.float32) * r3
+    lum = (out.mean(2, keepdims=True) / 60.0).clip(0.6, spec.get('lumHi', 1.4))
+    dark = (1 - spec['mix']) * out * 0.6 + spec['mix'] * tgt * lum
+    return out * (1 - g) + dark * g
+
+
 def colorfix(img, mouth_px, spec):
     tg, ls, lv = spec
     u8 = np.clip(img, 0, 255).astype(np.uint8)
@@ -484,6 +552,8 @@ def main():
             cr = NR * (1 - Mr) + colorfix(cr, mouth_px, cfx) * Mr
         if kind == 'human' and LIP_MATCH:
             cr = NR * (1 - Mr) + lip_match(cr, NR, mouth_px) * Mr
+        if INTERIOR.get(kind) and name != 'MBP':
+            cr = interior_tone(cr, mouth_px, INTERIOR[kind], W / 540.0)
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
