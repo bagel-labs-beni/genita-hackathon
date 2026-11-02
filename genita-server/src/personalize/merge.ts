@@ -63,8 +63,12 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   let toConfirm = [...(card.toConfirm ?? [])];
   const applied: AppliedUpdate[] = [];
   const stale = new Set<StoryId>();
+  // what was removed and when: an older analysis can't bring it back (Codex round 2)
+  const tombs = [...(card.removed ?? [])];
   for (const u of updates) {
     if (!u || !PROFILE_FIELDS.includes(u.field) || (u.label !== "explicit" && u.label !== "observed")) continue;
+    // said before the current profile was imported: belongs to an older profile
+    if (u.asOf && card.importedAt && card.importedAt > u.asOf) continue;
     const text = typeof u.text === "string" ? u.text.replace(/\s+/g, " ").trim().slice(0, 160) : "";
     const list = sections[u.field];
     const replaces = new Set((Array.isArray(u.replaces) ? u.replaces : []).filter((r) => typeof r === "string").map(norm));
@@ -75,6 +79,7 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
         const l = sections[key];
         for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text))) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); }
       }
+      for (const r of removed) tombs.push({ text: r, at });
       if (removed.length) applied.push({ field: u.field, text: "", label: "explicit", removed, ...(u.chip ? { chip: u.chip } : {}) });
       continue;
     }
@@ -86,7 +91,10 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     if (u.label === "observed" && list.some((x) => x.label === "explicit" && target(x))) continue;
     // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
     if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
+    // …nor bring back (or contradict) a line the user removed after it
+    if (u.asOf && text && tombs.some((t) => t.at > u.asOf! && (norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
+    for (const r of removed) tombs.push({ text: r, at });
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
     list.unshift({ text, label, scope: same?.scope ?? "any", at });
@@ -109,6 +117,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   }
   next.dropped = card.dropped;
   if (card.growth) next.growth = card.growth;
+  if (card.importedAt) next.importedAt = card.importedAt;
+  if (tombs.length) next.removed = tombs.slice(-40);
   if (card.story) next.story = { ...card.story, stale: [...new Set([...(card.story.stale ?? []), ...stale])] };
   next.updatedAt = at;
   return { card: next, applied, staleCards: [...stale] };

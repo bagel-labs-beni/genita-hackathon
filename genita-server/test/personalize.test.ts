@@ -345,3 +345,14 @@ test("Codex #5: a line that only echoes a suggestion is not shown, and evidence 
   const talk = cards.find((c) => c.id === "talk")!;
   assert.deepEqual(talk.items.map((i) => [i.text, i.evidence]), [["You want it warm and direct.", "explicit"], ["Mornings, you want quick replies.", "observed"]]);
 });
+
+test("Codex round 2: a removed line isn't brought back by an older analysis; a newer import drops older analyses", () => {
+  const card = rawCard({ likes: [{ text: "Loves cilantro.", label: "explicit", scope: "any", at: "2026-11-03T01:00:00Z" }] });
+  const removed = mergeUpdates(card, [{ field: "likes", text: "", replaces: ["Loves cilantro."], label: "explicit" }], "2026-11-03T02:00:00Z").card;
+  assert.deepEqual(removed.sections.likes, []);
+  const late = mergeUpdates(removed, [{ field: "likes", text: "Loves cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T01:30:00Z" }], "2026-11-03T03:00:00Z");
+  assert.equal(late.applied.length, 0);
+  const imported = { ...rawCard(), importedAt: "2026-11-03T02:00:00Z" };
+  assert.equal(mergeUpdates(imported, [{ field: "interests", text: "Into chess.", replaces: [], label: "explicit", asOf: "2026-11-03T01:00:00Z" }], "2026-11-03T03:00:00Z").applied.length, 0);
+  assert.equal(mergeUpdates(imported, [{ field: "interests", text: "Into chess.", replaces: [], label: "explicit", asOf: "2026-11-03T02:30:00Z" }], "2026-11-03T03:00:00Z").applied.length, 1);
+});

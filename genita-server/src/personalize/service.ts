@@ -27,7 +27,8 @@ export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCom
 
 export const ACK = "Got it. I'll remember that.";
 export const CORRECTION_TEXT_MAX = 200;
-const STORY_TIMEOUT_MS = 20_000;
+/** 11/3 eval: story p50 ~5 s, one outlier > 20 s; past this the GET writes it from the stored card instead */
+const STORY_TIMEOUT_MS = 12_000;
 const STORY_BACKOFF_MS = 5 * 60_000;
 const CALL_SIDE_MAX = 12;
 
@@ -89,7 +90,8 @@ export class Personalize {
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
   async replaceStyle(userId: string, card: StyleCard): Promise<void> {
-    await this.serial(userId, () => this.store.putStyle(userId, card));
+    const at = this.now().toISOString();
+    await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
   }
 
   // ───────────── D47 story ─────────────
@@ -209,6 +211,8 @@ export class Personalize {
     const text = typeof body.text === "string" ? body.text.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim() : "";
     if (text.length > CORRECTION_TEXT_MAX) throw new PersonalizeError(400, "bad_correction", `text is at most ${CORRECTION_TEXT_MAX} characters`);
     const items = rawItems as string[];
+    // newer wins by when the user asked: a slow earlier correction can't undo a later one
+    const asOf = this.now().toISOString();
     if (!items.length && !text) throw new PersonalizeError(400, "bad_correction", "items or text");
     const before = await this.store.getStyle(userId);
     if (!before) throw new PersonalizeError(404, "no_profile");
@@ -242,7 +246,7 @@ export class Personalize {
     }
     const applied = updates.length
       ? ((await this.update(userId, (card) => {
-          const m = mergeUpdates(card, updates, this.now().toISOString());
+          const m = mergeUpdates(card, updates.map((u) => ({ ...u, asOf })), this.now().toISOString());
           if (!m.applied.length) return null;
           if (m.card.story) m.card.story.stale = [...new Set([...(m.card.story.stale ?? []), ...(cardId === "unknowns" ? [] : [cardId])])];
           return { card: m.card, out: m.applied };
@@ -311,7 +315,7 @@ export class Personalize {
     const noted = out.m.applied.filter((a) => answer && a.text === answer.text);
     const rest = out.m.applied.filter((a) => !noted.includes(a));
     if (noted.length) events.push({ text: `Noted: ${noted[0].chip ?? noted[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [noted[0].field] });
-    if (rest.length) events.push({ text: `Updated: ${rest.map((a) => a.chip).filter(Boolean).join(", ") || rest[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [...new Set(rest.map((a) => a.field))] });
+    if (rest.length) events.push({ text: `Updated: ${rest.find((a) => a.chip)?.chip ?? rest[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [...new Set(rest.map((a) => a.field))] });
     this.log("profile.voice_updated", { applied: out.m.applied.length, answered: noted.length > 0, fields: out.m.applied.map((a) => a.field), ms: Math.round(performance.now() - t0) });
     return { events, applied: out.m.applied, answered: noted.length > 0, profile: styleProfileText(out.card, 2000, { toConfirm: false }), taste: tasteLines(out.card) };
   }
