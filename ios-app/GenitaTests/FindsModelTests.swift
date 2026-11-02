@@ -284,9 +284,13 @@ import XCTest
         let f = FindsModel()
         f.apply(productStarted("a")); f.apply(try ServerEvent.decode(noMatch))
         XCTAssertEqual(f.pillText, "Nothing I’d pick for you.")
+        // fridge (recipe) cards use the pill too since #122's follow-up; other kinds (link, outfit) keep the call cue
         let r = FindsModel()
         r.apply(started("r")); r.force(.half)
-        XCTAssertNil(r.pillText, "recipe and other cards keep the ordinary call cue")
+        XCTAssertEqual(r.pillText, "Let me take a look…", "a fridge search shows the short line until the server's pill arrives")
+        let l = FindsModel()
+        l.apply(try ServerEvent.decode(#"{"type":"find.started","findId":"l","utteranceId":1,"kind":"link","title":"Reading your link","detail":"example.com"}"#))
+        XCTAssertNil(l.pillText, "link cards keep the ordinary call cue")
     }
 
     /// Fridge pill (#122 follow-up): the server's short line is shown; the long sentence is not.
