@@ -30,7 +30,7 @@ import ARKit
     /// MV-E: shown for 3 s as the call's status line, then it clears itself (independent of any view).
     @Published var moveFailed = false {
         didSet {
-            guard moveFailed,!oldValue else{return}
+            guard moveFailed else{return} // every failure restarts the 3 s (a quick retry that fails again stays up 3 s)
             moveFailedToken+=1;let token=moveFailedToken
             DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in if self?.moveFailedToken==token {self?.moveFailed=false} }
         }

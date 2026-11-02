@@ -110,7 +110,8 @@ struct ConversationView: View {
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
-                        if !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed) {
+                        let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                        if moveLine && !findsTabOpen && !interpreting && !unclear {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
@@ -120,7 +121,7 @@ struct ConversationView: View {
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
                         }
                         }
