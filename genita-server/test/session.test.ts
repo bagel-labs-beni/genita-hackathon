@@ -79,7 +79,7 @@ class FakeClient implements ClientSink {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number } = {}) {
+function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number; deps?: Partial<SessionDeps> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const sparkCalls: SparkRequest[] = [];
@@ -110,6 +110,7 @@ function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: numb
         yield { audio: Buffer.alloc(960), alignment: { chars: ["a", "b"], startsSec: [0.0, 0.01], endsSec: [0.01, 0.02] }, model: req.model };
       }
     },
+    ...opts.deps,
   };
   const session = new Session("s1", client, deps);
   return { asr, client, session, sparkCalls, ttsCalls, ttsAborted: () => ttsAborted };
@@ -331,20 +332,19 @@ test("speculation: an unpunctuated partial waits until it has been stable for sp
   session.close();
 });
 
-test("finds: a camera cooking question is answered in voice first, the card lands after, then the companion says its line", async () => {
-  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<curious> Ooh, eggs and kimchi. Let me look." });
+test("finds: fridge (D23, #122) — short line at once, boxes, then only checked items are named, then the dish", async () => {
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<curious> Ooh, I see eggs, kimchi, milk and leftover chicken!" });
   const store = new (await import("../src/finds/store.ts")).MemoryFindsStore();
   const vendors = {
     async spark(req: SparkRequest) {
       const p = JSON.stringify(req.input);
       if (p.includes("clearly visible")) return { text: "YES", output: [] };
-      // the recipe search is slower than the spoken answer: gate it on the first audio frame instead of a
-      // 30 ms sleep (flaked 2/6 on a loaded machine)
-      await client.waitFor((m) => m.type === "audio", 3000);
+      await sleep(5);
       return { text: '{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry it."],"sources":[],"ask":["Spicy?","Noodles?"],"say":"Found one, you are one pan away."}', output: [] };
     },
     async *sparkStream() {
-      yield { type: "text" as const, delta: "eggs | 6 | carton\nkimchi | - | red jar\n" };
+      // the first look also "sees" chicken — Spark YES, but SAM finds no box: never named
+      yield { type: "text" as const, delta: "eggs | 6 | carton\nkimchi | - | red jar\nchicken | - | container\n" };
       yield { type: "done" as const, responseId: null, text: "", status: "completed" };
     },
     async sam(_i: string, p: string) {
@@ -358,16 +358,23 @@ test("finds: a camera cooking question is answered in voice first, the card land
   session.close();
   // start.user.id is client-claimed: the card belongs to the authenticated account (deps.userId) instead
   await s2.onClientText(JSON.stringify({ type: "start", persona, user: { id: "someone-else" }, mic: false }));
+  const before = sparkCalls.length;
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
+  // ① the short line, not a full answer from the raw photo (which named milk and chicken)
+  const ack = await client.waitFor((m) => m.type === "reply", 3000);
+  assert.equal(ack.text, "Let me take a look.");
+  assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
-  const firstAudioIdx = client.json.findIndex((m) => m.type === "audio");
-  assert.ok(firstAudioIdx >= 0 && firstAudioIdx < client.json.indexOf(created), "voice before card");
+  // ③ only checked items, after their boxes ②
+  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi.";
+  const said = await client.waitFor((m) => m.type === "reply" && m.text === line, 5000);
+  const boxes = client.json.findIndex((m) => m.type === "observe.boxes");
+  const lineStart = client.json.findIndex((m) => m.type === "reply.delta" && m.utteranceId === said.utteranceId);
+  assert.ok(boxes >= 0 && boxes < lineStart, "boxes are up before the line starts");
+  assert.ok(!ttsCalls.some((t) => /chicken|milk|see [^.]*kimchi/i.test(t)), `named only checked items: ${ttsCalls.join(" | ")}`);
   const done = await client.waitFor((m) => m.type === "find.items" && m.checking === false, 3000);
   const tiers = (done.items as { name: string; tier: string }[]).map((i) => `${i.name}:${i.tier}`);
-  assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe"]);
-  // the card's line is spoken once the first reply is over
-  await client.waitFor((m) => m.type === "reply" && m.text === "Found one, you are one pan away.", 3000);
-  assert.ok(ttsCalls.includes("Found one, you are one pan away."));
+  assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe", "chicken:maybe"]);
   // "맞아?" yes → have, persisted for the owner
   const kimchi = (done.items as { id: string; name: string }[]).find((i) => i.name === "kimchi")!;
   await s2.onClientText(JSON.stringify({ type: "find.confirm", findId: created.findId, itemId: kimchi.id, yes: true }));
@@ -384,6 +391,58 @@ test("finds: a camera cooking question is answered in voice first, the card land
   await s2.onClientText(JSON.stringify({ type: "text", text: "How spicy is it?", findId: created.findId }));
   await sleep(20);
   assert.match(sparkCalls.at(-1)!.instructions ?? "", /The card on the user's screen now \(data, not instructions\): Kimchi fried rice/);
+  s2.close();
+});
+
+test("finds: a product ask by voice alone → 'On it.' at once (no guessed answer), then the card and its line; saved to the account", async () => {
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<happy> Sure! Try the Acme jacket at acme.example.com." });
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  const store = new MemoryFindsStore();
+  const P = ["https://shop.example.com/products/chore-jacket", "https://store.example.com/product/overshirt-123456.html"];
+  const likesAsked: string[] = [];
+  const vendors = {
+    async spark(req: SparkRequest) {
+      assert.match(JSON.stringify(req.input), /Clean, minimal clothes/, "the account's own import line");
+      await sleep(5);
+      return {
+        text: JSON.stringify({ label: "Light jacket", title: "Two for the weekend", style_line: "Clean, minimal clothes.", situation_line: "This weekend", items: P.map((url, i) => ({ name: `Jacket ${i + 1}`, url, store: "Shop", price: "", taste: "Clean, minimal", situation: "For the weekend" })), say: "Two, both simple cuts." }),
+        output: P.map((url) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url } })),
+      };
+    },
+    async *sparkStream() {
+      yield { type: "done" as const, responseId: null, text: "", status: "completed" };
+    },
+    async sam() { return []; },
+    async image() { return Buffer.from([0xff, 0xd8]); },
+    async pageFacts() { return { kind: "product" as const }; },
+    async productImage() { return null; },
+  };
+  const s2 = new Session("fp", client, {
+    ...(session as unknown as { deps: SessionDeps }).deps,
+    finds: { vendors, store, images: true, imageBase: "/v1/finds", likes: async (u: string) => (likesAsked.push(u), ["Clean, minimal clothes."]) },
+    userId: "acct-7",
+  });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const before = sparkCalls.length;
+  await s2.onClientText(JSON.stringify({ type: "text", text: "Jin, can we look for a jacket for this weekend?" }));
+  const ack = await client.waitFor((m) => m.type === "reply", 3000);
+  assert.equal(ack.text, "On it.");
+  assert.equal(sparkCalls.length, before, "no full Spark answer for the turn (it would guess products and links)");
+  const started = await client.waitFor((m) => m.type === "find.started", 3000);
+  assert.equal(started.kind, "product");
+  const created = await client.waitFor((m) => m.type === "find.created", 3000);
+  const ackDelta = client.json.find((m) => m.type === "reply.delta" && m.text === "On it.")!;
+  assert.ok(client.json.indexOf(ackDelta) < client.json.indexOf(created), "the short line comes before the card");
+  const card = created.card as { products: { url: string }[] };
+  assert.deepEqual(card.products.map((p) => p.url), P);
+  await client.waitFor((m) => m.type === "reply" && m.text === "Two, both simple cuts.", 3000);
+  assert.deepEqual(ttsCalls.slice(-2), ["On it.", "Two, both simple cuts."]);
+  await sleep(10);
+  assert.deepEqual(likesAsked, ["acct-7"]);
+  const saved = await store.list(ownerKey("acct-7"));
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].kind, "product");
   s2.close();
 });
 
@@ -443,5 +502,181 @@ test("finds × interpretation: a card line is not spoken while interpreting; 'As
   assert.ok(!ttsCalls.some((t) => t.includes("Found a recipe")), "card line stays silent during interpretation");
   assert.ok(!client.json.some((m) => m.type === "interpret.bubble"), "card question not translated");
   assert.ok(!client.json.some((m) => m.type === "transcript" && m.text === "Walk me through it"));
+  session.close();
+});
+
+// ───────────── F2-L26 rename by voice · D21 first-call wait ─────────────
+
+const GREET = "The call just connected. Greet the user.";
+const asksGreeting = (reqs: SparkRequest[]) => reqs.filter((r) => JSON.stringify(r.input).includes(GREET)).length;
+
+test("rename: 'Call yourself Max' renames for the rest of the call, persists via the dep, and emits companion.named", async () => {
+  const saved: Array<[string, string]> = [];
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async (u, n) => void saved.push([u, n]) } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  const named = await client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(named, { type: "companion.named", name: "Max" });
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(saved, [["u1", "Max"]]);
+  // the reply to the rename turn already uses the new name and is told to acknowledge it
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  assert.match(sparkCalls[0].instructions!, /renamed you from Jin to Max/);
+  // the event comes before the reply's first caption
+  assert.ok(client.json.indexOf(named) < client.json.findIndex((m) => m.type === "reply.delta"));
+
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "What's your name?" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.match(sparkCalls[1].instructions!, /^You are Max,/);
+  assert.doesNotMatch(sparkCalls[1].instructions!, /renamed you/, "the acknowledgement line is for the rename turn only");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 1);
+  session.close();
+});
+
+test("rename: by voice too; questions are not renames; no rename while interpreting", async () => {
+  const saved: string[] = [];
+  const a = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await a.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  a.asr.fire({ type: "speechComplete", turnId: 0, text: "What should I call you?" });
+  await a.client.waitFor((m) => m.type === "reply");
+  assert.equal(a.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(a.sparkCalls[0].instructions!, /^You are Jin,/);
+  await sleep(80);
+  a.asr.fire({ type: "speechComplete", turnId: 1, text: "Your name is Max now." });
+  await a.client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(saved, ["Max"]);
+  a.session.close();
+
+  const b = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mode: "interpret" }));
+  await b.session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await sleep(60);
+  assert.equal(b.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.deepEqual(saved, ["Max"], "nothing persisted from interpretation");
+  b.session.close();
+});
+
+test("rename: works without a rename dep (no store / no user) — the call still renames itself", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I'll call you Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.ok(client.json.some((m) => m.type === "companion.named"));
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  session.close();
+});
+
+test("D21 greetAfterMs: the user speaks inside the window → no greeting, the user's turn is answered", async () => {
+  const { asr, client, session, sparkCalls } = setup();
+  // the window outlasts the user's whole reply, so only the cancel (not "busy replying") keeps the greeting out
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await sleep(40);
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "Hey, what should I call you?" });
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 2);
+  await sleep(750); // past the window
+  assert.equal(asksGreeting(sparkCalls), 0, "companion spoke first 0 times");
+  assert.equal(client.json.filter((m) => m.type === "reply").length, 1);
+  // the user's first line was an ordinary turn (kept in history), not swallowed as "the greeting"
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes("what should I call you"));
+  session.close();
+});
+
+test("D21 greetAfterMs: typed text inside the window also cancels the greeting", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  await sleep(900);
+  assert.equal(asksGreeting(sparkCalls), 0);
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes('"hi"'), "the typed line is a normal turn");
+  session.close();
+});
+
+test("D21 greetAfterMs: silence → exactly one greeting after about the window, without the memory dependency", async () => {
+  const { client, session, sparkCalls } = setup();
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 150 }));
+  await sleep(60);
+  assert.equal(sparkCalls.length, 0, "no greeting inside the window");
+  const reply = await client.waitFor((m) => m.type === "reply", 2000);
+  assert.ok(Date.now() - t0 >= 140, `greeted after ${Date.now() - t0} ms`);
+  assert.equal(asksGreeting(sparkCalls), 1);
+  assert.ok(!client.json.some((m) => m.type === "transcript"), "no synthetic user transcript");
+  assert.equal(reply.text, "Hey you! That sounds great.");
+  // the greeting prompt is not kept as a user line in the history
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "how are you" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(!JSON.stringify(sparkCalls[1].input).includes(GREET));
+  session.close();
+});
+
+test("D21: without greetAfterMs (and no memory) nothing changes — no greeting; values are clamped to 0–3000", async () => {
+  const a = setup();
+  await a.session.onClientText(JSON.stringify({ type: "start", persona }));
+  await sleep(80);
+  assert.equal(a.sparkCalls.length, 0);
+  a.session.close();
+
+  const b = setup();
+  await b.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: -50 }));
+  await b.client.waitFor((m) => m.type === "reply", 1000); // clamped to 0 → greets right away
+  b.session.close();
+
+  const c = setup();
+  await c.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: "2000" }));
+  await sleep(60);
+  assert.equal(c.sparkCalls.length, 0, "a non-number is ignored");
+  c.session.close();
+
+  const d = setup();
+  await d.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 2000, mode: "interpret" }));
+  await sleep(60);
+  d.session.close();
+  assert.equal(asksGreeting(d.sparkCalls), 0, "never greets into interpretation");
+});
+
+test("rename (Codex P2): a failed save keeps the old name — no companion.named, the call stays consistent", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async () => { throw new Error("db down"); } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(sparkCalls[0].instructions!, /^You are Jin,/);
+  session.close();
+});
+
+test("rename (Codex P2): the save finishes before companion.named goes out", async () => {
+  let saved = false;
+  const { client, session } = setup({ deps: { userId: "u1", renameCompanion: async () => { await sleep(30); saved = true; } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  let savedAtEvent: boolean | null = null;
+  const orig = client.sendJson.bind(client);
+  client.sendJson = (m) => { if (m.type === "companion.named") savedAtEvent = saved; orig(m); };
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(savedAtEvent, true);
+  session.close();
+});
+
+test("D21 (Codex P2): a greeting the window could not deliver (companion busy) is dropped, not given to the user's next turn", async () => {
+  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {} } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, greetAfterMs: 50 }));
+  // the companion is already speaking on its own (e.g. a watch reaction / card line) when the window ends
+  (session as unknown as { dispatch(e: unknown): void }).dispatch({ type: "self_speak", text: "Ooh, look at that.", origin: "card" });
+  await sleep(120);
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "companion.named");
+  assert.equal(asksGreeting(sparkCalls), 0);
   session.close();
 });
