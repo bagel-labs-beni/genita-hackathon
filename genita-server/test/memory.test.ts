@@ -272,3 +272,18 @@ test("the same seen line with a new crop deletes the old crop (Forget / account 
   await service.forget("a");
   assert.deepEqual(deleted, [a.image_ref, b.image_ref], "Forget removes the current one");
 });
+
+test("recall bookkeeping (Codex 11/3): the background last_used_at write never undoes a newer write of the same memory", async () => {
+  const repo = new InMemoryMemoryRepository();
+  const service = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  await service.remember("a", "I bought tofu for kimchi jjigae.", "episode", "s1");
+  const [before] = await repo.list("a");
+  const recalled = service.recall("a", "tofu");
+  // a newer write of the same row (e.g. a new crop reference) takes the user's lock right after the
+  // recall read, before the bookkeeping job
+  const write = service.serial("a", () => repo.put("a", { ...before, image_ref: "sam-crops/newer.jpg", updated_at: before.updated_at + 1 }));
+  await recalled; await write; await service.drain();
+  const [row] = await repo.list("a");
+  assert.equal(row.image_ref, "sam-crops/newer.jpg", "newer field kept");
+  assert.ok(row.last_used_at, "last_used_at still recorded");
+});
