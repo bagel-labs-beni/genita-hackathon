@@ -53,6 +53,7 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleWhenFlagged \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"

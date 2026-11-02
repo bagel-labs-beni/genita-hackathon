@@ -45,7 +45,9 @@ struct ReferenceSignInView: View {
                         DesignText(node: n).designSlot(n, width: size.width, top: top)
                     }
                     providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
-                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
+                    if !SignInFlags.hideGoogle {
+                        providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
+                    }
                     let node = nodes.first { $0.y == 734 && $0.type == "text" }!
                     DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
                     Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
@@ -102,5 +104,16 @@ struct ReferenceSignInView: View {
                 withAnimation(.easeOut(duration: 0.2)) { signInFailed = false }
             }
         }
+    }
+}
+
+/// #218: Chelsea decides whether A02 shows "Continue with Google". Off by default (Google stays); turn it on without a
+/// code change with the `GenitaHideGoogle` Info.plist key, the `genita.hideGoogle` default (also settable by a remote-config
+/// fetch later) or GENITA_HIDE_GOOGLE=1 (tests).
+enum SignInFlags {
+    static var hideGoogle: Bool {
+        if ProcessInfo.processInfo.environment["GENITA_HIDE_GOOGLE"] == "1" { return true }
+        if UserDefaults.standard.bool(forKey: "genita.hideGoogle") { return true }
+        return (Bundle.main.object(forInfoDictionaryKey: "GenitaHideGoogle") as? Bool) ?? false
     }
 }

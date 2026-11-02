@@ -254,4 +254,18 @@ final class GenitaUITests: XCTestCase {
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
+
+    /// #218 · the flag hides Google on A02 and keeps Apple.
+    func testA02HidesGoogleWhenFlagged() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_HIDE_GOOGLE": "1"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Continue with Google"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02-no-google"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
 }
