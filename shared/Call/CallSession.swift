@@ -162,6 +162,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
+    @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
     @ObservationIgnored let log = Logger(subsystem: "ai.thebeni.genita", category: "call")
     #if DEBUG
@@ -283,6 +284,7 @@ enum CallStop: Equatable {
     var historySnapshot: [ClientMessage.HistoryItem] { history }
 
     func end() {
+        capturePermissions.invalidate()
         userEnded = true
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
         socket?.close()
@@ -302,6 +304,7 @@ enum CallStop: Equatable {
 
     /// Background, screen off, or a phone call: stop the sound and close the mic and camera.
     func suspend() {
+        capturePermissions.invalidate()
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -312,14 +315,24 @@ enum CallStop: Equatable {
 
     // MARK: user actions
 
+    private var ownsConversation: Bool {
+        #if os(iOS)
+        PhoneHandoff.shared.ownership.isOwner
+        #else
+        MacHandoff.shared.ownership.isOwner
+        #endif
+    }
+
     func toggleMic() {
         if micOn { setMic(false); Self.micWasOn = false; return }
+        guard !userEnded, ownsConversation else { return }
         micDenied = false
         #if DEBUG
         if fixture != nil { setMic(true); Self.micWasOn = true; return }
         #endif
+        let generation = capturePermissions.generation
         Self.requestMicrophone { [weak self] granted in
-            guard let self else { return }
+            guard let self, self.capturePermissions.accepts(generation, callEnded: self.userEnded, isOwner: self.ownsConversation) else { return }
             if granted { self.setMic(true); Self.micWasOn = true } else { self.micDenied = true }
         }
     }
@@ -342,9 +355,13 @@ enum CallStop: Equatable {
 
     func toggleCamera() {
         if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
+        guard !userEnded, ownsConversation else { return }
         cameraDenied = false
-        let go = { [weak self] in
-            guard let self, self.camera.available else { return }
+        let generation = capturePermissions.generation
+        let apply: @MainActor @Sendable (Bool) -> Void = { [weak self] granted in
+            guard let self, self.capturePermissions.accepts(generation, callEnded: self.userEnded, isOwner: self.ownsConversation) else { return }
+            guard granted else { self.cameraDenied = true; return }
+            guard self.camera.available else { return }
             self.beforeCameraStart?()
             self.camera.start()
             self.cameraFront = self.camera.front
@@ -352,13 +369,13 @@ enum CallStop: Equatable {
             self.onCameraChange?()
         }
         #if DEBUG
-        if camera.fixture != nil { go(); return }
+        if camera.fixture != nil { apply(true); return }
         #endif
         switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized: go()
+        case .authorized: apply(true)
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { MainActor.assumeIsolated { if ok { go() } else { self.cameraDenied = true } } } }
-        default: cameraDenied = true
+            AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { MainActor.assumeIsolated { apply(ok) } } }
+        default: apply(false)
         }
     }
 
