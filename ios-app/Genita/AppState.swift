@@ -79,6 +79,8 @@ struct SavedSetup: Codable {
     var importError: String?
     var checkingImage = false
     var imageCheck: ImageCheck?
+    /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
+    var rightsAcked = false
     var imageCheckError: String?
     var creatingCompanion = false
     var suggestingName = false

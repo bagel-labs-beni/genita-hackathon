@@ -163,6 +163,11 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         bytes = Buffer.from(String(b.image ?? "").replace(/^data:[^,]*,/, ""), "base64");
         rights ||= b.rightsAck === true;
       } else bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
+      // D26 / SUB-8 (#125): the V01 line "I have the right to use this image" must be on; no ack, no check, nothing stored.
+      if (!rights) {
+        d.log("face.rejected", { reason: "rights_required" });
+        throw new PrepError(400, "rights_required", "Confirm you have the right to use this image.");
+      }
       d.log("face.uploaded", { bytes: bytes.length });
       const rec = await checkImage(d, user, bytes, rights);
       return send(res, 200, {

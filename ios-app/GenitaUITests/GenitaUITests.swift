@@ -204,6 +204,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["primaryCTA"].isEnabled, "V01: off until the rights line is on (SUB-8)")
+        app.buttons["rightsAck"].tap()
         XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
         app.buttons["primaryCTA"].tap()
         app.buttons["voice0"].tap(); app.buttons["primaryCTA"].tap()

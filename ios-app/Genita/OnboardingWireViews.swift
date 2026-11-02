@@ -104,7 +104,7 @@ struct ImageCheckView: View {
     private var resultPage: some View {
         WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F", subtitle: "One clear front-facing image works best.", back: { model.returnTo(.image) },
                  primary: passed ? "Use this image" : "Choose another image", primaryBusy: model.creatingCompanion,
-                 action: { if passed { model.useCheckedImage() } else { model.setup.imageData = nil; model.returnTo(.image) } }) { width, top, _ in
+                 action: { if passed { model.useCheckedImage() } else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) } }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 289)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topLeading) { if passed { typeChips.padding(12) } }
