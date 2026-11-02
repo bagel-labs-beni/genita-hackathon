@@ -27,8 +27,8 @@ public struct GenitaSplash: View {
     }
 
     // MARK: timing (motion page B+ table)
-    static let handoffAt = 1.08
-    static let handoff = 0.47      // → first screen at 1.55 s (≤ 1.6 s with frame jitter)
+    static let handoffAt = 1.06
+    static let handoff = 0.46      // → first screen at 1.52 s; a timer also ends it there, so slow frames can't hold it past 1.6 s
     static let skipHandoff = 0.38
     static let peak = 0.86
 
@@ -200,6 +200,10 @@ public struct GenitaSplash: View {
         let wait = (reduceMotion ? 0.2 : Self.peak) - elapsed
         if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
         if skipAt == nil, !hapticDone { hapticDone = true; GenitaHaptic.impact(soft: true, intensity: 0.6) } // the light peaks
+        // hard deadline: frames on a busy device / simulator may arrive late; the first screen must not wait for them
+        let left = endTime - (start.map { Date().timeIntervalSince($0) } ?? 0)
+        if left > 0 { try? await Task.sleep(for: .milliseconds(Int(left * 1000))) }
+        if skipAt == nil { finish() }
     }
 
     @MainActor private func skip() {
@@ -208,6 +212,7 @@ public struct GenitaSplash: View {
         guard now < Self.handoffAt else { return } // already handing over
         skipAt = now
         if let frozen = Self.frozenAt { self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.skipHandoff + 0.05) { finish() } // same deadline for a tap
     }
 
     @MainActor private func finish() {
