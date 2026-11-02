@@ -894,13 +894,14 @@ struct FindsToast: View {
 /// IC-4 · "안 보임 (실패)" (Figma rp1wR9…, frame 102:2): rgba(17,17,17,.84) card, radius 16, padding 16, 310 wide.
 /// Title 15/20 medium, body 14/20 at 76 %, a white 44 pt "Look again". Nothing is guessed: no ingredient is named.
 struct FindUnclearCard: View {
-    let finds: FindsModel
+    let call: CallController
+    var finds: FindsModel { call.finds }
     var body: some View {
         let lines = finds.current?.failureLines
         VStack(alignment: .leading, spacing: 4) {
             Text(lines?.title ?? "I can’t see it clearly").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.onInk)
             Text(lines?.body ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk.opacity(0.76)).fixedSize(horizontal: false, vertical: true)
-            Button { withAnimation(.fade) { finds.lookAgain() } } label: {
+            Button { withAnimation(.fade) { call.lookAgain() } } label: {
                 Text("Look again").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
                     .frame(maxWidth: .infinity).frame(height: 44).background(CallInk.onInk, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(PressScale()).padding(.top, 8).accessibilityIdentifier("findLookAgain")

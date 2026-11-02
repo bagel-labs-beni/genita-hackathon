@@ -248,9 +248,11 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     /// IC-4 "Look again": the card goes away; the camera is still on, the person shows the shelves again.
-    func lookAgain() {
-        guard current?.isUnclear == true else { return }
+    /// Returns the words of the failed question so the call can ask again with a fresh camera frame.
+    @discardableResult func lookAgain() -> String? {
+        guard let f = current, f.isUnclear else { return nil }
         state = .idle
+        return f.question
     }
 
     /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.

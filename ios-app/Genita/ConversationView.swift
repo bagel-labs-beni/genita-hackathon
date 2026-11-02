@@ -74,7 +74,7 @@ struct ConversationView: View {
                         }
                         if unclear {
                             // IC-4 (features r01): a dark card over the blurred picture, 24 / 124, 310 wide, one button
-                            FindUnclearCard(finds: call.finds).position(x: full.size.width / 2, y: 124 + top + 74)
+                            FindUnclearCard(call: call).position(x: full.size.width / 2, y: 124 + top + 74)
                                 .transition(.opacity)
                         }
                         if findsOpen {
@@ -92,7 +92,7 @@ struct ConversationView: View {
                         if sheet == .dismissed {
                             FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
-                        if !connecting && !interpreting {
+                        if !connecting && !interpreting && !unclear {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
