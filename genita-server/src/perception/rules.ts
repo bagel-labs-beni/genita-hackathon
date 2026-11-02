@@ -9,6 +9,10 @@ export const MIN_CONFIDENCE = 0.6;
 export const STALE_MS = 8_000;
 export const COOLDOWN_MS = 60_000;
 export const SMILE_CONF = 0.7;
+/** below this a "smile" is a resting face (eval 11/3: a neutral still read as smile 0.3) */
+export const SMILE_MIN_INTENSITY = 0.45;
+/** a face that has read the same for this long is its resting state, not a reaction */
+export const BASELINE_MS = 10_000;
 export const LAUGH_INTENSITY = 0.5;
 export const REPLY_SMILE_WINDOW_MS = 4_000;
 export const OWN_JOKE_WINDOW_MS = 3_000;
@@ -88,14 +92,18 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
     return true;
   };
 
-  // fast, single-sample moments (a smile lasts a second or two)
-  const positive = (s.expression === "smile" || s.expression === "laugh") && s.confidence >= SMILE_CONF;
+  // fast, single-sample moments (a smile lasts a second or two); a reaction is a change from the resting face
+  const resting = (e: Expression) => !!prev && prev.expression === e && at - prev.since >= BASELINE_MS;
+  const positive =
+    (s.expression === "smile" || s.expression === "laugh") && s.confidence >= SMILE_CONF && s.intensity >= SMILE_MIN_INTENSITY &&
+    // a laugh from a resting smile is still a reaction; a smile from a resting smile is not
+    !resting("laugh") && (s.expression === "laugh" || !resting("smile"));
   if (positive) {
     if (c.companionSpeaking || within(at, c.lastReplyEndAt, REPLY_SMILE_WINDOW_MS)) fire("smiled_at_reply");
     else if (c.userSpeaking || within(at, c.lastUserSpeechAt, OWN_JOKE_WINDOW_MS)) fire("smiled_at_own_joke");
     else if (s.expression === "laugh" && s.intensity >= LAUGH_INTENSITY) fire("laughed");
   }
-  if (s.expression === "confused" && s.confidence >= CONFUSED_CONF && (c.companionSpeaking || within(at, c.lastReplyEndAt, CONFUSED_WINDOW_MS))) {
+  if (s.expression === "confused" && s.confidence >= CONFUSED_CONF && !resting("confused") && (c.companionSpeaking || within(at, c.lastReplyEndAt, CONFUSED_WINDOW_MS))) {
     fire("looks_confused");
   }
 

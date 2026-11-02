@@ -189,6 +189,25 @@ test("cooldown: the same kind fires at most once per 60 s", () => {
   assert.deepEqual(r2.kinds, ["smiled_at_reply", "smiled_at_reply"]);
 });
 
+test("a faint smile (intensity < 0.45) is a resting face, not a reaction", () => {
+  const speaking: Convo = { ...QUIET, companionSpeaking: true };
+  assert.deepEqual(run([[1000, S({ expression: "smile", intensity: 0.3 }), speaking]]).kinds, []);
+  assert.deepEqual(run([[1000, S({ expression: "smile", intensity: 0.5 }), speaking]]).kinds, ["smiled_at_reply"]);
+});
+
+test("reactions are changes: a face that has read confused (or smiling) for ≥ 10 s does not fire again at the reply", () => {
+  const confused = S({ expression: "confused", confidence: 0.8 });
+  const steady = run([...series(0, 12_000, 2000, confused), [14_000, confused, { ...QUIET, lastReplyEndAt: 13_000 }]]);
+  assert.deepEqual(steady.kinds, [], "resting face reads confused: not a reaction to the reply");
+  const smiley = S({ expression: "smile", intensity: 0.6 });
+  const s2 = run([...series(0, 12_000, 2000, smiley), [14_000, smiley, { ...QUIET, companionSpeaking: true }]]);
+  assert.deepEqual(s2.kinds, []);
+  const laughs = run([...series(0, 12_000, 2000, smiley), [14_000, S({ expression: "laugh", intensity: 0.9 }), { ...QUIET, companionSpeaking: true }]]);
+  assert.deepEqual(laughs.kinds, ["smiled_at_reply"], "a laugh from a resting smile still counts");
+  const change = run([...series(0, 12_000, 2000, S()), [14_000, confused, { ...QUIET, lastReplyEndAt: 13_000 }]]);
+  assert.deepEqual(change.kinds, ["looks_confused"]);
+});
+
 test("false-comment guard: 5 minutes of a neutral or focused face fire nothing", () => {
   assert.deepEqual(run(series(0, 300_000, 2500, S())).kinds, []);
   assert.deepEqual(run(series(0, 300_000, 2500, S({ expression: "focused", engagement: 0.6 }))).kinds, []);
