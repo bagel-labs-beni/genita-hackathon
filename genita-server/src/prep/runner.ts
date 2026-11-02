@@ -88,6 +88,7 @@ export class PrepRunner {
   readonly events = new EventEmitter();
   private running = new Map<string, Promise<void>>();
   private aborts = new Map<string, AbortController>();
+  private deleting = new Set<string>();
   private d: PrepDeps;
   constructor(d: PrepDeps) { this.d = d; }
 
@@ -99,6 +100,7 @@ export class PrepRunner {
   run(userId: string): Promise<void> {
     const existing = this.running.get(userId);
     if (existing) return existing;
+    if (this.deleting.has(userId)) return Promise.resolve();
     const ac = new AbortController();
     this.aborts.set(userId, ac);
     const p = this.loop(userId, ac).catch((err) => {
@@ -126,12 +128,12 @@ export class PrepRunner {
   }
 
   /**
-   * Account deleted: stop the user's prep, wait until it has stopped writing,
-   * then remove every face image the user still has. Safe to call after the
-   * rows are gone (server.ts accounts.onUserDeleted), which also covers a run
-   * that finished between DELETE /me's blob delete and its row delete.
+   * Before deleting account rows: stop prep, drain in-flight writes, then erase
+   * every face image. Keep new prep blocked through the remaining feature/row
+   * cleanup, including a failed DELETE /me; a later deletion can retry the purge.
    */
   async forgetUser(userId: string): Promise<void> {
+    this.deleting.add(userId);
     this.cancel(userId);
     await this.running.get(userId)?.catch(() => {});
     await this.d.store.deleteAssets(userId);
@@ -158,7 +160,9 @@ export class PrepRunner {
   }
 
   async retry(userId: string): Promise<CompanionRecord> {
+    if (this.deleting.has(userId)) throw new Error("account deletion in progress");
     const c = await this.d.store.getCompanion(userId);
+    if (this.deleting.has(userId)) throw new Error("account deletion in progress");
     if (!c) throw new Error("no companion");
     if (c.prep.status === "running" && this.isRunning(userId)) return c;
     const steps = c.prep.steps;
