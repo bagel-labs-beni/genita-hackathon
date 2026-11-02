@@ -174,8 +174,10 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var headGain = 1.5, nodGain = 1.5, cheekGain = 1.8, lipLifePx = 0.4
         /// head roll gain (nil = headGain); nod pulse width (×, slower nod spring)
         public var rollGain: Double? = nil, nodWidth = 1.0
+        /// handheld-camera drift gain (0 = the background never moves; 11/3 Chelsea)
+        public var camera = 0.0
         public init() {}
-        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx }
+        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera }
         public init(from decoder: Decoder) throws {
             self.init()
             cheekGain = 1      // a prep that sends alive sends its cheek values as meant
@@ -186,6 +188,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .nodPx) { nodGain = v / AliveMotion.nodPixels }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .rollGain) { rollGain = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .nodWidth) { nodWidth = max(0.25, v) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .camera) { camera = max(0, v) }
             if let v = try c.decodeIfPresent(Double.self, forKey: .headGain) { headGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .nodGain) { nodGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .cheekGain) { cheekGain = v }
@@ -194,7 +197,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(headGain, forKey: .headGain); try c.encode(nodGain, forKey: .nodGain); try c.encode(cheekGain, forKey: .cheekGain)
-            try c.encode(lipLifePx, forKey: .lipLifePx); try c.encodeIfPresent(rollGain, forKey: .rollGain); try c.encode(nodWidth, forKey: .nodWidth)
+            try c.encode(lipLifePx, forKey: .lipLifePx); try c.encodeIfPresent(rollGain, forKey: .rollGain); try c.encode(nodWidth, forKey: .nodWidth); try c.encode(camera, forKey: .camera)
         }
     }
     public var alive: Alive? = nil
@@ -204,6 +207,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// the part of each key flow below the lower lip follows the amounts low-passed at this Hz
         /// (2nd order, critically damped), × chinGain; the lips stay on the raw amounts
         public var chinLpHz = 2.0, chinGain = 0.3
+        /// critic bgperi (11/3): the skin around the lips (outside the lip ellipse) also takes this share
+        /// of its motion from the slow amounts (× skinGain), so it moves continuously; 0 = off
+        public var skinShare = 0.0, skinGain = 1.0
         /// ramp start below the mouth box bottom and its length (× still height)
         public var chinRamp = [0.035, 0.03]
         /// texture blend: w_k = a_k/Σa × clip((Σa − blendFloor[0]) / blendFloor[1])
@@ -238,13 +244,15 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// lip saturation ceiling: × the neutral texture's mean lip saturation (v9.0 review: magenta closed lips); 0 = off
         public var lipSatMax = 1.05
         public init() {}
-        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop }
+        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, skinShare, skinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop }
         enum TeethKeys: String, CodingKey { case hyst, min, alpha, tone, exitBeforeClose }
         public init(from decoder: Decoder) throws {
             self.init()
             guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }   // a block of the wrong shape keeps its defaults
             if let v = try? c.decodeIfPresent(Double.self, forKey: .chinLpHz) { chinLpHz = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .chinGain) { chinGain = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .skinShare) { skinShare = min(1, max(0, v)) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .skinGain) { skinGain = v }
             if let v = try? c.decodeIfPresent([Double].self, forKey: .chinRamp), v.count == 2 { chinRamp = v }
             if let v = try? c.decodeIfPresent([Double].self, forKey: .blendFloor), v.count == 2 { blendFloor = v }
             if let v = try? c.decodeIfPresent([String].self, forKey: .noTex) { noTex = v }
@@ -268,7 +276,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         }
         public func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
-            try c.encode(chinLpHz, forKey: .chinLpHz); try c.encode(chinGain, forKey: .chinGain); try c.encode(chinRamp, forKey: .chinRamp)
+            try c.encode(chinLpHz, forKey: .chinLpHz); try c.encode(chinGain, forKey: .chinGain); try c.encode(skinShare, forKey: .skinShare); try c.encode(skinGain, forKey: .skinGain); try c.encode(chinRamp, forKey: .chinRamp)
             try c.encode(blendFloor, forKey: .blendFloor); try c.encode(noTex, forKey: .noTex)
             try c.encode(teethHyst, forKey: .teethHyst); try c.encode(teethMin, forKey: .teethMin); try c.encode(teethAlpha, forKey: .teethAlpha)
             try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone); try c.encode(lipSatMax, forKey: .lipSatMax)
@@ -291,6 +299,44 @@ public struct FlowMap: Codable, Equatable, Sendable {
         }
     }
     public var framing: Framing? = nil
+    /// Skin around the mouth (11/3 Chelsea: "still a bit botox around the mouth"), still px at 960 high
+    /// unless noted. All 0 = off; values come from the human lane.
+    public struct Perioral: Codable, Equatable, Sendable {
+        /// skin around the lips follows the corners' motion (share), falling off over `falloff` × mouth width.
+        /// Pixel values below are still px at 540 wide (like the cheek rules).
+        public var follow = 0.0, falloff = 0.8
+        /// skin below the lower lip moves down with the opening (px at full opening)
+        public var followOpenPx = 0.0
+        /// upper lip / philtrum lift at full opening (px)
+        public var philtrumPx = 0.0
+        /// corners pull the cheeks harder on EE (spread × (1 + eeSpread × EE amount))
+        public var eeSpread = 0.0
+        /// cheeks bulge outward on O / U (px at full rounding)
+        public var roundBulgePx = 0.0
+        /// chin moves up on a closure (px at full MBP)
+        public var mbpChinPx = 0.0
+        /// critic bgperi (11/3): the cheek / perioral drive is low-passed (1st order, ms) so the skin moves
+        /// continuously instead of only on syllables; plus a loudness-envelope micro-motion (px) that
+        /// carries on between syllables
+        public var lpfMs = 0.0, microPx = 0.0
+        public init() {}
+        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, mbpChinPx, lpfMs, microPx }
+        public init(from decoder: Decoder) throws {
+            self.init()
+            guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .follow) { follow = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .falloff) { falloff = max(0.1, v) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .followOpenPx) { followOpenPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .philtrumPx) { philtrumPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .eeSpread) { eeSpread = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .roundBulgePx) { roundBulgePx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .mbpChinPx) { mbpChinPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .lpfMs) { lpfMs = max(0, v) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .microPx) { microPx = v }
+        }
+        var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && mbpChinPx == 0 && microPx == 0 }
+    }
+    public var perioral: Perioral? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
     /// spring instead of stepping with the texture snap; amplitude scaled by stress; the next shape is
     /// blended in ahead; only closures are fast. Texture snap keeps its own hysteresis.
@@ -525,7 +571,7 @@ final class FlowMorph: @unchecked Sendable {
             let g = aliveP?.cheekGain ?? 1
             c.spread *= g; c.cheek *= g; c.naso *= g
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width),
-                                expressions: expressions)
+                                expressions: expressions, perioral: data.map.perioral)
         } else { cheekRig = nil }
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
         nkF = data.nk; knF = data.kn
@@ -563,6 +609,17 @@ final class FlowMorph: @unchecked Sendable {
                 let r = (dx * dx + dy * dy).squareRoot()
                 return Float(1 - smoothstep(1 - soft, 1 + soft, r))
             }
+            // slow share and gain per flow cell: chin rows (chinGain) and, optionally, the skin ring (skinGain)
+            var loC = [Float](repeating: 0, count: fw * fh), gC = [Float](repeating: Float(rg.chinGain), count: fw * fh)
+            for i in 0..<(fw * fh) {
+                let dx = (Double(i % fw) - cxg) / rx, dy = (Double(i / fw) - cyg) / ry
+                let skin = rg.skinShare * smoothstep(1.1, 1.6, (dx * dx + dy * dy).squareRoot())
+                let row = Double(rigLo[i / fw])
+                let lo = max(row, skin)
+                loC[i] = Float(lo)
+                if row + skin > 1e-6 { gC[i] = Float((row * rg.chinGain + skin * rg.skinGain) / (row + skin)) }
+            }
+            rigLoC = loC; rigGC = gC
         } else if let p = v2p, p.chinScale > 0, let mouth, data.map.drive != "snap" {
             // row weight w(y) = 1 − chinScale·clip((y − yl)/(yc − yl)), yl = lower lip + 3.5% H, yc = yl + 3% H
             let H = Double(neutralStill.height)
@@ -587,6 +644,8 @@ final class FlowMorph: @unchecked Sendable {
     /// Lip rig teeth-layer textures (teethTop.tone); keys without one use their own texture.
     private var teethTex: [String: [Float]] = [:]
     private var rigLo: [Float] = []
+    /// per flow cell: slow share and its gain (chin rows, skin ring)
+    private var rigLoC: [Float] = [], rigGC: [Float] = []
     private var rigN1: [Float] = [], rigN2: [Float] = [], rigLipMask: [Float] = []
     private var rigChinX: [Double] = [], rigChinV: [Double] = [], rigT: Double?
     /// test hook: the chin's low-passed amounts of the last frame
@@ -606,6 +665,10 @@ final class FlowMorph: @unchecked Sendable {
     var outputRect: CGRect { cheekRig?.region ?? data.roi }
     /// Corner displacement of the last frame per side (still px), from the neutral warp field.
     private var cornerD: [(Double, Double)] = [(0, 0), (0, 0)]
+    /// Perioral low-pass state (corner displacement for the cheeks, drive amounts, loudness envelope).
+    private var periD: [(Double, Double)]? = nil
+    private var periA: (open: Double, ee: Double, round: Double, mbp: Double) = (0, 0, 0, 0)
+    private var periLoud = 0.0, periT: Double?
 
     // MARK: amounts
 
@@ -872,6 +935,7 @@ final class FlowMorph: @unchecked Sendable {
         snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
         cornerD = [(0, 0), (0, 0)]
         rigChinX = []; rigChinV = []; rigT = nil; rigTop = nil
+        periD = nil; periA = (0, 0, 0, 0); periLoud = 0; periT = nil
         expressionEvents = []
     }
 
@@ -1041,14 +1105,13 @@ final class FlowMorph: @unchecked Sendable {
             var g = [Float](repeating: 0, count: n2)
             if let rg {
                 // lips on the raw amount, the chin (rows below the lower lip) on the slow one × chinGain
-                let ac = amC[idx], gc = Float(rg.chinGain)
-                let cfL = -ac * (1 - ac) * gc, cbL = ac * ac * gc
-                for gy in 0..<fh {
-                    let lo = rigLo[gy], cfy = cf * (1 - lo) + cfL * lo, cby = cb * (1 - lo) + cbL * lo
-                    for q in stride(from: gy * fw * 2, to: (gy + 1) * fw * 2, by: 2) {
-                        g[q] = (cfy * f[q] + cby * bk[q]) * kx; g[q + 1] = (cfy * f[q + 1] + cby * bk[q + 1]) * ky
-                        gn[q] += g[q]; gn[q + 1] += g[q + 1]
-                    }
+                let ac = amC[idx]
+                let cfL = -ac * (1 - ac), cbL = ac * ac
+                for c in 0..<(fw * fh) {
+                    let lo = rigLoC[c], gc = rigGC[c], q = c * 2
+                    let cfy = cf * (1 - lo) + cfL * gc * lo, cby = cb * (1 - lo) + cbL * gc * lo
+                    g[q] = (cfy * f[q] + cby * bk[q]) * kx; g[q + 1] = (cfy * f[q + 1] + cby * bk[q + 1]) * ky
+                    gn[q] += g[q]; gn[q + 1] += g[q + 1]
                 }
             } else {
                 for q in stride(from: 0, to: n2, by: 2) {
@@ -1100,12 +1163,10 @@ final class FlowMorph: @unchecked Sendable {
             let cf = (1 - a) * (1 - a), cb = -a * (1 - a)
             var g = [Float](repeating: 0, count: n2)
             let gj = act.firstIndex(of: idx).map { gs[$0] } ?? zero
-            for gy in 0..<fh {
-                let u: Float = rg == nil ? 1 : 1 - rigLo[gy], cfy = cf * u, cby = cb * u
-                for q in stride(from: gy * fw * 2, to: (gy + 1) * fw * 2, by: 2) {
-                    g[q] = (cfy * f[q] + cby * bk[q]) * kx + gn[q] - gj[q]
-                    g[q + 1] = (cfy * f[q + 1] + cby * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
-                }
+            for c in 0..<(fw * fh) {
+                let u: Float = rg == nil ? 1 : 1 - rigLoC[c], cfy = cf * u, cby = cb * u, q = c * 2
+                g[q] = (cfy * f[q] + cby * bk[q]) * kx + gn[q] - gj[q]
+                g[q + 1] = (cfy * f[q + 1] + cby * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
             }
             return g
         }
@@ -1187,7 +1248,31 @@ final class FlowMorph: @unchecked Sendable {
             : ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
         let ew = (context.map { expressionWeights(atMs: $0.audioMs) }) ?? [:]
         lastLaugh = (ew["laugh"] ?? 0, context?.audioMs ?? 0)
-        let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift), expressions: ew)
+        func sum(_ ks: [String]) -> Double { Double(ks.compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }) }
+        let mbpA = sum(["MBP"])
+        let peri = (open: min(1, max(0, Double(am.reduce(0, +)) - mbpA)), ee: min(1, sum(["EH", "EI"])),
+                    round: min(1, sum(["O", "OH", "U", "WQ"])), mbp: min(1, mbpA))
+        var dCheek = cornerD, periUse = peri, micro = (0.0, 0.0)
+        if let pr = rig.perioral {
+            let dt = periT.map { min(0.5, max(0, t - $0)) } ?? 0
+            periT = t
+            let a = pr.lpfMs > 0 && dt > 0 ? 1 - exp(-dt * 1000 / pr.lpfMs) : 1
+            if periD == nil || dt >= 0.5 { periD = d; periA = peri }
+            else {
+                periD = zip(periD!, d).map { ($0.0 + a * ($1.0 - $0.0), $0.1 + a * ($1.1 - $0.1)) }
+                periA = (periA.open + a * (peri.open - periA.open), periA.ee + a * (peri.ee - periA.ee),
+                         periA.round + a * (peri.round - periA.round), periA.mbp + a * (peri.mbp - periA.mbp))
+            }
+            if pr.lpfMs > 0 { dCheek = periD!; periUse = periA }
+            // loudness envelope: fast attack, 400 ms release, so the skin keeps living between syllables
+            let o = Double(max(0, min(1, lip.openness)))
+            periLoud = o > periLoud ? periLoud + (1 - exp(-dt / 0.04)) * (o - periLoud) : periLoud * exp(-dt / 0.4)
+            if pr.microPx > 0 {
+                let w = 2 * Double.pi * t, amp = pr.microPx * (0.35 + 0.65 * min(1, periLoud / 0.6))
+                micro = (amp * (0.6 * sin(w * 2.1 + 0.4) + 0.4 * sin(w * 3.3 + 1.7)), amp * (0.6 * sin(w * 2.7 + 2.2) + 0.4 * sin(w * 3.9 + 0.9)))
+            }
+        }
+        let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: dCheek, lift: Double(lift), expressions: ew, peri: periUse, micro: micro)
         cornerD = d
         return image
     }
@@ -1436,12 +1521,17 @@ final class CheekRig: @unchecked Sendable {
     private let roiOrigin: (x: Int, y: Int)
     private var lockYpx = 0.0
 
+    /// Perioral skin (map.perioral): ring around the lips (with its left/right split), the lower ring,
+    /// philtrum and chin weights, working res.
+    let perioral: FlowMap.Perioral?
+    private var wRing: [Float] = [], wSideL: [Float] = [], wLower: [Float] = [], wPhil: [Float] = [], wChin: [Float] = []
     /// Expression layer fields per tag (dx, dy in still px per unit weight, working res), when enabled.
     private(set) var exprFields: [String: [Float]] = [:]
 
     init(rules: FlowMap.Cheek, data: FaceFlowData, neutralStill: CGImage, scale s: Double, face: CGRect, mouth: CGRect, stillWidth: Double,
-         expressions: Bool = false) {
+         expressions: Bool = false, perioral: FlowMap.Perioral? = nil) {
         self.rules = rules
+        self.perioral = perioral.flatMap { $0.isOff ? nil : $0 }
         scale = s
         stillToOut = 540 / stillWidth           // the rules' pixel values are at 540 px wide
         let fw = Double(face.width), fh = Double(face.height)
@@ -1498,6 +1588,35 @@ final class CheekRig: @unchecked Sendable {
             wc.append(a); wk.append(b)
         }
         wCorner = wc; wCheek = wk
+        if let pr = self.perioral {
+            let mw = Double(mouth.width), mh = Double(mouth.height), mx = Double(mouth.midX), my = Double(mouth.midY)
+            let n = width * height
+            var ring = [Float](repeating: 0, count: n), side = ring, lower = ring, phil = ring, chin = ring
+            for j in 0..<height {
+                let Y = Double(region.minY) + (Double(j) + 0.5) / s
+                for i in 0..<width {
+                    let X = Double(region.minX) + (Double(i) + 0.5) / s
+                    let k = j * width + i
+                    let inNose = soft(min(0.13 * fw - abs(X - noseX), noseBottom - Y))
+                    let free = 1 - max(inNose, soft(eyeLine - Y))
+                    let ex = (X - mx) / (mw / 2), ey = (Y - my) / max(1, mh / 2)
+                    let insideLips = 1 - smoothstep(0.8, 1.3, (ex * ex + ey * ey).squareRoot())
+                    let sg = pr.falloff * mw
+                    let gR = exp(-(pow((X - mx) / sg, 2) + pow((Y - my) / (0.6 * sg), 2)) / 2)
+                    ring[k] = Float(gR * (1 - insideLips) * free)
+                    side[k] = Float(1 / (1 + exp((X - mx) / (0.1 * mw))))          // 1 on the left corner's side
+                    lower[k] = ring[k] * Float(smoothstep(Double(mouth.maxY) - 0.2 * mh, Double(mouth.maxY) + 0.3 * mh, Y))
+                    let gx = exp(-pow((X - mx) / (0.35 * mw), 2) / 2)
+                    let up = min(1, max(0, (Y - lockY) / max(1, Double(mouth.minY) - lockY)))
+                    let below = 1 - smoothstep(Double(mouth.minY), Double(mouth.minY) + 0.4 * mh, Y)
+                    phil[k] = Float(gx * up * below * (1 - inNose * 0.5))
+                    let gc = exp(-(pow((X - mx) / (0.5 * mw), 2) + pow((Y - (Double(mouth.maxY) + 0.05 * fh)) / (0.06 * fh), 2)) / 2)
+                    chin[k] = Float(gc * free)
+                }
+            }
+            wRing = ring; wSideL = side; wLower = lower; wPhil = phil; wChin = chin
+            for k in 0..<n { total[k] += ring[k] + phil[k] + chin[k] }
+        }
         // Output coverage: the morph's mask plus wherever the warp reaches (the rest stays the base).
         let m = FlowMorph.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height),
                               width: max(1, Int((Double(data.roi.width) * s).rounded())), height: max(1, Int((Double(data.roi.height) * s).rounded())))
@@ -1576,7 +1695,8 @@ final class CheekRig: @unchecked Sendable {
 
     /// The warped lower face over `region` (premultiplied RGBA, alpha = coverage).
     func render(morph: [UInt8], morphWidth mw: Int, morphHeight mh: Int, d: [(Double, Double)], dPrev: [(Double, Double)], lift: Double,
-                expressions: [String: Double] = [:]) -> CGImage {
+                expressions: [String: Double] = [:], peri: (open: Double, ee: Double, round: Double, mbp: Double) = (0, 0, 0, 0),
+                micro: (Double, Double) = (0, 0)) -> CGImage {
         let active = expressions.filter { $0.value > 0.001 }.compactMap { k, w in exprFields[k].map { ($0, Float(w)) } }
         // Frame = neutral with the morph composited in.
         var frame = neutral
@@ -1588,6 +1708,14 @@ final class CheekRig: @unchecked Sendable {
             for c in 0..<3 { frame[k + c] = Float(morph[o + c]) + frame[k + c] * (1 - a) }
         } }
         let up = rules.lift * lift / stillToOut       // still px
+        let pr = perioral
+        let spreadK = rules.spread * (1 + (pr?.eeSpread ?? 0) * peri.ee)
+        let bulge = (pr?.roundBulgePx ?? 0) * peri.round / stillToOut
+        let lowerPx = (pr?.followOpenPx ?? 0) * peri.open / stillToOut
+        let philPx = (pr?.philtrumPx ?? 0) * peri.open / stillToOut
+        let chinPx = (pr?.mbpChinPx ?? 0) * peri.mbp / stillToOut
+        let follow = pr?.follow ?? 0
+        let mx = micro.0 / stillToOut, my = micro.1 / stillToOut
         var out = [UInt8](repeating: 0, count: width * height * 4)
         for j in 0..<height {
             for i in 0..<width {
@@ -1595,8 +1723,16 @@ final class CheekRig: @unchecked Sendable {
                 var vx = 0.0, vy = 0.0
                 for side in 0..<2 {
                     let wk = Double(wCheek[side][k]), wc = Double(wCorner[side][k])
-                    vx += wk * rules.spread * dPrev[side].0 - wc * rules.pull * d[side].0
-                    vy += wk * (rules.spread * dPrev[side].1 - up) - wc * rules.pull * d[side].1
+                    vx += wk * (spreadK * dPrev[side].0 + (side == 0 ? -bulge : bulge)) - wc * rules.pull * d[side].0
+                    vy += wk * (spreadK * dPrev[side].1 - up) - wc * rules.pull * d[side].1
+                }
+                if pr != nil {
+                    let r = Double(wRing[k]), sl = Double(wSideL[k])
+                    vx += follow * r * (sl * d[0].0 + (1 - sl) * d[1].0)
+                    vy += follow * r * (sl * d[0].1 + (1 - sl) * d[1].1) + Double(wLower[k]) * lowerPx
+                        - Double(wPhil[k]) * philPx - Double(wChin[k]) * chinPx
+                    let lw = r + Double(wPhil[k]) * 0.5
+                    vx += lw * mx; vy += lw * my
                 }
                 for (f, w) in active { vx += Double(f[k * 2] * w); vy += Double(f[k * 2 + 1] * w) }
                 var c: (Float, Float, Float)

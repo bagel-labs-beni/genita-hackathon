@@ -34,6 +34,8 @@ struct AliveMotion {
 
     /// Per-face gains (map.alive): head sway/drift and the speech nod.
     var headGain = 1.0, nodGain = 1.0, rollGain = 1.0, nodWidth = 1.0
+    /// Handheld-camera drift (11/3 Chelsea: the background must stay still) — off unless a map asks.
+    var cameraGain = 0.0
 
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
@@ -74,10 +76,11 @@ struct AliveMotion {
 
         // Camera (whole frame) about the frame centre.
         let c = CGPoint(x: extent.midX, y: extent.midY)
-        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k
-        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k
-        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t)
-        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t)
+        let cg = cameraGain
+        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k * cg
+        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k * cg
+        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t) * cg
+        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t) * cg
         let camera = CGAffineTransform(translationX: -c.x, y: -c.y)
             .concatenating(CGAffineTransform(rotationAngle: camRoll))
             .concatenating(CGAffineTransform(scaleX: zoom, y: zoom))

@@ -90,7 +90,7 @@ public final class FaceRenderer: @unchecked Sendable {
         motion = AliveMotion(seed: seed)
         if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
-            motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth
+            motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
@@ -137,9 +137,16 @@ public final class FaceRenderer: @unchecked Sendable {
         // Person layers from the SAM face box: the head (with hair) and the shoulders/chest under it.
         // Soft masks, so the warp between layers is a smooth field with no holes.
         let he = Self.headEllipse(face: face)
-        headMask = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
-        bodyMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
+        var head = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
+        var body = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
                                     rx: face.width * 2.0, ry: face.height * 1.75, inner: 0.6, extent: extent)
+        if let pm = faceSet.personMask {
+            // Only the person moves (11/3 Chelsea: still background): layers = ellipse × person mask,
+            // feathered so the hair edge blends instead of cutting.
+            let p = Self.personAlpha(pm, extent: extent)
+            head = Self.multiply(head, p, extent: extent); body = Self.multiply(body, p, extent: extent)
+        }
+        headMask = head; bodyMask = body
     }
 
     // MARK: state
@@ -404,6 +411,26 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// White-opaque ellipse fading to clear between `inner` and 1 of its radii.
+    /// Prep's person mask (white = person) as an alpha mask at the still's extent, hair edge feathered.
+    static func personAlpha(_ cg: CGImage, extent: CGRect) -> CIImage {
+        var m = CIImage(cgImage: cg)
+        if m.extent.size != extent.size {
+            m = m.transformed(by: CGAffineTransform(scaleX: extent.width / m.extent.width, y: extent.height / m.extent.height))
+        }
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = m.clampedToExtent(); blur.radius = Float(max(1.5, 0.004 * extent.width))
+        let a = CIFilter.maskToAlpha()
+        a.inputImage = blur.outputImage!.cropped(to: extent)
+        return a.outputImage!.cropped(to: extent)
+    }
+
+    /// a with its alpha multiplied by b's alpha (source-in): the product of two masks.
+    static func multiply(_ a: CIImage, _ b: CIImage, extent: CGRect) -> CIImage {
+        let f = CIFilter.sourceInCompositing()
+        f.inputImage = a; f.backgroundImage = b
+        return f.outputImage!.cropped(to: a.extent.intersection(extent))
+    }
+
     static func ellipseMask(center: CGPoint, rx: CGFloat, ry: CGFloat, inner: CGFloat, extent: CGRect) -> CIImage {
         let g = CIFilter.radialGradient()
         g.center = .zero

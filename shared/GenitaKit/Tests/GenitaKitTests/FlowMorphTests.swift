@@ -374,3 +374,29 @@ struct RigRobustnessTests {
         #expect(FlowMorph.toneTeeth(p, interior: inn, width: w, height: h, tone: tone).count == p.count)
     }
 }
+
+struct StillBackgroundAndPerioralTests {
+    @Test func cameraDriftIsOffAndPerioralDecodes() throws {
+        let alive = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX":3}"#.utf8))
+        #expect(alive.camera == 0)
+        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"philtrumPx":1.2,"mbpChinPx":"x","lpfMs":150}"#.utf8))
+        #expect(pr.philtrumPx == 1.2 && pr.mbpChinPx == 0 && pr.lpfMs == 150 && !pr.isOff)
+        #expect(FlowMap.Perioral().isOff)
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"skinShare":2}"#.utf8))
+        #expect(rig.skinShare == 1)
+    }
+
+    /// Perioral weights render without crashing and move the skin around the lips.
+    @Test func perioralMovesTheSkinAroundTheMouth() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"])
+        var pr = FlowMap.Perioral(); pr.mbpChinPx = 6
+        let rules = FlowMap.Cheek(spread: 0.5, pull: 1, cheek: 1, naso: 0.3, lift: 2)
+        let rig = CheekRig(rules: rules, data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, face: set.faceBox, mouth: set.mouthBox,
+                           stillWidth: Double(set.pixelSize.width), perioral: pr)
+        #expect(rig.perioral != nil)
+        let morph = [UInt8](repeating: 0, count: 4)
+        let a = pixels(rig.render(morph: morph, morphWidth: 1, morphHeight: 1, d: [(0, 0), (0, 0)], dPrev: [(0, 0), (0, 0)], lift: 0))
+        let b = pixels(rig.render(morph: morph, morphWidth: 1, morphHeight: 1, d: [(0, 0), (0, 0)], dPrev: [(0, 0), (0, 0)], lift: 0, peri: (0, 0, 0, 1)))
+        #expect(a != b)
+    }
+}
