@@ -111,7 +111,9 @@ import XCTest
         call.handle(audio(5, seq: 1))
         call.handle(binary: frame(seq: 1, pcm(ms: 400)))
         call.handle(#"{"type":"reply","utteranceId":5,"text":"Hi.","emotion":"neutral","interpret":false,"final":true}"#)
-        // reconnect: the new session counts utterances from 1 again
+        call.handle(audio(1, seq: 2))
+        call.handle(#"{"type":"utterance.cancelled","utteranceId":1,"reason":"barge_in"}"#)
+        // reconnect: the new session counts utterances from 1 again (1 was cancelled in the old one)
         call.handle(ready.replacingOccurrences(of: "\"S\"", with: "\"s2\""))
         call.handle(audio(1, seq: 1))
         call.handle(binary: frame(seq: 1, pcm(ms: 400)))

@@ -520,7 +520,11 @@ enum CallStop: Equatable {
         switch event {
         case let .ready(r):
             link = .live
-            if r.sessionId != sessionId { faceIdBase = faceIdMax + 1 }   // the new session counts utterances from the start
+            if r.sessionId != sessionId {
+                // A new session counts utterances from the start: ids of the old one mean nothing now.
+                faceIdBase = faceIdMax + 1
+                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []
+            }
             sessionId = r.sessionId
             reconnectSince = nil
             answerFailed = false
