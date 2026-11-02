@@ -8,7 +8,8 @@
  * A seen item that Spark then says NO to, and no recipe needs, is dropped.
  * Pure: the pipeline feeds results in, the list comes out.
  */
-import type { FindItem, FindTier, NormBox, NormMask } from "../protocol.ts";
+import type { FindItem, FindTier, NormBox } from "../protocol.ts";
+import type { SamInstance } from "./instances.ts";
 import { cleanName, isStaple, nameKey, sameIngredient } from "./names.ts";
 
 export type Candidate = {
@@ -24,8 +25,8 @@ export type Candidate = {
   look: string | null;
   yes: boolean | null;
   box: NormBox | null;
-  /** SAM mask over `box` (only with GENITA_SAM_MASKS=1) */
-  mask?: NormMask | null;
+  /** every SAM match for the name, best first, each with its mask (only with GENITA_SAM_MASKS=1) */
+  instances?: SamInstance[];
   hint: NormBox | null;
   samDone: boolean;
   confirmed: "yes" | "no" | null;

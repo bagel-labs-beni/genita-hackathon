@@ -20,6 +20,8 @@ export type SamBox = {
   ny1: number | null;
   nx2: number | null;
   ny2: number | null;
+  /** model confidence 0..1 (only with metadata.include_confidence) */
+  score?: number;
   /** the record's mask token, raster over this box (only when SAM sent one) */
   mask?: SamMaskToken;
 };
@@ -53,6 +55,7 @@ export function parseSamBoxes(text: string): SamBox[] {
       nx2: w ? f.x2 / w : null,
       ny2: h ? f.y2 / h : null,
     };
+    if (Number.isFinite(f.c)) box.score = f.c;
     out.push(box);
     last = box;
   }

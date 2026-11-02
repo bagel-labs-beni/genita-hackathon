@@ -462,13 +462,39 @@ export function fromRle(w: number, h: number, rle: number[]): Uint8Array {
   return bits;
 }
 
+/** Binary raster -> wire mask (null when empty). */
+export function toWireMask(m: { width: number; height: number; bits: Uint8Array }, maxSide = 96): WireMask | null {
+  const d = downscaleMask(m, maxSide);
+  if (!d.bits.some((b) => b === 1)) return null;
+  return { w: d.width, h: d.height, rle: toRle(d.bits) };
+}
+
 /** Mask token -> wire mask (null when it can't be decoded or is empty). */
 export function wireMask(m: SamMaskToken, maxSide = 96): WireMask | null {
   try {
-    const d = downscaleMask(decodeSamMask(m), maxSide);
-    if (!d.bits.some((b) => b === 1)) return null;
-    return { w: d.width, h: d.height, rle: toRle(d.bits) };
+    return toWireMask(decodeSamMask(m), maxSide);
   } catch {
     return null;
   }
+}
+
+/** A decoded mask placed at its box's top-left, in source pixels. */
+export type PlacedMask = { x1: number; y1: number; width: number; height: number; bits: Uint8Array };
+
+/** OR of several placed masks over their joint bounding box. */
+export function unionMasks(parts: readonly PlacedMask[]): PlacedMask {
+  if (!parts.length) throw new SamMaskError("union of no masks");
+  const x1 = Math.min(...parts.map((p) => p.x1));
+  const y1 = Math.min(...parts.map((p) => p.y1));
+  const width = Math.max(...parts.map((p) => p.x1 + p.width)) - x1;
+  const height = Math.max(...parts.map((p) => p.y1 + p.height)) - y1;
+  if (width * height > MAX_AREA) throw new SamMaskError("union too large");
+  const bits = new Uint8Array(width * height);
+  for (const p of parts) {
+    for (let y = 0; y < p.height; y++) {
+      const row = (p.y1 - y1 + y) * width + (p.x1 - x1);
+      for (let x = 0; x < p.width; x++) if (p.bits[y * p.width + x]) bits[row + x] = 1;
+    }
+  }
+  return { x1, y1, width, height, bits };
 }

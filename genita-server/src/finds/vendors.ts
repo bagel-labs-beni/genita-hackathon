@@ -16,6 +16,8 @@ export interface FindsVendors {
   spark(req: SparkRequest, signal?: AbortSignal): Promise<SparkResult>;
   sparkStream(req: SparkRequest, signal?: AbortSignal): AsyncIterable<SparkStreamEvent>;
   sam(imageDataUrl: string, prompt: string, signal?: AbortSignal): Promise<SamBox[]>;
+  /** GENITA_SAM_MASKS=1: SAM boxes carry masks + scores; camera boxes go out one per match with a mask */
+  samMasks?: boolean;
   /** illustration bytes (PNG/JPEG) */
   image(prompt: string, signal?: AbortSignal): Promise<Buffer>;
   /** F7: read an opened product page (one product? price? og:image) — no AI; null = could not read */
@@ -46,6 +48,7 @@ export function metaVendors(key: string, opts: { samMasks?: boolean } = {}): Fin
     },
     sparkStream: (req, signal) => sparkStream(key, req, { signal, firstEventTimeoutMs: 8000 }),
     sam: (img, prompt, signal) => samDetect(key, img, prompt, signal, { masks: opts.samMasks }),
+    samMasks: opts.samMasks === true,
     image: (prompt, signal) => museImageGenerate(key, prompt, "512x512", signal),
     pageFacts: (url, signal) => fetchPageFacts(url, signal),
     productImage: (url, signal) => fetchImage(url, signal),

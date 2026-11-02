@@ -42,7 +42,8 @@ export async function museImageEdit(
 /**
  * Boxes for `prompt` (e.g. "the dog's mouth") in a data-URL image. Each box
  * carries its raw mask token. `masks: true` asks for one_bit masks, many times
- * smaller on the wire than the lossless default; decode with meta/samMask.ts.
+ * smaller on the wire than the lossless default (decode with meta/samMask.ts),
+ * and for a confidence score on every match (SamBox.score).
  */
 export async function samDetect(
   key: string,
@@ -57,7 +58,8 @@ export async function samDetect(
     {
       model: SAM_MODEL,
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: imageDataUrl }] }],
-      ...(opts.masks ? { metadata: { mask_encoding: "one_bit" } } : {}),
+      // metadata values are strings on this API ("true", not true)
+      ...(opts.masks ? { metadata: { mask_encoding: "one_bit", include_confidence: "true" } } : {}),
     },
     signal,
   );
