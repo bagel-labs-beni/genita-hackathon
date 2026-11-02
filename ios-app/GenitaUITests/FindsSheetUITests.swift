@@ -82,7 +82,7 @@ final class FindsSheetUITests: XCTestCase {
         XCTAssertTrue(link.waitForExistence(timeout: 5))
         link.tap()
         XCTAssertTrue(app.descendants(matching: .any)["findBrowser"].waitForExistence(timeout: 5), "View opens the in-sheet browser")
-        app.buttons["browserDone"].tap()
+        app.buttons["Done"].firstMatch.tap()
         let save = app.buttons["findCTA"]
         XCTAssertTrue(save.waitForExistence(timeout: 5))
         save.tap()
