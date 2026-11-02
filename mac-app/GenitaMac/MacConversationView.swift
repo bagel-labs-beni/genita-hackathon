@@ -75,7 +75,7 @@ struct MacConversationView: View {
                 if let denied = callDenied, waitingCopy == nil {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
+                        MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
                 if waitingCopy == nil && !interpret.isLive {
