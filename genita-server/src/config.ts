@@ -11,6 +11,8 @@ export type Config = {
    * judge can run the public repo with only a Meta key.
    */
   voice?: VoiceConfig | null;
+  /** Concurrent voice-GPU calls; default 3, 0 = unlimited. Older injected configs may omit it. */
+  voiceMaxCalls?: number;
   /** Whether the Meta voice service is configured; otherwise the app speaks. */
   serverTts: boolean;
   host: string;
@@ -89,10 +91,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
   const serverTts = !!voice;
+  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 3);
   return {
     metaKey,
     serverTts,
     voice,
+    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 3,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,

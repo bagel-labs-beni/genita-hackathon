@@ -26,6 +26,7 @@ import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { createSeamless } from "./tts/seamless.ts";
+import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
@@ -64,6 +65,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // Construct once with the process's voice client; all sessions share these seats.
+    voiceSeats: voice ? createVoiceSeats(config.voiceMaxCalls ?? 3) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };

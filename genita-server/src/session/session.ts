@@ -14,6 +14,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
 import { shiftTiming } from "../lips/visemes.ts";
@@ -69,6 +70,8 @@ export type SessionDeps = {
   now?: () => number;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
+  /** Shared by all calls to the process's voice GPU (not one gate per session). */
+  voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
   /**
@@ -99,7 +102,7 @@ type Reply = {
   doneTimer: NodeJS.Timeout | null;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
-  /** server mode: the voice failed mid-reply and the rest went to the app as `say` */
+  /** server mode: GPU capacity or a voice failure sent this reply to the app as `say` */
   fellBack: boolean;
 };
 
@@ -196,6 +199,7 @@ export class Session {
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
+  private voiceOverflow = false;
   private history: HistoryItem[] = [];
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
@@ -370,6 +374,7 @@ export class Session {
     this.lip = { requested: mode, active: mode, reason: null };
     // Server TTS runs only when the server has it on; then the app may still ask for device speech.
     this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
+    this.deviceVoiceForReply();
     // Device speech: no server audio to sync, so no server mouth cues; the device makes its own.
     if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
@@ -433,7 +438,7 @@ export class Session {
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
-    if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
+    if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (this.continued) return; // handoff: the conversation goes on, no greeting of either kind
     if (greetAfterMs === null) {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
@@ -541,7 +546,10 @@ export class Session {
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
-      say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
+      // Overflow stays on the device for the whole interpretation: queued translations would otherwise mix device PCM
+      // and server PCM out of order. The seat is retried on the next chat reply.
+      useDeviceVoice: () => this.voiceOverflow || this.deviceVoiceForReply(),
+      say: (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }),
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
       log: (event, data) => this.log(event, data),
     };
@@ -566,6 +574,7 @@ export class Session {
   close(code = 1000, reason = "closed"): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.tts === "server" && this.deps.config.voice) this.deps.voiceSeats?.release(this.id);
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
     if (this.greetTimer) clearTimeout(this.greetTimer);
     this.dropSpeculation();
@@ -874,6 +883,18 @@ export class Session {
     this.spec = null;
   }
 
+  /** Decide at call/reply start only: a running reply keeps its voice even if a seat frees. */
+  private deviceVoiceForReply(): boolean {
+    if (this.closed || this.tts === "device") return true;
+    const seats = this.deps.config.voice ? this.deps.voiceSeats : undefined;
+    if (!seats) return false;
+    const overflow = !seats.tryTake(this.id);
+    if (overflow && !this.voiceOverflow) this.log("voice.capacity_fallback", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
+    if (!overflow && this.voiceOverflow) this.log("voice.capacity_restored", { sessionId: this.id });
+    this.voiceOverflow = overflow;
+    return overflow;
+  }
+
   /**
    * self: the companion speaks on its own (one path, 11/2) — "card" = a Finds card's line (F10),
    * "watch" = a watch-together reaction (F5-L14). Spoken as is: no Spark, no user turn, no memory write.
@@ -883,7 +904,7 @@ export class Session {
     if (!self) this.greeting = null;
     // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
     const newName = !self && !greeting && this.mode === "chat" ? detectRename(text) : null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: false };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
