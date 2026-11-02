@@ -28,11 +28,13 @@ struct ProximityGlideModifier: ViewModifier, Animatable {
     var animatableData: Double { get { progress } set { progress = newValue } }
     func body(content: Content) -> some View {
         let p = min(1, max(0, progress))
+        // A solid card lifting away (shadow, opaque until the last third), not a ghost over the screen behind it.
         content
             .clipShape(RoundedRectangle(cornerRadius: 56 * p, style: .continuous))
-            .scaleEffect(1 - 0.58 * p, anchor: .top)
-            .offset(y: -360 * p * p)
-            .opacity(1 - p * p)
-            .blur(radius: 8 * p * p)
+            .shadow(color: .black.opacity(0.35 * min(1, p * 4)), radius: 30, y: 16)
+            .scaleEffect(1 - 0.6 * p, anchor: .top)
+            .offset(y: -380 * p * p)
+            .opacity(1 - p * p * p)
+            .blur(radius: 10 * p * p * p * p)
     }
 }
