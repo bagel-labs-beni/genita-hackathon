@@ -9,11 +9,9 @@ export const PROTOCOL_VERSION = 1;
 /** Binary server frame: "GA" | kind u8 | reserved u8 | seq u32 LE | payload */
 export const FRAME_HEADER_BYTES = 8;
 export const FRAME_KIND_TTS_PCM = 1;
-/** Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG (F4-L17) */
-export const FRAME_KIND_PETER = 2;
 
-export type LipMode = "peter" | "atlas" | "none";
-/** Who speaks the reply: the server (ElevenLabs PCM frames) or the device (`say` text, on-device TTS). */
+export type LipMode = "atlas" | "none";
+/** Who speaks the reply: the server (Meta voice PCM frames) or the device (`say` text, on-device TTS). */
 export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
@@ -67,10 +65,10 @@ export type StartMessage = {
   mode?: Mode;
   language?: string;
   voiceId?: string;
-  lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
+  lip?: LipMode | { mode: LipMode; fallback?: LipMode };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
-  /** default: "device" unless the server runs server TTS (GENITA_SERVER_TTS=1) */
+  /** default: "device" unless the server runs server TTS (GENITA_VOICE_URL + GENITA_VOICE_TOKEN) */
   tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
@@ -194,7 +192,7 @@ export type ServerEvent =
     }
   | { type: "asr.status"; status: "connected" | "reconnecting" }
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
-  | { type: "lip.changed"; lip: LipPlan; peter?: { bundleId: string; pasteDy: number; fps: number } }
+  | { type: "lip.changed"; lip: LipPlan }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown }
   | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
@@ -256,7 +254,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
-  "lip.changed": { required: ["lip"], optional: ["peter"] },
+  "lip.changed": { required: ["lip"], optional: [] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
   "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },

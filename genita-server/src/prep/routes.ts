@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
-import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { FACE_KEYS, type FaceKey } from "./face.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
@@ -65,17 +65,12 @@ export function userIdOf(req: IncomingMessage): string {
 
 const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
 
-/**
- * Session `lip`: Peter for humans only when GENITA_PETER is on; the mouth atlas
- * only on the Kling pipeline; otherwise "none" (the device animates the face set).
- */
-function sessionLip(c: CompanionRecord, flags: { peter?: boolean; kling?: boolean }) {
-  if (c.type === "human" && flags.peter) return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
-  if (c.type !== "human" && flags.kling) return "atlas";
+/** All companion kinds animate the Meta face set on the device. */
+function sessionLip(_c: CompanionRecord): "none" {
   return "none";
 }
 
-export function companionView(c: CompanionRecord, style: StyleCard | null, flags: { peter?: boolean; kling?: boolean } = {}) {
+export function companionView(c: CompanionRecord, style: StyleCard | null) {
   return {
     id: c.id,
     type: c.type,
@@ -88,7 +83,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null, flags
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c, flags), peter: prepView(c).lips.peter }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c) }
       : null,
   };
 }
@@ -179,9 +174,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       } catch {
         throw new PrepError(404, "unknown_voice");
       }
-      const mp3 = await voicePreview(d, id);
-      res.writeHead(200, { "content-type": "audio/mpeg", "content-length": mp3.length, "cache-control": "public, max-age=86400" });
-      return void res.end(mp3);
+      const wav = await voicePreview(d, id);
+      res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length, "cache-control": "public, max-age=86400" });
+      return void res.end(wav);
     }
 
     if (m === "POST" && p === "/v1/companion") {
@@ -201,18 +196,18 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voiceId: voice.id,
         name,
         createdAt: new Date().toISOString(),
-        prep: newPrepState({ kling: d.kling }),
+        prep: newPrepState(),
       };
       await d.store.putCompanion(c);
       d.log("voice.selected", { voice_id: voice.id });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 201, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "GET" && p === "/v1/companion") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      return send(res, 200, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 200, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "GET" && p === "/v1/companion/prep") {
@@ -237,7 +232,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/companion/prep/retry") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      if (c.prep.status === "ready") return send(res, 200, prepView(c));
+      if (c.prep.status === "ready" && !needsFaceSet(c)) return send(res, 200, prepView(c));
       return send(res, 202, prepView(await runner.retry(user)));
     }
 
@@ -246,7 +241,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       const next = await savePrefs(d, c, b.depth, b.answers);
-      const v = companionView(next, await d.store.getStyle(user), d);
+      const v = companionView(next, await d.store.getStyle(user));
       return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
     }
 

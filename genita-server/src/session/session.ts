@@ -1,28 +1,27 @@
 /**
  * One realtime conversation: app socket ↔ Muse Transcribe ↔ Muse Spark ↔
- * the app's on-device voice (`say`, device mode) or ElevenLabs (server mode,
- * GENITA_SERVER_TTS=1). Turn-taking decisions live in turnMachine.ts (pure); this
+ * the app's on-device voice (`say`, device mode) or Meta SeamlessM4T v2.
+ * Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
-import type { TtsChunk, TtsRequest } from "../tts/elevenlabs.ts";
-import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
+import type { TtsChunk, TtsRequest } from "../tts/types.ts";
+import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { resolveSpeaker, seamlessLang } from "../tts/seamless.ts";
+import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import { spokenText } from "../voice/normalize.ts";
-import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
+import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
 import {
   PROTOCOL_VERSION,
   FRAME_HEADER_BYTES,
   FRAME_KIND_TTS_PCM,
-  FRAME_KIND_PETER,
   CLIENT_FRAME_KIND_MIC,
   CLIENT_FRAME_KIND_CALL,
   encodeFrameHeader,
@@ -59,24 +58,12 @@ export interface AsrLike {
   readonly isOpen: boolean;
 }
 
-export interface PeterLike {
-  on(ev: "crop", fn: (c: { requestId: number; frame: number; jpeg: Buffer }) => void): unknown;
-  on(ev: "closed", fn: (code: number) => void): unknown;
-  connect(): Promise<{ bundleId: string; pasteDy: number; fps: number }>;
-  readonly isReady: boolean;
-  begin(requestId: number, startFrame?: number): void;
-  audio24k(requestId: number, pcm24k: Buffer): void;
-  end(requestId: number): void;
-  cancel(requestId: number): void;
-  close(): void;
-}
-
 export type SessionDeps = {
   config: Config;
   /** mode: the Mac's shared-screen sound uses DIARIZATION (watch together) */
   openAsr: (languages: string[], mode?: "ENDPOINTING" | "DIARIZATION") => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
-  tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
+  tts: (req: TtsRequest) => AsyncIterable<TtsChunk>;
   now?: () => number;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
@@ -85,8 +72,6 @@ export type SessionDeps = {
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
-  /** Peter worker connection factory; unset = Peter not deployed */
-  openPeter?: (opts?: { avatarId?: string }) => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
   /** result cards (F10); unset = spoken answers only */
   finds?: FindsDeps;
@@ -103,8 +88,6 @@ type Reply = {
   firstAudioAt: number | null;
   audioMs: number;
   doneTimer: NodeJS.Timeout | null;
-  /** this reply's audio is going to Peter */
-  peter: boolean;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
   /** server mode: the voice failed mid-reply and the rest went to the app as `say` */
@@ -198,8 +181,6 @@ export class Session {
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
-  /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
-  private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
@@ -211,9 +192,7 @@ export class Session {
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
-  private peter: PeterLike | null = null;
   private watch: WatchController | null = null;
-  private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
@@ -239,6 +218,19 @@ export class Session {
         now: this.now,
       });
     }
+  }
+
+  /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
+  get hasStarted(): boolean {
+    return this.started && !this.closed;
+  }
+
+  /**
+   * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
+   * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
+   */
+  stopForHandoff(): void {
+    if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
   // ───────────────────────── client input ─────────────────────────
@@ -357,12 +349,12 @@ export class Session {
     // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
     if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
-    const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
-    this.peterAvatarId = typeof lip.avatarId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(lip.avatarId) ? lip.avatarId : undefined;
-    this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
+    const asLip = (v: unknown, d: LipMode): LipMode => (v === "atlas" || v === "none" ? v : v === undefined ? d : "none");
+    const mode = asLip(lip.mode, persona.kind === "human" ? "none" : "atlas");
+    this.lip = { requested: mode, active: mode, reason: null };
     // Server TTS runs only when the server has it on; then the app may still ask for device speech.
     this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
-    // Device speech: no server audio to sync, so no mouth cues and no Peter; the device makes its own.
+    // Device speech: no server audio to sync, so no server mouth cues; the device makes its own.
     if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
@@ -407,7 +399,6 @@ export class Session {
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
-    if (this.lip.reason === "peter_connecting") void this.connectPeter();
     if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
   }
@@ -488,51 +479,11 @@ export class Session {
       // no memory context or recall/remember tools in translation (useMemory = false)
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
-        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
+        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
       say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
-      lipBegin: (uid) => {
-        if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
-        this.peter.begin(uid);
-        return true;
-      },
-      lipAudio: (uid, pcm) => this.peter?.audio24k(uid, pcm),
-      lipEnd: (uid) => this.peter?.end(uid),
-      lipCancel: (uid) => {
-        this.peterCancelled.add(uid);
-        this.peter?.cancel(uid);
-      },
       log: (event, data) => this.log(event, data),
     };
-  }
-
-  private async connectPeter(): Promise<void> {
-    const fallback = this.lip.active;
-    const peter = this.deps.openPeter!({ avatarId: this.peterAvatarId });
-    this.peter = peter;
-    peter.on("crop", (c) => {
-      if (this.closed || this.peterCancelled.has(c.requestId)) return;
-      const frame = Buffer.alloc(4);
-      frame.writeUInt32LE(c.frame >>> 0, 0);
-      this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_PETER, c.requestId), frame, c.jpeg]));
-    });
-    peter.on("closed", () => {
-      if (this.closed || this.lip.active !== "peter") return;
-      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip });
-    });
-    try {
-      const r = await peter.connect();
-      if (this.closed) return peter.close();
-      this.lip = { requested: "peter", active: "peter", reason: null };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip, peter: { bundleId: r.bundleId, pasteDy: r.pasteDy, fps: r.fps } });
-    } catch (err) {
-      this.peter = null;
-      if (this.closed) return;
-      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip });
-      this.log("peter.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-    }
   }
 
   private async ensureAsr(): Promise<void> {
@@ -563,7 +514,6 @@ export class Session {
     this.interp?.stop();
     this.dropCallAsr();
     this.asr?.end();
-    this.peter?.close();
     this.memoryCall?.close();
     // account deleted: Finds stop now and never write again (the delete runs right after)
     this.finds?.close({ purge: reason === "account_deleted" });
@@ -727,10 +677,6 @@ export class Session {
     r.abort.abort();
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
-    if (r.peter) {
-      this.peterCancelled.add(utteranceId);
-      this.peter?.cancel(utteranceId);
-    }
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
@@ -866,7 +812,7 @@ export class Session {
   private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: false };
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -986,8 +932,8 @@ export class Session {
           voiceId: this.voiceId,
           text: s.tts,
           emotion: s.emotion,
-          model: this.deps.config.ttsModel,
-          fallbackModel: this.deps.config.ttsFallbackModel,
+          model: SEAMLESS_MODEL,
+
           signal,
           lang: speechLang(s.display || s.tts, lang),
         }),
@@ -1041,10 +987,6 @@ export class Session {
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
-            if (this.lip.active === "peter" && this.peter?.isReady) {
-              reply.peter = true;
-              this.peter.begin(utteranceId);
-            }
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
@@ -1070,7 +1012,6 @@ export class Session {
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
-            if (reply.peter) this.peter?.audio24k(utteranceId, chunk.audio);
           }
           reply.audioMs += durationMs;
         }
@@ -1102,7 +1043,6 @@ export class Session {
     }
     await producer;
     if (signal.aborted || this.reply !== reply) return;
-    if (reply.peter) this.peter?.end(utteranceId);
 
     if (sparkError) {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
