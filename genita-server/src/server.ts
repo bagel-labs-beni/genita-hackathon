@@ -32,9 +32,12 @@ const IDLE_MS = 120_000;
 
 export type LogFn = (event: string, data: Record<string, unknown>) => void;
 
-/** Server TTS off: sessions run in device mode and never call this; it refuses rather than reach a vendor. */
+/**
+ * Server TTS off: sessions run in device mode and never call this. If one did, it refuses
+ * without reaching a vendor; "tts_off" is the session's text-only (no error) path.
+ */
 async function* serverTtsOff(): AsyncGenerator<never> {
-  throw new Error("server TTS is off (GENITA_SERVER_TTS)");
+  throw new Error("tts_off");
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {

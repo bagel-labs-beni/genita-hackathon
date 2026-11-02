@@ -54,7 +54,7 @@ test("server deps: flags off → no Peter factory even with Peter env set, and t
     assert.equal(deps.openPeter, undefined);
     await assert.rejects(async () => {
       for await (const _ of deps.tts({ voiceId: "v", text: "hi", emotion: null, model: "eleven_v4_turbo" })) void _;
-    }, /server TTS is off/);
+    }, /tts_off/);
     assert.equal(fetched, 0, "no ElevenLabs request");
   } finally {
     globalThis.fetch = realFetch;
