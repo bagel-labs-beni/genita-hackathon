@@ -55,9 +55,12 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
-      - name: Replay server log
+      - name: Replay server log, app log, crash reports
         if: always()
-        run: cat replay.log || true
+        run: |
+          cat replay.log || true
+          xcrun simctl spawn "${{ steps.simulator.outputs.id }}" log show --last 15m --style compact --predicate 'subsystem == "ai.thebeni.genita"' | tail -n 80 || true
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Genita* 2>/dev/null | head -2); do echo "== $f"; head -c 6000 "$f"; echo; done
 
       - name: Export call screenshots
         if: always()

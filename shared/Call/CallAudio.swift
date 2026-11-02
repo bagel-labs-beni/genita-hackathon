@@ -91,6 +91,7 @@ import os
         buffer.frameLength = AVAudioFrameCount(floats.count)
         floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
         if !engine.isRunning { try? engine.start() }
+        guard engine.isRunning else { log.error("engine not running; chunk dropped"); return }
         if !player.isPlaying { player.play() }
         let begin = max(scheduledEnd, nowSample() ?? 0)
         if utteranceStart[utteranceId] == nil { utteranceStart[utteranceId] = begin }

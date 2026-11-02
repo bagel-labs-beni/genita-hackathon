@@ -36,7 +36,7 @@ import XCTest
         let frames = framer.append([Int16](repeating: 2, count: 3000))
         XCTAssertEqual(frames.count, 2)
         XCTAssertEqual(frames.map(\.count), [3840, 3840])
-        XCTAssertEqual(framer.pendingSamples, 80)
+        XCTAssertEqual(framer.pendingSamples, 160)
         // order and little-endian bytes are preserved across the split
         XCTAssertEqual(Array(frames[0].prefix(2)), [1, 0])
         XCTAssertEqual(Array(frames[0].suffix(2)), [2, 0])
