@@ -17,6 +17,8 @@ const positives = [
   "Let me search the web for that.",
   "One sec, looking that up.",
   "Give me a sec while I look that up.",
+  "One sec, I'll check my memory.",
+  "One sec I'll check my memory.",
   "I'll remember that.",
   "I'll save that to memory.",
   "기억을 찾아볼게.",
@@ -96,6 +98,9 @@ for (const text of ["", " \t\n", "，！？…", "Yes!", "No.", "Hmm tofu", "Oka
 for (const text of ["Hmm", "Hmm,", "Hmm，um", "Okay", "Well, uh，", "Hmm Hmm"]) {
   test(`buffer interjection fragment: ${JSON.stringify(text)}`, () => assert.equal(isToolNarrationLead(text), true));
 }
+for (const text of ["One sec", "One sec,", "잠시만요", "잠시만요,"]) {
+  test(`buffer wait prefix: ${JSON.stringify(text)}`, () => assert.equal(isToolNarrationLead(text), true));
+}
 for (const text of ["Hmm.", "Hmm, Hmm.", "Hmm。", "uh！", "Okay?", "Hmm, tofu", "well-being"]) {
   test(`speak complete interjection or real content: ${JSON.stringify(text)}`, () => assert.equal(isToolNarrationLead(text), false));
 }
@@ -115,6 +120,12 @@ const realSentence = "You told me you love tofu.";
 const TOOL = Symbol("tool call");
 const END = Symbol("attempt EOF");
 const judgeCases = [
+  { name: "round 6 wait prefix before announcement", input: ["One sec,", announcement, TOOL], speak: [], answer: false },
+  { name: "round 6 bare wait prefix before announcement", input: ["One sec", announcement, TOOL], speak: [], answer: false },
+  { name: "round 6 completed wait is not an answer", input: ["One sec.", TOOL], speak: ["One sec."], answer: false },
+  { name: "round 6 Korean wait is not an answer", input: ["잠시만요.", TOOL], speak: ["잠시만요."], answer: false },
+  { name: "round 6 keep announcement before complete interjection", input: ["I'll remember that.", "Hmm."], speak: ["I'll remember that.", "Hmm."], answer: true },
+  { name: "round 6 keep announcement before unfinished interjection", input: ["I'll remember that.", "Hmm"], speak: ["I'll remember that.", "Hmm"], answer: true },
   { name: "round 5 announcement, filler, announcement", input: [announcement, "Hmm.", secondAnnouncement, TOOL], speak: ["Hmm."], answer: false },
   { name: "round 5 eager filler lead", input: [announcement, "Hmm,", secondAnnouncement, TOOL], speak: [], answer: false },
   { name: "multiple tool rounds", input: [announcement, TOOL, secondAnnouncement, TOOL, realSentence], speak: [realSentence], answer: true },
@@ -197,6 +208,70 @@ test("NarrationJudge exhaustive sequences up to four before and after a tool cal
   assert.equal(checked, 43_923);
 });
 
+// Expanded alphabet: exhaust every 0..4-piece sequence with no tool and with
+// a tool at every boundary. Retain the longer two-sided enumeration above.
+// Symbolic kinds are the oracle; no production classification predicates.
+test("NarrationJudge exhaustive wait/filler/announcement/answer sequences up to length four", () => {
+  const alphabet = [
+    { kind: "filler", text: "One sec" },
+    { kind: "filler", text: "One sec," },
+    { kind: "filler", text: "One sec." },
+    { kind: "filler", text: "잠시만요." },
+    { kind: "filler", text: "Hmm" },
+    { kind: "filler", text: "Hmm." },
+    { kind: "announcement", text: announcement },
+    { kind: "real", text: realSentence },
+  ] as const;
+  type Piece = typeof alphabet[number];
+  const sequences: Piece[][] = [[]];
+  let level: Piece[][] = [[]];
+  for (let length = 1; length <= 4; length++) {
+    level = level.flatMap((prefix) => alphabet.map((piece) => [...prefix, piece]));
+    sequences.push(...level);
+  }
+  let checked = 0;
+  for (const sequence of sequences) {
+    // -1 is no tool; 0..length inserts a tool before/between/after pieces.
+    for (let boundary = -1; boundary <= sequence.length; boundary++) {
+      const judge = new NarrationJudge();
+      const spoken: string[] = [];
+      const expectedReal: string[] = [];
+      const input = sequence.map((piece, index) => ({ ...piece, text: piece.kind === "real" ? `Tofu works ${index}.` : piece.text }));
+      for (let index = 0; index <= input.length; index++) {
+        if (index === boundary) spoken.push(...judge.onToolCall().speak);
+        if (index === input.length) break;
+        const { kind, text } = input[index];
+        const result = judge.push(text);
+        // Content must stream immediately and survive exactly once, in order.
+        if (kind === "real") {
+          expectedReal.push(text);
+          assert.ok(result.speak.some((sentence) => sentence.includes(text)));
+        }
+        spoken.push(...result.speak);
+      }
+      spoken.push(...judge.finish().speak);
+      const text = spoken.join(" ");
+      const context = () => JSON.stringify({ input, boundary, spoken });
+      assert.deepEqual(text.match(/Tofu works \d+\./g) ?? [], expectedReal, context());
+      if (boundary >= 0) {
+        // A tool turn never delivers an announcement or accepts only fillers.
+        assert.ok(!text.includes(announcement), context());
+        assert.equal(judge.hasAnswer(spoken), expectedReal.length > 0, context());
+      } else {
+        // Without tool use or subsequent real content, preserve every piece.
+        const lastReal = input.findLastIndex((piece) => piece.kind === "real");
+        const keptAnnouncements = input.slice(lastReal + 1).filter((piece) => piece.kind === "announcement").length;
+        assert.equal(text.split(announcement).length - 1, keptAnnouncements, context());
+        if (!expectedReal.length) assert.equal(text, input.map((piece) => piece.text).join(" "), context());
+        assert.equal(judge.hasAnswer(spoken), input.length > 0, context());
+      }
+      assert.deepEqual(judge.finish(), { speak: [], hold: [], dropped: [] });
+      checked++;
+    }
+  }
+  assert.equal(checked, 27_418);
+});
+
 // Exercise MemoryCall's actual function-call rounds and Session's eager server
 // voice splitter, as well as the device voice's whole-sentence path.
 function voiceConfig(voice: "server" | "device"): Config {
@@ -238,6 +313,23 @@ async function recallTurn(voice: "server" | "device", announcements: string[][],
 }
 
 for (const voice of ["server", "device"] as const) {
+  for (const pieces of [
+    ["One sec, ", "I'll check my memory. "],
+    ["One sec. "],
+    ["잠시만요. "],
+  ]) test(`round 6: wait-only tool turn retries (${voice}, ${JSON.stringify(pieces)})`, async () => {
+    const { events, logs, spoken, answer, followups } = await recallTurn(voice, [pieces], ["", "You told me you love tofu."]);
+    assert.equal(followups, 2);
+    assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+    const reply = events.find((e) => e.type === "reply")?.text;
+    assert.ok(reply?.endsWith(answer));
+    assert.doesNotMatch(reply!, /check my memory/);
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), reply);
+    assert.equal(events.some((e) => e.type === "error"), false);
+    if (voice === "server") assert.equal(spoken.join(" "), reply);
+    else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), reply);
+  });
+
   for (const pieces of [
     ["I'll check my memory. Hmm. I'll look that up. "],
     ["I'll check my memory. ", "Hmm. ", "I'll look that up. "],
@@ -360,7 +452,7 @@ for (const voice of ["server", "device"] as const) {
     else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), expected);
   });
 
-  for (const text of ["Hmm,", "Hmm.", "Hmm. I'll search my memory for that.", "Hmm. I remember you love tofu.", "Hmm, I'll search my memory for that.", "One sec; looking that up.", "One sec; the tofu is burning.", "One sec， looking that up.", "One sec， the tofu is burning."]) {
+  for (const text of ["I'll remember that. Hmm.", "I'll remember that. Hmm", "Hmm,", "Hmm.", "Hmm. I'll search my memory for that.", "Hmm. I remember you love tofu.", "Hmm, I'll search my memory for that.", "One sec; looking that up.", "One sec; the tofu is burning.", "One sec， looking that up.", "One sec， the tofu is burning."]) {
     test(`no-tool reply preserves ${JSON.stringify(text)} (${voice})`, async () => {
       const { events } = await turn({
         config: voiceConfig(voice),
