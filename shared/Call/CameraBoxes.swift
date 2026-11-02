@@ -36,10 +36,12 @@ struct LiveBox: Identifiable, Equatable {
     /// Bumped when the camera is flipped or turned off; boxes from before it are stale.
     private(set) var epoch = 0
     @ObservationIgnored var fadeAfter: Duration = .seconds(4)
-    /// Demo S3: soft pixel masks instead of boxes, when the server sends them. Off by default (boxes, as today):
-    /// `GENITA_SAM_MASKS_UI=1` in the environment or the `genita.samMasks` default turns it on.
+    /// Demo S3: soft pixel masks instead of boxes, when the server sends them (server GENITA_SAM_MASKS=1).
+    /// On by default since Chelsea's OK of option (c) (11/3); `GENITA_SAM_MASKS_UI=0` or the `genita.samMasks`
+    /// default set to false goes back to boxes. Without masks on the wire the boxes draw as before either way.
     static var masksEnabled: Bool {
-        ProcessInfo.processInfo.environment["GENITA_SAM_MASKS_UI"] == "1" || UserDefaults.standard.bool(forKey: "genita.samMasks")
+        if let env = ProcessInfo.processInfo.environment["GENITA_SAM_MASKS_UI"] { return env != "0" }
+        return UserDefaults.standard.object(forKey: "genita.samMasks") as? Bool ?? true
     }
     /// Gray images of each box's mask and its outline, made once per batch (by LiveBox.id).
     @ObservationIgnored private var maskCache: [String: (fill: CGImage, edge: CGImage)] = [:]

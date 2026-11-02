@@ -159,7 +159,7 @@ import XCTest
         XCTAssertNil(b.maskImages(for: b.boxes[2]))
         b.highlight("tomatoes")
         XCTAssertEqual(b.highlighted, "tomatoes")
-        XCTAssertFalse(CameraBoxes.masksEnabled, "masks are off by default (boxes, as today)")
+        XCTAssertTrue(CameraBoxes.masksEnabled, "masks are on by default (Chelsea OK, option c); off with GENITA_SAM_MASKS_UI=0")
     }
 
     /// Demo S3 option (c), masks only: a label never sits under the top-left menu button or the self-view PiP;
