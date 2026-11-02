@@ -793,3 +793,59 @@ test("memo: the reaction goes out as soon as its verdict streams, before the mem
   assert.equal(reacted.length, 1, "not twice");
   assert.match(c.questionContext()!.instructions, /Pancake on the ceiling/);
 });
+
+test("Codex P2: freshness is the content's time — a memo started late on an old still scene doesn't react", async () => {
+  const funny = '{"protectedVideo":false,"moment":"funny","reaction":"ha","memo":"x","speakers":[]}';
+  const { c, at, reacted } = controller([funny]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame }); // the last frame: the screen then stays still
+  at(30_000);
+  await c.runMemo();
+  assert.deepEqual(reacted, []);
+  assert.equal(c.stats.blocked.stale, 1);
+});
+
+test("Codex P2: a slower, older memo finishing late never clears a newer held reaction; memos stay in scene order", async () => {
+  const quiet = { quiet: false };
+  const { c, at, reacted } = controller([], quiet, {
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      const text = JSON.stringify(req).includes("late") ? '{"protectedVideo":false,"moment":"funny","reaction":"old one","memo":"door closed","speakers":[]}' : '{"protectedVideo":false,"moment":"funny","reaction":"new one","memo":"door opens","speakers":[]}';
+      if (text.includes("old one")) await new Promise((r) => setTimeout(r, 30));
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: `${frame}late` });
+  const older = c.runMemo(); // sees the 7 s frame, slow
+  at(8_000);
+  c.onMessage({ type: "frame", image: `${frame}new` });
+  await c.runMemo(); // sees the 8 s frame, answers first → held (they are talking)
+  at(17_000);
+  await older; // 7 s content, now stale
+  quiet.quiet = true;
+  at(16_500);
+  c.tick();
+  assert.deepEqual(reacted, ["<laugh> [smileopen] [laughs] new one"], "the newer held reaction survives and is spoken");
+  assert.match(c.questionContext()!.instructions, /door closed[\s\S]*door opens/, "timeline in scene order");
+});
+
+test("Codex P2: the protected-video line waits for a pause instead of being lost", async () => {
+  const prot = '{"protectedVideo":true,"moment":"none","reaction":"","memo":"Video area is black.","speakers":[]}';
+  const quiet = { quiet: true };
+  const { c, at, reacted } = controller([prot], quiet);
+  c.onMessage({ type: "start", source: "Safari" });
+  at(3_000);
+  c.onMessage({ type: "frame", image: frame });
+  const memo = c.runMemo();
+  quiet.quiet = false;
+  await memo;
+  assert.deepEqual(reacted, []);
+  quiet.quiet = true;
+  at(4_000);
+  c.tick();
+  assert.equal(reacted.length, 1);
+  assert.match(reacted[0], /protected/);
+});

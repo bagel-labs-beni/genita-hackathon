@@ -439,7 +439,7 @@ Answer as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":fa
   };
 }
 
-if (args.includes("--moments")) {
+if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   // per clip: one share, ~6.5 s of the clip's first frame held still (a share's first seconds never react), then
   // the clip in real time (3 fps + sound), then its last frame held 7 s for the reaction to land
   const dir = args.find((a) => a.startsWith("--moments="))?.slice(10) ?? join(homedir(), "genita-fixtures/genita-watch-moments");
@@ -471,6 +471,19 @@ if (args.includes("--moments")) {
     // log times are performance.now() of the same process: the reaction's delay after the salient moment
     const playT = playAt;
     const delaySec = react ? +(((react.t as number) - playT) / 1000 - clip.salientSec).toFixed(1) : null;
+    // over dialogue = a video line was open at any point while the reaction plays (est. 0.5 s + 0.35 s per word)
+    let overDialogue = false;
+    if (react) {
+      const from = react.t as number;
+      const to = from + 500 + 350 * String(react.line).split(/\s+/).length;
+      let open = false;
+      for (const l of mine.filter((x) => x.event === "watch.dialogue")) {
+        const t = l.t as number;
+        if (t <= from) open = l.on === true;
+        else if (t <= to && l.on === true) open = true;
+      }
+      overDialogue = open;
+    }
     let verdict = { correct: false, invented: false };
     if (react) {
       for (let i = 0; i < 3; i++) {
@@ -489,7 +502,7 @@ if (args.includes("--moments")) {
     const memos = mine.filter((l) => l.event === "watch.memo");
     const row = {
       clip: clip.id, kind: clip.kind, reacted: !!react, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
-      afterLineMs: react?.afterLineMs ?? null, lineOpen: react?.lineOpen ?? false, held: react?.held ?? false, ...verdict,
+      afterLineMs: react?.afterLineMs ?? null, lineOpen: (react?.lineOpen as boolean | undefined) || overDialogue, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
       moments: memos.map((l) => l.moment), blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => l.why),
       shareStartedLogged: !!startLog,

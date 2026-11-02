@@ -134,6 +134,7 @@ export class WatchController {
   /** last motion spike (scene cut / big move) not yet looked at by a memo */
   private salientAt: number | null = null;
   private protectedSpoken = false;
+  private protectedPending = false;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
   private held: { v: MemoVerdict; at: number } | null = null;
   /** memos running now: up to MEMO_CONCURRENCY, started ≥ MEMO_STAGGER_MS apart, so a moment waits ≤ ~1.5 s for one */
@@ -210,6 +211,7 @@ export class WatchController {
     this.blank = false;
     this.blankSpoken = false;
     this.protectedSpoken = false;
+    this.protectedPending = false;
     this.salientAt = null;
     this.lineSinceMemo = false;
     this.openAsr();
@@ -294,6 +296,7 @@ export class WatchController {
     const now = this.deps.now();
     switch (e.type) {
       case "speechStart":
+        if (!this.dialogueActive) this.log("watch.dialogue", { on: true });
         this.dialogueActive = true;
         this.openLine = "";
         if (this.speakerOffTimer) clearTimeout(this.speakerOffTimer);
@@ -305,10 +308,12 @@ export class WatchController {
         this.labelsSeen = this.labelsSeen.filter((l) => now - l.at <= 10 * 60_000).slice(-50);
         return;
       case "speechEnd":
+        if (this.dialogueActive) this.log("watch.dialogue", { on: false });
         this.dialogueActive = false;
         this.lastDialogueEndAt = now;
         return;
       case "speechComplete": {
+        if (this.dialogueActive) this.log("watch.dialogue", { on: false });
         this.dialogueActive = false;
         this.lastDialogueEndAt ??= now;
         const text = e.text.trim();
@@ -359,6 +364,7 @@ export class WatchController {
 
   /** Runs every 500 ms while sharing (tests call it directly). */
   tick(): void {
+    if (this.protectedPending && this.sharing && !this.closed) this.speakProtected();
     if (this.held && this.sharing && !this.closed) this.tryReact(this.held.v, this.held.at, true);
     const now = this.deps.now();
     const since = now - this.lastMemoAt;
@@ -378,9 +384,13 @@ export class WatchController {
 
   /** DRM: a black video inside a page that captures fine (Netflix in a browser). Said once per share, when quiet. */
   private speakProtected(): void {
-    if (this.protectedSpoken || !this.host.conversationQuiet()) return;
+    if (this.protectedSpoken) return;
+    // said in the next pause if someone is talking now (tick retries), never dropped
+    this.protectedPending = true;
+    if (!this.host.conversationQuiet()) return;
     if (this.host.react(PROTECTED_LINE) !== null) {
       this.protectedSpoken = true;
+      this.protectedPending = false;
       this.log("watch.protected.spoken", {});
     }
   }
@@ -404,6 +414,9 @@ export class WatchController {
     const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, spacing).map((f) => f.url);
     const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
+    // how fresh the moment is = its newest frame or line, not when this memo started (Codex P2: a memo started late
+    // after a long talk must not react to a scene from 20 s ago)
+    const contentAt = Math.max(fresh.at(-1)?.at ?? this.frames.at(-1)?.at ?? at, lines.at(-1)?.at ?? -Infinity);
     this.lastMemoAt = at;
     this.lineSinceMemo = false;
     const req = buildMemoRequest({
@@ -422,10 +435,10 @@ export class WatchController {
     try {
       // lanes race, first complete JSON wins; the reaction can go out as soon as the verdict part has streamed
       // (before the memo text is written)
-      raw = await this.memoRace(req, abort.signal, (e) => {
+      raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
-        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [] }, at);
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [] }, contentAt);
       });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
@@ -445,6 +458,8 @@ export class WatchController {
     const now = this.deps.now();
     if (v.memo) {
       this.memo.push({ at, text: v.memo });
+      // overlapping memos finish out of order: keep the timeline in scene order
+      this.memo.sort((a, b) => a.at - b.at);
       this.memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS).slice(-MAX_MEMO);
     }
     for (const s of v.speakers) if (s.label && !this.names.has(s.label)) this.names.set(s.label, s.name);
@@ -453,7 +468,7 @@ export class WatchController {
       this.speakProtected();
       return v;
     }
-    if (v.moment !== "none" && !early) this.tryReact(v, at);
+    if (v.moment !== "none" && !early) this.tryReact(v, contentAt);
     return v;
   }
 
@@ -490,7 +505,8 @@ export class WatchController {
     if (this.deps.reactions === false) return;
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
-    if (!retry) this.held = null;
+    // an older moment (a slower memo finishing late) never replaces or clears a newer one that is waiting
+    if (!retry && this.held && verdictAt < this.held.at) return;
     const gate = reactionAllowed({
       now: this.deps.now(),
       sharing: this.sharing,
@@ -509,7 +525,7 @@ export class WatchController {
         this.held = { v, at: verdictAt };
         return;
       }
-      this.held = null;
+      if (retry || (this.held && this.held.at <= verdictAt)) this.held = null;
       this.stats.blocked[gate.why] = (this.stats.blocked[gate.why] ?? 0) + 1;
       this.log("watch.react.blocked", { why: gate.why, moment: v.moment, reaction: v.reaction, held: retry });
       return;
