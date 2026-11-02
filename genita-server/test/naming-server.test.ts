@@ -16,7 +16,7 @@ import type { SessionDeps } from "../src/session/session.ts";
 import { FileStore } from "../src/prep/store.ts";
 import { newPrepState } from "../src/prep/runner.ts";
 
-const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta", ELEVENLABS_API_KEY: "fake-eleven" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
+const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
 
 test("server: 'Call yourself Max' in a call is saved — GET /v1/companion → session.persona.name is Max", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "naming-server-"));

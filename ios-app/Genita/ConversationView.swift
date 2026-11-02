@@ -10,6 +10,7 @@ struct ConversationView: View {
     private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
+    @State private var cameraGuide = false
     @State private var findsTabOpen = false
     @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
     @State private var loopURL: URL?
@@ -58,6 +59,10 @@ struct ConversationView: View {
                                 .position(x: sheet == .half || sheet == .rising ? 68 : full.size.width - 68, y: 184 + top)
                                 .onTapGesture { faceTapped() }.accessibilityLabel("\(call.companionName)").accessibilityIdentifier("cameraPip")
                         }
+                        if call.cameraOn, !connecting, let check = call.finds.noSee, sheet == .idle || sheet == .dismissed {
+                            // FT-NOSEE (Figma 59:2): left 24, top 124; never over a sheet
+                            NoSeeCard(check: check) { withAnimation(.fade) { call.finds.dismissNoSee() } }.offset(x: 24, y: 124 + top).transition(.opacity)
+                        }
                         if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
@@ -69,7 +74,7 @@ struct ConversationView: View {
                         if !call.cameraOn { selfView.scaleEffect(sheet == .half || sheet == .rising ? 0.5 : 1)
                             .position(x: sheet == .half || sheet == .rising ? 52.25 : 87.5, y: selfY(sheet) + bottom)
                             .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet) }
-                        Button { call.toggleCamera() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
+                        Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
@@ -108,6 +113,10 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
+                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                            CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
+                        }
                         }
                         if connecting {
                             let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
@@ -124,7 +133,7 @@ struct ConversationView: View {
                             handoffScrim.opacity(0.5).frame(width: full.size.width, height: full.size.height).onTapGesture { dismissDenied() }
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
+                                MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                         if moreOpen {
@@ -139,6 +148,11 @@ struct ConversationView: View {
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                     }.frame(width: full.size.width, height: full.size.height).offset(x: model.menuOpen ? panelWidth : 0)
+                    if cameraGuide && !connecting {
+                        CameraGuideSheet(bottomInset: max(0, bottom), turnOn: { CameraGuide.seen = true; withAnimation(.drawer) { cameraGuide = false }; call.toggleCamera() },
+                                         notNow: { withAnimation(.drawer) { cameraGuide = false } })
+                            .frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
                     if model.menuOpen {
                         Color(white: 0.996).frame(width: panelWidth, height: full.size.height)
                         let title = DesignLibrary.nodes("menu").first { $0.characters == "Genita" }!
@@ -158,6 +172,10 @@ struct ConversationView: View {
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
+        // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
+        // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
+        .task(id: "\(connecting) \(model.prep?.status ?? "")") { if !connecting { await model.followPrep(every: 5) } }
         .onAppear {
             if !connecting {
                 call.companionName = model.companionDisplayName
@@ -183,6 +201,11 @@ struct ConversationView: View {
         return max(label.w, ceil((line as NSString).size(withAttributes: [.font: label.font]).width) + 2)
     }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
+
+    /// CAM-1: the first time the camera is asked for, say what it does before the system prompt. Turning it off needs no guide.
+    private func cameraTapped() {
+        if !call.cameraOn && !CameraGuide.seen { withAnimation(.drawer) { cameraGuide = true } } else { call.toggleCamera() }
+    }
 
     /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
     private func faceTapped() {
@@ -320,5 +343,25 @@ struct CallGlassControl: View {
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
+    }
+}
+
+/// S09-PREP (Figma 228:543): small dark pill with a turning arc under the status line while prep runs.
+/// (#179 draws the same pill from `CallController.prepStage`; this one reads the account's prep poll.)
+struct CallPrepLine: View {
+    let text: String
+    @State private var turn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
+                .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.blueOnInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+                .frame(width: 14, height: 14)
+                .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
+            Text(text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 36)
+        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+        .accessibilityElement(children: .combine).accessibilityIdentifier("callPrepPill")
     }
 }
