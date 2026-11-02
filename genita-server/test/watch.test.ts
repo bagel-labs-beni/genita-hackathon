@@ -537,3 +537,92 @@ test("session: self speech (watch reaction / card line) never feeds memory extra
   await memory.drain();
   assert.ok(!seen.some((t) => t.user.startsWith("Found card")), "a card line is not something the user said");
 });
+
+// ───────────────────────── realtime screen answers (11/3) ─────────────────────────
+
+test("realtime: echoNow decides from the video's partial line without waiting when it can", async () => {
+  const { echoNow } = await import("../src/watch/rules.ts");
+  assert.equal(echoNow("Oh, it's Karina!", "and the night is young we dance until the morning"), "user");
+  assert.equal(echoNow("dance until the morning", "and the night is young we dance until the morning"), "echo");
+  assert.equal(echoNow("Oh, it's Karina!", "and"), "wait", "a partial too short to tell still waits");
+  assert.equal(echoNow("Oh, it's Karina!", ""), "wait");
+  assert.equal(echoNow("wow", "anything at all here"), "user");
+});
+
+test("realtime: a user line over the video's singing is answered without the 1.5 s echo wait", async () => {
+  const { c, asr } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "and the night is young we dance until the morning comes" });
+  const t0 = performance.now();
+  assert.equal(await c.isEcho("Oh, it's Karina!"), false);
+  const waited = performance.now() - t0;
+  assert.ok(waited < 500, `one partial's settle at most, not the 1.5 s line wait (${Math.round(waited)} ms)`);
+  // the video's own words in the mic are still dropped, at once
+  const t1 = performance.now();
+  assert.equal(await c.isEcho("we dance until the morning"), true);
+  assert.ok(performance.now() - t1 < 50);
+});
+
+test("realtime: a partial that lags the mic catches up within one update and the echo is still dropped (Codex P2)", async () => {
+  const { c, asr } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "welcome everyone today we are making" });
+  setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce" }), 40);
+  assert.equal(await c.isEcho("pasta with tomato sauce"), true);
+  // the partial catches up over two updates (40 ms: one word, 80 ms: the rest) — still the video's line
+  asr.fire({ type: "speechComplete", turnId: 0, text: "welcome everyone today we are making pasta with tomato sauce" });
+  asr.fire({ type: "speechStart", turnId: 1 });
+  asr.fire({ type: "partial", text: "now we chop the" });
+  setTimeout(() => asr.fire({ type: "partial", text: "now we chop the fresh" }), 40);
+  setTimeout(() => asr.fire({ type: "partial", text: "now we chop the fresh basil leaves very finely" }), 80);
+  assert.equal(await c.isEcho("fresh basil leaves very finely"), true);
+  // a real user line over the same video: the next partial still doesn't match → theirs
+  setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce and basil" }), 40);
+  assert.equal(await c.isEcho("Oh, it's Karina!"), false);
+});
+
+test("realtime: a turn gets the newest frame last plus one ~2 s older, and the naming rule", () => {
+  const { c, at } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  for (let s = 1; s <= 10; s++) {
+    at(s * 1000);
+    c.onMessage({ type: "frame", image: `data:image/jpeg;base64,f${s}` });
+  }
+  const q = c.questionContext()!;
+  assert.deepEqual(q.images, ["data:image/jpeg;base64,f8", "data:image/jpeg;base64,f10"], "2 frames, the screen right now last");
+  assert.match(q.instructions, /the last one is the screen right now/);
+  assert.match(q.instructions, /use the name they gave/);
+  assert.match(q.instructions, /Never say who anyone is from their face/);
+  assert.match(q.instructions, /what they're wearing/);
+  assert.match(q.instructions, /If they name someone and no person is visible/, "only a naming turn looks for a person (Codex P2)");
+});
+
+test("realtime: the scene memo refreshes every 5 s while the screen changes (was 12 s)", async () => {
+  const { c, at, sparkCalls } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(4_000);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  assert.equal(sparkCalls.length, 0);
+  at(5_000);
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 1);
+  at(8_000);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 1, "not before 5 s since the last memo");
+  at(10_000);
+  c.tick();
+  await wait(5);
+  assert.equal(sparkCalls.length, 2);
+});
+
+test("realtime: black screen keeps no naming rule and no frames", () => {
+  const black = buildQuestionContext({ source: "Netflix", memo: [], lines: [], names: new Map(), frames: ["f1"], blank: true });
+  assert.doesNotMatch(black.instructions, /name they gave/);
+  assert.deepEqual(black.images, []);
+});

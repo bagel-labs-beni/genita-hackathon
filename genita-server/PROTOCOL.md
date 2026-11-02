@@ -19,6 +19,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
+| 11/3 | Watch together, realtime (no wire change): a turn while sharing gets the newest screen frame (last) plus one ~2 s older (was 4 over ≈6 s), the memo refreshes every 5 s while the screen changes (was 12 s), the echo check decides from the video's partial line instead of waiting up to 1.5 s, and the prompt takes the user's naming of someone on screen as given and answers with what is visible (no face-based identity). |
 | 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
@@ -390,9 +391,14 @@ Server side (genita-server/src/watch): the system audio gets its own Muse Transc
 (DIARIZATION), so the video never becomes a user turn; a user turn that repeats a line the
 video just said (speakers, no earphones) is dropped. Every ~12 s, or 4 s after a new line,
 Spark writes a 1–2 line memo from the new frames and lines and judges whether a friend would
-react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
+react out loud (11/3: every ~5 s while the screen changes). Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
 the user or companion talks or the video's dialogue is running. A question while sharing gets
 the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
+11/3 realtime: the newest frame (≤ 1 s old while a video plays; the last image, "the screen right now") plus one ~2 s
+older. "Oh, it's Karina!": the companion goes along with the user's name and adds one thing visible on that person now
+(outfit, setting, action). It never identifies anyone from their face and adds no facts about a real person; with nobody
+on screen it says it can't spot them. While the video is mid-line, the echo check uses that line's partial transcript and
+only waits (≤ 1.5 s) when the partial is too short to tell. `npm run watch-sim -- --naming` measures it.
 
 Measured 11/2 (`npm run watch-sim`, local server, real vendors; T5 clips played in real time, then asked as typed turns):
 T5 set 38/50 correct (T5 video-file baseline 42/50; same judge re-run: 37 vs 42 strict, 39 vs 45 tone-tolerant — most misses are
