@@ -79,7 +79,7 @@ struct MacConversationView: View {
                 if let denied = callDenied, waitingCopy == nil {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
-                        MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
+                        MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
                     }.frame(width: 390, height: 844)
                 }
                 if waitingCopy == nil && !interpret.isLive {
@@ -180,17 +180,40 @@ struct MacConversationView: View {
     private func excluded(_ icon: String, _ label: String) -> some View {
         Button {} label: { MacGlassControl(icon: icon, size: 46) }.buttonStyle(MacUnchangedControlStyle()).disabled(true).accessibilityLabel(label)
     }
+    /// MC-M (Figma 90:2): Chat (dimmed, text chat is cut), Finds with its count, Setting, a rule, then Move to iPhone
+    /// (dimmed while no iPhone is in front, as the Move to Mac row on the iPhone).
     private var menu: some View {
-        ZStack(alignment: .topLeading) {
-            Color(white: 0.996).frame(width: 299, height: 844)
-            Text("Genita").font(.custom("KMUTTF-SungkokSemiSerif", size: 28)).tracking(-0.28).position(x: 75, y: 91)
-            Button { withAnimation { menuOpen = false } } label: { menuRow("Chat", "reference-menu-chat", 20.7, 20.7) }.buttonStyle(.plain).position(x: 149.5, y: 140)
-            Button { menuOpen = false; settingsOpen = true } label: { menuRow("Setting", "reference-menu-settings", 21.7, 20.7) }.buttonStyle(.plain).position(x: 149.5, y: 187)
+        let finds = call.finds.cardCount
+        let canMove = handoff.canMoveToPhone
+        return ZStack(alignment: .topLeading) {
+            Color(white: 253.0 / 255).frame(width: 299, height: 844)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Genita").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(ink).frame(height: 34, alignment: .leading)
+                    .padding(.leading, 33).padding(.bottom, 12).accessibilityAddTraits(.isHeader)
+                menuLine("Chat", icon: AnyView(resourceImage("reference-menu-chat").resizable().frame(width: 20, height: 20)), dim: true, id: "macMenuChat") {}.disabled(true)
+                menuLine("Finds", icon: AnyView(Image(systemName: "bookmark").font(.system(size: 17, weight: .light))), trailing: finds > 0 ? "\(finds)" : nil, id: "macMenuFinds") {
+                    withAnimation { menuOpen = false }
+                    if call.finds.cardCount > 0 { call.finds.reopenLatest() }
+                }
+                menuLine("Setting", icon: AnyView(resourceImage("reference-menu-settings").resizable().frame(width: 20, height: 20)), id: "macMenuSetting") { menuOpen = false; settingsOpen = true }
+                Rectangle().fill(Color(white: 227.0 / 255)).frame(height: 1).padding(.leading, 32).padding(.trailing, 24).padding(.top, 8)
+                menuLine("Move to iPhone", icon: AnyView(Image(systemName: "iphone").font(.system(size: 17, weight: .light))), dim: !canMove, height: 56, top: 8, id: "macMenuMoveToPhone") {
+                    withAnimation { menuOpen = false }
+                    handoff.moveToPhone()
+                }.disabled(!canMove)
+            }.padding(.top, 72).frame(width: 299, height: 844, alignment: .topLeading)
             Button { withAnimation { menuOpen = false } } label: { Color.clear.contentShape(Rectangle()) }.buttonStyle(.plain).frame(width: 91, height: 844).position(x: 344.5, y: 422).accessibilityLabel("Close menu")
         }
     }
-    private func menuRow(_ title: String, _ icon: String, _ width: CGFloat, _ height: CGFloat) -> some View {
-        HStack(spacing: 19) { resourceImage(icon).resizable().frame(width: width, height: height); Text(title).font(font(18, medium: true)); Spacer() }.foregroundStyle(ink).padding(.leading, 9).frame(width: 251, height: 44).contentShape(Rectangle())
+    private func menuLine(_ title: String, icon: AnyView, dim: Bool = false, trailing: String? = nil, height: CGFloat = 48, top: CGFloat = 0, id: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                icon.foregroundStyle(ink).frame(width: 20, height: 20)
+                Text(title).font(MacSheetInk.sans(17)).foregroundStyle(ink)
+                Spacer(minLength: 0)
+                if let trailing { Text(trailing).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute) }
+            }.padding(.leading, 32).padding(.trailing, 24).padding(.top, top).frame(width: 299, height: height).opacity(dim ? 0.4 : 1).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityIdentifier(id)
     }
     private var permissionPanel: some View {
         ZStack(alignment: .topLeading) {

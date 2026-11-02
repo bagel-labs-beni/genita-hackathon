@@ -16,4 +16,4 @@ swiftc -parse-as-library -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target ar
   shared/Handoff/*.swift shared/Call/*.swift $(find shared/GenitaKit/Sources/GenitaKit -name '*.swift') \
   ios-app/Genita/AppState.swift ios-app/Genita/SharedSettingsView.swift -o "$WORK/bin/harness"
 cp ios-app/Genita/Resources/*.png ios-app/Genita/Resources/*.ttf mac-app/GenitaMac/*.png "$WORK/bin/"
-(cd "$WORK/bin" && ./harness "$WORK/bin" "$OUT" share-notice sharing reacting black thinking mac-rs-a mac-rs-a-why mac-rs-b mac-rs-half mac-rs-failed mac-link a02 a02-j cs01)
+(cd "$WORK/bin" && ./harness "$WORK/bin" "$OUT" share-notice sharing reacting black thinking mac-rs-a mac-rs-a-why mac-rs-b mac-rs-half mac-rs-failed mac-link a02 a02-j cs01 mac-2 mac-3 mac-4 mc-m)
