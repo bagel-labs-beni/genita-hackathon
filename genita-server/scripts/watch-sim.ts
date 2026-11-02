@@ -3,7 +3,7 @@
  *
  * Real keys, real vendors. Acts like the Mac while it shares its screen
  * (F5-L7 uplink) and measures watch together end to end:
- *   --qa     T5 set (5 clips × 10 questions, ./_qa-scripts/…/suite/t5):
+ *   --qa     T5 set (5 clips × 10 questions, GENITA_FIXTURES_DIR/suite/t5):
  *            play each clip in real time (1 fps JPEG frames ≤1024 px + system
  *            audio PCM), then ask its questions as typed turns; Spark judges
  *            each answer against the clip's ground truth like T5 did.
@@ -23,14 +23,15 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.ts";
 import { startServer } from "../src/server.ts";
 import { sparkText } from "../src/meta/spark.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const SR = 24000;
 const CHUNK = (SR * 2 * 80) / 1000;
-const T5 = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/suite");
 const args = process.argv.slice(2);
+const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank")) ? fixturePath("suite") : undefined;
 const outDir = args.find((a) => a.startsWith("--out="))?.slice(6) ?? join(tmpdir(), "genita-watch-sim");
 mkdirSync(outDir, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -177,7 +178,7 @@ async function judge(truth: string, q: string, a: string): Promise<boolean> {
 
 const result: Record<string, unknown> = {};
 
-if (args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank"))) {
+if (T5) {
   const t5 = JSON.parse(readFileSync(join(T5, "t5.json"), "utf8")) as Record<string, { title: string; prompt: string; qa: { q: string; correct: boolean; sec: number }[] }>;
   const only = args.find((a) => a.startsWith("--clips="))?.slice(8).split(",");
   const rows: Record<string, unknown>[] = [];
