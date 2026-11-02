@@ -34,6 +34,24 @@ public struct FaceFlowManifest: Codable, Equatable, Sendable {
     public var kind: String?
     /// Viseme → key rules (prep writes them; absent → the prototype's defaults).
     public var map: FlowMap?
+
+    public init(version: Int?, roi: [Double], size: [Int], flowSize: [Int]?, keys: [String], files: [String: Files], mask: String,
+                neutralRoi: String?, lockY: Double?, kind: String?, map: FlowMap?) {
+        self.version = version; self.roi = roi; self.size = size; self.flowSize = flowSize; self.keys = keys; self.files = files
+        self.mask = mask; self.neutralRoi = neutralRoi; self.lockY = lockY; self.kind = kind; self.map = map
+    }
+    enum CodingKeys: String, CodingKey { case version, roi, size, flowSize, keys, files, mask, neutralRoi, lockY, kind, map }
+    /// A map this build can't read falls back to the standard rules (the flows still play).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
+        roi = try c.decode([Double].self, forKey: .roi); size = try c.decode([Int].self, forKey: .size)
+        flowSize = try c.decodeIfPresent([Int].self, forKey: .flowSize)
+        keys = try c.decode([String].self, forKey: .keys); files = try c.decode([String: Files].self, forKey: .files)
+        mask = try c.decode(String.self, forKey: .mask); neutralRoi = try c.decodeIfPresent(String.self, forKey: .neutralRoi)
+        lockY = try c.decodeIfPresent(Double.self, forKey: .lockY); kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        map = try? c.decodeIfPresent(FlowMap.self, forKey: .map)
+    }
 }
 
 /// A [key, number] pair in the flow map (JSON `["AH", 0.35]`).
@@ -154,8 +172,8 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public struct Motion: Codable, Equatable, Sendable {
         public var riseMs: Double = 75          // geometry 90% rise time (short vowels must land; jerk vs reach)
         public var closeRiseMs: Double = 40     // m/b/p closing
-        public var amplitude: Double = 0.7      // overall geometry scale (vowels)
-        public var unstressed: Double = 0.55    // share for unstressed vowels (stressed = 1)
+        public var amplitude: Double = 0.9      // overall geometry scale (stressed vowels; 11/3 open more)
+        public var unstressed: Double = 0.45    // share for unstressed vowels (stressed = 1)
         public var anticipation: Double = 0.25  // blend of the shape coming next (vowels only)
         public var aheadMs: Double = 120        // how far ahead "next" is
         public var textureOn: Double = 0.55     // hysteresis: a new texture needs this share …
@@ -166,6 +184,24 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// Skin micro-motion of the lower face (px at 540 wide, smooth noise ~2–4 Hz): a live face is
         /// never pixel-still between frames.
         public var microPx: Double = 0.5
+        public init() {}
+        enum CodingKeys: String, CodingKey { case riseMs, closeRiseMs, amplitude, unstressed, anticipation, aheadMs, textureOn, textureOff, textureMin, idleJaw, microPx }
+        /// Any field may be missing; missing ones keep the defaults.
+        public init(from decoder: Decoder) throws {
+            self.init()
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            if let v = try c.decodeIfPresent(Double.self, forKey: .riseMs) { riseMs = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .closeRiseMs) { closeRiseMs = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .amplitude) { amplitude = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .unstressed) { unstressed = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .anticipation) { anticipation = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .aheadMs) { aheadMs = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .textureOn) { textureOn = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .textureOff) { textureOff = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .textureMin) { textureMin = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .idleJaw) { idleJaw = v }
+            if let v = try c.decodeIfPresent(Double.self, forKey: .microPx) { microPx = v }
+        }
     }
     public var motion: Motion? = nil
 
