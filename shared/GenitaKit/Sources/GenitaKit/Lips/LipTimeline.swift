@@ -299,7 +299,15 @@ public final class LipTimeline: @unchecked Sendable {
                 if end > c.t { segs.append(Segment(start: Double(c.t), end: Double(end), viseme: v)) }
             }
         } else if !text.isEmpty, !d.voiced.isEmpty {
-            segs = textSegments(d)
+            segs = textSegments(d, tokens: Self.tokens(text), fromWindow: Int.min)
+        }
+        // Word timings that stop early (a chunk the voice service could not align): the voiced
+        // audio after the last timed word takes the words of the reply text not timed yet.
+        if phonemes.isEmpty, !words.isEmpty, !text.isEmpty, !d.voiced.isEmpty {
+            let timedEnd = Double(words.map(\.endMs).max() ?? 0)
+            let rest = Array(Self.tokens(text).dropFirst(words.count))
+            let from = Int((timedEnd / Double(Self.windowMs)).rounded(.up))
+            if !rest.isEmpty { segs += textSegments(d, tokens: rest, fromWindow: from) }
         }
         d.segments = disjoint(segs)
         d.hasSegments = !d.segments.isEmpty
@@ -320,13 +328,17 @@ public final class LipTimeline: @unchecked Sendable {
         return out
     }
 
-    /// Text fallback: voiced windows go to words in proportion to their letter count.
-    private func textSegments(_ d: Derived) -> [Segment] {
-        let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    // Text fallback: voiced windows go to words in proportion to their letter count.
+    private static func tokens(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    }
+
+    /// Text fallback over the voiced windows at or after `fromWindow` (absolute window index).
+    private func textSegments(_ d: Derived, tokens: [String], fromWindow: Int) -> [Segment] {
         let shaped = tokens.map { (LipGraphemes.visemes(in: $0), max(1, $0.filter { $0.isLetter || $0.isNumber }.count)) }
             .filter { !$0.0.isEmpty }
         guard !shaped.isEmpty else { return [] }
-        let voicedIdx = d.voiced.indices.filter { d.voiced[$0] }
+        let voicedIdx = d.voiced.indices.filter { d.voiced[$0] && d.firstWindow + $0 >= fromWindow }
         guard !voicedIdx.isEmpty else { return [] }
         let letters = Double(shaped.reduce(0) { $0 + $1.1 })
         let v = Double(voicedIdx.count)

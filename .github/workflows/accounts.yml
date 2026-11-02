@@ -96,7 +96,7 @@ jobs:
           else
             test -s "$OUT/animal-word-timings.mp4"
           fi
-          ls "$OUT"/*.mp4
+          ls "$OUT"/*.mp4 2>/dev/null || echo "::warning::no voice on this runner; both samples skipped"
       - name: Upload face sample
         if: always()
         uses: actions/upload-artifact@v4
