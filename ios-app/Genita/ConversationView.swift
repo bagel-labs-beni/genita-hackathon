@@ -111,14 +111,18 @@ struct ConversationView: View {
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
-                        if !findsTabOpen && !connecting && !interpreting && !unclear {
+                        let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                        if moveLine && !findsTabOpen && !interpreting && !unclear {
+                            // MV-1 / MV-E take the call's status line slot
+                            HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
+                        } else if !findsTabOpen && !connecting && !interpreting && !unclear {
                             let findsPill = call.finds.pillText
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
                         }
                         }
@@ -145,7 +149,8 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
+                                // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
+                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: { openFindsTab() }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
