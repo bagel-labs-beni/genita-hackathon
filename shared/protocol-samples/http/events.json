@@ -1,0 +1,7 @@
+{
+  "events": [
+    { "name": "setup.summary_viewed", "props": {} },
+    { "name": "camera.toggled", "props": { "on": true, "facing": "front" } },
+    { "name": "app.reopened", "props": { "gapHours": 24 } }
+  ]
+}
