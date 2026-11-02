@@ -162,6 +162,50 @@ import XCTest
         XCTAssertEqual(m.current?.card, before)
     }
 
+    func testProductRowSaysProductsAndLinkCount() throws {
+        let m = FindsModel()
+        m.apply(started("a")); m.apply(try productCreated())
+        let card = try XCTUnwrap(m.entries.first?.card)
+        XCTAssertEqual(FindsRow(card: card).subtitle, "Products · 2 links")
+    }
+
+    func testSavingAProductCardFlipsTheCTAStateAndPostsOnce() async throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        var calls: [(String, Bool)] = []
+        m.saveRemote = { id, saved in calls.append((id, saved)); return true }
+        m.apply(started(id)); m.apply(try productCreated()); m.force(.full)
+        XCTAssertEqual(m.current?.saved, false, "Save to Finds")
+        m.toggleSave()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(m.current?.saved, true, "Open Finds")
+        XCTAssertEqual(calls.count, 1); XCTAssertEqual(calls.first?.0, id); XCTAssertEqual(calls.first?.1, true)
+    }
+
+    func testNoMatchFailureSplitsTitleAndBodyAndRetryAsksAgain() throws {
+        let m = FindsModel()
+        var retries = 0
+        m.retryLast = { retries += 1 }
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#))
+        let lines = try XCTUnwrap(m.current?.failureLines)
+        XCTAssertEqual(lines.title, "Couldn’t find a good match")
+        XCTAssertEqual(lines.body, "Try a color or a price, or ask me again.")
+        XCTAssertEqual(m.state, .searching, "stays the collapsed sheet")
+        XCTAssertTrue(m.current?.canRetry == true)
+        m.retry()
+        XCTAssertEqual(retries, 1); XCTAssertEqual(m.state, .idle)
+    }
+
+    func testUnclearFailureHasNoRetry() throws {
+        let m = FindsModel()
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"unclear","message":"Show me again?"}"#))
+        XCTAssertEqual(m.current?.failureLines?.title, "I can’t see it clearly")
+        XCTAssertEqual(m.current?.failureLines?.body, "Show me again?")
+        XCTAssertFalse(m.current?.canRetry ?? true)
+    }
+
     func testTokenSubjectSeparatesAccounts() {
         func jwt(_ sub: String) -> String {
             let body = Data(#"{"sub":"\#(sub)"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")

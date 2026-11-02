@@ -36,6 +36,19 @@ struct FindEntry: Identifiable, Equatable {
     var saved = false
     /// Opened from the Finds tab (F10-U-FINDS): the card shows "Talk about this on a call" and closing goes back to the list.
     var reopened = false
+
+    /// The collapsed failure line (PF-1d). A server message is "Title. Body" — split on the first ". ".
+    /// "I can't see it" (unclear) keeps its fixed title and shows the whole message as the body.
+    var failureLines: (title: String, body: String)? {
+        guard let f = failed else { return nil }
+        if f.reason == .unclear { return ("I can’t see it clearly", f.message) }
+        if let r = f.message.range(of: ". ") {
+            return (String(f.message[..<r.lowerBound]), String(f.message[r.upperBound...]))
+        }
+        return (f.message.hasSuffix(".") ? String(f.message.dropLast()) : f.message, "")
+    }
+    /// A failed search the user can ask again (not a stop, not "show me again" which needs a new camera look).
+    var canRetry: Bool { failed != nil && failed?.reason != .unclear && failed?.reason != .stopped }
 }
 
 @MainActor @Observable final class FindsModel {
@@ -71,6 +84,8 @@ struct FindEntry: Identifiable, Equatable {
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
     /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
+    /// Wired by CallController: ask again with the user's last words (PF-1d Retry).
+    @ObservationIgnored var retryLast: () -> Void = {}
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
     @ObservationIgnored var persistFrames: (String, [Data]) -> Void = { _, _ in }
@@ -135,6 +150,7 @@ struct FindEntry: Identifiable, Equatable {
                 let image = FindImage(slot: i.slot, status: i.status == .ready ? .ready : .failed, url: i.url)
                 if i.slot == "hero" { card.hero = image }
                 if i.slot.hasPrefix("step-"), let n = Int(i.slot.dropFirst(5)), card.steps.indices.contains(n - 1) { card.steps[n - 1].image = image }
+                if i.slot.hasPrefix("product-"), let n = Int(i.slot.dropFirst(8)), card.products?.indices.contains(n - 1) == true { card.products?[n - 1].image = image }
                 e.card = card
             }
         case let .findFailed(f):
@@ -224,6 +240,13 @@ struct FindEntry: Identifiable, Equatable {
         guard let f = current else { state = .idle; return }
         send(.findStop(findId: f.id))
         state = .idle
+    }
+
+    /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.
+    func retry() {
+        guard let f = current, f.canRetry else { return }
+        state = .idle
+        retryLast()
     }
 
     func viewNewFind() {
@@ -353,4 +376,12 @@ struct FindEntry: Identifiable, Equatable {
 
 extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
+}
+
+extension FindCard.Source {
+    /// GenitaKit's Source has no public initializer (protocol types stay untouched); the wire shape builds one.
+    static func make(title: String, url: String, domain: String) -> FindCard.Source? {
+        let body = try? JSONSerialization.data(withJSONObject: ["title": title, "url": url, "domain": domain])
+        return body.flatMap { try? JSONDecoder().decode(FindCard.Source.self, from: $0) }
+    }
 }

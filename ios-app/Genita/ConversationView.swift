@@ -72,7 +72,7 @@ struct ConversationView: View {
                             FindsTabView(call: call, list: findsList, top: top) { closeFindsTab() }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .trailing))
                         }
                         if findsOpen {
-                            FindsSheet(call: call, size: full.size, talk: { closeFindsTab() }).frame(width: full.size.width, height: full.size.height, alignment: .top)
+                            FindsSheet(call: call, size: full.size, talk: { closeFindsTab() }, openFinds: { openFindsTab() }).frame(width: full.size.width, height: full.size.height, alignment: .top)
                                 .transition(.move(edge: .bottom))
                         }
                         if sheet == .full {
