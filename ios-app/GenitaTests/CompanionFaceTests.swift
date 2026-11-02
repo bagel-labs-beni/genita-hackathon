@@ -41,6 +41,11 @@ import XCTest
         return (call, try XCTUnwrap(call.face), played)
     }
 
+    /// The widest mouth over the first 400 ms.
+    private func peak(_ face: FaceDriver) -> LipFrame {
+        stride(from: 20.0, to: 400, by: 20).map { face.timeline.sample(atMs: $0) }.max { $0.openness < $1.openness }!
+    }
+
     // MARK: routing
 
     func testAudioEventAndItsPCMFrameReachTheFaceAndStillPlay() throws {
@@ -49,9 +54,9 @@ import XCTest
         call.handle(audio(7, seq: 3))
         call.handle(binary: frame(seq: 3, pcm(ms: 400)))
         XCTAssertEqual(face.currentUtteranceId, 7)
-        let mid = face.timeline.sample(atMs: 200)
-        XCTAssertGreaterThan(mid.openness, 0.2, "the received PCM opens the jaw")
-        XCTAssertNotEqual(mid.dominant, .rest)
+        let loudest = peak(face)
+        XCTAssertGreaterThan(loudest.openness, 0.5, "the received PCM opens the jaw")
+        XCTAssertNotEqual(loudest.dominant, .rest)
         XCTAssertEqual(played.value.count, 1, "the chunk still goes to the speaker")
         XCTAssertEqual(played.value.first?.bytes, 24 * 400 * 2)
         XCTAssertEqual(played.value.first?.utterance, 7)
@@ -77,7 +82,7 @@ import XCTest
         let (call, face, _) = try callWithFace()
         call.handle(audio(7, seq: 3))
         call.handle(binary: frame(seq: 3, pcm(ms: 400)))
-        XCTAssertGreaterThan(face.timeline.sample(atMs: 200).openness, 0.2)
+        XCTAssertGreaterThan(peak(face).openness, 0.5)
         call.handle(#"{"type":"utterance.cancelled","utteranceId":7,"reason":"barge_in"}"#)
         XCTAssertNil(face.currentUtteranceId)
         XCTAssertEqual(face.timeline.sample(atMs: 200), .rest)
