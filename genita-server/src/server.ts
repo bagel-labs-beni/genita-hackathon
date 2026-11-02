@@ -35,6 +35,7 @@ import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory, PgMemoryRepository } from "./memory/index.ts";
+import type { ThreadState } from "./memory/call.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -283,16 +284,16 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: { threadId: string; covered: number } | null; revision: number | null; at: number; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; at: number; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
   }
   // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
-  const handedThread = new Map<string, { threadId: string; covered: number } | null>();
+  const handedThread = new Map<string, ThreadState | null>();
   function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
-    let thread: { threadId: string; covered: number } | null = null;
+    let thread: ThreadState | null = null;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
@@ -305,7 +306,7 @@ export async function startServer(
     dropLastTurns(userId);
     return null;
   }
-  function priorThread(self: string): { threadId: string; covered: number } | null {
+  function priorThread(self: string): ThreadState | null {
     const t = handedThread.get(self) ?? null;
     handedThread.delete(self);
     return t;

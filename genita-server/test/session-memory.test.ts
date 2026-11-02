@@ -241,3 +241,55 @@ test("server: a Mac call that picks up the iPhone's ended call continues its thr
   assert.equal(rows[0].turns, 2);
   assert.ok(fake.calls[1].previous, "the Mac's summary merges the iPhone's notes");
 });
+
+test("Codex P1: a Forget while the notes are loading never brings the pre-Forget summary back", async () => {
+  const { memory, deps, requests, repo } = setup();
+  await memory.summarizeThread("acct-a", "old-thread", [{ user: "I need a jacket.", assistant: "Sure." }], 0);
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const real = repo.listSummaries.bind(repo);
+  let loading = false;
+  repo.listSummaries = async (u, n) => { const rows = await real(u, n); loading = true; await gate; return rows; };
+  const c = client();
+  const s = new Session("race", c.sink, deps);
+  const starting = s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => loading);
+  await memory.forget("acct-a"); // completes (rows deleted, calls notified) while the load is still out
+  release();
+  await starting;
+  repo.listSummaries = real;
+  await waitFor(c.ready);
+  await s.onClientText(JSON.stringify({ type: "text", text: "Hi again." }));
+  await waitFor(() => requests.some((r) => /Hi again/.test(JSON.stringify(r.input))));
+  assert.doesNotMatch(JSON.stringify(requests.map(inst)), /navy jacket|notes from your last calls/);
+  s.close(); await memory.drain();
+});
+
+test("Codex P1: a semantic safety pass drops lines the word filter misses; a failed check stores nothing", async () => {
+  const raw = { topics: ["Takes insulin daily", "Jacket shopping"], mood: "calm", open_threads: ["Practicing Buddhism more"], promises: [], asks: [], sensitive: true };
+  const ok = createSummarizer(async () => raw as never, async (lines) => lines.map((l) => !/insulin|buddhism/i.test(l)));
+  assert.deepEqual(await ok([{ user: "x", assistant: "y" }]), { topics: ["Jacket shopping"], mood: "calm", open_threads: [], promises: [], asks: [] });
+  const broken = createSummarizer(async () => raw as never, async () => { throw new Error("vendor down"); });
+  await assert.rejects(broken([{ user: "x", assistant: "y" }]));
+  const { memory } = setup(broken);
+  await memory.summarizeThread("acct-a", "t", [{ user: "x", assistant: "y" }], 0).catch(() => null);
+  assert.deepEqual(await memory.summaries("acct-a"), []);
+});
+
+test("Codex P2: a long call handed off mid-way — the Mac's summary covers every kept pair, not only the handed-off history", async () => {
+  const fake = fakeSummarizer();
+  const { memory, deps } = setup(fake.fn);
+  const lines = Array.from({ length: 14 }, (_, i) => `Turn number ${i + 1} about the jacket.`);
+  const phone = await call(deps, "phone-long", lines);
+  await memory.drain();
+  assert.equal(fake.calls.length, 1, "periodic summary after 12 turns");
+  const state = phone.session.threadInfo()!;
+  assert.equal(state.covered, 14);
+  const mac = await call({ ...deps, priorTurns: () => phone.session.historySnapshot(), priorThread: () => state }, "mac-long", ["On the Mac now."]);
+  mac.session.close(); await memory.drain();
+  const macRun = fake.calls.at(-1)!;
+  assert.ok(macRun.turns.some((t) => /Turn number 13 /.test(t.user)), "turn 13 (not in the 8-pair history) is summarized");
+  assert.equal(macRun.turns.length, 15);
+  assert.equal((await memory.summaries("acct-a"))[0].turns, 15);
+  phone.session.close(); await memory.drain();
+  assert.equal((await memory.summaries("acct-a"))[0].turns, 15, "the old device's 14-pair copy does not win");
+});

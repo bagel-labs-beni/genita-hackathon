@@ -156,6 +156,17 @@ Live checks run only with explicit opt-in, loading keys from
 npm run check:memory -- --live
 ```
 
+Session memory, live (real Spark for replies, extraction, summaries and the judge; synthetic facts):
+
+```sh
+npm run eval:session-memory -- --live --runs=5
+```
+
+Call 1 and call 2 for account A (one health line that must never be stored), then call 3 for A.
+It checks that A's companion brings up at least one right fact, open thread or promise on its own
+and that the Spark judge finds no invented shared past. The same call-3 lines then run for account B
+on the same service, and none of A's memory may appear in B's call.
+
 This runs five synthetic grocery extractions and real new-call greetings. Optional
 photos for the fridge/drama/outfit scenarios use only an approved companion image:
 

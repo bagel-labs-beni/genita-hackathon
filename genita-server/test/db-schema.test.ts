@@ -107,6 +107,10 @@ test("005 rollback refuses while memories are stored (a failed multi-step down n
   try {
     const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "mem" });
     await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [user.id]);
+    await db.query("INSERT INTO call_summaries (user_id, thread_id, turns, summary_json) VALUES ($1, 't', 1, '{}'::jsonb)", [user.id]);
+    await assert.rejects(migrateDown(db), "006 refuses while summaries are stored");
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM call_summaries")).rows[0].n, 1);
+    await db.query("DELETE FROM call_summaries");
     assert.deepEqual(await migrateDown(db), ["006_call_summaries"]);
     await assert.rejects(migrateDown(db));
     assert.equal((await db.query("SELECT count(*)::int AS n FROM memory_items")).rows[0].n, 1, "rows kept");

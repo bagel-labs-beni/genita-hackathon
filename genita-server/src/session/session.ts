@@ -38,7 +38,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import type { MemoryRetryState } from "../memory/call.ts";
+import type { MemoryRetryState, ThreadState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -89,7 +89,7 @@ export type SessionDeps = {
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
-  priorThread?: (revision: number) => { threadId: string; covered: number } | null;
+  priorThread?: (revision: number) => ThreadState | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -902,8 +902,8 @@ export class Session {
   }
 
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
-  threadInfo(): { threadId: string; covered: number } | null {
-    return this.memoryCall ? { threadId: this.memoryCall.threadId, covered: this.memoryCall.covered } : null;
+  threadInfo(): ThreadState | null {
+    return this.memoryCall?.threadState() ?? null;
   }
 
   /** This call's turns (copy) — for the account's next device after a handoff. */

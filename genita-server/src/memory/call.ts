@@ -12,6 +12,7 @@ export const MEMORY_TOOLS: Tool[] = [
     parameters: { type: "object", properties: { fact: { type: "string", maxLength: 300 }, kind: { type: "string", enum: ["fact", "episode"] } }, required: ["fact", "kind"], additionalProperties: false } },
 ];
 
+export type ThreadState = { threadId: string; covered: number; pairs: Turn[] };
 export type SparkSource = (req: SparkRequest, signal: AbortSignal) => AsyncIterable<SparkStreamEvent>;
 /** Per-turn continuation, shared with a speculative hit and its empty-answer retry. */
 export type MemoryRetryState = { request?: SparkRequest };
@@ -46,32 +47,45 @@ export class MemoryCall {
   private summarizedAt = 0;
   /** earlier threads' summaries for this call's instructions (loaded once at open) */
   summaries: CallSummary[] = [];
+  /** Forget notifications seen by this call */
+  private forgets = 0;
   constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId; this.threadId = sessionId;
     this.unsubscribe = service.subscribe(userId, (revision) => {
+      this.forgets++;
       this.pending = []; this.recentReplies = []; this.thread = []; this.covered = 0; this.summarizedAt = 0; this.summaries = [];
       this.revision = revision; onForget(revision);
     });
   }
+  /** For the next device (server.ts handoff): this thread, how many pairs it covers, and its kept pairs. */
+  threadState(): ThreadState {
+    return { threadId: this.threadId, covered: this.covered, pairs: this.thread.map((t) => ({ ...t })) };
+  }
   /**
    * Handoff: this call continues another device's conversation — the same thread, not a second call.
-   * `covered` = how many pairs the other device's thread already had (it may hold more than the handed-off turns).
+   * With the other device's thread state the summary gets ALL its kept pairs (not only the few handed-off
+   * history turns) and its true pair count; a client-claimed history (no state) counts only its own pairs.
    */
-  continueThread(thread: { threadId: string; covered: number } | null, history: Array<{ role: "user" | "assistant"; text: string }>): void {
+  continueThread(thread: ThreadState | null, history: Array<{ role: "user" | "assistant"; text: string }>): void {
     if (thread) this.threadId = thread.threadId;
-    const pairs: Turn[] = [];
-    for (let i = 0; i < history.length; i++) {
-      if (history[i].role !== "user") continue;
-      const next = history[i + 1];
-      pairs.push({ user: history[i].text, assistant: next?.role === "assistant" ? next.text : "" });
+    let pairs: Turn[] = thread?.pairs ?? [];
+    if (!thread) {
+      for (let i = 0; i < history.length; i++) {
+        if (history[i].role !== "user") continue;
+        const next = history[i + 1];
+        pairs.push({ user: history[i].text, assistant: next?.role === "assistant" ? next.text : "" });
+      }
     }
+    pairs = pairs.slice(-SUMMARY_MAX_PAIRS);
     this.thread = [...pairs, ...this.thread].slice(-SUMMARY_MAX_PAIRS);
-    this.covered = Math.max(thread?.covered ?? 0, pairs.length) + this.covered;
+    this.covered = (thread ? Math.max(thread.covered, pairs.length) : pairs.length) + this.covered;
     // the other device summarizes its own turns; this call re-summarizes once it adds some
     this.summarizedAt = this.covered;
     this.summaries = this.summaries.filter((s) => s.thread_id !== this.threadId);
   }
   async open(greet = true): Promise<Memory | null> {
+    // Any Forget notification from here on invalidates what the loads below return (Codex P1 11/3).
+    const forgets = this.forgets;
     // Bounded: a slow store never holds the call start; no notes = the old behavior.
     const notes = this.service.sessionMemory
       ? Promise.race([this.service.summaries(this.userId, this.threadId, SUMMARY_INJECT).catch(() => []), new Promise<CallSummary[]>((r) => setTimeout(() => r([]), SUMMARY_LOAD_MS).unref?.())])
@@ -80,10 +94,8 @@ export class MemoryCall {
     // A Forget notification can arrive while the persisted state read is in flight.
     this.revision = Math.max(this.revision, state.revision);
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
-    const revision = this.revision;
     const loaded = await notes;
-    // a Forget while the notes loaded bumped the revision (and cleared them): keep none
-    if (this.revision === revision) this.summaries = loaded.filter((s) => s.thread_id !== this.threadId);
+    if (this.forgets === forgets) this.summaries = loaded.filter((s) => s.thread_id !== this.threadId);
     return greet ? this.service.opening(this.userId, this.sessionId) : null;
   }
   userMessage(): void { this.service.background(() => this.service.noteMessage(this.userId)); }

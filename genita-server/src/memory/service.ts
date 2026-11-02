@@ -54,6 +54,8 @@ export class MemoryService {
   /** Newest first; the current thread (a handed-off call already has its turns) is left out. */
   async summaries(userId: string, exceptThread?: string, limit = SUMMARY_KEEP): Promise<CallSummary[]> {
     if (!this.sessionMemory) return [];
+    // No lock (a slow store must not block the user's other memory work); Forget deletes summaries
+    // BEFORE it notifies calls, so a load that races it is discarded by the caller (MemoryCall.open).
     return (await this.summaryStore!.listSummaries(userId, limit + 1)).filter((s) => s.thread_id !== exceptThread).slice(0, limit);
   }
   /** Background only (call close / every few turns). Turns are summarized, never stored; Forget wins. */
@@ -139,14 +141,14 @@ export class MemoryService {
   async forget(userId: string, id?: string): Promise<void> {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
+      // Session summaries are free text across many topics: any Forget (one item or all) drops them all,
+      // the same rule as the handoff turn cache. First, so no call can load them after the notification.
+      await this.summaryStore?.deleteSummaries(userId);
       const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
       for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.
       await this.repository.delete(userId, id);
-      // Session summaries are free text across many topics: any Forget (one item or all) drops them all,
-      // the same rule as the handoff turn cache.
-      await this.summaryStore?.deleteSummaries(userId);
     });
   }
   async extract(userId: string, sessionId: string, turns: Turn[], revision: number): Promise<void> {
