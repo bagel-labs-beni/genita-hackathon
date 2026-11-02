@@ -174,3 +174,10 @@ test("faceflow.py lock line: SAM nose bottom when plausible, else upper lip − 
   assert.deepEqual(run("[0.45,0.40,0.55,0.484]"), [0.484, "sam"]);
   assert.equal(run("[0.45,0.30,0.55,0.35]")[1], "face-geometry", "a nose box far above the lip is ignored");
 });
+
+test("v16 lip masks: <key>.lip.png → flow_<key>_lip, listed and served", () => {
+  assert.equal(flowAssetName("AH2.lip.png"), "flow_AH2_lip");
+  const f = { ...FLOW, files: { AH: { ...FLOW.files.AH, lip: "flow_AH_lip" } } };
+  assert.ok(flowAssets(f).has("flow_AH_lip"));
+  assert.equal(faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`).flow!.files.AH.lip, "/f/flow_AH_lip");
+});

@@ -26,7 +26,9 @@ export const FLOW_KEYS: readonly FaceKey[] = [...VISEMES, ...MOUTH_KEYS, ...PROF
 
 /** faceflow.py file name -> asset name (store ids are [A-Za-z0-9_-] only). */
 export function flowAssetName(file: string): string | null {
-  let m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
+  let m = file.match(/^([A-Za-z0-9]{1,8})\.lip\.png$/);
+  if (m) return `flow_${m[1]}_lip`;
+  m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
   if (m) return `flow_${m[1]}_${m[2]}`;
   m = file.match(/^([A-Za-z0-9]{1,8})\.jpg$/);
   if (m) return m[1] === "neutral" ? "flow_neutral" : `flow_${m[1]}_key`;
@@ -39,7 +41,7 @@ export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   const out = new Set<string>();
   if (!flow) return out;
   out.add(flow.mask).add(flow.neutralRoi);
-  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn]) if (a) out.add(a);
+  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn, f.lip]) if (a) out.add(a);
   return out;
 }
 
@@ -135,7 +137,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       return a;
     };
     const files: FaceFlow["files"] = {};
-    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}) };
+    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}), ...(f.lip ? { lip: rename(f.lip) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);

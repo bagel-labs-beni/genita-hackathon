@@ -46,10 +46,19 @@ BASE_MAP = {
     # coarticulation: a frame whose dominant shape is a consonant other than MBP/FV keeps `share` of the
     # neighbouring vowel frames' key amounts (linear between the nearest vowel frames within windowMs)
     'jawFloor': {'share': 0.6, 'windowMs': 160, 'vowels': ['A', 'O', 'EI', 'U'], 'closed': ['MBP', 'FV', 'rest']},
-    'blink': {'mode': 'snap', 'frames': 3},  # eyes fully closed for 3 frames, no half frames
+    'blink': {'mode': 'snap', 'frames': 3, 'perTenSeconds': 5},  # eyes fully closed for 3 frames, no half frames
     # optional per-key cap applied LAST (after focus, which would otherwise restore it); remainder -> neutral.
-    # Empty for v7 (caps were only needed for the bigger dark-interior keys that lost the sweep).
-    'maxAmount': {},
+    'maxAmount': {'AH2': 0.85},
+    # --- v16 (critic 8.5/10 vs Peter; reference render.py flags in sweep/README.md row v16) ---
+    # key colour only inside files[k].lip (lips + opening hull, prep-baked); outside it the neutral texture,
+    # warped by the same output->neutral flow GN (skin / beard / wrinkles never pop between keys)
+    'lipMask': True,
+    # cheeks / nasolabial follow the mouth corners: corner displacement d = -GN(corner); V = sum over sides of
+    # w_cheek * (spread * d[t - delayFrames] + (0, -lift * (EH + EI amounts))) - w_corner * pull * d; out(p) = frame(p - V(p))
+    'cheek': {'spread': 0.4, 'pull': 1.0, 'cheekW': 0.85, 'nasoW': 0.28, 'lift': 2.0, 'delayFrames': 1,
+              'roundNoInward': ['O', 'OH', 'U', 'WQ']},
+    'consonantOverride': {'U': 0.55, 'WQ': 0.55},
+    'brow': {'px': 2.5}, 'nod': {'px': 4.0}, 'stress': {'topShare': 0.3, 'minGapMs': 450, 'leadMs': 80},
 }
 PROFILE = {
     'human': {},
@@ -132,6 +141,32 @@ def lip_match(key, neutral, mouth_px):
     m = cv2.GaussianBlur(mk, (0, 0), 1.5)[..., None]
     out = np.clip(lk + d[None, None, :] * m, 0, 255).astype(np.uint8)
     return cv2.cvtColor(out, cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def lip_hull_mask(img, mouth_px, dilate_px):
+    """Lips + mouth opening of a key (ROI): the two largest redder-than-skin blobs in the mouth box, convex hull,
+    dilated `dilate_px` above the hull's middle and half that below (beard: no bare-skin band), feathered."""
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    hull = np.zeros_like(keep)
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if cs:
+        cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    d = max(1, int(dilate_px)); dl = max(1, d // 2)
+    up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
+    lo = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dl + 1, 2 * dl + 1)))
+    ys = np.where(hull.any(1))[0]
+    if len(ys):
+        mid = int((ys.min() + ys.max()) / 2)
+        up[mid:] = lo[mid:]
+    return cv2.GaussianBlur(up.astype(np.float32), (0, 0), max(1.0, 0.6 * d))
 
 
 def colorfix(img, mouth_px, spec):
@@ -428,6 +463,11 @@ def main():
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
+        if kind == 'human':
+            # 6 px at a 540-wide frame, scaled to this face set's resolution
+            lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
+            cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
+            ent['lip'] = f'{name}.lip.png'
         gKr = cv2.cvtColor(cv2.resize(crop, (rw, rh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         for tag, (src, dst) in (('nk', (gNr, gKr)), ('kn', (gKr, gNr))):
             if not use_flow:
