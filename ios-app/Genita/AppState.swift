@@ -59,6 +59,8 @@ struct SavedSetup: Codable {
     var skipInterests: [String]?
     var skipReplies: String?
     var skipAvoid: [String]?
+    /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
+    var skipLikes: [String]?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
@@ -68,7 +70,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 @MainActor @Observable final class AppState {
@@ -80,6 +82,8 @@ struct SavedSetup: Codable {
     var importing = false
     /// I02-E line ("I couldn't read this one…"); the pasted text stays
     var importError: String?
+    /// I01 → ChatGPT / Claude → back: I02 opens with the paste button focused (transient)
+    var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
     var imageCheckError: String?
@@ -93,6 +97,17 @@ struct SavedSetup: Codable {
     var savingPrefs = false
     var setupSummary: SetupSummary?
     var prep: PrepProgress?
+    /// NM01-0 "Use {name}": the server's suggestion, kept after the field is cleared
+    var suggestedCompanionName: String?
+    /// PREP-1e Try again in flight
+    var retryingPrep = false
+    /// PREP-1e: the one line under the buttons when Try again itself failed
+    var prepError: String?
+    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
+    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
+    var sceneImage: (key: String, data: Data)?
+    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
+    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
@@ -163,6 +178,9 @@ struct SavedSetup: Codable {
     }
     func save() { if let data = try? JSONEncoder().encode(setup) { storage.set(data, forKey: Self.storageKey) } }
     func go(_ stage: Stage) {
+        // D01 default follows the import path chosen at I01 (set when the path starts, never when an answer arrives):
+        // skippers (N1–N3) start on Quick start, people who paste an AI profile on Make it feel right.
+        if stage == .skipTopics { setup.depth = .quick } else if stage == .paste { setup.depth = .right }
         // The processing screen is transient: back from the next screen must not replay it.
         if setup.stage == .preparing { if stage != .preferences { history.append(.preferences) } }
         else { history.append(setup.stage) }
@@ -182,6 +200,7 @@ struct SavedSetup: Codable {
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         storage.set(true, forKey: Self.signedOutKey)
+        prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
@@ -204,6 +223,7 @@ struct SavedSetup: Codable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
+            prep = nil; sceneImage = nil
         }
         setup.accountId = id
     }
@@ -224,6 +244,7 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        prep = nil; sceneImage = nil
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {

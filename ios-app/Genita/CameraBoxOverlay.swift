@@ -19,12 +19,18 @@ struct CameraStage: View {
                 LinearGradient(colors: [CallInk.dim, .clear], startPoint: .top, endPoint: .bottom).frame(height: 136 + topInset)
                 Spacer(minLength: 0)
             }.allowsHitTesting(false)
-            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset)
+            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect)
         }
         .frame(width: size.width, height: size.height).clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Your camera")
         .accessibilityIdentifier("cameraStage")
+    }
+
+    /// FT-NOSEE card (24, 124): boxes under it are left out.
+    private var noSeeRect: CGRect? {
+        guard let check = call.finds.noSee, call.finds.state == .idle || call.finds.state == .dismissed else { return nil }
+        return CGRect(x: 24, y: 124 + topInset, width: 220, height: check.cardHeight)
     }
 
     private var mirrored: Bool {
@@ -49,6 +55,7 @@ struct CameraBoxOverlay: View {
     let boxes: CameraBoxes
     let mirrored: Bool
     let topInset: CGFloat
+    var avoid: CGRect? = nil
 
     var body: some View {
         GeometryReader { g in
@@ -57,8 +64,9 @@ struct CameraBoxOverlay: View {
                 Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
                 ForEach(boxes.boxes) { item in
                     let rect = CameraBoxes.rect(item.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)
-                    PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
-                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.id)
+                    // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
+                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
+                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.id) }
                 }
             }
             .opacity(boxes.visible ? 1 : 0)
@@ -82,14 +90,13 @@ private struct PopBox: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let above = CameraBoxes.labelAbove(rect, topInset: topInset)
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
             RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
             Text(item.label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(height: 28)
                 .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 12))
-                .offset(x: -2, y: above ? -32 : rect.height + 4)
+                .offset(x: max(-2, -rect.minX), y: CameraBoxes.labelOffsetY(rect, topInset: topInset))
                 .accessibilityIdentifier("boxLabel-\(item.label)")
         }
         .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)

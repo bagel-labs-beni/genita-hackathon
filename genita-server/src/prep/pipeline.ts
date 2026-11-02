@@ -26,6 +26,8 @@ export type PrepDeps = {
   spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
+  /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
+  python?: string | null;
 };
 
 export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
@@ -48,7 +50,7 @@ const since = (t0: number) => Math.round(performance.now() - t0);
 
 // ---------- F2-L20: image check ----------
 
-export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean): Promise<ImageRecord> {
+export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean, createdAt = new Date().toISOString()): Promise<ImageRecord> {
   if (!bytes.length) throw new PrepError(400, "empty_image");
   if (bytes.length > MAX_IMAGE_BYTES) throw new PrepError(413, "image_too_large", "image must be under 8 MB; downscale on device (1280 px is plenty)");
   const mime = sniffImage(bytes);
@@ -79,7 +81,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     rightsAck,
-    createdAt: new Date().toISOString(),
+    // This is captured after the upload body is read, before any model check.
+    createdAt,
     ms: { check: checkMs, sam: head?.ms ?? null },
   };
   await d.store.putImage(rec, bytes);

@@ -25,7 +25,7 @@ export class MemoryService {
   readonly state: CallStateRepository;
   private readonly options: MemoryOptions;
   private locks = new Map<string, Promise<unknown>>();
-  private listeners = new Map<string, Set<() => void>>();
+  private listeners = new Map<string, Set<(revision: number) => void>>();
   private jobs = new Set<Promise<unknown>>();
   private seen = new Map<string, number>();
   readonly now: () => number;
@@ -44,7 +44,7 @@ export class MemoryService {
     this.jobs.add(job); void job.finally(() => this.jobs.delete(job));
   }
   async drain(): Promise<void> { while (this.jobs.size) await Promise.all(this.jobs); }
-  subscribe(userId: string, fn: () => void): () => void {
+  subscribe(userId: string, fn: (revision: number) => void): () => void {
     const list = this.listeners.get(userId) ?? new Set(); list.add(fn); this.listeners.set(userId, list);
     return () => { list.delete(fn); if (!list.size) this.listeners.delete(userId); };
   }
@@ -100,7 +100,7 @@ export class MemoryService {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
       const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
-      for (const fn of this.listeners.get(userId) ?? []) fn();
+      for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.
       await this.repository.delete(userId, id);

@@ -217,4 +217,34 @@ import UIKit
         XCTAssertTrue(AppState.prompt.hasPrefix("Create an evidence-based personalization profile for Genita"))
         XCTAssertTrue(AppState.prompt.contains("How Genita can help"))
     }
+
+    /// N1–N3 answers → the skip import body: N1 topics as interests, N3 as n3.{clothes,food,chats}.{like,no}.
+    func testSkipAnswersFromTheTastePicker() {
+        var s = SavedSetup()
+        s.skipInterests = ["Design", "Food"]
+        s.skipLikes = ["Minimal", "Comfy", "Spicy", "Noodles", "Jokes"]
+        s.skipAvoid = ["Colorful", "Seafood", "Unasked advice", "Talk about looks"]
+        let a = AppState.skipAnswers(s)
+        XCTAssertEqual(a.interests, ["Design", "Food"])
+        XCTAssertEqual(a.n3["clothes"]?["like"], ["Minimal", "Comfy"])
+        XCTAssertEqual(a.n3["clothes"]?["no"], ["Colorful"])
+        XCTAssertEqual(a.n3["food"]?["like"], ["Spicy", "Noodles"])
+        XCTAssertEqual(a.n3["food"]?["no"], ["Seafood"])
+        XCTAssertEqual(a.n3["chats"]?["like"], ["Jokes"])
+        XCTAssertEqual(a.n3["chats"]?["no"], ["Unasked advice", "Talk about looks"])
+        XCTAssertEqual(AppState.skipAnswers(SavedSetup()).n3["chats"]?["no"], [], "all off = empty lists")
+    }
+
+    /// D01 default: skipping the import starts on Quick start; bringing an AI profile keeps Make it feel right.
+    func testD01DefaultFollowsTheImportPath() {
+        let state = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        XCTAssertEqual(state.setup.depth, .right)
+        state.go(.skipTopics)   // "I don't use an AI assistant"
+        XCTAssertEqual(state.setup.depth, .quick)
+        state.go(.paste)        // back to bringing an AI profile
+        XCTAssertEqual(state.setup.depth, .right)
+        state.go(.skipTopics); state.setup.depth = .deep   // an explicit choice at D01 is never overwritten later
+        state.go(.preferences)
+        XCTAssertEqual(state.setup.depth, .deep)
+    }
 }

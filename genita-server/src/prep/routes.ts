@@ -14,7 +14,8 @@
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
  *   GET  /v1/companion                      companion + prep + persona
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
- *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes), this user's companion only
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes, mouth keys) or
+ *                                           face-flow asset (flow_*: ROI keys, float16 flows, mask), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
  *
@@ -27,7 +28,8 @@ import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
-import { FACE_KEYS, type FaceKey } from "./face.ts";
+import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
+import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
@@ -68,7 +70,7 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
+const FACE_ASSETS = new Set<string>(["neutral", ...ALL_FACE_KEYS]);
 
 /** All companion kinds animate the Meta face set on the device. */
 function sessionLip(_c: CompanionRecord): "none" {
@@ -157,14 +159,20 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/companion/image") {
       const ct = req.headers["content-type"] ?? "";
       let bytes: Buffer;
+      let uploadedAt: number;
       let rights = url.searchParams.get("rights") === "1";
       if (ct.startsWith("application/json")) {
         const b = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+        uploadedAt = Date.now();
         bytes = Buffer.from(String(b.image ?? "").replace(/^data:[^,]*,/, ""), "base64");
         rights ||= b.rightsAck === true;
-      } else bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
-      d.log("face.uploaded", { bytes: bytes.length });
-      const rec = await checkImage(d, user, bytes, rights);
+      } else {
+        bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
+        uploadedAt = Date.now();
+      }
+      const uploadAt = new Date(uploadedAt).toISOString();
+      const rec = await checkImage(d, user, bytes, rights, uploadAt);
+      d.log("face.uploaded", { imageId: rec.id, userId: user, bytes: bytes.length, check_ms: rec.ms.check, at: uploadAt });
       return send(res, 200, {
         imageId: rec.id,
         passed: rec.check.passed,
@@ -243,7 +251,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         prep: newPrepState(),
       };
       await d.store.putCompanion(c);
-      d.log("voice.selected", { voice_id: voice.id });
+      d.log("voice.selected", { companionId: c.id, userId: user, voice_id: voice.id });
+      d.log("companion.named", { companionId: c.id, userId: user });
+      d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
       void runner.run(user);
       return send(res, 201, companionView(c, await d.store.getStyle(user)));
     }
@@ -277,13 +287,16 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       return send(res, 200, prepView(c));
     }
 
-    const fk = p.match(/^\/v1\/companion\/face\/([A-Za-z]{1,16})$/);
+    const fk = p.match(/^\/v1\/companion\/face\/([A-Za-z0-9_]{1,24})$/);
     if (m === "GET" && fk) {
-      if (!FACE_ASSETS.has(fk[1])) throw new PrepError(404, "not_found");
+      const isFlow = fk[1].startsWith("flow_");
+      if (!isFlow && !FACE_ASSETS.has(fk[1])) throw new PrepError(404, "not_found");
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      // only images the manifest lists (a rejected key never is)
-      if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
+      // only files the manifest lists (a rejected key never is)
+      if (isFlow) {
+        if (!flowAssets(c.prep.steps.face?.face?.flow).has(fk[1])) throw new PrepError(404, "no_image");
+      } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
       const bytes = await d.store.getAsset(user, c.id, fk[1]);
       if (!bytes) throw new PrepError(404, "no_image");
       res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, max-age=86400" });
