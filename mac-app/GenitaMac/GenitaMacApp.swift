@@ -9,7 +9,7 @@ import CoreText
         }
     }
     var body: some Scene {
-        WindowGroup("Genita", id: "companion") { MacHandoffControls().preferredColorScheme(.light) }
+        WindowGroup("Genita", id: "companion") { MacHandoffControls().preferredColorScheme(.light).genitaSplash() }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
     }
 }
