@@ -1,5 +1,5 @@
 /**
- * Sign in with Apple, ported from legacy-app app/api/mobile/_lib/appleAuth.ts
+ * Sign in with Apple verification
  * (identity-token check, code exchange, revoke on account deletion) without jose.
  *
  *   iPhone (native)  aud = APPLE_BUNDLE_ID   (default ai.thebeni.genita)
