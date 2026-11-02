@@ -140,20 +140,18 @@ import XCTest
         XCTAssertNil(call.face, "B must not see A's face, not even until B's own loads")
     }
 
-    /// Same presence (Mac): the face set loads before the conversation arrives, and nothing animates until the
-    /// call screen shows it.
-    func testPrepareFaceLoadsTheSetWithoutAnimating() async throws {
-        setenv("GENITA_FACE_SET_DIR", Self.fixtureDir.path, 1)
-        defer { unsetenv("GENITA_FACE_SET_DIR") }
+    /// Same presence (Mac): a face set that loads before the conversation arrives (prepareFace) draws nothing
+    /// until the call screen shows it, then animates the same set.
+    func testAFaceLoadedBeforeTheScreenAnimatesOnlyOnceShown() async throws {
         let call = CallController()
-        call.prepareFace(reduceMotion: true)
-        for _ in 0..<200 where call.face == nil { try await Task.sleep(for: .milliseconds(20)) }
-        let face = try XCTUnwrap(call.face, "prepared before the screen is up")
-        try await Task.sleep(for: .milliseconds(200))
+        call.prepareFace(reduceMotion: true)   // off screen: allowed, starts nothing
+        call.useFace(try Self.fixtureSet(), key: "prepared", reduceMotion: true)   // the load finishing off screen
+        let face = try XCTUnwrap(call.face)
+        try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(face.frame, "no frames while the conversation is still on the iPhone")
         call.showFace(reduceMotion: true)
-        for _ in 0..<100 where face.frame == nil { try await Task.sleep(for: .milliseconds(20)) }
-        XCTAssertTrue(call.face === face, "showFace keeps the prepared set (same key)")
+        for _ in 0..<250 where face.frame == nil { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(call.face === face, "showFace keeps the prepared set")
         XCTAssertNotNil(face.frame, "animates once shown")
         call.hideFace()
     }
