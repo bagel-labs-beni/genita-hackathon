@@ -133,7 +133,7 @@ struct ConversationView: View {
                             handoffScrim.opacity(0.5).frame(width: full.size.width, height: full.size.height).onTapGesture { dismissDenied() }
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
+                                MediaPermissionSheet(kind: denied, name: call.companionName, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                         if moreOpen {
