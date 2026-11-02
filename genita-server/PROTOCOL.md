@@ -445,7 +445,7 @@ person → the speaker the call app's mic hears.
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
 decided in those tickets and will be added here as additive changes.
 
-`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` (retired, never reuse) ·
 `camera`, `frame` (F5) · `claim`, `ownership` (handoff: now defined, see **Handoff**) ·
 `interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
 

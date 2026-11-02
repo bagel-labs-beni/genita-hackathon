@@ -35,8 +35,10 @@ final class FindsSheetUITests: XCTestCase {
     func testEveryBoardState() throws {
         for state in 1...25 {
             let app = launch(state)
-            let expectSheet = state != 17
-            if expectSheet {
+            let expectSheet = state != 17 && state != 20
+            if state == 20 {
+                XCTAssertTrue(app.descendants(matching: .any)["findUnclear"].waitForExistence(timeout: 15), "IC-4 card")
+            } else if expectSheet {
                 XCTAssertTrue(sheet(app).waitForExistence(timeout: 15), "state \(state): sheet")
             } else {
                 XCTAssertTrue(app.descendants(matching: .any)["findToast"].waitForExistence(timeout: 15), "17: In Finds · Undo")
@@ -48,6 +50,11 @@ final class FindsSheetUITests: XCTestCase {
             case 9, 10: XCTAssertTrue(app.buttons["findPeek"].exists, "peek row")
             case 11: XCTAssertTrue(app.buttons["findNew"].exists, "new find banner")
             case 14: XCTAssertTrue(app.descendants(matching: .any)["linkFailed"].exists, "couldn't open")
+            case 8: XCTAssertTrue(app.buttons["Done"].firstMatch.exists, "F10-8 Done")
+                XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Open in Safari")).firstMatch.exists, "F10-8 Open in Safari")
+            case 20:
+                XCTAssertTrue(app.buttons["findLookAgain"].exists, "IC-4 Look again")
+                XCTAssertFalse(sheet(app).exists && sheet(app).isHittable, "IC-4 has no sheet")
             case 21:
                 XCTAssertTrue(app.buttons["findStop"].exists, "PF-1a Stop")
                 assertPill(app, "On it…")

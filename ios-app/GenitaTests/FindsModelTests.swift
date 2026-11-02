@@ -223,6 +223,23 @@ import XCTest
         p.retry(); XCTAssertTrue(sent.isEmpty, "interpretation would translate it to the other person")
     }
 
+    /// IC-4: the unclear failure is the dark card, "Look again" drops it and the call goes on; other failures never show the card.
+    func testLookAgainClosesTheUnclearCardOnly() throws {
+        let m = FindsModel()
+        m.apply(started("a"))
+        m.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"a","reason":"unclear","message":"Show me again?"}"#))
+        XCTAssertTrue(m.current?.isUnclear ?? false)
+        m.lookAgain()
+        XCTAssertEqual(m.state, .idle)
+
+        let n = FindsModel()
+        n.apply(started("b"))
+        n.apply(try ServerEvent.decode(#"{"type":"find.failed","findId":"b","reason":"search_failed","message":"x"}"#))
+        XCTAssertFalse(n.current?.isUnclear ?? true)
+        n.lookAgain()
+        XCTAssertEqual(n.state, .searching, "only IC-4 is dismissed by Look again")
+    }
+
     func testUnclearFailureHasNoRetry() throws {
         let m = FindsModel()
         m.apply(started("a"))
@@ -241,6 +258,37 @@ import XCTest
         XCTAssertNotEqual(CallController.tokenSubject(jwt("user-a")), CallController.tokenSubject(jwt("user-b")))
         XCTAssertEqual(CallController.tokenSubject("shared-dev-token"), "dev")
         XCTAssertNil(CallController.tokenSubject(nil))
+    }
+
+    // FT-NOSEE: the card names only what the camera did not show, never a guess, and goes by itself
+    func testNoSeeCheckFromRecipeCard() {
+        func item(_ id: String, _ name: String, _ tier: FindTier) -> FindItem {
+            try! JSONDecoder().decode(FindItem.self, from: Data(#"{"id":"\#(id)","name":"\#(name)","tier":"\#(tier.rawValue)","from":"recipe"}"#.utf8))
+        }
+        var c = card("a")
+        c.items = [item("1", "eggs", .have), item("2", "scallions", .have), item("3", "cooked rice", .buy), item("4", "kimchi", .maybe), item("5", "oil", .buy)]
+        let check = NoSeeCheck.from(card: c)
+        XCTAssertEqual(check?.title, "For kimchi fried rice")
+        XCTAssertEqual(check?.rows.map(\.name), ["Eggs", "Scallions", "cooked rice", "kimchi"])
+        XCTAssertEqual(check?.rows.map(\.seen), [true, true, false, false])
+        XCTAssertEqual(check?.hint, "Move the camera if it’s there.")
+        c.items = [item("1", "eggs", .have)]
+        XCTAssertNil(NoSeeCheck.from(card: c), "everything seen: no card")
+        c.items = [item("3", "cooked rice", .buy)]; c.kind = .outfit
+        XCTAssertNil(NoSeeCheck.from(card: c), "recipes only")
+    }
+
+    func testNoSeeCardLeavesByItselfOrOnDismiss() async throws {
+        let m = FindsModel()
+        let check = NoSeeCheck(title: "For x", rows: [.init(name: "rice", seen: false)])
+        m.showNoSee(check, hold: .milliseconds(80))
+        XCTAssertEqual(m.noSee, check)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(m.noSee, "auto-hides")
+        m.showNoSee(check, hold: nil)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNotNil(m.noSee, "no hold = stays")
+        m.dismissNoSee(); XCTAssertNil(m.noSee)
     }
 
     func testStatusLineShortensByWholeWordsOnly() {
