@@ -118,6 +118,8 @@ public enum ServerEvent: Equatable, Sendable {
     case speaking(Speaking)
     case audio(Audio)
     case audioTiming(AudioTiming)
+    /// Expression layer (11/3): the face expression of one reply clause, on the reply's audio timeline.
+    case expression(Expression)
     case say(Say)
     case reply(Reply)
     case utteranceCancelled(UtteranceCancelled)
@@ -308,6 +310,19 @@ public enum ServerEvent: Equatable, Sendable {
         public var retryable: Bool
     }
     public struct Pong: Codable, Equatable, Sendable { public var t: Double? }
+    /// Server voice: one clause's face. `tag` = smile | smileopen | laugh | surprised | concerned (never neutral);
+    /// `intensity` 0…1; `startMs`/`endMs` on the reply's audio timeline (the `audio.offsetMs` clock).
+    public struct Expression: Codable, Equatable, Sendable {
+        public var utteranceId: Int
+        public var sentence: Int
+        public var tag: String
+        public var intensity: Double
+        public var startMs: Int
+        public var endMs: Int
+        public init(utteranceId: Int, sentence: Int, tag: String, intensity: Double, startMs: Int, endMs: Int) {
+            self.utteranceId = utteranceId; self.sentence = sentence; self.tag = tag; self.intensity = intensity; self.startMs = startMs; self.endMs = endMs
+        }
+    }
     public struct CompanionNamed: Codable, Equatable, Sendable {
         public var name: String
         public init(name: String) { self.name = name }
@@ -333,6 +348,7 @@ extension ServerEvent: Codable {
         case "speaking": self = .speaking(try .init(from: decoder))
         case "audio": self = .audio(try .init(from: decoder))
         case "audio.timing": self = .audioTiming(try .init(from: decoder))
+        case "expression": self = .expression(try .init(from: decoder))
         case "say": self = .say(try .init(from: decoder))
         case "reply": self = .reply(try .init(from: decoder))
         case "utterance.cancelled": self = .utteranceCancelled(try .init(from: decoder))
@@ -369,6 +385,7 @@ extension ServerEvent: Codable {
         case .speaking: "speaking"
         case .audio: "audio"
         case .audioTiming: "audio.timing"
+        case .expression: "expression"
         case .say: "say"
         case .reply: "reply"
         case .utteranceCancelled: "utterance.cancelled"
@@ -404,6 +421,7 @@ extension ServerEvent: Codable {
         case let .speaking(p): try p.encode(to: encoder)
         case let .audio(p): try p.encode(to: encoder)
         case let .audioTiming(p): try p.encode(to: encoder)
+        case let .expression(p): try p.encode(to: encoder)
         case let .say(p): try p.encode(to: encoder)
         case let .reply(p): try p.encode(to: encoder)
         case let .utteranceCancelled(p): try p.encode(to: encoder)
