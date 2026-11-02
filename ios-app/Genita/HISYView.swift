@@ -205,12 +205,13 @@ struct HISYTitle: View {
     }
 }
 
-/// I03's globe (the preparing screen's orb node, 346 × 321).
+/// I03's globe in HISY's 346 × 321 slot: the orb itself is ~130 pt wide there (Figma 251:21 / 251:436), smaller
+/// than on I03, so the I03 node is drawn at 0.59.
 struct HISYGlobe: View {
     var body: some View {
         if let orb = DesignLibrary.nodes("preparing").first(where: { $0.name.hasPrefix("soul-orb") }) {
             DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
-                .frame(width: orb.w, height: orb.h).accessibilityHidden(true)
+                .frame(width: orb.w, height: orb.h).scaleEffect(0.59).frame(width: 346, height: 321).accessibilityHidden(true)
         }
     }
 }
