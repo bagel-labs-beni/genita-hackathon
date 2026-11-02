@@ -245,7 +245,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Witty"].exists)
     }
     func testBackAndCopyPreserveDraft() {
-        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launch()
+        // this test walks the demo sign-in through the Google button, which A02 hides by default (#218)
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launchEnvironment = ["GENITA_HIDE_GOOGLE": "0"]; app.launch()
         app.buttons["getStarted"].tap(); app.buttons["Continue with Google"].tap(); app.alerts.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["Continue with Apple"].exists)
         app.buttons["Continue with Google"].tap(); app.alerts.buttons["Continue in demo"].tap()
