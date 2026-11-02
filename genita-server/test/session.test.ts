@@ -381,7 +381,7 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   // ③ only checked items, after their boxes ②
-  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi.";
+  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi. First, fry it.";
   const said = await client.waitFor((m) => m.type === "reply" && m.text === line, 5000);
   const boxes = client.json.findIndex((m) => m.type === "observe.boxes");
   const lineStart = client.json.findIndex((m) => m.type === "reply.delta" && m.utteranceId === said.utteranceId);

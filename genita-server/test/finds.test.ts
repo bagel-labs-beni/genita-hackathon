@@ -275,11 +275,14 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.equal(last.status, "You have it all");
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
+  // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge
+  assert.equal(card.eyebrow, "From your camera");
+  assert.equal((events.find((e) => e.type === "find.started") as Extract<ServerEvent, { type: "find.started" }>).title, "Looking at your ingredients");
   assert.equal(card.sources[0].domain, "maangchi.com");
   assert.equal(card.steps.length, 3);
   assert.equal(card.steps[0].source, "maangchi.com");
   // D23: the line names only "have" items (kimchi is "맞아?", onion has no box), never the model's own "say"
-  assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi.");
+  assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi. First, fry the kimchi.");
   assert.ok(card.how.some((h) => /illustrations I made/.test(h)));
   assert.equal(events.filter((e) => e.type === "find.image").length, 4);
   assert.ok(events.some((e) => e.type === "observe.boxes"));
@@ -461,7 +464,7 @@ test("fridge order (D23, #122): one line, spoken after the boxes, naming only YE
   const { ctx, events } = ctxFor("recipe", v, { images: false, speak: (text) => spoken.push({ text, at: events.length }) });
   await runRecipe(ctx);
   assert.equal(spoken.length, 1);
-  assert.equal(spoken[0].text, "I can see eggs, tofu, and cooked rice. You could make kimchi fried rice, if you have kimchi.");
+  assert.equal(spoken[0].text, "I can see eggs, tofu, and cooked rice. You could make kimchi fried rice, if you have kimchi. First, fry the kimchi.");
   const boxesBefore = events.slice(0, spoken[0].at).filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
   const boxed = new Set(boxesBefore.flatMap((b) => b.items.map((i) => i.label.toLowerCase())));
   for (const name of ["eggs", "tofu", "cooked rice"]) assert.ok(boxed.has(name), `${name} box is up before it is named`);
@@ -489,4 +492,68 @@ test("fridge pill (#122 follow-up): the shown line is ≤ 28 chars, whole names,
   assert.ok(r.card!.say!.length > 28, "the spoken sentence stays whole");
   const withPill = events.find((e) => e.type === "find.items" && (e as { pill?: string }).pill) as { pill: string } | undefined;
   assert.equal(withPill?.pill, r.card!.pill, "the pill reaches the app with the items");
+});
+
+test("recipe pipeline: GENITA_SAM_MASKS — a SAM mask rides on observe.boxes; a bad mask drops only the mask", async () => {
+  const { encodeOneBit, fromRle } = await import("../src/meta/samMask.ts");
+  // box 10..50 x 20..100 → 41 x 81 raster; an ellipse inside it
+  const W = 41;
+  const H = 81;
+  const bits = Uint8Array.from({ length: W * H }, (_, i) => +(((i % W) - 20) ** 2 / 400 + (Math.floor(i / W) - 40) ** 2 / 1600 <= 1));
+  const good = encodeOneBit(bits, W, H);
+  for (const payload of [good, "!" + good.slice(1, 10) + "?" + good.slice(11)]) {
+    const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+    const sam = v.sam.bind(v);
+    v.samMasks = true;
+    v.sam = async (img, prompt, signal) => (await sam(img, prompt, signal)).map((b) => ({ ...b, score: 0.9, mask: { width: W, height: H, payload } }));
+    const { ctx, events } = ctxFor("recipe", v, { images: false });
+    await runRecipe(ctx);
+    const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+    const eggs = boxes.at(-1)!.items.find((i) => i.label === "Eggs")!;
+    assert.ok(eggs.box, "box always sent");
+    if (payload === good) {
+      assert.ok(eggs.mask, "mask sent");
+      assert.ok(Math.max(eggs.mask!.w, eggs.mask!.h) <= 96);
+      assert.deepEqual(fromRle(eggs.mask!.w, eggs.mask!.h, eggs.mask!.rle), bits);
+    } else assert.equal(eggs.mask, undefined);
+  }
+});
+
+test("recipe pipeline: no mask on the wire when SAM sent none (flag off)", async () => {
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+  const { ctx, events } = ctxFor("recipe", v, { images: false });
+  await runRecipe(ctx);
+  const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+  assert.ok(boxes.length);
+  assert.ok(boxes.every((b) => b.items.every((i) => !("mask" in i))));
+});
+
+test("recipe pipeline: GENITA_SAM_MASKS — every match above the score bar is its own item, capped at 12", async () => {
+  const { encodeOneBit } = await import("../src/meta/samMask.ts");
+  const box = (i: number, score: number) => {
+    const x1 = 10 + i * 40;
+    return { x1, y1: 20, x2: x1 + 29, y2: 49, w: 480, h: 854, nx1: x1 / 480, ny1: 20 / 854, nx2: (x1 + 29) / 480, ny2: 49 / 854, score, mask: { width: 30, height: 30, payload: encodeOneBit(new Uint8Array(900).fill(1), 30, 30) } };
+  };
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\ntofu | 1 | block\n", recipe: RECIPE_JSON });
+  const sam = v.sam.bind(v);
+  v.samMasks = true;
+  v.sam = async (img, prompt, signal) => {
+    const base = await sam(img, prompt, signal);
+    if (!base.length) return [];
+    // eggs: 10 good matches + 1 low score; tofu: 4 matches → 14 > 12, eggs (the bigger group) merge into one
+    if (prompt === "eggs") return [...Array.from({ length: 10 }, (_, i) => box(i, 0.9 - i * 0.01)), box(10, 0.2)];
+    if (prompt === "tofu") return Array.from({ length: 4 }, (_, i) => ({ ...box(i, 0.8), y1: 300, y2: 329, ny1: 300 / 854, ny2: 329 / 854 }));
+    return base.map((b) => ({ ...b, score: 0.9 }));
+  };
+  const { ctx, events } = ctxFor("recipe", v, { images: false });
+  await runRecipe(ctx);
+  const last = (events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[]).at(-1)!;
+  assert.ok(last.items.length <= 12);
+  const eggs = last.items.filter((i) => i.label === "Eggs");
+  const tofu = last.items.filter((i) => i.label === "Tofu");
+  assert.equal(tofu.length, 4, "each tofu its own item");
+  assert.equal(eggs.length, 1, "eggs merged into one union item");
+  assert.ok(eggs[0].mask && eggs[0].box.x2 > 0.75, "union spans all 10 eggs");
+  assert.ok([...eggs, ...tofu].every((i) => i.mask));
+  assert.ok(last.items.filter((i) => i.label !== "Eggs" && i.label !== "Tofu").every((i) => !i.mask), "no mask sent → box only");
 });
