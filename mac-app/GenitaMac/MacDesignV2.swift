@@ -41,7 +41,8 @@ struct MacPairingCode: View {
                 if connected {
                     Circle().fill(Color(red: 0, green: 162.0 / 255, blue: 1)).frame(width: 8, height: 8).frame(width: 16, height: 16)
                 } else {
-                    ProgressView().controlSize(.small).frame(width: 16, height: 16)
+                    // MAC-2's waiting ring (87:2 "Checking for your companion"), not a system spinner
+                    Circle().strokeBorder(Color(white: 227.0 / 255), lineWidth: 2).frame(width: 16, height: 16)
                 }
                 Text(connected ? "Paired with your iPhone" : "Looking for your iPhone").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
             }.frame(height: 22).accessibilityElement(children: .combine).accessibilityIdentifier("macPairingStatus")
