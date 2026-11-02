@@ -19,7 +19,12 @@ public struct GenitaSplash: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let timeline = Self.makeTimeline()
 
-    public init(onFinished: @escaping () -> Void) { self.onFinished = onFinished }
+    /// `origin` = when the splash was put on screen (the overlay's creation, ≈ launch): the 1.6 s budget runs
+    /// from there, so a late first frame or a late `.task` skips ahead instead of holding the first screen longer.
+    public init(origin: Date = Date(), onFinished: @escaping () -> Void) {
+        self.onFinished = onFinished
+        _start = State(initialValue: origin)
+    }
 
     // MARK: timing (motion page B+ table)
     static let handoffAt = 1.08
@@ -71,7 +76,7 @@ public struct GenitaSplash: View {
                 TimelineView(.animation(paused: start == nil || Self.frozenAt != nil || finished)) { ctx in
                     let t = Self.frozenAt ?? start.map { ctx.date.timeIntervalSince($0) } ?? 0
                     scene(t: t, size: full.size, top: top)
-                        .onChange(of: t >= endTime) { _, done in if done { finish() } }
+                        .onChange(of: t >= endTime, initial: true) { _, done in if done { finish() } }
                 }
                 .contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0)
@@ -187,21 +192,22 @@ public struct GenitaSplash: View {
     // MARK: control
 
     @MainActor private func run() async {
-        start = Date()
         if Self.frozenAt != nil { return } // review shot: hold the frame until tapped
         if !reduceMotion {
             leanSource.start { l in withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = l } }
         }
-        try? await Task.sleep(for: .milliseconds(Int((reduceMotion ? 0.2 : Self.peak) * 1000)))
+        let elapsed = start.map { Date().timeIntervalSince($0) } ?? 0
+        let wait = (reduceMotion ? 0.2 : Self.peak) - elapsed
+        if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
         if skipAt == nil, !hapticDone { hapticDone = true; GenitaHaptic.impact(soft: true, intensity: 0.6) } // the light peaks
     }
 
     @MainActor private func skip() {
         guard !finished, skipAt == nil, let start, !reduceMotion else { if reduceMotion { finish() }; return }
-        let now = Date().timeIntervalSince(start)
+        let now = Self.frozenAt ?? Date().timeIntervalSince(start)
         guard now < Self.handoffAt else { return } // already handing over
-        skipAt = Self.frozenAt ?? now
-        if Self.frozenAt != nil { self.start = Date().addingTimeInterval(-(Self.frozenAt ?? 0)); Self.unfreeze = true }
+        skipAt = now
+        if let frozen = Self.frozenAt { self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true }
     }
 
     @MainActor private func finish() {
@@ -261,7 +267,7 @@ struct SplashOverlayModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.overlay {
             if enabled && visible {
-                GenitaSplash {
+                GenitaSplash(origin: shownAt) {
                     elapsedMs = Int(Date().timeIntervalSince(shownAt) * 1000)
                     visible = false
                 }
