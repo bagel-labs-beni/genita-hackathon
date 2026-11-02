@@ -14,6 +14,8 @@ export type GuardContext = {
   camera: boolean;
   /** the user's line this reply answers ("" for a greeting or initiative) */
   userText: string;
+  /** personalization's one still-to-confirm question is due this turn (#194 GK-1): its question is not intake */
+  askTurn?: boolean;
 };
 
 const CLASSES: Array<[GuardClass, RegExp]> = [
@@ -21,12 +23,13 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been) (?:really |so |super )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest))/i],
   ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into))/i],
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
-  ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b|emergency services)/i],
+  // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
+  ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
   ["unseen", /\b(?:you look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
-const REAL_CRISIS = /\b(?:kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
+const REAL_CRISIS = /\b(?:(?:threaten\w*|going|trying|wants?) to (?:kill|hurt) me|has a (?:knife|gun|weapon)|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
 
 const ASKS_AI = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+|just\s+an?\s+)?(?:ai|a\.i\.|bot|robot|chatbot)\b|\bis this (?:an? )?(?:ai|bot)\b/i;
 const ASKS_HUMAN = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+)?(?:real|human|(?:real )?person)\b|\bis this a real person\b/i;
@@ -48,13 +51,13 @@ export function realCrisisSignal(text: string): boolean {
 
 /** The class that drops this sentence, or null to speak it. */
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
-  const crisis = realCrisisSignal(ctx.userText);
+  // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
+  // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
+  if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   for (const [cls, re] of CLASSES) {
     if (!re.test(sentence)) continue;
-    if (cls === "referral" && crisis) continue;
-    // a crisis turn may say "you're not alone" / "I'm here" — that is the friend staying, not therapy-speak
-    if (cls === "counselor" && crisis) continue;
     if (cls === "unseen" && ctx.camera) continue;
+    if (cls === "intake" && ctx.askTurn) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

@@ -266,3 +266,75 @@ test("session v1: never in interpretation", { skip: !v1 }, async () => {
   assert.equal(calls.length, 0);
   session.close();
 });
+
+// ───────────── Codex review 11/3 (round 1) ─────────────
+
+test("guard (Codex P1): on a real crisis or danger line nothing but an AI denial is dropped — 'stay with me' and emergency help stay", () => {
+  const crisis = { camera: false, userText: "I want to kill myself." };
+  assert.equal(guardSentence("Stay with me and call emergency services right now.", crisis), null);
+  assert.equal(guardSentence("Please text 988 right now.", crisis), null);
+  const danger = "My partner has a knife and is threatening to kill me right now.";
+  assert.ok(realCrisisSignal(danger));
+  assert.equal(guardSentence("Get somewhere safe and call 911 now.", { camera: false, userText: danger }), null);
+  // emergency services are never treated as a counselling referral, even when the regex misses the danger
+  assert.equal(guardSentence("Call emergency services right now.", { camera: false, userText: "there's a fire in my building" }), null);
+});
+
+type Internals = { deps: SessionDeps; memoryCall: unknown; historyRevision: number | null; initiative: unknown; setFrames(i: unknown): void };
+
+async function quietCall(replies: string[]) {
+  const t = setup(replies);
+  await t.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: true, tts: "device", user: { profile: "Likes: aespa." } }));
+  await t.session.onClientText(JSON.stringify({ type: "text", text: "hey" }));
+  await t.client.waitFor((m) => m.type === "reply");
+  await t.session.onClientText(JSON.stringify({ type: "playback_done", utteranceId: 1 }));
+  await t.client.waitFor((m) => m.type === "state" && m.state === "listening" && t.client.json.indexOf(m) > 2);
+  t.tick(14_000);
+  return t;
+}
+
+function slowMemory(session: Session, onLoad: () => void) {
+  const s = session as unknown as Internals;
+  s.memoryCall = { close() {} };
+  s.deps.userId = "u1";
+  s.deps.memory = { list: async () => { onLoad(); return [{ id: "m1", text: "Summer had an interview Thursday", kind: "episode", created_at: 0, updated_at: 1, last_used_at: null, follow_up: true, source_session_id: "x" }]; } } as unknown as SessionDeps["memory"];
+}
+
+test("session (Codex P1): a Forget while the memory lines load drops the initiative — nothing forgotten reaches Spark", { skip: !v1 }, async () => {
+  const { session, calls } = await quietCall(["<happy> Hey!", "<curious> So the interview?"]);
+  slowMemory(session, () => { (session as unknown as Internals).historyRevision = 7; });
+  await session.initiativeTick();
+  assert.equal(calls.length, 1, "no initiative after a Forget mid-load");
+  session.close();
+});
+
+test("session (Codex P2): camera frames arriving while the lines load hold the initiative (decide again after the load)", { skip: !v1 }, async () => {
+  const { session, calls } = await quietCall(["<happy> Hey!", "<curious> So the interview?"]);
+  slowMemory(session, () => (session as unknown as Internals).setFrames(["aGVsbG8="]));
+  await session.initiativeTick();
+  assert.equal(calls.length, 1);
+  session.close();
+});
+
+test("session (Codex P2): after a handoff took the sound, this call never speaks first", { skip: !v1 }, async () => {
+  const { session, calls } = await quietCall(["<happy> Hey!", "<curious> Ok random."]);
+  session.stopForHandoff();
+  await session.initiativeTick();
+  assert.equal(calls.length, 1);
+  assert.equal((session as unknown as Internals).initiative, null);
+  session.close();
+});
+
+test("session (Codex P2): a call that started interpreting gets initiative once it switches to chat", { skip: !v1 }, async () => {
+  const { session } = setup(["<neutral> ok"]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: true, tts: "device", mode: "interpret" }));
+  assert.equal((session as unknown as Internals).initiative, null);
+  await session.onClientText(JSON.stringify({ type: "mode", mode: "chat" }));
+  assert.notEqual((session as unknown as Internals).initiative, null);
+  session.close();
+});
+
+test("guard: the personalization ask turn (#194 GK-1) may ask its one question", () => {
+  assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok", askTurn: true }), null);
+  assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok" }), "intake");
+});

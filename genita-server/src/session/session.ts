@@ -299,6 +299,8 @@ export class Session {
    * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
    */
   stopForHandoff(): void {
+    // the other device has the sound now: this call never speaks first again (Codex 11/3 P2)
+    this.stopInitiative();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
@@ -563,6 +565,9 @@ export class Session {
     }
     this.leaveInterpret();
     this.mode = "chat";
+    // back from interpretation: the silence clock starts now, and a call that started interpreting gets a governor
+    this.initiative?.activity(this.now());
+    if (this.started && initiativeOn()) this.startInitiative();
     this.client.sendJson({ type: "mode.changed", mode, by });
     this.log("mode.changed", { mode, by });
   }
@@ -718,6 +723,8 @@ export class Session {
   private onAsr(e: AsrEvent): void {
     const t = this.now();
     if (e.type === "speechStart") this.warm();
+    // interpretation speech counts as talking too: returning to chat never starts on a stale silence (Codex P2)
+    if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
     if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
@@ -953,6 +960,13 @@ export class Session {
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint };
   }
 
+  private stopInitiative(): void {
+    if (this.initiativeTimer) clearInterval(this.initiativeTimer);
+    this.initiativeTimer = null;
+    this.initiative = null;
+    this.cueTurn = null;
+  }
+
   /** DESIGN §5: a 1 s check; the governor decides, the session only checks it's idle and speaks. */
   private startInitiative(): void {
     if (this.initiative || this.closed) return;
@@ -977,13 +991,19 @@ export class Session {
     const d = gov.decide(this.now(), this.initiativeIdle());
     if (!d.fire) return;
     this.initiativeBusy = true;
+    const revision = this.historyRevision;
+    const memoryCall = this.memoryCall;
     try {
       const threads = await this.initiativeThreads();
-      // the user may have started talking while the threads loaded
-      if (!this.initiativeIdle() || this.initiative !== gov) return;
+      // a Forget while the lines loaded: what was read may be forgotten now (Codex 11/3 P1)
+      if (this.historyRevision !== revision || this.memoryCall !== memoryCall) return;
+      // the user may have started talking, or showed the camera, while the threads loaded: decide again (Codex P2)
+      if (this.initiative !== gov) return;
+      const again = gov.decide(this.now(), this.initiativeIdle());
+      if (!again.fire) return;
       gov.markFired(this.now());
-      this.cueTurn = { source: d.source, block: initiativeBlock(d.source, threads) };
-      this.log("convo.initiative", { source: d.source, threads: threads.length, n: gov.count });
+      this.cueTurn = { source: again.source, block: initiativeBlock(again.source, threads) };
+      this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
       this.dispatch({ type: "text", text: INITIATIVE_INPUT });
     } finally {
       this.initiativeBusy = false;
