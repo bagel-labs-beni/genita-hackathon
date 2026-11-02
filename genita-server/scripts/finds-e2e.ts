@@ -1,5 +1,5 @@
 /**
- * npm run finds:e2e [-- --runs=5 --kind=recipe|outfit|link|all --no-images --record=<dir>]
+ * npm run finds:e2e [-- --runs=5 --kind=recipe|outfit|link|all --no-images --record=<dir> --out=<dir>]
  *
  * Real keys, real vendors. Starts the server in-process on loopback and acts
  * like the app: start (mic off) → `text` with 2 camera JPEGs → measures, on
@@ -17,6 +17,7 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.ts";
 import { startServer, defaultDeps } from "../src/server.ts";
 import { sameIngredient } from "../src/finds/names.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
@@ -27,7 +28,7 @@ const kind = arg("kind", "all");
 if (args.includes("--no-images")) process.env.GENITA_FIND_IMAGES = "0";
 process.env.GENITA_FINDS_DIR ??= mkdtempSync(join(tmpdir(), "genita-finds-"));
 
-const T4 = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/suite/t4");
+const T4 = fixturePath("suite", "t4");
 const jpeg = (f: string) => readFileSync(join(T4, f)).toString("base64");
 const TRUTH = ["eggs", "kimchi", "tofu", "green onions", "milk", "rice"];
 
@@ -181,7 +182,7 @@ for (const k of kinds) {
   }
   console.log("SUMMARY " + JSON.stringify(sum));
 }
-const out = join(homedir(), "genita-fixtures/genita-finds-e2e");
+const out = arg("out", join(tmpdir(), "genita-finds-e2e"));
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, `run-${Date.now()}.json`), JSON.stringify(all, null, 1));
 server.close();
