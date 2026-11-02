@@ -64,7 +64,7 @@ test("Spark output is cleaned: traits merged with presence, user-analysis lines 
       traits: ["Curious", "steady"],
       speaking_style: "I talk: short and warm, with dry humour.",
       role: "a trusted partner who helps the user think things through",
-      summary: { why: "You're an introvert, so I'll keep it calm.", energy: "Warm and easy.", initiative: "I'll suggest a next step now and then.", never: "x" },
+      summary: { why: "You're an introvert, so I'll keep it calm.", energy: "warm and easy", initiative: "I'll suggest a next step now and then.", never: "x" },
     },
     input(right as SetupAnswers),
   );

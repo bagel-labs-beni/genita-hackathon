@@ -191,7 +191,8 @@ export function toPersona(raw: Partial<PersonaRaw> | null | undefined, p: Person
     initiative: a.reachOut ? `I'll be ${REACH[a.reachOut - 1].split(";")[0]}.` : "I'll follow your lead.",
     never: a.never?.length ? `I won't ${a.never.map((n) => n.toLowerCase()).join(", ")}.` : "Nothing off-limits yet.",
   };
-  const pick = (k: keyof typeof fallback, v: string) => (v && !USER_ANALYSIS.test(v) ? v : fallback[k]);
+  const sentence = (v: string) => (v ? v.charAt(0).toUpperCase() + v.slice(1).replace(/[\s]+$/, "") + (/[.!?]$/.test(v) ? "" : ".") : v);
+  const pick = (k: keyof typeof fallback, v: string) => (v && !USER_ANALYSIS.test(v) ? sentence(v) : fallback[k]);
   const summary = {
     why: pick("why", one(s.why)),
     energy: pick("energy", one(s.energy)),
