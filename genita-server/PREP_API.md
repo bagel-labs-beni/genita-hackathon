@@ -31,8 +31,20 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
 | `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, previewUrl}], suggested}`, already in Spark's recommended order |
 | `GET /v1/companion/voices/{id}/preview` | | `audio/mpeg`, ~8 s |
-| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists` |
+| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name; a given name follows the rule below, else `400 bad_name`). Starts prep in the background ("Use this image"). `409 companion_exists` |
 | `GET /v1/companion` | | companion + `prep` + `persona` + `session` (fields for the realtime `start` message) |
+
+## Companion name (F2-L26, NM01, D21)
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/companion/name/suggest` | `{imageId}` (the checked image from `POST /v1/companion/image`; works before the companion exists) | `200 {name, ms, suggested}`. Spark 1.3 looks at the photo + the imported style card and proposes one first name for NM01. `suggested:false` = Spark failed or timed out (4 s) and `name` is a neutral fallback (never a 5xx for that). `404 unknown_image` (not yours / unknown) · `429 rate_limited` (10 per user per minute) |
+| `PATCH /v1/companion` | `{name}` | `200` companion (same shape as `GET`); `name`, `persona.card.name` and `session.persona.name` all carry the new name. `400 bad_name` · `404 no_companion` |
+
+Name rule (PATCH, POST, rename by voice): trimmed, 1–20 characters, letters/digits/spaces/`.` `'` `-`,
+at least one letter. Empty, whitespace-only and 21+ characters are `400 bad_name` — keep NM01's
+Continue disabled for those. A suggestion is letters/spaces/hyphens/apostrophes only and never "Genita".
+Renaming in a call ("Call yourself Max") saves the same way and sends `companion.named` (PROTOCOL.md).
 
 ## Prep progress (F2-L9, F2-L22)
 

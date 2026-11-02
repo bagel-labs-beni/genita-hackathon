@@ -4,7 +4,7 @@
  * only wires them to Spark, SAM, Muse Image, fal and ElevenLabs.
  */
 import { randomUUID } from "node:crypto";
-import { sparkJson } from "../meta/spark.ts";
+import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { falUpload, falSubmit, falWait } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
@@ -24,6 +24,8 @@ export type PrepDeps = {
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** tests: replaces the structured Spark call used by name suggest (F2-L26); unset = Muse Spark */
+  spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 };
 
 export class PrepError extends Error {
