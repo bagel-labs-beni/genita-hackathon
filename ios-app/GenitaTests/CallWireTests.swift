@@ -13,7 +13,7 @@ import XCTest
         XCTAssertEqual(header.seq, 0x0102_0304)
         let payload = AudioFrameHeader.payload(of: frame)
         XCTAssertEqual(payload, Data([0x10, 0x00, 0xF0, 0xFF]))
-        XCTAssertEqual(PCM.floats(fromS16LE: payload), [16 / 32768, -16 / 32768])
+        XCTAssertEqual(PCM.floats(fromS16LE: payload), [Float(16) / 32768, Float(-16) / 32768])
     }
 
     func testRejectsFramesThatAreNotGenitaAudio() {
