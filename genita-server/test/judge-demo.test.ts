@@ -13,12 +13,14 @@ import { startServer, defaultDeps } from "../src/server.ts";
 import { loadConfig } from "../src/config.ts";
 import { createAccounts, type AccountsService } from "../src/auth/index.ts";
 import { newPrepState } from "../src/prep/runner.ts";
-import { DEFAULT_VOICES } from "../src/prep/voices.ts";
+import * as voiceLists from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import { DEMO_NAME, DEMO_TEMPLATE_SUB, seedDemoCompanion } from "../src/prep/demo.ts";
 import type { ImageRecord } from "../src/prep/store.ts";
 import { testDb } from "./helpers/db.ts";
 
+/** the list POST /v1/companion accepts: device voices once the Meta-only prep (#158) lands, else the server list */
+const VOICES: Array<{ id: string }> = (voiceLists as Record<string, any>).DEVICE_VOICES ?? voiceLists.DEFAULT_VOICES;
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
 const CHECK = interpretCheck({ subject: "person", face_count: 1, front_facing: true, face_covered: false, sharp: true, well_lit: true, text_on_image: false });
 
@@ -44,7 +46,7 @@ async function makeTemplate(a: AccountsService, files: Record<string, Buffer> = 
     userId: user.id,
     imageId: "tplimg",
     type: "human",
-    voiceId: DEFAULT_VOICES[0].id,
+    voiceId: VOICES[0].id,
     name: DEMO_NAME,
     createdAt: "2026-11-02T00:00:30.000Z",
     prep,
@@ -161,7 +163,7 @@ test("a judge makes their own companion: POST /v1/companion replaces the demo on
   assert.equal((await call("POST", "/v1/companion", s.token, { imageId: "mine1", voiceId: "nope" })).body.error, "unknown_voice");
   assert.equal((await call("GET", "/v1/companion", s.token)).body.id, demo.id);
 
-  const made = await call("POST", "/v1/companion", s.token, { imageId: "mine1", voiceId: DEFAULT_VOICES[1].id, name: "Mina" });
+  const made = await call("POST", "/v1/companion", s.token, { imageId: "mine1", voiceId: VOICES[1].id, name: "Mina" });
   assert.equal(made.status, 201);
   assert.equal(made.body.demo, false);
   assert.equal(made.body.name, "Mina");
@@ -171,11 +173,14 @@ test("a judge makes their own companion: POST /v1/companion replaces the demo on
   assert.equal((await call("GET", "/me", s.token)).body.companionDemo, false);
 
   await accounts.prepStore.putImage(image("mine2", s.user.id), JPEG);
-  const again = await call("POST", "/v1/companion", s.token, { imageId: "mine2", voiceId: DEFAULT_VOICES[1].id });
+  const again = await call("POST", "/v1/companion", s.token, { imageId: "mine2", voiceId: VOICES[1].id });
   assert.equal(again.status, 409, "B7: one companion per user once it is their own");
   // signing in again does not bring the demo back
   const back = await signIn();
   assert.equal((await call("GET", "/v1/companion", back.token)).body.name, "Mina");
+  // the new companion's prep runs in the background (instant without vendor keys; the Meta face set fails fast on
+  // the fake key): let it settle before the database closes
+  for (let i = 0; i < 100 && (await call("GET", "/v1/companion/prep", back.token)).body.status === "running"; i++) await new Promise((r) => setTimeout(r, 100));
 });
 
 test("the template account can't be reached from outside: x-genita-user can't name it", async (t) => {
