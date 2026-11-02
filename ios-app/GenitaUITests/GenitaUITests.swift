@@ -82,6 +82,7 @@ final class GenitaUITests: XCTestCase {
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
+        XCTAssertTrue(app.buttons["cameraToggle"].isEnabled)
         XCTAssertTrue(app.buttons["micToggle"].isEnabled)
         app.buttons["more"].tap(); XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)); capture("31a-더보기")
         app.descendants(matching: .any)["closeMore"].tap()

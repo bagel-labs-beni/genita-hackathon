@@ -20,6 +20,9 @@ struct SettingsView: View {
                     LabeledContent("Voice", value: model.setup.voice.map { "Mira \($0 + 1)" } ?? "Not selected")
                     ForEach(model.setup.answers.keys.sorted(), id: \.self) { key in LabeledContent(Self.label(for: key), value: Self.display(key, model.setup.answers[key] ?? "")) }
                 }
+                #if os(iOS)
+                Section("Devices") { NavigationLink("Mac pairing") { PhonePairingView().padding(24) } }
+                #endif
                 Section { Text("Local hackathon demo · Account sign-in, Muse Spark and live conversation are not connected yet.").font(.footnote).foregroundStyle(.secondary) }
             }.navigationTitle("Settings")
             #if os(iOS)
