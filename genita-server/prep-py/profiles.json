@@ -394,8 +394,7 @@
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
-   "AH",
-   "AH2"
+   "AH"
   ],
   "drive": "open",
   "jaw": {
@@ -469,7 +468,8 @@
    "lip": 1.1,
    "idle": 0.45
   },
-  "texMin": 0.2
+  "texMin": 0.2,
+  "_keysServer": "server prep: AH only until the AH2 squash derivation (non-human faceflow --squash 1.4 from AH) is ported; generating AH2 would inherit the 3D teeth / tongue prompt (codex P2)"
  },
  "motion": {
   "animal": {

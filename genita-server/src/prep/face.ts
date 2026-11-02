@@ -216,7 +216,9 @@ export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx
   // profile keys (and a profile's blink): the lane's own prompt again, same species; its wording is already
   // the filter-safe "talking / calm" one (codex P2: never swap a blink retry for a mouth prompt)
   // also a mouth key the profile brings its own prompt for (11/3: animal / cat / toy jaw keys are named AH / AH2)
-  if (isProfileKey(key) || (ctx.profile && profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species))) {
+  // animal / cat bring filter-safe prompts of their own; 3D / toy retries still soften to the generic line (codex P2)
+  const ownSafe = (ctx.profile === "animal" || ctx.profile === "cat") && !!profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species);
+  if (isProfileKey(key) || ownSafe || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
     return faceEditPrompt(key, kind, false, ctx);
   }
   const s = NOUN[kind];
