@@ -16,7 +16,7 @@
  *   total         voiced end → first audio
  *   serverTotal   speechEnd → first audio (what turn.metrics calls speechEndToFirstAudioMs)
  *
- * --pauses: each utterance is also sent split at its quietest word gap (30–70% in) with that much
+ * --pauses: each utterance is also sent split at its quietest word gap (--split, default 30–70% in) with that much
  * silence inserted. A turn is a false end-of-turn if the server starts answering (state thinking)
  * before the second half has been spoken; "talkedOver" if audio started before it.
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/{meta,voice}.env and are never printed.
@@ -43,6 +43,8 @@ const pauses = (arg("pauses") ?? "").split(",").filter(Boolean).map(Number);
 const dir = arg("dir") ?? process.env.GENITA_FIXTURES_DIR ?? "";
 const outFile = arg("out");
 const skipPlain = args.includes("--pauses-only");
+// --split=0.2-0.45: where in the voiced span the pause goes (early = more likely mid-sentence)
+const [splitLo, splitHi] = (arg("split") ?? "0.3-0.7").split("-").map(Number);
 
 function toPcm(file: string): Buffer {
   if (file.endsWith(".pcm24")) return readFileSync(file);
@@ -69,12 +71,12 @@ function voicedSpan(pcm: Buffer): { start: number; end: number } {
   while (last > 0 && rms[last] <= thr) last--;
   return { start: first * WIN, end: (last + 1) * WIN };
 }
-/** split at the quietest 60 ms between 30% and 70% of the voiced span, insert `ms` of silence */
+/** split at the quietest 60 ms inside --split (default 30–70%) of the voiced span, insert `ms` of silence */
 function withPause(pcm: Buffer, ms: number): { pcm: Buffer; firstEnd: number } {
   const rms = rmsWindows(pcm);
   const span = voicedSpan(pcm);
-  const a = Math.floor(span.start / WIN + 0.3 * ((span.end - span.start) / WIN));
-  const b = Math.floor(span.start / WIN + 0.7 * ((span.end - span.start) / WIN));
+  const a = Math.floor(span.start / WIN + splitLo * ((span.end - span.start) / WIN));
+  const b = Math.floor(span.start / WIN + splitHi * ((span.end - span.start) / WIN));
   let best = a;
   let bestE = Infinity;
   for (let i = a; i + 2 < b; i++) {
