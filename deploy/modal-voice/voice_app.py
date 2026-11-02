@@ -31,6 +31,7 @@ Scale: python scale.py warm|cold   (min_containers 1 / 0)
 Bench: VOICE_GPU=H100 modal run voice_app.py::bench   (ephemeral app, stops when done)
 """
 import os, time, json, math, base64, asyncio, threading
+from concurrent.futures import ThreadPoolExecutor
 
 import modal
 
@@ -55,6 +56,28 @@ app = modal.App(APP)
 LANGS = {"eng", "kor"}
 MAX_CHARS = 400
 ALIGN_WAIT_MS = int(os.environ.get("VOICE_ALIGN_WAIT_MS", "250"))
+# The aligner has its own thread (never the default executor that synthesis uses) and a short queue: when it is
+# busy the clause just gets no timing, and a job that waited past its deadline is dropped before the GPU.
+ALIGN_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="align")
+ALIGN_MAX_QUEUED = 2
+_align_queued = 0  # running + waiting jobs
+_align_lock = threading.Lock()
+
+
+def _align_job(aligner, wav16, text, deadline):
+    global _align_queued
+    try:
+        if time.perf_counter() > deadline:
+            return None, None  # too late to be used: skip the GPU work
+        return aligner.align(wav16, text)
+    finally:
+        with _align_lock:
+            _align_queued -= 1
+
+
+def align_queued() -> int:
+    with _align_lock:
+        return _align_queued
 REGION = os.environ.get("VOICE_REGION", "us")  # broad region = 1.15x price; "us-east" = 1.75x
 # Daily cap (cost guard after 11/5, when Modal bills the card): requests per UTC day across containers.
 # Over the cap -> 429 "daily_cap" and genita-server falls back to the app's own voice. 80% logs an ALERT line.
@@ -327,16 +350,27 @@ async def aligned_lines(pcm, alignment, gen_ms, audio_ms, speaker, wav16, text, 
     first = next(lines, None)
     if first is not None:
         yield first
-    job = asyncio.ensure_future(asyncio.to_thread(aligner.align, wav16, text))
+    global _align_queued
+    job = None
+    with _align_lock:
+        take = _align_queued < ALIGN_MAX_QUEUED
+        if take:
+            _align_queued += 1
+    if take:
+        job = asyncio.get_running_loop().run_in_executor(ALIGN_POOL, _align_job, aligner, wav16, text,
+                                                         time.perf_counter() + wait_ms / 1000)
+    else:
+        print("align: busy, no timing", flush=True)
     for line in lines:
         yield line
     timing, align_ms = None, None
-    try:
-        timing, align_ms = await asyncio.wait_for(asyncio.shield(job), wait_ms / 1000)
-    except asyncio.TimeoutError:
-        print(f"align: late (> {wait_ms} ms after the audio), no timing", flush=True)
-    except Exception as e:  # noqa: BLE001  never fail the audio for the timing
-        print("align failed:", str(e)[:160], flush=True)
+    if job is not None:
+        try:
+            timing, align_ms = await asyncio.wait_for(asyncio.shield(job), wait_ms / 1000)
+        except asyncio.TimeoutError:
+            print(f"align: late (> {wait_ms} ms after the audio), no timing", flush=True)
+        except Exception as e:  # noqa: BLE001  never fail the audio for the timing
+            print("align failed:", str(e)[:160], flush=True)
     if timing:
         yield json.dumps({"timing": timing}, ensure_ascii=False) + "\n"
     yield done_line(gen_ms, audio_ms, speaker, align_ms)

@@ -50,14 +50,31 @@ class Romanize(unittest.TestCase):
         self.assertEqual(letters_of(plan("돌면")), "dolmyeon")
 
     def test_korean_final_links_onto_silent_initial(self):
-        # 있어요: ㅆ moves onto 어 (iss-eo-yo -> "isseoyo"), not "itseoyo"
+        # 있어요: ㅆ is heard as the onset of 어
         self.assertEqual(letters_of(plan("있어요")), "isseoyo")
         # 읽어: cluster ㄺ splits, l stays, g moves
         self.assertEqual(letters_of(plan("읽어")), "ilgeo")
-        # 좋아: ㅎ before a vowel is silent
-        self.assertEqual(letters_of(plan("좋아")), "joa")
         # 강아지: ㅇ final never moves
         self.assertEqual(letters_of(plan("강아지")), "gangaji")
+
+    def test_korean_letters_match_uroman(self):
+        # MMS_FA was trained on uroman romanization; these are uroman 1.3's outputs (checked 11/3)
+        uroman = {"까": "gga", "따": "dda", "빠": "bba", "짜": "jja", "싸": "ssa", "워": "weo", "의": "yi",
+                  "좋아": "joha", "놓고": "nohgo", "있어요": "isseoyo", "강아지": "gangaji", "읽어": "ilgeo",
+                  "돌면": "dolmyeon", "모퉁이": "motungi", "저녁은": "jeonyeogeun", "뭐": "mweo",
+                  "생각이에요": "saenggagieyo", "같이": "gati", "드릴까요": "deurilggayo", "괜찮아": "gwaincanha",
+                  "웨": "we", "외": "oe", "위": "wi", "얘": "yae", "예": "ye", "으": "eu", "앉아": "anja",
+                  "닭": "dalg", "값이": "gabsi", "흙": "heulg", "많이": "manhi", "싫어": "silheo",
+                  "했어": "haesseo", "학교": "haggyo", "국물": "gugmul"}
+        for word, rom in uroman.items():
+            self.assertEqual(letters_of(plan(word)), rom, word)
+
+    def test_korean_labels_follow_pronunciation(self):
+        # final ㅅ/ㅆ sound as t before a consonant, s when linked onto a silent ㅇ; final ㅎ is silent
+        self.assertEqual(labels(hangul_units("있다"))[1], ("ss", "T"))
+        self.assertEqual(labels(hangul_units("있어"))[1], ("ss", "S"))
+        self.assertIn(("h", None), labels(hangul_units("좋아")))
+        self.assertEqual(labels(hangul_units("닭")), [("d", "D"), ("a", "AA"), ("l", None), ("g", "K")])
 
     def test_mixed_script_word(self):
         self.assertEqual(letters_of(plan("OK네")), "okne")

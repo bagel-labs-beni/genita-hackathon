@@ -4,9 +4,8 @@ Meta open weights, CC-BY-NC 4.0). Runs on the voice GPU next to SeamlessM4T v2.
 The aligner takes romanized letters (a-z, '). Text -> letters is rule-based, no model:
   - Latin: lowercase, accents stripped; English letter groups (digraphs, silent final e) become ARPAbet
     labels, so the app's LipViseme(phoneme:) maps each one to a mouth shape.
-  - Hangul: each syllable is split into jamo (initial / medial / final) and each jamo is romanized
-    (Revised Romanization, final consonant linked to a following silent initial ㅇ). Each jamo gets its
-    ARPAbet label.
+  - Hangul: each syllable is split into jamo (initial / medial / final); letters are uroman's (what MMS_FA
+    was trained on), labels follow pronunciation (coda vs. linked onto a following silent ㅇ).
   - Anything else (digits, other scripts, punctuation) is skipped; a word with no letters gets no timing.
 
 Output (`timing`), all ms from the start of this request's audio:
@@ -95,31 +94,33 @@ def latin_units(run: str) -> list[Unit]:
 
 
 # ---------------- Hangul (jamo -> romanized letters + ARPAbet) ----------------
-# initial consonants (19): romanization, label (ㅇ silent)
-_INITIAL = [("g", "G"), ("kk", "K"), ("n", "N"), ("d", "D"), ("tt", "T"), ("r", "L"), ("m", "M"), ("b", "B"),
-            ("pp", "P"), ("s", "S"), ("ss", "S"), ("", None), ("j", "JH"), ("jj", "CH"), ("ch", "CH"),
+# Letters follow uroman (what MMS_FA was trained on: a fixed letter string per jamo, spelling-based);
+# labels follow pronunciation (final consonants as codas, linked onto a following silent ㅇ as onsets).
+# initial consonants (19): (letters, label); ㅇ is silent
+_INITIAL = [("g", "G"), ("gg", "K"), ("n", "N"), ("d", "D"), ("dd", "T"), ("r", "L"), ("m", "M"), ("b", "B"),
+            ("bb", "P"), ("s", "S"), ("ss", "S"), ("", None), ("j", "JH"), ("jj", "CH"), ("c", "CH"),
             ("k", "K"), ("t", "T"), ("p", "P"), ("h", "HH")]
-# medial vowels (21): list of (letters, label)
+# medial vowels (21): (letters, label) parts
 _MEDIAL = [
     [("a", "AA")], [("ae", "EH")], [("y", "Y"), ("a", "AA")], [("y", "Y"), ("ae", "EH")],
     [("eo", "AO")], [("e", "EH")], [("y", "Y"), ("eo", "AO")], [("y", "Y"), ("e", "EH")],
-    [("o", "OW")], [("w", "W"), ("a", "AA")], [("w", "W"), ("ae", "EH")], [("o", "W"), ("e", "EH")],
-    [("y", "Y"), ("o", "OW")], [("u", "UW")], [("w", "W"), ("o", "AO")], [("w", "W"), ("e", "EH")],
-    [("w", "W"), ("i", "IY")], [("y", "Y"), ("u", "UW")], [("eu", "IH")], [("ui", "IY")], [("i", "IY")],
+    [("o", "OW")], [("w", "W"), ("a", "AA")], [("w", "W"), ("ai", "EH")], [("o", "W"), ("e", "EH")],
+    [("y", "Y"), ("o", "OW")], [("u", "UW")], [("w", "W"), ("eo", "AO")], [("w", "W"), ("e", "EH")],
+    [("w", "W"), ("i", "IY")], [("y", "Y"), ("u", "UW")], [("eu", "IH")], [("yi", "IY")], [("i", "IY")],
 ]
-# final consonants (28, 0 = none): (letters at the end of a syllable, label)
-_FINAL = [None, ("k", "K"), ("k", "K"), ("k", "K"), ("n", "N"), ("n", "N"), ("n", "N"), ("t", "T"), ("l", "L"),
-          ("k", "K"), ("m", "M"), ("l", "L"), ("l", "L"), ("l", "L"), ("p", "P"), ("l", "L"), ("m", "M"),
-          ("p", "P"), ("p", "P"), ("t", "T"), ("t", "T"), ("ng", "NG"), ("t", "T"), ("t", "T"), ("k", "K"),
-          ("t", "T"), ("p", "P"), ("", None)]
-# final linked onto a following silent ㅇ: (stays as final, moves to the next syllable's onset)
-_LINK = {1: (None, ("g", "G")), 2: (None, ("kk", "K")), 3: (("k", "K"), ("s", "S")), 4: (None, ("n", "N")),
-         5: (("n", "N"), ("j", "JH")), 6: (None, ("n", "N")), 7: (None, ("d", "D")), 8: (None, ("r", "L")),
-         9: (("l", "L"), ("g", "G")), 10: (("l", "L"), ("m", "M")), 11: (("l", "L"), ("b", "B")),
-         12: (("l", "L"), ("s", "S")), 13: (("l", "L"), ("t", "T")), 14: (("l", "L"), ("p", "P")),
-         15: (None, ("r", "L")), 16: (None, ("m", "M")), 17: (None, ("b", "B")), 18: (("p", "P"), ("s", "S")),
-         19: (None, ("s", "S")), 20: (None, ("ss", "S")), 22: (None, ("j", "JH")), 23: (None, ("ch", "CH")),
-         24: (None, ("k", "K")), 25: (None, ("t", "T")), 26: (None, ("p", "P")), 27: (None, None)}
+# final consonants (28, 0 = none): parts (letters, label as a coda, label when linked onto a silent ㅇ).
+# A cluster keeps one consonant as the coda (the other part is silent) and links its second part.
+_FINAL = [
+    None,
+    [("g", "K", "G")], [("gg", "K", "K")], [("g", "K", "K"), ("s", None, "S")], [("n", "N", "N")],
+    [("n", "N", "N"), ("j", None, "JH")], [("n", "N", "N"), ("h", None, None)], [("d", "T", "D")],
+    [("l", "L", "L")], [("l", None, "L"), ("g", "K", "G")], [("l", None, "L"), ("m", "M", "M")],
+    [("l", "L", "L"), ("b", None, "B")], [("l", "L", "L"), ("s", None, "S")], [("l", "L", "L"), ("t", None, "T")],
+    [("l", None, "L"), ("p", "P", "P")], [("l", "L", "L"), ("h", None, None)], [("m", "M", "M")],
+    [("b", "P", "B")], [("b", "P", "P"), ("s", None, "S")], [("s", "T", "S")], [("ss", "T", "S")],
+    [("ng", "NG", "NG")], [("j", "T", "JH")], [("c", "T", "CH")], [("k", "K", "K")], [("t", "T", "T")],
+    [("p", "P", "P")], [("h", None, None)],
+]
 
 
 def _syllable(ch: str) -> tuple[int, int, int] | None:
@@ -130,29 +131,20 @@ def _syllable(ch: str) -> tuple[int, int, int] | None:
 
 
 def hangul_units(run: str) -> list[Unit]:
-    """One run of Hangul syllables -> jamo units (romanized letters + ARPAbet)."""
+    """One run of Hangul syllables -> jamo units (uroman letters + ARPAbet)."""
     sy = [_syllable(c) for c in run]
     out: list[Unit] = []
-    carry: tuple[str, str] | None = None  # final consonant moved onto this syllable's silent ㅇ
     for k, s in enumerate(sy):
         if s is None:
             continue
         ini, med, fin = s
-        if carry and ini == 11:
-            out.append(Unit(*carry))
-        elif ini != 11:
+        if ini != 11:
             out.append(Unit(*_INITIAL[ini]))
-        carry = None
         out += [Unit(letters, label) for letters, label in _MEDIAL[med]]
         if fin:
             nxt = sy[k + 1] if k + 1 < len(sy) else None
-            if nxt is not None and nxt[0] == 11 and fin in _LINK and fin != 21:
-                stay, move = _LINK[fin]
-                if stay:
-                    out.append(Unit(*stay))
-                carry = move
-            elif _FINAL[fin][0]:
-                out.append(Unit(*_FINAL[fin]))
+            linked = nxt is not None and nxt[0] == 11
+            out += [Unit(letters, onset if linked else coda) for letters, coda, onset in _FINAL[fin]]
     return out
 
 

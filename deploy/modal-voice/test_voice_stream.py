@@ -16,8 +16,10 @@ class FakeAligner:
     def __init__(self, result=None, delay=0.0, error=None):
         self.result, self.delay, self.error = result, delay, error
         self.called_at = None
+        self.calls = 0
 
     def align(self, wav16, text):
+        self.calls += 1
         self.called_at = time.perf_counter()
         time.sleep(self.delay)
         if self.error:
@@ -34,7 +36,15 @@ def run(aligner, wait_ms=200):
     return asyncio.run(go())
 
 
+def drain():
+    """The aligner thread is shared by the module: let a previous test's slow job finish."""
+    t0 = time.time()
+    while va.align_queued() and time.time() - t0 < 5:
+        time.sleep(0.01)
+
+
 class TimingLine(unittest.TestCase):
+    setUp = staticmethod(drain)
     def test_audio_lines_are_the_same_as_without_alignment(self):
         plain = [json.loads(x) for x in va.chunk_lines(PCM, None, 80, 2000, 72)]
         got = [j for _, j in run(FakeAligner(TIMING))]
@@ -69,6 +79,34 @@ class TimingLine(unittest.TestCase):
         self.assertFalse(any("timing" in j for _, j in got))
         self.assertLess(got[-1][0] - t0, 0.4)
         self.assertNotIn("align_ms", got[-1][1])
+
+
+class Overload(unittest.TestCase):
+    """Codex P1 (11/3): late alignments must not pile up and starve synthesis of threads."""
+    setUp = staticmethod(drain)
+
+    def streams(self, aligner, n, wait_ms=50):
+        async def one():
+            return [json.loads(x) async for x in va.aligned_lines(PCM, None, 80, 2000, 72, [0.0] * 16000, "Hey", aligner, wait_ms=wait_ms)]
+
+        async def go():
+            res = await asyncio.gather(*[one() for _ in range(n)])
+            t0 = time.perf_counter()
+            await asyncio.to_thread(lambda: None)  # what eng.render needs: a default-executor thread
+            return res, (time.perf_counter() - t0) * 1000
+        return asyncio.run(go())
+
+    def test_a_busy_aligner_skips_instead_of_queueing(self):
+        a = FakeAligner(TIMING, delay=0.3)
+        res, _ = self.streams(a, 8)
+        self.assertLessEqual(a.calls, va.ALIGN_MAX_QUEUED)
+        self.assertTrue(all(r[-1]["done"] for r in res))
+        self.assertTrue(all(sum("audio_base64" in j for j in r) == 3 for r in res))
+
+    def test_alignment_never_holds_the_synthesis_threads(self):
+        a = FakeAligner(TIMING, delay=0.3)
+        _, ms = self.streams(a, 40)
+        self.assertLess(ms, 100)
 
 
 if __name__ == "__main__":
