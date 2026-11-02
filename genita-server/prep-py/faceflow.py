@@ -55,7 +55,7 @@ BASE_MAP = {
     'lipMask': True,
     # cheeks / nasolabial follow the mouth corners: corner displacement d = -GN(corner); V = sum over sides of
     # w_cheek * (spread * d[t - delayFrames] + (0, -lift * (EH + EI amounts))) - w_corner * pull * d; out(p) = frame(p - V(p))
-    'cheek': {'spread': 0.4, 'pull': 1.0, 'cheekW': 0.85, 'nasoW': 0.28, 'lift': 2.0, 'delayFrames': 1,
+    'cheek': {'spread': 0.4, 'pull': 1.0, 'cheek': 0.85, 'naso': 0.28, 'lift': 2.0, 'delayFrames': 1,
               'roundNoInward': ['O', 'OH', 'U', 'WQ']},
     'consonantOverride': {'U': 0.55, 'WQ': 0.55},
     'brow': {'px': 2.5}, 'nod': {'px': 4.0}, 'stress': {'topShare': 0.3, 'minGapMs': 450, 'leadMs': 80},
@@ -342,6 +342,21 @@ def main():
             if nm in ALN:
                 my = gy_ + wt * ((anc + (gy_ - anc) / float(sy)) - gy_)
                 ALN[nm] = cv2.remap(ALN[nm], gx_, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+    # 2b) 3D: lift pitch-black mouth interiors to a dark warm red-brown (profiles prep.interior = B,G,R; classical)
+    if prep.get('interior'):
+        tgt = np.array([float(v) for v in prep['interior']], np.float32)
+        mw_ = (mouth[2] - mouth[0]) * W; fwp_ = (face[2] - face[0]) * W
+        lim_ = np.zeros((H, W), np.float32)
+        r_ = max(mw_, 0.2 * fwp_)
+        cv2.ellipse(lim_, (int((mouth[0] + mouth[2]) / 2 * W), int((mouth[1] + mouth[3]) / 2 * H + 0.3 * mw_)), (int(r_), int(0.9 * r_)), 0, 0, 360, 1.0, -1)
+        lim_ = cv2.GaussianBlur(lim_, (0, 0), 0.05 * fwp_)
+        for nm in list(ALN):
+            al = ALN[nm]
+            L = cv2.cvtColor(np.clip(al, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            wv = np.clip((tgt.mean() * 1.4 - L) / (tgt.mean() * 1.4), 0, 1) * 0.85 * lim_
+            wv = cv2.GaussianBlur(wv, (0, 0), 1.2)[..., None]
+            ALN[nm] = al * (1 - wv) + np.maximum(al, tgt) * wv
 
     # 3) blend mask (= lock mask). character2d: only where a key's drawing differs, after fitting each drawn mouth
     #    onto a clean plate (the closed line painted out); others: lower-face ellipse x lock ramp.

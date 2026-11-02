@@ -105,9 +105,26 @@
     0.8
    ],
    "brow": 1.5,
-   "nosePx": 2.0,
+   "nosePx": 3.0,
    "_units": "px at 540 px frame width; cheek = [down, out] at full opening; brow lift on stressed onsets (op > .6 and rise > .25 within 3 frames, ≥0.6 s apart, profile [.5,1,1,.7,.4,.15]); nose lifts with jaw + idle sniff [.6,1,.4,.8,.3] every 2.2–4 s"
-  }
+  },
+  "cheek": {
+   "spread": 3.0,
+   "pull": 0.0,
+   "cheek": 1.2,
+   "naso": 0.8,
+   "lift": 4.0,
+   "liftAll": 1,
+   "geometry": [
+    0.07,
+    0.06,
+    0.07,
+    0.06
+   ]
+  },
+  "lipmask": 6,
+  "rampIn": 0.55,
+  "whiskers": 0.8
  },
  "cat_override": {
   "_when": "species is a cat (or the J3 prompt is filtered): a single open key, small openings drawn by flow only",
@@ -211,7 +228,13 @@
    "squash": {
     "AH": 1.15,
     "OH": 0.65
-   }
+   },
+   "interior": [
+    30,
+    38,
+    80
+   ],
+   "_interior": "BGR floor for pitch-black mouth interiors: dark pixels in a mouth ellipse blended toward max(px, colour), weight (1.4*mean(colour) - L)/(1.4*mean) * 0.85"
   },
   "swayInterp": "cubic",
   "prompts": {
@@ -230,7 +253,23 @@
     1.0
    ],
    "brow": 1.0
-  }
+  },
+  "cheek": {
+   "spread": 0.8,
+   "pull": 0.3,
+   "cheek": 1.2,
+   "naso": 0.35,
+   "lift": 2.0,
+   "liftAll": 0,
+   "geometry": [
+    0.18,
+    0.15,
+    0.12,
+    0.1
+   ]
+  },
+  "lipmask": 6,
+  "rampIn": 0.55
  },
  "character2d": {
   "keys": [
@@ -312,14 +351,17 @@
    "_neutral": "neutral = the scene image (closed mouth line); SM/WD/OO/EE are edits of it"
   },
   "lookaheadMs": 80,
-  "_sizes": "small SM / medium WD (0.62x, loud A >= 2 frames) / wide EE (0.87x, loud EI); base width = max(mouth box, 0.08 x head)"
+  "_sizes": "small SM / medium WD (0.62x, loud A >= 2 frames) / wide EE (0.87x, loud EI); base width = max(mouth box, 0.08 x head)",
+  "secondary": {
+   "brow": 1.0
+  }
  },
  "_fields": {
   "neutralFlow": "when the snap shows neutral, scale its flow warp (0 = untouched neutral texture)",
   "shownFloor": "min geometry amount of the shown key (a shown key is never pulled back toward neutral below this)",
   "snapMin": "amount at which a key colour is shown (snap dissolve minAmount)"
  },
- "_status": "v16 04:00 KST — all kinds re-tuned toward 9/10. Critic: anime 8.5, chibi 7.5, dog 7, pixar 7, plush 6.5, clay 6, rabbit 6, cat 5.5",
+ "_status": "v17 04:2x KST — s40 cheek coupling per kind, 3D interior lift",
  "toy_override": {
   "_when": "plush / stuffed toy / figurine without an anatomical jaw (classify character_style == 'toy')",
   "keys": [
@@ -360,6 +402,21 @@
   },
   "prompts": {
    "AH": "Edit this exact photo of a plush toy. Keep everything identical: same toy, fabric, fur, nose, embroidered details, eyes, pose, framing, lighting and background. Only change: the embroidered mouth line opens slightly into a small felt fabric mouth opening with dark brown felt inside and stitched edges, no lips, no tongue, in the same plush toy style."
-  }
+  },
+  "cheek": {
+   "spread": 0.8,
+   "pull": 0.0,
+   "cheek": 1.0,
+   "naso": 0.3,
+   "lift": 1.0,
+   "liftAll": 1,
+   "geometry": [
+    0.08,
+    0.08,
+    0.08,
+    0.07
+   ]
+  },
+  "lipmask": 6
  }
 }
