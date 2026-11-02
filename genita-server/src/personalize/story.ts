@@ -414,6 +414,10 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
       .map((t) => ({ group: (groups.includes(t?.group as string) ? t.group : "style") as StoryTag["group"], text: clean(t?.text, 40), dislike: t?.dislike === true }))
       .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && lineEvidence(t.text, card, id) !== null && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
       .slice(0, 14);
+    // a shopping budget the user gave is always on the card (Spark may leave it out)
+    const budget = card.sections.likes.find((x) => x.label !== "suggested" && /^\s*budget:/i.test(x.text));
+    const bt = budget ? budgetTag(budget.text) : "";
+    if (bt && !sc.tags.some((t) => t.text.toLowerCase() === bt.toLowerCase())) sc.tags.push({ group: "style", text: bt, dislike: false });
     if (!sc.tags.length) return null;
     if (!card.sections.likes.some((x) => x.label !== "suggested")) sc.note = NO_FAVORITES;
   }

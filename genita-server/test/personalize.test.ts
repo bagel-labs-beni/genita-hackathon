@@ -465,3 +465,15 @@ test("budget: a taste tag on HISY and a product reason chip only when every pric
   const { cards } = toStory(null, rawCard({ likes: [f("Budget: usually under $100 for clothes."), f("Style: Clean, minimal clothes.")] }));
   assert.ok(cards.find((c) => c.id === "taste")!.tags!.some((t) => t.text === "Under $100"));
 });
+
+test("a shopping price range said in a call reaches Spark", () => {
+  assert.ok(mightBeCorrection("I usually spend under 100 dollars on clothes."));
+  assert.ok(mightBeCorrection("My budget for a jacket is like 150."));
+  assert.ok(!mightBeCorrection("How much does it cost?"));
+});
+
+test("budget tag is on the Spark-written taste card too", () => {
+  const card = rawCard({ likes: [f("Style: Clean, minimal clothes."), f("Budget: usually under $100 for clothes.")] });
+  const { cards } = toStory({ cards: [sc("taste", { headline: "Clean and simple.", tags: [tag("style", "Clean, minimal")] })], topics: [] }, card);
+  assert.deepEqual(cards.find((c) => c.id === "taste")!.tags!.map((t) => t.text), ["Clean, minimal", "Under $100"]);
+});
