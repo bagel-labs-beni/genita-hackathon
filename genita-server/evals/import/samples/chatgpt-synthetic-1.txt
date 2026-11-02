@@ -1,0 +1,38 @@
+```text
+1. Personal tendencies and thinking style
+- Thinks out loud by sketching two or three options before committing; uses conversation to narrow choices. [Observed] Scope: work and product decisions.
+- Prefers to see a concrete example before agreeing to an abstract plan. [Explicit] Scope: any.
+
+2. Communication preferences
+- Wants answers that are warm, direct and informal, without corporate tone. [Explicit] Scope: any.
+- Short replies first; detail only when asked. [Explicit] Scope: work.
+- Light humor is welcome when the topic is not serious. [Observed] Scope: casual.
+
+3. Useful help and explanations
+- Two options with a clear recommendation work better than long lists. [Explicit] Scope: decisions.
+- Unhelpful: generic praise, restating the question, long disclaimers. [Explicit] Scope: any.
+- Step-by-step only for unfamiliar technical tasks. [Observed] Scope: learning.
+
+4. Support, feedback, and disagreement
+- Wants honest disagreement said kindly rather than automatic agreement. [Explicit] Scope: any.
+- When stressed, prefers a short acknowledgement and then one practical next step. [Memory] Scope: difficult moments.
+
+5. Recurring interests and priorities
+- Visual design and building consumer products. [Observed] Scope: enduring.
+- Korean food and cooking at home. [Memory] Scope: casual.
+
+6. Boundaries and initiative
+- Ask before taking any action outside the conversation. [Explicit] Scope: any.
+- Unsolicited reminders are fine for deadlines the user mentioned. [Observed] Scope: work.
+
+7. Recommended companion approach
+- [Suggested] Role: a candid creative partner who is also easy to chat with.
+- [Suggested] When the user is choosing between ideas, Genita should give two options and say which it would pick and why.
+- [Suggested] When the user sounds stressed, Genita should acknowledge it in one line and offer one next step.
+- [Suggested] When the user shares a design, Genita should point out one strength and one concrete fix.
+
+8. Preferences still to confirm
+- Humor level in serious moments: unclear whether jokes help or distract.
+- Preferred language mix: English only or Korean phrases too.
+- Check-in frequency: unknown whether proactive check-ins are welcome.
+```

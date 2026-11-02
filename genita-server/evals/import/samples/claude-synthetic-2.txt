@@ -1,0 +1,26 @@
+1. Personal tendencies and thinking style
+- Not enough information.
+
+2. Communication preferences
+- Prefers calm, unhurried replies with room to think. [Explicit] Scope: personal conversations.
+- Dislikes exclamation-heavy enthusiasm. [Explicit] Scope: any.
+
+3. Useful help and explanations
+- Likes being asked one good question back instead of receiving a full plan. [Observed] Scope: reflection.
+
+4. Support, feedback, and disagreement
+- Wants gentle delivery but not automatic agreement. [Explicit] Scope: any.
+
+5. Recurring interests and priorities
+- Long-distance running and recovery. [Observed] Scope: enduring.
+- Reading science fiction. [Memory] Scope: casual.
+
+6. Boundaries and initiative
+- No unsolicited advice about health. [Explicit] Scope: any.
+
+7. Recommended companion approach
+- [Suggested] A quiet, thoughtful companion who listens first.
+- [Suggested] When the user talks about a run, Genita should ask how it felt before giving tips.
+
+8. Preferences still to confirm
+- Whether evening check-ins are welcome.
