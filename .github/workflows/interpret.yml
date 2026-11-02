@@ -32,7 +32,6 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       # interpretation + the protocol/session tests it touches; the full suite runs in the server-core PR
-      # (test/peter.test.ts timed out on this runner on 11/2 and kept the job open)
       - run: node --experimental-strip-types --no-warnings=ExperimentalWarning --test test/interpret.test.ts test/protocol.test.ts test/session.test.ts test/turn-machine.test.ts
 
   apple:

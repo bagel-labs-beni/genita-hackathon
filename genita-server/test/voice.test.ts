@@ -17,16 +17,14 @@ test("config: no GENITA_VOICE_URL → no voice, device mode (judges run with onl
   assert.equal(c.serverTts, false);
 });
 
-test("config: GENITA_VOICE_URL + token → server voice on, no ElevenLabs key needed or read", () => {
+test("config: GENITA_VOICE_URL + token → server voice on, Meta voice enabled", () => {
   const c = loadConfig({
     MODEL_API_KEY: "k",
     GENITA_VOICE_URL: "https://voice.example/",
     GENITA_VOICE_TOKEN: "t",
     GENITA_VOICE_SPEAKERS: "human:12, animal:7,character:300,bogus:1",
-    ELEVENLABS_API_KEY: "should-not-be-read",
   });
   assert.equal(c.serverTts, true);
-  assert.equal(c.elevenKey, null);
   assert.equal(c.voice?.url, "https://voice.example");
   assert.deepEqual(c.voice?.speakers, { human: 12, animal: 7, character: 0 }, "out-of-range id keeps the default");
   assert.equal(c.voice?.model, "seamless");
@@ -37,7 +35,7 @@ test("config: GENITA_VOICE_URL without a token throws (misconfigured deploy fail
   assert.throws(() => loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v" }), /GENITA_VOICE_TOKEN/);
 });
 
-test("server deps: with a voice service, the TTS dep calls it (not ElevenLabs) and exposes prefetch", async () => {
+test("server deps: with a voice service, the TTS dep calls it and exposes prefetch", async () => {
   const c = loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "http://127.0.0.1:9", GENITA_VOICE_TOKEN: "t", GENITA_VOICE_TIMEOUT_MS: "300" });
   const deps = defaultDeps(c, () => {});
   assert.equal(typeof deps.voicePrefetch, "function");
@@ -194,7 +192,7 @@ test("client: emoji-only text makes no request", async () => {
 test("speaker: seamless:<n> or <n> picks that speaker; anything else → the kind's default", () => {
   assert.equal(resolveSpeaker("seamless:42", "human", cfg), 42);
   assert.equal(resolveSpeaker("17", "human", cfg), 17);
-  assert.equal(resolveSpeaker("7PbNGDB5sJCFnOZuMPNL", "animal", cfg), 5);
+  assert.equal(resolveSpeaker("legacy-voice", "animal", cfg), 5);
   assert.equal(resolveSpeaker(undefined, "character", cfg), 9);
   assert.equal(resolveSpeaker("seamless:250", "human", cfg), 3);
 });
