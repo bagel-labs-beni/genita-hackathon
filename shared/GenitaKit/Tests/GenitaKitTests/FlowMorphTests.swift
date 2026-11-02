@@ -187,3 +187,28 @@ struct FlowMorphResetTests {
         #expect(a.allSatisfy { $0 < 1e-6 })
     }
 }
+
+struct FlowMorphFixtureTests {
+    /// A real prep export (animal, open-jaw profile): loads with flows and renders at speed.
+    @Test func realExportLoadsAndRendersFast() throws {
+        let dir = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        let set = try FaceSet(directory: dir)
+        #expect(set.flow != nil)
+        #expect(set.flow?.map.drive == "open")
+        let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 2)
+        let tl = LipTimeline()
+        tl.appendPCM(lipTestPCM(amplitude: 0.4, ms: 3000), offsetMs: 0)
+        tl.appendText("a moment of the warm afternoon light")
+        tl.finishAudio()
+        _ = r.render(at: 0, lip: .rest)
+        let n = 60
+        let start = Date()
+        for i in 0..<n {
+            let t = Double(i) / 25
+            #expect(r.render(at: t, lip: tl.sample(atMs: t * 1000 + r.lipLookaheadMs)) != nil)
+        }
+        let fps = Double(n) / Date().timeIntervalSince(start)
+        print(String(format: "FLOW_FPS=%.1f (flow morph + alive base, 540x960, %d frames)", fps, n))
+        #expect(fps > 1)
+    }
+}
