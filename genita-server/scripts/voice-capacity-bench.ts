@@ -11,6 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
+import { UpstreamError } from "../src/meta/http.ts";
 import { createSeamless, SEAMLESS_MODEL } from "../src/tts/seamless.ts";
 
 type Lang = "eng" | "kor" | "mix";
@@ -33,7 +34,19 @@ export type BenchOptions = {
 };
 
 export type BenchQuantiles = { p50: number | null; p90: number | null; max: number | null };
-export type BenchRow = { calls: number; firstSound: BenchQuantiles; rtfP50: number | null; errors: number; timeouts: number; replies: number };
+export type BenchRow = {
+  calls: number;
+  firstSound: BenchQuantiles;
+  /** Wall-clock synthesis time divided by output-audio duration. Lower is faster than real time. */
+  rtfP50: number | null;
+  errors: number;
+  noAudio: number;
+  timeouts: number;
+  /** First-sound samples observed (one per reply). */
+  replies: number;
+  expectedReplies: number;
+  status: "complete" | "incomplete";
+};
 export type BenchResult = { rows: BenchRow[]; recommendedCalls: number | null; thresholdMs: number };
 
 const ENGLISH_REPLIES = [
@@ -138,6 +151,7 @@ export async function runVoiceCapacityBench(options: BenchOptions): Promise<Benc
       const firstSounds: number[] = [];
       const rtfs: number[] = [];
       let errors = 0;
+      let noAudio = 0;
       let timeouts = 0;
       const gapMs = options.gapMs ?? 5_000;
       const jitterMs = options.jitterMs ?? 500;
@@ -166,7 +180,7 @@ export async function runVoiceCapacityBench(options: BenchOptions): Promise<Benc
                 lang: lang === "kor" ? "ko" : "en",
                 signal: controller.signal,
               })) {
-                if (firstChunkAt === null) {
+                if (chunk.audio.length && firstChunkAt === null) {
                   firstChunkAt = performance.now();
                   if (index === 0) firstSound = firstChunkAt - requestedAt;
                   // Session behavior: request exactly one sentence ahead once the
@@ -175,10 +189,17 @@ export async function runVoiceCapacityBench(options: BenchOptions): Promise<Benc
                 }
                 audioBytes += chunk.audio.length;
               }
+              if (audioBytes === 0) {
+                // A {done:true} response without PCM is not a reply. Count it
+                // explicitly so a quiet-but-broken GPU cannot look healthy.
+                errors++;
+                noAudio++;
+                return;
+              }
               if (firstChunkAt !== null) {
                 const wallMs = performance.now() - requestedAt;
                 const audioMs = (audioBytes / 2 / 24_000) * 1_000;
-                if (wallMs > 0 && audioMs > 0) rtfs.push(audioMs / wallMs);
+                if (wallMs > 0 && audioMs > 0) rtfs.push(wallMs / audioMs);
               }
             } catch (error) {
               errors++;
@@ -193,16 +214,45 @@ export async function runVoiceCapacityBench(options: BenchOptions): Promise<Benc
       };
 
       await Promise.all(Array.from({ length: concurrency }, (_, call) => runCall(call)));
-      rows.push({ calls: concurrency, firstSound: quantiles(firstSounds), rtfP50: median(rtfs), errors, timeouts, replies: firstSounds.length });
+      const expectedReplies = concurrency * replies;
+      rows.push({
+        calls: concurrency,
+        firstSound: quantiles(firstSounds),
+        rtfP50: median(rtfs),
+        errors,
+        noAudio,
+        timeouts,
+        replies: firstSounds.length,
+        expectedReplies,
+        status: firstSounds.length === expectedReplies ? "complete" : "incomplete",
+      });
     }
-    const recommended = rows.filter((row) => row.errors === 0 && row.firstSound.p90 !== null && row.firstSound.p90 <= thresholdMs).at(-1)?.calls ?? null;
+    const passing = rows.filter((row) => row.status === "complete" && row.errors === 0 && row.firstSound.p90 !== null && row.firstSound.p90 <= thresholdMs);
+    const recommended = passing.length ? Math.max(...passing.map((row) => row.calls)) : null;
     return { rows, recommendedCalls: recommended, thresholdMs };
   } finally {
     clearTimeout(hardStop);
   }
 }
 
-type CliOptions = Omit<BenchOptions, "voice"> & { json: boolean };
+type SingleGpuAcknowledgement = "assume-single-gpu" | "max-containers=1";
+type CliOptions = Omit<BenchOptions, "voice"> & { json: boolean; singleGpuAcknowledgement: SingleGpuAcknowledgement };
+
+class BenchConfigError extends Error {}
+
+export function validateVoiceToken(token: string | undefined): void {
+  if (!token || !/^[\x21-\x7e]+$/.test(token)) throw new BenchConfigError("GENITA_VOICE_TOKEN has invalid characters");
+}
+
+export function benchErrorReport(error: unknown): string {
+  if (error instanceof BenchConfigError) return `bad_config: ${error.message}`;
+  if (error instanceof UpstreamError) {
+    const code = error.status === null ? (isTimeout(error) ? "timeout" : "network") : `http_${error.status}`;
+    return JSON.stringify({ code, status: error.status });
+  }
+  if (isTimeout(error)) return JSON.stringify({ code: "timeout", status: null });
+  return JSON.stringify({ code: "bad_config", status: null });
+}
 
 function numberArg(args: string[], name: string, fallback: number): number {
   const raw = args.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -219,6 +269,10 @@ export function parseVoiceBenchArgs(args: string[]): CliOptions {
   if (!(["eng", "kor", "mix"] as string[]).includes(lang)) throw new Error("--lang must be eng, kor, or mix");
   const maxMinutes = numberArg(args, "max-minutes", 10);
   if (maxMinutes > 10) throw new Error("--max-minutes cannot exceed 10");
+  const assumedSingleGpu = args.includes("--assume-single-gpu");
+  const maxContainers = args.find((arg) => arg.startsWith("--max-containers="))?.slice("--max-containers=".length);
+  if (!assumedSingleGpu && maxContainers !== "1") throw new BenchConfigError("pass --assume-single-gpu or --max-containers=1 to acknowledge single-GPU isolation");
+  if (maxContainers !== undefined && maxContainers !== "1") throw new BenchConfigError("--max-containers must be 1 for this benchmark");
   return {
     calls,
     replies: numberArg(args, "replies", 6),
@@ -229,18 +283,21 @@ export function parseVoiceBenchArgs(args: string[]): CliOptions {
     speaker: numberArg(args, "speaker", NaN),
     lang,
     json: args.includes("--json"),
+    singleGpuAcknowledgement: maxContainers === "1" ? "max-containers=1" : "assume-single-gpu",
   };
 }
 
-function printResult(result: BenchResult, json: boolean): void {
+function printResult(result: BenchResult, json: boolean, singleGpuAcknowledgement: SingleGpuAcknowledgement): void {
   if (json) {
-    console.log(JSON.stringify(result));
+    console.log(JSON.stringify({ ...result, singleGpuAcknowledgement }));
     return;
   }
+  console.log(`SINGLE-GPU ACKNOWLEDGEMENT: ${singleGpuAcknowledgement}.`);
+  console.log("WARNING: the service NDJSON done line has no container id/hostname. This result is valid only while Modal is scaled to exactly one container; scale.py warm sets min_containers=1, not max_containers.");
   for (const row of result.rows) {
     const f = row.firstSound;
     const rtf = row.rtfP50 === null ? "n/a" : row.rtfP50.toFixed(2);
-    console.log(`calls=${row.calls}: first-sound p50=${f.p50 ?? "n/a"}ms p90=${f.p90 ?? "n/a"}ms max=${f.max ?? "n/a"}ms; RTF p50=${rtf}; errors=${row.errors}; timeouts=${row.timeouts}`);
+    console.log(`calls=${row.calls}: first-sound p50=${f.p50 ?? "n/a"}ms p90=${f.p90 ?? "n/a"}ms max=${f.max ?? "n/a"}ms; rtfP50=${rtf}; samples=${row.replies}/${row.expectedReplies} ${row.status}; errors=${row.errors}; no_audio=${row.noAudio}; timeouts=${row.timeouts}`);
   }
   if (result.recommendedCalls === null) console.log(`recommended GENITA_VOICE_MAX_CALLS = none (even N=1 failed or missed ${result.thresholdMs}ms p90)`);
   else console.log(`recommended GENITA_VOICE_MAX_CALLS = ${result.recommendedCalls}`);
@@ -249,18 +306,19 @@ function printResult(result: BenchResult, json: boolean): void {
 async function main(): Promise<void> {
   const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
   if (existsSync(envFile)) process.loadEnvFile(envFile);
+  validateVoiceToken(process.env.GENITA_VOICE_TOKEN);
   if (!process.env.GENITA_VOICE_URL) throw new Error("GENITA_VOICE_URL is required; this bench only measures the voice GPU.");
   const config = loadConfig();
   if (!config.voice) throw new Error("GENITA_VOICE_URL and GENITA_VOICE_TOKEN are required for the voice bench.");
   const parsed = parseVoiceBenchArgs(process.argv.slice(2));
   const speaker = Number.isNaN(parsed.speaker) ? config.voice.speakers.human : parsed.speaker;
-  const { json, ...options } = parsed;
-  printResult(await runVoiceCapacityBench({ ...options, voice: config.voice, speaker }), json);
+  const { json, singleGpuAcknowledgement, ...options } = parsed;
+  printResult(await runVoiceCapacityBench({ ...options, voice: config.voice, speaker }), json, singleGpuAcknowledgement);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : "voice bench failed");
+    console.error(benchErrorReport(error));
     process.exitCode = 1;
   });
 }

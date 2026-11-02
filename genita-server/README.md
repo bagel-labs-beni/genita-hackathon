@@ -9,7 +9,7 @@ npm test            # unit tests (node:test, no network)
 npm run typecheck   # tsc --noEmit
 npm start           # ws://127.0.0.1:8787/v1/session
 npm run smoke -- --turns=20   # real vendors: end-of-speech → first say (device, default) or first audio (--tts=server) + barge-in timing (needs ffmpeg)
-npm run bench:voice           # live voice GPU capacity: copy the recommended GENITA_VOICE_MAX_CALLS to SSM after checking its p90 ≤3 s and zero errors
+npm run bench:voice -- --max-containers=1  # first configure Modal max_containers=1, then warm it (`cd ../deploy/modal-voice && python scale.py warm`; this only sets min_containers=1). The benchmark aborts without a single-GPU acknowledgement. Copy the recommendation only with p90 ≤3 s, zero errors, and complete samples.
 npm run check:meta  # one live call each: Spark JSON, SAM 3.1, files, Muse Image
 npm run db:migrate  # apply migrations to DATABASE_URL (`-- down [n|all]` rolls back)
 npm run watch-sim -- --qa            # watch together on the T5 clips: accuracy + question → first audio
