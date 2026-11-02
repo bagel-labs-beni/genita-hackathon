@@ -326,3 +326,64 @@ test("runner.forgetUser (account deleted): cancels, waits for the run, removes e
   await p;
   for (const k of ["neutral", ...FACE_KEYS]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} removed`);
 });
+
+test("runner.forgetUser blocks new runs and retries through cleanup and the account row-delete window", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-deleting-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf });
+  const runner = new PrepRunner({ metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media });
+  let entered!: () => void;
+  const deleting = new Promise<void>((r) => { entered = r; });
+  let release!: () => void;
+  const blocked = new Promise<void>((r) => { release = r; });
+  t.after(() => release());
+  t.mock.method(store, "deleteAssets", async () => { entered(); await blocked; });
+  const forgetting = runner.forgetUser("u1");
+  await deleting;
+  try {
+    await runner.run("u1");
+    await assert.rejects(runner.retry("u1"), /delet/i);
+    assert.equal(runner.isRunning("u1"), false);
+    assert.equal(calls.edits.length, 0);
+  } finally {
+    release();
+    await forgetting;
+  }
+  // The rows may still exist while another feature is being erased, including a failed delete.
+  await runner.run("u1");
+  await assert.rejects(runner.retry("u1"), /delet/i);
+  assert.equal(calls.edits.length, 0);
+  // Another DELETE /me must still be able to retry the purge.
+  await runner.forgetUser("u1");
+});
+
+test("runner.retry that was reading when deletion began cannot restart prep", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-retry-delete-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf });
+  const runner = new PrepRunner({ metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media });
+  let entered!: () => void;
+  const reading = new Promise<void>((r) => { entered = r; });
+  let release!: () => void;
+  const blocked = new Promise<void>((r) => { release = r; });
+  t.after(() => release());
+  const getCompanion = store.getCompanion.bind(store);
+  let first = true;
+  t.mock.method(store, "getCompanion", async () => {
+    if (first) { first = false; entered(); await blocked; }
+    return getCompanion("u1");
+  });
+  const retrying = runner.retry("u1");
+  await reading;
+  await runner.forgetUser("u1");
+  release();
+  await assert.rejects(retrying, /delet/i);
+  assert.equal(calls.edits.length, 0);
+});

@@ -41,7 +41,7 @@ struct MacConversationView: View {
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
-                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).opacity(sheetFull || linkOpened != nil ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil).accessibilityIdentifier("macOpenMenu")
+                    .buttonStyle(.plain).position(x: 47.5, y: 86.5).opacity(sheetFull || linkOpened != nil || menuOpen ? 0 : 1).allowsHitTesting(!sheetFull && linkOpened == nil && !menuOpen).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
@@ -56,7 +56,9 @@ struct MacConversationView: View {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
                                 .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
-                            excluded("glass-more-icon", "More unavailable in demo")
+                            // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
+                            Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
@@ -125,7 +127,7 @@ struct MacConversationView: View {
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
-        .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
+        .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
@@ -159,11 +161,13 @@ struct MacConversationView: View {
     /// r03 rail rule on the Mac: searching (198) and peek (148) lift the self view and controls above the sheet.
     private var railShift: CGFloat { [.searching, .peek].contains(call.finds.state) && linkOpened == nil ? call.finds.state.macHeight - 26 : 0 }
     private var cueText: String? {
-        if linkOpened != nil { return nil }
+        // MC-M (90:2): the face beside the open menu carries nothing
+        if linkOpened != nil || menuOpen { return nil }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
+        // the server's spoken line for the card (one line in the pill); otherwise the call cue, as on the iPhone —
+        // no app copy (the searching "On it." is the server's spoken reply, heard as "{name} is talking")
         if sheetFull, let say = call.finds.current?.card?.say, !say.isEmpty { return say }
-        if call.finds.state == .searching { return "On it…" }
         return MacCallCue.text(call.cue, name: macCall.companionName ?? call.companionName)
     }
     /// Face tap: folds an open sheet (r03), otherwise stops the companion mid-sentence.
@@ -179,9 +183,6 @@ struct MacConversationView: View {
         } else {
             resourceImage("selfPreview").resizable().frame(width: 113, height: 211).accessibilityLabel("Your camera is off")
         }
-    }
-    private func excluded(_ icon: String, _ label: String) -> some View {
-        Button {} label: { MacGlassControl(icon: icon, size: 46) }.buttonStyle(MacUnchangedControlStyle()).disabled(true).accessibilityLabel(label)
     }
     /// MC-M (Figma 90:2): Chat (dimmed, text chat is cut), Finds with its count, Setting, a rule, then Move to iPhone
     /// (dimmed while no iPhone is in front, as the Move to Mac row on the iPhone).
