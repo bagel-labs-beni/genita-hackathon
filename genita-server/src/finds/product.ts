@@ -160,6 +160,12 @@ export function writeUpPrompt(searchPrompt: string, opened: string[]): string {
   ].join("\n\n");
 }
 
+/** "Searched the web · a.com, b.com" on one line of the card (≤ 44 chars), else "… · a.com +1" (#214). */
+export function searchedLine(domains: string[]): string {
+  const all = `Searched the web · ${domains.join(", ")}`;
+  return all.length <= 44 || domains.length < 2 ? all : `Searched the web · ${domains[0]} +${domains.length - 1}`;
+}
+
 /** Card names stay short (r03 column is ~150 pt): cut at a word under 48 characters. */
 export function shortName(s: string): string {
   if (s.length <= 48) return s;
@@ -445,7 +451,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     sources: products.map((p) => ({ title: p.name, url: p.url, domain: p.domain })),
     how: [
       styleLine ? "Blue: your style, from your import. Grey: what you said." : "Grey: what you said. I don’t know your style yet.",
-      `Searched the web · ${domains.join(", ")}`,
+      searchedLine(domains),
       ...(one ? ["Only one product page opened, so there’s one here."] : []),
     ],
     products: products.map(({ _image, ...p }) => p),
