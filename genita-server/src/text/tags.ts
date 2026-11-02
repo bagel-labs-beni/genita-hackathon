@@ -2,7 +2,7 @@
  * Reply text carries two kinds of inline tags:
  *   <emotion>   — one per reply (or per sentence), chosen by Spark; drives the
  *                 face clip and the TTS tone. Never spoken, never shown.
- *   [audio tag] — ElevenLabs v3/v4 audio tags like [laughs], [whispers].
+ *   [audio tag] — bracketed delivery tags like [laughs], [whispers] (stripped for speech).
  *                 Sent to TTS, hidden from subtitles and lip timing.
  */
 const EMOTION_RE = /<\s*([A-Za-z][A-Za-z_-]{0,23})\s*>/g;
