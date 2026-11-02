@@ -256,4 +256,21 @@ final class GenitaUITests: XCTestCase {
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
+
+    /// #235 · A02-E: the failure card sits under the subtitle, fully inside the screen, and does not cover the headline.
+    func testA02ESignInFailedCardDoesNotCoverTheTitle() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_REVIEW_SIGNIN_FAILED": "1"]
+        app.launch()
+        let toast = app.descendants(matching: .any)["signInFailed"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 10))
+        // headline + subtitle end near canvas y 265 (design) -> the card must start below 250 pt on any phone
+        XCTAssertGreaterThanOrEqual(toast.frame.minY, 250, "the card starts under 'Built from your stories, rhythm and boundaries.'")
+        XCTAssertLessThanOrEqual(toast.frame.width, 342.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02E-toast"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
 }

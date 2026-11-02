@@ -63,10 +63,16 @@ struct ReferenceSignInView: View {
                     Image(systemName: "exclamationmark.circle").font(.system(size: 16, weight: .medium))
                     Text("Couldn’t reach Apple. Check your connection and try again.").font(TypeStyle.body(14, .medium))
                 }.foregroundStyle(.white).padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(Color.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 16).padding(.top, 72)
+                    // #235 · A02-E (Figma 3:2): an opaque card under the subtitle (canvas y 272 = 228 below the status bar), 342 wide
+                    .background(Color(white: 0.09), in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+                    .frame(maxWidth: 342).padding(.horizontal, 24).padding(.top, 228)
                     .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
+        #if DEBUG
+        .onAppear { if ProcessInfo.processInfo.environment["GENITA_REVIEW_SIGNIN_FAILED"] == "1" { signInFailed = true } }
+        #endif
         .sheet(isPresented: $emailSheet) { emailSheetContent }
         .onAppear {
             #if DEBUG
