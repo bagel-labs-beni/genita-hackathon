@@ -5,6 +5,7 @@
  * response.web_search_call.{in_progress,searching,completed}.
  */
 import { META_BASE, UpstreamError, metaHeaders, metaJson } from "./http.ts";
+import { getOps } from "../ops/limits.ts";
 import { SseParser } from "./sse.ts";
 
 export const SPARK_MODEL = "muse-spark-1.3";
@@ -62,6 +63,7 @@ export async function* sparkStream(
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout.signal]) : timeout.signal;
   const timer = setTimeout(() => timeout.abort(new Error("spark first-token timeout")), opts.firstEventTimeoutMs ?? 8000);
   try {
+    getOps().consumeMeta();
     const r = await fetch(META_BASE + "/responses", { method: "POST", headers: metaHeaders(key), body: JSON.stringify(body(req, true)), signal });
     if (!r.ok || !r.body) throw new UpstreamError("meta", r.status, await r.text().catch(() => ""));
     const parser = new SseParser();

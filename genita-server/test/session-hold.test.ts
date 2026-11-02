@@ -24,7 +24,7 @@ class FakeAsr extends EventEmitter {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const voice = { url: "https://v", token: "t", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 2000, model: "seamless" as const };
 
-function setup(device: boolean) {
+function setup(device: boolean, ttsFails = false) {
   const asr = new FakeAsr();
   const sent: { t: string; at: number }[] = [];
   const t0 = Date.now();
@@ -42,14 +42,15 @@ function setup(device: boolean) {
       yield { type: "done", responseId: null, text: "", status: "completed" };
     },
     async *tts(): AsyncGenerator<TtsChunk> {
+      if (ttsFails) throw new Error("voice 503");
       yield { audio: Buffer.alloc(960), alignment: null, model: "seamless-m4t-v2" };
     },
   };
   return { asr, sent, session: new Session("h1", sink, deps) };
 }
 
-async function turnThenResume(device: boolean, resumeMs: number) {
-  const { asr, sent, session } = setup(device);
+async function turnThenResume(device: boolean, resumeMs: number, ttsFails = false) {
+  const { asr, sent, session } = setup(device, ttsFails);
   await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, bargeIn: { minMs: 120 }, tts: device ? "device" : "server" }));
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
@@ -77,3 +78,18 @@ for (const device of [false, true]) {
     assert.equal(sent.filter((m) => m.t === "utterance.cancelled").length, 0);
   });
 }
+
+test("hold: the user stops and starts again in one tick → still no sound over them (Codex P2)", async () => {
+  const { asr, sent } = await turnThenResume(false, 60);
+  asr.fire({ type: "speechEnd", turnId: 1 });
+  asr.fire({ type: "speechStart", turnId: 2 }); // same tick: the waiter wakes to a user who is talking again
+  await sleep(250);
+  assert.equal(sent.filter((m) => m.t === "bin").length, 0, sent.map((m) => m.t).join(","));
+  assert.ok(sent.some((m) => m.t === "utterance.cancelled"));
+});
+
+test("hold: the voice failing first does not let the device voice talk over the user (Codex P2)", async () => {
+  const { sent } = await turnThenResume(false, 300, true);
+  assert.equal(sent.filter((m) => m.t === "say").length, 0, sent.map((m) => m.t).join(","));
+  assert.ok(sent.some((m) => m.t === "utterance.cancelled"));
+});

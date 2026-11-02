@@ -31,6 +31,7 @@ struct FindsBrowser: UIViewRepresentable {
     let url: URL?
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
+        view.overrideUserInterfaceStyle = .light // the window is dark over a full sheet (status bar); pages stay light
         view.backgroundColor = .clear
         if let url, ["http", "https"].contains(url.scheme) { view.load(URLRequest(url: url)) }
         return view

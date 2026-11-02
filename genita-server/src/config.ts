@@ -5,12 +5,21 @@
  */
 export type Config = {
   metaKey: string;
+  /** Operational controls (D46); optional for legacy embedded/test configs. */
+  paused?: boolean;
+  /** GENITA_PAUSE_FILE: while this file exists, generation is paused (no restart needed) */
+  pauseFile?: string | null;
+  metaDailyCalls?: number;
+  metaDailyImages?: number;
+  userDailyTurns?: number;
   /**
    * Server voice on our GPU (D3, Meta open model SeamlessM4T v2 on Modal): set by GENITA_VOICE_URL +
    * GENITA_VOICE_TOKEN. Optional: without it the server runs device mode (the app speaks), so a
    * judge can run the public repo with only a Meta key.
    */
   voice?: VoiceConfig | null;
+  /** Concurrent voice-GPU calls; default 3, 0 = unlimited. Older injected configs may omit it. */
+  voiceMaxCalls?: number;
   /** Whether the Meta voice service is configured; otherwise the app speaks. */
   serverTts: boolean;
   host: string;
@@ -65,6 +74,8 @@ export function parseSpeakers(v: string | undefined, d: VoiceConfig["speakers"])
   return out;
 }
 
+const flag = (v: string | undefined) => v === "1";
+
 function num(v: string | undefined, d: number): number {
   const n = Number(v);
   return v !== undefined && v !== "" && Number.isFinite(n) ? n : d;
@@ -94,10 +105,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
   const serverTts = !!voice;
+  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 3);
   return {
     metaKey,
+    paused: flag(env.GENITA_PAUSED),
+    pauseFile: env.GENITA_PAUSE_FILE?.trim() || null,
+    metaDailyCalls: num(env.GENITA_META_DAILY_CALLS, 20_000),
+    metaDailyImages: num(env.GENITA_META_DAILY_IMAGES, 600),
+    userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),
     serverTts,
     voice,
+    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 3,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,

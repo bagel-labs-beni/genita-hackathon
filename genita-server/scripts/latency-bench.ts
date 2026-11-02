@@ -42,7 +42,9 @@ const turns = Number(arg("turns") ?? 20);
 const pauses = (arg("pauses") ?? "").split(",").filter(Boolean).map(Number);
 const dir = arg("dir") ?? process.env.GENITA_FIXTURES_DIR ?? "";
 const outFile = arg("out");
-const skipPlain = args.includes("--pauses-only");
+const skipPlain = args.includes("--pauses-only") || args.includes("--barge-only");
+// --barge=N: N barge-in trials (talk over the companion's reply), timed like smoke.ts
+const bargeTrials = Number(arg("barge") ?? 0);
 // --split=0.2-0.45: where in the voiced span the pause goes (early = more likely mid-sentence)
 const [splitLo, splitHi] = (arg("split") ?? "0.3-0.7").split("-").map(Number);
 
@@ -247,7 +249,7 @@ async function runTurn(file: string, pauseMs: number | null): Promise<Row> {
 
 const order: [string, number | null][] = [];
 if (!skipPlain) for (const f of files) order.push([f, null]);
-for (const p of pauses) for (const f of files) order.push([f, p]);
+if (!args.includes("--barge-only")) for (const p of pauses) for (const f of files) order.push([f, p]);
 for (const [i, [f, p]] of order.entries()) {
   const row = await runTurn(f, p);
   (p === null ? plain : paused).push(row);
@@ -258,6 +260,38 @@ for (const [i, [f, p]] of order.entries()) {
       (p !== null ? ` falseEot=${row.falseEot} talkedOver=${row.talkedOver}` : "") +
       `  heard="${row.heard}"`,
   );
+}
+
+// ── barge-in: ask, wait for the companion to speak, talk over it ──
+const barges: Row[] = [];
+for (let i = 0; i < bargeTrials; i++) {
+  const ask = toPcm(files[i % files.length]);
+  const over = toPcm(files[(i + 7) % files.length]);
+  const from = inbox.length;
+  const askSpan = voicedSpan(ask);
+  queue.push({ pcm: ask, marks: [{ at: askSpan.end, fn: () => {} }] });
+  const speaking = await waitMsg((m) => m.type === "state" && m.state === "speaking", from, 30000);
+  if (!speaking) { barges.push({ trial: i, note: "never spoke" }); await settle(from); continue; }
+  await sleep(300);
+  const sp = inbox.length;
+  let speakAt = 0;
+  const overSpan = voicedSpan(over);
+  queue.push({ pcm: over, marks: [{ at: overSpan.start + 1, fn: (t) => (speakAt = t) }] });
+  const cancelled = await waitMsg((m) => m.type === "utterance.cancelled", sp, 15000);
+  const asrStart = inbox.slice(sp).find((x) => x.m.type === "speech.start");
+  const twoWordPartial = cancelled ? inbox.slice(sp).find((x) => x.t <= cancelled.t && x.m.type === "transcript" && !x.m.final && String(x.m.text).trim().split(/\s+/).length >= 2) : undefined;
+  const row: Row = cancelled
+    ? {
+        trial: i,
+        speechStartToCancelledMs: Math.round(cancelled.t - speakAt),
+        asrSpeechStartToCancelledMs: asrStart ? Math.round(cancelled.t - asrStart.t) : null,
+        // which rule fired: a 2-word partial before the timer, or the bargeIn.minMs timer
+        path: twoWordPartial ? "partial" : "timer",
+      }
+    : { trial: i, note: inbox.slice(from).some((x) => x.m.type === "reply") ? "reply finished first" : "no cancel" };
+  barges.push(row);
+  console.log(`barge ${i + 1}/${bargeTrials}`, JSON.stringify(row));
+  await settle(from);
 }
 
 function stageTable(rows: Row[]) {
@@ -292,9 +326,20 @@ if (paused.length) {
     }),
   );
 }
+if (barges.length) {
+  const asr = barges.map((b) => b.asrSpeechStartToCancelledMs).filter((x): x is number => typeof x === "number");
+  const sp = barges.map((b) => b.speechStartToCancelledMs).filter((x): x is number => typeof x === "number");
+  summary.barge = {
+    n: barges.length,
+    cancelled: asr.length,
+    asrStartToCancel: { p50: pct(asr, 0.5), p90: pct(asr, 0.9), max: pct(asr, 1) },
+    speechStartToCancel: { p50: pct(sp, 0.5), p90: pct(sp, 0.9), max: pct(sp, 1) },
+    byPath: { partial: barges.filter((b) => b.path === "partial").length, timer: barges.filter((b) => b.path === "timer").length },
+  };
+}
 summary.serverErrors = serverErrors;
 console.log("SUMMARY " + JSON.stringify(summary));
-if (outFile) writeFileSync(outFile, JSON.stringify({ summary, plain, paused }, null, 1));
+if (outFile) writeFileSync(outFile, JSON.stringify({ summary, plain, paused, barges }, null, 1));
 micRunning = false;
 ws.close();
 server.close();
