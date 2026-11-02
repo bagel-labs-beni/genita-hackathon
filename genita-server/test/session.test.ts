@@ -522,7 +522,7 @@ test("finds: a product ask by voice alone → 'On it.' at once (no guessed answe
       assert.match(JSON.stringify(req.input), /Clean, minimal clothes/, "the account's own import line");
       await sleep(5);
       return {
-        text: JSON.stringify({ label: "Light jacket", title: "Two for the weekend", style_line: "Clean, minimal clothes.", situation_line: "This weekend", items: P.map((url, i) => ({ name: `Jacket ${i + 1}`, url, store: "Shop", price: "", taste: "Clean, minimal", situation: "For the weekend" })), say: "Two options. Simple cuts, like you prefer." }),
+        text: JSON.stringify({ label: "Light jacket", title: "Two for the weekend", style_line: "Clean, minimal clothes.", situation_line: "This weekend", items: P.map((url, i) => ({ name: `Jacket ${i + 1}`, url, store: "Shop", price: "", taste: "Clean, minimal", situation: "For the weekend" })), say: "Two, both simple cuts." }),
         output: P.map((url) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url } })),
       };
     },
@@ -553,8 +553,8 @@ test("finds: a product ask by voice alone → 'On it.' at once (no guessed answe
   assert.ok(client.json.indexOf(ackDelta) < client.json.indexOf(created), "the short line comes before the card");
   const card = created.card as { products: { url: string }[] };
   assert.deepEqual(card.products.map((p) => p.url), P);
-  await client.waitFor((m) => m.type === "reply" && m.text === "Two options. Simple cuts, like you prefer.", 3000);
-  assert.deepEqual(ttsCalls.slice(-3), ["On it.", "Two options.", "Simple cuts, like you prefer."]);
+  await client.waitFor((m) => m.type === "reply" && m.text === "Two, both simple cuts.", 3000);
+  assert.deepEqual(ttsCalls.slice(-2), ["On it.", "Two, both simple cuts."]);
   await sleep(10);
   assert.deepEqual(likesAsked, ["acct-7"]);
   const saved = await store.list(ownerKey("acct-7"));
