@@ -48,6 +48,7 @@ struct MacResultSheet: View {
                 searching.opacity(finds.state == .searching ? 1 : 0)
                 peek.opacity(finds.state == .peek ? 1 : 0)
                 results.opacity([.rising, .half, .full].contains(finds.state) ? 1 : 0)
+                if finds.newFind != nil, [.half, .full].contains(finds.state) { newFindBanner }
             }.animation(.easeOut(duration: 0.2), value: finds.state)
             grab
         }
@@ -164,12 +165,27 @@ struct MacResultSheet: View {
         }
     }
 
+    /// r03 #11: a result arrived while another is open — it never takes the card being read; the banner offers it.
+    private var newFindBanner: some View {
+        let title = finds.entries.first { $0.id == finds.newFind }?.card?.title ?? "A new find"
+        return Button { withAnimation { finds.viewNewFind() } } label: {
+            HStack(spacing: 8) {
+                Text("New").font(MacSheetInk.sans(12, .medium)).foregroundStyle(MacSheetInk.chipBlueText)
+                Text(title).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.onInk).lineLimit(1)
+                Text("View").font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.chipBlue)
+            }.padding(.horizontal, 14).frame(height: 36).background(MacSheetInk.pill, in: Capsule())
+        }.buttonStyle(.plain).padding(.top, 14).accessibilityIdentifier("macNewFind")
+    }
+
     private func header(_ card: FindCard, count: Int) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(card.eyebrow).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
                 HStack(spacing: 4) {
-                    ForEach(0..<min(count, 6), id: \.self) { i in Circle().fill(i == finds.page ? MacSheetInk.ink : MacSheetInk.handle).frame(width: 6, height: 6) }
+                    ForEach(0..<min(count, 6), id: \.self) { i in
+                        Circle().fill(i == finds.page ? MacSheetInk.ink : MacSheetInk.handle).frame(width: 6, height: 6)
+                            .padding(4).contentShape(Rectangle()).onTapGesture { withAnimation { finds.showPage(i) } }
+                    }
                 }.accessibilityLabel("Find \(finds.page + 1) of \(count)")
             }
             Spacer()

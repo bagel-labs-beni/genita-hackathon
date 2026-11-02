@@ -95,7 +95,8 @@ struct MacConversationView: View {
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
-                WatchOverlays(sharing: sharing, review: reviewState)
+                // A full result sheet owns the top of the window; the share chip and cards come back when it folds.
+                if !sheetFull { WatchOverlays(sharing: sharing, review: reviewState) }
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
             if interpret.stage == .picking { interpretSheet }

@@ -34,6 +34,8 @@ import Foundation
     let auth = GenitaAuthClient()
     private var signIn: WebSignIn?
     private var wantsCall = false
+    /// Bumped on sign-out: answers to requests started before it are dropped (no call with an old token).
+    private var generation = 0
 
     var companionName: String? { if case let .ready(plan) = account { return plan.name } else { return nil } }
 
@@ -54,27 +56,31 @@ import Foundation
 
     /// /me → StartRouter (Mac) → /v1/companion. Safe to call again (sign-in, wake, retry).
     func refresh() async {
+        let gen = generation
         if account != .signingIn { account = .checking }
         guard let token = CallEndpoint.current().token, !token.isEmpty else { account = .signedOut; return }
+        let next: Account
+        var plan: CompanionCallPlan?
         do {
             let me: GenitaMe = try await get("/me", token: token)
-            switch StartRouter.route(.active(me), device: .mac) {
-            case .macNoCompanion: account = .noCompanion; return
-            default: break
-            }
-            let data = try await getData("/v1/companion", token: token)
-            guard let plan = CompanionCallPlan(companionJSON: data) else { account = .noCompanion; return }
-            account = .ready(plan)
-            call.companionName = plan.name
-            loadFace(plan, token: token)
-            if wantsCall { startCall() }
+            if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
+                next = .noCompanion
+            } else if let p = CompanionCallPlan(companionJSON: try await getData("/v1/companion", token: token)) {
+                plan = p; next = .ready(p)
+            } else { next = .noCompanion }
         } catch MacCallError.status(401) {
-            account = .signedOut
+            next = .signedOut
         } catch MacCallError.status(404) {
-            account = .noCompanion
+            next = .noCompanion
         } catch {
-            account = .offline((error as? MacCallError)?.message ?? "Can’t reach Genita")
+            next = .offline((error as? MacCallError)?.message ?? "Can’t reach Genita")
         }
+        guard gen == generation else { return } // signed out meanwhile
+        account = next
+        guard let plan else { return }
+        call.companionName = plan.name
+        loadFace(plan, token: token, generation: gen)
+        if wantsCall { startCall() }
     }
 
     /// MAC-1 · Sign in with Apple on the web (Developer ID apps can't use the native sheet).
@@ -97,8 +103,27 @@ import Foundation
     }
 
     func signOut() {
+        generation += 1
+        account = .signedOut
+        face = nil
         call.end()
-        Task { await auth.logout(); account = .signedOut; face = nil }
+        Task { await auth.logout() }
+    }
+
+    /// The server closed the call for a reason reconnecting can't fix (4401 / 4403 / 4001).
+    func callStopped(_ stop: CallStop) {
+        call.end()
+        switch stop {
+        case .signIn:
+            generation += 1
+            auth.store.clear()
+            account = .signedOut
+            face = nil
+        case .consent:
+            account = .noCompanion // consent is given on the iPhone (MAC-2)
+        case .timeLimit:
+            break
+        }
     }
 
     // MARK: the call follows the conversation
@@ -113,9 +138,13 @@ import Foundation
         }
     }
 
-    /// The conversation left this Mac. MacHandoff already suspended the call (mic, camera, sound off, barge-in
-    /// sent); the socket stays so coming back is instant.
-    func conversationLeft() { wantsCall = false }
+    /// The conversation left this Mac. MacHandoff already suspended it (mic, camera, sound off, barge-in sent);
+    /// the session is closed too, so nothing that was still on its way (a greeting, a late reply) can play here
+    /// while the iPhone talks. Coming back opens a new session.
+    func conversationLeft() {
+        wantsCall = false
+        call.end()
+    }
 
     private func startCall() {
         guard case let .ready(plan) = account else { return }
@@ -142,10 +171,6 @@ import Foundation
         var req = URLRequest(url: auth.baseURL.appendingPathComponent(String(path.dropFirst())))
         req.timeoutInterval = 15
         req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
-        #if DEBUG
-        // dev token runs: the server keys the user by this header (genita-server auth/accounts.ts)
-        if let user = ProcessInfo.processInfo.environment["GENITA_DEV_USER"] { req.setValue(user, forHTTPHeaderField: "x-genita-user") }
-        #endif
         let (data, response) = try await URLSession.shared.data(for: req)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw MacCallError.status(status) }
@@ -156,13 +181,13 @@ import Foundation
         do { return try JSONDecoder().decode(T.self, from: try await getData(path, token: token)) } catch let e as MacCallError { throw e } catch is DecodingError { throw MacCallError.decode }
     }
 
-    private func loadFace(_ plan: CompanionCallPlan, token: String) {
+    private func loadFace(_ plan: CompanionCallPlan, token: String, generation gen: Int) {
         guard let url = plan.faceURL(base: auth.baseURL) else { return }
         Task {
             var req = URLRequest(url: url)
             if url.host == auth.baseURL.host { req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization") }
             guard let (data, response) = try? await URLSession.shared.data(for: req), (response as? HTTPURLResponse)?.statusCode == 200,
-                  let image = NSImage(data: data) else { return }
+                  let image = NSImage(data: data), gen == generation else { return }
             face = image
         }
     }
@@ -191,5 +216,7 @@ struct MacAccountRow: View {
         }
         .font(.callout)
         .task { if call.account == .checking { await call.refresh() } }
+        // 4401 → MAC-1, 4403 → MAC-2 (the control window is always there, so this sees every stop)
+        .onChange(of: CallController.shared.stopped) { _, stop in if let stop { call.callStopped(stop) } }
     }
 }
