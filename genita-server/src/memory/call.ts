@@ -29,13 +29,14 @@ export class MemoryCall {
   readonly userId: string;
   readonly sessionId: string;
   recentReplies: string[] = [];
-  constructor(service: MemoryService, userId: string, sessionId: string, onForget: () => void = () => {}) {
+  constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId;
-    this.unsubscribe = service.subscribe(userId, () => { this.pending = []; this.revision++; onForget(); });
+    this.unsubscribe = service.subscribe(userId, (revision) => { this.pending = []; this.recentReplies = []; this.revision = revision; onForget(revision); });
   }
   async open(greet = true): Promise<Memory | null> {
     const state = await this.service.state.getState(this.userId);
-    this.revision = state.revision;
+    // A Forget notification can arrive while the persisted state read is in flight.
+    this.revision = Math.max(this.revision, state.revision);
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
     return greet ? this.service.opening(this.userId, this.sessionId) : null;
   }

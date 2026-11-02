@@ -19,6 +19,8 @@ export type CancelReason = "barge_in" | "text" | "client";
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
+/** ARPAbet label (GenitaKit LipViseme(phoneme:)), ms on the reply's audio timeline */
+export type PhonemeTiming = { p: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
 // F8 interpretation
@@ -72,6 +74,11 @@ export type StartMessage = {
   tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
+  /**
+   * D21 first call after onboarding (app sends 2000): wait up to this many ms (clamped 0–3000) for the user
+   * to speak or type first; if they do, no greeting; if not, the companion greets. Unset = greet as before.
+   */
+  greetAfterMs?: number;
 };
 
 export type ClientMessage =
@@ -91,7 +98,7 @@ export type ClientMessage =
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 
-export type FindKind = "recipe" | "outfit" | "link";
+export type FindKind = "recipe" | "outfit" | "link" | "product";
 /** checking → have (Spark YES + SAM box) | maybe (Spark YES, no box: "맞아?") | buy (recipe only) */
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */
@@ -122,6 +129,8 @@ export type FindCard = {
   status?: string;
   /** what the companion says when the card lands */
   say?: string;
+  /** the status pill's line for this card, ≤ 28 characters (one line on iPhone and Mac); `say` is spoken, this is shown */
+  pill?: string;
   hero?: FindImage;
   /** which camera frame boxes are drawn on (the app keeps the frame; the server never stores it) */
   camera?: { frame: number; at: string; w: number; h: number; label: string };
@@ -134,6 +143,30 @@ export type FindCard = {
   how: string[];
   page?: { url: string; opened: boolean };
   saved?: boolean;
+  /** kind "product" (F7 PF-1 / MAC-RS): up to 2 product detail pages the search really opened */
+  products?: FindProduct[];
+  /** kind "product": what this answer is based on (MAC-RS evidence line) */
+  evidence?: FindEvidence;
+};
+/**
+ * One product card. `url` is a product detail page found in Spark's tool trace
+ * (open_page completed) — never a category or search page, never a URL the
+ * model only wrote. `price` only when it was on the page. Reasons are the two
+ * chips: `taste` from the user's import (Likes & dislikes), `situation` from what
+ * they said ("this weekend", weather).
+ */
+/** The import line a product search follows (shown as-is by MF-1 / PF-1) and the situation line ("" until known). */
+export type FindEvidence = { style: string; situation: string };
+export type FindProduct = {
+  id: string;
+  name: string;
+  url: string;
+  domain: string;
+  store: string;
+  price?: string;
+  image?: FindImage;
+  taste: string;
+  situation: string;
 };
 
 // ───────────────────────── server → app ─────────────────────────
@@ -173,6 +206,9 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** server voice, GENITA_VOICE_ALIGN: forced-aligner word + phoneme timing of one clause, after its audio.
+   * seq = the clause's first `audio` seq; ms on the reply's audio timeline (like audio.words). */
+  | { type: "audio.timing"; utteranceId: number; sentence: number; seq: number; words: WordTiming[]; phonemes: PhonemeTiming[] }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -187,6 +223,11 @@ export type ServerEvent =
       replyStartToFirstSentenceMs: number | null;
       firstSentenceToFirstAudioMs: number | null;
       speechEndToFirstAudioMs: number | null;
+      /** log/report aliases: ASR finalization, first token, sentence-to-TTS, speech end-to-first sound */
+      stt_ms?: number | null;
+      llm_ms?: number | null;
+      tts_ms?: number | null;
+      first_audio_ms?: number | null;
       audioMs: number;
       speculative?: "hit" | "miss" | "none";
     }
@@ -195,14 +236,16 @@ export type ServerEvent =
   | { type: "lip.changed"; lip: LipPlan }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown }
-  | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
-  | { type: "find.progress"; findId: string; detail: string }
+  | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string; evidence?: FindEvidence }
+  | { type: "find.progress"; findId: string; detail: string; evidence?: FindEvidence }
   /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
-  | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string }
+  | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
-  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string };
+  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
+  /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
+  | { type: "companion.named"; name: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -235,6 +278,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  "audio.timing": { required: ["utteranceId", "sentence", "seq", "words", "phonemes"], optional: [] },
   say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
@@ -250,20 +294,21 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
       "speechEndToFirstAudioMs",
       "audioMs",
     ],
-    optional: ["speculative"],
+    optional: ["speculative", "stt_ms", "llm_ms", "tts_ms", "first_audio_ms"],
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
   "lip.changed": { required: ["lip"], optional: [] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
-  "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },
-  "find.progress": { required: ["findId", "detail"], optional: [] },
-  "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status"] },
+  "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: ["evidence"] },
+  "find.progress": { required: ["findId", "detail"], optional: ["evidence"] },
+  "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status", "pill"] },
   "observe.boxes": { required: ["findId", "frame", "w", "h", "items"], optional: [] },
   "find.created": { required: ["findId", "card"], optional: [] },
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
+  "companion.named": { required: ["name"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
