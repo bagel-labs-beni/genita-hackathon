@@ -254,4 +254,27 @@ final class GenitaUITests: XCTestCase {
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
+
+    /// #217 · A02 Terms / Privacy Policy open the live pages in an in-app Safari sheet (and close again).
+    func testA02LegalLinksOpenSafari() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        for (label, id) in [("Terms", "legal-terms"), ("Privacy Policy", "legal-privacy")] {
+            let link = app.buttons[label]
+            XCTAssertTrue(link.waitForExistence(timeout: 10), label)
+            XCTAssertGreaterThanOrEqual(link.frame.height, 40, "\(label) hit area")
+            link.tap()
+            let safari = app.descendants(matching: .any)["legalSafari"]
+            let done = app.buttons["Done"]
+            XCTAssertTrue(safari.waitForExistence(timeout: 10) || done.waitForExistence(timeout: 5), "\(label) opens the Safari sheet (\(id))")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "call-A02-legal-" + id
+            shot.lifetime = .keepAlways
+            add(shot)
+            if done.exists { done.tap() } else { app.swipeDown() }
+            XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 10), "back on A02 after closing \(label)")
+        }
+    }
 }
