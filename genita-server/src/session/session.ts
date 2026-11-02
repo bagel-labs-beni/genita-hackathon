@@ -79,7 +79,7 @@ export type SessionDeps = {
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
   /** open the vendor HTTPS connections ahead of the first answer (keepalive.ts warmUp); fire and forget */
-  prewarm?: () => void;
+  prewarm?: (o: { voice: boolean }) => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
@@ -117,7 +117,8 @@ type Reply = {
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
 type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void; at: number };
+/** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void; at: number; firstTextAt?: number };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -597,7 +598,7 @@ export class Session {
   private warm(): void {
     if (!this.deps.prewarm || this.now() - this.lastWarmAt < WARM_AGAIN_MS) return;
     this.lastWarmAt = this.now();
-    this.deps.prewarm();
+    this.deps.prewarm({ voice: this.tts === "server" && !!this.deps.config.voice });
   }
 
   private onAsr(e: AsrEvent): void {
@@ -879,7 +880,16 @@ export class Session {
     let confirm!: () => void;
     const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
     abort.signal.addEventListener("abort", confirm, { once: true });
-    this.spec = { norm, abort, built, confirm, at: this.now(), stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
+    const source = this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed);
+    const spec: Speculation = { norm, abort, built, confirm, at: this.now(), stream: new Eager(this.stampFirstText(source, (t) => (spec.firstTextAt ??= t))) };
+    this.spec = spec;
+  }
+
+  private async *stampFirstText(source: AsyncIterable<SparkStreamEvent>, onText: (t: number) => void): AsyncGenerator<SparkStreamEvent> {
+    for await (const ev of source) {
+      if (ev.type === "text") onText(this.now());
+      yield ev;
+    }
   }
 
   private dropSpeculation(): void {
@@ -896,6 +906,8 @@ export class Session {
   private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
+    // the vendors are about to be used: their sockets stay open for the keep-alive from here
+    if (!self) this.lastWarmAt = this.now();
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
     const device = this.tts === "device";
     this.reply = reply;
@@ -993,7 +1005,8 @@ export class Session {
           for await (const ev of stream) {
             if (signal.aborted) return;
             if (ev.type === "text") {
-              if (m.firstTokenAt === undefined) m.firstTokenAt = this.now();
+              // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
+              if (m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
               gotText = true;
               pushSentences(splitter.push(ev.delta));
             } else if (ev.type === "tool") {

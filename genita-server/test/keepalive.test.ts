@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GLOBAL_DISPATCHER, installKeepAlive, warmUp } from "../src/util/keepalive.ts";
+import { GLOBAL_DISPATCHER, installKeepAlive, makePrewarm, warmUp } from "../src/util/keepalive.ts";
 import { loadConfig } from "../src/config.ts";
 
 const g = globalThis as unknown as Record<symbol, unknown>;
@@ -10,15 +10,18 @@ class FakeAgent {
   constructor(opts: unknown) {
     this.opts = opts;
   }
+  dispatch() {
+    return true;
+  }
 }
 
 test("keep-alive: swaps the fetch dispatcher for one that keeps idle sockets for idleMs", async () => {
   const before = g[GLOBAL_DISPATCHER];
   try {
-    g[GLOBAL_DISPATCHER] = new FakeAgent({});
+    g[GLOBAL_DISPATCHER] = new (class Agent extends FakeAgent {})({});
     assert.equal(await installKeepAlive(60_000), true);
     const now = g[GLOBAL_DISPATCHER] as FakeAgent;
-    assert.ok(now instanceof FakeAgent);
+    assert.ok(now instanceof FakeAgent && now.constructor.name === "Agent");
     assert.deepEqual(now.opts, { keepAliveTimeout: 60_000, keepAliveMaxTimeout: 60_000 });
     // a second call is a no-op (same agent)
     assert.equal(await installKeepAlive(60_000), true);
@@ -38,6 +41,24 @@ test("keep-alive: 0 turns it off; a runtime without a dispatcher is left alone",
     g[GLOBAL_DISPATCHER] = undefined;
     assert.equal(await installKeepAlive(60_000, async () => {}), false);
     assert.equal(g[GLOBAL_DISPATCHER], undefined);
+  } finally {
+    g[GLOBAL_DISPATCHER] = before;
+  }
+});
+
+test("keep-alive: a dispatcher someone else installed (not undici's Agent) is never replaced", async () => {
+  const before = g[GLOBAL_DISPATCHER];
+  try {
+    const custom = { dispatch() { return true; } };
+    g[GLOBAL_DISPATCHER] = custom;
+    assert.equal(await installKeepAlive(60_000), false);
+    assert.equal(g[GLOBAL_DISPATCHER], custom);
+    class Agent { dispatch() { return true; } }
+    class Interceptor extends Agent {}
+    const wrapped = new Interceptor();
+    g[GLOBAL_DISPATCHER] = wrapped;
+    assert.equal(await installKeepAlive(60_000), false);
+    assert.equal(g[GLOBAL_DISPATCHER], wrapped);
   } finally {
     g[GLOBAL_DISPATCHER] = before;
   }
@@ -63,4 +84,26 @@ test("config: Spark hedge defaults to 3 lanes and keep-alive to 60 s; both overr
   const o = loadConfig({ MODEL_API_KEY: "k", GENITA_SPARK_HEDGE: "2", GENITA_HTTP_KEEPALIVE_MS: "0" });
   assert.equal(o.sparkHedge, 2);
   assert.equal(o.httpKeepAliveMs, 0);
+});
+
+test("prewarm: one Meta socket per Spark lane, the voice only when asked, at most once per cooldown for the whole server", () => {
+  const urls: string[] = [];
+  let clock = 0;
+  const fake = (async (url: string) => {
+    urls.push(url);
+    return new Response("{}");
+  }) as unknown as typeof fetch;
+  const prewarm = makePrewarm({ metaUrl: "https://meta/v1/models", metaHeaders: {}, lanes: 3, voiceUrl: "https://voice/healthz", cooldownMs: 20_000, now: () => clock, doFetch: fake });
+  prewarm({ voice: false });
+  assert.deepEqual(urls, ["https://meta/v1/models", "https://meta/v1/models", "https://meta/v1/models"]);
+  const count = (host: string) => urls.filter((u) => u.includes(host)).length;
+  clock = 5_000;
+  prewarm({ voice: true }); // a server-voice call 5 s later: Meta is warm already, the voice is not
+  assert.deepEqual([count("meta"), count("voice")], [3, 1]);
+  clock = 12_000;
+  prewarm({ voice: true }); // within the cooldown: nothing
+  assert.deepEqual([count("meta"), count("voice")], [3, 1]);
+  clock = 25_000;
+  prewarm({ voice: true });
+  assert.deepEqual([count("meta"), count("voice")], [6, 2]);
 });
