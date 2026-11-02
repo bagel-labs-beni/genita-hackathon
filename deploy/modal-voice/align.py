@@ -24,6 +24,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 
+REV = "11/3-uroman-snap"  # reported by /healthz, so a deploy can be checked against the running container
 FILL_S = 0.12  # gaps up to this are held by the previous phoneme (connected speech)
 TAIL_S = 0.04  # before a pause, without level data: held this much longer than its CTC span
 HOLD_S = 0.30  # before a pause: held while voiced, at most this long after its CTC span
@@ -291,6 +292,7 @@ class Aligner:
         self.device = device
         self.lock = threading.Lock()
         self.load_s = time.time() - t0
+        self.rev = REV
 
     def align(self, wav16, text: str) -> tuple[dict | None, float]:
         """wav16: float32 mono 16 kHz, the request's audio from its first sample. -> (timing | None, ms)."""

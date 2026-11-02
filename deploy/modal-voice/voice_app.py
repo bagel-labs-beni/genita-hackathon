@@ -426,7 +426,7 @@ class Voice:
         @api.get("/healthz")
         def health():
             return {"ok": True, "warm": eng.warm, "gpu": eng.torch.cuda.get_device_name(0), "mms": mms is not None,
-                    "align": aligner is not None}
+                    "align": aligner is not None, "align_rev": getattr(aligner, "rev", None)}
 
         @api.post("/v1/tts")
         async def tts(req: Request):
