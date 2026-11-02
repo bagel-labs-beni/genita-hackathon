@@ -45,7 +45,7 @@ const GARMENT =
 
 /** "What should I wear?" without a camera: wearing words, or a garment that isn't about cooking; never a product search. */
 export function isOutfitAsk(text: string, afterProduct = false): boolean {
-  if (isProductAsk(text, afterProduct)) return false;
+  if (findUrl(text) || isProductAsk(text, afterProduct)) return false;
   return WEAR.test(text) || (GARMENT.test(text) && !COOK.test(text));
 }
 

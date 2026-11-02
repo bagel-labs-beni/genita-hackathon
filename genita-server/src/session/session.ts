@@ -956,8 +956,9 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
     });
-    // a refine after a product search in this call ("another one in black…") stays a search (Finds #199 rule)
-    const afterProduct = this.history.slice(-6).some((h) => h.role === "user" && isProductAsk(h.text));
+    // a refine after a product search in this call ("another one in black…") stays a search: the Finds runner's own rule
+    const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
+    const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
     const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
     const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     return {
@@ -1414,8 +1415,8 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
-    // Demo S4: counted as asked only once the suggestion was actually said (a failed reply can ask again)
-    if (full && built.suggestMac && !sparkError && !signal.aborted) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
+    // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
+    if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
