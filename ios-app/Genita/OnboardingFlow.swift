@@ -110,16 +110,13 @@ extension AppState {
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
 
-    /// What N1–N3 send (server `POST /v1/import/skip`, at most 8 of each): N1 topics, then the N3 likes, as interests;
-    /// the N3 "no"s as things to avoid, the chat ones first and in the server's own wording so they become the boundary lines.
-    /// Per-group payload (like / no per group, a "Jokes" communication line) needs a server change: follow-up.
-    static func skipAnswers(_ s: SavedSetup) -> (interests: [String], avoid: [String]) {
-        func unique(_ xs: [String]) -> [String] { var seen = Set<String>(); return xs.filter { seen.insert($0).inserted } }
-        let serverWording = ["Lots of questions": "Too many questions", "Talk about looks": "Comments on my looks"]
-        let no = s.skipAvoid ?? []
-        let chats = no.filter { SkipImportView.chats.contains($0) }.map { serverWording[$0] ?? $0 }
-        let rest = no.filter { !SkipImportView.chats.contains($0) }
-        return (Array(unique((s.skipInterests ?? []) + (s.skipLikes ?? [])).prefix(8)), Array(unique(chats + rest).prefix(8)))
+    /// What N1–N3 send (`POST /v1/import/skip`): the N1 topics as interests and the taste picker as
+    /// `n3.{clothes,food,chats}.{like,no}` (each chip is off, liked or "no").
+    static func skipAnswers(_ s: SavedSetup) -> (interests: [String], n3: [String: [String: [String]]]) {
+        let like = Set(s.skipLikes ?? []), no = Set(s.skipAvoid ?? [])
+        func group(_ items: [String]) -> [String: [String]] { ["like": items.filter { like.contains($0) }, "no": items.filter { no.contains($0) }] }
+        return (Array((s.skipInterests ?? []).prefix(8)),
+                ["clothes": group(SkipImportView.clothes), "food": group(SkipImportView.foods), "chats": group(SkipImportView.chats)])
     }
 
     /// N1–N3 Continue → I04-S (same rows, from the chips).
@@ -130,7 +127,7 @@ extension AppState {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
-                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, avoid: answers.avoid))
+                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }
