@@ -18,6 +18,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 |---|---|
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
+| 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
@@ -75,6 +76,11 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `hold` | `on: boolean` | F8 "Hold to talk / Hold to reply": while held, the mic is the user ("me") whatever the language; in `call` mode the mic is only listened to while held. |
 | `ping` | `t` | server answers `pong {t}` |
 | `stop` | — | end the call |
+| `find.confirm` | `findId`, `itemId`, `yes` | the user answered "맞아?" on a maybe ingredient (IC-3): yes → have, no → buy (or gone if no recipe needs it) |
+| `find.stop` | `findId` | Stop on the searching sheet; answered with `find.failed {reason:"stopped"}` |
+
+`text` may carry `findId` ("Ask about this" chip): that card becomes the context of the reply.
+`start.user` may carry `id` (stable per install until login; owner of saved Finds) and `timeZone` (IANA, for "7:12 PM" in cards).
 
 `start`:
 
@@ -169,6 +175,13 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `lip.changed` | `lip {requested, active, reason}`, `peter? {bundleId, pasteDy, fps}` | Peter worker became ready (`active: "peter"`) or is unavailable (`reason: "peter_unavailable"`, back on the fallback) |
 | `error` | `code`, `message`, `retryable` | see below |
 | `pong` | `t` | |
+| `find.started` | `findId`, `utteranceId`, `kind: recipe \| outfit \| link`, `title`, `detail` | open the sheet in "searching" (r03 #1) |
+| `find.progress` | `findId`, `detail` | update the searching line ("Kimchi, eggs, tofu · recipes") |
+| `find.items` | `findId`, `items`, `checking`, `subtitle?`, `status?` | full ingredient list each time; replace, don't merge. `checking:false` = all checks done |
+| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s) |
+| `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
+| `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
+| `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
 
 `audio` timing (all ms on the reply's own audio timeline, 0 = first sample of the reply):
 
@@ -248,6 +261,49 @@ decided in those tickets and will be added here as additive changes.
 `mouth {f, cell}` (F4-L20 atlas cells) ·
 `camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
 `interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
+
+## Finds (result cards, F10)
+
+A user turn whose text has a link, or that has camera frames and asks about
+cooking or clothes, gets a result card **after** the spoken answer (the answer
+is the normal reply; the card never delays it). Sequence:
+
+```
+find.started → find.items (every name "checking", IC-1) → find.progress …
+→ find.created (card text, pictures pending) → find.items / observe.boxes as checks land
+→ find.items {checking:false} → find.image × n
+```
+
+Ingredient tiers (PRD 22): `have` = Spark re-check YES + SAM box for the name;
+`maybe` = YES without a box ("맞아?"; `hint` may carry a look-alike box, e.g. the
+kimchi jar), or the first look saw it and SAM boxes it but the re-check said NO;
+`buy` = recipe only. Recipe names merge into what the camera saw ("onion" into
+"green onions"). Boxes are 0..1 of `card.camera.frame` = the index of the frame
+the app sent (the last one); the server never stores frames, so the app keeps
+that frame with the card if it wants to show it later.
+
+Card fields (`FindCard`): `id, kind, createdAt, eyebrow, title, subtitle,
+status?, say?, hero?, camera?, items[], steps[{text, source?, image?}],
+options[{label, frame, picked, box?}], why[], ask[], sources[{title,url,domain}],
+how[], page?{url, opened}, saved?`. Image `url`s are server-relative
+(`/v1/finds/<id>/images/<slot>`); fetch with the same bearer token.
+
+When the card lands the companion says `card.say` as its own short reply — only
+into silence, after the current reply, and not if the user starts talking first.
+
+REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
+
+| method | path | |
+|---|---|---|
+| GET | `/v1/finds` | `{finds}` saved first, then newest |
+| GET | `/v1/finds/:id` | `{find}` |
+| DELETE | `/v1/finds/:id` | soft delete; `{ok, undo}` |
+| POST | `/v1/finds/:id/restore` | undo a delete (24 h) |
+| POST | `/v1/finds/:id/save` | `{saved: bool}` pin to top |
+| GET | `/v1/finds/:id/images/:slot` | illustration bytes (`?token=` also accepted) |
+| DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
+
+Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
 
 ## Errors
 

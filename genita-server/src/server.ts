@@ -2,6 +2,7 @@
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
+ *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
  *
@@ -28,6 +29,9 @@ import { createAccounts, type AccountsService, type Principal } from "./auth/ind
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
+import { findsFromEnv } from "./finds/setup.ts";
+import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
+import { ownerKey } from "./finds/store.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -46,6 +50,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
         ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
         : undefined,
+    finds: findsFromEnv(config.metaKey),
     log,
   };
 }
@@ -82,6 +87,7 @@ export async function startServer(
   if (accounts) accounts.onUserDeleted = (userId) => {
     // memories live outside Postgres (GENITA_MEMORY_FILE / in-memory): erase them with the account
     void deps.memory?.forget(userId).catch((err) => log("memory.delete_failed", { message: String(err).slice(0, 200) }));
+    void deps.finds?.store.removeOwner(ownerKey(userId)).catch((err) => log("finds.delete_failed", { message: String(err).slice(0, 200) }));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
   };
@@ -112,6 +118,13 @@ export async function startServer(
       if (!who) return json(res, 401, { error: "unauthorized" });
       if (!who.consented) return json(res, 403, { error: "consent_required" });
       return memoryRoute(req, res, url, { memory: deps.memory, photos: deps.photos, resolveCompanionFace: deps.resolveCompanionFace, resolveUser: () => who.userId }).catch(() => json(res, 503, { error: "memory_unavailable" }));
+    }
+    if (deps.finds && isFindsRoute(url.pathname)) {
+      // F10-L6 Finds REST: same principal and consent gate; the owner is the account, never a header
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return handleFindsHttp(req, res, deps.finds.store, who.userId);
     }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });

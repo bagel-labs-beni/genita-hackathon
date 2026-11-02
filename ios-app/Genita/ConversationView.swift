@@ -17,30 +17,64 @@ struct ConversationView: View {
                 let panelWidth = min(CGFloat(299), full.size.width - 60)
                 // F8 INT-1~6: the face stays, the rail and self view give way to the interpretation overlay
                 let interpreting = call.mode == .interpret && !connecting
+                let sheet = call.finds.state
+                // F10 sheet during interpretation (11/2 decision): the sheet can open; while it is up the
+                // interpretation bubbles and hold rail are hidden, and they come back when it closes.
+                let findsOpen = !connecting && sheet != .idle && sheet != .dismissed
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
+                        // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
+                        // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
-                            .contentShape(Rectangle()).onTapGesture { call.interrupt() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
+                            .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0)
+                            .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
+                            .opacity(sheet == .full ? 0 : 1)
+                            .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
+                            .animation(.drawer, value: sheet)
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
                             CallGlassControl(icon: "glass-menu-icon", size: 47)
                         }.buttonStyle(.plain).disabled(connecting).position(x: 47.5, y: 86.5 + top)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
+                            .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
                         if interpreting {
-                            InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
-                                .frame(width: full.size.width, height: full.size.height)
-                                .transition(.opacity)
+                            if !findsOpen {
+                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                    .frame(width: full.size.width, height: full.size.height)
+                                    .transition(.opacity)
+                            }
                         } else {
-                        selfView.position(x: 87.5, y: 700.5 + bottom)
+                        selfView.scaleEffect(sheet == .half || sheet == .rising ? 0.5 : 1)
+                            .position(x: sheet == .half || sheet == .rising ? 52.25 : 87.5, y: selfY(sheet) + bottom)
+                            .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet)
                         Button { call.toggleCamera() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom)
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom + railShift(sheet))
+                            .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom)
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
+                            .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom)
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
+                            .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
+                        }
+                        if findsOpen {
+                            FindsSheet(call: call, size: full.size).frame(width: full.size.width, height: full.size.height, alignment: .top)
+                                .transition(.move(edge: .bottom))
+                        }
+                        if sheet == .full {
+                            // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
+                            Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
+                                CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
+                            }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
+                                .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
+                        }
+                        if sheet == .dismissed {
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
                         if !connecting && !interpreting {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
-                                .position(x: full.size.width / 2, y: 142 + top)
+                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
                         if connecting {
                             ZStack {
@@ -54,7 +88,8 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true }) {
+                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
+                                              openFinds: call.finds.cardCount > 0 ? { withAnimation(.drawer) { call.finds.reopenLatest() } } : nil) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
@@ -75,11 +110,46 @@ struct ConversationView: View {
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
-        .onAppear { if !connecting { call.begin(model.callStart) } }
+        .onAppear {
+            if !connecting {
+                call.begin(model.callStart)
+                #if DEBUG
+                call.installFindsFixture()
+                #endif
+            }
+        }
         .onDisappear { if !connecting { call.end() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
         .onChange(of: handoff.desktop) { _, onMac in if onMac { call.suspend() } }
     }
+    private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
+
+    /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
+    private func faceTapped() {
+        if withAnimation(.drawer, { call.finds.faceTapped() }) { return }
+        call.interrupt()
+    }
+    private func faceScale(_ s: SheetState) -> CGFloat { s == .half ? 0.814 : s == .rising ? 0.895 : 1 }
+    private func faceOffset(_ s: SheetState, top: CGFloat) -> CGSize {
+        s == .half ? CGSize(width: 43.1, height: -66) : s == .rising ? CGSize(width: 24.2, height: -37.1) : .zero
+    }
+    /// r03 `.self`: half → translate(-7,-400) scale .5 (centre 52.25, 247.75); peek/searching → up 122.
+    private func selfY(_ s: SheetState) -> CGFloat {
+        switch s {
+        case .half, .rising: 247.75
+        case .peek, .searching: 700.5 - 122
+        default: 700.5
+        }
+    }
+    /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
+    private func railShift(_ s: SheetState) -> CGFloat {
+        switch s {
+        case .half, .rising, .full: -440
+        case .peek, .searching: -122
+        default: 0
+        }
+    }
+
     /// Self view: the live front camera when on, the design's placeholder when off.
     @ViewBuilder var selfView: some View {
         if call.cameraOn {

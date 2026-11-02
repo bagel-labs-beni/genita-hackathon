@@ -3,3 +3,4 @@ node_modules/
 .memory/
 .memory-vendor/
 .memory-evidence/
+data/

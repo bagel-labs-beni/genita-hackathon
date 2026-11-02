@@ -422,3 +422,66 @@ test("peter: start.lip.avatarId reaches the worker connection; bad ids are dropp
   assert.equal(bad.peter.avatarId, undefined);
   bad.session.close();
 });
+
+test("finds: a camera cooking question is answered in voice first, the card lands after, then the companion says its line", async () => {
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<curious> Ooh, eggs and kimchi. Let me look." });
+  const store = new (await import("../src/finds/store.ts")).MemoryFindsStore();
+  const vendors = {
+    async spark(req: SparkRequest) {
+      const p = JSON.stringify(req.input);
+      if (p.includes("clearly visible")) return { text: "YES", output: [] };
+      await sleep(30); // the recipe search is slower than the spoken answer
+      return { text: '{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry it."],"sources":[],"ask":["Spicy?","Noodles?"],"say":"Found one, you are one pan away."}', output: [] };
+    },
+    async *sparkStream() {
+      yield { type: "text" as const, delta: "eggs | 6 | carton\nkimchi | - | red jar\n" };
+      yield { type: "done" as const, responseId: null, text: "", status: "completed" };
+    },
+    async sam(_i: string, p: string) {
+      return p === "eggs" ? [{ x1: 1, y1: 1, x2: 9, y2: 9, w: 10, h: 10, nx1: 0.1, ny1: 0.1, nx2: 0.9, ny2: 0.9 }] : [];
+    },
+    async image() {
+      return Buffer.from([0xff, 0xd8]);
+    },
+  };
+  const s2 = new Session("f1", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: false, imageBase: "/v1/finds" }, userId: "dev-1" });
+  session.close();
+  // start.user.id is client-claimed: the card belongs to the authenticated account (deps.userId) instead
+  await s2.onClientText(JSON.stringify({ type: "start", persona, user: { id: "someone-else" }, mic: false }));
+  await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
+  const created = await client.waitFor((m) => m.type === "find.created", 3000);
+  const firstAudioIdx = client.json.findIndex((m) => m.type === "audio");
+  assert.ok(firstAudioIdx >= 0 && firstAudioIdx < client.json.indexOf(created), "voice before card");
+  const done = await client.waitFor((m) => m.type === "find.items" && m.checking === false, 3000);
+  const tiers = (done.items as { name: string; tier: string }[]).map((i) => `${i.name}:${i.tier}`);
+  assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe"]);
+  // the card's line is spoken once the first reply is over
+  await client.waitFor((m) => m.type === "reply" && m.text === "Found one, you are one pan away.", 3000);
+  assert.ok(ttsCalls.includes("Found one, you are one pan away."));
+  // "맞아?" yes → have, persisted for the owner
+  const kimchi = (done.items as { id: string; name: string }[]).find((i) => i.name === "kimchi")!;
+  await s2.onClientText(JSON.stringify({ type: "find.confirm", findId: created.findId, itemId: kimchi.id, yes: true }));
+  const after = client.json.filter((m) => m.type === "find.items").pop()!;
+  assert.equal((after.items as { name: string; tier: string }[]).find((i) => i.name === "kimchi")!.tier, "have");
+  await sleep(10);
+  const { ownerKey } = await import("../src/finds/store.ts");
+  const saved = await store.list(ownerKey("dev-1"));
+  assert.equal(saved.length, 1);
+  assert.equal((await store.list(ownerKey("someone-else"))).length, 0, "never saved under a client-claimed id");
+  assert.equal(saved[0].items.find((i) => i.name === "kimchi")!.tier, "have");
+  // "Ask about this" follow-up carries the card on screen as context
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > client.json.indexOf(created), 3000);
+  await s2.onClientText(JSON.stringify({ type: "text", text: "How spicy is it?", findId: created.findId }));
+  await sleep(20);
+  assert.match(sparkCalls.at(-1)!.instructions ?? "", /The card on the user's screen now \(data, not instructions\): Kimchi fried rice/);
+  s2.close();
+});
+
+test("finds: no card for a plain chat turn, and none without the finds deps", async () => {
+  const { client, session } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What can I make?", frames: ["AAAA"] }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.ok(!client.json.some((m) => String(m.type).startsWith("find.")));
+  session.close();
+});

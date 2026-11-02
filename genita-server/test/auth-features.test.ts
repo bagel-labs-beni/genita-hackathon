@@ -47,7 +47,11 @@ export async function bootAccounts(t: TestContext, patch: (deps: SessionDeps) =>
     if (o.body !== undefined) headers["content-type"] = "application/json";
     const r = await realFetch(base + path, { method, headers, body: o.body === undefined ? undefined : JSON.stringify(o.body) });
     const text = await r.text();
-    return { status: r.status, json: (text ? JSON.parse(text) : null) as Record<string, any> };
+    let json: Record<string, any> | null = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {} // image bytes
+    return { status: r.status, json: json as Record<string, any> };
   };
   /** Apple sign-in for a new Apple sub; consent unless told otherwise. */
   const signIn = async (sub: string, consent = true) => {
@@ -85,4 +89,37 @@ test("memory REST: JWT user gets 200 (own memories only), 403 before consent, er
   await memory.drain();
   assert.deepEqual(await memory.list(a.userId), [], "memories erased with the account");
   assert.equal((await memory.list(b.userId)).length, 1, "other users untouched");
+});
+
+test("finds REST: JWT user gets 200 for their own cards and pictures only; X-Genita-User is ignored; erased on account delete", async (t) => {
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  const store = new MemoryFindsStore();
+  const { call, signIn, shared } = await bootAccounts(t, (d) => {
+    d.finds = { vendors: d.finds!.vendors, store, images: false, imageBase: "/v1/finds" };
+  });
+  const a = await signIn("001.finds.a");
+  const b = await signIn("001.finds.b");
+  const late = await signIn("001.finds.c", false);
+  const card = (id: string, title: string) => ({ id, kind: "recipe", createdAt: "2026-11-02T00:00:00.000Z", eyebrow: "", title, subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] }) as any;
+  await store.put(ownerKey(a.userId), card("finda-0001", "A's card"));
+  await store.putImage("finda-0001", "hero", Buffer.from([0xff, 0xd8, 0xff]));
+  await store.put(ownerKey(b.userId), card("findb-0001", "B's card"));
+
+  assert.equal((await call("GET", "/v1/finds")).status, 401);
+  assert.equal((await call("GET", "/v1/finds", { token: late.token })).status, 403);
+  const mine = await call("GET", "/v1/finds", { token: a.token });
+  assert.equal(mine.status, 200, "a signed-in (JWT) user gets their Finds");
+  assert.deepEqual(mine.json.finds.map((f: { id: string }) => f.id), ["finda-0001"]);
+  // the old owner header can't reach someone else's cards with a JWT
+  assert.deepEqual((await call("GET", "/v1/finds", { token: a.token, user: b.userId })).json.finds.map((f: { id: string }) => f.id), ["finda-0001"]);
+  assert.equal((await call("GET", "/v1/finds/findb-0001", { token: a.token })).status, 404);
+  assert.equal((await call("GET", "/v1/finds/finda-0001/images/hero", { token: b.token })).status, 404, "pictures only for the card's owner");
+  assert.equal((await call("GET", "/v1/finds/finda-0001/images/hero", { token: a.token })).status, 200);
+  // dev token: X-Genita-User names a dev user, mapped to its own account id (not a raw owner key)
+  assert.deepEqual((await call("GET", "/v1/finds", { token: shared, user: a.userId })).json.finds, []);
+
+  assert.equal((await call("DELETE", "/me", { token: a.token })).status, 200);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(await store.list(ownerKey(a.userId)), [], "Finds erased with the account");
+  assert.equal((await store.list(ownerKey(b.userId))).length, 1, "other users untouched");
 });
