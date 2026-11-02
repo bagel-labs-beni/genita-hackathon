@@ -269,6 +269,25 @@ import XCTest
 
     // MARK: render rate
 
+    /// Option B: the flow morph (a real prep export, animal open-jaw profile) + alive base on the CI simulator.
+    func testFlowMorphThroughputAt540x960() throws {
+        let dir = Self.fixtureDir.deletingLastPathComponent().appending(path: "face-flow-animal")
+        let set = try FaceSet(directory: dir)
+        XCTAssertNotNil(set.flow)
+        let renderer = FaceRenderer(faceSet: set, outputSize: CGSize(width: 540, height: 960), seed: 7)
+        _ = renderer.render(at: 0, lip: .rest)
+        let n = 120
+        let start = CFAbsoluteTimeGetCurrent()
+        for i in 0..<n {
+            let lip = LipFrame(weights: [i % 6 < 3 ? .A : .O: 0.8, .rest: 0.2], openness: Float(i % 10) / 10)
+            XCTAssertNotNil(renderer.render(at: Double(i) / 30, lip: lip))
+        }
+        let seconds = CFAbsoluteTimeGetCurrent() - start
+        let line = String(format: "FACE_FPS=flow %.1f (flow morph + alive base, %d frames 540x960 in %.1f s, iOS simulator)", Double(n) / seconds, n, seconds)
+        print(line)
+        XCTContext.runActivity(named: line) { _ in }
+    }
+
     /// The number for the PR: frames per second of the face renderer at 540×960 on the CI simulator.
     func testRenderThroughputAt540x960() throws {
         let set = try Self.fixtureSet()
