@@ -103,7 +103,8 @@ export function openerBlock(o: OpenerInput): string {
   const notLast = o.lastHook && (!hook || o.lastHook.toLowerCase() !== hook.toLowerCase()) ? ` Don't open on "${o.lastHook.replace(/["\n]/g, " ").slice(0, 80)}" (that was last time).` : "";
   const fromProfile = hook ? `with ${onLater}` : "with one hook from their profile or your own mood";
   // a fashion hook came back as "back in the monochrome uniform I see" with no camera (eval 11/3)
-  const known = hook ? " It's something you know about them, never something you can see right now." : "";
+  // "fight me on aespa again": the hook is profile knowledge, not a shared history (eval 11/3, 4 of 26 runs)
+  const known = hook ? ` It's something you know from their profile, not something you two talked about (so no "again"), and never something you can see right now.` : "";
   const lines: Record<typeof k, string> = {
     first_known: `This is your very first call (nothing has happened between you yet, so no "again" or "back"), but you already know them from their profile. Open like a friend who knows them: build your first line on ${on} as a guess, a tease or an opinion they can push back on, in the style the profile says they like.${known} No "nice to meet you", never say how you know it. ${NO_INTAKE} ${SHORT}`,
     known: `Open like a friend who knows them: build your first line on ${onLater} as a guess, a tease or an opinion, in the style it says they like.${notLast}${known} Never say how you know it. ${NO_INTAKE} ${SHORT}`,
