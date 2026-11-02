@@ -252,12 +252,14 @@ export async function startServer(
     const ref: { session?: Session } = {};
     const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
     const sink = gated?.sink ?? raw;
-    const session = new Session(id, sink, { ...deps, userId: who.userId });
+    // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts)
+    const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
+    const session = new Session(id, sink, { ...deps, userId: who.userId, turnGate });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
-    log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
+    log("session.open", { session: id, sessions: sessions.size, auth: who.kind, ...(who.judge ? { judge: who.judge } : {}) });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
     const touch = () => {
       clearTimeout(idle);

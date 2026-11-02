@@ -5,6 +5,7 @@
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
 import type { Config } from "../config.ts";
+import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/elevenlabs.ts";
@@ -82,6 +83,8 @@ export type SessionDeps = {
   voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  /** D41 per-account daily turn cap (judge demo accounts only); unset = no cap. */
+  turnGate?: TurnGate;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -288,7 +291,7 @@ export class Session {
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
-        if (this.interp) return this.interp.typed(text);
+        if (this.interp) return this.admitInterpret(() => this.interp?.typed(text));
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -450,7 +453,8 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate,
+      // capped (judge) accounts don't guess on partials: a guess calls Spark before the turn is admitted
+      speculate: this.deps.config.speculate && !this.deps.turnGate,
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
@@ -478,7 +482,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.interp.final("call", e.text);
+      else if (e.type === "speechComplete") this.admitInterpret(() => this.interp?.final("call", e.text));
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -637,7 +641,7 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        return interp.final("mic", e.text);
+        return this.admitInterpret(() => interp.final("mic", e.text));
     }
   }
 
@@ -854,6 +858,7 @@ export class Session {
   }
 
   private startSpeculation(text: string): void {
+    if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -882,6 +887,13 @@ export class Session {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
     const device = this.tts === "device";
     this.reply = reply;
+    // D41 daily cap: a real user turn spends one; the greeting only runs while one is left. Over the cap:
+    // no Spark call, a daily_limit error, and the call stays open.
+    if (!self && this.deps.turnGate && !(greeting ? this.deps.turnGate.peek() : this.deps.turnGate.take())) {
+      this.dropSpeculation();
+      this.dailyLimit();
+      return this.finishReply(reply);
+    }
     const signal = reply.abort.signal;
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
@@ -1165,6 +1177,17 @@ export class Session {
     this.reply = null;
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
+  }
+
+  /** An interpreted line is a user turn too (it calls Spark): spend one or refuse it. */
+  private admitInterpret(run: () => void): void {
+    if (this.deps.turnGate && !this.deps.turnGate.take()) return this.dailyLimit();
+    run();
+  }
+
+  private dailyLimit(): void {
+    this.log("turn.daily_limit", {});
+    this.error("daily_limit", "Today's turns for this access code are used up. The limit resets at 00:00 UTC.", false);
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {
