@@ -28,6 +28,9 @@ struct Options {
     var width = 540, height = 960
     var emotion: String?
     var seed: UInt64 = 1
+    var still = false
+    var dumpAmounts: String?
+    var amounts: String?
     var framesDir: String?
     var framesPrefix = "face"
     var bitrate = 1_100_000
@@ -56,6 +59,10 @@ func parse() -> Options {
             o.width = p[0]; o.height = p[1]
         case "--emotion": o.emotion = v()
         case "--seed": o.seed = UInt64(v()) ?? 1
+        case "--still": o.still = true
+        case "--dump-amounts": o.dumpAmounts = v()
+        case "--amounts": o.amounts = v()
+        case "--flow-density": FaceRenderer.flowDensity = Double(v()) ?? 1
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -182,9 +189,18 @@ if let say = o.say {
 } else {
     pcm = readAudio(o.audio!)
 }
+var phonemes: [LipPhonemeTiming] = []
 if let tPath = o.timings {
-    guard let d = FileManager.default.contents(atPath: tPath), let list = try? JSONDecoder().decode([JSONWord].self, from: d) else { fail("timings: unreadable") }
-    words = list.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+    // Either a word list [{w,s,e}] or an aligner payload {"timing": {"words": [...], "phonemes": [{p,s,e}]}}.
+    struct JSONPhone: Decodable { let p: String; let s: Int; let e: Int }
+    struct Aligned: Decodable { struct T: Decodable { let words: [JSONWord]; let phonemes: [JSONPhone]? }; let timing: T }
+    guard let d = FileManager.default.contents(atPath: tPath) else { fail("timings: unreadable") }
+    if let list = try? JSONDecoder().decode([JSONWord].self, from: d) {
+        words = list.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+    } else if let a = try? JSONDecoder().decode(Aligned.self, from: d) {
+        words = a.timing.words.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+        phonemes = (a.timing.phonemes ?? []).map { LipPhonemeTiming(phoneme: $0.p, startMs: $0.s, endMs: $0.e) }
+    } else { fail("timings: unreadable") }
 }
 if pcm.count < 4800 { fail("audio too short") }
 
@@ -201,13 +217,21 @@ while off < pcm.count {
     let offsetMs = off / 48
     timeline.appendPCM(pcm.subdata(in: off..<end), offsetMs: offsetMs)
     timeline.appendWords(words.filter { $0.startMs >= offsetMs && $0.startMs < offsetMs + 200 })
+    timeline.appendPhonemes(phonemes.filter { $0.startMs >= offsetMs && $0.startMs < offsetMs + 200 })
     off = end
 }
 timeline.finishAudio()
-print("mouth timing: \(timeline.hasTimings ? "word timings (\(words.count) words)" : (o.text != nil ? "text + loudness fallback" : "loudness only"))")
+print("mouth timing: \(timeline.hasTimings ? "timings (\(words.count) words, \(phonemes.count) phonemes)" : (o.text != nil ? "text + loudness fallback" : "loudness only"))")
 
 let size = CGSize(width: o.width, height: o.height)
-let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed)
+let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: o.still)
+var amountRows: [[Float]] = []
+// --amounts <json>: per-frame key amounts from the prototype (parity check of the morph itself).
+let givenAmounts: [[Float]] = {
+    guard let p = o.amounts, let d = try? Data(contentsOf: URL(fileURLWithPath: p)),
+          let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let rows = j["amounts"] as? [[Double]] else { return [] }
+    return rows.map { $0.map(Float.init) }
+}()
 if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
 // The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
 // timeline), so the alive base's motion does not count as mouth movement.
@@ -294,11 +318,12 @@ func mouthArea(_ pb: CVPixelBuffer) -> [Float] {
 
 func renderFrame(_ i: Int) {
     let t = Double(i) / Double(fps)
-    // The rig's spring needs the target a little early (FaceRenderer.rigLookaheadMs).
-    let lip = timeline.sample(atMs: t * 1000 + FaceRenderer.rigLookaheadMs)
+    let lip = timeline.sample(atMs: t * 1000 + renderer.lipLookaheadMs)
     openness.append(Double(timeline.sample(atMs: t * 1000).openness))
     let r0 = Date()
+    if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
     let image = renderer.image(at: t, lip: lip)
+    if o.dumpAmounts != nil, let keys = faceSet.flow?.keys { let a = renderer.flowAmounts; amountRows.append(keys.map { a[$0] ?? 0 }) }
     var pbOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pbOut)
     guard let pb = pbOut else { fail("no pixel buffer") }
@@ -349,6 +374,11 @@ writer.finishWriting { sem.signal() }
 sem.wait()
 if writer.status != .completed { fail("writer: \(String(describing: writer.error))") }
 let wallSeconds = Date().timeIntervalSince(wall)
+if let path = o.dumpAmounts, let keys = faceSet.flow?.keys {
+    let obj: [String: Any] = ["keys": keys, "fps": fps, "amounts": amountRows.map { $0.map { (Double($0) * 10_000).rounded() / 10_000 } }]
+    try? JSONSerialization.data(withJSONObject: obj).write(to: URL(fileURLWithPath: path))
+}
+print("face engine: \(faceSet.flow != nil && renderer.useFlow ? "flow morph (\(faceSet.flow!.keys.count) keys)" : "key patches")")
 
 // MARK: A/V offset
 

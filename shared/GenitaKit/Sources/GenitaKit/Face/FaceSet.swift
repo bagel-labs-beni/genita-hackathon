@@ -28,6 +28,8 @@ public struct FaceManifest: Codable, Equatable, Sendable {
     public var visemes: [String: String]
     public var boxes: [String: Boxes]?
     public var rejected: [Rejected]?
+    /// Option B flow morph data (absent → the key-patch engine).
+    public var flow: FaceFlowManifest?
 }
 
 public enum FaceExpression: String, CaseIterable, Sendable {
@@ -70,8 +72,8 @@ public final class FaceSet: @unchecked Sendable {
     /// Alignment of each expression still to the neutral one (pixels, y down).
     public let expressionShift: [FaceExpression: (dx: Int, dy: Int)]
     public let patches: [LipViseme: FaceMouthPatch]
-    /// Each shape's own mouth box, moved into neutral-image pixels by its alignment (y down).
-    public let ownMouth: [LipViseme: CGRect]
+    /// Flow-morph data when prep produced it (option B).
+    public let flow: FaceFlowData?
     /// What each shape draws after fallbacks (nil = the expression's own mouth).
     public let resolved: [LipViseme: LipViseme?]
     /// Load decisions worth logging (rejections, fallbacks, shifts).
@@ -165,7 +167,6 @@ public final class FaceSet: @unchecked Sendable {
             cover = cover.union(m.offsetBy(dx: CGFloat(-s.dx), dy: CGFloat(-s.dy)))
         }
         var patches: [LipViseme: FaceMouthPatch] = [:]
-        var ownMouth: [LipViseme: CGRect] = [:]
         for v in LipViseme.shapes {
             guard let ref = manifest.visemes[v.rawValue] else { notes.append("\(v.rawValue): missing"); continue }
             do {
@@ -179,13 +180,16 @@ public final class FaceSet: @unchecked Sendable {
                     continue
                 }
                 patches[v] = patch
-                ownMouth[v] = own.offsetBy(dx: CGFloat(-patch.shift.dx), dy: CGFloat(-patch.shift.dy))
             } catch {
                 notes.append("\(v.rawValue): \(error)")
             }
         }
         self.patches = patches
-        self.ownMouth = ownMouth
+        var flowData: FaceFlowData?
+        if let fm = manifest.flow {
+            do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { notes.append("flow: \(error) → key patches") }
+        }
+        self.flow = flowData
         let resolved = Self.resolve(available: Set(patches.keys))
         for v in LipViseme.shapes where resolved[v]! != v {
             notes.append("\(v.rawValue) → \(resolved[v]!.map(\.rawValue) ?? "rest")")

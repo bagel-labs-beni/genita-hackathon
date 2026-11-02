@@ -19,9 +19,10 @@ struct AliveMotion {
     static let nodPitch = 0.006           // vertical foreshortening at full nod
     static let breathingHz = 0.25
     static let breathingScale = 0.006
-    static let cameraDrift = 3.0, cameraJitter = 0.8
-    static let cameraRollDegrees = 0.25
-    static let cameraZoom = 0.004
+    // Kept small: a review of Peter's reference clip measured its background as nearly still.
+    static let cameraDrift = 1.0, cameraJitter = 0.3
+    static let cameraRollDegrees = 0.1
+    static let cameraZoom = 0.0015
     static let parallax = 0.15            // person moves 15% more than the background
     /// Output is scaled up this much so camera drift never shows the frame edge.
     static let overscan: CGFloat = 1.03

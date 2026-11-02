@@ -339,7 +339,7 @@ public final class LipTimeline: @unchecked Sendable {
                 if j < tokens.count { segs += textSegments(d, tokens: Array(tokens[j...]), fromMs: prevEnd, toMs: .infinity, covered: covered) }
             }
         }
-        d.segments = disjoint(segs)
+        d.segments = Self.coarticulate(disjoint(segs))
         d.hasSegments = !d.segments.isEmpty
         return d
     }
@@ -380,11 +380,23 @@ public final class LipTimeline: @unchecked Sendable {
         let denom = audioFinished || toMs.isFinite ? v : max(v, letters * Self.windowsPerLetter)
         let w = Double(Self.windowMs)
         var out: [Segment] = []
-        var cum = 0.0
-        for (shapes, count) in shaped {
-            let a = Int((cum / letters * denom).rounded(.down))
-            cum += Double(count)
-            let b = Int((cum / letters * denom).rounded(.down))
+        // Word boundaries: letter-count share of the voiced windows, each moved to the quietest
+        // window within ±3 (speech dips between words), kept in order.
+        var cuts: [Int] = [0]
+        var cum0 = 0.0
+        for (_, count) in shaped {
+            cum0 += Double(count)
+            cuts.append(Int((cum0 / letters * denom).rounded(.down)))
+        }
+        for k in 1..<(cuts.count - 1) where cuts[k] > 0 && cuts[k] < voicedIdx.count {
+            let lo = max(cuts[k - 1] + 1, cuts[k] - 3), hi = min(voicedIdx.count - 1, cuts[k] + 3, cuts[k + 1] - 1)
+            guard lo <= hi else { continue }
+            var best = cuts[k], bestOpen = Float.infinity
+            for c in lo...hi { let o = d.openness[voicedIdx[c]]; if o < bestOpen { bestOpen = o; best = c } }
+            cuts[k] = best
+        }
+        for (n, (shapes, _)) in shaped.enumerated() {
+            let a = cuts[n], b = cuts[n + 1]
             let mine = Array(voicedIdx[min(a, voicedIdx.count)..<min(max(a, b), voicedIdx.count)])
             if a >= voicedIdx.count { break }
             guard !mine.isEmpty else { continue }
@@ -429,6 +441,29 @@ public final class LipTimeline: @unchecked Sendable {
             }
         }
         return parts
+    }
+
+    /// Shortest shape the mouth shows (2 frames at 25 fps); shorter ones read as chatter.
+    static let minShapeMs = 80.0
+
+    /// Co-articulation: a shape shorter than `minShapeMs` is absorbed by the shape before it,
+    /// except closures (m/b/p), which keep their own timing (the face engine holds them shut for
+    /// its minimum from the closure's start; stretching here as well ate short vowels after them).
+    private static func coarticulate(_ segs: [Segment]) -> [Segment] {
+        guard segs.count > 1 else { return segs }
+        let s = segs
+        var out: [Segment] = []
+        for seg in s where seg.end > seg.start {
+            if seg.viseme != .MBP, seg.end - seg.start < minShapeMs, let last = out.last, last.viseme != .MBP, abs(last.end - seg.start) < 1e-6 {
+                out[out.count - 1].end = seg.end      // absorbed by the shape before it
+                continue
+            }
+            if let last = out.last, last.viseme == seg.viseme, abs(last.end - seg.start) < 1e-6 {
+                out[out.count - 1].end = seg.end; continue
+            }
+            out.append(seg)
+        }
+        return out
     }
 
     /// Sorted, non-overlapping (a later segment wins where two overlap), neighbours merged.
