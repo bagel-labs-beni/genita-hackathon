@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, PILL_MAX, TWO_SAY, ONE_SAY, searchedLine, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
+import { FindsRunner } from "../src/finds/runner.ts";
+import { MemoryFindsStore } from "../src/finds/store.ts";
 import { likesFromStyle } from "../src/finds/setup.ts";
 import { checkServerEvent, type ServerEvent } from "../src/protocol.ts";
 
@@ -206,8 +208,8 @@ test("product pipeline: 2 opened product pages → card with price from the page
     ["Linen overshirt", P2, null, "Understated color", "Easy to layer"],
   ], "page price wins over the model's; no price when the page didn't show one");
   assert.deepEqual(card.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
-  assert.equal(card.say, "Two options. Simple cuts, like you prefer.");
-  assert.match(card.how[1], /^Searched the web · northline\.example\.com, fieldandco\.example\.com$/);
+  assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
+  assert.equal(card.how[1], "Searched the web · northline.example.com +1", "one line on the card (#214)");
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
   assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
   assert.deepEqual(stored, ["product-1"], "only the product with a page picture gets one");
@@ -228,7 +230,7 @@ test("product pipeline: an invented URL and a category page are dropped; with on
   const { ctx } = ctxFor(v);
   const card = (await runProduct(ctx)).card!;
   assert.deepEqual(card.products!.map((p) => p.url), [P1]);
-  assert.equal(card.say, "I could only open one page that fits. Here it is.");
+  assert.equal(card.say, ONE_SAY);
   assert.match(card.status!, /^1 link/);
   assert.ok(card.how.some((h) => /Only one product page opened/.test(h)));
   assert.equal(card.products![0].price, undefined, "the page was read and had no price: the model's $70 is not used");
@@ -341,4 +343,45 @@ test("searching lines fit one line at 390 pt: short title, whole-word labels, sh
     const [title, body] = [m.slice(0, m.indexOf(". ")), m.slice(m.indexOf(". ") + 2)];
     assert.ok(title.length <= 28 && body.length <= 40, m);
   }
+});
+
+test("#199: find.started / find.progress carry the import line the search follows", async () => {
+  const v = vendors({ items: [ITEM1, ITEM2], output: [OPEN(P1), OPEN(P2)] });
+  const { ctx, events } = ctxFor(v, { likes: ["Clean, minimal clothes. Understated colors.", "No loud logos."] });
+  await runProduct(ctx);
+  const started = events.find((e) => e.type === "find.started") as Extract<ServerEvent, { type: "find.started" }>;
+  const progress = events.find((e) => e.type === "find.progress") as Extract<ServerEvent, { type: "find.progress" }>;
+  assert.deepEqual(started.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "" });
+  assert.deepEqual(progress.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
+  const bare = ctxFor(vendors({ items: [ITEM1, ITEM2], output: [OPEN(P1), OPEN(P2)] }), { likes: undefined });
+  await runProduct(bare.ctx);
+  assert.equal((bare.events[0] as { evidence?: unknown }).evidence, undefined, "no import → no evidence field");
+});
+
+test("#199: on the Mac (new call, no search yet) 'match my style' refines the jacket asked on the iPhone, not 'Things'", async () => {
+  const v = vendors({ items: [ITEM1, ITEM2], output: [OPEN(P1), OPEN(P2)] });
+  const events: ServerEvent[] = [];
+  const runner = new FindsRunner({ vendors: v, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds", productHedge: 1 }, { emit: (e) => events.push(e), announce: () => {}, log: () => {}, now: () => performance.now() });
+  runner.configure({ owner: "acct", memories: [] });
+  const recent = ["User: Jin, can we look for a jacket for this weekend?", "You: On it.", "User: Still with me?", "You: Right here."];
+  const started = runner.onTurn({ text: "Can you make them match my style?", frames: [], utteranceId: 9, replyText: Promise.resolve(null), recent });
+  assert.equal(started?.kind, "product", "a refine phrase counts after a search asked on the other device");
+  await runner.settle();
+  const s = events.find((e) => e.type === "find.started") as Extract<ServerEvent, { type: "find.started" }>;
+  assert.equal(s.detail, "Jacket · searching shops");
+  assert.match(v.prompts[0], /This refines the search you already did for: .{1,3}Jin, can we look for a jacket for this weekend/);
+  // and without that history it stays an ordinary chat turn
+  const fresh = new FindsRunner({ vendors: v, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, { emit: () => {}, announce: () => {}, log: () => {}, now: () => 0 });
+  fresh.configure({ owner: "acct", memories: [] });
+  assert.equal(fresh.onTurn({ text: "Can you make them match my style?", frames: [], utteranceId: 1, replyText: Promise.resolve(null), recent: [] }), null);
+});
+
+test("#211: pill strings are one-liners (≤ 28 chars): searching title, ack, answer", () => {
+  for (const s of [SEARCH_TITLE, TWO_SAY, ONE_SAY, "On it."]) assert.ok(s.length <= PILL_MAX, s);
+});
+
+test("#214: the 'Searched the web' line fits one card line", () => {
+  assert.equal(searchedLine(["quince.com", "target.com"]), "Searched the web · quince.com, target.com");
+  assert.equal(searchedLine(["northline.example.com", "fieldandco.example.com"]), "Searched the web · northline.example.com +1");
+  assert.equal(searchedLine(["onlyone.example.com"]), "Searched the web · onlyone.example.com");
 });

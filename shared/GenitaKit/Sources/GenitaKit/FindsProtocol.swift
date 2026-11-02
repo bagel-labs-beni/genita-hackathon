@@ -138,10 +138,14 @@ extension ServerEvent {
         public var kind: FindKind
         public var title: String
         public var detail: String
+        /// product search: the import line it follows (show as-is when present)
+        public var evidence: FindCard.Evidence?
     }
     public struct FindProgress: Codable, Equatable, Sendable {
         public var findId: String
         public var detail: String
+        /// product search: the import line the picks follow, once known
+        public var evidence: FindCard.Evidence?
     }
     public struct FindItems: Codable, Equatable, Sendable {
         public var findId: String
