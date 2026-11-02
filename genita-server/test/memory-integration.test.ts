@@ -11,7 +11,7 @@ import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
 import { MemoryService } from "../src/memory/service.ts";
 import { UsPhotoService, metaPhotoVendors } from "../src/memory/photos.ts";
 
-const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta", ELEVENLABS_API_KEY: "fake-eleven" }), port: 0, webSearch: false, speculate: true, sparkHedge: 2 };
+const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSearch: false, speculate: true, sparkHedge: 2 };
 const pause = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function waitFor(check: () => boolean) { const deadline = Date.now() + 2000; while (!check()) { if (Date.now() > deadline) throw new Error("test timed out"); await pause(); } }
 const fakePng = () => Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(32)]);
