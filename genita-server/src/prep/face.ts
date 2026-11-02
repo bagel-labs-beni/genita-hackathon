@@ -36,6 +36,20 @@ export type Viseme = (typeof VISEMES)[number];
 export type MouthKey = (typeof MOUTH_KEYS)[number];
 export type FaceKey = FaceExpression | Viseme | MouthKey;
 export const FACE_KEYS: readonly FaceKey[] = [...FACE_EXPRESSIONS, ...VISEMES, ...MOUTH_KEYS];
+
+/**
+ * Per-category mouth keys and prompt lines for the flow morph. Every kind gets the five keys today;
+ * the non-human lane (dog / cat / 3D clay / 2D anime) replaces these entries as its sets settle.
+ * A key left out of a kind's list is never generated for it (the device resolves it via map.fallback).
+ */
+export const MOUTH_KEYS_BY_KIND: Record<CompanionKind, readonly MouthKey[]> = { human: MOUTH_KEYS, animal: MOUTH_KEYS, character: MOUTH_KEYS };
+export const MOUTH_PROMPT_BY_KIND: Partial<Record<CompanionKind, Partial<Record<MouthKey, string>>>> = {};
+
+/** Keys a face set of this kind is made of. */
+export function faceKeysFor(kind: CompanionKind): readonly FaceKey[] {
+  const mouth = new Set<string>(MOUTH_KEYS_BY_KIND[kind] ?? MOUTH_KEYS);
+  return FACE_KEYS.filter((k) => !(MOUTH_KEYS as readonly string[]).includes(k) || mouth.has(k));
+}
 export const FACE_CONCURRENCY = 6;
 
 /** Normalised box [x1, y1, x2, y2], 0–1 of the image's own size. */
@@ -154,7 +168,9 @@ function region(key: FaceKey, kind: CompanionKind): { part: string; keep: string
 export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolean): string {
   const s = NOUN[kind];
   const { part, keep } = region(key, kind);
-  const line = (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
+  const line =
+    (isMouthKey(key) ? MOUTH_PROMPT_BY_KIND[kind]?.[key] : undefined) ??
+    (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
   const base = `Edit only the ${s}'s ${part}: ${line}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
   // the mouth keys always carry the hold-still line (that is how they were tested), and never smile
@@ -365,7 +381,7 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     state.items[key] = item;
   };
 
-  const todo = FACE_KEYS.filter((k) => !state.items[k]);
+  const todo = faceKeysFor(o.kind).filter((k) => !state.items[k]);
   let next = 0;
   let failure: { err: unknown } | null = null;
   const lanes = Math.min(o.concurrency ?? FACE_CONCURRENCY, todo.length);

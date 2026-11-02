@@ -316,3 +316,21 @@ test("makeFaceSet (codex P2): a saved set with no kept image is redone, not skip
   assert.equal(again.calls.edits.length, 18);
   assert.equal(Object.values(st.items).filter((i) => i?.status === "done").length, 18);
 });
+
+test("per-category key sets: a kind generates only its listed mouth keys; prompt overrides per kind", async () => {
+  const { MOUTH_KEYS_BY_KIND, MOUTH_PROMPT_BY_KIND, faceKeysFor } = await import("../src/prep/face.ts");
+  assert.deepEqual([...faceKeysFor("human")], [...FACE_KEYS]);
+  const saved = MOUTH_KEYS_BY_KIND.animal;
+  MOUTH_KEYS_BY_KIND.animal = ["MID", "AH"];
+  MOUTH_PROMPT_BY_KIND.animal = { MID: "the dog's mouth just barely open, lips relaxed" };
+  try {
+    assert.ok(!faceKeysFor("animal").includes("EH") && faceKeysFor("animal").includes("AH"));
+    assert.match(faceEditPrompt("MID", "animal", false), /the dog's mouth just barely open/);
+    const { media, calls } = fakeMedia({ keyOf: keyOf("animal") });
+    await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "animal", size: "1024x1820" });
+    assert.equal(calls.edits.length, FACE_KEYS.length - 3);
+  } finally {
+    MOUTH_KEYS_BY_KIND.animal = saved;
+    delete MOUTH_PROMPT_BY_KIND.animal;
+  }
+});

@@ -21,9 +21,13 @@ WORK_H = 960          # flow / registration working height
 RAMP_PX = 8           # lock ramp below the subnasale line, at WORK_H
 FLOW_SCALE = 0.5      # stored flow grid vs working ROI
 
-# How a LipTimeline frame maps onto keys (runtime reads this; same numbers as proto.py).
-LIP_MAP = {
-    'ladder': {'viseme': 'A', 'steps': [['MID', 0.0], ['AH', 0.35], ['AH2', 0.7], ['A', 1.15]], 'gain': [0.8, 0.4]},
+# How a LipTimeline frame maps onto keys (runtime reads this; reference: _qa-scripts/genita-mouth-proto/render.py).
+# 11/3 sweep winner (critic-ranked vs Peter, sweep s21 + snap blink; _qa-scripts/genita-mouth-compare/sweep/README.md):
+# vowel keys as the backbone, stability from timing: MMS phoneme timings, lookahead 40 ms, slew 0.25/frame,
+# MBP fully closed >= 2 frames, jaw-open floor 0.6 between syllables, snap dissolve (no cross-dissolve
+# between vowels), focus 6, no yawn-sized A for humans. Keys a set lacks resolve through `fallback`.
+BASE_MAP = {
+    'ladder': {'viseme': 'A', 'steps': [['MID', 0.0], ['AH', 0.2], ['AH2', 0.45]], 'gain': [0.8, 0.4]},
     'mix': {'O': {'keys': [['OH', 0.6], ['O', 0.4]], 'gain': [0.75, 0.5]},
             'EI': {'keys': [['EH', 0.5], ['EI', 0.5]], 'gain': [0.75, 0.5]}},
     'consonant': {'MBP': 1.0, 'FV': 0.9, 'TH': 0.85, 'L': 0.9, 'WQ': 0.8, 'U': 0.9, 'CDG': 0.9},
@@ -31,12 +35,38 @@ LIP_MAP = {
     'fallback': {'TH': 'CDG', 'L': 'CDG', 'U': 'OH', 'WQ': 'O', 'FV': 'MBP', 'CDG': 'MID', 'AH': 'A', 'AH2': 'A',
                  'MID': 'CDG', 'EH': 'EI', 'OH': 'O', 'O': 'OH', 'EI': 'EH', 'A': 'AH2'},
     'smoothing': {'fps': 25, 'attack': 0.75, 'release': 0.5},
-    'focus': 3.0,
-    'colourEdge': 0.1,
+    'slew': 0.25,                 # max change of one key amount per frame
+    'instantKeys': ['MBP'],       # attack 1 (closures land on the frame)
+    'holdFrames': {'MBP': 2},     # a closure stays fully closed at least this long
+    'focus': 6.0,                 # winner-take-most across keys (total kept)
+    'gain': 1.3,                  # vowel amount scale (Peter-like opening)
+    'lookaheadMs': 40,            # mouth leads the sound
+    'dissolve': {'mode': 'snap', 'ms': 40, 'minAmount': 0.3},  # one texture at a time, 1-frame switch (no grey teeth)
+    'colourEdge': 0.35,           # only for mode 'smooth'
+    # coarticulation: a frame whose dominant shape is a consonant other than MBP/FV keeps `share` of the
+    # neighbouring vowel frames' key amounts (linear between the nearest vowel frames within windowMs)
+    'jawFloor': {'share': 0.6, 'windowMs': 160, 'vowels': ['A', 'O', 'EI', 'U'], 'closed': ['MBP', 'FV', 'rest']},
+    'blink': {'mode': 'snap', 'frames': 3},  # eyes fully closed for 3 frames, no half frames
 }
+PROFILE = {
+    'human': {},
+    # per-category overrides (merged over BASE_MAP); the non-human lane owns animal / character3d / character2d
+    'animal': {'gain': 1.0, 'ladder': {'viseme': 'A', 'steps': [['MID', 0.0], ['AH', 0.25], ['AH2', 0.55]], 'gain': [0.8, 0.4]}},
+    'character': {'gain': 1.2, 'ladder': {'viseme': 'A', 'steps': [['MID', 0.0], ['AH', 0.2], ['AH2', 0.45]], 'gain': [0.8, 0.4]}},
+}
+PROFILE['character3d'] = PROFILE['character']
+PROFILE['character2d'] = PROFILE['character']
+
+
+def lip_map(kind):
+    m = json.loads(json.dumps(BASE_MAP))
+    m.update(json.loads(json.dumps(PROFILE.get(kind, {}))))
+    return m
+
 
 # Mask shape per kind: ellipse radii as a fraction of the face box, centre below the mouth.
-SHAPE = {'human': (0.40, 0.30, 0.08), 'animal': (0.30, 0.34, 0.08), 'character': (0.36, 0.30, 0.08)}
+SHAPE = {'human': (0.40, 0.30, 0.08), 'animal': (0.30, 0.34, 0.08), 'character': (0.36, 0.30, 0.08),
+         'character3d': (0.36, 0.30, 0.08), 'character2d': (0.36, 0.30, 0.08)}
 
 
 def box(s):
@@ -163,7 +193,7 @@ def main():
     flow = {'version': 1, 'roi': [round(X1 / W, 5), round(Y1 / H, 5), round(X2 / W, 5), round(Y2 / H, 5)],
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
-            'kind': a.kind, 'map': LIP_MAP}
+            'kind': a.kind, 'map': lip_map(a.kind)}
     json.dump(flow, open(os.path.join(a.out, 'flow.json'), 'w'), indent=1)
     print(json.dumps({'ok': True, 'ms': int((time.time() - t0) * 1000), 'flowBytes': nbytes, 'keys': len(files),
                       'lockY': flow['lockY'], 'lockSource': lock_src, 'diag': diag}))
