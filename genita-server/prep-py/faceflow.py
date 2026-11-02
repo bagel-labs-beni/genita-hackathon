@@ -123,6 +123,8 @@ def lip_map(kind):
         if 'cheek' not in ch and 'cheekW' in ch: ch['cheek'] = ch['cheekW']
         if 'naso' not in ch and 'nasoW' in ch: ch['naso'] = ch['nasoW']
     if kind == 'human':
+        m['runtime'] = {'default': 'humanV41'}
+    if (m.get('runtime') or {}).get('default') == 'humanV41':
         # lip rig (v41, critic 8.5, blind ~5:5): cross-blended lips + slow chin channel + opaque teeth layer from the top key
         m['rig'] = {'chinLpHz': 2.0, 'chinGain': 0.3, 'chinRamp': [0.035, 0.03], 'blendFloor': [0.12, 0.40],
                     'teethTop': {'hyst': 0.05, 'min': 0.08, 'alpha': [0.06, 0.12], 'fade': [0.1, 0.3], 'cavity': [52, 28, 30],
