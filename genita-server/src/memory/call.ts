@@ -87,6 +87,7 @@ export class MemoryCall {
    */
   continueThread(thread: ThreadState | null, history: Array<{ role: "user" | "assistant"; text: string }>): void {
     if (thread) this.threadId = thread.threadId;
+    this.service.claimThread(this.userId, this.threadId, this.sessionId);
     let pairs: Turn[] = thread?.pairs ?? [];
     if (!thread) {
       for (let i = 0; i < history.length; i++) {
@@ -136,6 +137,9 @@ export class MemoryCall {
   /** Background summary of this thread (never on the reply path). */
   private summarize(): void {
     if (!this.service.sessionMemory || this.covered <= this.summarizedAt || !this.thread.length) return;
+    // the thread moved to another device: that call owns its summary now; this (older, shorter) copy would
+    // describe a conversation that already went on (live eval 11/3: "did you pick white or black?" after she picked)
+    if (!this.service.ownsThread(this.userId, this.threadId, this.sessionId)) return;
     const turns = [...this.thread];
     const forgets = this.forgetsSeen;
     const threadId = this.threadId;

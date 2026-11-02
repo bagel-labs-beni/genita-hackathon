@@ -50,6 +50,18 @@ export class MemoryService {
     const r = this.repository as MemoryRepository & Partial<SummaryRepository>;
     return typeof r.putSummary === "function" && typeof r.listSummaries === "function" && typeof r.deleteSummaries === "function" ? (r as SummaryRepository) : null;
   }
+  /** (user, thread) → the call that continued it last (in process, like the handoff turn cache) */
+  private threadOwners = new Map<string, string>();
+  claimThread(userId: string, threadId: string, sessionId: string): void {
+    const key = userId + "\u0000" + threadId;
+    this.threadOwners.delete(key); this.threadOwners.set(key, sessionId);
+    while (this.threadOwners.size > 5000) this.threadOwners.delete(this.threadOwners.keys().next().value!);
+  }
+  /** an unclaimed thread belongs to the call that started it */
+  ownsThread(userId: string, threadId: string, sessionId: string): boolean {
+    const owner = this.threadOwners.get(userId + "\u0000" + threadId);
+    return owner === undefined || owner === sessionId;
+  }
   get sessionMemory(): boolean { return !!this.options.summarize && this.options.sessionMemory !== false && !!this.summaryStore; }
   /** Newest first; the current thread (a handed-off call already has its turns) is left out. */
   async summaries(userId: string, exceptThread?: string, limit = SUMMARY_KEEP): Promise<CallSummary[]> {

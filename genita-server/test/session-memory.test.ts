@@ -138,7 +138,9 @@ test("session memory: an iPhone → Mac handoff is ONE thread — one summary, t
   assert.match(JSON.stringify(requests.at(-1)!.input), /look at the navy one/, "full session context on the Mac");
   assert.doesNotMatch(inst(requests.at(-1)!), /"thread_id":"phone"/);
   mac.session.close(); await memory.drain();
+  const runs = fake.calls.length;
   phone.session.close(); await memory.drain(); // the old device closes last, with fewer turns
+  assert.equal(fake.calls.length, runs, "the old device no longer summarizes a thread the Mac continued");
   const rows = await memory.summaries("acct-a");
   assert.deepEqual(rows.map((r) => [r.thread_id, r.turns]).sort(), [["earlier-thread", 1], ["phone", 4]]);
   const macCall = fake.calls.find((c) => c.turns.some((t) => /on the Mac now/.test(t.user)))!;
@@ -290,6 +292,29 @@ test("Codex P2: a long call handed off mid-way — the Mac's summary covers ever
   assert.ok(macRun.turns.some((t) => /Turn number 13 /.test(t.user)), "turn 13 (not in the 8-pair history) is summarized");
   assert.equal(macRun.turns.length, 15);
   assert.equal((await memory.summaries("acct-a"))[0].turns, 15);
+  const before = fake.calls.length;
   phone.session.close(); await memory.drain();
+  assert.equal(fake.calls.length, before, "no stale summary run from the old device");
   assert.equal((await memory.summaries("acct-a"))[0].turns, 15, "the old device's 14-pair copy does not win");
+});
+
+test("live eval 11/3: if the Mac's summary fails, the iPhone's older half never stands in for the conversation", async () => {
+  let fail = false;
+  const calls: number[] = [];
+  const summarize: Summarizer = async (turns) => { calls.push(turns.length); if (fail) throw new Error("vendor"); return cleanSummary(NOTES); };
+  const { memory, deps } = setup(summarize);
+  const phone = await call(deps, "phone-f", ["White or black top for dinner?"]);
+  const mac = await call({ ...deps, priorTurns: () => phone.session.historySnapshot(), priorThread: () => phone.session.threadInfo() }, "mac-f", ["Black it is."]);
+  fail = true; mac.session.close(); await memory.drain();
+  fail = false; phone.session.close(); await memory.drain();
+  assert.deepEqual(await memory.summaries("acct-a"), [], "no stale 'did you pick white or black?' notes");
+  assert.deepEqual(calls, [2]);
+});
+
+test("summary safety: a verdict list of the wrong length drops only the lines without a verdict", async () => {
+  const s = createSummarizer(async () => ({ ...NOTES, sensitive: false }) as never, async (lines) => lines.slice(0, 2).map(() => true));
+  const out = await s([{ user: "x", assistant: "y" }]);
+  assert.deepEqual(out?.topics, NOTES.topics);
+  assert.deepEqual(out?.open_threads, NOTES.open_threads);
+  assert.deepEqual(out?.promises, []);
 });
