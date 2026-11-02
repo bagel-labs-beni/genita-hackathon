@@ -114,6 +114,10 @@ struct SavedSetup: Codable {
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
+    /// After a sign-in, where to go is asked from the server (`/me`): a returning account gets its companion back
+    /// and goes to the call instead of A03. nil = `routeOnLaunch()`; tests swap it.
+    @ObservationIgnored var routeAfterSignIn: (() async -> Void)?
+    @ObservationIgnored private(set) var signInRouting: Task<Void, Never>?
     @ObservationIgnored var onboarding = OnboardingClient()
     var storage: UserDefaults
     let imageURL: URL
@@ -214,6 +218,12 @@ struct SavedSetup: Codable {
         }
         if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
         if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+        // two accounts on one iPhone: the other account's companion lives on the server, not in this phone's setup
+        // (signing in used to land a returning account on A03 until the app was relaunched)
+        if userId != nil {
+            let route = routeAfterSignIn ?? { [weak self] in await self?.routeOnLaunch() }
+            signInRouting = Task { await route() }
+        }
     }
     /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
     /// account, drop it — one account's data never goes out under another's token.

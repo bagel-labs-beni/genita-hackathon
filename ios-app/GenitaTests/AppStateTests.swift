@@ -61,6 +61,23 @@ import UIKit
         XCTAssertFalse(model.setup.hasOnboarded)
         XCTAssertEqual(model.stage, .consent)
     }
+    /// Demo (two accounts on one iPhone): signing in as an account that already has a companion must ask the
+    /// server where to go (/me → restore the companion → the call), not start onboarding at A03.
+    func testSignInAsAnotherAccountAsksTheServerWhereToGo() async {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a")
+        model.setup.hasOnboarded = true
+        model.signedOut()
+        var routed = 0
+        model.routeAfterSignIn = { routed += 1 }
+        model.signedIn(userId: "user-b")
+        await model.signInRouting?.value
+        XCTAssertEqual(routed, 1, "a consented sign-in re-routes from /me (restores B's companion)")
+        model.signedOut()
+        model.signedIn(userId: "user-c", consented: false)
+        await model.signInRouting?.value
+        XCTAssertEqual(routed, 1, "no consent yet: CS01 first (it re-routes itself after Agree)")
+    }
     func testPendingConsentSurvivesARestart() {
         let model = AppState(storage: store)
         model.setup.hasOnboarded = true; model.go(.conversation); model.save()
