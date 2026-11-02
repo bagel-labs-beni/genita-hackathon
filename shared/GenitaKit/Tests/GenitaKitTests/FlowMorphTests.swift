@@ -339,3 +339,64 @@ struct LipRigTests {
         #expect(v2.consonantJaw == 0.2 && v2.springHz == MotionV2Params().springHz)
     }
 }
+
+struct FramingTests {
+    /// Small non-human faces are zoomed up to 35 % of the frame height (≤ 1.35×); people never; map wins.
+    @Test func smallAnimalFacesZoomPeopleDoNot() throws {
+        let set = try Synth.faceSet()           // human, face box 60 % high
+        #expect(FaceRenderer.framing(set).zoom == 1)
+        let fr = try JSONDecoder().decode(FlowMap.Framing.self, from: Data(#"{"zoom":1.2,"cy":"x"}"#.utf8))
+        #expect(fr.zoom == 1.2 && fr.cy == nil)
+    }
+
+    @Test func v44TeethToneAndExitDecode() throws {
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"teethTop":{"tone":{"cavityDark":0.4,"split":0.5},"exitBeforeClose":1},"blendFloor":[0.12,0.4]}"#.utf8))
+        #expect(rig.teethTone?.cavityDark == 0.4 && rig.teethTone?.teethLift == 0.5 && rig.teethExitBeforeClose && rig.blendFloor == [0.12, 0.4])
+    }
+}
+
+struct RigRobustnessTests {
+    /// Codex P2: a rig / framing / alive block of the wrong shape keeps the rest of the map.
+    @Test func aBadOptionalBlockKeepsTheMap() throws {
+        var m = FlowMap.standard; m.drive = "open"
+        var j = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as! [String: Any]
+        j["rig"] = "bad"; j["framing"] = [Int](); j["alive"] = 3; j["motionV2"] = "x"
+        let back = try JSONDecoder().decode(FlowMap.self, from: JSONSerialization.data(withJSONObject: j))
+        #expect(back.drive == "open" && back.rig == FlowMap.Rig() && back.framing == FlowMap.Framing())
+    }
+
+    /// Codex P1: an out-of-range percentile does not crash the teeth tone.
+    @Test func teethToneSurvivesABadPercentile() throws {
+        var tone = FlowMap.Rig.TeethTone(); tone.thrPct = -10
+        let w = 12, h = 12
+        let p = [Float](repeating: 120, count: w * h * 3)
+        let inn = (0..<(w * h)).map { i in (2..<10).contains(i % w) && (2..<10).contains(i / w) ? Float(1) : 0 }
+        #expect(FlowMorph.toneTeeth(p, interior: inn, width: w, height: h, tone: tone).count == p.count)
+    }
+}
+
+struct StillBackgroundAndPerioralTests {
+    @Test func cameraDriftIsOffAndPerioralDecodes() throws {
+        let alive = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX":3}"#.utf8))
+        #expect(alive.camera == 0)
+        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"philtrumPx":1.2,"mbpChinPx":"x","lpfMs":150}"#.utf8))
+        #expect(pr.philtrumPx == 1.2 && pr.mbpChinPx == 0 && pr.lpfMs == 150 && !pr.isOff)
+        #expect(FlowMap.Perioral().isOff)
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"skinShare":2}"#.utf8))   // clamped
+        #expect(rig.skinShare == 1)
+    }
+
+    /// Perioral weights render without crashing and move the skin around the lips.
+    @Test func perioralMovesTheSkinAroundTheMouth() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"])
+        var pr = FlowMap.Perioral(); pr.mbpChinPx = 6
+        let rules = FlowMap.Cheek(spread: 0.5, pull: 1, cheek: 1, naso: 0.3, lift: 2)
+        let rig = CheekRig(rules: rules, data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, face: set.faceBox, mouth: set.mouthBox,
+                           stillWidth: Double(set.pixelSize.width), perioral: pr)
+        #expect(rig.perioral != nil)
+        let morph = [UInt8](repeating: 0, count: 4)
+        let a = pixels(rig.render(morph: morph, morphWidth: 1, morphHeight: 1, d: [(0, 0), (0, 0)], dPrev: [(0, 0), (0, 0)], lift: 0))
+        let b = pixels(rig.render(morph: morph, morphWidth: 1, morphHeight: 1, d: [(0, 0), (0, 0)], dPrev: [(0, 0), (0, 0)], lift: 0, peri: (0, 0, 0, 1)))
+        #expect(a != b)
+    }
+}

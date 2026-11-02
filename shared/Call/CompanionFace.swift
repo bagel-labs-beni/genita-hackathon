@@ -129,7 +129,8 @@ struct CompanionFaceLoader: Sendable {
         if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.flow = nil }
         let finalManifest = useManifest
         let set = try await Task.detached(priority: .userInitiated) {
-            try FaceSet(manifest: finalManifest) { ref in
+            FaceSet.onDevicePersonMask = true   // still background: only the person moves (no prep mask → Vision)
+            return try FaceSet(manifest: finalManifest) { ref in
                 guard let data = images[ref] else { throw FaceSetError.undecodable(ref) }
                 return data
             }
