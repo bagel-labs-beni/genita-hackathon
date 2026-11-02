@@ -341,7 +341,10 @@ const config: Config = {
   sparkFirstTokenTimeoutMs: 8000,
   sparkHedge: 1,
   speculate: false,
-  speculateStableMs: 250,
+  speculateStableMs: 250,  // #157: these session tests exercise server-voice frames
+  serverTts: true,
+  kling: false,
+  peter: false,
 };
 
 class Client implements ClientSink {

@@ -40,23 +40,27 @@ const IDLE_MS = 120_000;
 
 export type LogFn = (event: string, data: Record<string, unknown>) => void;
 
-/** No ElevenLabs key: every sentence goes out as text only (the session's ttsFailed path), no vendor call. */
-async function* ttsOff(): AsyncGenerator<never> {
+/**
+ * Server TTS off: sessions run in device mode and never call this. If one did, it refuses
+ * without reaching a vendor; "tts_off" is the session's text-only (no error) path.
+ */
+async function* serverTtsOff(): AsyncGenerator<never> {
   throw new Error("tts_off");
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
+  const elevenKey = config.serverTts ? config.elevenKey : null;
+  const peterUrl = process.env.GENITA_PETER_URL;
+  const peterToken = process.env.GENITA_PETER_TOKEN;
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: config.elevenKey ? (req) => streamSpeech({ ...req, apiKey: config.elevenKey }) : ttsOff,
-    // one Peter connection per call = one Modal container = one GPU
+    tts: elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
-      process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
-        ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
-        : undefined,
+      config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };
