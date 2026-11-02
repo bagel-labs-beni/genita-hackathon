@@ -55,7 +55,9 @@ final class GenitaUITests: XCTestCase {
         let app = XCUIApplication()
         func open(_ stage: String) {
             app.launchArguments = ["--uitesting"]
-            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage]
+            // Not the deployed server: with no session token it closes 4401 and the app routes to A02 sign-in (#155),
+            // so the conversation stage would never show its rail. A closed local port just keeps reconnecting.
+            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage, "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session"]
             app.launch()
         }
         func capture(_ name: String) {
@@ -76,12 +78,13 @@ final class GenitaUITests: XCTestCase {
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
         app.terminate()
-        open("voice"); app.buttons["voice1"].tap(); capture("13-목소리-선택완료")
-        app.buttons["Preview voice 2"].tap(); capture("13a-목소리-미리듣기")
-        app.buttons["Preview voice 2"].tap(); app.buttons["voice0"].tap(); capture("13b-목소리-첫번째선택"); app.terminate()
+        // V04 reads the server's voices; with no server in this test the curated four show greyed and the default stays picked
+        // (the server states V04 / V04-P / V04-S / V04-waking are covered in OnboardingUITests against the stub)
+        open("voice"); XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13-목소리-선택완료"); app.terminate()
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
+        XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 15), "camera toggle on the call rail")
         XCTAssertTrue(app.buttons["cameraToggle"].isEnabled)
         XCTAssertTrue(app.buttons["micToggle"].isEnabled)
         app.buttons["more"].tap(); XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)); capture("31a-더보기")
@@ -163,7 +166,7 @@ final class GenitaUITests: XCTestCase {
                 app.buttons["Cancel"].tap()
             }
             if stage == "voice" && variant != "empty" {
-                app.buttons["Preview voice 1"].tap(); capture("13a-목소리-미리듣기")
+                XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13a-목소리-미리듣기")
             }
             if stage == "conversation" {
                 app.buttons["openMenu"].tap(); capture("32-대화메뉴")
@@ -207,7 +210,9 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
         app.buttons["primaryCTA"].tap()
-        app.buttons["voice0"].tap(); app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["primaryCTA"]); waitForExpectations(timeout: 15)   // no server: the default voice is picked
+        app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Quick start")).firstMatch.tap()
         app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Think with me")).firstMatch.tap(); app.buttons["primaryCTA"].tap()

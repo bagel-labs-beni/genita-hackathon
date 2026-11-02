@@ -41,6 +41,7 @@ export async function memoryRoute(req: IncomingMessage, res: ServerResponse, url
         return json(res, 200, await routes.memory.settings(userId, update));
       }
     }
+    if (url.pathname === "/v1/us-photos" && !routes.photos) return json(res, 404, { error: "feature_off" });
     if (url.pathname === "/v1/us-photos" && req.method === "POST" && routes.photos) {
       const b = await body(req);
       // Reject all other images/fields: the user's face/room is never forwarded.

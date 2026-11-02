@@ -12,6 +12,8 @@ export type MemoryOptions = {
   /** Storage owner must delete the crop, not just its DB reference. */
   deleteCrop?: (userId: string, ref: string) => Promise<void>;
   verifyCrop?: (userId: string, crop: SeenCandidate["crop"]) => Promise<boolean>;
+  /** Seen memory (SM-1~3). Off in the hackathon build via createMemory (D40); defaults on for direct use/tests. */
+  seenMemory?: boolean;
   isSafe?: (text: string) => Promise<boolean>;
   log?: Log;
 };
@@ -23,7 +25,7 @@ export class MemoryService {
   readonly state: CallStateRepository;
   private readonly options: MemoryOptions;
   private locks = new Map<string, Promise<unknown>>();
-  private listeners = new Map<string, Set<() => void>>();
+  private listeners = new Map<string, Set<(revision: number) => void>>();
   private jobs = new Set<Promise<unknown>>();
   private seen = new Map<string, number>();
   readonly now: () => number;
@@ -42,7 +44,7 @@ export class MemoryService {
     this.jobs.add(job); void job.finally(() => this.jobs.delete(job));
   }
   async drain(): Promise<void> { while (this.jobs.size) await Promise.all(this.jobs); }
-  subscribe(userId: string, fn: () => void): () => void {
+  subscribe(userId: string, fn: (revision: number) => void): () => void {
     const list = this.listeners.get(userId) ?? new Set(); list.add(fn); this.listeners.set(userId, list);
     return () => { list.delete(fn); if (!list.size) this.listeners.delete(userId); };
   }
@@ -98,7 +100,7 @@ export class MemoryService {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
       const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
-      for (const fn of this.listeners.get(userId) ?? []) fn();
+      for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.
       await this.repository.delete(userId, id);
@@ -117,6 +119,7 @@ export class MemoryService {
     });
   }
   async rememberSeen(userId: string, context: SeenContext, candidate: SeenCandidate): Promise<Memory | null> {
+    if (this.options.seenMemory === false) return null;
     const revision = (await this.state.getState(userId)).revision;
     if (!this.options.deleteCrop || !this.options.verifyCrop || !validSeen(candidate, context) || !await this.options.verifyCrop(userId, candidate.crop)) return null;
     return this.serial(userId, async () => {

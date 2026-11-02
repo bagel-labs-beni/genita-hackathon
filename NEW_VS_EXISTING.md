@@ -1,19 +1,15 @@
 # New versus existing
 
-What in this repository predates the hackathon, and what does not.
+What in this repository predates the hackathon (10/28 – 11/5), and what does not.
 
 ## Existing (pre-hackathon)
 
-- `existing/peter-engine/`: Peter lip-sync engine bundle, native Swift compositor, demo character cache, model weights, vendored MuseTalk and Earlier source snapshots (`vendor/`), and test media. Offline only. The apps do not call it.
-- `shared/Handoff/EffectSource/` and the built `shared/Handoff/handoff-effect.{js,html}`: Duo blur shader, sampler and payload compositor from `handoff-effects-lab`. Upstream license is kept next to the sources. Three.js is MIT.
-- `ios-app/Genita/LidarWorldTracker.swift`: plane, corner and world-map algorithm ported from `handoff-effects-lab`.
-
-`handoff-effects-lab` is not in this repository. Treat the last two items as existing until the lab's dates are confirmed.
+Nothing in the submitted apps or server. Code that predated the hackathon is no longer in this repository (see Removed).
 
 ## Removed
 
-The earlier account gateway in `server/index.mjs`, `src/api.js`, `src/persona-call.js` and `src/original-call.js` were not used by any screen, so they were deleted. They remain in git history.
+An account gateway and a web prototype from our earlier products, and our earlier lip-sync engine, were removed before submission and are not part of this submission.
 
 ## New
 
-Everything else: the iOS and Mac apps, the web design prototype, device ownership (`shared/Handoff/ConversationOwnership.swift`), the handoff sheets, local camera and microphone controls, and the Genita sounds.
+Everything here was built during the hackathon: the iOS and Mac apps, genita-server, device ownership (`shared/Handoff/ConversationOwnership.swift`), the handoff sheets, local camera and microphone controls, the Genita sounds, and the iPhone ↔ Mac move effect. The iPhone ↔ Mac handoff effects — EffectSource and its Duo shader (`shared/Handoff/EffectSource/`, built into `shared/Handoff/handoff-effect.{js,html}`) and `ios-app/Genita/LidarWorldTracker.swift` — are NEW; the first related commit was made during the hackathon (11/1), as was the first commit here. Three.js (MIT) is a third-party library; its license is kept next to the sources.

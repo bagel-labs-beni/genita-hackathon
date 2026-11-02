@@ -4,18 +4,32 @@ import CoreText
 
 @main struct GenitaMacApp: App {
     init() {
+        MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["ttf", "otf"].contains(url.pathExtension.lowercased()) { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
         }
+        MacUpdater.shared.start() // Sparkle: launch + daily check, silent download, "Restart to update"
     }
     var body: some Scene {
         WindowGroup("Genita", id: "companion") {
-            MacHandoffControls().preferredColorScheme(.light)
+            // Figma MAC-1~4: the window bar has the traffic lights only, no title text
+            MacStartView().preferredColorScheme(.light).toolbar(removing: .title)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif
         }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
+            .commands { MacAccountCommands() }
+    }
+}
+
+/// Genita ▸ Sign Out (the home windows carry no sign-out link, as in Figma MAC-2/3/4).
+struct MacAccountCommands: Commands {
+    @ObservedObject private var call = MacCall.shared
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Sign Out") { call.signOut() }.disabled(!call.isSignedIn)
+        }
     }
 }
 func resourceImage(_ name: String) -> Image {

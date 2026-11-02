@@ -33,7 +33,7 @@ enum CallMotion {
 // MARK: - Face
 
 /// Where the moving mouth comes from. Only `.none` exists today: the silent loop plays as is.
-/// F4-L18 adds `.peter` (MuseTalk frames composited over the loop) and F4-L19/20 `.atlas`; each draws in
+/// Atlas mouth playback draws in
 /// `LipLayer`, above the base video and below the controls.
 enum LipSource: Equatable { case none }
 
@@ -92,6 +92,8 @@ final class LoopingVideoView: UIView {
 struct CallCueView: View {
     let cue: CallCue
     let name: String
+    /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
+    var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     var body: some View {
@@ -117,7 +119,8 @@ struct CallCueView: View {
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
     private var content: Content? {
-        switch cue {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+        return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
         case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
@@ -204,6 +207,7 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
+    var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
@@ -219,7 +223,9 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            if textChatEnabled {
+                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
@@ -281,7 +287,14 @@ extension AppState {
         return mine == demo ? loop : nil
     }
 
+    /// The server's persona card (setup answers, F4) when there is one, always with the NM01 name; the imported
+    /// style's profile text (never the raw paste once the import ran); 2 s wait on the first call (D21).
     var callStart: ClientMessage.Start {
-        .companion(name: "Jin", userName: setup.name, profile: setup.response, traits: setup.presence.sorted(), voiceId: nil)
+        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? setup.response,
+                                                  traits: setup.presence.sorted(), voiceId: nil)
+        if var persona = setup.serverPersona { persona.name = companionDisplayName; start.persona = persona }
+        if let kind = setup.imageType.flatMap(ClientMessage.Persona.Kind.init(rawValue:)) { start.persona.kind = kind }
+        start.greetAfterMs = setup.firstCallPending == true ? 2000 : nil
+        return start
     }
 }
