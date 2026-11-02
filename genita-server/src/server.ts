@@ -36,6 +36,7 @@ import { createMemory } from "./memory/index.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
+import { configureOps, rejectGeneration } from "./ops/limits.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
 import { HandoffHub } from "./handoff/hub.ts";
@@ -97,6 +98,7 @@ export async function startServer(
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
+  const ops = configureOps(config, { log, db: accounts?.db });
   const sessions = new Map<string, Session>();
   /** resets a call's idle timer; watch traffic keeps a muted call alive */
   const touches = new Map<string, () => void>();
@@ -145,6 +147,7 @@ export async function startServer(
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (isAppConfigRoute(url.pathname)) return handleAppConfig(req, res, appConfig); // public, before any auth
+    if (rejectGeneration(req, res, ops)) return;
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.
@@ -215,9 +218,11 @@ export async function startServer(
     }
     const isPresence = url.pathname === "/v1/presence";
     if (url.pathname !== "/v1/session" && !isPresence) return reject(404, "Not Found");
+    if (!isPresence && ops.isPaused("ws.session")) return reject(503, "Paused");
     if (!isPresence && sessions.size >= config.maxSessions) return reject(503, "Busy");
     principal(req, url).then(
       (who) => {
+        if (!isPresence && ops.isPaused("ws.session")) return reject(503, "Paused");
         // re-check after the async auth: concurrent upgrades all passed the first check (attach is synchronous below)
         if (!isPresence && sessions.size >= config.maxSessions) return reject(503, "Busy");
         wss.handleUpgrade(req, socket, head, (ws) => {
@@ -235,7 +240,7 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, gatedCallDevice(who.device, url));
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId);
         });
       },
       () => reject(500, "Internal Server Error"),
@@ -257,7 +262,7 @@ export async function startServer(
     return c && Date.now() - c.at < 10 * 60_000 ? c.turns : null;
   }
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
     const id = randomUUID();
     const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
@@ -271,7 +276,7 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id) });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);

@@ -4,6 +4,7 @@
  * Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
+import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
@@ -74,6 +75,9 @@ export type SessionDeps = {
   voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  ops?: OpsLimits;
+  /** null: shared-token dev identity has no persisted user row. */
+  turnUserId?: string | null;
   /**
    * Handoff: this account's turns from its other live call, or from a call that ended in the last few minutes
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
@@ -213,6 +217,7 @@ export class Session {
   private spec: Speculation | null = null;
   private watch: WatchController | null = null;
   private specTimer: NodeJS.Timeout | null = null;
+  private specCheck = 0;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private metrics: TurnMetrics = {};
@@ -384,6 +389,7 @@ export class Session {
     const g = msg.greetAfterMs;
     const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
+    (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
       this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
@@ -494,7 +500,7 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate,
+      speculate: this.deps.config.speculate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
@@ -534,6 +540,7 @@ export class Session {
   private interpretHost(): InterpretHost {
     return {
       now: this.now,
+      admitTurn: () => this.admitTurn(),
       send: (e) => this.client.sendJson(e),
       sendAudio: (seq, pcm) => this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), pcm])),
       nextSeq: () => ++this.seq,
@@ -646,7 +653,8 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        return interp.final("mic", e.text);
+        interp.final("mic", e.text);
+        return;
     }
   }
 
@@ -706,6 +714,17 @@ export class Session {
     if (this.closed) return;
     if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
     const r = reduceTurn(this.turn, e, this.bargeCfg);
+    const reply = r.effects.find((fx) => fx.type === "start_reply");
+    // The reducer is pure: admit only actual user replies before committing thinking or running effects.
+    // Preserve any barge-in cancellation, but never start a reply or emit thinking on a cap rejection.
+    if (reply?.type === "start_reply" && !reply.self && !this.greeting && !this.admitTurn()) {
+      this.dropSpeculation();
+      this.metrics = {};
+      this.turn = { ...r.state, phase: "listening" };
+      for (const fx of r.effects) if (fx.type === "cancel_reply") this.run(fx);
+      this.client.sendJson({ type: "state", state: "listening" });
+      return;
+    }
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
@@ -857,14 +876,18 @@ export class Session {
     if (this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS) return; // frames are consumed per turn; don't guess
     if (this.specTimer) clearTimeout(this.specTimer);
     this.specTimer = null;
-    if (LOOKS_FINAL.test(text.trim())) return this.startSpeculation(text);
+    if (LOOKS_FINAL.test(text.trim())) { void this.startSpeculation(text); return; }
     this.specTimer = setTimeout(() => {
       this.specTimer = null;
-      if (this.turn.phase === "listening") this.startSpeculation(text);
+      if (this.turn.phase === "listening") void this.startSpeculation(text);
     }, this.deps.config.speculateStableMs);
   }
 
-  private startSpeculation(text: string): void {
+  private async startSpeculation(text: string): Promise<void> {
+    const check = ++this.specCheck;
+    const ops = this.deps.ops ?? getOps();
+    if (ops.cappedUser(this.limitUserId()) && !ops.canSpeculate(this.limitUserId())) return;
+    if (check !== this.specCheck || this.turn.phase !== "listening") return;
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -877,6 +900,7 @@ export class Session {
   }
 
   private dropSpeculation(): void {
+    this.specCheck++;
     if (this.specTimer) clearTimeout(this.specTimer);
     this.specTimer = null;
     this.spec?.abort.abort();
@@ -908,6 +932,9 @@ export class Session {
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
+    const spec = self ? null : this.spec;
+    if (!self) this.spec = null; // this turn was admitted synchronously before start_reply
+    if (spec) signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
     let renamedFrom: string | undefined;
     if (newName && newName !== this.persona!.name) {
       renamedFrom = await this.applyRename(newName);
@@ -923,8 +950,6 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = self ? null : this.spec;
-    if (!self) this.spec = null;
     if (!self && this.specTimer) clearTimeout(this.specTimer);
     if (!self) this.specTimer = null;
     if (spec) {
@@ -934,7 +959,6 @@ export class Session {
         spec.confirm();
         built = spec.built;
         pre = spec.stream;
-        signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
       } else {
         speculative = "miss";
         spec.abort.abort();
@@ -1236,6 +1260,17 @@ export class Session {
     this.reply = null;
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
+  }
+
+  private limitUserId(): string | null | undefined {
+    return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
+  }
+
+  private admitTurn(): boolean {
+    if (this.closed) return false;
+    let admitted = false;
+    (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+    return admitted;
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {

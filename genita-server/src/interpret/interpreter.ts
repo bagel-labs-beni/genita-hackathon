@@ -38,6 +38,8 @@ export type Channel = "mic" | "call";
 
 export interface InterpretHost {
   now(): number;
+  /** Synchronous admission after empty/echo/language filters; false drops the utterance. */
+  admitTurn(): boolean;
   send(e: ServerEvent): void;
   /** binary TTS frame for the `audio` event with this seq */
   sendAudio(seq: number, pcm: Buffer): void;
@@ -228,6 +230,11 @@ export class Interpreter {
       this.host.log("interpret.detected", { language: r.lang, speaker: r.speaker, relayed: false, reason: r.reason });
       return;
     }
+    if (!this.host.admitTurn()) {
+      spec?.abort.abort();
+      if (b) this.closeBubble(b, "cancelled");
+      return;
+    }
     if (r.setsOther) {
       this.other = r.setsOther;
       this.sendPair();
@@ -262,6 +269,7 @@ export class Interpreter {
       bubble.original = { lang: this.user, text: clean };
       return this.closeBubble(bubble, "skipped", "no_other_language");
     }
+    if (!this.host.admitTurn()) return;
     bubble.original = { lang: this.user, text: clean };
     const abort = new AbortController();
     const now = this.host.now();
