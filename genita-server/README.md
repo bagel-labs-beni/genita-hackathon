@@ -11,6 +11,9 @@ npm start           # ws://127.0.0.1:8787/v1/session
 npm run smoke -- --turns=20   # real vendors: end-of-speech → first-audio + barge-in timing (needs ffmpeg)
 npm run check:meta  # one live call each: Spark JSON, SAM 3.1, files, Muse Image
 npm run db:migrate  # apply migrations to DATABASE_URL (`-- down [n|all]` rolls back)
+npm run watch-sim -- --qa            # watch together on the T5 clips: accuracy + question → first audio
+npm run watch-sim -- --react a.mp4 … # one long share: proactive reactions and rule checks
+npm run watch-sim -- --blank         # black screen: answers that claim to see something
 ```
 
 Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA_ENV_FILE` is loaded):
@@ -33,4 +36,4 @@ blobs: `GENITA_S3_BUCKET` + `GENITA_S3_REGION` + optional `GENITA_S3_ENDPOINT` (
 Without `DATABASE_URL` nothing changes: prep keeps the JSON file store and `/auth/*`, `/me` answer 503.
 Tests use PGlite in memory; set `TEST_DATABASE_URL=postgres://…` to run them on a real Postgres (CI does both).
 
-Layout: `src/auth` (Apple sign-in, session JWT, /me), `src/db` (Postgres adapter + SQL migrations), `src/storage` (S3/file blobs, SigV4), `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language).
+Layout: `src/auth` (Apple sign-in, session JWT, /me), `src/db` (Postgres adapter + SQL migrations), `src/storage` (S3/file blobs, SigV4), `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language), `src/watch` (Mac screen share: memo, video sound, reactions, speaker chip — F5).
