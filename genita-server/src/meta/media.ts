@@ -39,14 +39,25 @@ export async function museImageEdit(
   return firstImage(await metaForm<ImageResponse>(key, "/images/edits", form, opts.signal));
 }
 
-/** Boxes for `prompt` (e.g. "the dog's mouth") in a data-URL image. */
-export async function samDetect(key: string, imageDataUrl: string, prompt: string, signal?: AbortSignal): Promise<SamBox[]> {
+/**
+ * Boxes for `prompt` (e.g. "the dog's mouth") in a data-URL image. Each box
+ * carries its raw mask token. `masks: true` asks for one_bit masks, many times
+ * smaller on the wire than the lossless default; decode with meta/samMask.ts.
+ */
+export async function samDetect(
+  key: string,
+  imageDataUrl: string,
+  prompt: string,
+  signal?: AbortSignal,
+  opts: { masks?: boolean } = {},
+): Promise<SamBox[]> {
   const d = await metaJson<{ id: string; output?: [] }>(
     key,
     "/responses",
     {
       model: SAM_MODEL,
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: imageDataUrl }] }],
+      ...(opts.masks ? { metadata: { mask_encoding: "one_bit" } } : {}),
     },
     signal,
   );

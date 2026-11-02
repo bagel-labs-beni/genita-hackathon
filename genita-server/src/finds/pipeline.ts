@@ -11,7 +11,8 @@
  * 1.5–3.7 s, one-search recipe 3–6 s (both start at t0, in parallel), each
  * re-check Spark YES/NO ≈1.5–2.4 s and SAM ≈1–2.5 s, all in parallel.
  */
-import type { FindCard, FindImage, FindItem, FindKind, NormBox, ServerEvent } from "../protocol.ts";
+import type { FindCard, FindImage, FindItem, FindKind, NormBox, NormMask, ServerEvent } from "../protocol.ts";
+import { wireMask } from "../meta/samMask.ts";
 import type { SamBox } from "../meta/sam.ts";
 import { Candidates, recipeSummary, toWire, type Candidate } from "./tiers.ts";
 import { LineSplitter, domainOf, isYes, lastJsonObject, parseSeenLine, str, strList } from "./parse.ts";
@@ -218,18 +219,21 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     const items = cands
       .all()
       .filter((c) => c.box && c.yes)
-      .map((c) => ({ label: capFirst(c.name), box: c.box! }));
+      .map((c) => ({ label: capFirst(c.name), box: c.box!, ...(c.mask ? { mask: c.mask } : {}) }));
     if (items.length && wh.w) ctx.emit({ type: "observe.boxes", findId: ctx.findId, frame: frameIndex, w: wh.w, h: wh.h, items });
   };
 
   const check = async (c: Candidate) => {
     // one slow call must not hold the whole list (a 16 s outlier on 11/2): 7 s each
-    const firstBox = async (prompt: string) => {
+    const firstHit = async (prompt: string): Promise<{ box: NormBox; mask: NormMask | null } | null> => {
       const boxes = (await withTimeout(ctx.vendors.sam(frame, prompt, ctx.signal), CHECK_TIMEOUT_MS, ctx.signal)) ?? [];
       const b = boxes[0];
       if (b?.w && b.h) wh = { w: b.w, h: b.h };
-      return b ? toNormBox(b) : null;
+      const box = b ? toNormBox(b) : null;
+      // the mask only rides along when SAM sent one (GENITA_SAM_MASKS=1); a bad payload drops the mask, never the box
+      return box ? { box, mask: b.mask ? wireMask(b.mask) : null } : null;
     };
+    const firstBox = async (prompt: string) => (await firstHit(prompt))?.box ?? null;
     // SAM by name (and its plural: "green onion" missed where "green onions" hit, 11/2)
     const names = [c.name, ...(/s$/.test(c.name) ? [] : [`${c.name}s`])];
     const [yes, nameBoxes, hint] = await Promise.all([
@@ -238,14 +242,16 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
         CHECK_TIMEOUT_MS,
         ctx.signal,
       ),
-      Promise.all(names.map(firstBox)),
+      Promise.all(names.map(firstHit)),
       c.look ? firstBox(c.look) : Promise.resolve(null),
     ]);
-    const box = nameBoxes.find((b) => b) ?? null;
+    const hit = nameBoxes.find((b) => b) ?? null;
+    const box = hit?.box ?? null;
     if (ctx.signal.aborted) return;
     // a failed re-check counts as "not sure", never as YES
     c.yes = yes ?? false;
     c.box = box;
+    c.mask = hit?.mask ?? null;
     c.hint = box ?? hint;
     c.samDone = true;
     pushItems(true);

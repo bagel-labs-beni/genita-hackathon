@@ -490,3 +490,36 @@ test("fridge pill (#122 follow-up): the shown line is ≤ 28 chars, whole names,
   const withPill = events.find((e) => e.type === "find.items" && (e as { pill?: string }).pill) as { pill: string } | undefined;
   assert.equal(withPill?.pill, r.card!.pill, "the pill reaches the app with the items");
 });
+
+test("recipe pipeline: GENITA_SAM_MASKS — a SAM mask rides on observe.boxes; a bad mask drops only the mask", async () => {
+  const { encodeOneBit, fromRle } = await import("../src/meta/samMask.ts");
+  // box 10..50 x 20..100 → 41 x 81 raster; an ellipse inside it
+  const W = 41;
+  const H = 81;
+  const bits = Uint8Array.from({ length: W * H }, (_, i) => +(((i % W) - 20) ** 2 / 400 + (Math.floor(i / W) - 40) ** 2 / 1600 <= 1));
+  const good = encodeOneBit(bits, W, H);
+  for (const payload of [good, "!" + good.slice(1, 10) + "?" + good.slice(11)]) {
+    const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+    const sam = v.sam.bind(v);
+    v.sam = async (img, prompt, signal) => (await sam(img, prompt, signal)).map((b) => ({ ...b, mask: { width: W, height: H, payload } }));
+    const { ctx, events } = ctxFor("recipe", v, { images: false });
+    await runRecipe(ctx);
+    const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+    const eggs = boxes.at(-1)!.items.find((i) => i.label === "Eggs")!;
+    assert.ok(eggs.box, "box always sent");
+    if (payload === good) {
+      assert.ok(eggs.mask, "mask sent");
+      assert.ok(Math.max(eggs.mask!.w, eggs.mask!.h) <= 96);
+      assert.deepEqual(fromRle(eggs.mask!.w, eggs.mask!.h, eggs.mask!.rle), bits);
+    } else assert.equal(eggs.mask, undefined);
+  }
+});
+
+test("recipe pipeline: no mask on the wire when SAM sent none (flag off)", async () => {
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+  const { ctx, events } = ctxFor("recipe", v, { images: false });
+  await runRecipe(ctx);
+  const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+  assert.ok(boxes.length);
+  assert.ok(boxes.every((b) => b.items.every((i) => !("mask" in i))));
+});

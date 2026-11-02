@@ -24,7 +24,8 @@ export interface FindsVendors {
   productImage?(url: string, signal?: AbortSignal): Promise<Buffer | null>;
 }
 
-export function metaVendors(key: string): FindsVendors {
+/** samMasks: request one_bit masks with every SAM call (GENITA_SAM_MASKS=1). */
+export function metaVendors(key: string, opts: { samMasks?: boolean } = {}): FindsVendors {
   return {
     async spark(req, signal) {
       const d = await metaJson<{ id: string; output?: OutputItem[] }>(
@@ -44,7 +45,7 @@ export function metaVendors(key: string): FindsVendors {
       return { text: outputText(d as Parameters<typeof outputText>[0]), output: d.output ?? [] };
     },
     sparkStream: (req, signal) => sparkStream(key, req, { signal, firstEventTimeoutMs: 8000 }),
-    sam: (img, prompt, signal) => samDetect(key, img, prompt, signal),
+    sam: (img, prompt, signal) => samDetect(key, img, prompt, signal, { masks: opts.samMasks }),
     image: (prompt, signal) => museImageGenerate(key, prompt, "512x512", signal),
     pageFacts: (url, signal) => fetchPageFacts(url, signal),
     productImage: (url, signal) => fetchImage(url, signal),
