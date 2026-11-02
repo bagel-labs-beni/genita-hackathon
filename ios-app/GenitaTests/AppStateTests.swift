@@ -244,4 +244,17 @@ import UIKit
         XCTAssertEqual(a.n3["chats"]?["no"], ["Unasked advice", "Talk about looks"])
         XCTAssertEqual(AppState.skipAnswers(SavedSetup()).n3["chats"]?["no"], [], "all off = empty lists")
     }
+
+    /// D01 default: skipping the import starts on Quick start; bringing an AI profile keeps Make it feel right.
+    func testD01DefaultFollowsTheImportPath() {
+        let state = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        XCTAssertEqual(state.setup.depth, .right)
+        state.go(.skipTopics)   // "I don't use an AI assistant"
+        XCTAssertEqual(state.setup.depth, .quick)
+        state.go(.paste)        // back to bringing an AI profile
+        XCTAssertEqual(state.setup.depth, .right)
+        state.go(.skipTopics); state.setup.depth = .deep   // an explicit choice at D01 is never overwritten later
+        state.go(.preferences)
+        XCTAssertEqual(state.setup.depth, .deep)
+    }
 }

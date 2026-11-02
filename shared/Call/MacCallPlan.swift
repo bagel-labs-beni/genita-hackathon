@@ -59,20 +59,25 @@ enum ExternalLink {
     }
 }
 
-/// F7 / #121 · MAC-RS reads a product card (`find.created`, kind `product`, #119). One place maps the card to
-/// the sheet, so a change in the card's shape is a change here only:
-///   sources[i]            = the product page that was actually opened (title "Name · $68", url, domain)
-///   steps{text, source}   = reason chips; `source` = the product's domain (or url)
-///   why + how             = the evidence lines ("Why these"), shown as the server wrote them
+/// F7 / #121 · MAC-RS reads a product card (`find.created`, kind `product`, server #171). One place maps the
+/// card to the sheet, so a change in the card's shape is a change here only:
+///   products[≤2]  = product detail pages the search really opened {name, store, price?, url, domain, image?, taste, situation}
+///   evidence      = {style: the import line the blue chips stand on, situation: what they said (+ weather)}
+/// Same fields as the iPhone's PF-1 (`FindCardPage.product`), so both devices show one answer the same way.
 struct ProductPick: Equatable, Identifiable {
-    var id: String { url.absoluteString }
+    var id: String
     var name: String
-    var brand: String
+    var store: String
     var price: String?
     var url: URL
-    var reasons: [String]
+    var domain: String
+    var image: FindImage?
+    /// blue chip (from the import), empty when there is no import
+    var taste: String
+    /// grey chip (from what they said)
+    var situation: String
     /// "Northline · $68" / "Field & Co. · Price on site" (MAC-RS-b)
-    var brandLine: String { "\(brand) · \(price ?? "Price on site")" }
+    var brandLine: String { "\(store) · \(price ?? "Price on site")" }
 }
 
 struct ProductEvidence: Equatable {
@@ -82,24 +87,58 @@ struct ProductEvidence: Equatable {
 enum ProductPicks {
     static let maxPicks = 2
 
+    /// Web pages only (`ExternalLink.web`), at most two — the server already dropped anything it didn't open.
     static func picks(from card: FindCard) -> [ProductPick] {
-        var out: [ProductPick] = []
-        for source in card.sources {
-            guard out.count < maxPicks, let url = ExternalLink.web(source.url) else { continue }
-            let parts = source.title.components(separatedBy: " · ")
-            let price = parts.count > 1 ? parts.last?.trimmingCharacters(in: .whitespaces) : nil
-            let name = (parts.count > 1 ? parts.dropLast().joined(separator: " · ") : source.title).trimmingCharacters(in: .whitespaces)
-            let domain = source.domain.isEmpty ? (url.host ?? "") : source.domain
-            let reasons = card.steps.filter { step in
-                guard let s = step.source?.lowercased() else { return false }
-                return s == domain.lowercased() || s == source.url.lowercased()
-            }.map(\.text)
-            out.append(ProductPick(name: name.isEmpty ? domain : name, brand: domain, price: (price?.isEmpty ?? true) ? nil : price, url: url, reasons: reasons))
+        let out: [ProductPick] = (card.products ?? []).compactMap { p in
+            guard let url = ExternalLink.web(p.url) else { return nil }
+            let domain = p.domain.isEmpty ? (url.host ?? "") : p.domain
+            let store = p.store.trimmingCharacters(in: .whitespaces)
+            let price = p.price?.trimmingCharacters(in: .whitespaces)
+            return ProductPick(id: p.id, name: p.name.isEmpty ? domain : p.name, store: store.isEmpty ? domain : store,
+                               price: (price?.isEmpty ?? true) ? nil : price, url: url, domain: domain, image: p.image,
+                               taste: p.taste, situation: p.situation)
         }
-        return out
+        return Array(out.prefix(maxPicks))
     }
 
-    static func evidence(from card: FindCard) -> ProductEvidence { ProductEvidence(lines: card.why + card.how) }
+    /// "Why these" (D25): the server's own evidence, word for word —
+    ///   “{import style line}” · {situation}
+    ///   From your import and what you said · {source 1} · {source 2}
+    /// Cards from before #171 carry no `evidence`: their `why` + `how` lines as written.
+    static func evidence(from card: FindCard) -> ProductEvidence {
+        guard let first = basis(card) else { return ProductEvidence(lines: card.why + card.how) }
+        let domains = picks(from: card).map(\.domain)
+        let from = card.evidence?.style.isEmpty == false ? "From your import and what you said" : "From what you said"
+        return ProductEvidence(lines: [first, ([from] + domains).joined(separator: " · ")])
+    }
+
+    /// MF-1 "Why" while searching: the import line the last product answer of this call stood on. Only the style —
+    /// it belongs to the account; the situation belonged to that search, and a new ask may be about something else.
+    /// A first search has no line — `find.started`/`find.progress` carry no evidence yet (server follow-up).
+    static func searchingWhy(after earlier: [FindCard]) -> String? {
+        guard let style = earlier.last(where: { $0.kind == .product })?.evidence?.style.trimmingCharacters(in: .whitespaces), !style.isEmpty else { return nil }
+        return "“\(style)”"
+    }
+
+    private static func basis(_ card: FindCard) -> String? {
+        guard let e = card.evidence else { return nil }
+        let style = e.style.trimmingCharacters(in: .whitespaces)
+        let parts = [style.isEmpty ? "" : "“\(style)”", e.situation.trimmingCharacters(in: .whitespaces)].filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// #211 (Chelsea 11/3): the Mac call pill is one line. A spoken answer longer than the pill shows its first
+/// sentence ("I found two. Their simple cuts match your style." → "I found two."); `OneLineText` then
+/// shortens by whole words if even that doesn't fit. The text is always the server's, never app copy.
+enum CueLine {
+    /// Shorter versions to try after the whole line, longest first. Empty for a single sentence.
+    static func summaries(_ said: String) -> [String] {
+        // a sentence ends at . ! ? followed by a space and a capital ("$68.50", "Field & Co. has" don't end one)
+        let text = said.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let r = text.range(of: #"[.!?]\s+(?=[A-Z“"'])"#, options: .regularExpression) else { return [] }
+        return [String(text[..<r.lowerBound]) + String(text[r.lowerBound])]
+    }
 }
 
 /// A02-J on the Mac (PRD v12 D41, server #166 `POST /auth/judge`): a code instead of an Apple ID.
