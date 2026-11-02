@@ -140,7 +140,7 @@ final class OnboardingUITests: XCTestCase {
         // Start talking lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 15)
-        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped Peter lips don't mark Mouth done")
+        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped lip step doesn't mark Mouth done")
         capture("PREP1-scene-done")
         // PREP-1e: the stub fails the face step at 7/13 (expressions done, mouth failed)
         XCTAssertTrue(app.buttons["prepRetry"].waitForExistence(timeout: 20), "PREP-1e Try again")
