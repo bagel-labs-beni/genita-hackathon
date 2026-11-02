@@ -35,6 +35,7 @@ import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/i
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { WatchController, type WatchSink } from "../watch/watch.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -68,7 +69,8 @@ export interface PeterLike {
 
 export type SessionDeps = {
   config: Config;
-  openAsr: (languages: string[]) => AsrLike;
+  /** mode: the Mac's shared-screen sound uses DIARIZATION (watch together) */
+  openAsr: (languages: string[], mode?: "ENDPOINTING" | "DIARIZATION") => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
@@ -180,6 +182,7 @@ export class Session {
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
   private peter: PeterLike | null = null;
+  private watch: WatchController | null = null;
   private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
@@ -518,6 +521,7 @@ export class Session {
     this.peter?.close();
     this.memoryCall?.close();
     this.finds?.close();
+    this.watch?.close();
     this.client.close(code, reason);
   }
 
@@ -540,16 +544,17 @@ export class Session {
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
         this.metrics.completeAt = t;
-        this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
+        // exactly one final transcript goes out either way
         if (interpretCommand(e.text) === "start") {
+          this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
           // INT-0 by voice: "Can you interpret for me?"
           this.switchMode("interpret", "model");
           (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
           return;
         }
-        this.dispatch({ type: "speech_complete", text: e.text });
-        // not consumed by a reply (backchannel / empty): stop the guess
-        return this.dropSpeculation();
+        if (this.watch?.isSharing && e.text.trim()) return void this.completeUnlessEcho(e.turnId, e.text);
+        return this.completeTurn(e.turnId, e.text);
     }
   }
 
@@ -573,6 +578,49 @@ export class Session {
     }
   }
 
+  private completeTurn(turnId: number, text: string): void {
+    this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
+    this.dispatch({ type: "speech_complete", text });
+    // not consumed by a reply (backchannel / empty): stop the guess
+    this.dropSpeculation();
+  }
+
+  /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
+  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+    const echo = (await this.watch?.isEcho(text)) ?? false;
+    if (this.closed) return;
+    if (!echo) return this.completeTurn(turnId, text);
+    this.log("watch.echo_dropped", { text: text.slice(0, 120) });
+    this.dispatch({ type: "speech_complete", text: "" });
+    this.dropSpeculation();
+  }
+
+  // ───────────────────────── watch together (F5) ─────────────────────────
+
+  /** The Mac opened /v1/watch for this call. Null until `start`. */
+  attachWatch(sink: WatchSink): WatchController | null {
+    if (!this.started || this.closed) return null;
+    this.watch ??= new WatchController(
+      {
+        companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
+        conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        react: (script) => {
+          const before = this.turn.utteranceId;
+          this.dispatch({ type: "self_speak", text: script, origin: "watch" });
+          return this.turn.utteranceId !== before ? this.turn.utteranceId : null;
+        },
+      },
+      {
+        now: this.now,
+        openAsr: (mode) => this.deps.openAsr(this.deps.config.asrLanguages, mode),
+        spark: this.deps.spark,
+        log: (event, data) => this.log(event, data),
+      },
+    );
+    this.watch.attach(sink);
+    return this.watch;
+  }
+
   private dispatch(e: TurnEvent): void {
     if (this.closed) return;
     if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
@@ -582,14 +630,14 @@ export class Session {
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce) {
       const p = this.pendingAnnounce;
       this.pendingAnnounce = null;
-      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "announce", text: p.text });
+      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "self_speak", text: p.text, origin: "card" });
     }
   }
 
   /** Say a card's line now if the companion is idle, else right after the current reply. */
   private announce(text: string): void {
     if (this.closed) return;
-    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "announce", text });
+    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "self_speak", text, origin: "card" });
     if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
@@ -608,7 +656,7 @@ export class Session {
       case "cancel_reply":
         return this.cancelReply(fx.utteranceId, fx.reason);
       case "start_reply":
-        void this.runReply(fx.text, fx.utteranceId, fx.announce === true);
+        void this.runReply(fx.text, fx.utteranceId, fx.self);
         return;
     }
   }
@@ -671,7 +719,9 @@ export class Session {
         images: [],
       };
     }
-    const images = this.takeFrames();
+    const camera = this.takeFrames();
+    const watch = this.watch?.questionContext() ?? null;
+    const images = [...camera, ...(watch?.images ?? [])];
     const content: string | ContentPart[] = images.length
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
@@ -685,14 +735,20 @@ export class Session {
       memories: this.memories,
       mode: "chat",
       language: this.language,
-      cameraAttached: images.length > 0,
+      cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
     });
     return {
       interpret,
       detected: null,
-      images,
-      req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
+      // Finds get the camera frames only, never the shared screen
+      images: camera,
+      req: {
+        instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
+        input,
+        maxOutputTokens: 800,
+        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+      },
     };
   }
 
@@ -741,14 +797,13 @@ export class Session {
     this.spec = null;
   }
 
-  /** A line the companion says on its own (a card landed); see turnMachine "announce". */
-  private announceRequest(text: string): Built {
-    return { interpret: false, detected: null, images: [], req: { input: text } };
-  }
-
-  private async runReply(text: string, utteranceId: number, announce = false): Promise<void> {
-    const greeting = this.greeting;
-    this.greeting = null;
+  /**
+   * self: the companion speaks on its own (one path, 11/2) — "card" = a Finds card's line (F10),
+   * "watch" = a watch-together reaction (F5-L14). Spoken as is: no Spark, no user turn, no memory write.
+   */
+  private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
+    const greeting = self ? null : this.greeting;
+    if (!self) this.greeting = null;
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -762,17 +817,10 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = announce ? null : this.spec;
-    if (!announce) this.spec = null;
-    if (!announce && this.specTimer) clearTimeout(this.specTimer);
-    if (!announce) this.specTimer = null;
-    if (announce) {
-      built = this.announceRequest(text);
-      pre = (async function* () {
-        yield { type: "text" as const, delta: `<warm> ${text}` };
-        yield { type: "done" as const, responseId: null, text, status: "completed" };
-      })();
-    }
+    const spec = self ? null : this.spec;
+    if (!self) this.spec = null;
+    if (!self && this.specTimer) clearTimeout(this.specTimer);
+    if (!self) this.specTimer = null;
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
@@ -785,14 +833,15 @@ export class Session {
         spec.abort.abort();
       }
     }
+    if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [] };
     built ??= this.buildRequest(text);
     const { req, interpret } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!greeting && !announce) this.memoryCall?.userMessage();
-    if (!interpret && !greeting && !announce) this.remember("user", text);
+    if (!greeting && !self) this.memoryCall?.userMessage();
+    if (!interpret && !greeting && !self) this.remember("user", text);
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !announce && !greeting && this.finds) {
+    if (!interpret && !self && !greeting && this.finds) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said });
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
@@ -809,7 +858,7 @@ export class Session {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
         let tts = p.ttsText;
-        if (!sentences.length && !interpret) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        if (!sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         if (!tts) continue;
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
@@ -823,6 +872,13 @@ export class Session {
     // Producer: Spark stream → sentences
     const producer = (async () => {
       try {
+        if (self) {
+          m.firstTokenAt = this.now();
+          // a card line has no tag of its own: say it warmly; watch reactions carry theirs ("<laugh> ha")
+          pushSentences(splitter.push(self === "card" ? `<warm> ${text}` : text));
+          pushSentences(splitter.flush());
+          return;
+        }
         // An answer with no text (seen once on 11/2 after a web search) gets
         // one retry without tools rather than silence.
         for (let attempt = 0; attempt < 2; attempt++) {

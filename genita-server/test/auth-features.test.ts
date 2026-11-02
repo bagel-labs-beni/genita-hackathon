@@ -145,3 +145,34 @@ test("DELETE /me: if memories can't be erased, the account stays (502) and a ret
   assert.equal((await call("DELETE", "/me", { token: a.token })).status, 200);
   assert.deepEqual(await memory.list(a.userId), []);
 });
+
+test("/v1/watch: only the user who owns the call can share into it; others get 404, no token closes 4401", async (t) => {
+  const { base, signIn } = await bootAccounts(t);
+  const { WebSocket } = await import("ws");
+  const a = await signIn("001.watch.a");
+  const b = await signIn("001.watch.b");
+  const wsBase = base.replace("http", "ws");
+  const call = new WebSocket(`${wsBase}/v1/session`, { headers: { authorization: `Bearer ${a.token}` } });
+  const sessionId = await new Promise<string>((resolve, reject) => {
+    call.on("open", () => call.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false })));
+    call.on("message", (d, bin) => {
+      if (bin) return;
+      const m = JSON.parse(String(d));
+      if (m.type === "ready") resolve(m.sessionId);
+    });
+    call.on("error", reject);
+  });
+  const tryWatch = (token?: string) =>
+    new Promise<{ status?: number; opened?: boolean; close?: number }>((resolve) => {
+      let opened = false;
+      const ws = new WebSocket(`${wsBase}/v1/watch?session=${sessionId}`, token ? { headers: { authorization: `Bearer ${token}` } } : {});
+      ws.on("unexpected-response", (_q, res) => { res.resume(); resolve({ status: res.statusCode }); });
+      ws.on("open", () => { opened = true; setTimeout(() => ws.close(1000), 100); });
+      ws.on("close", (c) => resolve({ opened, close: c }));
+      ws.on("error", () => {});
+    });
+  assert.deepEqual(await tryWatch(b.token), { status: 404 }, "another user's call looks missing");
+  assert.equal((await tryWatch()).close, 4401, "no token: upgrade, then 4401 like the call socket");
+  assert.deepEqual(await tryWatch(a.token), { opened: true, close: 1000 }, "the owner shares into their own call (we close it)");
+  call.terminate();
+});
