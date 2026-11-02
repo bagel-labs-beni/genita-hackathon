@@ -64,7 +64,9 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   const applied: AppliedUpdate[] = [];
   const stale = new Set<StoryId>();
   // what was removed and when: an older analysis can't bring it back (Codex round 2)
-  const tombs = [...(card.removed ?? [])];
+  // only removals from before this batch guard it: one correction's own replace must not block its own rewrite (Codex round 4)
+  const priorTombs = [...(card.removed ?? [])];
+  const tombs = [...priorTombs];
   for (const u of updates) {
     if (!u || !PROFILE_FIELDS.includes(u.field) || (u.label !== "explicit" && u.label !== "observed")) continue;
     // said before the current profile was imported: belongs to an older profile
@@ -78,7 +80,7 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
       for (const key of PROFILE_FIELDS) {
         const l = sections[key];
         // a slow removal can't take out a line (re)saved after the user asked for it (Codex round 3)
-        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text)) && !(u.asOf && l[i].at && l[i].at! > u.asOf)) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); tombs.push({ text: removed[0], at, field: key }); }
+        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text)) && !(u.asOf && l[i].at && l[i].at! > u.asOf)) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); tombs.push({ text: removed[0], at: u.asOf ?? at, field: key }); }
       }
       if (removed.length) applied.push({ field: u.field, text: "", label: "explicit", removed, ...(u.chip ? { chip: u.chip } : {}) });
       continue;
@@ -93,12 +95,13 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
     // …nor bring back (or contradict) a line the user removed after it
     // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
-    if (u.asOf && text && tombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
+    if (u.asOf && text && priorTombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
-    for (const r of removed) tombs.push({ text: r, at, field: u.field });
+    for (const r of removed) tombs.push({ text: r, at: u.asOf ?? at, field: u.field });
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
-    list.unshift({ text, label, scope: same?.scope ?? "any", at });
+    // `at` = when the user said it (order of what they said, not of when Spark finished) — Codex round 4
+    list.unshift({ text, label, scope: same?.scope ?? "any", at: u.asOf ?? at });
     while (list.length > SECTION_MAX) {
       const drop = [...list].reverse().find((x) => x.label !== "explicit") ?? list[list.length - 1];
       list.splice(list.lastIndexOf(drop), 1);

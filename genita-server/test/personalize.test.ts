@@ -363,6 +363,20 @@ test("Codex round 3: a slow removal spares a line saved after it; a removal bloc
   assert.deepEqual(slow.card.sections.likes.map((x) => x.text), ["Loves cilantro."]);
   const removed = mergeUpdates(card, [{ field: "likes", text: "", replaces: ["Loves cilantro."], label: "explicit", asOf: "2026-11-03T02:30:00Z" }], "2026-11-03T03:00:00Z").card;
   assert.deepEqual(removed.sections.likes, []);
-  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T02:45:00Z" }], "2026-11-03T04:00:00Z").applied.length, 0);
-  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T03:30:00Z" }], "2026-11-03T04:00:00Z").applied.length, 1, "said after the removal: kept");
+  // order is by when it was said (the removal was asked at 02:30)
+  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T02:15:00Z" }], "2026-11-03T04:00:00Z").applied.length, 0);
+  assert.equal(mergeUpdates(removed, [{ field: "likes", text: "Likes cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T02:45:00Z" }], "2026-11-03T04:00:00Z").applied.length, 1, "said after the removal: kept");
+});
+
+test("Codex round 4: one correction's replace + rewrite both land; order follows when it was said, not when Spark finished", () => {
+  const card = rawCard({ likes: [f("Food: Korean home cooking, cilantro in everything.")] });
+  const r = mergeUpdates(card, [
+    { field: "likes", text: "Dislikes cilantro.", replaces: ["Food: Korean home cooking, cilantro in everything."], label: "explicit", asOf: "2026-11-03T01:00:00Z" },
+    { field: "likes", text: "Food: Korean home cooking.", replaces: [], label: "explicit", asOf: "2026-11-03T01:00:00Z" },
+  ], "2026-11-03T01:00:05Z");
+  assert.deepEqual(r.card.sections.likes.map((x) => x.text), ["Food: Korean home cooking.", "Dislikes cilantro."]);
+  // A said 01:00 (saved 01:02), B said 01:01 (saved 01:03): B wins
+  const a = mergeUpdates(rawCard({ likes: [] }), [{ field: "likes", text: "Loves cilantro.", replaces: [], label: "explicit", asOf: "2026-11-03T01:00:00Z" }], "2026-11-03T01:02:00Z").card;
+  const b = mergeUpdates(a, [{ field: "likes", text: "Dislikes cilantro.", replaces: ["Loves cilantro."], label: "explicit", asOf: "2026-11-03T01:01:00Z" }], "2026-11-03T01:03:00Z").card;
+  assert.deepEqual(b.sections.likes.map((x) => x.text), ["Dislikes cilantro."]);
 });
