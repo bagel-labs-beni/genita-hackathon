@@ -46,6 +46,9 @@ export type VoiceConfig = {
   timeoutMs: number;
   /** "seamless" (default) or "mms" (Meta MMS-TTS backup on the same service, no timing) */
   model: "seamless" | "mms";
+  /** GENITA_VOICE_ALIGN=1: ask the service for word + phoneme timing (Meta MMS forced aligner), sent to the app
+   * as `audio.timing` after each clause's audio. Off: requests are unchanged. */
+  align?: boolean;
 };
 
 /** "human:12,animal:7,character:33" → per-kind Seamless speaker ids */
@@ -83,6 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           speed: Math.min(1.3, Math.max(0.8, num(env.GENITA_VOICE_SPEED, 1))),
           timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
+          align: env.GENITA_VOICE_ALIGN === "1",
         }
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
