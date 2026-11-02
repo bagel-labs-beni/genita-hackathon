@@ -8,9 +8,7 @@ struct ProtocolSamplesTests {
         let dir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("protocol-samples/\(side)")
-        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            .filter { $0.hasSuffix(".json") && !(side == "client" && $0 == "events.json") }
-            .sorted()
+        let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".json") }.sorted()
         #expect(!files.isEmpty, "no samples in \(dir.path)")
         return try files.map { ($0, try Data(contentsOf: dir.appendingPathComponent($0))) }
     }

@@ -160,7 +160,7 @@ struct AppEventsTests {
     @Test func eventsSampleMatchesTheSameServerSchema() throws {
         let sample = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("protocol-samples/client/events.json")
+            .appendingPathComponent("protocol-samples/http/events.json")
         let body = try JSONDecoder().decode(EventBody.self, from: Data(contentsOf: sample))
         #expect(body.events.count == 3)
         for event in body.events {
