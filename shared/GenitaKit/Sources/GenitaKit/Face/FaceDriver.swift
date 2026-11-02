@@ -93,6 +93,13 @@ public final class FaceDriver: ObservableObject {
         newestUtteranceId = nil
     }
 
+    /// Server `expression` (per clause, reply audio clock). Behind `FaceRenderer.expressionLayer`.
+    public func handle(expression tag: String, intensity: Double, startMs: Int, endMs: Int, utteranceId: Int) {
+        guard switchUtterance(utteranceId) else { return }
+        let r = renderer, e = FaceExpressionEvent(tag: tag, intensity: intensity, startMs: startMs, endMs: endMs)
+        queue.async { r.addExpression(e) }
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }

@@ -16,7 +16,9 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var jawAttackMs = 60.0, jawReleaseMs = 70.0, jawKnee = 1.8
     public var shapeTauMs = 100.0, weakShape = 0.5, shortVowelMs = 80.0
     public var anticipation = 0.3
-    public var amp = 0.3, unstressed = 0.7, lip = 1.3
+    public var amp = 0.3, unstressed = 0.6, lip = 1.3
+    /// v29: stress factor x ×= (1 − k/2 + k·stressed)
+    public var stressK = 0.6
     public var preemphMs = 40.0
     public var closureFrames = 2
     public var springHz = 9.0
@@ -32,16 +34,17 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// v25: how much the chin follows the key flows below the lower lip (applied to the flows at load)
     public var chinScale = 0.5
     /// 11/3 (Chelsea: "barely moves"): opening gain by stress — stressed vowels open more, unstressed less.
-    public var stressedGain = 1.3, unstressedGain = 0.6
-    public var stressedJawGain = 1.3, unstressedJawGain = 0.7
+    public var stressedGain = 1.0, unstressedGain = 1.0
+    public var stressedJawGain = 1.0, unstressedJawGain = 1.0
     /// v28: pre-emphasis cap; jaw target inside a non-closing consonant (syllable beats)
     public var preemphCap = 2.5, consonantJaw = 0.1
     public init() {}
-    enum CodingKeys: String, CodingKey { case preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
+    enum CodingKeys: String, CodingKey { case stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .jawAttackMs) { jawAttackMs = v }
@@ -127,7 +130,8 @@ struct MotionV2 {
         for q in ph where ["M", "B", "P"].contains(q.p) {
             let nearShort = vow.contains { (abs($0.s - q.e) < 30 || abs($0.e - q.s) < 30) && $0.e - $0.s < 120 }
             let minMs = Double(nearShort ? 1 : p.closureFrames) * 40
-            if ms >= q.s && ms < max(q.e, q.s + minMs) { closed = true; break }
+            // closed from the phoneme start (with lookahead) until its end on the audio clock (v29)
+            if ms >= q.s && ms < max(q.e + 40, q.s + minMs) { closed = true; break }
         }
         // shape target: the current (or last) vowel, leaning toward the next one within 150 ms
         func shapeOf(_ i: Int) -> [Double] {
@@ -154,7 +158,7 @@ struct MotionV2 {
         if let i = curVowel, p.preemphMs > 0 { pre = min(p.preemphCap, 1 / (1 - exp(-max(vow[i].e - vow[i].s, 20) / p.preemphMs))) }
         let st = stressed ? 1.0 : 0.0
         let amp = p.amp * faceNorm
-        var xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (0.85 + 0.3 * st)
+        var xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (1 - p.stressK / 2 + p.stressK * st)
         // inside a consonant (not a closure) the jaw heads back up: the syllable beat
         if curVowel == nil, ph.contains(where: { $0.s <= ms && ms < $0.e && !Self.vowels.contains($0.p) }) { xj *= p.consonantJaw }
         let aa = 1 - exp(-dt / p.jawAttackMs), ar = 1 - exp(-dt / p.jawReleaseMs)

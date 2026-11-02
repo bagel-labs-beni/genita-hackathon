@@ -278,3 +278,15 @@ struct FlowManifestRobustnessTests {
         #expect(mo.riseMs == 90 && mo.textureMin == FlowMap.Motion().textureMin)
     }
 }
+
+struct ExpressionLayerTests {
+    @Test func expressionWeightsRampAroundTheClause() throws {
+        let set = try Synth.faceSet()
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, face: set.faceBox, mouth: set.mouthBox, expressions: true)
+        m.expressionEvents = [FaceExpressionEvent(tag: "smile", intensity: 0.8, startMs: 1000, endMs: 2000)]
+        #expect((m.expressionWeights(atMs: 500)["smile"] ?? 0) == 0)
+        #expect(abs((m.expressionWeights(atMs: 1500)["smile"] ?? 0) - 0.8) < 1e-9)
+        #expect((m.expressionWeights(atMs: 2500)["smile"] ?? 0) == 0)
+        #expect(m.cheekRig?.exprFields["smile"] != nil)
+    }
+}

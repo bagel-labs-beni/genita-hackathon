@@ -315,6 +315,8 @@ final class FlowMorph: @unchecked Sendable {
     private let keyPix: [String: [Float]]
     /// Per-key lip hull (0…1, working res); a key's colour shows only inside it, the skin is the warped neutral.
     private let lipPix: [String: [Float]]
+    /// v29: teeth pixels per key (fade to the mouth's inside colour while the key is barely open).
+    private let teethPix: [String: [Float]]
     private let maskW: [Float]
     private let order: [String]
     private var smooth: [Float]
@@ -328,7 +330,7 @@ final class FlowMorph: @unchecked Sendable {
     private var dominant: Int?
     private var dominantSince = -Double.infinity
 
-    init(data: FaceFlowData, neutralStill: CGImage, scale: Double, face: CGRect? = nil, mouth: CGRect? = nil) {
+    init(data: FaceFlowData, neutralStill: CGImage, scale: Double, face: CGRect? = nil, mouth: CGRect? = nil, expressions: Bool = false) {
         self.data = data
         let s = min(1, max(0.1, scale))
         workScale = s
@@ -352,6 +354,20 @@ final class FlowMorph: @unchecked Sendable {
             lm[key] = stride(from: 0, to: v.count, by: 3).map { v[$0] / 255 }
         }
         lipPix = lm
+        // v29 teeth fade: bright, unsaturated pixels inside the lip hull are teeth
+        var tm: [String: [Float]] = [:]
+        for (key, px) in kp {
+            guard let lip = lm[key] else { continue }
+            var m = [Float](repeating: 0, count: width * height)
+            for i in 0..<(width * height) where lip[i] > 0.5 {
+                let r = px[i * 3], g = px[i * 3 + 1], b = px[i * 3 + 2]
+                let mx = max(r, g, b), mn = min(r, g, b)
+                let sat = mx > 0 ? (mx - mn) / mx : 0
+                if sat < 0.35 && mx > 165 { m[i] = 1 }
+            }
+            tm[key] = m
+        }
+        teethPix = tm
         let m = Self.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height), width: width, height: height)
         maskW = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
         order = data.keys
@@ -359,7 +375,8 @@ final class FlowMorph: @unchecked Sendable {
         snapW = smooth
         let cheekRules = data.map.cheek ?? (data.kind == "human" ? FlowMap.Cheek(spread: 0.52, pull: 1.0, cheek: 1.2, naso: 0.35, lift: 2.0) : nil)
         if let c = cheekRules, let face, let mouth, data.map.drive != "snap" {
-            cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width))
+            cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width),
+                                expressions: expressions)
         } else { cheekRig = nil }
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
         nkF = data.nk; knF = data.kn
@@ -474,6 +491,18 @@ final class FlowMorph: @unchecked Sendable {
     private var v2: MotionV2?
     private var v2Closed = false
     private var v2Shown: Int?
+    /// Expression layer (v29): events on the reply's audio clock; only used when the rig was built with them.
+    var expressionEvents: [FaceExpressionEvent] = []
+
+    /// Weight per tag at audio time `ms`: intensity × attack 250 ms before start, release 400 ms after end.
+    func expressionWeights(atMs ms: Double) -> [String: Double] {
+        var w: [String: Double] = [:]
+        for e in expressionEvents {
+            let a = smoothstep(Double(e.startMs) - 250, Double(e.startMs), ms) * (1 - smoothstep(Double(e.endMs), Double(e.endMs) + 400, ms))
+            if a > 0 { w[e.tag, default: 0] += e.intensity * a }
+        }
+        return w
+    }
     private var motionT: Double?
     private var loudPeak: Float = 0.3
     /// Texture amounts of the last motion step (focused, before amplitude), for the snap.
@@ -645,6 +674,7 @@ final class FlowMorph: @unchecked Sendable {
         dominant = nil; dominantSince = -.infinity; candidate = nil; candidateRun = 0; shownHeld = 0
         snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
         cornerD = [(0, 0), (0, 0)]
+        expressionEvents = []
     }
 
     /// Parity checks: use these amounts (in `keys` order) instead of the lip timeline once.
@@ -724,6 +754,18 @@ final class FlowMorph: @unchecked Sendable {
             am = mo.map { stepMotion(lip, ahead: ahead, at: t, $0) } ?? step(lip, at: t)
         }
         if let cap = data.map.cap, usedV2 { for (k, c) in cap { if let j = order.firstIndex(of: k) { am[j] = min(am[j], Float(c)) } } }
+        // expression floors: open smile / laugh show teeth (never through a closure); laugh pulses "ha-ha"
+        if let ctx = context, !expressionEvents.isEmpty, !(usedV2 ? v2Closed : closeStart != nil) {
+            let ew = expressionWeights(atMs: ctx.audioMs)
+            if let eh = order.firstIndex(of: "EH") ?? order.firstIndex(of: "EI") {
+                let f = 0.35 * (ew["smileopen"] ?? 0) + 0.55 * (ew["laugh"] ?? 0)
+                am[eh] = max(am[eh], Float(f))
+            }
+            if let lw = ew["laugh"], let ah2 = order.firstIndex(of: "AH2") {
+                let pulse = pow(sin(2 * Double.pi * 4.5 * ctx.audioMs / 1000), 2)
+                am[ah2] = max(am[ah2], Float(0.25 * lw * (0.6 + 0.4 * pulse)))
+            }
+        }
         var overridden = false
         if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil; overridden = true }
         var (cw, shown) = colourWeights(mo == nil || overridden ? am : textureAmounts, at: t)
@@ -781,7 +823,7 @@ final class FlowMorph: @unchecked Sendable {
             let jy = Float(px * (sin(w * 2.9 + 1.9) * 0.6 + sin(w * 4.1 + 0.3) * 0.4))
             for q in stride(from: 0, to: n2, by: 2) { gn[q] += jx; gn[q + 1] += jy }
         }
-        var drawn: [(key: [Float], w: Float, field: [Float], lip: [Float]?)] = []
+        var drawn: [(key: [Float], w: Float, field: [Float], lip: [Float]?, teeth: [Float]?, u: Float)] = []
         // Every key with colour weight is drawn, including one still held by the snap rule after its
         // amount fell to 0 (leaving it out left that weight unpainted: a black mouth).
         let zero = [Float](repeating: 0, count: n2)
@@ -794,7 +836,8 @@ final class FlowMorph: @unchecked Sendable {
                 g[q] = (cf * f[q] + cb * bk[q]) * kx + gn[q] - gj[q]
                 g[q + 1] = (cf * f[q + 1] + cb * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
             }
-            drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]]))
+            let u = Float(smoothstep(0, 1, (Double(a) - 0.06) / 0.14))
+            drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], usedV2 ? teethPix[order[idx]] : nil, u))
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -813,6 +856,10 @@ final class FlowMorph: @unchecked Sendable {
                     for k in drawn {
                         let dk = Self.bilinear2(k.field, fw, fh, fx, fy)
                         var c = Self.bilinear3(k.key, w, h, px + dk.0, py + dk.1)
+                        if let th = k.teeth, k.u < 1 {
+                            let tmk = Self.bilinear1(th, w, h, px + dk.0, py + dk.1) * (1 - k.u)
+                            c = (c.0 * (1 - tmk) + 52 * tmk, c.1 * (1 - tmk) + 28 * tmk, c.2 * (1 - tmk) + 30 * tmk)
+                        }
                         if let lip = k.lip {
                             // the key's colour only inside its lip hull (warped with it); skin = warped neutral
                             let mk = Self.bilinear1(lip, w, h, px + dk.0, py + dk.1)
@@ -839,7 +886,8 @@ final class FlowMorph: @unchecked Sendable {
         let lift = (rig.rules.liftAll ?? 0) >= 1
             ? min(1, am.reduce(0, +))
             : ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
-        let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift))
+        let ew = (context.map { expressionWeights(atMs: $0.audioMs) }) ?? [:]
+        let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift), expressions: ew)
         cornerD = d
         return image
     }
@@ -969,8 +1017,13 @@ final class CheekRig: @unchecked Sendable {
     private let wCorner: [[Float]], wCheek: [[Float]]
     private let alpha: [Float]
     private let roiOrigin: (x: Int, y: Int)
+    private var lockYpx = 0.0
 
-    init(rules: FlowMap.Cheek, data: FaceFlowData, neutralStill: CGImage, scale s: Double, face: CGRect, mouth: CGRect, stillWidth: Double) {
+    /// Expression layer fields per tag (dx, dy in still px per unit weight, working res), when enabled.
+    private(set) var exprFields: [String: [Float]] = [:]
+
+    init(rules: FlowMap.Cheek, data: FaceFlowData, neutralStill: CGImage, scale s: Double, face: CGRect, mouth: CGRect, stillWidth: Double,
+         expressions: Bool = false) {
         self.rules = rules
         scale = s
         stillToOut = 540 / stillWidth           // the rules' pixel values are at 540 px wide
@@ -988,13 +1041,17 @@ final class CheekRig: @unchecked Sendable {
             let kx = cx + sx * geo[0] * fw, ky = cy - geo[1] * fh
             r = r.union(CGRect(x: kx - 2 * geo[2] * fw, y: ky - 2 * geo[3] * fh, width: 4 * geo[2] * fw, height: 4 * geo[3] * fh))
         }
+        if expressions {   // brows to chin
+            r = r.union(CGRect(x: face.minX, y: face.minY + face.height * 0.1, width: face.width, height: face.height * 0.95))
+        }
         region = r.intersection(CGRect(x: 0, y: 0, width: neutralStill.width, height: neutralStill.height)).integral
         width = max(8, Int((Double(region.width) * s).rounded())); height = max(8, Int((Double(region.height) * s).rounded()))
         neutral = FlowMorph.rgb(neutralStill, crop: region, width: width, height: height)
         cornersROI = corners.map { ($0.0 - Double(data.roi.minX), $0.1 - Double(data.roi.minY)) }
         roiOrigin = (Int(((Double(data.roi.minX) - Double(region.minX)) * s).rounded()), Int(((Double(data.roi.minY) - Double(region.minY)) * s).rounded()))
         // Lock: the nose column down to the lock line, and everything above the lower eyelids.
-        let lockY = (data.lockY ?? Double(data.roi.minY) / Double(neutralStill.height)) * Double(neutralStill.height)
+        lockYpx = (data.lockY ?? Double(data.roi.minY) / Double(neutralStill.height)) * Double(neutralStill.height)
+        let lockY = lockYpx
         let noseX = Double(mouth.midX)
         let noseBottom = lockY + 6 / stillToOut
         let eyeLine = Double(face.minY) + 0.42 * fh
@@ -1034,11 +1091,71 @@ final class CheekRig: @unchecked Sendable {
             guard X >= 0, Y >= 0, X < width, Y < height else { continue }
             al[Y * width + X] = max(al[Y * width + X], m[(y * mw + x) * 3] / 255)
         } }
+        if expressions {
+            let f = Self.expressionFields(face: face, mouth: mouth, lockY: lockY, stillHeight: Double(neutralStill.height), region: region,
+                                          width: width, height: height, scale: s)
+            exprFields = f
+            for (_, v) in f { for k in 0..<(width * height) { let m = abs(v[k * 2]) + abs(v[k * 2 + 1]); if m > 0.05 { al[k] = max(al[k], min(1, m * 2)) } } }
+        }
         alpha = al
     }
 
+    /// The v29 expression layer as displacement fields per tag (still px for weight 1).
+    static func expressionFields(face: CGRect, mouth: CGRect, lockY: Double, stillHeight H0: Double, region: CGRect,
+                                 width: Int, height: Int, scale s: Double) -> [String: [Float]] {
+        let W = Double(face.width), H = Double(face.height)
+        let fsc = (H * 960 / H0) / 356 * 2.2 * (H0 / 960)      // spec px (960-high frame) → still px
+        let mcx = Double(mouth.midX), mcy = Double(mouth.midY)
+        let corners = [(Double(mouth.minX), mcy, -1.0), (Double(mouth.maxX), mcy, 1.0)]
+        // eyes box from the face box (T9-measured proportions: x .23–.80 W, y .354–.419 H)
+        let ex1 = Double(face.minX) + 0.229 * W, ex2 = Double(face.minX) + 0.803 * W
+        let eyeY = Double(face.minY) + 0.386 * H, eh = 0.065 * H
+        let eyes = [(ex1 + 0.25 * (ex2 - ex1), -1.0), (ex1 + 0.75 * (ex2 - ex1), 1.0)]
+        let feather = 0.03 * W
+        typealias Part = (cx: Double, cy: Double, sx: Double, sy: Double, dx: Double, dy: Double)
+        func corner(_ kx: Double, _ ky: Double, _ inward: Bool = false, dx0: Double = 3, dy0: Double = -4) -> [Part] {
+            corners.map { (c) in (c.0, c.1, 0.045 * W, 0.03 * H, (inward ? -c.2 : c.2) * dx0 * kx, dy0 * ky) }
+        }
+        func cheekApple(_ k: Double) -> [Part] { eyes.map { e in (e.0 + 0.15 * (e.0 - mcx), eyeY + 0.17 * H, 0.09 * W, 0.06 * H, 0, -3 * k) } }
+        func lowerLid(_ k: Double, _ dy: Double = -1.6, _ off: Double = 0.9) -> [Part] { eyes.map { e in (e.0, eyeY + off * eh, 0.07 * W, 0.6 * eh, 0, dy * k) } }
+        func brows(_ dy: Double) -> [Part] { eyes.map { e in (e.0, eyeY - 2.2 * eh, 0.09 * W, 1.0 * eh, 0, dy) } }
+        let smile = corner(1, 1) + cheekApple(1) + lowerLid(1)
+        var tags: [String: [Part]] = [:]
+        tags["smile"] = smile
+        tags["smileopen"] = smile.map { ($0.cx, $0.cy, $0.sx, $0.sy, $0.dx * 1.15, $0.dy * 1.15) }
+        tags["laugh"] = corner(1.4, 1.5) + cheekApple(1) + lowerLid(1.9) + brows(-1.5)
+        tags["surprised"] = brows(-5) + eyes.map { e in (e.0, eyeY - 0.6 * eh, 0.06 * W, 0.35 * eh, 0, -1.6) } + lowerLid(1, 0.8, 0.7)
+        tags["concerned"] = eyes.map { e in (e.0 + 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.035 * W, 0.8 * eh, (mcx - e.0 > 0 ? 1.6 : -1.6), -2.6) }
+            + eyes.map { e in (e.0 - 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.05 * W, 0.8 * eh, 0, 1.2) }
+            + corner(0.8 / 3, -0.5, true)   // corners dx −.8 inward, dy +2
+        var out: [String: [Float]] = [:]
+        for (tag, parts) in tags {
+            var f = [Float](repeating: 0, count: width * height * 2)
+            for j in 0..<height {
+                let Y = Double(region.minY) + (Double(j) + 0.5) / s
+                for i in 0..<width {
+                    let X = Double(region.minX) + (Double(i) + 0.5) / s
+                    // nose box stays put
+                    let inNose = smoothstep(-feather, feather, min(0.1 * W - abs(X - mcx), min(Y - (eyeY + eh), lockY - Y)))
+                    let free = 1 - inNose
+                    var dx = 0.0, dy = 0.0
+                    for p in parts {
+                        let g = exp(-(pow((X - p.cx) / p.sx, 2) + pow((Y - p.cy) / p.sy, 2)) / 2)
+                        dx += g * p.dx; dy += g * p.dy
+                    }
+                    let k = (j * width + i) * 2
+                    f[k] = Float(dx * fsc * free); f[k + 1] = Float(dy * fsc * free)
+                }
+            }
+            out[tag] = f
+        }
+        return out
+    }
+
     /// The warped lower face over `region` (premultiplied RGBA, alpha = coverage).
-    func render(morph: [UInt8], morphWidth mw: Int, morphHeight mh: Int, d: [(Double, Double)], dPrev: [(Double, Double)], lift: Double) -> CGImage {
+    func render(morph: [UInt8], morphWidth mw: Int, morphHeight mh: Int, d: [(Double, Double)], dPrev: [(Double, Double)], lift: Double,
+                expressions: [String: Double] = [:]) -> CGImage {
+        let active = expressions.filter { $0.value > 0.001 }.compactMap { k, w in exprFields[k].map { ($0, Float(w)) } }
         // Frame = neutral with the morph composited in.
         var frame = neutral
         for y in 0..<mh { for x in 0..<mw {
@@ -1059,6 +1176,7 @@ final class CheekRig: @unchecked Sendable {
                     vx += wk * rules.spread * dPrev[side].0 - wc * rules.pull * d[side].0
                     vy += wk * (rules.spread * dPrev[side].1 - up) - wc * rules.pull * d[side].1
                 }
+                for (f, w) in active { vx += Double(f[k * 2] * w); vy += Double(f[k * 2 + 1] * w) }
                 var c: (Float, Float, Float)
                 if abs(vx) + abs(vy) < 0.01 { c = (frame[k * 3], frame[k * 3 + 1], frame[k * 3 + 2]) }
                 else { c = FlowMorph.bilinear3(frame, width, height, Float(Double(i) - vx * scale), Float(Double(j) - vy * scale)) }
@@ -1079,5 +1197,15 @@ public struct LipContext: @unchecked Sendable {
     public let audioMs: Double
     public let timeline: LipTimeline
     public init(audioMs: Double, timeline: LipTimeline) { self.audioMs = audioMs; self.timeline = timeline }
+}
+
+/// One expression from the server (`expression` event, per clause) on the reply's audio clock.
+public struct FaceExpressionEvent: Equatable, Sendable {
+    public var tag: String          // smile | smileopen | laugh | surprised | concerned
+    public var intensity: Double    // 0…1
+    public var startMs: Int, endMs: Int
+    public init(tag: String, intensity: Double, startMs: Int, endMs: Int) {
+        self.tag = tag; self.intensity = intensity; self.startMs = startMs; self.endMs = endMs
+    }
 }
 

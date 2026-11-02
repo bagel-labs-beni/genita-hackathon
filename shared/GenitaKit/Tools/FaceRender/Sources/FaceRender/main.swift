@@ -31,6 +31,7 @@ struct Options {
     var still = false
     var dumpAmounts: String?
     var amounts: String?
+    var expr: String?          // "tag:intensity:startMs:endMs,…"
     var framesDir: String?
     var framesPrefix = "face"
     var bitrate = 1_100_000
@@ -63,6 +64,7 @@ func parse() -> Options {
         case "--dump-amounts": o.dumpAmounts = v()
         case "--amounts": o.amounts = v()
         case "--flow-density": FaceRenderer.flowDensity = Double(v()) ?? 1
+        case "--expr": o.expr = v(); FaceRenderer.expressionLayer = true
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -233,6 +235,12 @@ let givenAmounts: [[Float]] = {
     return rows.map { $0.map(Float.init) }
 }()
 if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
+for item in (o.expr ?? "").split(separator: ",") {
+    let f = item.split(separator: ":")
+    if f.count == 4, let i = Double(f[1]), let a = Int(f[2]), let b = Int(f[3]) {
+        renderer.addExpression(FaceExpressionEvent(tag: String(f[0]), intensity: i, startMs: a, endMs: b))
+    }
+}
 // The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
 // timeline), so the alive base's motion does not count as mouth movement.
 let metricRenderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: true)
