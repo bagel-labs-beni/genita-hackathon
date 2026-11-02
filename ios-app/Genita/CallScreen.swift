@@ -202,7 +202,8 @@ struct CallMoreSheet: View {
                 call.setInterpreting(call.mode != .interpret)
             }
             row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
-            row("bookmark", "Finds", call.findsCount == 0 ? "Nothing looked up yet" : call.findsCount == 1 ? "1 thing I looked up" : "\(call.findsCount) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
+            let n = max(call.finds.cardCount, call.findsCount)
+            row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
         }
