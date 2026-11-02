@@ -203,8 +203,7 @@ struct SavedSetup: Codable {
         onboardingSession.snapshot(token: onboarding.auth.token)
     }
     func ownsOnboardingResponse(_ snapshot: OnboardingSessionGeneration.Snapshot, allowingClearedSession: Bool = false) -> Bool {
-        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token)
-            || (allowingClearedSession && onboardingSession.isCurrent(snapshot))
+        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token, allowingClearedSession: allowingClearedSession)
     }
     private func invalidateOnboardingWork() {
         onboardingSession.invalidate()

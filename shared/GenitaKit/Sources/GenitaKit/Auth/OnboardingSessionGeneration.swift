@@ -20,6 +20,12 @@ public struct OnboardingSessionGeneration: Sendable {
         snapshot.generation == generation && snapshot.token == token
     }
 
+    /// A 401 clears the current request's token before its error handler runs. That request may still
+    /// route to sign-in, but a response from an invalidated (previous-account) generation never may.
+    public func isCurrent(_ snapshot: Snapshot, token: String?, allowingClearedSession: Bool) -> Bool {
+        isCurrent(snapshot, token: token) || (allowingClearedSession && isCurrent(snapshot))
+    }
+
     public func isCurrent(_ snapshot: Snapshot) -> Bool {
         snapshot.generation == generation
     }

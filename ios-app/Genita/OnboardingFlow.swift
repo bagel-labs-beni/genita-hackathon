@@ -30,7 +30,7 @@ extension AppState {
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
-        guard ownsOnboardingResponse(request) else { return }
+        guard ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
         apply(route, me: me)
     }
 
@@ -114,7 +114,9 @@ extension AppState {
                 importing = false
                 if stage == .preparing { go(.preferences) }
             } catch {
-                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                let expiredCurrentSession = (error as? GenitaAuthError) == .unauthorized
+                guard !Task.isCancelled,
+                      ownsOnboardingResponse(request, allowingClearedSession: expiredCurrentSession) else { return }
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }

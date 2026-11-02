@@ -13,4 +13,15 @@ struct OnboardingSessionGenerationTests {
         #expect(!generation.isCurrent(accountA, token: "account-a"))
         #expect(generation.isCurrent(generation.snapshot(token: "account-b"), token: "account-b"))
     }
+
+    @Test func currentRequestCanHandleItsOwnExpiredSessionButNotAnOlderAccount() {
+        var generation = OnboardingSessionGeneration()
+        let expiredRequest = generation.snapshot(token: "account-a")
+
+        #expect(!generation.isCurrent(expiredRequest, token: nil))
+        #expect(generation.isCurrent(expiredRequest, token: nil, allowingClearedSession: true))
+
+        generation.invalidate()
+        #expect(!generation.isCurrent(expiredRequest, token: nil, allowingClearedSession: true))
+    }
 }
