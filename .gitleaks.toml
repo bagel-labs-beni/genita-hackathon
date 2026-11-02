@@ -11,3 +11,9 @@ useDefault = true
 [[allowlists]]
 description = "dummy JWT in protocol sample fixture (not a credential)"
 paths = ['''^shared/protocol-samples/http/signin\.json$''']
+
+# 2026-11-03 false-positive decision (integration lane): the Crockford base32 alphabet constant in the proximity
+# handoff token code (feat/proximity-handoff, 9f3672fb) is a public alphabet, not a credential. Scoped to that path.
+[[allowlists]]
+description = "Crockford base32 alphabet constant (not a credential)"
+paths = ['''^genita-server/src/handoff/proximity\.ts$''']
