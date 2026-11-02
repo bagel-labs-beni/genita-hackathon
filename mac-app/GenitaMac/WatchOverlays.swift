@@ -131,9 +131,9 @@ struct ShareNoticeSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             Capsule().fill(WatchPalette.handle).frame(width: 47, height: 5).frame(maxWidth: .infinity).padding(.bottom, 24)
             Text("I only see what you share.").font(WatchPalette.serif(28)).tracking(-0.28).lineSpacing(6)
-            Text("Pick a window or your whole screen.").font(WatchPalette.sans(16)).lineSpacing(8).padding(.top, 16)
-            Text("I look while it’s shared and don’t keep it. Genita’s window is left out.").font(WatchPalette.sans(16)).lineSpacing(8)
-                .fixedSize(horizontal: false, vertical: true)
+            // MS-1 (157:74): three even lines, one per sentence
+            Text("Pick a window or your whole screen.\nI look while it’s shared and don’t keep it.\nGenita’s window is left out.")
+                .font(WatchPalette.sans(15)).lineSpacing(9).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
             Button(action: choose) {
                 Text("Choose what to share").font(WatchPalette.sans(16, medium: true)).foregroundStyle(WatchPalette.onInk)
                     .frame(maxWidth: .infinity).frame(height: 50).background(WatchPalette.ink, in: RoundedRectangle(cornerRadius: 12))
