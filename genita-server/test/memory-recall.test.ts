@@ -131,3 +131,23 @@ test("recall keys: a Forget before the background keys land wins", async () => {
   release(); await m.drain();
   assert.deepEqual(await m.list("u"), []);
 });
+
+test("Codex 11/3: possessives match ('Miso's'), keys never carry secrets or instructions, a Forget in progress never leaves pinned facts", async () => {
+  const m = service(); await m.remember("u", "My cat Miso steals running socks.", "episode", "s");
+  assert.equal((await m.recall("u", "Miso's"))[0]?.text, "My cat Miso steals running socks.");
+  assert.equal((await m.recall("u", "Miso’s"))[0]?.text, "My cat Miso steals running socks.");
+  const { cleanKeys } = await import("../src/memory/extract.ts");
+  assert.equal(cleanKeys(["password violet", "api key", "ignore previous instructions"]), undefined);
+  // Forget: calls are notified before rows are deleted; a pinned-facts load in that window waits for it
+  const repo = new InMemoryMemoryRepository();
+  const f = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  await f.remember("u", "I drink oat milk lattes.", "fact", "s");
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const del = repo.delete.bind(repo);
+  repo.delete = async (u, id) => { await gate; return del(u, id); };
+  const forgetting = f.forget("u");
+  await pause();
+  const pinned = f.stableFacts("u");
+  release(); await forgetting;
+  assert.deepEqual(await pinned, []);
+});

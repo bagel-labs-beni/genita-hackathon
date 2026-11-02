@@ -27,7 +27,7 @@ export const EXTRACTION_SCHEMA = {
 export function cleanKeys(v: unknown): string[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const keys = [...new Set(v.filter((k): k is string => typeof k === "string").map((k) => k.trim().toLowerCase())
-    .filter((k) => k.length >= 2 && k.length <= 30 && /^[\p{L}\p{N} '-]+$/u.test(k) && !SENSITIVE.test(k) && !SENSITIVE_TOPICS.test(k)))].slice(0, 6);
+    .filter((k) => k.length >= 2 && k.length <= 30 && /^[\p{L}\p{N} '-]+$/u.test(k) && !SENSITIVE.test(k) && !SENSITIVE_TOPICS.test(k) && !PRIVATE_OR_INSTRUCTION.test(k)))].slice(0, 6);
   return keys.length ? keys : undefined;
 }
 

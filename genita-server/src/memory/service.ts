@@ -32,7 +32,8 @@ export type MemoryOptions = {
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
 // Words that match everything ("my", "the", "what") are not evidence of relevance.
 const STOP = new Set("i me my mine myself you your yours we us our the a an and or but to of in on at for with from by as is am are was were be been being it its this that these those do does did doing what which who whom how why when where about so just like have has had can could would should will shall get got im i'm it's dont don't not no yes ok okay oh hey hi please really very".split(" "));
-const tokens = (s: string) => new Set((s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []).map((t) => t.replace(/'/g, "")).filter((t) => t && !STOP.has(t)));
+// "Miso's" / "Miso’s" → miso (possessive dropped), "don't" → dont (a stop word)
+const tokens = (s: string) => new Set((s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}'’]+/gu) ?? []).map((t) => t.replace(/['’]s$/, "").replace(/['’]/g, "")).filter((t) => t && !STOP.has(t)));
 
 export class MemoryService {
   repository: MemoryRepository;
@@ -149,7 +150,9 @@ export class MemoryService {
   }
   /** The call's top stable facts (see rerank.ts stableFacts): loaded once at call start. */
   async stableFacts(userId: string): Promise<Memory[]> {
-    return stableFacts(await this.repository.list(userId));
+    // under the user's lock: a Forget in progress (calls notified, rows not deleted yet) finishes first (Codex 11/3);
+    // the caller bounds the wait
+    return this.serial(userId, async () => stableFacts(await this.repository.list(userId)));
   }
   /**
    * Token overlap (stop words removed) ranks; `rerank` (the recall tool only) lets Spark re-order up to
@@ -158,13 +161,15 @@ export class MemoryService {
    */
   async recall(userId: string, query: string, opts: { rerank?: boolean } = {}): Promise<Memory[]> {
     if (!query.trim()) return [];
-    const { items, revision } = await this.serial(userId, async () => ({ items: await this.repository.list(userId), revision: (await this.state.getState(userId)).revision }));
+    const wantsRerank = !!(opts.rerank && this.options.rerank);
+    // the revision is read only for the re-rank (it guards the Spark wait); the per-reply recall stays one read
+    const { items, revision } = await this.serial(userId, async () => ({ items: await this.repository.list(userId), revision: wantsRerank ? (await this.state.getState(userId)).revision : 0 }));
     const q = tokens(query);
     // the memory's words plus its recall keys ("pet" finds "my cat Miso")
     const scored = items.map((m) => ({ m, score: [...tokens(m.text + " " + (m.keys ?? []).join(" "))].filter((t) => q.has(t)).length }))
       .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at);
     let ranked = scored.slice(0, 3).map((r) => r.m);
-    if (opts.rerank && this.options.rerank && items.length) {
+    if (wantsRerank && this.options.rerank && items.length) {
       const candidates = scored.slice(0, RERANK_CANDIDATES).map((r) => r.m);
       for (const m of [...items].sort((a, b) => b.updated_at - a.updated_at)) {
         if (candidates.length >= RERANK_CANDIDATES) break;
