@@ -255,7 +255,7 @@ struct FindsSheet: View {
 
     private var mainLayer: some View {
         let full = finds.state == .full
-        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 412 : 344
+        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 396 : 344
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
