@@ -10,7 +10,12 @@ import CoreText
         }
     }
     var body: some Scene {
-        WindowGroup("Genita", id: "companion") { MacHandoffControls().preferredColorScheme(.light) }
+        WindowGroup("Genita", id: "companion") {
+            MacHandoffControls().preferredColorScheme(.light)
+                #if DEBUG
+                .task { await MacHandoff.shared.renderReviewScreens() }
+                #endif
+        }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
     }
 }
@@ -21,6 +26,7 @@ func resourceImage(_ name: String) -> Image {
 struct MacGlassControl: View {
     var icon: String
     var size: CGFloat = 47
+    var slashed = false
     var body: some View {
         ZStack {
             if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
@@ -28,6 +34,7 @@ struct MacGlassControl: View {
             if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
                 resourceImage(icon).resizable().frame(width: CGFloat(bitmap.pixelsWide) / 4, height: CGFloat(bitmap.pixelsHigh) / 4)
             }
+            if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
     }
 }

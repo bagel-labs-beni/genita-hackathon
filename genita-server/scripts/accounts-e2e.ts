@@ -16,11 +16,12 @@ import type { AddressInfo } from "node:net";
 import { loadConfig } from "../src/config.ts";
 import { startServer, defaultDeps } from "../src/server.ts";
 import { createAccounts } from "../src/auth/index.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 delete process.env.FAL_KEY; // no Kling clips in this check
-const img = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/out/img/p1.jpg");
+const img = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? fixturePath("out", "img", "p1.jpg");
 
 const dir = mkdtempSync(join(tmpdir(), "genita-accounts-e2e-"));
 const env = { ...process.env, DATABASE_URL: process.env.DATABASE_URL ?? "pglite:memory", GENITA_DATA_DIR: dir, GENITA_JWT_SECRET: "e2e-".repeat(10) };
