@@ -28,7 +28,7 @@ test("recall: stop words are not evidence ('What is my name?' no longer matches 
   assert.deepEqual((await m.recall("u", "how is the 10K going")).map((x) => x.text), ["I am training for a 10K in December."]);
 });
 
-test("recall tool: Spark re-ranks overlap candidates padded with the newest items; the per-reply recall never calls it", async () => {
+test("recall tool (GENITA_MEMORY_RERANK=1): Spark re-ranks overlap candidates padded with the newest items; the per-reply recall never calls it", async () => {
   const asked: string[][] = [];
   const rerank: Reranker = async (_q, c) => { asked.push(c); return [c.findIndex((t) => /cat/.test(t))]; };
   const m = service(rerank); await seed(m);
@@ -102,4 +102,32 @@ test("pinned facts: the call's top stable facts sit in every reply without a too
   await waitFor(() => c2.replies().length >= 1);
   assert.doesNotMatch(JSON.stringify(requests.map((r) => r.instructions)), /What you already know/);
   s2.close(); await m.drain();
+});
+
+test("recall keys: extraction keys widen the overlap match with zero reply-time cost; explicit remember gets keys in the background", async () => {
+  const repo = new InMemoryMemoryRepository();
+  let keyCalls = 0;
+  const m = new MemoryService({ repository: repo, state: repo,
+    extract: async () => [{ text: "My cat Miso steals my running socks.", kind: "fact", sensitive: "none", follow_up: false, keys: ["Cat", "pet", "animal", "doctor", "miso"] }],
+    keys: async (t) => { keyCalls++; return /cello/.test(t) ? ["instrument", "music"] : undefined; } });
+  await m.extract("u", "s1", [{ user: "My cat Miso steals my running socks.", assistant: "Ha!" }], 0);
+  const [row] = await m.list("u");
+  assert.deepEqual(row.keys, ["cat", "pet", "animal", "miso"], "lowercased, sensitive key dropped");
+  assert.equal((await m.recall("u", "what pet do I have"))[0]?.text, "My cat Miso steals my running socks.", "found without a re-rank");
+  assert.equal(keyCalls, 0, "extraction brings its own keys");
+  await m.remember("u", "I play the cello in a community orchestra.", "fact", "s2");
+  assert.deepEqual(await m.recall("u", "which instrument"), [], "keys not there yet: the reply path never waits for them");
+  await m.drain();
+  assert.equal(keyCalls, 1);
+  assert.equal((await m.recall("u", "which instrument"))[0]?.text, "I play the cello in a community orchestra.");
+});
+
+test("recall keys: a Forget before the background keys land wins", async () => {
+  const repo = new InMemoryMemoryRepository();
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const m = new MemoryService({ repository: repo, state: repo, extract: async () => [], keys: async () => { await gate; return ["instrument"]; } });
+  await m.remember("u", "I play the cello.", "fact", "s");
+  await m.forget("u");
+  release(); await m.drain();
+  assert.deepEqual(await m.list("u"), []);
 });

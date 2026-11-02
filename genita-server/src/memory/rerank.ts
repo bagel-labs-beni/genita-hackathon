@@ -11,7 +11,9 @@ import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import type { Memory } from "./repository.ts";
 
 export const RERANK_CANDIDATES = 20;
-export const RERANK_BUDGET_MS = 900;
+const budget = Number(process.env.GENITA_RERANK_BUDGET_MS);
+/** extra time the recall TOOL may spend on the Spark re-rank (GENITA_RERANK_BUDGET_MS) */
+export const RERANK_BUDGET_MS = Number.isFinite(budget) && budget >= 0 && budget <= 5000 ? budget : 900;
 export const PINNED_FACTS = 6;
 
 /** returns candidate indexes, most useful first (at most 3); [] = none of them helps */
