@@ -3,8 +3,7 @@
  *
  * Meta-only prep, end to end, with the real Meta API and the same code the
  * routes use: image check (Spark + SAM) → scene (Muse Image) → face set
- * (Muse Image expressions + visemes, SAM drift check). No fal, Kling, Peter
- * or ElevenLabs. Writes the face set to <outDir>: neutral/blink/smile/warm and
+ * (Muse Image expressions + visemes, SAM drift check). Writes the face set to <outDir>: neutral/blink/smile/warm and
  * the visemes as image files + manifest.json (file names instead of URLs, plus
  * timings). Costs 14–30 Muse Image edits. One pass, then exit.
  *
@@ -17,7 +16,6 @@ import { join } from "node:path";
 import { FileStore, type CompanionRecord } from "../src/prep/store.ts";
 import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
 import { checkImage, type PrepDeps } from "../src/prep/pipeline.ts";
-import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEVICE_VOICES } from "../src/prep/voices.ts";
 import { faceManifest } from "../src/prep/face.ts";
 import { sniffImage } from "../src/prep/classify.ts";
@@ -34,9 +32,6 @@ const t0 = performance.now();
 const at = () => `${((performance.now() - t0) / 1000).toFixed(1).padStart(6)} s`;
 const d: PrepDeps = {
   metaKey,
-  elevenKey: null,
-  ttsModel: "",
-  falKey: null,
   store: new FileStore(dataDir),
   voices: DEVICE_VOICES,
   log: (e, data) => {
@@ -53,7 +48,7 @@ if (!rec.check.passed || !rec.check.type) throw new Error(`image did not pass: $
 
 const companion: CompanionRecord = { id: `e2e${Date.now()}`, userId: user, imageId: rec.id, type: rec.check.type, voiceId: DEVICE_VOICES[0].id, name: "E2E", createdAt: new Date().toISOString(), prep: newPrepState() };
 await d.store.putCompanion(companion);
-const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+const runner = new PrepRunner(d);
 let last = "";
 runner.events.on("prep.progress", (p) => {
   const s = `${p.done}/${p.total}`;

@@ -12,19 +12,14 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 
 const config: Config = {
   metaKey: "x",
-  elevenKey: null,
   serverTts: false,
-  kling: false,
-  peter: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English", "Korean"],
@@ -133,13 +128,13 @@ test("voice service: ready.tts server, voice = the kind's Seamless speaker, fill
   session.close();
 });
 
-test("voice service: start.voiceId seamless:<n> picks that speaker; ElevenLabs ids map to the kind default", async () => {
+test("voice service: start.voiceId seamless:<n> picks that speaker; unrecognized voice ids map to the kind default", async () => {
   const a = setup();
   await a.session.onClientText(JSON.stringify({ type: "start", persona, voiceId: "seamless:42", mic: false }));
   assert.equal(a.client.of("ready")[0].voiceId, "seamless:42");
   a.session.close();
   const b = setup();
-  await b.session.onClientText(JSON.stringify({ type: "start", persona: { ...persona, kind: "human", voice: { id: "7PbNGDB5sJCFnOZuMPNL" } }, mic: false }));
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: { ...persona, kind: "human", voice: { id: "legacy-voice" } }, mic: false }));
   assert.equal(b.client.of("ready")[0].voiceId, "seamless:3");
   b.session.close();
 });

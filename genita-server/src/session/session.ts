@@ -1,21 +1,21 @@
 /**
  * One realtime conversation: app socket ↔ Muse Transcribe ↔ Muse Spark ↔
- * the app's on-device voice (`say`, device mode) or ElevenLabs (server mode,
- * GENITA_SERVER_TTS=1). Turn-taking decisions live in turnMachine.ts (pure); this
+ * the app's on-device voice (`say`, device mode) or Meta SeamlessM4T v2.
+ * Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
-import type { TtsChunk, TtsRequest } from "../tts/elevenlabs.ts";
-import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
+import type { TtsChunk, TtsRequest } from "../tts/types.ts";
+import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { resolveSpeaker, seamlessLang } from "../tts/seamless.ts";
+import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import { spokenText } from "../voice/normalize.ts";
-import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
+import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
 import { shiftTiming } from "../lips/visemes.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
@@ -23,7 +23,6 @@ import {
   PROTOCOL_VERSION,
   FRAME_HEADER_BYTES,
   FRAME_KIND_TTS_PCM,
-  FRAME_KIND_PETER,
   CLIENT_FRAME_KIND_MIC,
   CLIENT_FRAME_KIND_CALL,
   encodeFrameHeader,
@@ -41,6 +40,7 @@ import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
+import { detectRename } from "./rename.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -60,24 +60,12 @@ export interface AsrLike {
   readonly isOpen: boolean;
 }
 
-export interface PeterLike {
-  on(ev: "crop", fn: (c: { requestId: number; frame: number; jpeg: Buffer }) => void): unknown;
-  on(ev: "closed", fn: (code: number) => void): unknown;
-  connect(): Promise<{ bundleId: string; pasteDy: number; fps: number }>;
-  readonly isReady: boolean;
-  begin(requestId: number, startFrame?: number): void;
-  audio24k(requestId: number, pcm24k: Buffer): void;
-  end(requestId: number): void;
-  cancel(requestId: number): void;
-  close(): void;
-}
-
 export type SessionDeps = {
   config: Config;
   /** mode: the Mac's shared-screen sound uses DIARIZATION (watch together) */
   openAsr: (languages: string[], mode?: "ENDPOINTING" | "DIARIZATION") => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
-  tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
+  tts: (req: TtsRequest) => AsyncIterable<TtsChunk>;
   now?: () => number;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
@@ -86,11 +74,11 @@ export type SessionDeps = {
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
-  /** Peter worker connection factory; unset = Peter not deployed */
-  openPeter?: (opts?: { avatarId?: string }) => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
   /** result cards (F10); unset = spoken answers only */
   finds?: FindsDeps;
+  /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
+  renameCompanion?: (userId: string, name: string) => Promise<unknown>;
 };
 
 type Mode = "chat" | "interpret";
@@ -104,8 +92,6 @@ type Reply = {
   firstAudioAt: number | null;
   audioMs: number;
   doneTimer: NodeJS.Timeout | null;
-  /** this reply's audio is going to Peter */
-  peter: boolean;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
   /** server mode: the voice failed mid-reply and the rest went to the app as `say` */
@@ -159,6 +145,8 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+const GREET_PROMPT = "The call just connected. Greet the user.";
+const MAX_GREET_AFTER_MS = 3000;
 
 function str(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -194,13 +182,13 @@ export class Session {
   private memories: string[] = [];
   private memoryCall: MemoryCall | null = null;
   private greeting: { item: Memory | null } | null = null;
+  /** D21: start.greetAfterMs window; the user speaking or typing inside it cancels the greeting */
+  private greetTimer: NodeJS.Timeout | null = null;
   private mode: Mode = "chat";
   private language = "English";
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
-  /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
-  private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
@@ -212,9 +200,7 @@ export class Session {
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
-  private peter: PeterLike | null = null;
   private watch: WatchController | null = null;
-  private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
@@ -281,6 +267,7 @@ export class Session {
       case "text": {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
+        this.skipPendingGreeting("text");
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
         if (this.interp && typeof msg.findId === "string") {
           // "Ask about this" on a card while interpreting would be translated to the other person: not sent
@@ -371,17 +358,19 @@ export class Session {
     // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
     if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
-    const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
-    this.peterAvatarId = typeof lip.avatarId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(lip.avatarId) ? lip.avatarId : undefined;
-    this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
+    const asLip = (v: unknown, d: LipMode): LipMode => (v === "atlas" || v === "none" ? v : v === undefined ? d : "none");
+    const mode = asLip(lip.mode, persona.kind === "human" ? "none" : "atlas");
+    this.lip = { requested: mode, active: mode, reason: null };
     // Server TTS runs only when the server has it on; then the app may still ask for device speech.
     this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
-    // Device speech: no server audio to sync, so no mouth cues and no Peter; the device makes its own.
+    // Device speech: no server audio to sync, so no server mouth cues; the device makes its own.
     if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
+    const g = msg.greetAfterMs;
+    const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
     if (this.deps.memory && this.deps.userId) {
       this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
@@ -421,15 +410,40 @@ export class Session {
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
-    if (this.lip.reason === "peter_connecting") void this.connectPeter();
     if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
-    if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
+    if (greetAfterMs === null) {
+      if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
+      return;
+    }
+    // D21: also without the memory dependency, the plain greeting
+    if (startMode === "chat" && !this.greeting) this.greeting = { item: null };
+    if (!this.greeting || this.closed) return;
+    this.greetTimer = setTimeout(() => {
+      this.greetTimer = null;
+      if (!this.greeting || this.closed) return;
+      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
+        // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
+        this.greeting = null;
+        return this.log("call.greet_skipped", { by: "busy" });
+      }
+      this.dispatch({ type: "text", text: GREET_PROMPT });
+    }, greetAfterMs);
+  }
+
+  /** D21: the user spoke or typed first inside the greetAfterMs window → no greeting, just answer them. */
+  private skipPendingGreeting(by: "speech" | "text" | "mode"): void {
+    if (!this.greetTimer) return;
+    clearTimeout(this.greetTimer);
+    this.greetTimer = null;
+    this.greeting = null;
+    this.log("call.greet_skipped", { by });
   }
 
   // ───────────────────────── F8 interpretation ─────────────────────────
 
   private switchMode(mode: Mode, by: "client" | "model", opts: InterpretOptionsWire = {}): void {
     if (mode === "interpret") {
+      this.skipPendingGreeting("mode");
       // a chat reply in progress is cut; the interpreter owns the voice now
       if (this.turn.phase !== "listening") this.dispatch({ type: "client_barge_in" });
       this.dropSpeculation();
@@ -502,51 +516,11 @@ export class Session {
       // no memory context or recall/remember tools in translation (useMemory = false)
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
-        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
+        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
       say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
-      lipBegin: (uid) => {
-        if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
-        this.peter.begin(uid);
-        return true;
-      },
-      lipAudio: (uid, pcm) => this.peter?.audio24k(uid, pcm),
-      lipEnd: (uid) => this.peter?.end(uid),
-      lipCancel: (uid) => {
-        this.peterCancelled.add(uid);
-        this.peter?.cancel(uid);
-      },
       log: (event, data) => this.log(event, data),
     };
-  }
-
-  private async connectPeter(): Promise<void> {
-    const fallback = this.lip.active;
-    const peter = this.deps.openPeter!({ avatarId: this.peterAvatarId });
-    this.peter = peter;
-    peter.on("crop", (c) => {
-      if (this.closed || this.peterCancelled.has(c.requestId)) return;
-      const frame = Buffer.alloc(4);
-      frame.writeUInt32LE(c.frame >>> 0, 0);
-      this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_PETER, c.requestId), frame, c.jpeg]));
-    });
-    peter.on("closed", () => {
-      if (this.closed || this.lip.active !== "peter") return;
-      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip });
-    });
-    try {
-      const r = await peter.connect();
-      if (this.closed) return peter.close();
-      this.lip = { requested: "peter", active: "peter", reason: null };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip, peter: { bundleId: r.bundleId, pasteDy: r.pasteDy, fps: r.fps } });
-    } catch (err) {
-      this.peter = null;
-      if (this.closed) return;
-      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
-      this.client.sendJson({ type: "lip.changed", lip: this.lip });
-      this.log("peter.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-    }
   }
 
   private async ensureAsr(): Promise<void> {
@@ -569,6 +543,7 @@ export class Session {
     if (this.closed) return;
     this.closed = true;
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
+    if (this.greetTimer) clearTimeout(this.greetTimer);
     this.dropSpeculation();
     if (this.reply) {
       this.reply.abort.abort();
@@ -577,7 +552,6 @@ export class Session {
     this.interp?.stop();
     this.dropCallAsr();
     this.asr?.end();
-    this.peter?.close();
     this.memoryCall?.close();
     // account deleted: Finds stop now and never write again (the delete runs right after)
     this.finds?.close({ purge: reason === "account_deleted" });
@@ -592,6 +566,7 @@ export class Session {
     if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
+        this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
@@ -741,10 +716,6 @@ export class Session {
     r.abort.abort();
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
-    if (r.peter) {
-      this.peterCancelled.add(utteranceId);
-      this.peter?.cancel(utteranceId);
-    }
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
@@ -779,7 +750,7 @@ export class Session {
   }
 
   /** Pure apart from consuming pending camera frames. */
-  private buildRequest(text: string): Built {
+  private buildRequest(text: string, renamedFrom?: string): Built {
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
     const interpret = this.mode === "interpret" || hangul;
@@ -812,6 +783,7 @@ export class Session {
       language: this.language,
       cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
+      renamedFrom,
     });
     return {
       interpret,
@@ -880,10 +852,17 @@ export class Session {
   private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
+    // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
+    const newName = !self && !greeting && this.mode === "chat" ? detectRename(text) : null;
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: false };
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
+    let renamedFrom: string | undefined;
+    if (newName && newName !== this.persona!.name) {
+      renamedFrom = await this.applyRename(newName);
+      if (signal.aborted || this.reply !== reply) return;
+    }
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
       firstTokenAt?: number;
@@ -899,7 +878,8 @@ export class Session {
     if (!self && this.specTimer) clearTimeout(this.specTimer);
     if (!self) this.specTimer = null;
     if (spec) {
-      if (spec.norm === normTranscript(text)) {
+      // a guess built before a rename still carries the old name: ask again
+      if (spec.norm === normTranscript(text) && !renamedFrom) {
         speculative = "hit";
         spec.confirm();
         built = spec.built;
@@ -911,7 +891,7 @@ export class Session {
       }
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
-    built ??= this.buildRequest(text);
+    built ??= this.buildRequest(text, renamedFrom);
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!greeting && !self) this.memoryCall?.userMessage();
@@ -1000,8 +980,8 @@ export class Session {
           voiceId: this.voiceId,
           text: s.tts,
           emotion: s.emotion,
-          model: this.deps.config.ttsModel,
-          fallbackModel: this.deps.config.ttsFallbackModel,
+          model: SEAMLESS_MODEL,
+
           signal,
           lang: speechLang(s.display || s.tts, lang),
         }),
@@ -1064,10 +1044,6 @@ export class Session {
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
-            if (this.lip.active === "peter" && this.peter?.isReady) {
-              reply.peter = true;
-              this.peter.begin(utteranceId);
-            }
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
@@ -1094,7 +1070,6 @@ export class Session {
           if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
-            if (reply.peter) this.peter?.audio24k(utteranceId, chunk.audio);
           }
           reply.audioMs += durationMs;
         }
@@ -1126,7 +1101,6 @@ export class Session {
     }
     await producer;
     if (signal.aborted || this.reply !== reply) return;
-    if (reply.peter) this.peter?.end(utteranceId);
 
     if (sparkError) {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
@@ -1168,6 +1142,29 @@ export class Session {
     const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
+  }
+
+  /**
+   * Saves the new name first (own companion; no-op without one), then switches this call to it and tells the app.
+   * A failed save keeps the old name everywhere (call, labels, stored) rather than splitting them (Codex 11/2).
+   * Returns the old name, or undefined if nothing changed.
+   */
+  private async applyRename(name: string): Promise<string | undefined> {
+    const userId = this.deps.userId;
+    if (userId && this.deps.renameCompanion) {
+      try {
+        await this.deps.renameCompanion(userId, name);
+      } catch (err) {
+        this.log("companion.rename_failed", { message: String(err).slice(0, 200) });
+        return undefined;
+      }
+    }
+    if (this.closed) return undefined;
+    const from = this.persona!.name;
+    this.persona = { ...this.persona!, name };
+    this.client.sendJson({ type: "companion.named", name });
+    this.log("companion.renamed", { by: "voice", chars: [...name].length });
+    return from;
   }
 
   private finishReply(reply: Reply): void {
