@@ -247,7 +247,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Witty"].exists)
     }
     func testBackAndCopyPreserveDraft() {
-        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launch()
+        // this test walks the demo sign-in through the Google button, which A02 hides by default (#218)
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launchEnvironment = ["GENITA_HIDE_GOOGLE": "0"]; app.launch()
         app.buttons["getStarted"].tap(); app.buttons["Continue with Google"].tap(); app.alerts.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["Continue with Apple"].exists)
         app.buttons["Continue with Google"].tap(); app.alerts.buttons["Continue in demo"].tap()
@@ -284,5 +285,32 @@ final class GenitaUITests: XCTestCase {
             if done.exists { done.tap() } else { app.swipeDown() }
             XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 10), "back on A02 after closing \(label)")
         }
+    }
+
+    /// #218 · A02 hides Google by default and keeps Apple, in the lower slot (no hole between buttons and the legal line).
+    func testA02HidesGoogleByDefault() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        let apple = app.buttons["Continue with Apple"]
+        XCTAssertTrue(apple.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Continue with Google"].exists)
+        let legal = app.buttons["Terms"]
+        if legal.exists { XCTAssertLessThan(legal.frame.minY - apple.frame.maxY, 120, "no awkward gap between Apple and the legal line") }
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02-no-google"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// #218 · the flag turns Google back on (reversible).
+    func testA02ShowsGoogleWhenFlagOff() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_HIDE_GOOGLE": "0"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Continue with Google"].exists)
     }
 }

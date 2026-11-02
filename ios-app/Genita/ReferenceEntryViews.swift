@@ -48,9 +48,12 @@ struct ReferenceSignInView: View {
                     ForEach(nodes.filter { $0.type == "text" && ($0.fontFamily == "KMU80 TTF" || $0.y == 199) }) { n in
                         DesignText(node: n).designSlot(n, width: size.width, top: top)
                     }
-                    // the board's two buttons move up one row (61 pt) so "Continue with email" takes Google's old row; the legal line stays put
-                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 537 + bottom)
-                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
+                    // the board's two buttons move up one row (61 pt) so "Continue with email" takes Google's old row; the legal line stays put.
+                    // #218: with Google hidden (default) Apple keeps its board slot (598) right above email, so there is no hole.
+                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: (SignInFlags.hideGoogle ? 598 : 537) + bottom)
+                    if !SignInFlags.hideGoogle {
+                        providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
+                    }
                     emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
                     LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
@@ -187,4 +190,15 @@ struct SafariPage: UIViewControllerRepresentable {
     let url: URL
     func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
     func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
+}
+
+/// #218 (Chelsea, 11/3): A02 hides "Continue with Google"; Apple stays. Kept behind a flag so it is reversible without
+/// touching the layout code: GENITA_HIDE_GOOGLE=0 (tests), the `genita.hideGoogle` default (a remote-config fetch can set it)
+/// or the `GenitaHideGoogle` Info.plist key turn Google back on / off. Default: hidden.
+enum SignInFlags {
+    static var hideGoogle: Bool {
+        if let env = ProcessInfo.processInfo.environment["GENITA_HIDE_GOOGLE"] { return env != "0" }
+        if let stored = UserDefaults.standard.object(forKey: "genita.hideGoogle") as? Bool { return stored }
+        return (Bundle.main.object(forInfoDictionaryKey: "GenitaHideGoogle") as? Bool) ?? true
+    }
 }
