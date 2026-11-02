@@ -18,6 +18,7 @@ extension CallController {
 
 struct FindsFixtureRun {
     let kind: FindKind
+    var question: String? = nil
     let frames: [Data]
     let events: [ServerEvent]
 
@@ -35,7 +36,7 @@ struct FindsFixtureRun {
                 guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
                 return try? JSONDecoder().decode(ServerEvent.self, from: d)
             }
-            return FindsFixtureRun(kind: kind, frames: frames, events: events)
+            return FindsFixtureRun(kind: kind, question: run["question"] as? String, frames: frames, events: events)
         }
     }
 }
@@ -53,6 +54,7 @@ extension FindsModel {
             reset()
             for (run, events) in list {
                 latestFrames = run.frames.map { $0.base64EncodedString() }
+                latestQuestion = run.question
                 for e in events { apply(e) }
             }
         }
@@ -117,6 +119,7 @@ extension FindsModel {
         case 21, 22, 23, 24:
             // PF-1 product search: 21 searching · 22 two cards · 23 saved (Open Finds) · 24 "Couldn't find a good match"
             guard let product else { return }
+            saveRemote = { _, _ in true } // no server in screenshots: the bookmark stays
             if n == 21 {
                 play([(product, Array(product.events.prefix { if case .findCreated = $0 { return false }; return true }))]); state = .searching
             } else if n == 24 {

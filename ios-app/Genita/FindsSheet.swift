@@ -625,7 +625,7 @@ struct FindCardPage: View {
             ForEach(items) { p in productColumn(p) }
             if items.count == 1 { Color.clear.frame(maxWidth: .infinity) }
         }.padding(.top, 8)
-        .accessibilityIdentifier("productView")
+        .accessibilityElement(children: .contain).accessibilityIdentifier("productView")
     }
 
     private func productColumn(_ p: FindCard.Product) -> some View {
@@ -634,7 +634,7 @@ struct FindCardPage: View {
                 .aspectRatio(1, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 12))
                 .accessibilityLabel("Picture of \(p.name)")
             VStack(alignment: .leading, spacing: 4) {
-                Text(p.name).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
+                Text(p.name).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).multilineTextAlignment(.leading)
                 Text(p.store + " · " + (p.price ?? "Price on site")).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
             }
             if !p.taste.isEmpty { productChip(p.taste, fg: FindsInk.blueText, bg: FindsInk.blueSoft) }
@@ -643,12 +643,12 @@ struct FindCardPage: View {
                 if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
             } label: {
                 HStack(spacing: 4) {
-                    Text("View").font(TypeStyle.body(16))
-                    Image(systemName: "arrow.up.right").font(.system(size: 13, weight: .medium))
-                }.foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 44)
+                    Text("View").font(TypeStyle.body(14))
+                    Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .medium))
+                }.foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 34)
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(FindsInk.line, lineWidth: 1))
-                .contentShape(Rectangle())
-            }.buttonStyle(PressScale()).opacity(offline ? 0.5 : 1).padding(.top, 4)
+                .padding(.vertical, 5).contentShape(Rectangle())
+            }.buttonStyle(PressScale()).opacity(offline ? 0.5 : 1)
             .accessibilityLabel("View \(p.name) at \(p.store)").accessibilityIdentifier("productLink-\(p.id)")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }

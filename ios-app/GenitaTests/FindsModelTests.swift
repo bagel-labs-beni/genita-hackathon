@@ -164,7 +164,7 @@ import XCTest
 
     func testProductRowSaysProductsAndLinkCount() throws {
         let m = FindsModel()
-        m.apply(started("a")); m.apply(try productCreated())
+        m.apply(started("4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43")); m.apply(try productCreated())
         let card = try XCTUnwrap(m.entries.first?.card)
         XCTAssertEqual(FindsRow(card: card).subtitle, "Products · 2 links")
     }
