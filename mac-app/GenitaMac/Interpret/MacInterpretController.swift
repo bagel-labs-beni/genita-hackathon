@@ -13,6 +13,11 @@ import Observation
 /// Known limit (checked 11/2): the call app keeps its own mic open, so the other person also
 /// hears the user's own voice before Genita's translation. See mac-app/README.md.
 @MainActor @Observable final class MacInterpretController {
+    /// D40 (PRD v12, 11/2): Mac FaceTime/Zoom interpretation is cut for the hackathon build.
+    /// The ⋮ entry stays the disabled "More" control; iPhone face-to-face interpretation is unaffected.
+    /// Flip to `true` to bring the INT-M0 sheet back.
+    nonisolated static let enabled = false
+
     enum Stage: Equatable { case idle, picking, starting, live, failed(String) }
 
     var stage: Stage = .idle

@@ -36,8 +36,12 @@ struct MacConversationView: View {
                 VStack(spacing: 13) {
                     excluded("glass-camera-icon", "Camera unavailable in demo")
                     excluded("glass-mic-icon", "Microphone unavailable in demo")
-                    Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                        .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                    if MacInterpretController.enabled {
+                        Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                            .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                    } else {
+                        excluded("glass-more-icon", "More unavailable in demo")
+                    }
                 }.position(x: 334, y: 724)
                 }
                 if handoff.desktop && handoff.motion == nil {
@@ -55,7 +59,7 @@ struct MacConversationView: View {
                 }
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
-            if interpret.stage == .picking { interpretSheet }
+            if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
             MacDemoSystemBar().allowsHitTesting(false).accessibilityHidden(true)
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
