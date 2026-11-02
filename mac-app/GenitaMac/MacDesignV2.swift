@@ -121,7 +121,7 @@ struct MacV2Button: View {
 struct MacV2Legal: View {
     var prefix = "By continuing, you agree to our "
     var body: some View {
-        Text(attributed).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(5)
+        Text(attributed).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true).frame(width: 356, alignment: .leading)
             .tint(MacSheetInk.ink).accessibilityIdentifier("macLegal")
     }
@@ -194,7 +194,7 @@ struct MacPairingCode: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Enter these six digits in Genita on your iPhone.\nYou only do this once.")
-                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).fixedSize(horizontal: false, vertical: true)
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                 .frame(width: 356, alignment: .leading)
             MacV2CodeBoxes(code: code)
                 .accessibilityElement(children: .ignore)

@@ -371,7 +371,7 @@ struct MacHomeView:View {
         }
     }
     private func v2Para(_ text:String)->some View {
-        Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+        Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
     }
     private var v2Body:some View {
         VStack(alignment:.leading,spacing:0) {
@@ -405,7 +405,7 @@ struct MacHomeView:View {
                     MacV2Button(label:"Show screen",style:.secondary,id:"macShowScreen") { handoff.showRegistration() }
                 }.padding(.top,24)
                 Text("Show screen helps your iPhone find this display, so you can pass the call across.")
-                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(5).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
+                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(2).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
             case .offline(let reason):
                 v2Para(reason).padding(.top,16)
                 MacV2Button(label:"Try again",id:"macTryAgain") { Task { await MacCall.shared.refresh() } }.padding(.top,24)
@@ -414,6 +414,8 @@ struct MacHomeView:View {
         .padding(.horizontal,32).padding(.top,24).padding(.bottom,28).frame(width:420,alignment:.topLeading)
         .background(MacSheetInk.sheet)
         .animation(.easeOut(duration:0.2),value:v2Screen)
+        // a finished pairing closes MAC-P for good (a later drop of the local link shows MAC-3's link again, not the code)
+        .onChange(of:paired) { _,now in if now { pairing=false } }
     }
     private var v1Body:some View {
         VStack(alignment:.leading,spacing:12) {

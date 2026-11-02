@@ -291,7 +291,7 @@ struct MacLinkPrompt: View {
                 Text("Look at it together?").font(MacSheetInk.serif(24)).tracking(-0.24).foregroundStyle(MacSheetInk.ink).lineLimit(1)
                     .accessibilityAddTraits(.isHeader).accessibilityIdentifier("macLinkPrompt")
                 Text("I opened it in your browser. Share that window and I’ll see what you see.")
-                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
                 MacV2Button(label: "Share this window", id: "macShareThisWindow", action: share).padding(.top, 24)
                 MacV2Button(label: "Not now", style: .text, id: "macLinkNotNow", action: notNow).frame(maxWidth: .infinity).padding(.top, 4)
             }

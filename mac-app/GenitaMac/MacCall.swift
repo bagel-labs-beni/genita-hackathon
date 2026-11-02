@@ -28,7 +28,10 @@ import Foundation
         case ready(CompanionCallPlan)
     }
 
-    @Published private(set) var account: Account = .checking
+    @Published private(set) var account: Account = .checking {
+        // Mac v2 Settings: never show the previous account's address once its session is gone (Codex review)
+        didSet { if account == .signedOut || account == .signingIn { accountLabel = nil } }
+    }
     /// MAC-1's footnote line after a sign-in that didn't finish (stays on MAC-1, never the home's offline state).
     @Published private(set) var signInMessage: String?
     /// Genita ▸ Sign Out is on while an account is signed in on this Mac.

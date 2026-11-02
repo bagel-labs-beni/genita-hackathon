@@ -84,7 +84,7 @@ struct MacSignInView: View {
             }.disabled(call.account == .signingIn).padding(.top, 24)
             if call.account == .signingIn || call.signInMessage != nil {
                 Text(call.account == .signingIn ? "Finish signing in in the browser window that opened." : call.signInMessage ?? "")
-                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.ink).lineSpacing(5).fixedSize(horizontal: false, vertical: true)
+                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                     .frame(width: 356, alignment: .leading).padding(.top, 16).accessibilityIdentifier("macSignInMessage")
             }
             MacV2Legal().padding(.top, 16)
@@ -365,7 +365,7 @@ struct MacConsentView: View {
         VStack(alignment: .leading, spacing: 0) {
             MacV2Title(text: "Before we start.")
             Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
-                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
                 .frame(width: 356, alignment: .leading)
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(rows, id: \.0) { row in
