@@ -40,7 +40,9 @@ public struct GenitaSplash: View {
         var amp = 0.0      // 0.50–1.50 corona rise
         var bloom = 1.0    // 1.10–1.90 ×1 → ×1.2
         var word = 0.0     // 1.20–1.70 wordmark
-        static let finished = Frame(outline: 1, orbit: 1, body: 1, amp: 1, bloom: 1.2, word: 1)
+        var disc = 0.0     // 0.50–1.10 the white disc brightens
+        var halo = 0.45    // 1.10–1.90 warm edge halo .45 → .9
+        static let finished = Frame(outline: 1, orbit: 1, body: 1, amp: 1, bloom: 1.2, word: 1, disc: 1, halo: 0.9)
     }
 
     private static func makeTimeline() -> KeyframeTimeline<Frame> {
@@ -61,6 +63,14 @@ public struct GenitaSplash: View {
             KeyframeTrack(\.bloom) {
                 LinearKeyframe(1, duration: 1.1)
                 CubicKeyframe(1.2, duration: 0.8)
+            }
+            KeyframeTrack(\.disc) {
+                LinearKeyframe(0, duration: 0.5)
+                CubicKeyframe(1, duration: 0.6)
+            }
+            KeyframeTrack(\.halo) {
+                LinearKeyframe(0.45, duration: 1.1)
+                CubicKeyframe(0.9, duration: 0.8)
             }
             KeyframeTrack(\.word) {
                 LinearKeyframe(0, duration: 1.2)
@@ -115,17 +125,21 @@ public struct GenitaSplash: View {
         let h = calm ? 0 : Self.sineInOut(clamp((t - hStart) / hDur))
         let f: Frame = calm || skipAt != nil ? .finished : timeline.value(time: min(t, Self.handoffAt))
         let dx = (size.width - 390) / 2
-        // disc: the G's round counter (205, 366, r 31.5) → the head of the A02 photo (195, 285, r 200)
-        let disc = CGPoint(x: lerp(205, 195, h) + dx, y: lerp(366, 285, h) + top)
-        let r = lerp(31.5, 200, h)
+        let shift = (size.height - 844) / 2 // A01 centres its mark vertically (ReferenceWelcomeView)
+        // the mark exactly where A01 draws it: centre (193.34, 368.89), −14.05°; its round counter = the disc
+        let markC = CGPoint(x: 193.3445 + dx, y: 368.8885 + shift)
+        let a = -14.05 * Double.pi / 180
+        let counter = CGPoint(x: markC.x + 12.5 * cos(a), y: markC.y + 12.5 * sin(a))
+        // white disc: the counter (r 31.8) → behind the A02 head (195, 330, r 260)
+        let disc = CGPoint(x: lerp(counter.x, 195 + dx, h), y: lerp(counter.y, 330 + top, h))
+        let r = lerp(31.8, 260, h)
         let breathe = calm ? 1 : 1 + 0.03 * sin(t / 3.2 * 2 * .pi)
-        let amp = f.amp * f.bloom * breathe
+        let amp = f.amp * f.bloom * breathe * (1 - h)
         // Reduce Motion: fade in 0.2 s, crossfade to A02 at 0.7 s over 0.4 s
         let calmAlpha = calm ? clamp(t / 0.2) * (1 - clamp((t - 0.7) / 0.4)) : 1
         // last part of the hand-off: the overlay thins out so A02's copy and buttons come through
         let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.3) / (hDur * 0.7)))
         let markAlpha = 1 - clamp(h / 0.35)
-        let markOrigin = CGPoint(x: disc.x - BrandMarkShape.pupil.x, y: disc.y - BrandMarkShape.pupil.y)
         // wordmark: out in place during the first 30 % of the hand-off (1.90–2.14 s); A02 logo in at its spot 2.26–2.66 s.
         // Reduce Motion: out over 0.18 s when the crossfade starts (0.7 s), logo in 0.2 s later over 0.2 s.
         let wordAlpha = calm ? 1 - clamp((t - 0.7) / 0.18) : f.word * (1 - clamp((t - hStart) / (hDur * 0.3)))
@@ -133,17 +147,37 @@ public struct GenitaSplash: View {
 
         ZStack(alignment: .topLeading) {
             Color(red: 7 / 255, green: 7 / 255, blue: 7 / 255)
-            // the real A02 photo comes up through the corona, bright areas first
+            // corona: only behind the disc
+            CoronaView(center: disc, radius: r, amp: amp, lean: lean, time: t, size: size)
+            // warm blurred halo at the disc edge (.45 → .9 over 1.1–1.9 s)
+            Circle().fill(GenitaCorona.edge)
+                .frame(width: r * 2 + 8, height: r * 2 + 8)
+                .blur(radius: 6 + 10 * h)
+                .position(disc)
+                .opacity(f.halo * f.disc * (1 - 0.6 * h))
+            // the white disc (flat white, faint warm edge), brightening 0.5–1.1 s
+            Circle()
+                .fill(RadialGradient(stops: [
+                    .init(color: .white, location: 0),
+                    .init(color: .white, location: 0.8),
+                    .init(color: GenitaCorona.edge, location: 1),
+                ], center: .center, startRadius: 0, endRadius: r))
+                .frame(width: r * 2, height: r * 2)
+                .position(disc)
+                .opacity(f.disc)
+            // the real A02 photo: dark areas first (the head stands in front of the disc), bright areas last
             PhotoReveal(reveal: h, size: size, top: top)
-            CoronaView(center: disc, radius: r, amp: amp, lean: lean, time: t, reveal: h, size: size, top: top)
-            mark(f, t: t)
+            // the mark: a clean vector layer above everything, A01's colours
+            mark(f)
                 .frame(width: BrandMarkShape.size.width, height: BrandMarkShape.size.height)
+                .rotationEffect(.degrees(-14.05))
                 .rotation3DEffect(.degrees(Double(lean.width) * 6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-                .offset(x: markOrigin.x, y: markOrigin.y)
+                .position(markC)
                 .opacity(markAlpha)
-            wordmark(f: f, alpha: wordAlpha, x: 195 + dx, y: 456 + top)
+            wordmark(f: f, alpha: wordAlpha, x: 195 + dx, y: 456 + shift)
         }
         .frame(width: size.width, height: size.height)
+        .compositingGroup() // fade the scene as one picture (else each layer fades and the disc shows through the head)
         .opacity(sceneAlpha)
         .overlay(alignment: .topLeading) {
             // A02's own logo spot (35, 67.5), same asset at 63.142 pt: fades in there, nothing flies across the title
@@ -156,20 +190,20 @@ public struct GenitaSplash: View {
         }
     }
 
-    @ViewBuilder private func mark(_ f: Frame, t: Double) -> some View {
-        let away = CGSize(width: -lean.width * 0.6, height: 0.5 - lean.height * 0.4)
+    /// The brandmark as on A01 (#111 fill), with a warm-white rim (the same path stroked 1.6 pt under the body, so
+    /// 0.8 pt shows), the warm outline drawing in first, and the faint orbit dot. No noise or blur on it.
+    @ViewBuilder private func mark(_ f: Frame) -> some View {
+        let toward = UnitPoint(x: BrandMarkShape.pupil.x / BrandMarkShape.size.width + lean.width * 0.05,
+                               y: BrandMarkShape.pupil.y / BrandMarkShape.size.height + lean.height * 0.05)
         ZStack {
-            BrandMarkShape().fill(GenitaCorona.body).opacity(f.body)
-            // thin warm rim: the mark minus itself pushed away from the light
-            ZStack {
-                BrandMarkShape().fill(GenitaCorona.rim)
-                BrandMarkShape().fill(.black).offset(away).blendMode(.destinationOut)
-            }
-            .compositingGroup()
-            .opacity(f.body * 0.9)
+            BrandMarkShape()
+                .stroke(RadialGradient(colors: [GenitaCorona.rim, GenitaCorona.rim.opacity(0.55), GenitaCorona.warm.opacity(0.25)],
+                                       center: toward, startRadius: 0, endRadius: 110), lineWidth: 1.6)
+                .opacity(f.body)
+            BrandMarkShape().fill(GenitaCorona.ink).opacity(f.body)
             BrandMarkShape().trim(from: 0, to: f.outline)
                 .stroke(GenitaCorona.warm, style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
-                .opacity(1 - f.body * 0.8)
+                .opacity(1 - f.body)
             if f.orbit > 0, f.orbit < 1 {
                 Ellipse().trim(from: max(0, f.orbit - 0.08), to: f.orbit)
                     .stroke(GenitaCorona.accent.opacity(0.5), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
@@ -264,7 +298,8 @@ public struct GenitaSplash: View {
 
 /// Colours (motion page A′). Change here only.
 enum GenitaCorona {
-    static let body = Color(red: 5 / 255, green: 5 / 255, blue: 6 / 255)            // #050506 disc + mark body
+    static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)          // #111111 the A01 brandmark
+    static let edge = Color(red: 250 / 255, green: 238 / 255, blue: 221 / 255)      // #FAEEDD disc edge / halo
     static let warm = Color(red: 243 / 255, green: 234 / 255, blue: 223 / 255)      // #F3EADF outline
     static let rim = Color(red: 1, green: 242 / 255, blue: 226 / 255)               // #FFF2E2 rim
     static let cool = Color(red: 0.62, green: 0.74, blue: 0.9)                      // outer corona (calm)
@@ -292,19 +327,27 @@ struct A02Photo<Content: View>: View {
     }
 }
 
-/// The photo shows where it is bright first: alpha ≈ smoothstep(thr, thr + 0.4, luminance), thr = 1 − 1.4·reveal;
-/// the whole photo from reveal 0.45 on.
+/// The photo comes in dark areas first (the head and shoulders stand in front of the white disc), bright areas
+/// last: alpha ≈ smoothstep(thr, thr + 0.4, 1 − luminance), thr = 1 − 1.4·reveal; the whole photo from reveal 0.45,
+/// so the disc light ends as the photo's own backlight.
 struct PhotoReveal: View {
     var reveal: Double
     var size: CGSize
     var top: CGFloat
     var body: some View {
         if reveal > 0 {
-            let thr = 1 - 1.4 * reveal
+            // 1 − L ≥ thr ⇔ L ≤ 1 − thr: dark-first mask = white minus the bright-first mask at threshold (0.6 − thr)
+            let thr = 0.6 - (1 - 1.4 * reveal)
             let full = max(0, min(1, (reveal - 0.45) / 0.55))
             A02Photo(size: size, top: top) { photo in
                 ZStack {
-                    photo.resizable().mask(photo.resizable().brightness(0.3 - thr).contrast(2.5).luminanceToAlpha())
+                    photo.resizable().mask {
+                        ZStack {
+                            Color.white
+                            photo.resizable().brightness(0.3 - thr).contrast(2.5).luminanceToAlpha().blendMode(.destinationOut)
+                        }
+                        .compositingGroup()
+                    }
                     photo.resizable().opacity(full * full * (3 - 2 * full))
                 }
             }
@@ -312,30 +355,16 @@ struct PhotoReveal: View {
     }
 }
 
-/// The photo's bright areas as a mask (≈ smoothstep(0.06, 0.5, luminance)).
-struct BrightAreas: View {
-    var size: CGSize
-    var top: CGFloat
-    var body: some View {
-        A02Photo(size: size, top: top) { photo in
-            photo.resizable().brightness(0.22).contrast(2.27).luminanceToAlpha()
-        }
-    }
-}
-
-/// The calm corona around a dark disc, without a shader: a faint cool halo, a tight white glow just outside the
-/// rim, two layers of soft noisy rays (angular gradients of smoothed noise, blurred, drifting slowly and
-/// crossfading on the 3.2 s breath), a warm rim, and the dark disc. From the hand-off on it is masked to the A02
-/// photo's bright areas, so it becomes the photo's backlight.
+/// The calm corona behind the disc, without a shader: a faint cool halo, a tight white glow just outside the
+/// edge, and two layers of soft noisy rays (angular gradients of smoothed noise, blurred, drifting slowly and
+/// crossfading on the 3.2 s breath). Nothing of it is drawn on the mark.
 struct CoronaView: View {
     var center: CGPoint
     var radius: CGFloat
     var amp: Double
     var lean: CGSize
     var time: Double
-    var reveal: Double
     var size: CGSize
-    var top: CGFloat
 
     var body: some View {
         let r = radius
@@ -343,9 +372,6 @@ struct CoronaView: View {
         let k2 = r * 1.7 + 46                          // wide halo falloff (pt)
         let outer = r + k2
         let light = CGSize(width: lean.width * 2.5, height: lean.height * 2.5)
-        // as the shader: corona → bright areas only by smoothstep(0, 0.4, reveal); disc fades by smoothstep(0.08, 0.45)
-        let s = GenitaSplash.smooth(max(0, min(1, reveal / 0.25)))
-        let discDark = 1 - GenitaSplash.smooth(max(0, min(1, (reveal - 0.04) / 0.26)))
         let breath = sin(time / 3.2 * 2 * .pi)
         let glowEnd = min(1, (k1 * 2.6) / (outer - r))
         ZStack(alignment: .topLeading) {
@@ -369,27 +395,11 @@ struct CoronaView: View {
                     .init(color: .clear, location: ring(glowEnd, r, outer)),
                 ], center: .center, startRadius: 0, endRadius: outer)
                     .offset(light)
-                Circle().stroke(GenitaCorona.rim.opacity(0.8), lineWidth: 0.85)
-                    .frame(width: r * 2, height: r * 2)
-                    .blur(radius: 0.35)
-                    .offset(x: light.width * 0.2, y: light.height * 0.2)
             }
             .frame(width: outer * 2, height: outer * 2)
             .position(center)
             .opacity(amp)
             .blendMode(.plusLighter)
-            .mask {
-                ZStack {
-                    Color.white.opacity(1 - s)
-                    if s > 0 { BrightAreas(size: size, top: top).opacity(s) }
-                }
-                .frame(width: size.width, height: size.height)
-            }
-            Circle().fill(GenitaCorona.body)
-                .frame(width: r * 2 + 1, height: r * 2 + 1)
-                .blur(radius: 0.6 + 14 * reveal)
-                .position(center)
-                .opacity(discDark)
         }
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)

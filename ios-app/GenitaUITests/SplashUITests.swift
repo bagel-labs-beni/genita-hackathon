@@ -22,7 +22,7 @@ final class SplashUITests: XCTestCase {
     }
 
     func testSplashFrames() throws {
-        for t in ["0.7", "1.1", "1.5", "1.9", "2.05", "2.2", "2.35", "2.5", "2.65"] {
+        for t in ["0.7", "1.1", "1.5", "1.9", "2.0", "2.08", "2.2", "2.4", "2.65"] {
             let app = launch(at: t)
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "splash at \(t)")
             shot(app, "call-splash-t\(Int((Double(t) ?? 0) * 1000))ms") // no "." in the name: the export cuts there
