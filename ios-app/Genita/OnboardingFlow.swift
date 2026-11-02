@@ -21,18 +21,22 @@ extension AppState {
     /// Offline keeps the saved screen; a 401 clears the token and shows A02.
     func routeOnLaunch() async {
         guard serverWired, onboarding.auth.isSignedIn else { return }
+        let request = onboardingSnapshot()
         let state = await onboarding.auth.sessionState()
+        guard ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion() }
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        guard ownsOnboardingResponse(request) else { return }
         apply(route, me: me)
     }
 
-    func restoreCompanion() async {
+    func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         guard let c = try? await onboarding.companion() else { return }
+        if let request, !ownsOnboardingResponse(request) { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -45,6 +49,7 @@ extension AppState {
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
            let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
+            if let request, !ownsOnboardingResponse(request) { return }
             setup.imageData = data
         }
     }
@@ -98,17 +103,18 @@ extension AppState {
         importError = nil
         let text = setup.response
         guard serverWired else { importing = false; return }
+        let request = onboardingSnapshot()
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let style = try await onboarding.importReply(text)
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 applyStyle(style)
                 importing = false
                 if stage == .preparing { go(.preferences) }
             } catch {
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }

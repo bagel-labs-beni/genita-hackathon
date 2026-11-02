@@ -114,6 +114,8 @@ struct SavedSetup: Codable {
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
+    /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
+    @ObservationIgnored private var onboardingSession = OnboardingSessionGeneration()
     @ObservationIgnored var onboarding = OnboardingClient()
     var storage: UserDefaults
     let imageURL: URL
@@ -197,8 +199,23 @@ struct SavedSetup: Codable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
+        onboardingSession.snapshot(token: onboarding.auth.token)
+    }
+    func ownsOnboardingResponse(_ snapshot: OnboardingSessionGeneration.Snapshot, allowingClearedSession: Bool = false) -> Bool {
+        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token)
+            || (allowingClearedSession && onboardingSession.isCurrent(snapshot))
+    }
+    private func invalidateOnboardingWork() {
+        onboardingSession.invalidate()
+        importTask?.cancel(); importTask = nil
+        companionTask?.cancel(); companionTask = nil
+        imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
+        importing = false; creatingCompanion = false; checkingImage = false
+    }
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        invalidateOnboardingWork()
         storage.set(true, forKey: Self.signedOutKey)
         prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
@@ -207,6 +224,7 @@ struct SavedSetup: Codable {
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     func signedIn(userId: String? = nil, consented: Bool = true) {
+        invalidateOnboardingWork()
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
