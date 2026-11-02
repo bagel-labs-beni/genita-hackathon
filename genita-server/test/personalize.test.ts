@@ -380,3 +380,17 @@ test("Codex round 4: one correction's replace + rewrite both land; order follows
   const b = mergeUpdates(a, [{ field: "likes", text: "Dislikes cilantro.", replaces: ["Loves cilantro."], label: "explicit", asOf: "2026-11-03T01:01:00Z" }], "2026-11-03T01:03:00Z").card;
   assert.deepEqual(b.sections.likes.map((x) => x.text), ["Dislikes cilantro."]);
 });
+
+test("skip S2 (Figma 269:228): N1 tiles + N3 like/no chips are the taste tags, exactly", () => {
+  const skip = skipStyleCard({ interests: ["Design", "Food", "Film & TV"], replies: "Start with the answer", avoid: [] });
+  assert.ok(skip.ok);
+  const card = { ...skip.card, sections: { ...skip.card.sections, likes: [f("Style: Minimal, Comfy."), f("Food: spicy, noodles."), f("Dislikes colorful clothes."), f("Dislikes seafood.")] } };
+  const { cards } = toStory({ cards: [sc("taste", { headline: "Design, food, and good stories.", tags: [tag("style", "Made up by Spark")] })], topics: [] }, card);
+  const taste = cards.find((c) => c.id === "taste")!;
+  assert.equal(taste.headline, "Design, food, and good stories.");
+  assert.deepEqual(taste.tags!.map((t) => `${t.group}:${t.dislike ? "✕" : ""}${t.text}`), ["interest:Design", "interest:Food", "interest:Film & TV", "style:Minimal", "style:Comfy", "food:Spicy", "food:Noodles", "style:✕Colorful", "food:✕Seafood"]);
+  assert.equal(taste.note, undefined);
+  // no N3 likes → the "No favorites yet" note stays
+  const bare = toStory(null, skip.card).cards.find((c) => c.id === "taste")!;
+  assert.equal(bare.note, "No favorites yet. Tell me one anytime, or show me on camera.");
+});

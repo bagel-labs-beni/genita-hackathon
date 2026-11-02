@@ -331,6 +331,37 @@ function tasteFallback(card: StyleCard, base: StoryCard): StoryCard {
   return { ...base, tags, ...(card.sections.likes.some((x) => x.label !== "suggested") ? {} : { note: NO_FAVORITES }) };
 }
 
+const cap = (t: string) => (t ? t[0].toUpperCase() + t.slice(1) : t);
+const splitList = (body: string) => body.replace(/[.!]+$/, "").split(/\s*,\s*|\s+and\s+/).map((x) => x.trim()).filter(Boolean);
+
+/**
+ * Skip users (S2, Figma 269:228): the tags are exactly the N1 tiles and N3 chips, never Spark's words. N3 lines
+ * (skip import, #219): "Style: Minimal, Comfy." · "Food: spicy, noodles." · "Dislikes colorful clothes." ·
+ * "Dislikes seafood." Interests → top row; Style / Food likes blue, "no"s dashed. Lines added later by calls or
+ * corrections fall back to shortTaste.
+ */
+export function skipTasteTags(card: StyleCard): StoryTag[] {
+  const tags: StoryTag[] = [];
+  const add = (group: StoryTag["group"], text: string, dislike: boolean) => {
+    const t = cap(text.trim()).slice(0, 28);
+    if (t && !storyTextProblem(t) && !tags.some((x) => x.group === group && x.text.toLowerCase() === t.toLowerCase())) tags.push({ group, text: t, dislike });
+  };
+  for (const f of card.sections.interests.filter((x) => x.label !== "suggested").slice(0, 8)) add("interest", f.text.replace(/[.!]+$/, ""), false);
+  for (const f of card.sections.likes.filter((x) => x.label !== "suggested")) {
+    let m: RegExpMatchArray | null;
+    if ((m = f.text.match(/^Style:\s*(.+)$/i))) splitList(m[1]).forEach((x) => add("style", x, false));
+    else if ((m = f.text.match(/^Food:\s*(.+)$/i))) splitList(m[1]).forEach((x) => add("food", x, false));
+    else if ((m = f.text.match(/^Dislikes\s+(.+?)\s+clothes\.?$/i))) splitList(m[1]).forEach((x) => add("style", x, true));
+    else if ((m = f.text.match(/^(?:Dislikes|Avoids)\s+(.+)$/i))) splitList(m[1]).forEach((x) => add("food", x, true));
+    else {
+      const t = shortTaste(f.text);
+      if (t) add(/^(?:food|cooking|cuisine)/i.test(f.text) ? "food" : "style", t, isDislikeLine(f.text));
+    }
+  }
+  return tags;
+}
+const isDislikeLine = (t: string) => /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(t);
+
 type RawItem = { text?: unknown; evidence?: unknown };
 type RawCard = { id?: unknown; headline?: unknown; items?: unknown; promise?: unknown; evidence?: unknown; tags?: unknown; help?: unknown };
 
@@ -411,7 +442,14 @@ export function toStory(raw: { cards?: unknown; topics?: unknown } | null | unde
       if (prev) { out.push(prev); continue; }
     }
     const r = list.find((c) => c?.id === id);
-    const sc = (r && sparkCard(id, r, card, best)) || fallbackCard(id, card);
+    let sc = (r && sparkCard(id, r, card, best)) || fallbackCard(id, card);
+    // skip users: Spark may word the headline, the tags are the user's own taps (S2)
+    if (sc && id === "taste" && card.source === "skip") {
+      const tags = skipTasteTags(card);
+      sc = { ...sc, tags, evidence: "explicit", ...(card.sections.likes.some((x) => x.label !== "suggested") ? { note: undefined } : { note: NO_FAVORITES }) };
+      if (sc.note === undefined) delete sc.note;
+      if (!tags.length) sc = null;
+    }
     if (sc) out.push(sc);
     else missing.push(id);
   }

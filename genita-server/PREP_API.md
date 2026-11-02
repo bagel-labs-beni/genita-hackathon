@@ -43,7 +43,7 @@ Card `{id, eyebrow, headline, subline?, items, promise?, evidence, tags?, note?,
 |---|---|---|
 | `think` | How you think | `headline` + 1–2 `items` |
 | `talk` | How you like to talk | `headline` + 1–2 `items` + `promise` ("So I'll …", the blue box) |
-| `taste` | What you're into | `headline` + `tags [{group: style\|food\|watch\|interest, text, dislike}]` (dislikes dashed with ✕) + card `evidence`; `note` "No favorites yet. Tell me one anytime, or show me on camera." when there are no likes (skip users) |
+| `taste` | What you're into | `headline` + `tags [{group: style\|food\|watch\|interest, text, dislike}]` (dislikes dashed with ✕) + card `evidence`; `note` "No favorites yet. Tell me one anytime, or show me on camera." when there are no likes. Skip users (S2, Figma 269:228): tags are exactly the N1 tiles (`interest`, "You said this") and the N3 Clothes / Food like (blue) and no (dashed) chips (legend "From your answers") — Spark only words the headline |
 | `help` | How I can help | headline "Where I'll actually be useful." + `help [{label, sub, mode: ask_first\|just_do_it}]` (≤3) + card `evidence` |
 | `lines` | Lines I won't cross | headline "Some things I'll leave alone." + 1–4 `items` (the app adds "And always: I won't buy, book, or message anyone for you.") |
 | `unknowns` | Still getting to know you | `headline` + `subline` (import / skip copy) + `unknowns [{item, topic, sub}]` (≤4; shrinks as calls answer them) |
