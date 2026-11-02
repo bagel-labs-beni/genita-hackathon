@@ -48,7 +48,7 @@ BASE_MAP = {
     'jawFloor': {'share': 0.6, 'windowMs': 160, 'vowels': ['A', 'O', 'EI', 'U'], 'closed': ['MBP', 'FV', 'rest']},
     'blink': {'mode': 'snap', 'frames': 3},  # eyes fully closed for 3 frames, no half frames
     # applied LAST (after focus, which would otherwise restore it); the remainder goes to neutral
-    'maxAmount': {'AH2': 0.7},
+    'maxAmount': {'AH2': 0.6},
 }
 PROFILE = {
     'human': {},
