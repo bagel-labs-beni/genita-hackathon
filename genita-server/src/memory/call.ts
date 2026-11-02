@@ -15,6 +15,10 @@ export const MEMORY_TOOLS: Tool[] = [
 /** reply-path budgets for memory reads (a store that is slower just means no memory this turn) */
 export const RECALL_BUDGET_MS = 400;
 export const OPENING_BUDGET_MS = 1000;
+/** the recall/remember tools inside a reply (Codex 11/3: a stalled store must not hold the answer) */
+export const TOOL_BUDGET_MS = 1500;
+/** the whole memory part of a call start (open + handoff seeding) */
+export const MEMORY_START_BUDGET_MS = 1500;
 export function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise<T>((resolve) => {
     const t = setTimeout(() => resolve(fallback), ms);
@@ -152,9 +156,13 @@ export class MemoryCall {
     let args: Record<string, unknown>;
     try { args = JSON.parse(call.arguments); } catch { return { error: "invalid_arguments" }; }
     if (!args || typeof args !== "object" || Array.isArray(args)) return { error: "invalid_arguments" };
-    if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) return { memories: await this.service.recall(this.userId, args.query) };
+    if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) {
+      const memories = await within(this.service.recall(this.userId, args.query).then((m) => m, () => null), TOOL_BUDGET_MS, null);
+      return memories ? { memories } : { error: "memory_unavailable" };
+    }
     if (call.name === "remember" && typeof args.fact === "string" && (args.kind === "fact" || args.kind === "episode")) {
-      const m = await this.service.remember(this.userId, args.fact, args.kind, this.sessionId);
+      // past the budget the save may still land; the companion just doesn't claim it
+      const m = await within(this.service.remember(this.userId, args.fact, args.kind, this.sessionId), TOOL_BUDGET_MS, null);
       return { saved: !!m, ...(m ? { id: m.id } : {}) };
     }
     return { error: "invalid_arguments" };

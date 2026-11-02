@@ -138,9 +138,13 @@ export class MemoryService {
       }
       // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
       // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
+      // Only last_used_at changes on the CURRENT row (a newer write, e.g. a new crop ref, must not be undone).
       if (ranked.length) this.background(() => this.serial(userId, async () => {
-        const live = new Set((await this.repository.list(userId)).map((m) => m.id));
-        for (const m of ranked) if (live.has(m.id)) await this.repository.put(userId, m);
+        const current = new Map((await this.repository.list(userId)).map((m) => [m.id, m]));
+        for (const m of ranked) {
+          const row = current.get(m.id);
+          if (row) await this.repository.put(userId, { ...row, last_used_at: Math.max(row.last_used_at ?? 0, at) });
+        }
       }));
       return ranked;
     });
