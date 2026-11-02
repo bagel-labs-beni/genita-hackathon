@@ -175,6 +175,28 @@ for (const reconnectMinutes of [9, 10]) {
   });
 }
 
+for (const cacheMinutes of [9, 10, 11]) {
+  test(`#349 review P2: higher-progress cache only blocks an older call while valid (cache age ${cacheMinutes} minutes)`, { timeout: 5000 }, async (t) => {
+    const start = Date.now();
+    t.mock.timers.enable({ apis: ["Date"], now: start });
+    const { open } = await setup(t);
+    const phone = await open(); await phone.say(OLD);
+    const mac = await open("mac"); await mac.say(LATEST); await mac.close();
+    for (let minute = 1; minute <= cacheMinutes; minute++) {
+      t.mock.timers.setTime(start + minute * 60_000);
+      await phone.ping(); // Keep the older call open while the newer cached call ages.
+    }
+    await phone.close();
+    const next = await open();
+    const input = inputOf(await next.say("What were we talking about?"));
+    if (cacheMinutes < 10) assert.match(input, /cobalt teapot/);
+    else {
+      assert.match(input, /pottery/, "the just-ended call is saved when the newer cache has expired");
+      assert.doesNotMatch(input, /cobalt teapot/, "the expired call is not restored");
+    }
+  });
+}
+
 test("#349: competing live and cached history never crosses account boundaries", async (t) => {
   const { open } = await setup(t);
   const phone = await open(); await phone.say(OLD);

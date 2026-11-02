@@ -341,12 +341,14 @@ export async function startServer(
     if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
       const cached = lastTurns.get(userId);
+      const now = Date.now();
       // Compare when saving (inside the Forget lock), not before an asynchronous state read.
+      // Only a still-valid newer snapshot can block this save.
       // An unchanged inherited snapshot still refreshes retention when its call ends.
-      if (cached?.revision === revision && newer(cached.progress, p)) return;
+      if (cached?.revision === revision && now - cached.at < 10 * 60_000 && newer(cached.progress, p)) return;
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: Date.now(), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
