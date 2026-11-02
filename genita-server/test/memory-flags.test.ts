@@ -6,8 +6,8 @@ import { MemoryService } from "../src/memory/service.ts";
 
 // D40: Us photo and seen memory are cut for the hackathon build; flags default off.
 test("memory features: Us photo and seen memory are off unless their env flag is 1", () => {
-  assert.deepEqual(memoryFeatures({}), { usPhotos: false, seenMemory: false, sessionMemory: true });
-  assert.deepEqual(memoryFeatures({ GENITA_US_PHOTOS: "1", GENITA_SEEN_MEMORY: "1" }), { usPhotos: true, seenMemory: true, sessionMemory: true });
+  assert.deepEqual(memoryFeatures({}), { usPhotos: false, seenMemory: false, sessionMemory: true, rerank: true });
+  assert.deepEqual(memoryFeatures({ GENITA_US_PHOTOS: "1", GENITA_SEEN_MEMORY: "1" }), { usPhotos: true, seenMemory: true, sessionMemory: true, rerank: true });
   // session memory (call summaries, 11/3) is on unless GENITA_SESSION_MEMORY=0
   assert.equal(memoryFeatures({ GENITA_SESSION_MEMORY: "0" }).sessionMemory, false);
 });

@@ -1,6 +1,8 @@
 import { type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
 import { safeMemoryText, type Extractor, type Turn } from "./extract.ts";
 import { validSeen, type SeenCandidate, type SeenContext } from "./seen.ts";
+import { within } from "../util/within.ts";
+import { RERANK_BUDGET_MS, RERANK_CANDIDATES, stableFacts, type Reranker } from "./rerank.ts";
 import { SUMMARY_KEEP, type CallSummary, type Summarizer, type SummaryRepository } from "./summaries.ts";
 
 type Log = (event: string, data: Record<string, unknown>) => void;
@@ -19,12 +21,16 @@ export type MemoryOptions = {
   /** Session memory (per-thread call summaries). Off when unset or sessionMemory=false (GENITA_SESSION_MEMORY=0). */
   summarize?: Summarizer;
   sessionMemory?: boolean;
+  /** Spark re-rank for the recall TOOL (GENITA_MEMORY_RERANK=0 turns it off); unset = overlap order */
+  rerank?: Reranker;
   /** createMemory's default in-process store: the server swaps it for Postgres when accounts are on (useStore). */
   ephemeral?: boolean;
   log?: Log;
 };
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
-const tokens = (s: string) => new Set(s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+// Words that match everything ("my", "the", "what") are not evidence of relevance.
+const STOP = new Set("i me my mine myself you your yours we us our the a an and or but to of in on at for with from by as is am are was were be been being it its this that these those do does did doing what which who whom how why when where about so just like have has had can could would should will shall get got im i'm it's dont don't not no yes ok okay oh hey hi please really very".split(" "));
+const tokens = (s: string) => new Set((s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []).map((t) => t.replace(/'/g, "")).filter((t) => t && !STOP.has(t)));
 
 export class MemoryService {
   repository: MemoryRepository;
@@ -125,25 +131,49 @@ export class MemoryService {
     if (old?.image_ref && imageRef && old.image_ref !== imageRef) await this.options.deleteCrop?.(userId, old.image_ref).catch(() => {});
     return m;
   }
-  async recall(userId: string, query: string): Promise<Memory[]> {
+  /** The call's top stable facts (see rerank.ts stableFacts): loaded once at call start. */
+  async stableFacts(userId: string): Promise<Memory[]> {
+    return stableFacts(await this.repository.list(userId));
+  }
+  /**
+   * Token overlap (stop words removed) ranks; `rerank` (the recall tool only) lets Spark re-order up to
+   * RERANK_CANDIDATES overlap candidates, padded with the newest items so a same-meaning memory ("pet" vs
+   * "my cat") can still be found. Bounded; past the budget or on error the overlap order stands.
+   */
+  async recall(userId: string, query: string, opts: { rerank?: boolean } = {}): Promise<Memory[]> {
     if (!query.trim()) return [];
-    return this.serial(userId, async () => {
-      const q = tokens(query);
-      const ranked = (await this.repository.list(userId)).map((m) => ({ m, score: [...tokens(m.text)].filter((t) => q.has(t)).length }))
-        .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at).slice(0, 3).map((r) => r.m);
-      const at = this.now();
-      for (const m of ranked) {
-        m.last_used_at = at;
-        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
+    const { items, revision } = await this.serial(userId, async () => ({ items: await this.repository.list(userId), revision: (await this.state.getState(userId)).revision }));
+    const q = tokens(query);
+    const scored = items.map((m) => ({ m, score: [...tokens(m.text)].filter((t) => q.has(t)).length }))
+      .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at);
+    let ranked = scored.slice(0, 3).map((r) => r.m);
+    if (opts.rerank && this.options.rerank && items.length) {
+      const candidates = scored.slice(0, RERANK_CANDIDATES).map((r) => r.m);
+      for (const m of [...items].sort((a, b) => b.updated_at - a.updated_at)) {
+        if (candidates.length >= RERANK_CANDIDATES) break;
+        if (!candidates.includes(m)) candidates.push(m);
       }
-      // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
-      // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
-      if (ranked.length) this.background(() => this.serial(userId, async () => {
-        const live = new Set((await this.repository.list(userId)).map((m) => m.id));
-        for (const m of ranked) if (live.has(m.id)) await this.repository.put(userId, m);
-      }));
-      return ranked;
-    });
+      const t0 = performance.now();
+      const ctl = new AbortController();
+      const picks = await within(this.options.rerank(query, candidates.map((m) => m.text), ctl.signal), RERANK_BUDGET_MS, null);
+      if (!picks) ctl.abort();
+      this.log("memory.reranked", { candidates: candidates.length, picked: picks?.length ?? null, ms: Math.round(performance.now() - t0), fallback: !picks });
+      if (picks) ranked = picks.map((i) => candidates[i]).filter(Boolean);
+      // a Forget while Spark was ranking: nothing from before it
+      if ((await this.state.getState(userId)).revision !== revision) return [];
+    }
+    const at = this.now();
+    for (const m of ranked) {
+      m.last_used_at = at;
+      this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
+    }
+    // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
+    // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
+    if (ranked.length) this.background(() => this.serial(userId, async () => {
+      const live = new Set((await this.repository.list(userId)).map((m) => m.id));
+      for (const m of ranked) if (live.has(m.id)) await this.repository.put(userId, m);
+    }));
+    return ranked;
   }
   async forget(userId: string, id?: string): Promise<void> {
     await this.serial(userId, async () => {

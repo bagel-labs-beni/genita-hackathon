@@ -3,6 +3,8 @@ import type { Memory } from "./repository.ts";
 import type { Turn } from "./extract.ts";
 import { MemoryService } from "./service.ts";
 import { recentOpeningWords } from "../prompt/persona.ts";
+import { within } from "../util/within.ts";
+import { pinnedPrompt } from "./rerank.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -15,13 +17,7 @@ export const MEMORY_TOOLS: Tool[] = [
 /** reply-path budgets for memory reads (a store that is slower just means no memory this turn) */
 export const RECALL_BUDGET_MS = 400;
 export const OPENING_BUDGET_MS = 1000;
-export function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return new Promise<T>((resolve) => {
-    const t = setTimeout(() => resolve(fallback), ms);
-    (t as { unref?: () => void }).unref?.();
-    p.then((v) => { clearTimeout(t); resolve(v); }, () => { clearTimeout(t); resolve(fallback); });
-  });
-}
+export { within } from "../util/within.ts";
 export type ThreadState = { threadId: string; covered: number; pairs: Turn[] };
 export type SparkSource = (req: SparkRequest, signal: AbortSignal) => AsyncIterable<SparkStreamEvent>;
 /** Per-turn continuation, shared with a speculative hit and its empty-answer retry. */
@@ -57,12 +53,15 @@ export class MemoryCall {
   private summarizedAt = 0;
   /** earlier threads' summaries for this call's instructions (loaded once at open) */
   summaries: CallSummary[] = [];
+  /** this call's top stable facts (loaded once at open, in every reply's instructions) */
+  pinned: Memory[] = [];
   /** Forget notifications seen by this call */
   private forgets = 0;
   constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId; this.threadId = sessionId;
     this.unsubscribe = service.subscribe(userId, (revision) => {
       this.forgets++;
+      this.pinned = [];
       this.pending = []; this.recentReplies = []; this.thread = []; this.covered = 0; this.summarizedAt = 0; this.summaries = [];
       this.revision = revision; onForget(revision);
     });
@@ -100,12 +99,14 @@ export class MemoryCall {
     const notes = this.service.sessionMemory
       ? Promise.race([this.service.summaries(this.userId, this.threadId, SUMMARY_INJECT).catch(() => []), new Promise<CallSummary[]>((r) => setTimeout(() => r([]), SUMMARY_LOAD_MS).unref?.())])
       : Promise.resolve([]);
+    const facts = within(this.service.stableFacts(this.userId), SUMMARY_LOAD_MS, [] as Memory[]);
     const state = await this.service.state.getState(this.userId);
     // A Forget notification can arrive while the persisted state read is in flight.
     this.revision = Math.max(this.revision, state.revision);
     this.recentReplies = (state.recent_openers ?? []).map((w) => w + ",");
     const loaded = await notes;
-    if (this.forgets === forgets) this.summaries = loaded.filter((s) => s.thread_id !== this.threadId);
+    const pinned = await facts;
+    if (this.forgets === forgets) { this.summaries = loaded.filter((s) => s.thread_id !== this.threadId); this.pinned = pinned; }
     return greet ? within(this.service.opening(this.userId, this.sessionId), OPENING_BUDGET_MS, null) : null;
   }
   userMessage(): void { this.service.background(() => this.service.noteMessage(this.userId)); }
@@ -152,7 +153,8 @@ export class MemoryCall {
     let args: Record<string, unknown>;
     try { args = JSON.parse(call.arguments); } catch { return { error: "invalid_arguments" }; }
     if (!args || typeof args !== "object" || Array.isArray(args)) return { error: "invalid_arguments" };
-    if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) return { memories: await this.service.recall(this.userId, args.query) };
+    // the tool path may re-rank with Spark (bounded); the per-reply implicit recall never does
+    if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) return { memories: await this.service.recall(this.userId, args.query, { rerank: true }) };
     if (call.name === "remember" && typeof args.fact === "string" && (args.kind === "fact" || args.kind === "episode")) {
       const m = await this.service.remember(this.userId, args.fact, args.kind, this.sessionId);
       return { saved: !!m, ...(m ? { id: m.id } : {}) };
@@ -166,7 +168,9 @@ export class MemoryCall {
       // more than RECALL_BUDGET_MS for memories — past it, it answers without them.
       const items = opening === undefined ? await within(this.service.recall(this.userId, query).catch(() => []), RECALL_BUDGET_MS, [] as Memory[]) : opening ? [opening] : [];
       const notes = summaryPrompt(this.summaries, this.service.now());
-      next = { ...req, instructions: (req.instructions ?? "") + notes + memoryPrompt(items, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...MEMORY_TOOLS] };
+      const pinnedIds = new Set(this.pinned.map((m) => m.id));
+      const extra = items.filter((m) => !pinnedIds.has(m.id));
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(this.pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...MEMORY_TOOLS] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;
