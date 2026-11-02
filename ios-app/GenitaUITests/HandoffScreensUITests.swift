@@ -63,6 +63,46 @@ final class HandoffScreensUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Mac screen learned. Touch its edge with this iPhone to move."].waitForExistence(timeout: 5))
         capture(app, "P04-registered")
     }
+    func testPairingScreens() {
+        // P01: six boxes, the number pad is up, the sixth digit starts pairing by itself (no Pair button).
+        var app = open(["--handoff-state", "p01"])
+        XCTAssertTrue(app.staticTexts["Pair with your Mac."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Enter the six digits in Genita on your Mac. You only do this once."].exists)
+        XCTAssertFalse(app.buttons["Pair"].exists, "Auto-advance after six digits: there is no Pair button")
+        capture(app, "P01-pair")
+        app.terminate()
+        app = open(["--handoff-state", "p01-looking"])
+        XCTAssertTrue(app.staticTexts["Looking for your Mac"].waitForExistence(timeout: 10))
+        capture(app, "P01-looking")
+        app.terminate()
+        // P01-E: no Mac answered to that code.
+        app = open(["--handoff-state", "p01e"])
+        XCTAssertTrue(app.staticTexts["That code didn’t match. Check your Mac."].waitForExistence(timeout: 10))
+        capture(app, "P01E-wrong-code")
+        app.terminate()
+        // P02: paired, one tap to set up touch to move, or Not now back to the call.
+        app = open(["--handoff-state", "p02"])
+        XCTAssertTrue(app.staticTexts["Paired with your Mac."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["setUpTouchToMove"].isHittable)
+        capture(app, "P02-paired")
+        app.buttons["pairingNotNow"].tap()
+        XCTAssertFalse(app.staticTexts["Paired with your Mac."].waitForExistence(timeout: 1))
+    }
+    func testMoveStatusLine() {
+        // MV-1 and MV-E are the call's status line, not a system alert.
+        var app = open(["--handoff-state", "mv1"])
+        XCTAssertTrue(app.staticTexts["Moving to your Mac…"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
+        capture(app, "MV1-moving")
+        app.terminate()
+        app = open(["--handoff-state", "mve"])
+        XCTAssertTrue(app.staticTexts["Mac not responding. Still here."].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.alerts.firstMatch.exists, "A failed move is a status line, never a system alert")
+        capture(app, "MVE-move-failed")
+        XCTAssertTrue(app.buttons["cameraToggle"].isHittable, "The call stays usable")
+        XCTAssertFalse(app.staticTexts["Mac not responding. Still here."].waitForNonExistence(timeout: 1), "visible for about 3 s")
+        XCTAssertTrue(app.staticTexts["Mac not responding. Still here."].waitForNonExistence(timeout: 6))
+    }
     func testPermissionDeniedSheets() {
         var app = open(["--media-state", "camera-denied"])
         XCTAssertTrue(app.staticTexts["Allow camera access."].waitForExistence(timeout: 10))

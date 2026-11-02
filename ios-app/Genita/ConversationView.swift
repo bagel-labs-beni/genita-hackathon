@@ -78,7 +78,10 @@ struct ConversationView: View {
                         if sheet == .dismissed {
                             FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
                         }
-                        if !connecting && !interpreting {
+                        if !connecting && !interpreting && handoffEnabled && (handoff.moving || handoff.moveFailed) {
+                            // MV-1 / MV-E take the call's status line slot
+                            HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
+                        } else if !connecting && !interpreting {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
@@ -107,7 +110,7 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
+                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: call.finds.cardCount > 0 ? { withAnimation(.drawer) { call.finds.reopenLatest() } } : nil) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }

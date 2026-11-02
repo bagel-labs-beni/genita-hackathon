@@ -134,11 +134,11 @@ private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }
 
-private struct CueAlert: View {
+struct CueAlert: View {
     var body: some View { Image(systemName: "exclamationmark.circle").font(.system(size: 17, weight: .semibold)).foregroundStyle(CallInk.onInk).frame(width: 20, height: 20) }
 }
 
-private struct CueSpinner: View {
+struct CueSpinner: View {
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
