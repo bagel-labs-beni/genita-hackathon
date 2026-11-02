@@ -38,7 +38,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import type { MemoryRetryState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -430,14 +430,18 @@ export class Session {
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
       });
-      try {
+      // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
+      // budget the call starts without memory context, and the late result never touches this call.
+      let abandoned = false;
+      const memoryCall = this.memoryCall;
+      const init = async () => {
         // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
         // and the greeting prompt would be sent to the translator
-        const item = await this.memoryCall.open(startMode === "chat");
-        // A Forget during open already cleared these; do not restore its older result.
-        if (this.historyRevision === null) {
+        const item = await memoryCall.open(startMode === "chat");
+        // A Forget during open already cleared these; do not restore its older result (nor a late one).
+        if (this.historyRevision === null && !abandoned) {
           this.greeting = startMode === "chat" ? { item } : null;
-          this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+          this.recentReplies = [...memoryCall.recentReplies, ...this.recentReplies].slice(-3);
         }
         // Validate and copy together under the same per-user lock as Forget. The cache/live call must
         // carry this persisted revision. Clients cannot prove their snapshot's age, so after ANY Forget
@@ -445,6 +449,8 @@ export class Session {
         await memory.serial(userId, async () => {
           const revision = (await memory.state.getState(userId)).revision;
           if (this.closed) return;
+          // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
+          if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
           this.historyRevision = revision;
           if (startMode !== "chat" || this.history.length) return;
           const server = this.deps.priorTurns?.(revision) ?? null;
@@ -457,8 +463,15 @@ export class Session {
           this.continued = true;
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
+      };
+      const outcome = await within(init().then(() => "ok" as const, () => "error" as const), MEMORY_START_BUDGET_MS, "slow" as const);
+      if (outcome === "error") { this.log("memory.unavailable", {}); memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
+      else if (outcome === "slow") {
+        abandoned = true;
+        this.log("memory.slow_start", { budget_ms: MEMORY_START_BUDGET_MS });
+        // a plain greeting (no shared past); no handoff seeding without a verified Forget revision
+        if (startMode === "chat" && !this.greeting && this.historyRevision === null) this.greeting = { item: null };
       }
-      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
     }
     if (this.closed) return;
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
