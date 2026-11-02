@@ -41,7 +41,10 @@ final class InterpretScreenUITests: XCTestCase {
         XCTAssertTrue(wait(speaker) { $0.hasPrefix("Them") && $0.contains("Korean") }, "INT-2"); capture("INT-2-them-speaking")
         XCTAssertTrue(wait(bar) { $0.contains("Korean ↔ English") }, "pair detected")
         XCTAssertTrue(wait(speaker) { $0.contains("saying it in English") }, "INT-3"); capture("INT-3-jin-says-it")
-        XCTAssertTrue(wait(speaker) { $0.contains("saying it in Korean") }, "INT-5"); capture("INT-5-my-reply-in-korean")
+        // INT-5: my English with its Korean line. "Jin · saying it in Korean" lasts ~1.5 s in the recording,
+        // shorter than a UI query round trip on CI, so wait for the bubble itself (it stays until INT-6).
+        let mine = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'interpretBubble' AND label CONTAINS '2호선'")).firstMatch
+        XCTAssertTrue(mine.waitForExistence(timeout: 40), "INT-5"); capture("INT-5-my-reply-in-korean")
         XCTAssertTrue(wait(bar) { $0.contains("Couldn’t tell the language") }, "INT-6"); capture("INT-6-unclear")
         app.buttons["interpretStop"].tap()
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 5), "back to the call screen")
