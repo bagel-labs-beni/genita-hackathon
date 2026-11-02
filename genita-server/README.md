@@ -51,7 +51,7 @@ voice. A real Meta key is needed for model-dependent onboarding and replies.
 Stop with Ctrl-C. Run `npm run local` again to reuse your account and data;
 sign in again with a new printed code (session signing keys change on restart).
 The default data lives in `genita-server/.genita-data/`: `db/` for PGlite and
-`blobs/` for media. Migrations run automatically on startup.
+`blobs/` for media, `memory.json` for conversation memory. Migrations run automatically on startup.
 
 `npm run dev:local` is an alias. Settings are read from the shell, then
 `genita-server/.env`, then repo-root `.env` (first value wins). Optional settings

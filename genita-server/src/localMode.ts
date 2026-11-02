@@ -54,6 +54,7 @@ export function applyLocalDefaults(env: NodeJS.ProcessEnv, serverRoot: string): 
   const data = resolve(serverRoot, env.GENITA_DATA_DIR || ".genita-data");
   env.DATABASE_URL = localDatabase(env.DATABASE_URL || `pglite:${join(data, "db")}`, serverRoot);
   env.GENITA_DATA_DIR = data;
+  env.GENITA_MEMORY_FILE = join(data, "memory.json"); // conversation memory survives a restart, like the db and blobs
   env.HOST = "127.0.0.1";
   env.PORT ||= "8787";
   env.NODE_ENV = "development"; // email codes are printed only on a loopback development server

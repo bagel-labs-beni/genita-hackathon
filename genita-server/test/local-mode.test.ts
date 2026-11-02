@@ -20,6 +20,7 @@ test("local defaults: one Meta key, on-disk PGlite, local blobs, loopback, devic
   const root = scratch(t);
   const env = applyLocalDefaults({ MODEL_API_KEY: "fake-key-for-local-check" }, root);
   assert.equal(env.GENITA_DATA_DIR, join(root, ".genita-data"));
+  assert.equal(env.GENITA_MEMORY_FILE, join(root, ".genita-data", "memory.json"));
   assert.equal(env.DATABASE_URL, `pglite:${join(root, ".genita-data", "db")}`);
   assert.ok(existsSync(join(root, ".genita-data", "blobs")));
   assert.equal(env.HOST, "127.0.0.1");
@@ -41,7 +42,12 @@ test("local mode discards inherited cloud/vendor configuration, including an unr
     DATABASE_SSL: "1", GENITA_FINDS_DIR: "/personal/finds", GENITA_MEMORY_FILE: "/personal/memory",
   };
   const env = applyLocalDefaults({ ...cloud, MODEL_API_KEY: "meta", NODE_ENV: "production", HOST: "0.0.0.0", PATH: "/bin" }, scratch(t));
-  for (const key of Object.keys(cloud)) assert.equal(env[key], key === "GENITA_ENV_FILE" ? "" : undefined, key);
+  for (const key of Object.keys(cloud)) {
+    // GENITA_ENV_FILE is blanked; the memory file is replaced by one inside the local data dir
+    if (key === "GENITA_ENV_FILE") assert.equal(env[key], "", key);
+    else if (key === "GENITA_MEMORY_FILE") assert.ok(env[key]?.startsWith(env.GENITA_DATA_DIR!) && env[key] !== "/personal/memory", key);
+    else assert.equal(env[key], undefined, key);
+  }
   assert.equal(env.NODE_ENV, "development", "console email login remains available");
   assert.equal(env.HOST, "127.0.0.1", "inherited deployment settings cannot expose keyless access");
   assert.equal(env.PATH, "/bin");
