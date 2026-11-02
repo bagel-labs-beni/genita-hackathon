@@ -45,7 +45,9 @@ const ENCODED_PATTERNS = [
   ['Z3B0LWltYWdl', 'Z3B0LWltYWdl'],
 ];
 const decode = (value) => Buffer.from(value, 'base64').toString('utf8');
-const FORBIDDEN_PATTERNS = ENCODED_PATTERNS.map(([label, source]) => ({ label: decode(label), expression: new RegExp(decode(source), 'i') }));
+// Home paths are matched case-sensitively: lowercase `/users/` is an ordinary URL path segment.
+const CASE_SENSITIVE = new Set(['/Users/']);
+const FORBIDDEN_PATTERNS = ENCODED_PATTERNS.map(([label, source]) => ({ label: decode(label), expression: new RegExp(decode(source), CASE_SENSITIVE.has(decode(label)) ? '' : 'i') }));
 
 function runGit(args, options = {}) {
   return execFileSync('git', args, { encoding: options.encoding ?? 'utf8' });

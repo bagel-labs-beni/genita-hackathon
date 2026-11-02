@@ -42,7 +42,6 @@ jobs:
         with:
           node-version: 22
 
-      # TODO: Make this blocking after #188 and its follow-up delete merge.
-      - name: Report all forbidden words
-        continue-on-error: true
+      # Blocking since #188 (Meta-only) is on main.
+      - name: Check all forbidden words
         run: node scripts/gate-i-words.mjs
