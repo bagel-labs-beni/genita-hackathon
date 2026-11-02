@@ -1,4 +1,5 @@
 import { CLAUSE_SEPARATORS } from "./sentences.ts";
+import { parseTaggedSentence } from "./tags.ts";
 
 /**
  * Narrow list of tool announcements, not general hesitation or real content.
@@ -43,4 +44,72 @@ export function isInterjectionOnly(text: string): boolean {
   // separators work without allowing a filler prefix to hide real words.
   const words = text.normalize("NFKC").replace(/[\p{P}\s]+/gu, " ").trim();
   return !!words && words.split(" ").every((word) => INTERJECTION_WORD.test(word));
+}
+
+export type NarrationDecision = {
+  /** Raw tagged sentences: the caller retains emotion and delivery tags. */
+  speak: string[];
+  hold: string[];
+  dropped: string[];
+};
+
+/**
+ * Pure turn-local judge shared by both voice paths. Only an unfinished lead
+ * or announcement is held; real content can always stream immediately.
+ * Dropping a candidate never disables judging the next sentence. Tool use
+ * persists across retries, so fillers cannot satisfy a tool's answer.
+ */
+export class NarrationJudge {
+  private pending: { raw: string; kind: "lead" | "announcement" } | null = null;
+  private usedTool = false;
+  private readonly enabled: boolean;
+
+  constructor(enabled = true) { this.enabled = enabled; }
+
+  push(raw: string): NarrationDecision {
+    if (!this.enabled || !parseTaggedSentence(raw).displayText) return this.result([raw]);
+    const dropped: string[] = [];
+    if (this.pending?.kind === "lead") {
+      raw = this.pending.raw + " " + raw;
+    } else if (this.pending) {
+      dropped.push(this.pending.raw);
+    }
+    this.pending = null;
+    const text = parseTaggedSentence(raw).displayText;
+    if (isToolNarration(text)) {
+      this.pending = { raw, kind: "announcement" };
+    } else if (isToolNarrationLead(text)) {
+      this.pending = { raw, kind: "lead" };
+    } else {
+      return this.result([raw], dropped);
+    }
+    return this.result([], dropped);
+  }
+
+  onToolCall(): NarrationDecision {
+    if (!this.enabled) return this.result();
+    this.usedTool = true;
+    if (this.pending?.kind !== "announcement") return this.result();
+    const raw = this.pending.raw;
+    this.pending = null;
+    return this.result([], [raw]);
+  }
+
+  /** EOF of an attempt: preserve lone no-tool replies; suppress tool narration. */
+  finish(): NarrationDecision {
+    if (!this.pending) return this.result();
+    const { raw, kind } = this.pending;
+    this.pending = null;
+    return this.usedTool && kind === "announcement" ? this.result([], [raw]) : this.result([raw]);
+  }
+
+  /** Use the delivered display text, after opener rewriting, to decide retry. */
+  hasAnswer(sentences: readonly string[]): boolean {
+    return sentences.some((text) => !!text.trim() && (!this.usedTool ||
+      (!isInterjectionOnly(text) && !isToolNarrationLead(text))));
+  }
+
+  private result(speak: string[] = [], dropped: string[] = []): NarrationDecision {
+    return { speak, hold: this.pending ? [this.pending.raw] : [], dropped };
+  }
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isToolNarration, isToolNarrationLead, isInterjectionOnly } from "../src/text/toolNarration.ts";
+import { NarrationJudge, isToolNarration, isToolNarrationLead, isInterjectionOnly } from "../src/text/toolNarration.ts";
 import { SentenceSplitter } from "../src/text/sentences.ts";
 import { loadConfig, type Config } from "../src/config.ts";
 import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
@@ -109,6 +109,94 @@ for (const separator of [",", ";", ":", "—", "，", "、", "；", "："]) {
   });
 }
 
+const announcement = "I'll check my memory.";
+const secondAnnouncement = "I'll look that up.";
+const realSentence = "You told me you love tofu.";
+const TOOL = Symbol("tool call");
+const END = Symbol("attempt EOF");
+const judgeCases = [
+  { name: "round 5 announcement, filler, announcement", input: [announcement, "Hmm.", secondAnnouncement, TOOL], speak: ["Hmm."], answer: false },
+  { name: "round 5 eager filler lead", input: [announcement, "Hmm,", secondAnnouncement, TOOL], speak: [], answer: false },
+  { name: "multiple tool rounds", input: [announcement, TOOL, secondAnnouncement, TOOL, realSentence], speak: [realSentence], answer: true },
+  { name: "judge after real content", input: [realSentence, announcement, "Hmm.", secondAnnouncement, TOOL], speak: [realSentence, "Hmm."], answer: true },
+  { name: "tool continuation announcement only", input: [TOOL, announcement], speak: [], answer: false },
+  { name: "tool continuation interjections only", input: [TOOL, "Hmm,", "Hmm"], speak: ["Hmm, Hmm"], answer: false },
+  { name: "tool state survives retry EOF", input: [announcement, TOOL, "Hmm.", END, "Hmm"], speak: ["Hmm.", "Hmm"], answer: false },
+  { name: "real retry answer", input: [TOOL, "Hmm.", END, realSentence], speak: ["Hmm.", realSentence], answer: true },
+  { name: "keep lone no-tool announcement", input: [announcement], speak: [announcement], answer: true },
+  { name: "keep no-tool filler and lone announcement", input: ["Hmm.", announcement], speak: ["Hmm.", announcement], answer: true },
+  { name: "drop announcement before an answer", input: [announcement, realSentence], speak: [realSentence], answer: true },
+  { name: "merge eager wait", input: ["One sec，", "looking that up.", TOOL, realSentence], speak: [realSentence], answer: true },
+  { name: "keep real content after eager wait", input: ["One sec;", "the tofu is burning.", TOOL], speak: ["One sec; the tofu is burning."], answer: true },
+  { name: "keep real content after eager filler", input: ["Hmm,", realSentence, TOOL], speak: [`Hmm, ${realSentence}`], answer: true },
+  { name: "preserve raw tags", input: ["<curious> Hmm,", "[whispers] I'll look that up.", TOOL, "<warm> [whispers] Tofu works."], speak: ["<warm> [whispers] Tofu works."], answer: true },
+] as const;
+
+for (const scenario of judgeCases) test(`NarrationJudge sequence: ${scenario.name}`, () => {
+  const judge = new NarrationJudge();
+  const spoken: string[] = [];
+  for (const step of scenario.input) {
+    const result = step === TOOL ? judge.onToolCall() : step === END ? judge.finish() : judge.push(step);
+    spoken.push(...result.speak);
+    assert.ok(result.hold.length <= 1);
+  }
+  spoken.push(...judge.finish().speak);
+  assert.deepEqual(spoken, scenario.speak);
+  assert.equal(judge.hasAnswer(spoken), scenario.answer);
+  assert.deepEqual(judge.finish(), { speak: [], hold: [], dropped: [] });
+});
+
+test("NarrationJudge bypass preserves interpretation and self-authored text", () => {
+  const judge = new NarrationJudge(false);
+  assert.deepEqual(judge.push(announcement).speak, [announcement]);
+  judge.onToolCall();
+  assert.deepEqual(judge.push("Hmm,").speak, ["Hmm,"]);
+  assert.equal(judge.hasAnswer(["Hmm,"]), true);
+  assert.equal(judge.hasAnswer([""]), false);
+});
+
+// Deterministic exhaustive property: every length 0..4 sequence on each side
+// of a tool boundary (121²), with complete and unfinished interjections.
+// The oracle uses symbolic kinds, independently of the production predicates.
+test("NarrationJudge exhaustive sequences up to four before and after a tool call", () => {
+  type Kind = "interjection" | "announcement" | "real";
+  const sequences: Kind[][] = [[]];
+  let level: Kind[][] = [[]];
+  for (let length = 1; length <= 4; length++) {
+    level = level.flatMap((prefix) => (["interjection", "announcement", "real"] as const).map((kind) => [...prefix, kind]));
+    sequences.push(...level);
+  }
+  let checked = 0;
+  for (const interjection of ["Hmm.", "Hmm,", "Hmm"]) {
+    for (const before of sequences) for (const after of sequences) {
+      const judge = new NarrationJudge();
+      const spoken: string[] = [];
+      const expectedReal: string[] = [];
+      let index = 0;
+      const push = (kind: Kind) => {
+        const text = kind === "interjection" ? interjection : kind === "announcement" ? announcement : `Tofu works ${index++}.`;
+        if (kind === "real") expectedReal.push(text);
+        const result = judge.push(text);
+        // Each real sentence leaves the judge immediately, even after a lead.
+        if (kind === "real") assert.ok(result.speak.some((s) => s.includes(text)));
+        spoken.push(...result.speak);
+      };
+      before.forEach(push);
+      spoken.push(...judge.onToolCall().speak);
+      after.forEach(push);
+      spoken.push(...judge.finish().speak);
+      const text = spoken.join(" ");
+      assert.ok(!text.includes(announcement), JSON.stringify({ before, after, interjection, spoken }));
+      assert.deepEqual(text.match(/Tofu works \d+\./g) ?? [], expectedReal);
+      // This is Session's retry decision: no real answer after tool use,
+      // including an interjection-only continuation, must retry.
+      assert.equal(judge.hasAnswer(spoken), expectedReal.length > 0);
+      checked++;
+    }
+  }
+  assert.equal(checked, 43_923);
+});
+
 // Exercise MemoryCall's actual function-call rounds and Session's eager server
 // voice splitter, as well as the device voice's whole-sentence path.
 function voiceConfig(voice: "server" | "device"): Config {
@@ -150,6 +238,22 @@ async function recallTurn(voice: "server" | "device", announcements: string[][],
 }
 
 for (const voice of ["server", "device"] as const) {
+  for (const pieces of [
+    ["I'll check my memory. Hmm. I'll look that up. "],
+    ["I'll check my memory. ", "Hmm. ", "I'll look that up. "],
+    ["I'll check my memory. Hmm, ", "I'll look that up. "],
+  ]) test(`round 5: announcements separated by fillers still retry (${voice}, ${JSON.stringify(pieces)})`, async () => {
+    const { events, logs, spoken, answer, followups } = await recallTurn(voice, [pieces], ["", "You told me you love tofu."]);
+    assert.equal(followups, 2);
+    assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+    const reply = events.find((e) => e.type === "reply")?.text;
+    assert.ok(reply?.endsWith(answer));
+    assert.doesNotMatch(reply!, /check my memory|look that up/);
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), reply);
+    if (voice === "server") assert.equal(spoken.join(" "), reply);
+    else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), reply);
+  });
+
   for (const [lead, followup] of [
     ["Hmm,", "Hmm."],
     ["Hmm,", "Hmm"],

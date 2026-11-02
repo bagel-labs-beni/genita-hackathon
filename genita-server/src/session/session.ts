@@ -13,7 +13,7 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { isToolNarration, isToolNarrationLead, isInterjectionOnly } from "../text/toolNarration.ts";
+import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
@@ -1148,39 +1148,13 @@ export class Session {
     let sparkError: unknown = null;
     let emptyCause: string | null = null;
     let droppedOpener = false;
-    let narrationDecided = interpret || !!self;
-    let pendingNarration: string | null = null;
-    let usedTool = false;
-    // Interjections can already be spoken while a tool runs. They do not
-    // satisfy the answer, including on the retry of the tool's continuation.
-    const hasAnswer = () => sentences.some(({ display }) => !usedTool || (!isInterjectionOnly(display) && !isToolNarrationLead(display)));
-    const dropNarration = () => {
-      pendingNarration = null;
-      narrationDecided = true;
-      droppedOpener = true;
-      this.log("reply.narration_dropped", { utteranceId });
-    };
+    const narration = new NarrationJudge(!interpret && !self);
+    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
     let onlyOpener: string | null = null;
-    const pushSentences = (list: string[], keepOpener = false) => {
-      for (let raw of list) {
-        // Eager TTS can cut "One sec," or "Hmm," before the body arrives.
-        if (!narrationDecided && pendingNarration && isToolNarrationLead(parseTaggedSentence(pendingNarration).displayText)) {
-          raw = pendingNarration + " " + raw;
-          pendingNarration = null;
-        }
+    const enqueueSentences = (list: string[], keepOpener = false) => {
+      for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
-        if (!narrationDecided && p.displayText) {
-          if (pendingNarration) dropNarration(); // subsequent content makes it safe to drop the first piece
-          else if (isToolNarration(p.displayText)) {
-            pendingNarration = raw;
-            if (usedTool) dropNarration();
-            continue;
-          } else if (isToolNarrationLead(p.displayText)) {
-            pendingNarration = raw;
-            continue;
-          } else if (!isInterjectionOnly(p.displayText)) narrationDecided = true;
-        }
         // Delivery/emotion tags alone cannot be displayed or spoken. Do not
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
@@ -1202,6 +1176,20 @@ export class Session {
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
       }
       waiter.wake?.();
+    };
+    const applyNarration = ({ speak, dropped }: NarrationDecision) => {
+      for (const _raw of dropped) {
+        droppedOpener = true;
+        this.log("reply.narration_dropped", { utteranceId });
+      }
+      enqueueSentences(speak);
+    };
+    const pushSentences = (list: string[]) => {
+      for (const raw of list) {
+        const p = parseTaggedSentence(raw);
+        if (p.emotion) emotion = p.emotion;
+        applyNarration(narration.push(raw));
+      }
     };
 
     // Producer: Spark stream → sentences
@@ -1231,13 +1219,10 @@ export class Session {
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
                 if (!interpret) {
-                  usedTool = true;
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());
-                  if (pendingNarration && isToolNarration(parseTaggedSentence(pendingNarration).displayText)) dropNarration();
-                  // MemoryCall can produce another announcement in its next
-                  // model round. A decision only covers the text before this tool.
-                  narrationDecided = false;
+                  // Completion alone is also tool evidence; some streams omit the start event.
+                  applyNarration(narration.onToolCall());
                 }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
@@ -1249,18 +1234,10 @@ export class Session {
           }
           if (signal.aborted) return;
           pushSentences(splitter.flush());
-          // A narration without a tool is still a reply. Once it has accompanied
-          // a tool, though, it is deliberately dropped and must take the empty
-          // reply recovery path below instead of becoming a silent turn.
-          if (!sentences.length && pendingNarration && !usedTool) {
-            const raw = pendingNarration;
-            pendingNarration = null;
-            narrationDecided = true;
-            pushSentences([raw]);
-          }
+          applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
+          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -1269,20 +1246,12 @@ export class Session {
           onlyOpener = null;
           emotion = null;
           droppedOpener = false;
-          narrationDecided = interpret || !!self;
-          pendingNarration = null;
           m.firstTokenAt = undefined;
         }
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
-        // A lone announcement with no tool or answer must not turn into an empty reply.
-        if (pendingNarration && !signal.aborted) {
-          const raw = pendingNarration;
-          pendingNarration = null;
-          narrationDecided = true;
-          pushSentences([raw]);
-        }
+        if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
         waiter.wake?.();
       }
