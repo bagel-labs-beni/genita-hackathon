@@ -6,7 +6,8 @@ import SwiftUI
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var handoff = PhoneHandoff.shared
     /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
-    private var darkStatusBar: Bool { model.stage == .signIn || model.stage == .bringing || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
+    /// PF-1b / r03 full: a full Finds sheet leaves a dark band under the status bar, so it turns light too.
+    private var darkStatusBar: Bool { model.stage == .signIn || model.stage == .bringing || CallController.shared.finds.state == .full || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
     var body: some Scene {
         WindowGroup {
             Group {

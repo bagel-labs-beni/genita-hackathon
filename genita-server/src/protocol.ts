@@ -223,6 +223,11 @@ export type ServerEvent =
       replyStartToFirstSentenceMs: number | null;
       firstSentenceToFirstAudioMs: number | null;
       speechEndToFirstAudioMs: number | null;
+      /** log/report aliases: ASR finalization, first token, sentence-to-TTS, speech end-to-first sound */
+      stt_ms?: number | null;
+      llm_ms?: number | null;
+      tts_ms?: number | null;
+      first_audio_ms?: number | null;
       audioMs: number;
       speculative?: "hit" | "miss" | "none";
     }
@@ -289,7 +294,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
       "speechEndToFirstAudioMs",
       "audioMs",
     ],
-    optional: ["speculative"],
+    optional: ["speculative", "stt_ms", "llm_ms", "tts_ms", "first_audio_ms"],
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
