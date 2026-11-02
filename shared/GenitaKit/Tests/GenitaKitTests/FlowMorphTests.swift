@@ -163,3 +163,27 @@ struct FaceManifestFlowDecodingTests {
         #expect(m.flow == nil && m.images["neutral"] == "n")
     }
 }
+
+struct FlowMorphResetTests {
+    /// Codex P2: a key still shown by the snap hold after its amount dropped is painted, not black.
+    @Test func aHeldKeyIsStillPainted() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2", "MID"])
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1)
+        m.amountsOverride = [0, 1, 0]
+        _ = m.render(.rest, at: 1)
+        m.amountsOverride = [0, 0, 1]
+        let p = [UInt8](m.render(.rest, at: 1.04).dataProvider!.data! as Data)
+        let k = (20 * m.width + 4) * 4      // skin inside the mask, away from the mouth
+        #expect(p[k + 3] > 200 && p[k] > 120)
+    }
+
+    /// Codex P2: cancel drops the smoothing tail at once.
+    @Test func resetRestsTheMouthNow() throws {
+        let set = try Synth.faceSet()
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1)
+        for i in 0..<5 { _ = m.step(LipFrame(weights: [.A: 1], openness: 0.8), at: Double(i) / 25) }
+        m.reset()
+        let a = m.step(.rest, at: 0.2)
+        #expect(a.allSatisfy { $0 < 1e-6 })
+    }
+}

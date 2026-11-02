@@ -396,6 +396,14 @@ final class FlowMorph: @unchecked Sendable {
     // MARK: render
 
     /// The morphed ROI as premultiplied RGBA with alpha = mask (composite over the expression still).
+    /// Barge-in / cancel: the mouth returns to the still at once (no smoothing tail, no held key).
+    func reset() {
+        smooth = smooth.map { _ in 0 }; snapW = smooth
+        lastT = nil; snapT = nil; closeStart = nil; lastVowel = nil
+        dominant = nil; dominantSince = -.infinity; candidate = nil; candidateRun = 0; shownHeld = 0
+        snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
+    }
+
     /// Parity checks: use these amounts (in `keys` order) instead of the lip timeline once.
     var amountsOverride: [Float]?
 
@@ -485,11 +493,14 @@ final class FlowMorph: @unchecked Sendable {
             gs.append(g)
         }
         var drawn: [(key: [Float], w: Float, field: [Float])] = []
-        for (j, idx) in act.enumerated() where cw[idx] > 0 {
+        // Every key with colour weight is drawn, including one still held by the snap rule after its
+        // amount fell to 0 (leaving it out left that weight unpainted: a black mouth).
+        let zero = [Float](repeating: 0, count: n2)
+        for idx in order.indices where cw[idx] > 0 {
             let a = am[idx], f = data.nk[order[idx]]!, bk = data.kn[order[idx]]!
             let cf = (1 - a) * (1 - a), cb = -a * (1 - a)
             var g = [Float](repeating: 0, count: n2)
-            let gj = gs[j]
+            let gj = act.firstIndex(of: idx).map { gs[$0] } ?? zero
             for q in stride(from: 0, to: n2, by: 2) {
                 g[q] = (cf * f[q] + cb * bk[q]) * kx + gn[q] - gj[q]
                 g[q + 1] = (cf * f[q + 1] + cb * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
@@ -504,7 +515,7 @@ final class FlowMorph: @unchecked Sendable {
                 let i = y * w + x
                 let m = maskW[i]
                 var r = neutral[i * 3], g = neutral[i * 3 + 1], b = neutral[i * 3 + 2]
-                if m > 0.002, !act.isEmpty {
+                if m > 0.002, !act.isEmpty || !drawn.isEmpty {
                     let fx = (Float(x) + 0.5) * sx - 0.5
                     let px = Float(x), py = Float(y)
                     let d = Self.bilinear2(gn, fw, fh, fx, fy)
