@@ -52,8 +52,11 @@ const importStory = () => [
 const skipStory = () => [
   { id: "talk", eyebrow: "How you like to talk", headline: "Answer first.", evidence: "explicit",
     items: [it("You want the answer up front, then the why.", "explicit")], promise: "So I'll lead with the answer and keep the rest short." },
+  // S2 (Figma 269:228): N1 tiles + N3 like / no chips, as the server builds them for skip users (d1806e7)
   { id: "taste", eyebrow: "What you're into", headline: "Design, food, and good stories.", evidence: "explicit", items: [],
-    tags: [tag("interest", "Design"), tag("interest", "Food"), tag("interest", "Film & TV")], note: "No favorites yet. Tell me one anytime, or show me on camera." },
+    tags: [tag("interest", "Design"), tag("interest", "Food"), tag("interest", "Film & TV"),
+      tag("style", "Minimal"), tag("style", "Comfy"), tag("style", "Colorful", true),
+      tag("food", "Spicy"), tag("food", "Noodles"), tag("food", "Seafood", true)] },
   { id: "lines", eyebrow: "Lines I won't cross", headline: "Some things I'll leave alone.", evidence: "explicit",
     items: [it("No advice you didn't ask for.", "explicit"), it("No comments on your looks.", "explicit")] },
   { id: "unknowns", eyebrow: "Still getting to know you", headline: "Most of you, I'll learn as we talk.", subline: "I'll ask you in our calls, one at a time. You can always just tell me.",

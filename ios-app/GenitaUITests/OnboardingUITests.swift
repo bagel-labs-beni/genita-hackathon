@@ -227,7 +227,12 @@ final class OnboardingUITests: XCTestCase {
             let end = Date().addingTimeInterval(5)
             while Date() < end && dots.label != "Card \(n) of 4" { Thread.sleep(forTimeInterval: 0.1) }
             XCTAssertEqual(dots.label, "Card \(n) of 4", "S\(n)")
-            if n == 2 { XCTAssertTrue(element("hisyNote").exists, "S2: no favorites yet") }
+            if n == 2 {
+                // S2 (269:228): N1 tiles, then the N3 rows with likes and dashed "no"s
+                let colorful = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyTag' AND label == 'Not for you: Colorful'")).firstMatch
+                XCTAssertTrue(colorful.exists, "S2: N3 'no' as a dashed tag")
+                XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyEvidence' AND label CONTAINS 'From your answers'")).firstMatch.exists, "S2: N3 rows' chip")
+            }
             Thread.sleep(forTimeInterval: 0.4)
             capture("HISY-S\(n)")
         }

@@ -281,11 +281,13 @@ struct HISYToast: View {
 /// White r12 #E3E3E3 chip: 12 pt icon + Pretendard Medium 12 #737373.
 struct HISYEvidenceChip: View {
     let evidence: String
+    /// S2 (Figma 269:228): the N3 rows' chip reads "From your answers"
+    var label: String? = nil
     var body: some View {
         HStack(spacing: 6) {
             Image(evidence == "observed" ? "hisy-often" : evidence == "memory" ? "hisy-memory" : "hisy-said")
-                .resizable().renderingMode(.template).foregroundStyle(HISYInk.mute).frame(width: 12, height: 12)
-            Text(StoryCard.evidenceLabel(evidence)).hisyBody(12, .medium, line: 16, color: HISYInk.mute).lineLimit(1).fixedSize()
+                .resizable().renderingMode(.template).foregroundStyle(HISYInk.mute).frame(width: 12, height: 12).accessibilityHidden(true)
+            Text(label ?? StoryCard.evidenceLabel(evidence)).hisyBody(12, .medium, line: 16, color: HISYInk.mute).lineLimit(1).fixedSize()
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(.white, in: RoundedRectangle(cornerRadius: 12))
@@ -301,7 +303,7 @@ struct HISYTag: View {
     var body: some View {
         HStack(spacing: 5) {
             if tag.dislike {
-                Image("hisy-not").resizable().renderingMode(.template).foregroundStyle(HISYInk.dislike).frame(width: 12, height: 12)
+                Image("hisy-not").resizable().renderingMode(.template).foregroundStyle(HISYInk.dislike).frame(width: 12, height: 12).accessibilityHidden(true)
             }
             Text(tag.text).hisyBody(14, .medium, line: 18, color: tag.dislike ? HISYInk.dislike : HISYInk.blueText)
         }
@@ -406,8 +408,46 @@ struct HISYCardBody: View {
         }
     }
 
-    /// taste: Style / Food / Watch & listen groups (one interest-only group has no title, S2), evidence + legend, note.
-    private var taste: some View {
+    /// taste: Style / Food / Watch & listen groups, evidence + legend, note. Skip users (S2, Figma 269:228): the N1
+    /// tiles untitled on top with "You said this", then the N3 Style / Food rows with "From your answers".
+    @ViewBuilder private var taste: some View {
+        if skip { skipTaste } else { importTaste }
+    }
+
+    private var skipTaste: some View {
+        let groups = card.tagGroups
+        let interest = groups.first { $0.key == "interest" }
+        let rows = groups.filter { $0.key != "interest" }
+        let dislikes = rows.contains { g in g.tags.contains { $0.dislike } }
+        return VStack(alignment: .leading, spacing: 0) {
+            if let interest {
+                HISYFlow(spacing: 8) {
+                    ForEach(Array(interest.tags.enumerated()), id: \.offset) { _, t in HISYTag(tag: t, changed: changed.contains(t.choiceText)) }
+                }.padding(.top, 24)
+                HISYEvidenceChip(evidence: "explicit").padding(.top, 14)
+            }
+            ForEach(Array(rows.enumerated()), id: \.element.key) { i, g in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(g.title).hisyBody(14, .semibold, line: 20)
+                    HISYFlow(spacing: 8) {
+                        ForEach(Array(g.tags.enumerated()), id: \.offset) { _, t in HISYTag(tag: t, changed: changed.contains(t.choiceText)) }
+                    }
+                }.padding(.top, i == 0 && interest == nil ? 24 : 16)
+            }
+            if !rows.isEmpty {
+                HStack(spacing: 10) {
+                    HISYEvidenceChip(evidence: "memory", label: "From your answers")
+                    if dislikes { Text("Dashed = not for you").hisyBody(12, line: 16, color: HISYInk.mute) }
+                }.padding(.top, 20)
+            }
+            if let note = card.note, !note.isEmpty {
+                Text(note).hisyBody(16, line: 24, color: HISYInk.mute).fixedSize(horizontal: false, vertical: true).padding(.top, 24)
+                    .accessibilityIdentifier("hisyNote")
+            }
+        }
+    }
+
+    private var importTaste: some View {
         let groups = card.tagGroups
         let titled = !(groups.count == 1 && groups[0].key == "interest")
         let dislikes = (card.tags ?? []).contains { $0.dislike }
