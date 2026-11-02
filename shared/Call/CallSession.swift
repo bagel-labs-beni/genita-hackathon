@@ -795,11 +795,13 @@ enum CallStop: Equatable {
     /// Device voice (`say`): the rendered PCM moves the mouth like server audio. Its offset in the reply is the
     /// audio rendered so far; the shapes come from the reply's `reply.delta` text.
     private func feedFaceDevicePCM(_ pcm: Data, utteranceId: Int) {
-        guard face != nil, !routed.contains(utteranceId) else { return }
+        guard !routed.contains(utteranceId) else { return }
+        // Count every buffer that goes to the player, face or not, so a face that loads mid-reply stays in time.
         let offset = faceDeviceMs[utteranceId] ?? 0
         let ms = Int(PCM.durationMs(bytes: pcm.count).rounded())
         faceDeviceMs[utteranceId] = offset + ms
         if faceDeviceMs.count > 16 { faceDeviceMs = faceDeviceMs.filter { $0.key >= utteranceId - 4 } }
+        guard face != nil else { return }
         let event = ServerEvent.Audio(utteranceId: faceId(utteranceId), seq: 0, sentence: 0, offsetMs: offset, durationMs: ms,
                                       sampleRate: GenitaProtocol.sampleRate, model: "device", words: [], mouth: nil)
         feedFace(utteranceId) { $0.handle(audio: event, pcm: pcm) }
