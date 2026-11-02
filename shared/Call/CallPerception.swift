@@ -43,6 +43,8 @@ struct PerceptionGate {
     private var gate = PerceptionGate()
     private var task: Task<Void, Never>?
     private var busy = false
+    /// bumped on every start/stop: a crop from an earlier run is dropped (call ended, socket lost)
+    private(set) var generation = 0
     private let worker = DispatchQueue(label: "ai.thebeni.genita.perception", qos: .utility)
 
     var isRunning: Bool { task != nil }
@@ -51,19 +53,21 @@ struct PerceptionGate {
     func start(frame: @escaping () -> CIImage?, active: @escaping () -> Bool, send: @escaping (String) -> Void) {
         stop()
         gate = PerceptionGate()
+        generation += 1
         task = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 guard let self, !Task.isCancelled else { return }
                 guard active(), !self.busy, let image = frame() else { continue }
                 self.busy = true
+                let gen = self.generation
                 self.worker.async {
                     let crop = FaceCrop.make(from: image)
                     DispatchQueue.main.async {
                         MainActor.assumeIsolated {
-                            self.busy = false
-                            guard let crop, self.task != nil, active() else { return }
-                            if self.gate.shouldSend(now: Date(), thumb: crop.thumb) { send(crop.jpeg.base64EncodedString()) }
+                            if gen == self.generation { self.busy = false }
+                            guard let crop else { return }
+                            self.deliver(crop, generation: gen, active: active(), send: send)
                         }
                     }
                 }
@@ -75,6 +79,13 @@ struct PerceptionGate {
         task?.cancel()
         task = nil
         busy = false
+        generation += 1
+    }
+
+    /// Send a finished crop if it belongs to the current run and the call still wants faces.
+    func deliver(_ crop: FaceCrop.Result, generation gen: Int, active: Bool, now: Date = Date(), send: (String) -> Void) {
+        guard gen == generation, task != nil, active else { return }
+        if gate.shouldSend(now: now, thumb: crop.thumb) { send(crop.jpeg.base64EncodedString()) }
     }
 }
 

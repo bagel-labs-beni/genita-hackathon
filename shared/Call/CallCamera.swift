@@ -48,6 +48,8 @@ import UniformTypeIdentifiers
     func flip() {
         guard canFlip else { return }
         front.toggle()
+        // Codex P1 (11/3): no frame from the old camera after a flip (a rear-camera face must never go out as "the user")
+        worker.beginSwitch()
         worker.switchDevice(session: session, device: Self.device(front: front))
     }
 
@@ -95,6 +97,8 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var input: AVCaptureDeviceInput?
     private let lock = NSLock()
     private var frame: CIImage?
+    /// true from a flip until the new camera is attached: frames still coming from the old camera are dropped
+    private var switching = false
 
     func start(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
@@ -122,12 +126,17 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
         }
     }
 
+    /// Synchronous: from now on `latest()` is nil until the new camera's first frame.
+    func beginSwitch() { lock.withLock { frame = nil; switching = true } }
+
     func switchDevice(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
             session.beginConfiguration()
             self.attach(session: session, device: device)
             self.orient()
             session.commitConfiguration()
+            // sample buffers run on this same queue: the ones queued before here were the old camera's
+            self.lock.withLock { self.frame = nil; self.switching = false }
         }
     }
 
@@ -151,6 +160,6 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let image = CIImage(cvPixelBuffer: pixels)
-        lock.withLock { frame = image }
+        lock.withLock { if !switching { frame = image } }
     }
 }

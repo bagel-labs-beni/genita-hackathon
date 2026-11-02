@@ -49,3 +49,23 @@ import XCTest
         XCTAssertEqual(o["image"] as? String, "/9j/")
     }
 }
+
+/// Codex P2 (11/3): a crop that was in flight when the sampler stopped (call ended / socket lost) never reaches a new call.
+@MainActor final class PerceptionSamplerTests: XCTestCase {
+    func testStaleCropFromAStoppedRunIsDropped() {
+        let sampler = PerceptionSampler()
+        var sent: [String] = []
+        let crop = FaceCrop.Result(jpeg: Data([1, 2, 3]), thumb: [UInt8](repeating: 9, count: 576))
+        sampler.start(frame: { nil }, active: { true }, send: { sent.append($0) })
+        let old = sampler.generation
+        sampler.stop()
+        sampler.start(frame: { nil }, active: { true }, send: { sent.append($0) })
+        sampler.deliver(crop, generation: old, active: true, send: { sent.append($0) })
+        XCTAssertEqual(sent, [], "crop from the stopped run")
+        sampler.deliver(crop, generation: sampler.generation, active: true, send: { sent.append($0) })
+        XCTAssertEqual(sent, [Data([1, 2, 3]).base64EncodedString()])
+        sampler.deliver(crop, generation: sampler.generation, active: false, send: { sent.append($0) })
+        XCTAssertEqual(sent.count, 1, "inactive now")
+        sampler.stop()
+    }
+}

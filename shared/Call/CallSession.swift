@@ -533,6 +533,7 @@ enum CallStop: Equatable {
         log.info("socket closed: \(String(describing: closure), privacy: .public)")
         socket = nil
         pingTask?.cancel()
+        perception.stop() // a new `ready` restarts it (Codex P2)
         flushPlayback()
         playing = false
         awaitingFirstAudio = false
