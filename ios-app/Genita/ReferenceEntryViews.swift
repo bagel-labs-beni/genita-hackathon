@@ -44,7 +44,8 @@ struct ReferenceSignInView: View {
                     ForEach(nodes.filter { $0.type == "text" && ($0.fontFamily == "KMU80 TTF" || $0.y == 199) }) { n in
                         DesignText(node: n).designSlot(n, width: size.width, top: top)
                     }
-                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
+                    // #218: without Google, Apple takes the lower slot (the one next to the legal line) so there is no hole between the buttons
+                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: (SignInFlags.hideGoogle ? 659 : 598) + bottom)
                     if !SignInFlags.hideGoogle {
                         providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     }
@@ -96,6 +97,7 @@ struct ReferenceSignInView: View {
             do {
                 let r = try await AppleSignInFlow().signIn()
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+                model.adopt(accountId: r.me.user.id)   // #163: the saved setup's style/companion belong to this account
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02
             } catch {
@@ -107,13 +109,13 @@ struct ReferenceSignInView: View {
     }
 }
 
-/// #218: Chelsea decides whether A02 shows "Continue with Google". Off by default (Google stays); turn it on without a
-/// code change with the `GenitaHideGoogle` Info.plist key, the `genita.hideGoogle` default (also settable by a remote-config
-/// fetch later) or GENITA_HIDE_GOOGLE=1 (tests).
+/// #218 (Chelsea, 11/3): A02 hides "Continue with Google"; Apple stays. Kept behind a flag so it is reversible without
+/// touching the layout code: GENITA_HIDE_GOOGLE=0 (tests), the `genita.hideGoogle` default (a remote-config fetch can set it)
+/// or the `GenitaHideGoogle` Info.plist key turn Google back on / off. Default: hidden.
 enum SignInFlags {
     static var hideGoogle: Bool {
-        if ProcessInfo.processInfo.environment["GENITA_HIDE_GOOGLE"] == "1" { return true }
-        if UserDefaults.standard.bool(forKey: "genita.hideGoogle") { return true }
-        return (Bundle.main.object(forInfoDictionaryKey: "GenitaHideGoogle") as? Bool) ?? false
+        if let env = ProcessInfo.processInfo.environment["GENITA_HIDE_GOOGLE"] { return env != "0" }
+        if let stored = UserDefaults.standard.object(forKey: "genita.hideGoogle") as? Bool { return stored }
+        return (Bundle.main.object(forInfoDictionaryKey: "GenitaHideGoogle") as? Bool) ?? true
     }
 }

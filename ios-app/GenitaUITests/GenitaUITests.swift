@@ -78,9 +78,9 @@ final class GenitaUITests: XCTestCase {
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
         app.terminate()
-        open("voice"); app.buttons["voice1"].tap(); capture("13-목소리-선택완료")
-        app.buttons["Preview voice 2"].tap(); capture("13a-목소리-미리듣기")
-        app.buttons["Preview voice 2"].tap(); app.buttons["voice0"].tap(); capture("13b-목소리-첫번째선택"); app.terminate()
+        // V04 reads the server's voices; with no server in this test the curated four show greyed and the default stays picked
+        // (the server states V04 / V04-P / V04-S / V04-waking are covered in OnboardingUITests against the stub)
+        open("voice"); XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13-목소리-선택완료"); app.terminate()
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
@@ -166,7 +166,7 @@ final class GenitaUITests: XCTestCase {
                 app.buttons["Cancel"].tap()
             }
             if stage == "voice" && variant != "empty" {
-                app.buttons["Preview voice 1"].tap(); capture("13a-목소리-미리듣기")
+                XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13a-목소리-미리듣기")
             }
             if stage == "conversation" {
                 app.buttons["openMenu"].tap(); capture("32-대화메뉴")
@@ -210,7 +210,9 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
         app.buttons["primaryCTA"].tap()
-        app.buttons["voice0"].tap(); app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["primaryCTA"]); waitForExpectations(timeout: 15)   // no server: the default voice is picked
+        app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Quick start")).firstMatch.tap()
         app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Think with me")).firstMatch.tap(); app.buttons["primaryCTA"].tap()
@@ -255,17 +257,30 @@ final class GenitaUITests: XCTestCase {
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
 
-    /// #218 · the flag hides Google on A02 and keeps Apple.
-    func testA02HidesGoogleWhenFlagged() {
+    /// #218 · A02 hides Google by default and keeps Apple, in the lower slot (no hole between buttons and the legal line).
+    func testA02HidesGoogleByDefault() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
-        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_HIDE_GOOGLE": "1"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
         app.launch()
-        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
+        let apple = app.buttons["Continue with Apple"]
+        XCTAssertTrue(apple.waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Continue with Google"].exists)
+        let legal = app.buttons["Terms"]
+        if legal.exists { XCTAssertLessThan(legal.frame.minY - apple.frame.maxY, 120, "no awkward gap between Apple and the legal line") }
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = "call-A02-no-google"
         shot.lifetime = .keepAlways
         add(shot)
+    }
+
+    /// #218 · the flag turns Google back on (reversible).
+    func testA02ShowsGoogleWhenFlagOff() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_HIDE_GOOGLE": "0"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Continue with Google"].exists)
     }
 }
