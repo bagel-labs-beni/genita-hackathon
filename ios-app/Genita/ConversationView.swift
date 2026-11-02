@@ -76,6 +76,12 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        if !connecting {
+                            ZStack { if let chip = call.profileChip { ProfileChipView(text: chip).transition(.opacity.combined(with: .offset(y: -6))) } }
+                                .animation(.fade, value: call.profileChip)
+                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : 184) + top)
+                        }
                         if connecting {
                             let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                             ZStack {
@@ -118,6 +124,7 @@ struct ConversationView: View {
                 model.setup.firstCallPending = false
                 #if DEBUG
                 call.installFindsFixture()
+                call.installProfileChipFixture()
                 #endif
             }
         }

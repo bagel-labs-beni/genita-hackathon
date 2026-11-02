@@ -130,6 +130,22 @@ struct CallCueView: View {
     }
 }
 
+/// D48 ①: "Updated: no cilantro" for 2.5 s after a correction said in the call was saved (`profile.updated`).
+/// The status line's pill, smaller, just under it.
+struct ProfileChipView: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
+            Text(text).font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1)
+        }
+        .padding(.horizontal, 14).frame(height: 30)
+        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("profileChip")
+    }
+}
+
 private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }

@@ -116,6 +116,9 @@ enum CallStop: Equatable {
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
     var companionName = ""
+    /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
+    /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
+    private(set) var profileChip: String?
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
@@ -157,6 +160,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var reconnectSince: Date?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var holdTask: Task<Void, Never>?
+    @ObservationIgnored private var profileChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
@@ -266,7 +270,7 @@ enum CallStop: Equatable {
 
     func end() {
         userEnded = true
-        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
+        reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil
         socket?.close()
         socket = nil
         voice.cancel()
@@ -616,6 +620,8 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
+        case let .profileUpdated(p):
+            showProfileChip(p.text)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
             break
         case .profileUpdated, .profileAsking:
@@ -641,6 +647,27 @@ enum CallStop: Equatable {
             return
         }
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
+    }
+
+    /// `profile.updated` chip: 2.5 s (PROTOCOL.md). Debug UI tests on slow simulators can lengthen it (GENITA_PROFILE_CHIP_MS).
+    static var profileChipMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_PROFILE_CHIP_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 2500
+    }
+
+    private func showProfileChip(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        profileChip = String(text.prefix(60))
+        profileChipTask?.cancel()
+        profileChipTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(Self.profileChipMs))
+            guard !Task.isCancelled else { return }
+            self?.profileChip = nil
+        }
+        log.info("profile.updated chip")
     }
 
     private func setPhase(_ next: Phase) {

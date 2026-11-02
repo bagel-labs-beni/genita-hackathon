@@ -61,4 +61,27 @@ final class CallScreenUITests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.5)
         capture("S09-mic-off")
     }
+
+    /// D48 ①: a `profile.updated` in the call shows "Updated: no cilantro" under the status line, then it goes.
+    /// The finds replay server (8789) only provides a live session; GENITA_PROFILE_CHIP=1 injects the event.
+    func testProfileUpdatedChip() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = [
+            "GENITA_REVIEW_STAGE": "conversation",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8789/v1/session",
+            "GENITA_PROFILE_CHIP": "1",
+            "GENITA_PROFILE_CHIP_MS": "6000", // slow simulators: room to see it before it goes
+            "GENITA_REVIEW_STILL": "1",
+        ]
+        app.launch()
+        let chip = app.descendants(matching: .any).matching(identifier: "profileChip").firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 20), "the Updated chip shows")
+        XCTAssertTrue(chip.label.contains("Updated: no cilantro"))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-S09-profile-updated-chip"
+        shot.lifetime = .keepAlways
+        add(shot)
+        XCTAssertTrue(chip.waitForNonExistence(timeout: 15), "and goes after its time")
+    }
 }
