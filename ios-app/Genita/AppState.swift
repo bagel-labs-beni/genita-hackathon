@@ -4,6 +4,8 @@ import Observation
 enum Stage: String, Codable, CaseIterable {
     case welcome, signIn, name, prompt, paste, preparing, preferences, image, voice
     case depth, help, relationship, challenge, tempo, initiative, boundaries, presence, summary, connecting, conversation
+    /// CS01 AI data consent (F1-L8): after the first sign-in, or when the call closes 4403
+    case consent
 }
 enum SetupDepth: String, Codable, CaseIterable { case quick, right, deep
     var title: String { switch self { case .quick: "Quick start"; case .right: "Make it feel right"; case .deep: "Deep setup" } }
@@ -173,6 +175,18 @@ struct SavedSetup: Codable {
         let fallback: [Stage: Stage] = [.signIn: .welcome, .name: .signIn, .prompt: .name, .paste: .prompt, .preferences: .paste, .image: .preferences, .voice: .image, .depth: .voice]
         if let previous = fallback[stage] { setup.stage = previous }
         else if let i = setup.depth.path.firstIndex(of: stage), i > 0 { setup.stage = setup.depth.path[i - 1] }
+    }
+    /// CS01 agreed: back to the call if that's where the user came from, else on to A03 (name).
+    func consentAccepted() {
+        if history.contains(.conversation) { returnTo(.conversation) } else { go(.name) }
+    }
+    /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
+    func route(_ stop: CallStop?) {
+        switch stop {
+        case .signIn?: if stage != .signIn { go(.signIn) }
+        case .consent?: if stage != .consent { go(.consent) }
+        default: break
+        }
     }
     func returnTo(_ stage: Stage) {
         if let index = history.lastIndex(of: stage) { history = Array(history.prefix(index)) }

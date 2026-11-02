@@ -99,6 +99,10 @@ enum CallStop: Equatable {
     /// Set when the server ended the call for a reason reconnecting can't fix. The app routes on it
     /// (F1-L7 StartRouter: signIn → A02, consent → CS01).
     private(set) var stopped: CallStop?
+    /// `ready.sessionId` of the live call: the Mac's screen share opens `/v1/watch?session=` with it (F5).
+    private(set) var sessionId: String?
+    /// The server and token this call uses (also for /v1/watch and Finds REST).
+    var currentEndpoint: CallEndpoint { fixedEndpoint ?? .current() }
     /// Peter worker details from `lip.changed` (bundle, pasteDy, fps) for the F4-L18 mouth layer.
     private(set) var peter: ServerEvent.LipChanged.Peter?
     private(set) var emotion: String?
@@ -487,6 +491,7 @@ enum CallStop: Equatable {
         switch event {
         case let .ready(r):
             link = .live
+            sessionId = r.sessionId
             reconnectSince = nil
             answerFailed = false
             interruptedHold = false
