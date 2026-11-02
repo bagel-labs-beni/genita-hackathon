@@ -226,11 +226,16 @@ export async function startServer(
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
 
   http.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
     const reject = (status: number, text: string) => {
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return reject(400, "Bad Request");
+    }
     if (url.pathname === "/v1/watch") {
       // F5 + 11/2 auth: same principal as the call; only the user who owns the call can share into it.
       // Someone else's session id looks exactly like a missing one (404).
@@ -345,7 +350,9 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id) });
+    // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
+    const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
