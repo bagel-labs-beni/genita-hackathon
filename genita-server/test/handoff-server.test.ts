@@ -16,6 +16,7 @@ import type { TtsChunk } from "../src/tts/types.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DEV = "dev-token-handoff";
+const MIN_SEEN_GAP = 210; // proximity.ts MIN_SEEN_INTERVAL_MS + margin
 
 class FakeAsr extends EventEmitter {
   isOpen = false;
@@ -223,4 +224,41 @@ test("presence without a device closes with 4400; other users never see each oth
   assert.equal(a.json.filter((m) => m.type === "ownership" && m.owner === "iphone").length, 0);
   a.ws.close();
   b.ws.close();
+});
+
+test("proximity on the real server: an ungated iPhone call (today's apps) + presence arm → the Mac's proximity.seen moves it", async (t) => {
+  const { base, events } = await boot(t);
+  const phonePresence = await open(base, "/v1/presence?device=iphone", "prox");
+  const macPresence = await open(base, "/v1/presence?device=mac", "prox");
+  const stranger = await open(base, "/v1/presence?device=iphone", "someone-else");
+
+  // no call yet → no token
+  phonePresence.send({ type: "proximity.arm" });
+  assert.equal((await phonePresence.waitFor((m) => m.type === "proximity.unavailable")).reason, "not_in_call");
+
+  const phoneCall = await open(base, "/v1/session", "prox");
+  phoneCall.send({ type: "start", persona: { name: "Jin" } });
+  await phoneCall.waitFor((m) => m.type === "ready");
+  phonePresence.send({ type: "proximity.arm" });
+  const { token } = await phonePresence.waitFor((m) => m.type === "proximity.token");
+
+  // another account's iPhone in a call, next to this Mac
+  const strangerCall = await open(base, "/v1/session", "someone-else");
+  strangerCall.send({ type: "start", persona: { name: "Jin" } });
+  await strangerCall.waitFor((m) => m.type === "ready");
+  stranger.send({ type: "proximity.arm" });
+  const theirs = (await stranger.waitFor((m) => m.type === "proximity.token")).token;
+  macPresence.send({ type: "proximity.seen", token: theirs });
+  assert.equal((await macPresence.waitFor((m) => m.type === "proximity.result")).reason, "unknown_token");
+
+  await sleep(MIN_SEEN_GAP);
+  macPresence.send({ type: "proximity.seen", token });
+  const ok = await macPresence.waitFor((m) => m.type === "proximity.result" && m.accepted);
+  assert.equal(ok.reason, "ok");
+  const moved = await phonePresence.waitFor((m) => m.type === "ownership" && m.owner === "mac");
+  assert.equal(moved.trigger, "proximity");
+  assert.equal((await macPresence.waitFor((m) => m.type === "claim.result")).accepted, true);
+  assert.ok(events.some((e) => e.event === "handoff.committed" && e.data.trigger === "proximity"));
+  assert.ok(!JSON.stringify(events).includes(token), "the token is never logged");
+  for (const c of [phonePresence, macPresence, stranger, phoneCall, strangerCall]) c.ws.close();
 });

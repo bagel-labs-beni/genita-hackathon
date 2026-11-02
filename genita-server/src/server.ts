@@ -142,7 +142,10 @@ export async function startServer(
     }
   };
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
-  const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log);
+  // proximity handoff moves a conversation only while the account has a live call socket
+  const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
+    liveCall: (userId) => [...sessionUsers.values()].includes(userId),
+  });
   const presence = new Map<() => void, string>(); // closer → users.id
   if (accounts) accounts.onUserDeleted = (userId) => {
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");

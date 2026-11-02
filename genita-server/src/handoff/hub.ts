@@ -17,13 +17,14 @@
  */
 import { claimWins, type HandoffDevice, type Ownership } from "./rules.ts";
 import type { ClaimOutcome, OwnershipRecord, OwnershipStore } from "./store.ts";
+import { MIN_SEEN_INTERVAL_MS, ProximityBook, isToken, type ProximityReason } from "./proximity.ts";
 
 export type { HandoffDevice } from "./rules.ts";
 type Msg = Record<string, unknown>;
 type LogFn = (event: string, data: Record<string, unknown>) => void;
-export type Trigger = "button" | "touch" | "continue" | "start" | "sync" | "move";
+export type Trigger = "button" | "touch" | "continue" | "start" | "sync" | "move" | "proximity";
 
-type Conn = { device: HandoffDevice; send: (m: Msg) => void; active: boolean };
+type Conn = { device: HandoffDevice; send: (m: Msg) => void; active: boolean; lastSeenAt?: number };
 type Call = { device: HandoffDevice; stop: () => void; send: (m: Msg) => void };
 type UserState = {
   id: string;
@@ -44,6 +45,11 @@ export type PresenceHandle = {
   release(epoch: number | null): Promise<ClaimOutcome>;
   moveRequest(to: HandoffDevice): void;
   setActive(active: boolean): void;
+  /** iPhone: issue (or keep) the Bluetooth token for "bring it close to the Mac" (proximity.ts) */
+  proximityArm(): Promise<void>;
+  proximityDisarm(): void;
+  /** Mac: this account's iPhone token was held close */
+  proximitySeen(token: unknown): Promise<void>;
   close(): void;
 };
 
@@ -59,15 +65,21 @@ export class HandoffHub {
   private store: OwnershipStore;
   private log: LogFn;
   private handoverMs: number;
+  private now: () => number;
+  /** the account has a live call socket (server.ts); unset = not checked */
+  private liveCall: (userId: string) => boolean;
+  private proximity = new ProximityBook();
   /**
    * handoverMs: after the owner changes, the new owner's gate stays shut this long. The old device's
    * `utterance.cancelled` goes out first; the lease covers its delivery and the queue flush, since the
    * apps don't acknowledge it. 250 ms is below anything a person notices next to a ≥1.5 s first reply.
    */
-  constructor(store: OwnershipStore, log: LogFn = () => {}, opts: { handoverMs?: number } = {}) {
+  constructor(store: OwnershipStore, log: LogFn = () => {}, opts: { handoverMs?: number; now?: () => number; liveCall?: (userId: string) => boolean } = {}) {
     this.store = store;
     this.log = log;
     this.handoverMs = opts.handoverMs ?? 250;
+    this.now = opts.now ?? Date.now;
+    this.liveCall = opts.liveCall ?? (() => true);
   }
 
   /** cached owner, undefined before the first load */
@@ -117,8 +129,12 @@ export class HandoffHub {
         conn.active = active;
         this.peerChanged(u, conn.device);
       },
+      proximityArm: () => this.proximityArm(u, conn),
+      proximityDisarm: () => this.proximity.revoke(userId, conn),
+      proximitySeen: (token) => this.proximitySeen(u, conn, token),
       close: () => {
         if (!u.conns.delete(conn)) return;
+        this.proximity.revoke(userId, conn);
         this.peerChanged(u, conn.device);
       },
     };
@@ -151,6 +167,46 @@ export class HandoffHub {
   /** The account was deleted: forget it (sockets are closed by the server). */
   forget(userId: string): void {
     this.users.delete(userId);
+    this.proximity.forget(userId);
+  }
+
+  // ───────────────────────── proximity (proximity.ts) ─────────────────────────
+
+  private async proximityArm(u: UserState, conn: Conn): Promise<void> {
+    if (conn.device !== "iphone") return conn.send({ type: "error", code: "bad_message" });
+    const r = await this.load(u);
+    // owner null = nobody claimed yet (a first call on a fresh account, or released): the calling iPhone has it
+    const reason = r.owner === "mac" ? "not_owner" : !this.liveCall(u.id) ? "not_in_call" : null;
+    if (reason) {
+      this.proximity.revoke(u.id, conn);
+      return conn.send({ type: "proximity.unavailable", reason });
+    }
+    const t = this.proximity.issue(u.id, conn, r.epoch, this.now());
+    conn.send({ type: "proximity.token", token: t.token, expiresIn: Math.round((t.expiresAt - this.now()) / 1000) });
+  }
+
+  private async proximitySeen(u: UserState, conn: Conn, token: unknown): Promise<void> {
+    if (conn.device !== "mac" || !isToken(token)) return conn.send({ type: "error", code: "bad_message" });
+    const now = this.now();
+    const result = (accepted: boolean, reason: ProximityReason) => {
+      conn.send({ type: "proximity.result", accepted, reason });
+      if (!accepted && reason !== "rate_limited") this.log("handoff.proximity_rejected", { reason });
+    };
+    if (conn.lastSeenAt !== undefined && now - conn.lastSeenAt < MIN_SEEN_INTERVAL_MS) return result(false, "rate_limited");
+    conn.lastSeenAt = now;
+    const found = this.proximity.find(u.id, token, now);
+    if (typeof found === "string") return result(false, found);
+    const phone = [...u.conns].find((c) => c === found.armedBy);
+    if (!phone) return result(false, "unknown_token");
+    if (!phone.active) return result(false, "phone_inactive");
+    const r = await this.load(u);
+    if (r.owner === "mac" || r.epoch !== found.epoch) return result(false, "not_owner");
+    if (!this.liveCall(u.id)) return result(false, "not_in_call");
+    if (this.proximity.coolingDown(u.id, now)) return result(false, "cooldown");
+    this.proximity.spend(u.id, now);
+    this.log("handoff.preparing", { from: "iphone", to: "mac", trigger: "proximity" });
+    const out = await this.claimFor(u.id, "mac", null, "proximity", conn);
+    result(out.accepted, "ok");
   }
 
   // ───────────────────────── internals ─────────────────────────
