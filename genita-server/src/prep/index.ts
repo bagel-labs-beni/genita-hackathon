@@ -24,7 +24,7 @@ export type Prep = { routes: PrepRoutes; runner: PrepRunner; deps: PrepDeps };
 export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv = process.env, store?: PrepStore): Prep {
   const deps: PrepDeps = {
     metaKey: config.metaKey,
-    elevenKey: config.elevenKey,
+    elevenKey: config.elevenKey ?? "",
     ttsModel: config.ttsModel,
     falKey: env.FAL_KEY || null,
     store: store ?? new FileStore(env.GENITA_DATA_DIR || join(homedir(), ".genita-data")),

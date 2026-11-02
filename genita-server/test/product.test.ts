@@ -19,6 +19,10 @@ test("product intent: voice alone starts it; shopping beats the camera; other as
   assert.equal(classifyTurn("I'm looking for a new job", false), null);
   assert.equal(classifyTurn("I love this jacket", false), null);
   assert.ok(isProductAsk("재킷 좀 찾아줘"));
+  // Codex review P2: an outfit question with the camera is not a shopping search
+  assert.deepEqual(classifyTurn("Does this jacket match my style?", true), { kind: "outfit" });
+  assert.equal(classifyTurn("Does this match my style?", false), null);
+  assert.deepEqual(classifyTurn("Can you make them match my style?", false, true), { kind: "product" }, "after a product search it refines");
 });
 
 // ───────────── tool trace ─────────────
@@ -77,6 +81,8 @@ test("page facts: JSON-LD Product gives kind, price and picture; ItemList is a l
   assert.equal(meta.kind, "product");
   assert.equal(meta.price, "€79.90");
   assert.equal(readPageFacts(`<script type="application/ld+json">{"@type":"ItemList","itemListElement":[]}</script>`, "https://x.example.com/c").kind, "list");
+  // Codex review P2: a collection page that embeds Product tiles is still a list
+  assert.equal(readPageFacts(`<script type="application/ld+json">[{"@type":"CollectionPage"},{"@type":"Product","name":"A","offers":{"price":"10","priceCurrency":"USD"}}]</script>`, "https://x.example.com/collections/jackets").kind, "list");
   assert.equal(readPageFacts(`<title>hi</title>`, "https://x.example.com/").kind, "unknown");
   assert.equal(readPageFacts(`<meta property="og:image" content="http://insecure.example.com/a.jpg">`, "https://x.example.com/").image, undefined, "https pictures only");
   assert.equal(formatPrice("0", "USD"), undefined);
@@ -86,6 +92,9 @@ test("page facts: JSON-LD Product gives kind, price and picture; ItemList is a l
 test("fetch guard: public https only; private, metadata and odd hosts are refused", () => {
   for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"]) assert.ok(isPrivateAddress(ip), ip);
   for (const ip of ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]) assert.ok(!isPrivateAddress(ip), ip);
+  // Codex review P1: every spelling of a mapped / compatible / NAT64 / 6to4 private v4
+  for (const ip of ["::ffff:7f00:1", "::ffff:a00:1", "0:0:0:0:0:ffff:a9fe:a9fe", "::127.0.0.1", "::7f00:1", "64:ff9b::a00:1", "2002:a00:1::", "fd00:ec2::254", "::ffff:169.254.169.254"]) assert.ok(isPrivateAddress(ip), ip);
+  assert.ok(!isPrivateAddress("::ffff:5db8:d822"), "mapped public v4 is public");
   assert.ok(allowedUrl("https://shop.example.com/products/a"));
   for (const u of ["http://shop.example.com/a", "https://user:pw@shop.example.com/", "https://shop.example.com:8443/", "https://127.0.0.1/", "https://localhost/", "https://printer.local/", "file:///etc/passwd"]) assert.equal(allowedUrl(u), null, u);
   assert.ok(isImageBytes(Buffer.from([0xff, 0xd8, 0xff])));
