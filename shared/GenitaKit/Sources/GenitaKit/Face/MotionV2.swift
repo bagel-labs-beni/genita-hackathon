@@ -40,38 +40,41 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var preemphCap = 2.5, consonantJaw = 0.1
     public init() {}
     enum CodingKeys: String, CodingKey { case stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
+    enum AliasKeys: String, CodingKey { case consonantDip }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        if let v = try c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .jawAttackMs) { jawAttackMs = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .jawReleaseMs) { jawReleaseMs = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .jawKnee) { jawKnee = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .shapeTauMs) { shapeTauMs = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .weakShape) { weakShape = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .shortVowelMs) { shortVowelMs = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .anticipation) { anticipation = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .amp) { amp = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressed) { unstressed = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .lip) { lip = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .preemphMs) { preemphMs = v }
-        if let v = try c.decodeIfPresent(Int.self, forKey: .closureFrames) { closureFrames = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .springHz) { springHz = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .idle) { idle = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .stressPercentile) { stressPercentile = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedMs) { shortStressedMs = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedLip) { shortStressedLip = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedJaw) { shortStressedJaw = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .closePre) { closePre = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .micro) { micro = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .chinScale) { chinScale = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .stressedGain) { stressedGain = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressedGain) { unstressedGain = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .stressedJawGain) { stressedJawGain = v }
-        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressedJawGain) { unstressedJawGain = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
+        if let al = try? decoder.container(keyedBy: AliasKeys.self),
+           let v = try? al.decodeIfPresent(Double.self, forKey: .consonantDip) { consonantJaw = v }   // prep #266 name
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .jawAttackMs) { jawAttackMs = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .jawReleaseMs) { jawReleaseMs = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .jawKnee) { jawKnee = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .shapeTauMs) { shapeTauMs = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .weakShape) { weakShape = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .shortVowelMs) { shortVowelMs = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .anticipation) { anticipation = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .amp) { amp = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .unstressed) { unstressed = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .lip) { lip = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .preemphMs) { preemphMs = v }
+        if let v = try? c.decodeIfPresent(Int.self, forKey: .closureFrames) { closureFrames = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .springHz) { springHz = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .idle) { idle = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .stressPercentile) { stressPercentile = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedMs) { shortStressedMs = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedLip) { shortStressedLip = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .shortStressedJaw) { shortStressedJaw = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .closePre) { closePre = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .micro) { micro = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .chinScale) { chinScale = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .stressedGain) { stressedGain = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .unstressedGain) { unstressedGain = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .stressedJawGain) { stressedJawGain = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .unstressedJawGain) { unstressedJawGain = v }
     }
 }
 

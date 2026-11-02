@@ -38,7 +38,7 @@ private enum Synth {
     }
 
     /// Files by name; `breakKey` leaves one flow file out (load error → no flow).
-    static func faceSet(keys: [String] = ["MBP", "MID", "AH", "AH2", "A"], breakKey: String? = nil) throws -> FaceSet {
+    static func faceSet(keys: [String] = ["MBP", "MID", "AH", "AH2", "A"], breakKey: String? = nil, rig: Bool = false) throws -> FaceSet {
         var files: [String: Data] = [:]
         let skin: (UInt8, UInt8, UInt8) = (200, 160, 140)
         let isMouth = { (x: Int, y: Int) in (26..<38).contains(x) && (60..<63).contains(y) }
@@ -52,12 +52,23 @@ private enum Synth {
         }
         var fm: [String: FaceFlowManifest.Files] = [:]
         for k in keys {
-            files["\(k).png"] = png(sw, sh) { x, y in (8..<24).contains(x) && (11..<17).contains(y) ? (k == "MBP" ? (150, 70, 70) : (30, 10, 10)) : skin }
+            let inside = { (x: Int, y: Int) in (10..<22).contains(x) && (12..<16).contains(y) }
+            files["\(k).png"] = png(sw, sh) { x, y in
+                if rig, k != "MBP", inside(x, y) { return (235, 235, 235) }     // rig: teeth inside the mouth
+                return (8..<24).contains(x) && (11..<17).contains(y) ? (k == "MBP" ? (150, 70, 70) : (30, 10, 10)) : skin
+            }
             files["\(k).nk"] = f16(Synth.flowSize[0] * Synth.flowSize[1] * 2, dx: 0, dy: k == "MBP" ? 0 : 1)
             files["\(k).kn"] = k == breakKey ? Data([1, 2, 3]) : f16(Synth.flowSize[0] * Synth.flowSize[1] * 2, dx: 0, dy: k == "MBP" ? 0 : -1)
             fm[k] = .init(key: "\(k).png", nk: "\(k).nk", kn: "\(k).kn")
+            if rig, k != "MBP" {
+                files["\(k).lip"] = png(sw, sh) { x, y in (8..<24).contains(x) && ((10..<12).contains(y) || (16..<18).contains(y)) ? (255, 255, 255) : (0, 0, 0) }
+                files["\(k).int"] = png(sw, sh) { x, y in inside(x, y) ? (255, 255, 255) : (0, 0, 0) }
+                fm[k]?.lip = "\(k).lip"; fm[k]?.interior = "\(k).int"
+            }
         }
-        let flow = FaceFlowManifest(version: 1, roi: roi, size: size, flowSize: flowSize, keys: keys, files: fm, mask: "mask.png", neutralRoi: nil, lockY: 0.55, kind: "human", map: nil)
+        var rigMap = FlowMap.standard
+        rigMap.rig = FlowMap.Rig(); rigMap.rig?.lipTone = 0; rigMap.rig?.lipFlowPx = 0
+        let flow = FaceFlowManifest(version: 1, roi: roi, size: size, flowSize: flowSize, keys: keys, files: fm, mask: "mask.png", neutralRoi: nil, lockY: 0.55, kind: "human", map: rig ? rigMap : nil)
         let manifest = FaceManifest(version: 1, size: [w, h], faceBox: [0.1, 0.25, 0.9, 0.85], mouthBox: [0.4, 0.62, 0.6, 0.66],
                                     images: ["neutral": "neutral.png"], visemes: [:], boxes: nil, rejected: nil, flow: flow)
         return try FaceSet(manifest: manifest) { ref in
@@ -288,5 +299,43 @@ struct ExpressionLayerTests {
         #expect(abs((m.expressionWeights(atMs: 1500)["smile"] ?? 0) - 0.8) < 1e-9)
         #expect((m.expressionWeights(atMs: 2500)["smile"] ?? 0) == 0)
         #expect(m.cheekRig?.exprFields["smile"] != nil)
+    }
+}
+
+
+struct LipRigTests {
+    /// v41: the mouth inside comes from the top key as an opaque layer; below its threshold the
+    /// cross-blended lips show the warped neutral inside the mouth.
+    @Test func teethComeFromTheTopKeyOnlyWhenItIsOpenEnough() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)    // no face box: the morph ROI is the output
+        let k = (14 * m.width + 16) * 4
+        m.amountsOverride = [0, 0.6]
+        let open = pixels(m.render(.rest, at: 1))
+        #expect(open[k] > 200 && open[k + 1] > 200)          // teeth layer
+        m.reset()
+        m.amountsOverride = [0, 0.05]
+        let shut = pixels(m.render(.rest, at: 2))
+        #expect(shut[k] < 200)                               // below teethMin: no teeth
+    }
+
+    /// The chin rows follow a slow, scaled copy of the amounts: a sudden opening barely moves them.
+    @Test func theChinFollowsSlowly() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, face: set.faceBox, mouth: set.mouthBox)
+        m.amountsOverride = [0, 0]
+        _ = m.render(.rest, at: 1)
+        m.amountsOverride = [0, 1]
+        _ = m.render(.rest, at: 1.04)
+        #expect(m.debugChinAmounts[1] < 0.2)
+    }
+
+    @Test func prepRigAndAliveNamesDecode() throws {
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"chinGain":0.5,"teethTop":{"hyst":0.1,"min":0.2,"alpha":[0.1,0.2],"cavity":[1,2,3]},"lipFlowPx":"x"}"#.utf8))
+        #expect(rig.chinGain == 0.5 && rig.teethHyst == 0.1 && rig.teethMin == 0.2 && rig.teethAlpha == [0.1, 0.2] && rig.lipFlowPx == 1.2)
+        let alive = try JSONDecoder().decode(FlowMap.Alive.self, from: Data(#"{"headX":3,"headRoll":1.5,"nodPx":5,"nodWidth":2,"browPx":2.5}"#.utf8))
+        #expect(alive.headGain == 3 && alive.rollGain == 1.5 && abs(alive.nodGain - 2) < 1e-9 && alive.nodWidth == 2 && alive.cheekGain == 1)
+        let v2 = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"consonantDip":0.2,"springHz":"fast","closeToPhonemeEnd":true}"#.utf8))
+        #expect(v2.consonantJaw == 0.2 && v2.springHz == MotionV2Params().springHz)
     }
 }
