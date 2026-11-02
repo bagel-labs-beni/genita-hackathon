@@ -4,8 +4,10 @@
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
+ *   GET  /v1/app-config    → copy, flags, tuning, update nudges for the apps (src/appconfig, public: no user data)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
+ *   WS   /v1/presence, /v1/handoff[/claim|/release] → F6-L7 conversation owner (src/handoff/routes.ts)
  *
  * Threat line: callers are the Genita iOS/macOS apps. Auth is the user's
  * session JWT (F1-L5, `Authorization: Bearer` or `?token=`); the shared
@@ -20,13 +22,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Config } from "./config.ts";
-import { Session, type ClientSink, type SessionDeps } from "./session/session.ts";
+import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
-import { streamSpeech } from "./tts/elevenlabs.ts";
 import { createSeamless } from "./tts/seamless.ts";
-import { PeterClient } from "./lips/peter.ts";
+import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
+import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
@@ -34,8 +36,14 @@ import { createMemory } from "./memory/index.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
+import { configureOps, rejectGeneration } from "./ops/limits.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
+import { createEventsRoute } from "./events/routes.ts";
+import { HandoffHub } from "./handoff/hub.ts";
+import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
+import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
+import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -51,21 +59,16 @@ async function* serverTtsOff(): AsyncGenerator<never> {
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
-  const elevenKey = config.serverTts ? config.elevenKey : null;
-  const peterUrl = process.env.GENITA_PETER_URL;
-  const peterToken = process.env.GENITA_PETER_TOKEN;
-  // Meta voice service (Seamless on our GPU) wins; ElevenLabs only as the legacy flag path; else device mode
   const voice = config.voice ? createSeamless(config.voice, { log }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
     openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
-    // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
-    openPeter:
-      config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
+    // Construct once with the process's voice client; all sessions share these seats.
+    voiceSeats: voice ? createVoiceSeats(config.voiceMaxCalls ?? 3) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };
@@ -96,12 +99,17 @@ export async function startServer(
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
+  const ops = configureOps(config, { log, db: accounts?.db });
   const sessions = new Map<string, Session>();
   /** resets a call's idle timer; watch traffic keeps a muted call alive */
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  const events = createEventsRoute(log);
+  // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
+  if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
+  const appConfig = createAppConfigSource({ file: env.GENITA_APP_CONFIG_FILE || null, bargeInMs: config.bargeInMinMs, log });
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
@@ -110,9 +118,15 @@ export async function startServer(
     await deps.memory?.forget(userId);
     await deps.finds?.store.removeOwner(ownerKey(userId));
   };
+  // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
+  const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log);
+  const presence = new Map<() => void, string>(); // closer → users.id
   if (accounts) accounts.onUserDeleted = (userId) => {
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
+    for (const [close, u] of presence) if (u === userId) close();
+    handoff.forget(userId);
+    void prep.runner.forgetUser(userId).catch((err) => log("prep.forget_failed", { message: String(err).slice(0, 200) }));
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
@@ -134,6 +148,14 @@ export async function startServer(
 
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (isAppConfigRoute(url.pathname)) return handleAppConfig(req, res, appConfig); // public, before any auth
+    if (rejectGeneration(req, res, ops)) return;
+    if (events.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return events.handle(req, res, who.userId);
+    }
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.
@@ -157,6 +179,11 @@ export async function startServer(
       // F1-L8: nothing goes to a third-party AI before consent (the import prompt is static text)
       if (!who.consented && url.pathname !== "/v1/import/prompt") return json(res, 403, { error: "consent_required" });
       return prep.routes.handle(req, res, who.userId);
+    }
+    if (handoffHttpPaths.has(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      return handleHandoffHttp(handoff, req, res, url, who.userId, who.device);
     }
     if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size });
     json(res, 404, { error: "not_found" });
@@ -197,35 +224,69 @@ export async function startServer(
       );
       return;
     }
-    if (url.pathname !== "/v1/session") return reject(404, "Not Found");
-    if (sessions.size >= config.maxSessions) return reject(503, "Busy");
+    const isPresence = url.pathname === "/v1/presence";
+    if (url.pathname !== "/v1/session" && !isPresence) return reject(404, "Not Found");
+    if (!isPresence && ops.isPaused("ws.session")) return reject(503, "Paused");
+    if (!isPresence && sessions.size >= config.maxSessions) return reject(503, "Busy");
     principal(req, url).then(
       (who) => {
+        if (!isPresence && ops.isPaused("ws.session")) return reject(503, "Paused");
         // re-check after the async auth: concurrent upgrades all passed the first check (attach is synchronous below)
-        if (sessions.size >= config.maxSessions) return reject(503, "Busy");
+        if (!isPresence && sessions.size >= config.maxSessions) return reject(503, "Busy");
         wss.handleUpgrade(req, socket, head, (ws) => {
           // a bad frame while closing must not become an unhandled 'error' (that kills the process)
           ws.on("error", () => ws.terminate());
           // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
           if (!who) return ws.close(4401, "unauthorized");
+          if (isPresence) {
+            // presence carries no conversation content, so consent is not needed to know the owner
+            const device = deviceFor(who.device, url);
+            if (!device) return ws.close(4400, "device_required");
+            const close = attachPresence(handoff, ws, who.userId, device, log);
+            presence.set(close, who.userId);
+            ws.on("close", () => presence.delete(close));
+            return;
+          }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who);
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId);
         });
       },
       () => reject(500, "Internal Server Error"),
     );
   });
 
-  function attach(ws: WebSocket, who: Principal) {
+  // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
+  // one process — same as the audio gate). Never another account's.
+  const lastTurns = new Map<string, { turns: HistoryItem[]; at: number }>();
+  function priorTurns(userId: string, self: string): HistoryItem[] | null {
+    let best: HistoryItem[] | null = null;
+    for (const [sid, u] of sessionUsers) {
+      if (u !== userId || sid === self) continue;
+      const t = sessions.get(sid)?.historySnapshot();
+      if (t?.length && (!best || t.length >= best.length)) best = t;
+    }
+    if (best) return best;
+    const c = lastTurns.get(userId);
+    return c && Date.now() - c.at < 10 * 60_000 ? c.turns : null;
+  }
+
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
     const id = randomUUID();
-    const sink: ClientSink = {
+    const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
       close: (code, reason) => ws.readyState === ws.OPEN && ws.close(code, reason),
     };
+    // F6-L7: a call that names its device plays only while that device owns the conversation.
+    // Calls without a device (older builds, smoke) are not gated.
+    const ref: { session?: Session } = {};
+    const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
+    const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id) });
+    ref.session = session;
+    let announced = false;
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
@@ -239,13 +300,28 @@ export async function startServer(
     ws.on("message", (data, isBinary) => {
       touch();
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
-      if (isBinary) session.onClientAudio(buf);
-      else void session.onClientText(buf.toString("utf8")).catch((err) => log("session.error", { session: id, message: String(err).slice(0, 200) }));
+      if (isBinary) {
+        // the mic belongs to the owner only
+        if (!gated || gated.call.mayPlay()) session.onClientAudio(buf);
+        return;
+      }
+      void session
+        .onClientText(buf.toString("utf8"))
+        .then(() => {
+          if (gated && !announced && session.hasStarted) {
+            announced = true;
+            return gated.call.started();
+          }
+        })
+        .catch((err) => log("session.error", { session: id, message: String(err).slice(0, 200) }));
     });
     ws.on("close", () => {
       clearTimeout(idle);
       clearTimeout(life);
       session.close();
+      gated?.call.close();
+      const turns = session.historySnapshot();
+      if (turns.length) lastTurns.set(who.userId, { turns, at: Date.now() });
       sessions.delete(id);
       sessionUsers.delete(id);
       touches.delete(id);

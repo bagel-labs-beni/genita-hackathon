@@ -8,7 +8,7 @@ import { FileStore, type CompanionRecord, type ImageRecord, type PrepStore } fro
 import { PgPrepStore } from "../src/prep/pgStore.ts";
 import { FsBlobStore } from "../src/storage/blob.ts";
 import { Accounts } from "../src/auth/accounts.ts";
-import { newPrepState } from "../src/prep/runner.ts";
+import { newPrepState, prepView } from "../src/prep/runner.ts";
 import { testDb } from "./helpers/db.ts";
 
 async function contract(store: PrepStore, userId: string) {
@@ -36,11 +36,15 @@ async function contract(store: PrepStore, userId: string) {
 
   assert.equal(await store.getCompanion(userId), null);
   const c: CompanionRecord = { id: "comp_a1", userId, imageId: "img_a1", type: "human", voiceId: "v1", name: "Jin", createdAt: "2026-11-02T00:00:01.000Z", prep: newPrepState() };
+  delete c.prep.steps.face;
+  Object.assign(c.prep.steps.videos.neutral, JSON.parse('{"status":"running","fal":{"requestId":"old-job","statusUrl":"https://retired.test/status"}}'));
   await store.putCompanion(c);
   const back = (await store.getCompanion(userId))!;
   assert.equal(back.name, "Jin");
   assert.equal(back.prep.status, "running");
   assert.equal(back.prefs, undefined);
+  assert.deepEqual(prepView(back).emotionVideos, {});
+  assert.equal(prepView(back).steps.videos.neutral?.status, "skipped");
 
   // two writers at once (runner + prefs route) must both land
   await Promise.all([
@@ -56,6 +60,11 @@ async function contract(store: PrepStore, userId: string) {
   const list = await store.listCompanions();
   assert.deepEqual(list.map((x) => x.id), ["comp_a1"]);
 
+  // face set images (GET /v1/companion/face/:key)
+  assert.equal(await store.getAsset(userId, "comp_a1", "A"), null);
+  await store.putAsset(userId, "comp_a1", "A", Buffer.from([0xff, 0xd8, 0xff, 1]));
+  assert.deepEqual([...(await store.getAsset(userId, "comp_a1", "A"))!], [0xff, 0xd8, 0xff, 1]);
+
   assert.equal(await store.getVoicePreview("v1", "p1"), null);
   await store.putVoicePreview("v1", "p1", Buffer.from("mp3"));
   assert.equal((await store.getVoicePreview("v1", "p1"))?.toString(), "mp3");
@@ -70,14 +79,16 @@ test("PrepStore contract: FileStore", async () => {
   }
 });
 
-test("PrepStore contract: PgPrepStore (Postgres + blobs), emotions table follows the clips", async () => {
+test("PrepStore contract: PgPrepStore (Postgres + blobs), legacy video JSON still loads", async () => {
   const dir = mkdtempSync(join(tmpdir(), "prep-pg-"));
   const db = await testDb();
   try {
     const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "contract" });
     await contract(new PgPrepStore(db, new FsBlobStore(dir)), user.id);
     const em = await db.query("SELECT emotion, video_url FROM companion_emotions");
-    assert.deepEqual(em.rows, [{ emotion: "happy", video_url: "https://cdn/h.mp4" }]);
+    assert.deepEqual(em.rows, []);
+    // face images live under users/<id>/, the prefix DELETE /me removes
+    assert.equal(existsSync(join(dir, "users", user.id, "companions", "comp_a1", "face", "A")), true);
     const job = await db.query("SELECT status, attempts FROM clip_jobs");
     assert.deepEqual(job.rows, [{ status: "running", attempts: 0 }]);
   } finally {

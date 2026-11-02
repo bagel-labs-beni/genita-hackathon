@@ -121,7 +121,7 @@ test("detectRename: questions and look-alikes are not renames", () => {
 });
 
 function deps(dir: string, spark?: PrepDeps["spark"]): PrepDeps {
-  return { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {}, spark };
+  return { metaKey: "", store: new FileStore(dir), voices: DEFAULT_VOICES, log: () => {}, spark };
 }
 
 const image = (id: string, userId: string): ImageRecord => ({

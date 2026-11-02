@@ -11,8 +11,6 @@ public enum GenitaProtocol {
     /// Binary server frame header: "GA" | kind u8 | reserved u8 | seq u32 LE.
     public static let frameHeaderBytes = 8
     public static let frameKindTTSPCM: UInt8 = 1
-    /// Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG.
-    public static let frameKindPeter: UInt8 = 2
     /// App → server, Mac call interpretation only (F8): header + mic PCM.
     public static let clientFrameKindMic: UInt8 = 3
     /// App → server, Mac call interpretation only (F8): header + the call's sound (ScreenCaptureKit).
@@ -46,19 +44,11 @@ public struct AudioFrameHeader: Equatable, Sendable {
         frame.dropFirst(GenitaProtocol.frameHeaderBytes)
     }
 
-    /// For kind 2 (Peter): `seq` is the utteranceId; returns the frame index and JPEG.
-    /// Frame k lines up with the utterance's audio at k × 40 ms (25 fps).
-    public static func peterCrop(of frame: Data) -> (frame: UInt32, jpeg: Data)? {
-        let p = [UInt8](frame.dropFirst(GenitaProtocol.frameHeaderBytes).prefix(4))
-        guard p.count == 4 else { return nil }
-        let index = UInt32(p[0]) | UInt32(p[1]) << 8 | UInt32(p[2]) << 16 | UInt32(p[3]) << 24
-        return (index, Data(frame.dropFirst(GenitaProtocol.frameHeaderBytes + 4)))
-    }
 }
 
 // MARK: - Shared value types
 
-public enum LipMode: String, Codable, Sendable { case peter, atlas, none }
+public enum LipMode: String, Codable, Sendable { case atlas, none }
 /// Who speaks the reply: the server (TTS PCM frames) or the device (`say` text, on-device speech).
 public enum TtsMode: String, Codable, Sendable { case server, device }
 public enum ConversationMode: String, Codable, Sendable { case chat, interpret }
@@ -69,7 +59,7 @@ public enum Viseme: String, Codable, Sendable { case X, A, E, O, U, M, F, L, S }
 public struct LipPlan: Codable, Equatable, Sendable {
     public var requested: LipMode
     public var active: LipMode
-    /// peter_connecting | peter_unavailable | peter_not_deployed | null (wire sends null, not absent)
+    /// Optional reason for the active lip plan (for example device_tts).
     public var reason: String?
 
     private enum K: String, CodingKey { case requested, active, reason }
@@ -103,6 +93,15 @@ public struct WordTiming: Codable, Equatable, Sendable {
     public var e: Int
 }
 
+/// One phoneme of server voice timing: `p` is an ARPAbet label (LipViseme(phoneme:)), `s`/`e` ms on the
+/// reply's audio timeline (same clock as `WordTiming`).
+public struct PhonemeTiming: Codable, Equatable, Sendable {
+    public var p: String
+    public var s: Int
+    public var e: Int
+    public init(p: String, s: Int, e: Int) { self.p = p; self.s = s; self.e = e }
+}
+
 // MARK: - Server → app
 
 public enum ServerEvent: Equatable, Sendable {
@@ -118,6 +117,7 @@ public enum ServerEvent: Equatable, Sendable {
     case replyDelta(ReplyDelta)
     case speaking(Speaking)
     case audio(Audio)
+    case audioTiming(AudioTiming)
     case say(Say)
     case reply(Reply)
     case utteranceCancelled(UtteranceCancelled)
@@ -250,6 +250,15 @@ public enum ServerEvent: Equatable, Sendable {
         public var words: [WordTiming]
         public var mouth: [MouthCue]?
     }
+    /// Server voice: forced-aligner word + phoneme timing of one clause (sentence), sent after that clause's
+    /// audio. `seq` = the clause's first `audio` seq. Times are absolute on the reply timeline, like `Audio.words`.
+    public struct AudioTiming: Codable, Equatable, Sendable {
+        public var utteranceId: Int
+        public var sentence: Int
+        public var seq: UInt32
+        public var words: [WordTiming]
+        public var phonemes: [PhonemeTiming]
+    }
     /// Device mode: one sentence for the app to speak, in order. `text` is plain (no tags);
     /// `lang` is a BCP-47 hint (en-US, ko-KR, …) for the voice.
     public struct Say: Codable, Equatable, Sendable {
@@ -291,13 +300,7 @@ public enum ServerEvent: Equatable, Sendable {
         public var by: String
     }
     public struct LipChanged: Codable, Equatable, Sendable {
-        public struct Peter: Codable, Equatable, Sendable {
-            public var bundleId: String
-            public var pasteDy: Int
-            public var fps: Int
-        }
         public var lip: LipPlan
-        public var peter: Peter?
     }
     public struct ServerError: Codable, Equatable, Sendable {
         public var code: String
@@ -329,6 +332,7 @@ extension ServerEvent: Codable {
         case "reply.delta": self = .replyDelta(try .init(from: decoder))
         case "speaking": self = .speaking(try .init(from: decoder))
         case "audio": self = .audio(try .init(from: decoder))
+        case "audio.timing": self = .audioTiming(try .init(from: decoder))
         case "say": self = .say(try .init(from: decoder))
         case "reply": self = .reply(try .init(from: decoder))
         case "utterance.cancelled": self = .utteranceCancelled(try .init(from: decoder))
@@ -364,6 +368,7 @@ extension ServerEvent: Codable {
         case .replyDelta: "reply.delta"
         case .speaking: "speaking"
         case .audio: "audio"
+        case .audioTiming: "audio.timing"
         case .say: "say"
         case .reply: "reply"
         case .utteranceCancelled: "utterance.cancelled"
@@ -398,6 +403,7 @@ extension ServerEvent: Codable {
         case let .replyDelta(p): try p.encode(to: encoder)
         case let .speaking(p): try p.encode(to: encoder)
         case let .audio(p): try p.encode(to: encoder)
+        case let .audioTiming(p): try p.encode(to: encoder)
         case let .say(p): try p.encode(to: encoder)
         case let .reply(p): try p.encode(to: encoder)
         case let .utteranceCancelled(p): try p.encode(to: encoder)
@@ -478,7 +484,7 @@ public enum ClientMessage: Equatable, Sendable {
         public var text: String
         public init(role: Role, text: String) { self.role = role; self.text = text }
     }
-    /// `lip` is either "atlas" or {"mode":"peter","fallback":"none"} on the wire.
+    /// `lip` selects "atlas" or "none" on the wire.
     public struct Lip: Codable, Equatable, Sendable {
         public var mode: LipMode
         public var fallback: LipMode?

@@ -2,17 +2,33 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
+private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {true} }
+
 @MainActor final class MacHandoff: ObservableObject {
     static let shared = MacHandoff()
     let link = HandoffLink()
-    @Published var status = "아이폰 연결 대기"
-    @Published var desktop = false
+    let sharing = ScreenSharingController()
+    let media = LocalCallMedia()
+    let ownership = OwnershipCoordinator(device:.mac)
+    /// F6-L7: the server's conversation layer; the local link stays as fallback and effect layer.
+    let server = ServerOwnershipLink(device:.mac)
+    private var fanout: OwnershipFanout?
+    @Published var status = "Waiting for your iPhone"
+    @Published fileprivate(set) var surface = HandoffSurface.active
+    @Published private(set) var companionVisible = false
+    /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
+    @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
     @Published private(set) var renderedMotionID:String?
     var motionVisible:Bool { motion != nil && renderedMotionID == motion?.id }
     func effectReady(_ id:String) { guard motion?.id==id else{return};renderedMotionID=id }
+    /// An arriving window shows only the effect; a departing one stays visible until its first frame.
+    var conversationHidden:Bool { guard let motion else{return false};return motion.outgoing ? motionVisible : true }
+    /// Only when a request can actually reach an iPhone that is in front (local link, or the server says active).
+    var canMoveToPhone:Bool { ownership.isOwner && (linkReachable || server.peerActive) && motion == nil }
+    private var linkReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
     private var returnOrigin:NSPoint?
-    @Published var canReturn = false
     @Published var profile: Data?
     private var image = ""
     private var screen: NSScreen?
@@ -33,15 +49,25 @@ import Combine
     private var epoch=0
     private var bestRTT=Double.infinity
     private var subscriptions=Set<AnyCancellable>()
-    private var identity:String {
-        let key="genita.handoff.identity"
-        if let value=UserDefaults.standard.string(forKey:key){return value}
-        let value=UUID().uuidString.lowercased();UserDefaults.standard.set(value,forKey:key);return value
-    }
+    /// The iPhone counts as reachable over the local link (pongs) or the server (presence).
+    private var phoneReachable:Bool { (link.connected && Date().timeIntervalSince1970-lastPong<3) || server.peerOnline }
     init() {
+        let fanout=OwnershipFanout([link,server]);self.fanout=fanout
+        ownership.transport=fanout
+        server.onEffect = { [weak self] in self?.serverEffect($0) }
+        server.onConnect = { [weak self] in
+            guard let self else{return}
+            self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":true])
+        }
+        server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {server.start()}
+        ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         link.host()
+        // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
+        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion() }}
+        refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
     }
     func showRegistration() {
@@ -49,31 +75,114 @@ import Combine
         guard let screen else{return}
         registration?.close()
         let window=NSWindow(contentRect:screen.frame,styleMask:.borderless,backing:.buffered,defer:false)
-        window.isReleasedWhenClosed=false;window.level = .floating;window.backgroundColor = NSColor(red:0.027,green:0.592,blue:0.592,alpha:1)
-        window.contentView=NSHostingView(rootView:RegistrationView())
+        window.isReleasedWhenClosed=false;window.level = .floating;window.backgroundColor = .white
+        window.contentView=NSHostingView(rootView:RegistrationView(aspect:screen.frame.width/screen.frame.height))
         window.setFrame(screen.frame,display:true);window.makeKeyAndOrderFront(nil);registration=window
         NSApp.presentationOptions=[.autoHideDock,.autoHideMenuBar]
-        status="아이폰 후면 카메라로 이 화면 전체를 한 번 비춰주세요"
+        // MAC-REG fills the screen, so the picture's physical size is the screen's (CGDisplayScreenSize, mm).
+        if let geometry=registrationGeometry(screen) {link.send(geometry.message)}
+        status="Point your iPhone’s rear camera at this whole screen once"
+    }
+    private func registrationGeometry(_ screen:NSScreen)->RegistrationGeometry? {
+        let display=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+        let mm=CGDisplayScreenSize(display)
+        return RegistrationGeometry(widthM:mm.width/1000,heightM:mm.height/1000)
     }
     func closeRegistration() { guard registration != nil else{return};registration?.close();registration=nil;NSApp.presentationOptions=[] }
     private func ensureCompanion() {
         guard companion == nil else{return}
-        let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+        let window=CompanionWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
         window.isReleasedWhenClosed=false;window.isOpaque=false;window.backgroundColor = .clear;window.hasShadow=false;window.level = .floating
         window.collectionBehavior=[.fullScreenAuxiliary];window.contentView=NSHostingView(rootView:MacHandoffSurface())
         companion=window
+        placeAtRest(window)
     }
+    /// A move by button has no recorded edge: rest at the right of the screen at the phone's physical size.
+    private func placeAtRest(_ window:NSWindow) {
+        screen = screen ?? NSScreen.main
+        guard let screen else{return}
+        let size=phoneSize(on:screen)
+        window.setFrame(NSRect(origin:NSPoint(x:screen.visibleFrame.maxX-size.width-24,y:screen.visibleFrame.midY-size.height/2),size:size),display:true)
+    }
+    private func phoneSize(on screen:NSScreen)->NSSize {
+        let display=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+        let mm=CGDisplayScreenSize(display)
+        // The same physical phone size, independent of Retina backing pixels.
+        let pointsPerM=mm.height>0 ? screen.frame.height/(mm.height/1000) : 844/phoneHeight
+        return NSSize(width:phoneWidth*pointsPerM,height:phoneHeight*pointsPerM)
+    }
+    /// Once shown, this window stays. The conversation leaving turns it into the waiting screen.
+    private func showCompanion() {
+        ensureCompanion();companionVisible=true;companion?.orderFrontRegardless()
+    }
+    /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
+    func continueHere() {
+        guard !ownership.isOwner else{return}
+        let atEdge=freshAtDock
+        server.nextTrigger = atEdge ? "touch" : "continue"
+        ownership.claimHere()
+        status="Conversation on this Mac"
+        if atEdge {prepare(outgoing:true)}
+    }
+    func moveToPhone() {
+        guard canMoveToPhone else{return}
+        // One channel per request, so a late duplicate can't undo a later Continue here.
+        if server.peerActive {server.moveRequest(to:.phone)} else {link.send(["type":"moveRequest"])}
+        status="Moving to your iPhone"
+    }
+    private func serverEffect(_ effect:PresenceEffect) {
+        switch effect {
+        case let .apply(claim):
+            // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
+            if pending != nil || motion != nil {
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+            } else {ownership.receive(claim)}
+        case .moveRequested:
+            if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
+        case .moveFailed:
+            status="Your iPhone isn’t available. Still on this Mac."
+        case .peerChanged: refreshSurface()
+        }
+    }
+    private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
+        if new == .mac {
+            sharingStopped=false;showCompanion()
+        } else {
+            if old == .mac {sharingStopped=sharing.isSharing}
+            // The conversation left: sharing stops now and does not come back by itself.
+            sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
+            candidate=nil;armed=false
+            status="Conversation on your iPhone"
+        }
+        refreshSurface()
+    }
+    private func refreshSurface() {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil {return}
+        #endif
+        let next=ownership.surface(peerReachable:phoneReachable)
+        if next != surface {surface=next}
+    }
+    private var freshAtDock:Bool { nowFresh && last.map { p in dock.map { p.sameDock($0) && p.touchesEdge(phoneHeight:phoneHeight) } ?? false } == true }
     func receive(_ message:[String:Any]) {
         let now=Date().timeIntervalSince1970
         switch message["type"] as? String {
-        case "connected": lastPong=now;bestRTT = .infinity;status="아이폰 연결됨"
+        case "connected":
+            lastPong=now;bestRTT = .infinity;status=ownership.isOwner && ownership.state.epoch>0 ? "Conversation on this Mac" : "iPhone connected"
+            ownership.publishCurrent();refreshSurface()
         case "hello":
             image=message["image"] as? String ?? "";profile=(message["profile"] as? String).flatMap { Data(base64Encoded:$0) }
             if let h=message["phoneHeight"] as? Double,let w=message["phoneWidth"] as? Double,(0.09...0.2).contains(h),(0.04...0.1).contains(w){phoneHeight=h;phoneWidth=w}
-            showRegistration()
-            let display=screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
-            link.send(["type":"welcome","identity":identity+"-"+(display?.stringValue ?? "main")])
+            if message["register"] as? Bool == true {showRegistration()}
+            else if let screen=screen ?? NSScreen.main,let geometry=registrationGeometry(screen) {link.send(geometry.message)}
+            let display=(screen ?? NSScreen.main)?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+            link.send(["type":"welcome","identity":link.macID+"-"+(display?.stringValue ?? "main")])
         case "register": showRegistration()
+        case "registerCancel": closeRegistration()
+        case "ownership":
+            if let claim=OwnershipClaim(message) {ownership.receive(claim)}
+        case "moveRequest":
+            if !ownership.isOwner {ownership.claimHere();status="Conversation on this Mac"}
         case "pong":
             lastPong=now
             if let sent=message["sent"] as? Double,let phone=message["phone"] as? Double {
@@ -81,12 +190,16 @@ import Combine
                 if rtt>=0 && rtt<bestRTT {bestRTT=rtt;link.send(["type":"clock","offset":phone-(sent+now)/2])}
             }
         case "reading":
-            guard let p=HandoffPosition(message) else {last=nil;candidate=nil;canReturn=false;status=message["reason"] as? String ?? "화면 위치 찾는 중";return}
+            guard let p=HandoffPosition(message) else {
+                last=nil;candidate=nil
+                if message["state"] as? String != "stopped" {status=message["reason"] as? String ?? "Finding the screen position"}
+                return
+            }
             last=p;lastAt=now;closeRegistration()
             let edge=p.touchesEdge(phoneHeight:phoneHeight)
-            status="\(p.right ? "오른쪽":"왼쪽") · 화면 중앙에서 \(Int(p.y*100))cm · \(desktop ? "Mac에서 이어지는 중":"아이폰에서 대기")"
+            status="\(p.right ? "Right":"Left") · \(Int(p.y*100)) cm from screen center · \(ownership.isOwner ? "on this Mac":"on your iPhone")"
             if !edge {armed=true;candidate=nil;return}
-            guard !desktop,motion == nil,pending == nil,armed,!image.isEmpty else{return}
+            guard !ownership.isOwner,motion == nil,pending == nil,armed,!image.isEmpty else{return}
             if let c=candidate,c.right==p.right,abs(c.y-p.y)<0.025 {
                 if now-candidateAt>=0.45 {dock=p;prepare(outgoing:true)}
             } else {candidate=p;candidateAt=now}
@@ -97,52 +210,44 @@ import Combine
             returnOrigin=pending.outgoing ? nil : companion?.frame.origin
             renderedMotionID=nil
             motion=TransitionPayload(id:pending.id,image:image,start:start,outgoing:!pending.outgoing,reverse:(!pending.outgoing) != dock.right)
-            ensureCompanion();companion?.orderFrontRegardless();self.pending=nil;epoch+=1;let e=epoch
+            // The move commits as the effect starts. The effect only decorates it.
+            if pending.outgoing,!ownership.isOwner {server.nextTrigger="touch";ownership.claimHere()}
+            showCompanion();self.pending=nil;epoch+=1;let e=epoch
             DispatchQueue.main.asyncAfter(deadline:.now()+4) {
                 guard self.epoch==e else{return}
-                self.desktop=pending.outgoing;self.motion=nil;self.candidate=nil
-                if !pending.outgoing {self.companion?.orderOut(nil);self.armed=false}
+                self.motion=nil;self.candidate=nil
             }
-        case "disconnected": reset(notify:false);status="아이폰 연결 중단 · 화면 복원됨"
+        case "disconnected":
+            // Losing the local link never ends the conversation on this Mac.
+            pending=nil;last=nil;candidate=nil;status="iPhone not connected";refreshSurface()
         case "inactive":
-            if desktop || motion != nil {reset(notify:false)}
-            else {last=nil;candidate=nil;canReturn=false}
+            last=nil;candidate=nil
         default:break
         }
     }
-    func returnToPhone() { guard canReturn else{return};prepare(outgoing:false) }
     private func prepare(outgoing:Bool) {
         guard link.connected,nowFresh,motion == nil,pending == nil else{return}
-        let id=UUID().uuidString;pending=(id,outgoing,Date().timeIntervalSince1970);canReturn=false
+        let id=UUID().uuidString;pending=(id,outgoing,Date().timeIntervalSince1970)
         link.send(["type":"prepare","id":id,"outgoing":outgoing])
     }
-    private var nowFresh:Bool { Date().timeIntervalSince1970-lastAt<1 && Date().timeIntervalSince1970-lastPong<3 }
-    func reset(notify:Bool=true) {
-        epoch+=1;motion=nil;pending=nil;desktop=false;candidate=nil;last=nil;canReturn=false;armed=true
-        companion?.orderOut(nil);closeRegistration();if notify {link.send(["type":"cancel"])}
-    }
+    private var nowFresh:Bool { Date().timeIntervalSince1970-lastAt<1 && phoneReachable }
     private func tick() {
         let now=Date().timeIntervalSince1970
         if now-diagnosticAt>0.5 {
             diagnosticAt=now
             let root=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Genita/Handoff")
             try? FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
-            var data:[String:Any] = ["at":now,"code":link.code,"connected":link.connected,"status":status,"desktop":desktop,"canReturn":canReturn,"imageReady":!image.isEmpty,"rtt":bestRTT.isFinite ? bestRTT : -1]
+            var data:[String:Any] = ["at":now,"code":link.code,"connected":link.connected,"status":status,"owner":ownership.state.owner.rawValue,"epoch":ownership.state.epoch,"imageReady":!image.isEmpty,"rtt":bestRTT.isFinite ? bestRTT : -1]
             if let last {data["position"]=["x":last.x,"y":last.y,"z":last.z,"width":last.width,"height":last.height]}
             if let bytes=try? JSONSerialization.data(withJSONObject:data,options:.prettyPrinted) {try? bytes.write(to:root.appendingPathComponent("state.json"),options:.atomic)}
+            refreshSurface()
         }
         if link.connected,now-pingAt>0.5 {pingAt=now;link.send(["type":"ping","sent":now])}
-        if link.connected,now-lastPong>3,(desktop || motion != nil || pending != nil){reset();status="아이폰 응답 없음 · 전환 취소"}
-        if let pending,now-pending.time>2 {self.pending=nil;candidate=nil;link.send(["type":"cancel"]);status="아이폰 전환 준비 시간 초과"}
-        canReturn=desktop && motion == nil && pending == nil && nowFresh && last.map { p in dock.map { p.sameDock($0) && p.touchesEdge(phoneHeight:phoneHeight) } ?? false } == true
+        if let pending,now-pending.time>2 {self.pending=nil;candidate=nil;link.send(["type":"cancel"]);status="iPhone didn’t get ready in time"}
         if let motion,!motion.outgoing,now<motion.start,let last,last.touchesEdge(phoneHeight:phoneHeight),last.right==dock?.right {dock=last}
-        guard let screen,let dock,let window=companion,desktop || motion != nil else{return}
-        if desktop && motion == nil {return} // Preserve native mouse dragging after arrival.
-        let display=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
-        let mm=CGDisplayScreenSize(display)
-        // The same physical phone size, independent of Retina backing pixels.
-        let pointsPerM=mm.height>0 ? screen.frame.height/(mm.height/1000) : screen.frame.height/dock.height
-        let size=NSSize(width:phoneWidth*pointsPerM,height:phoneHeight*pointsPerM)
+        // A settled window stays where the user dragged it. Only a running effect positions it.
+        guard let screen,let dock,let window=companion,motion != nil else{return}
+        let size=phoneSize(on:screen)
         var inset=24.0
         if let motion {
             let t=now-motion.start
@@ -161,13 +266,25 @@ import Combine
     }
 }
 
+/// MAC-REG (design-flow r01): the feature-rich picture fills the screen; the note sits in the bottom-right
+/// corner only, so the middle of the picture stays visible to the iPhone. It closes by itself once the
+/// iPhone has found the screen.
 struct RegistrationView: View {
+    let aspect: CGFloat
     var body:some View {
-        ZStack {
-            Color(red:0.027,green:0.592,blue:0.592)
-            Rectangle().stroke(.white,lineWidth:7).padding(4)
-            VStack(spacing:14){Text("Genita 화면 연결").font(.title);Text("아이폰 후면 카메라로 화면 전체를 한 번 비춰주세요.\n등록되면 이 화면이 닫히고, 실제 데스크탑에서 이동할 수 있어요.").multilineTextAlignment(.center);Button("닫기"){MacHandoff.shared.closeRegistration()}}
-                .padding(24).background(.black.opacity(0.6),in:RoundedRectangle(cornerRadius:16)).foregroundStyle(.white)
+        ZStack(alignment:.bottomTrailing) {
+            if let image=RegistrationPattern.image(width:1600,aspect:aspect) {
+                Image(decorative:image,scale:1).resizable().interpolation(.high).ignoresSafeArea()
+            }
+            HStack(spacing:16) {
+                Text("Show this to your iPhone").font(.custom("KMUTTF-SungkokSemiSerif",fixedSize:22)).foregroundStyle(Color(white:253.0/255)).fixedSize()
+                Button { MacHandoff.shared.closeRegistration() } label: {
+                    Text("Close").font(.custom("PretendardVariable-Medium",fixedSize:16)).foregroundStyle(Color(white:17.0/255))
+                        .padding(.horizontal,24).frame(height:44).background(Color(white:253.0/255),in:RoundedRectangle(cornerRadius:12)).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("closeRegistration")
+            }
+            .padding(EdgeInsets(top:8,leading:16,bottom:8,trailing:8))
+            .background(Color(white:17.0/255).opacity(0.84),in:UnevenRoundedRectangle(topLeadingRadius:20))
         }.ignoresSafeArea()
     }
 }
@@ -176,7 +293,7 @@ struct MacHandoffSurface: View {
     var body:some View {
         GeometryReader { geometry in
             ZStack {
-                if handoff.desktop {MacConversationView().opacity(handoff.motionVisible ? 0 : 1).scaleEffect(x:geometry.size.width/390,y:geometry.size.height/844,anchor:.topLeading).frame(width:geometry.size.width,height:geometry.size.height,alignment:.topLeading)}
+                if handoff.companionVisible {MacConversationView().opacity(handoff.conversationHidden ? 0 : 1).scaleEffect(x:geometry.size.width/390,y:geometry.size.height/844,anchor:.topLeading).frame(width:geometry.size.width,height:geometry.size.height,alignment:.topLeading)}
                 if let motion=handoff.motion {DuoTransition(payload:motion,onReady:handoff.effectReady).allowsHitTesting(false)}
             }.clipShape(RoundedRectangle(cornerRadius:geometry.size.width*0.085))
         }
@@ -187,12 +304,49 @@ struct MacHandoffControls:View {
     var body:some View {
         VStack(spacing:16) {
             Text("Genita").font(.largeTitle)
-            Text("아이폰의 ‘Mac으로 이동’에 입력").foregroundStyle(.secondary)
+            Text("First time? Enter this code on your iPhone.").foregroundStyle(.secondary)
             Text(handoff.link.code).font(.system(size:40,weight:.medium,design:.monospaced)).textSelection(.enabled)
             Text(handoff.link.status)
             Text(handoff.status).font(.callout).multilineTextAlignment(.center)
-            HStack {Button("화면 등록"){handoff.showRegistration()}.disabled(!handoff.link.connected);Button("아이폰으로"){handoff.returnToPhone()}.disabled(!handoff.canReturn)}
-            Text("통화 연결 전 프로토타입 · Mac으로 이동한 뒤 화면공유 가능").font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Show screen"){handoff.showRegistration()}.disabled(!handoff.link.connected)
+                Button("Continue on this Mac"){handoff.continueHere()}.disabled(handoff.ownership.isOwner && handoff.ownership.state.epoch>0)
+                Button("Move to iPhone"){handoff.moveToPhone()}.disabled(!handoff.canMoveToPhone)
+            }
+            Text(handoff.server.connected ? "Signed in: moves go through your account, no code needed." : "Screen sharing is available while the conversation is on this Mac.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }.padding(28).frame(width:420)
     }
 }
+
+#if DEBUG
+extension MacHandoff {
+    /// CI review only: GENITA_MAC_REVIEW_OUT=<dir> writes the waiting screens as PNGs, then quits.
+    func renderReviewScreens() async {
+        guard let out=ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] else{return}
+        let dir=URL(fileURLWithPath:out);try? FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true)
+        for (name,next,stopped) in [("R2-mac",HandoffSurface.waiting,false),("R2-mac-sharing-stopped",.waiting,true),("R2E-mac",.waitingPeerUnreachable,false)] {
+            surface=next;sharingStopped=stopped
+            let host=NSHostingView(rootView:MacConversationView().frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+            }
+            window.orderOut(nil)
+        }
+        // MAC-REG at a 14-inch MacBook Pro's point size
+        let size=NSSize(width:1512,height:982)
+        let host=NSHostingView(rootView:RegistrationView(aspect:size.width/size.height).frame(width:size.width,height:size.height))
+        let window=NSWindow(contentRect:NSRect(origin:.zero,size:size),styleMask:.borderless,backing:.buffered,defer:false)
+        window.contentView=host;window.orderFront(nil)
+        try? await Task.sleep(for:.seconds(1))
+        if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+            host.cacheDisplay(in:host.bounds,to:rep)
+            try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MAC-REG.png"))
+        }
+        exit(0)
+    }
+}
+#endif

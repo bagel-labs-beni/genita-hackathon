@@ -218,6 +218,23 @@ extension AppState {
         suggestName()
     }
 
+    // MARK: V04
+
+    /// V04 Continue: the picked voice is saved on the companion. The companion already has the recommended
+    /// voice from "Use this image", so an unreachable server (or no pick while the voice service wakes) just continues.
+    func saveVoiceAndContinue() {
+        if setup.deviceVoice == nil { setup.deviceVoice = VoicePlayer.deviceFallbackID }   // silent offline fallback, not a choice
+        UserDefaults.standard.set(setup.deviceVoice, forKey: VoicePlayer.deviceFallbackKey)
+        guard serverWired, let voiceId = setup.voiceId else { go(.companionName); return }
+        savingVoice = true
+        Task {
+            defer { savingVoice = false }
+            await companionTask?.value
+            if setup.companionCreated == true { voiceUnsaved = (try? await onboarding.saveVoice(voiceId)) == nil }   // else NM01's create sends it
+            go(.companionName)
+        }
+    }
+
     // MARK: NM01 (D21)
 
     /// Pre-fills NM01 from the server's suggestion (photo + imported style). The user's own edit wins.
@@ -242,9 +259,10 @@ extension AppState {
             defer { savingName = false }
             await companionTask?.value
             do {
+                if voiceUnsaved, let voiceId = setup.voiceId, (try? await onboarding.saveVoice(voiceId)) != nil { voiceUnsaved = false }
                 if setup.companionCreated == true { try await onboarding.renameCompanion(setup.companionName ?? "") }
                 else if let imageId = setup.imageId {
-                    try await onboarding.createCompanion(imageId: imageId, name: setup.companionName)
+                    try await onboarding.createCompanion(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
                     setup.companionCreated = true
                 }
                 go(.depth)
