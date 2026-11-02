@@ -5,7 +5,7 @@
 import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
-import { FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
+import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
@@ -238,7 +238,7 @@ export class PrepRunner {
         await d.store.putAsset(c.userId, c.id, "neutral", s.bytes);
         scene = s.bytes;
         await setStep("scene", { status: "done", url: faceUrl("neutral"), ms: s.ms, source: s.source, error: undefined });
-        d.log("scene.done", { companion: c.id, source: s.source, ms: s.ms });
+        d.log("scene.done", { companionId: c.id, userId: c.userId, source: s.source, ms: s.ms });
       } catch (err) {
         if (!signal.aborted) await setStep("scene", { status: "failed", error: String(err).slice(0, 300) });
         throw err;
@@ -275,7 +275,7 @@ export class PrepRunner {
       });
       await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
       const m = faceManifest(out, faceUrl);
-      d.log("face.done", { companion: companionId, ms: out.ms, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
+      d.log("face.done", { companionId, userId, ms: out.ms.total, expressions: Object.keys(m.images).filter((key) => key !== "neutral" && (FACE_EXPRESSIONS as readonly string[]).includes(key)).length, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
     } catch (err) {
       if (!signal.aborted) await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
       throw err;
@@ -323,7 +323,11 @@ export class PrepRunner {
     }
     if (gone) throw new Error("companion deleted");
     const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl) : null;
-    d.log("prep.completed", { companion: c.id, type: c.type, pipeline: "meta", total_ms: Math.round(performance.now() - t0), rejected: face?.rejected.length ?? null });
+    const image = await d.store.getImage(c.imageId).catch(() => null);
+    const uploadAt = image ? Date.parse(image.rec.createdAt) : NaN;
+    const msFromUpload = Number.isFinite(uploadAt) ? Math.max(0, Date.now() - uploadAt) : null;
+    d.log("prep.completed", { companionId: c.id, userId: c.userId, type: c.type, pipeline: "meta", total_ms: Math.round(performance.now() - t0), rejected: face?.rejected.length ?? null });
+    d.log("onboarding.ready", { companionId: c.id, userId: c.userId, ms_from_upload: msFromUpload });
     this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {}, face });
   }
 }

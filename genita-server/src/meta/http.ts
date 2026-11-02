@@ -1,3 +1,5 @@
+import { getOps } from "../ops/limits.ts";
+
 export const META_BASE = "https://api.meta.ai/v1";
 
 /** A vendor call failed. Carries status and a short vendor message, never the key. */
@@ -17,12 +19,14 @@ export function metaHeaders(key: string, json = true): Record<string, string> {
 }
 
 export async function metaJson<T>(key: string, path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  getOps().consumeMeta(path === "/images/generations" || path === "/images/edits");
   const r = await fetch(META_BASE + path, { method: "POST", headers: metaHeaders(key), body: JSON.stringify(body), signal });
   if (!r.ok) throw new UpstreamError("meta", r.status, await r.text().catch(() => ""));
   return (await r.json()) as T;
 }
 
 export async function metaForm<T>(key: string, path: string, form: FormData, signal?: AbortSignal): Promise<T> {
+  getOps().consumeMeta(path === "/images/generations" || path === "/images/edits");
   const r = await fetch(META_BASE + path, { method: "POST", headers: metaHeaders(key, false), body: form, signal });
   if (!r.ok) throw new UpstreamError("meta", r.status, await r.text().catch(() => ""));
   return (await r.json()) as T;

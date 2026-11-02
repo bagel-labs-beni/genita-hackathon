@@ -1,6 +1,6 @@
 name: Call client
 
-# F4-L10 / F4-U-S09 / F10-U-SHEET: builds both apps, runs the unit tests, and drives the call screen through its states
+# F4-L10 / F4-U-S09 / F10-U-SHEET / F10-U-FINDS / F5-U-CAM: builds both apps, runs the unit tests, and drives the call screen through its states
 # with a recorded real session (ios-app/Tools/call-replay). Screenshots are uploaded as an artifact.
 on:
   pull_request:
@@ -54,6 +54,8 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/EmailSignInUITests \
+            -only-testing:GenitaUITests/FindsTabUITests \
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -resultBundlePath build-output/ios.xcresult \
@@ -98,7 +100,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith("call-") or name.startswith("onb-"):
+                  if name.startswith(("call-", "auth-", "onb-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens

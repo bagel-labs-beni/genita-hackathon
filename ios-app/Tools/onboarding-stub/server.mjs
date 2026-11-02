@@ -23,6 +23,20 @@ const style = (source) => ({
   style: { version: 1, source, display: rows, partial: false, toConfirm: ["Budget"], itemCount: 7, dropped: { injection: 0, sensitive: 0 } },
 });
 
+// V04: the server's four voices for the look, the preview clip (WAV, 1.6 s tone) and the saved pick.
+// POST /__voice {down:true|false} flips the voice service so the UI test can show the greyed list.
+let voiceDown = false;
+const VOICES = [["72", "Tara", "Warm, bright"], ["120", "Leah", "Soft, steady"], ["36", "Leo", "Calm, low"], ["24", "Dan", "Easygoing"]]
+  .map(([id, name, blurb]) => ({ id, name, blurb, label: `${name} · ${blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${id}/preview` }));
+function previewWav() {
+  const rate = 24000, n = Math.floor(rate * 1.6), pcm = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 220 * i) / rate) * 2500), i * 2);
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0); h.writeUInt32LE(36 + pcm.length, 4); h.write("WAVEfmt ", 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(rate, 24); h.writeUInt32LE(rate * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
+
 let companion = null;
 let prepStartedAt = 0;
 // The clock starts at PREP-1's first poll (the UI test spends longer than the prep on the screens before it):
@@ -57,6 +71,8 @@ createServer(async (req, res) => {
   const b = await body(req);
   log(req.method, p, Buffer.isBuffer(b) ? `${b.length} bytes` : JSON.stringify(b).slice(0, 120));
   if (p === "/healthz") return send(200, { ok: true });
+  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; voiceDown = false; return send(200, { ok: true }); }
+  if (req.method === "POST" && p === "/__voice") { voiceDown = b.down === true; return send(200, { voiceDown }); }
   if (!req.headers.authorization?.startsWith("Bearer ")) return send(401, { error: "unauthorized" });
 
   if (req.method === "GET" && p === "/me")
@@ -69,7 +85,21 @@ createServer(async (req, res) => {
     return send(200, { imageId: "img1", passed: true, type: "human", checks: { oneFaceFrontFacing: true, sharpAndLit: true, noText: true }, reasons: [], headBox: null, ms: 1800 });
   }
   if (req.method === "POST" && p === "/v1/companion/name/suggest") { await sleep(600); return send(200, { name: "Jin", ms: 600, suggested: true }); }
-  if (req.method === "GET" && p === "/v1/companion/voices") return send(200, { voices: [{ id: "v1", name: "Mira", blurb: "Warm" }], suggested: "v1", ms: 5 });
+  if (req.method === "GET" && p === "/v1/companion/voices") return send(200, { voices: VOICES, suggested: "72", available: !voiceDown, ms: 5 });
+  const pv = p.match(/^\/v1\/companion\/voices\/(\d+)\/preview$/);
+  if (req.method === "GET" && pv) {
+    if (voiceDown) return send(503, { error: "voice_unavailable" });
+    await sleep(600);
+    const wav = previewWav();
+    res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length });
+    return void res.end(wav);
+  }
+  if (req.method === "PUT" && p === "/v1/companion/voice") {
+    if (!companion) return send(404, { error: "no_companion" });
+    if (!VOICES.some((v) => v.id === b.voiceId)) return send(400, { error: "unknown_voice" });
+    companion.voiceId = b.voiceId;
+    return send(200, companionView());
+  }
   if (req.method === "POST" && p === "/v1/companion") {
     if (companion) return send(409, { error: "companion_exists" });
     companion = { id: "c1", type: "human", name: b.name ?? "Mira", voiceId: b.voiceId, imageId: b.imageId, createdAt: "t" };
