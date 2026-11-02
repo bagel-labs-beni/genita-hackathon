@@ -6,6 +6,8 @@ public protocol GenitaTokenStore: AnyObject, Sendable {
     func load() -> String?
     func save(_ token: String)
     func clear()
+    /// Clears the current session only when it is the request's session.
+    func clear(ifMatching token: String)
 }
 
 public final class InMemoryTokenStore: GenitaTokenStore, @unchecked Sendable {
@@ -15,6 +17,7 @@ public final class InMemoryTokenStore: GenitaTokenStore, @unchecked Sendable {
     public func load() -> String? { lock.withLock { token } }
     public func save(_ token: String) { lock.withLock { self.token = token } }
     public func clear() { lock.withLock { token = nil } }
+    public func clear(ifMatching token: String) { lock.withLock { if self.token == token { self.token = nil } } }
 }
 
 /// Generic-password item, readable after first unlock, never synced or backed up to another device.
@@ -22,6 +25,7 @@ public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
     public static let defaultService = "ai.thebeni.genita.session"
     private let service: String
     private let account: String
+    private let lock = NSLock()
 
     public init(service: String = KeychainTokenStore.defaultService, account: String = "session") {
         self.service = service
@@ -36,7 +40,7 @@ public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
         return q
     }
 
-    public func load() -> String? {
+    private func loadUnlocked() -> String? {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -45,7 +49,7 @@ public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
         return String(data: data, encoding: .utf8)
     }
 
-    public func save(_ token: String) {
+    private func saveUnlocked(_ token: String) {
         let data = Data(token.utf8)
         let attrs: [String: Any] = [kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         if SecItemUpdate(query as CFDictionary, attrs as CFDictionary) == errSecItemNotFound {
@@ -55,5 +59,10 @@ public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
         }
     }
 
-    public func clear() { SecItemDelete(query as CFDictionary) }
+    private func clearUnlocked() { SecItemDelete(query as CFDictionary) }
+
+    public func load() -> String? { lock.withLock { loadUnlocked() } }
+    public func save(_ token: String) { lock.withLock { saveUnlocked(token) } }
+    public func clear() { lock.withLock { clearUnlocked() } }
+    public func clear(ifMatching token: String) { lock.withLock { if loadUnlocked() == token { clearUnlocked() } } }
 }
