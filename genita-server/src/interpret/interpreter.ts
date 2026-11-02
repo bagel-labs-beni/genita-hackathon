@@ -128,6 +128,8 @@ export class Interpreter {
   private holding = false;
   /** the next mic utterance to finish was (at least partly) held */
   private holdTurn = false;
+  /** speech was heard during the current/last hold */
+  private heldHeard = false;
   private queue: Job[] = [];
   private running: Job | null = null;
   private playEndAt = 0;
@@ -166,7 +168,13 @@ export class Interpreter {
 
   hold(on: boolean): void {
     this.holding = on;
-    if (on) this.holdTurn = true;
+    if (on) {
+      this.holdTurn = true;
+      this.heldHeard = !!this.open.get("mic");
+    } else if (!this.heldHeard) {
+      // pressed and let go without saying anything: the next utterance is decided by language again
+      this.holdTurn = false;
+    }
   }
 
   speechEnd(ch: Channel): void {
@@ -175,7 +183,8 @@ export class Interpreter {
 
   partial(ch: Channel, text: string): void {
     if (this.stopped || !text.trim()) return;
-    if (ch === "mic" && this.isEcho(text)) return;
+    if (ch === "mic" && this.holding) this.heldHeard = true;
+    if (ch === "mic" && !this.holding && !this.holdTurn && this.isEcho(text)) return;
     const r = this.resolve(ch, text);
     const b = this.open.get(ch) ?? this.newBubble(r.via);
     this.open.set(ch, b);

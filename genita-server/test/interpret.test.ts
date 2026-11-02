@@ -285,6 +285,19 @@ test("INT-4 hold to talk: a held turn is mine even if it is not clearly English"
   session.close();
 });
 
+test("a hold with nothing said does not make the next utterance mine", async () => {
+  const { client, session, mic } = setup();
+  await startInterpret(session, { interpret: { other: "Korean" } });
+  await session.onClientText(JSON.stringify({ type: "hold", on: true }));
+  await session.onClientText(JSON.stringify({ type: "hold", on: false }));
+  mic().turn("이거 얼마예요?");
+  await client.waitFor((m) => m.type === "reply");
+  const b = client.bubbles("done")[0];
+  assert.equal(b.speaker, "them");
+  assert.equal(b.via, "voice");
+  session.close();
+});
+
 test("typed text while interpreting is mine and goes out in the other language", async () => {
   const { client, session } = setup();
   await startInterpret(session, { interpret: { other: "Korean" } });
