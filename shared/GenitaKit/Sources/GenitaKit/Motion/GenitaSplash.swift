@@ -138,8 +138,8 @@ public struct GenitaSplash: View {
         // Reduce Motion: fade in 0.2 s, crossfade to A02 at 0.7 s over 0.4 s
         let calmAlpha = calm ? clamp(t / 0.2) * (1 - clamp((t - 0.7) / 0.4)) : 1
         // last part of the hand-off: the overlay thins out so A02's copy and buttons come through
-        let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.3) / (hDur * 0.7)))
-        let markAlpha = 1 - clamp(h / 0.35)
+        let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.45) / (hDur * 0.55)))
+        let markAlpha = 1 - clamp(h / 0.15)
         // wordmark: out in place during the first 30 % of the hand-off (1.90–2.14 s); A02 logo in at its spot 2.26–2.66 s.
         // Reduce Motion: out over 0.18 s when the crossfade starts (0.7 s), logo in 0.2 s later over 0.2 s.
         let wordAlpha = calm ? 1 - clamp((t - 0.7) / 0.18) : f.word * (1 - clamp((t - hStart) / (hDur * 0.3)))
@@ -346,7 +346,7 @@ struct PhotoReveal: View {
     var body: some View {
         if reveal > 0 {
             // 1 − L ≥ thr ⇔ L ≤ 1 − thr: dark-first mask = white minus the bright-first mask at threshold (0.6 − thr)
-            let thr = 0.6 - (1 - 1.4 * reveal)
+            let thr = 0.6 - (1 - 2.8 * reveal) // the head is in front within the first ~20 % (page frame 2.08 s)
             let full = max(0, min(1, (reveal - 0.45) / 0.55))
             A02Photo(size: size, top: top) { photo in
                 ZStack {
