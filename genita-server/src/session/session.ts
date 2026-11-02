@@ -15,7 +15,21 @@ import { isMostlyHangul } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
-import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
+import {
+  PROTOCOL_VERSION,
+  FRAME_HEADER_BYTES,
+  FRAME_KIND_TTS_PCM,
+  FRAME_KIND_PETER,
+  CLIENT_FRAME_KIND_MIC,
+  CLIENT_FRAME_KIND_CALL,
+  encodeFrameHeader,
+  type ServerEvent,
+  type ErrorCode,
+  type CancelReason,
+  type InterpretOptionsWire,
+} from "../protocol.ts";
+import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
+import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -89,6 +103,18 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** spoken after "Can you interpret for me?" */
+const INTERPRET_ON_LINE = "Sure, I'll pass on what I hear.";
+
+function parseInterpretOptions(v: unknown): InterpretOptionsWire {
+  if (!v || typeof v !== "object") return {};
+  const o = v as Record<string, unknown>;
+  return {
+    source: o.source === "call" ? "call" : "face",
+    other: str(o.other, 40),
+    app: str(o.app, 40),
+  };
+}
 
 function str(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -130,6 +156,10 @@ export class Session {
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
   private asr: AsrLike | null = null;
+  /** F8 · set while mode is "interpret" */
+  private interp: Interpreter | null = null;
+  /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
+  private callAsr: AsrLike | null = null;
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
@@ -179,11 +209,17 @@ export class Session {
         if (!text) return;
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
+        if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
+        if (this.interp) return this.interp.bargeIn();
         return this.dispatch({ type: "client_barge_in" });
+      case "hold":
+        this.interp?.hold(msg.on === true);
+        return;
       case "playback_done": {
+        if (this.interp && typeof msg.utteranceId === "number") this.interp.playbackDone(msg.utteranceId);
         const r = this.reply;
         if (r && msg.utteranceId === r.utteranceId && r.doneTimer) {
           clearTimeout(r.doneTimer);
@@ -192,10 +228,7 @@ export class Session {
         return;
       }
       case "mode":
-        if (msg.mode === "chat" || msg.mode === "interpret") {
-          this.mode = msg.mode;
-          this.client.sendJson({ type: "mode.changed", mode: this.mode, by: "client" });
-        }
+        if (msg.mode === "chat" || msg.mode === "interpret") this.switchMode(msg.mode, "client", parseInterpretOptions(msg.interpret));
         return;
       case "frames":
         this.setFrames(msg.images);
@@ -207,8 +240,22 @@ export class Session {
     }
   }
 
-  onClientAudio(pcm: Buffer): void {
-    if (!this.started || !this.micOn) return;
+  onClientAudio(frame: Buffer): void {
+    if (!this.started) return;
+    let pcm = frame;
+    // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
+    if (frame.length > FRAME_HEADER_BYTES && frame[0] === 0x47 && frame[1] === 0x41 && frame[3] === 0 && (frame[2] === CLIENT_FRAME_KIND_MIC || frame[2] === CLIENT_FRAME_KIND_CALL)) {
+      pcm = frame.subarray(FRAME_HEADER_BYTES);
+      if (frame[2] === CLIENT_FRAME_KIND_CALL) {
+        if (this.interp?.source !== "call") return;
+        if (!this.callAsr?.isOpen) void this.ensureCallAsr();
+        this.callAsr?.sendAudio(pcm);
+        return;
+      }
+    }
+    if (!this.micOn) return;
+    // "Hold to reply": outside the hold the mic is silence, which also ends the held turn quickly
+    if (this.interp?.micGated) pcm = Buffer.alloc(pcm.length);
     if (!this.asr?.isOpen) void this.ensureAsr();
     this.asr?.sendAudio(pcm);
   }
@@ -231,7 +278,7 @@ export class Session {
       }
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
-    this.mode = msg.mode === "interpret" ? "interpret" : "chat";
+    const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
     this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -253,14 +300,107 @@ export class Session {
       type: "ready",
       protocol: PROTOCOL_VERSION,
       sessionId: this.id,
-      mode: this.mode,
+      mode: startMode,
       audio: { in: "pcm_s16le_24000_mono", out: "pcm_s16le_24000_mono", frameHeaderBytes: FRAME_HEADER_BYTES },
       lip: this.lip,
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
+  }
+
+  // ───────────────────────── F8 interpretation ─────────────────────────
+
+  private switchMode(mode: Mode, by: "client" | "model", opts: InterpretOptionsWire = {}): void {
+    if (mode === "interpret") {
+      // a chat reply in progress is cut; the interpreter owns the voice now
+      if (this.turn.phase !== "listening") this.dispatch({ type: "client_barge_in" });
+      this.dropSpeculation();
+      this.mode = "interpret";
+      this.client.sendJson({ type: "mode.changed", mode, by });
+      this.enterInterpret(opts);
+      return;
+    }
+    this.leaveInterpret();
+    this.mode = "chat";
+    this.client.sendJson({ type: "mode.changed", mode, by });
+  }
+
+  private enterInterpret(opts: InterpretOptionsWire): void {
+    this.interp?.stop();
+    this.mode = "interpret";
+    this.interp = new Interpreter(this.interpretHost(), {
+      userLanguage: this.language,
+      source: opts.source ?? "face",
+      other: opts.other ?? null,
+      app: opts.app,
+      speculate: this.deps.config.speculate,
+      speculateStableMs: this.deps.config.speculateStableMs,
+    });
+    this.interp.begin();
+    if (this.interp.source === "call") void this.ensureCallAsr().catch(() => this.error("asr_unavailable", "Could not listen to the call's sound", true));
+    else this.dropCallAsr();
+  }
+
+  private leaveInterpret(): void {
+    this.interp?.stop();
+    this.interp = null;
+    this.dropCallAsr();
+  }
+
+  private dropCallAsr(): void {
+    const a = this.callAsr;
+    this.callAsr = null;
+    a?.end();
+  }
+
+  private async ensureCallAsr(): Promise<void> {
+    if (this.closed || this.callAsr) return;
+    const asr = this.deps.openAsr(this.deps.config.asrLanguages);
+    this.callAsr = asr;
+    asr.on("event", (e) => {
+      if (this.callAsr !== asr || !this.interp) return;
+      if (e.type === "partial") this.interp.partial("call", e.text);
+      else if (e.type === "speechEnd") this.interp.speechEnd("call");
+      else if (e.type === "speechComplete") this.interp.final("call", e.text);
+    });
+    asr.on("status", (s) => {
+      if (s === "closed" && this.callAsr === asr) this.callAsr = null;
+    });
+    asr.on("error", (err) => this.log("asr.call.error", { message: err.message.slice(0, 200) }));
+    await asr.connect();
+  }
+
+  private interpretHost(): InterpretHost {
+    return {
+      now: this.now,
+      send: (e) => this.client.sendJson(e),
+      sendAudio: (seq, pcm) => this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), pcm])),
+      nextSeq: () => ++this.seq,
+      nextUtteranceId: () => {
+        // shares the turn machine's counter so ids never repeat across modes
+        this.turn = { ...this.turn, utteranceId: this.turn.utteranceId + 1 };
+        return this.turn.utteranceId;
+      },
+      translate: (req, signal) => this.sparkSource(req, signal),
+      tts: (text, signal) =>
+        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
+      timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
+      lipBegin: (uid) => {
+        if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
+        this.peter.begin(uid);
+        return true;
+      },
+      lipAudio: (uid, pcm) => this.peter?.audio24k(uid, pcm),
+      lipEnd: (uid) => this.peter?.end(uid),
+      lipCancel: (uid) => {
+        this.peterCancelled.add(uid);
+        this.peter?.cancel(uid);
+      },
+      log: (event, data) => this.log(event, data),
+    };
   }
 
   private async connectPeter(): Promise<void> {
@@ -317,6 +457,8 @@ export class Session {
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
+    this.interp?.stop();
+    this.dropCallAsr();
     this.asr?.end();
     this.peter?.close();
     this.client.close(code, reason);
@@ -326,6 +468,7 @@ export class Session {
 
   private onAsr(e: AsrEvent): void {
     const t = this.now();
+    if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
@@ -341,9 +484,35 @@ export class Session {
       case "speechComplete":
         this.metrics.completeAt = t;
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        if (interpretCommand(e.text) === "start") {
+          // INT-0 by voice: "Can you interpret for me?"
+          this.switchMode("interpret", "model");
+          (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
+          return;
+        }
         this.dispatch({ type: "speech_complete", text: e.text });
         // not consumed by a reply (backchannel / empty): stop the guess
         return this.dropSpeculation();
+    }
+  }
+
+  /** Interpret mode: the mic's ASR events become bubbles, not chat turns. */
+  private onInterpretAsr(e: AsrEvent): void {
+    const interp = this.interp!;
+    switch (e.type) {
+      case "speechStart":
+        this.client.sendJson({ type: "speech.start", turnId: e.turnId });
+        return;
+      case "partial":
+        this.client.sendJson({ type: "transcript", final: false, text: e.text });
+        return interp.partial("mic", e.text);
+      case "speechEnd":
+        this.client.sendJson({ type: "speech.end", turnId: e.turnId });
+        return interp.speechEnd("mic");
+      case "speechComplete":
+        this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
+        return interp.final("mic", e.text);
     }
   }
 

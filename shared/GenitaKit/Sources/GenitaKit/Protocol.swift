@@ -13,6 +13,10 @@ public enum GenitaProtocol {
     public static let frameKindTTSPCM: UInt8 = 1
     /// Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG.
     public static let frameKindPeter: UInt8 = 2
+    /// App → server, Mac call interpretation only (F8): header + mic PCM.
+    public static let clientFrameKindMic: UInt8 = 3
+    /// App → server, Mac call interpretation only (F8): header + the call's sound (ScreenCaptureKit).
+    public static let clientFrameKindCall: UInt8 = 4
 }
 
 public struct AudioFrameHeader: Equatable, Sendable {
@@ -75,6 +79,17 @@ public struct LipPlan: Codable, Equatable, Sendable {
     }
 }
 
+/// F8 interpretation options on `start` and `mode`.
+public struct InterpretOptions: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, Sendable { case face, call }
+    public var source: Source?
+    /// Fix the other language instead of detecting it.
+    public var other: String?
+    /// Call app shown back in `interpret.pair` ("FaceTime", "Zoom").
+    public var app: String?
+    public init(source: Source? = nil, other: String? = nil, app: String? = nil) { self.source = source; self.other = other; self.app = app }
+}
+
 public struct MouthCue: Codable, Equatable, Sendable {
     public var t: Int
     public var v: Viseme
@@ -95,6 +110,8 @@ public enum ServerEvent: Equatable, Sendable {
     case speechEnd(Turn)
     case transcript(Transcript)
     case interpretDetected(InterpretDetected)
+    case interpretPair(InterpretPair)
+    case interpretBubble(InterpretBubble)
     case tool(Tool)
     case replyDelta(ReplyDelta)
     case speaking(Speaking)
@@ -140,6 +157,57 @@ public enum ServerEvent: Equatable, Sendable {
     public struct InterpretDetected: Codable, Equatable, Sendable {
         public var from: String
         public var to: String
+    }
+    /// F8: the language pair; `other == nil` = still listening for the other language (INT-1).
+    public struct InterpretPair: Codable, Equatable, Sendable {
+        public var user: String
+        public var other: String?
+        public var source: InterpretOptions.Source
+        /// "auto" (detected) | "client" (fixed by the app)
+        public var by: String
+        public var app: String?
+        private enum K: String, CodingKey { case user, other, source, by, app }
+        public init(user: String, other: String?, source: InterpretOptions.Source, by: String, app: String? = nil) {
+            self.user = user; self.other = other; self.source = source; self.by = by; self.app = app
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: K.self)
+            try c.encode(user, forKey: .user)
+            try c.encode(other, forKey: .other) // null on the wire, not absent
+            try c.encode(source, forKey: .source)
+            try c.encode(by, forKey: .by)
+            try c.encodeIfPresent(app, forKey: .app)
+        }
+    }
+    /// F8: one two-language bubble. Sent again on every change; upsert by `bubbleId`.
+    public struct InterpretBubble: Codable, Equatable, Sendable {
+        public enum Speaker: String, Codable, Sendable { case them, me, unknown }
+        public enum Via: String, Codable, Sendable { case voice, hold, call, text }
+        public enum Status: String, Codable, Sendable { case hearing, translating, speaking, done, unknown, skipped, cancelled }
+        public struct Line: Codable, Equatable, Sendable {
+            public var lang: String?
+            public var text: String
+            private enum K: String, CodingKey { case lang, text }
+            public init(lang: String?, text: String) { self.lang = lang; self.text = text }
+            public func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: K.self)
+                try c.encode(lang, forKey: .lang) // null on the wire, not absent
+                try c.encode(text, forKey: .text)
+            }
+        }
+        public var bubbleId: Int
+        public var speaker: Speaker
+        public var via: Via
+        public var status: Status
+        public var original: Line
+        public var translation: Line?
+        public var utteranceId: Int?
+        /// language_unclear | no_other_language | same_language | echo | empty
+        public var reason: String?
+        public init(bubbleId: Int, speaker: Speaker, via: Via, status: Status, original: Line, translation: Line? = nil, utteranceId: Int? = nil, reason: String? = nil) {
+            self.bubbleId = bubbleId; self.speaker = speaker; self.via = via; self.status = status
+            self.original = original; self.translation = translation; self.utteranceId = utteranceId; self.reason = reason
+        }
     }
     public struct Tool: Codable, Equatable, Sendable {
         public var utteranceId: Int
@@ -227,6 +295,8 @@ extension ServerEvent: Codable {
         case "speech.end": self = .speechEnd(try .init(from: decoder))
         case "transcript": self = .transcript(try .init(from: decoder))
         case "interpret.detected": self = .interpretDetected(try .init(from: decoder))
+        case "interpret.pair": self = .interpretPair(try .init(from: decoder))
+        case "interpret.bubble": self = .interpretBubble(try .init(from: decoder))
         case "tool": self = .tool(try .init(from: decoder))
         case "reply.delta": self = .replyDelta(try .init(from: decoder))
         case "speaking": self = .speaking(try .init(from: decoder))
@@ -251,6 +321,8 @@ extension ServerEvent: Codable {
         case .speechEnd: "speech.end"
         case .transcript: "transcript"
         case .interpretDetected: "interpret.detected"
+        case .interpretPair: "interpret.pair"
+        case .interpretBubble: "interpret.bubble"
         case .tool: "tool"
         case .replyDelta: "reply.delta"
         case .speaking: "speaking"
@@ -274,6 +346,8 @@ extension ServerEvent: Codable {
         case let .speechStart(p), let .speechEnd(p): try p.encode(to: encoder)
         case let .transcript(p): try p.encode(to: encoder)
         case let .interpretDetected(p): try p.encode(to: encoder)
+        case let .interpretPair(p): try p.encode(to: encoder)
+        case let .interpretBubble(p): try p.encode(to: encoder)
         case let .tool(p): try p.encode(to: encoder)
         case let .replyDelta(p): try p.encode(to: encoder)
         case let .speaking(p): try p.encode(to: encoder)
@@ -304,6 +378,10 @@ public enum ClientMessage: Equatable, Sendable {
     case bargeIn
     case playbackDone(utteranceId: Int)
     case mode(ConversationMode)
+    /// `mode` with `interpret` options (F8), e.g. `.modeInterpret(.init(source: .call, app: "FaceTime"))`.
+    case modeInterpret(InterpretOptions)
+    /// F8 hold to talk / hold to reply.
+    case hold(on: Bool)
     case ping(t: Double?)
     case stop
 
@@ -371,9 +449,11 @@ public enum ClientMessage: Equatable, Sendable {
         public var lip: Lip?
         public var bargeIn: BargeIn?
         public var mic: Bool?
-        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil) {
+        /// F8: read only when `mode` is interpret.
+        public var interpret: InterpretOptions?
+        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil, interpret: InterpretOptions? = nil) {
             self.persona = persona; self.user = user; self.memories = memories; self.history = history; self.mode = mode
-            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic
+            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic; self.interpret = interpret
         }
     }
     public struct Text: Codable, Equatable, Sendable {
@@ -390,7 +470,7 @@ public enum ClientMessage: Equatable, Sendable {
 }
 
 extension ClientMessage: Codable {
-    private enum K: String, CodingKey { case type, utteranceId, mode, t }
+    private enum K: String, CodingKey { case type, utteranceId, mode, t, interpret, on }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -403,7 +483,10 @@ extension ClientMessage: Codable {
         case "frames": self = .frames(try .init(from: decoder))
         case "barge_in": self = .bargeIn
         case "playback_done": self = .playbackDone(utteranceId: try c.decode(Int.self, forKey: .utteranceId))
-        case "mode": self = .mode(try c.decode(ConversationMode.self, forKey: .mode))
+        case "mode":
+            let mode = try c.decode(ConversationMode.self, forKey: .mode)
+            if mode == .interpret, let o = try c.decodeIfPresent(InterpretOptions.self, forKey: .interpret) { self = .modeInterpret(o) } else { self = .mode(mode) }
+        case "hold": self = .hold(on: try c.decode(Bool.self, forKey: .on))
         case "ping": self = .ping(t: try c.decodeIfPresent(Double.self, forKey: .t))
         case "stop": self = .stop
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message \(type)")
@@ -421,6 +504,8 @@ extension ClientMessage: Codable {
         case .bargeIn: try c.encode("barge_in", forKey: .type)
         case let .playbackDone(id): try c.encode("playback_done", forKey: .type); try c.encode(id, forKey: .utteranceId)
         case let .mode(m): try c.encode("mode", forKey: .type); try c.encode(m, forKey: .mode)
+        case let .modeInterpret(o): try c.encode("mode", forKey: .type); try c.encode(ConversationMode.interpret, forKey: .mode); try c.encode(o, forKey: .interpret)
+        case let .hold(on): try c.encode("hold", forKey: .type); try c.encode(on, forKey: .on)
         case let .ping(t): try c.encode("ping", forKey: .type); try c.encodeIfPresent(t, forKey: .t)
         case .stop: try c.encode("stop", forKey: .type)
         }
