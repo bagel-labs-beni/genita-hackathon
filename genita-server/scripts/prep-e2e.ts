@@ -20,12 +20,13 @@ import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { PREP_EMOTIONS, type PrepEmotion } from "../src/prep/prompts.ts";
 import type { CompanionRecord } from "../src/prep/store.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
-const config = loadConfig();
 const args = process.argv.slice(2);
-const img = args.find((a) => !a.startsWith("--")) ?? join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/out/img/p1.jpg");
+const img = args.find((a) => !a.startsWith("--")) ?? fixturePath("out", "img", "p1.jpg");
+const config = loadConfig();
 const flag = (k: string) => args.find((a) => a.startsWith(`--${k}=`))?.split("=")[1];
 const emotions = (flag("emotions")?.split(",") ?? [...PREP_EMOTIONS]) as PrepEmotion[];
 const skipVideo = args.includes("--skip-video");
@@ -34,12 +35,15 @@ const dataDir = process.env.GENITA_DATA_DIR ?? mkdtempSync(join(tmpdir(), "genit
 const events: string[] = [];
 const d: PrepDeps = {
   metaKey: config.metaKey,
-  elevenKey: config.elevenKey,
+  elevenKey: config.elevenKey ?? "",
   ttsModel: config.ttsModel,
   falKey: process.env.FAL_KEY || null,
   store: new FileStore(dataDir),
   voices: DEFAULT_VOICES,
   log: (e, data) => events.push(`${e} ${JSON.stringify(data).slice(0, 200)}`),
+  // this script exercises the earlier ElevenLabs + Kling pipeline; `npm run face:e2e` is the Meta-only one
+  kling: true,
+  serverTts: true,
 };
 const timings: Record<string, number> = {};
 async function step<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -67,7 +71,7 @@ const mp3 = await step("3b voice preview mp3", () => voicePreview(d, v.voices[0]
 console.log(`    ${v.voices[0].name} preview ${mp3.length} bytes`);
 
 const voice = v.voices[0];
-const prep = newPrepState();
+const prep = newPrepState({ kling: true });
 if (skipVideo) for (const e of PREP_EMOTIONS) prep.steps.videos[e] = { status: "done", attempts: 0, url: "(skipped)" };
 else for (const e of PREP_EMOTIONS) if (!emotions.includes(e)) prep.steps.videos[e] = { status: "done", attempts: 0, url: "(not requested)" };
 const companion: CompanionRecord = { id: "e2e" + Date.now(), userId: user, imageId: rec.id, type: rec.check.type, voiceId: voice.id, name: voice.name, createdAt: new Date().toISOString(), prep };

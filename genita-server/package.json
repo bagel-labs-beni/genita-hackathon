@@ -14,14 +14,17 @@
     "smoke": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke.ts",
     "check:meta": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-meta.ts",
     "prep:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/prep-e2e.ts",
+    "face:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/face-e2e.ts",
     "eval:import": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/import/run.ts",
     "peter:bake": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/peter-bake.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/db-migrate.ts",
+    "handoff:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/handoff-e2e.ts",
     "accounts:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/accounts-e2e.ts",
     "smoke:interpret": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke-interpret.ts",
     "eval:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-memory.ts",
     "check:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-memory.ts",
-    "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts"
+    "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts",
+    "watch-sim": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/watch-sim.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",
