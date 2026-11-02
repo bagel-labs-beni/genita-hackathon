@@ -67,7 +67,7 @@ struct ReferenceSignInView: View {
                     .background(Color(white: 0.09), in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
                     .frame(maxWidth: 342).padding(.horizontal, 24).padding(.top, 228)
-                    .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
+                    .transition(.opacity).accessibilityElement(children: .combine).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
         #if DEBUG

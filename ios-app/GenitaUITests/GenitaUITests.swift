@@ -263,7 +263,7 @@ final class GenitaUITests: XCTestCase {
         app.launchArguments = ["--uitesting"]
         app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_REVIEW_SIGNIN_FAILED": "1"]
         app.launch()
-        let toast = app.descendants(matching: .any)["signInFailed"]
+        let toast = app.descendants(matching: .any)["signInFailed"].firstMatch
         XCTAssertTrue(toast.waitForExistence(timeout: 10))
         // headline + subtitle end near canvas y 265 (design) -> the card must start below 250 pt on any phone
         XCTAssertGreaterThanOrEqual(toast.frame.minY, 250, "the card starts under 'Built from your stories, rhythm and boundaries.'")
