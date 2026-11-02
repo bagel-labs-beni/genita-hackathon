@@ -41,7 +41,12 @@ struct MacConversationView: View {
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
                 if let face = call.face {
-                    FaceFrameView(driver: face).frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                    // same presence: the face set's own rest frame sits under the live face, so the first frame after
+                    // arriving from the iPhone is already this face in this crop (never the prep still, then a jump)
+                    ZStack {
+                        if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+                        FaceFrameView(driver: face)
+                    }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                         .allowsHitTesting(false)
                 }
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
@@ -117,6 +122,8 @@ struct MacConversationView: View {
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
                 .accessibilityLabel("Drag to move the window")
         }.frame(width: 390, height: 844).clipped().ignoresSafeArea()
+        // same presence (flag): the waiting sheet fades away as the conversation comes back to this Mac
+        .animation(MacPresenceFade.enabled ? .easeOut(duration: MacPresenceFade.seconds) : nil, value: waitingCopy == nil)
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }

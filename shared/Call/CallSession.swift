@@ -193,6 +193,9 @@ enum CallStop: Equatable {
     @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
     /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
     private(set) var faceStill: CGImage?
+    /// Same presence (Mac): the face set's own rest frame, drawn under the live face so the very first frame on
+    /// arrival is this face in this crop (not the prep still, then a jump). Rendered once per face set.
+    private(set) var facePoster: CGImage?
 
     convenience init() {
         self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
@@ -831,6 +834,7 @@ enum CallStop: Equatable {
         faceAudio = [:]
         facePending = []
         faceStill = nil
+        facePoster = nil
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
         let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
@@ -843,6 +847,27 @@ enum CallStop: Equatable {
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
+        #if os(macOS)
+        renderFacePoster(set, size: size, for: driver)
+        #endif
+    }
+
+    private func renderFacePoster(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
+        Task { [weak self] in
+            let image = await Task.detached(priority: .utility) {
+                FaceRenderer(faceSet: set, outputSize: size, seed: 1, reduceMotion: true).render(at: 0, lip: .rest)
+            }.value
+            guard let self, self.face === driver else { return }
+            self.facePoster = image
+        }
+    }
+
+    /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
+    /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
+    func prepareFace() {
+        guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
+        faceLoad?.cancel()
+        faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
     private func renderFaceStill(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
