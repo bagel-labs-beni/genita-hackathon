@@ -25,6 +25,8 @@ import type { Config } from "./config.ts";
 import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
+import { META_BASE, metaHeaders } from "./meta/http.ts";
+import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
@@ -67,6 +69,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
+    prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
     // Construct once with the process's voice client; all sessions share these seats.
     voiceSeats: voice ? createVoiceSeats(config.voiceMaxCalls ?? 3) : undefined,
     finds: findsFromEnv(config.metaKey),
@@ -95,6 +99,7 @@ export async function startServer(
   injected?: AccountsService | null, // tests
 ): Promise<Server> {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  if (config.httpKeepAliveMs) log("http.keepalive", { ms: config.httpKeepAliveMs, on: await installKeepAlive(config.httpKeepAliveMs) });
   const accounts = injected !== undefined ? injected : await createAccounts(env, log, { loopback }); // null without DATABASE_URL
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
