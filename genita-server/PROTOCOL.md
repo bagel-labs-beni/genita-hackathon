@@ -23,6 +23,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
+| 11/3 | F2-L26 naming + D21 first-call wait: new event `companion.named {name}` (the user renamed the companion by voice, already saved — update every {name} label); optional `start.greetAfterMs` (0–3000; the app sends 2000 on the first call after onboarding: the server waits that long for the user to speak or type first, then greets). REST `POST /v1/companion/name/suggest`, `PATCH /v1/companion {name}` (PREP_API.md). Additive: an app that ignores both sees no change. |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 
 ```
@@ -105,7 +106,8 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
   "lip": { "mode": "peter", "fallback": "none" },   // or just "atlas"
   "bargeIn": { "minMs": 400, "minWords": 2 },
   "mic": true,
-  "interpret": { "source": "face" }          // only read when mode is "interpret"
+  "interpret": { "source": "face" },         // only read when mode is "interpret"
+  "greetAfterMs": 2000                       // D21, optional: first call after onboarding only
 }
 ```
 
@@ -117,6 +119,23 @@ retains new conversation history only for this call. New calls receive an ordina
 greeting, or one qualifying past episode (seen crops first after six hours).
 Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;
 there is no synthetic user `transcript` event.
+
+**`greetAfterMs` (D21, first call after onboarding).** Number of ms, clamped to 0–3000; the app
+sends `2000`. The server does not greet right after `ready`: it waits up to that long. If the user
+starts speaking (`speech.start`) or sends `text` inside the window, there is no greeting — the
+companion just answers them ("Hey, what should I call you?" → "You can call me Jin…"). If nobody
+does, it greets as usual. This also works without server memory (plain greeting). Not in interpret
+mode. Without `greetAfterMs` nothing changes (with memory: greet right after `ready`; without: no greeting).
+
+## Companion name (F2-L26)
+
+`persona.name` is the companion's name; the instructions say "You are {name}", so "What's your name?"
+is answered with it. During a chat-mode call the user can rename it by voice or text: "Call yourself
+Max", "Your name is Max now", "I'll call you Max", "Can I call you Max?" (English, detected on the
+server without a model call; questions like "What should I call you?" are not renames; never during
+interpretation). The server then uses the new name from that turn's reply on (the reply briefly takes
+the name), saves it to the user's companion (same as `PATCH /v1/companion {name}`), and sends
+`companion.named {name}` before that reply's audio. Update every {name} label (S07, S09-T, PREP-1).
 
 ## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
 
@@ -183,6 +202,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
 | `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
 | `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
+| `companion.named` | `name` | the user renamed the companion in the call ("Call yourself Max"); already saved. Update every {name} label |
 
 `audio` timing (all ms on the reply's own audio timeline, 0 = first sample of the reply):
 
