@@ -165,11 +165,18 @@ def lip_hull_mask(img, mouth_px, dilate_px):
     if cs:
         cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
     if len(cs) < 2:
-        # no or only one lip found (grey photo, pale lower lip): add the mouth box ellipse reaching down, so the key's
-        # opening still shows (codex P2 x2)
+        # no or only one lip found (grey photo, pale lower lip): the mouth box ellipse reaching down, so the key's
+        # opening still shows (codex P2 x2). With one lip found, only the ellipse's dark (opening) pixels are added,
+        # so skin below the mouth keeps the neutral's texture.
         bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
         mh_ = max(1, by2 - by1)   # the key's jaw may be lowered by more than the closed mouth's height
-        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
+        el = np.zeros_like(hull)
+        cv2.ellipse(el, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
+        if cs:
+            L_ = lab[..., 0]; lipL_ = float(np.median(L_[keep > 0]))
+            el = el * (L_ < lipL_ - 15).astype(np.uint8)
+            el = cv2.morphologyEx(el, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        hull = np.maximum(hull, el)
     d = max(1, int(dilate_px)); dl = max(1, d // 2)
     up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
     lo = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dl + 1, 2 * dl + 1)))
@@ -184,10 +191,10 @@ def lip_hull_mask(img, mouth_px, dilate_px):
 # a grey cavity. Inside each key's lip hull (lips excluded), the upper 60 % low-saturation teeth lift halfway to white
 # (a band 70 % of the hull width, dimmer off-centre), everything else in the opening becomes a warm dark maroon with a
 # faint tongue tone in the lower third. Colour only; no geometry. Teeth white scales with skin lightness.
-INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 1.0, 'greyDark': 0.4}}
+INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 1.0, 'greyDark': 0.4, 'newDark': 0.78}}
 
 
-def interior_tone(img, mouth_px, spec, scale):
+def interior_tone(img, mouth_px, spec, scale, neutral=None):
     lab, lips = lips_lab_mask(img, mouth_px)
     lb = (lips > 0).astype(np.uint8)
     n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
@@ -258,7 +265,16 @@ def interior_tone(img, mouth_px, spec, scale):
     grey = np.clip((0.28 - S) / 0.1, 0, 1) * np.clip((V - 0.35 * lipV) / 15, 0, 1) * np.clip((vlo + 10 - V) / 20, 0, 1)   # bright teeth stay
     g = cv2.GaussianBlur(inn * grey * (1 - np.clip(th * 1.5, 0, 1)), (0, 0), fe)[..., None] * spec['mix']
     dark = out * spec.get('greyDark', 0.62) * np.array([0.85, 0.85, 1.08], np.float32)
-    return out * (1 - g) + dark * g
+    out = out * (1 - g) + dark * g
+    if neutral is not None:
+        # new opening = clearly darker than the neutral at the same place (lips / skin match the neutral, so they stay)
+        Ln = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)[..., 0]
+        newo = np.clip((Ln - lab[..., 0] - 15) / 20, 0, 1) * inn * (1 - np.clip(th * 1.5, 0, 1))
+        newo = cv2.GaussianBlur(newo, (0, 0), fe)[..., None]
+        out = out * (1 - newo) + out * spec.get('newDark', 0.65) * newo
+    # tongue shadow: the lower third of the opening x .7 (inside the opening only; reads as depth on a phone)
+    low3 = cv2.GaussianBlur(inn * np.clip((r - 0.62) / 0.15, 0, 1), (0, 0), fe)[..., None]
+    return out * (1 - 0.3 * low3)
 
 
 def colorfix(img, mouth_px, spec):
@@ -570,7 +586,7 @@ def main():
         if kind == 'human' and LIP_MATCH:
             cr = NR * (1 - Mr) + lip_match(cr, NR, mouth_px) * Mr
         if INTERIOR.get(kind) and name != 'MBP':
-            cr = interior_tone(cr, mouth_px, INTERIOR[kind], W / 540.0)
+            cr = interior_tone(cr, mouth_px, INTERIOR[kind], W / 540.0, NR)
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
