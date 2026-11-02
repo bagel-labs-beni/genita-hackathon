@@ -112,6 +112,36 @@ struct LipTimelineTests {
         #expect((t.sample(atMs: 250).weights[.rest] ?? 0) < 0.5)
     }
 
+    /// Server aligner (`audio.timing`) covered only the first clause; the second clause came
+    /// without timing. Phonemes win where they are, the second clause still gets shapes.
+    @Test func phonemesOverrideOnlyTheClauseTheyCover() {
+        let t = LipTimeline()
+        t.appendPCM(lipTestPCM(amplitude: 0.4, ms: 2400), offsetMs: 0)
+        t.appendText("ma ma. say it again later ")
+        t.appendPhonemes([LipPhonemeTiming(phoneme: "M", startMs: 0, endMs: 300), LipPhonemeTiming(phoneme: "AA", startMs: 300, endMs: 600),
+                          LipPhonemeTiming(phoneme: "M", startMs: 600, endMs: 900), LipPhonemeTiming(phoneme: "AA", startMs: 900, endMs: 1200)])
+        t.appendWords([LipWordTiming(text: "ma", startMs: 0, endMs: 600), LipWordTiming(text: "ma.", startMs: 600, endMs: 1200)])
+        t.finishAudio()
+        #expect((t.sample(atMs: 150).weights[.MBP] ?? 0) > 0.9)       // the phoneme, not the spelling pass
+        #expect((t.sample(atMs: 450).weights[.A] ?? 0) > 0.9)
+        var shaped = 0
+        for ms in stride(from: 1300, to: 2350, by: 50) where (t.sample(atMs: Double(ms)).weights[.rest] ?? 0) < 0.5 { shaped += 1 }
+        #expect(shaped >= 18)
+    }
+
+    /// Codex P2: timed words with an untimed stretch between them ("my friend") still move.
+    @Test func untimedWordsBetweenTimedOnesGetShapes() {
+        let t = LipTimeline()
+        t.appendPCM(lipTestPCM(amplitude: 0.4, ms: 2000), offsetMs: 0)
+        t.appendText("hello my friend there ")
+        t.appendWords([LipWordTiming(text: "hello", startMs: 0, endMs: 500), LipWordTiming(text: "there", startMs: 1500, endMs: 2000)])
+        t.finishAudio()
+        var shaped = 0
+        for ms in stride(from: 600, to: 1450, by: 50) where (t.sample(atMs: Double(ms)).weights[.rest] ?? 0) < 0.5 { shaped += 1 }
+        #expect(shaped >= 14)
+        #expect(stride(from: 500, to: 760, by: 20).contains { (t.sample(atMs: Double($0)).weights[.MBP] ?? 0) > 0.5 })  // "my" closes the lips
+    }
+
     @Test func silenceMeansRestAndClosed() {
         let t = LipTimeline()
         var pcm = lipTestPCM(amplitude: 0.4, ms: 400)

@@ -220,6 +220,20 @@ struct FaceDriverTests {
         #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
     }
 
+    @Test func alignerTimingsReachTheMouth() throws {
+        let driver = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 1)
+        func audio(_ id: Int) throws -> ServerEvent.Audio {
+            guard case let .audio(a) = try event(#"{"type":"audio","utteranceId":\#(id),"seq":1,"sentence":0,"offsetMs":0,"durationMs":600,"sampleRate":24000,"model":"m","words":[]}"#) else { throw CocoaError(.coderReadCorrupt) }
+            return a
+        }
+        driver.handle(audio: try audio(4), pcm: lipTestPCM(amplitude: 0.4, ms: 600))
+        driver.handle(timing: 4, words: [LipWordTiming(text: "ma", startMs: 0, endMs: 600)],
+                      phonemes: [LipPhonemeTiming(phoneme: "M", startMs: 0, endMs: 300), LipPhonemeTiming(phoneme: "AA", startMs: 300, endMs: 600)])
+        #expect((driver.timeline.sample(atMs: 150).weights[.MBP] ?? 0) > 0.9)
+        driver.handle(timing: 3, words: [], phonemes: [LipPhonemeTiming(phoneme: "OW", startMs: 0, endMs: 600)])   // late, older
+        #expect((driver.timeline.sample(atMs: 150).weights[.MBP] ?? 0) > 0.9)
+    }
+
     @Test func lateEventsOfAnOldOrCancelledUtteranceAreIgnored() throws {
         let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), reduceMotion: true, seed: 5)
         func audio(_ id: Int) throws -> ServerEvent.Audio {
