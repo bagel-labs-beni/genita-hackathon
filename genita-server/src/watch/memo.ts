@@ -59,8 +59,8 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
   const instructions = [
     `You keep a running memo while ${who} watches the user's shared screen with them. It can be anything: a show, a game, a website, a document.`,
     "memo: one or two short lines on what is NEW in these frames and lines (who or what is on screen, what happened, what was said). Don't repeat the memo so far. If the frames are black, write \"Screen is black.\"",
-    "The frames are a short sequence (~0.6 s apart): read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline).",
-    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now (a punchline, a fall, a big move, a reveal, people on screen cracking up); otherwise none (most of the time, and always for documents, code, menus or browsing).`,
+    "The frames are a short sequence since the last memo (0.6–1 s apart), oldest first: read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline).",
+    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, casual English, no question. Otherwise empty.`,
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",

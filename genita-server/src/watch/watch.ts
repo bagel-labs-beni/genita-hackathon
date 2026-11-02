@@ -55,6 +55,8 @@ export type WatchDeps = {
   speakerChip?: boolean;
   memoEveryMs?: number;
   memoAfterLineMs?: number;
+  memoLanes?: number;
+  memoConcurrency?: number;
   log?: (event: string, data: Record<string, unknown>) => void;
   /** test hook: no timers */
   manualTick?: boolean;
@@ -84,7 +86,12 @@ const MEMO_AFTER_LINE_MS = 1_200;
 /** a reaction held back by the video's dialogue or by the conversation waits for a pause, until it is stale */
 const HOLD_WHY = new Set(["dialogue", "conversation", "turn"]);
 /** the timeline memo sees a short motion sequence: 5 frames ~0.6 s apart (≈2.4 s), not stills seconds apart */
-const MEMO_FRAMES = 5;
+const MEMO_FRAMES = 4;
+/** memo Spark lanes raced per memo (GENITA_WATCH_MEMO_LANES, default 2) */
+const MEMO_LANES = Number(process.env.GENITA_WATCH_MEMO_LANES ?? 1) || 1;
+/** memos in flight at once (GENITA_WATCH_MEMOS, default 2), started at least this far apart */
+const MEMO_CONCURRENCY = Number(process.env.GENITA_WATCH_MEMOS ?? 2) || 1;
+const MEMO_STAGGER_MS = 1_500;
 const MEMO_FRAME_SPACING_MS = 600;
 /** a frame this different from the last one (a cut, a fall, a big move) asks for the memo right away */
 export const MOTION_SPIKE = 0.1;
@@ -129,7 +136,8 @@ export class WatchController {
   private protectedSpoken = false;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
   private held: { v: MemoVerdict; at: number } | null = null;
-  private memoInFlight: AbortController | null = null;
+  /** memos running now: up to MEMO_CONCURRENCY, started ≥ MEMO_STAGGER_MS apart, so a moment waits ≤ ~1.5 s for one */
+  private memosInFlight = new Set<AbortController>();
   private asr: WatchAsr | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
   private padTimer: NodeJS.Timeout | null = null;
@@ -236,8 +244,8 @@ export class WatchController {
     if (this.padTimer) clearInterval(this.padTimer);
     this.tickTimer = null;
     this.padTimer = null;
-    this.memoInFlight?.abort();
-    this.memoInFlight = null;
+    for (const m of this.memosInFlight) m.abort();
+    this.memosInFlight.clear();
     this.held = null;
     this.asr?.end();
     this.asr = null;
@@ -352,9 +360,10 @@ export class WatchController {
   /** Runs every 500 ms while sharing (tests call it directly). */
   tick(): void {
     if (this.held && this.sharing && !this.closed) this.tryReact(this.held.v, this.held.at, true);
-    if (!this.sharing || this.memoInFlight || this.closed) return this.maybeSpeakBlank();
     const now = this.deps.now();
     const since = now - this.lastMemoAt;
+    const busy = this.memosInFlight.size >= (this.deps.memoConcurrency ?? MEMO_CONCURRENCY) || (this.memosInFlight.size > 0 && since < MEMO_STAGGER_MS);
+    if (!this.sharing || busy || this.closed) return this.maybeSpeakBlank();
     const newFrames = this.frames.some((f) => f.at > this.lastMemoAt);
     const spike = this.salientAt !== null && this.salientAt > this.lastMemoAt && now - this.salientAt >= SPIKE_SETTLE_MS;
     const due =
@@ -387,7 +396,10 @@ export class WatchController {
     const at = this.deps.now();
     const since = this.lastMemoAt;
     const fresh = this.frames.filter((f) => f.at > since);
-    const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, MEMO_FRAME_SPACING_MS).map((f) => f.url);
+    // spread over everything new since the last memo (a move between two memos is never skipped), ≥0.6 s apart
+    const span = fresh.length > 1 ? fresh[fresh.length - 1].at - fresh[0].at : 0;
+    const spacing = Math.max(MEMO_FRAME_SPACING_MS, Math.floor(span / (MEMO_FRAMES - 1)));
+    const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, spacing).map((f) => f.url);
     const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
     this.lastMemoAt = at;
@@ -402,18 +414,16 @@ export class WatchController {
       blank: this.blank,
     });
     const abort = new AbortController();
-    this.memoInFlight = abort;
+    this.memosInFlight.add(abort);
     let raw = "";
     try {
-      for await (const ev of this.deps.spark(req, { signal: abort.signal, firstEventTimeoutMs: 10_000 })) {
-        if (ev.type === "text") raw += ev.delta;
-        else if (ev.type === "done" && !raw) raw = ev.text;
-      }
+      // two lanes, first complete JSON wins (a reaction is only as quick as its memo; Spark's tail is long)
+      raw = await this.memoRace(req, abort.signal);
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
       return null;
     } finally {
-      if (this.memoInFlight === abort) this.memoInFlight = null;
+      this.memosInFlight.delete(abort);
     }
     if (abort.signal.aborted || !this.sharing) return null;
     const v = parseMemoVerdict(raw);
@@ -437,6 +447,30 @@ export class WatchController {
     }
     if (v.moment !== "none") this.tryReact(v, at);
     return v;
+  }
+
+  private async memoRace(req: SparkRequest, signal: AbortSignal): Promise<string> {
+    const lanes = Math.max(1, this.deps.memoLanes ?? MEMO_LANES);
+    const kids = Array.from({ length: lanes }, () => new AbortController());
+    const stop = () => kids.forEach((k) => k.abort());
+    signal.addEventListener("abort", stop, { once: true });
+    const one = async (k: AbortController): Promise<string> => {
+      let raw = "";
+      for await (const ev of this.deps.spark(req, { signal: k.signal, firstEventTimeoutMs: 10_000 })) {
+        if (ev.type === "text") raw += ev.delta;
+        else if (ev.type === "done" && !raw) raw = ev.text;
+      }
+      if (!parseMemoVerdict(raw)) throw new Error("memo: no verdict");
+      return raw;
+    };
+    try {
+      return await Promise.any(kids.map(one));
+    } catch (err) {
+      throw err instanceof AggregateError ? err.errors[0] : err;
+    } finally {
+      stop();
+      signal.removeEventListener("abort", stop);
+    }
   }
 
   private tryReact(v: MemoVerdict, verdictAt: number, retry = false): void {

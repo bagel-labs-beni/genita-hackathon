@@ -172,6 +172,7 @@ function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}, extr
       yield { type: "done", responseId: null, text, status: "completed" };
     },
     manualTick: true,
+    memoLanes: 1,
     ...extra,
   });
   const sink = new FakeSink();
@@ -651,7 +652,7 @@ test("realtime: the scene timeline (memo) refreshes every 3 s while the screen c
   assert.equal(sparkCalls.length, 2);
 });
 
-test("motion: a spike (cut / fall / big move) asks for the memo 0.7 s later, with a 5-frame sequence ~0.6 s apart", async () => {
+test("motion: a spike (cut / fall / big move) asks for the memo 0.7 s later, with a short sequence ~0.6 s apart", async () => {
   const { c, at, sparkCalls } = controller([]);
   c.onMessage({ type: "start", source: "YouTube" });
   at(2_500);
@@ -673,7 +674,7 @@ test("motion: a spike (cut / fall / big move) asks for the memo 0.7 s later, wit
   await wait(5);
   assert.equal(sparkCalls.length, 2, "memo right after the spike, not at the next cadence (6 s)");
   const images = (sparkCalls[1].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
-  assert.equal(images.length, 3, "≤5 frames, ≥0.6 s apart: 3.3/3.9/4.5 → 3.6/4.2/4.8 picked from 6 fresh frames");
+  assert.equal(images.length, 3, "≤4 frames, ≥0.6 s apart: 3.6/4.2/4.8 picked from 6 fresh frames");
   assert.match(sparkCalls[1].instructions!, /read the motion across them/);
 });
 
@@ -711,4 +712,53 @@ test("session: a watch reaction's face tag never reaches the voice or the captio
   assert.deepEqual(tts.at(-1), { text: "[laughs] He fed the ceiling!", emotion: "laugh" });
   assert.equal(client.json.find((m) => m.type === "reply" && m.utteranceId === id)!.text, "He fed the ceiling!");
   s.close();
+});
+
+test("memo: two Spark lanes race and the first complete verdict wins; a lane with junk doesn't count", async () => {
+  const good = '{"memo":"A dunk.","moment":"surprising","reaction":"What a dunk!","speakers":[],"protectedVideo":false}';
+  let n = 0;
+  const { c, at, reacted } = controller([], {}, {
+    memoLanes: 2,
+    async *spark(_req, { signal } = {}): AsyncGenerator<SparkStreamEvent> {
+      const lane = n++;
+      // lane 0 is slow, lane 1 answers junk first; lane 0's real verdict must still win
+      await new Promise((r) => setTimeout(r, lane === 0 ? 40 : 5));
+      if (signal?.aborted) return;
+      const text = lane === 0 ? good : "not json";
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame });
+  const v = await c.runMemo();
+  assert.equal(n, 2);
+  assert.equal(v?.moment, "surprising");
+  assert.deepEqual(reacted, ["<surprised> [surprised] What a dunk!"]);
+});
+
+test("memo pipeline: a second memo starts 1.5 s after the first while it runs, never a third", async () => {
+  let running = 0, peak = 0, calls = 0;
+  const { c, at } = controller([], {}, {
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      calls++; running++; peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 60));
+      running--;
+      const text = '{"memo":"x","moment":"none","reaction":"","speakers":[],"protectedVideo":false}';
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  c.onMessage({ type: "start", source: "YouTube" });
+  // 3.0 s cadence memo; a spike at 3.5 s settles by 4.2 s but waits for the 1.5 s stagger (4.5 s); then two run, so a
+  // third (cadence at 7.6 s would be due) waits while both are out
+  for (const [ms, motion, expect] of [[3_000, 0.03, 1], [3_500, 0.4, 1], [4_300, 0.03, 1], [4_600, 0.03, 2], [5_000, 0.4, 2], [8_000, 0.03, 2]] as const) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion });
+    c.tick();
+    assert.equal(calls, expect, `at ${ms} ms`);
+  }
+  await wait(80);
+  assert.equal(peak, 2);
 });
