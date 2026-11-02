@@ -21,7 +21,9 @@ import Foundation
         case signingIn
         /// server unreachable or an unexpected answer; `refresh()` again
         case offline(String)
-        /// MAC-2: no consent or no companion yet ("Set up on iPhone")
+        /// CS01: signed in (Apple or Judge access), AI-data consent not given yet
+        case needsConsent
+        /// MAC-2: no companion yet ("Set up on iPhone")
         case noCompanion
         case ready(CompanionCallPlan)
     }
@@ -65,7 +67,9 @@ import Foundation
         var plan: CompanionCallPlan?
         do {
             let me: GenitaMe = try await get("/me", token: token)
-            if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
+            if !me.consented {
+                next = .needsConsent
+            } else if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
                 next = .noCompanion
             } else if let p = CompanionCallPlan(companionJSON: try await getData("/v1/companion", token: token)) {
                 plan = p; next = .ready(p)
@@ -104,6 +108,24 @@ import Foundation
         }
     }
 
+    /// A02-J · Judge access: a code from the submission form instead of an Apple ID. nil = signed in.
+    func signInWithJudgeCode(_ code: String) async -> String? {
+        guard let req = JudgeAccess.request(code: code, base: auth.baseURL) else { return JudgeAccess.message(status: 401) }
+        guard let (data, response) = try? await URLSession.shared.data(for: req) else { return JudgeAccess.message(status: nil) }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if let message = JudgeAccess.message(status: status) { return message }
+        guard let signedIn = try? JSONDecoder().decode(GenitaSignInResponse.self, from: data) else { return JudgeAccess.message(status: 500) }
+        generation += 1
+        auth.store.save(signedIn.token)
+        await refresh()
+        return nil
+    }
+
+    /// CS01 · Agree and continue → POST /me/consent → on to the call (or MAC-2).
+    func consent() async -> Bool {
+        do { try await auth.consent(); await refresh(); return true } catch { return false }
+    }
+
     func signOut() {
         generation += 1
         account = .signedOut
@@ -134,7 +156,7 @@ import Foundation
             account = .signedOut
             face = nil
         case .consent:
-            account = .noCompanion // consent is given on the iPhone (MAC-2)
+            account = .needsConsent
         case .timeLimit:
             break
         }
@@ -224,6 +246,7 @@ struct MacAccountRow: View {
             case .offline(let reason):
                 HStack { Text(reason).foregroundStyle(.secondary); Button("Try again") { Task { await call.refresh() } } }
             case .noCompanion: Text("Set up Genita on your iPhone first.").foregroundStyle(.secondary)
+            case .needsConsent: Text("Agree to the AI data terms to continue.").foregroundStyle(.secondary)
             case .ready(let plan):
                 HStack(spacing: 8) {
                     Text("Calling with \(plan.name)").foregroundStyle(.secondary)

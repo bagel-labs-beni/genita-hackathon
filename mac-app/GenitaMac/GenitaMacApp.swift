@@ -10,7 +10,7 @@ import CoreText
     }
     var body: some Scene {
         WindowGroup("Genita", id: "companion") {
-            MacHandoffControls().preferredColorScheme(.light)
+            MacStartView().preferredColorScheme(.light)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif

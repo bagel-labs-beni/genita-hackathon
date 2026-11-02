@@ -101,3 +101,29 @@ enum ProductPicks {
 
     static func evidence(from card: FindCard) -> ProductEvidence { ProductEvidence(lines: card.why + card.how) }
 }
+
+/// A02-J on the Mac (PRD v12 D41, server #166 `POST /auth/judge`): a code instead of an Apple ID.
+/// Same request and answers as GenitaKit's `signInWithJudgeCode` (#166), with `device: "mac"`.
+enum JudgeAccess {
+    static func request(code: String, base: URL) -> URLRequest? {
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let body = try? JSONSerialization.data(withJSONObject: ["code": trimmed, "device": "mac"]) else { return nil }
+        var req = URLRequest(url: base.appendingPathComponent("auth/judge"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 20
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.httpBody = body
+        return req
+    }
+
+    /// The one line under the field; nil = signed in. `status` nil = no answer at all.
+    static func message(status: Int?) -> String? {
+        switch status {
+        case nil: "Couldn’t reach the server. Check your connection."
+        case let s? where (200..<300).contains(s): nil
+        case 401?: "That code didn’t work. Check it and try again."
+        case 429?: "Too many tries. Wait 10 minutes and try again."
+        default: "Judge access isn’t available right now."
+        }
+    }
+}

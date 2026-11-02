@@ -88,4 +88,23 @@ final class MacCallPlanTests: XCTestCase {
         let e = ProductPicks.evidence(from: card([], why: why, how: how))
         XCTAssertEqual(e.lines, why + how)
     }
+
+    // MARK: A02-J on the Mac (#166 POST /auth/judge)
+
+    func testJudgeCodeAnswersBecomeOneLine() {
+        XCTAssertEqual(JudgeAccess.message(status: 401), "That code didn’t work. Check it and try again.")
+        XCTAssertEqual(JudgeAccess.message(status: 429), "Too many tries. Wait 10 minutes and try again.")
+        XCTAssertEqual(JudgeAccess.message(status: 404), "Judge access isn’t available right now.")
+        XCTAssertEqual(JudgeAccess.message(status: nil), "Couldn’t reach the server. Check your connection.")
+        XCTAssertNil(JudgeAccess.message(status: 200))
+    }
+
+    func testJudgeRequestCarriesTheTrimmedCodeAndTheMac() throws {
+        let req = try XCTUnwrap(JudgeAccess.request(code: "  ABCD-1234 \n", base: URL(string: "https://d72kt0jfmscyj.cloudfront.net")!))
+        XCTAssertEqual(req.url?.absoluteString, "https://d72kt0jfmscyj.cloudfront.net/auth/judge")
+        XCTAssertEqual(req.httpMethod, "POST")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(req.httpBody)) as? [String: String])
+        XCTAssertEqual(body, ["code": "ABCD-1234", "device": "mac"])
+        XCTAssertNil(JudgeAccess.request(code: "   ", base: URL(string: "https://x.example")!))
+    }
 }

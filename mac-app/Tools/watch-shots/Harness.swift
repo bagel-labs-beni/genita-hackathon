@@ -27,9 +27,17 @@ import CoreText
             case "mac-rs-b": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.full); override = ""
             case "mac-rs-half": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = ""
             case "mac-link": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = "link"
+            case "a02", "a02-j", "cs01": break
             default: setenv("GENITA_MAC_REVIEW", state, 1)
             }
-            let view = MacConversationView(reviewOverride: override).frame(width: 390, height: 844).environment(\.colorScheme, .light)
+            let page: AnyView
+            switch state {
+            case "a02": page = AnyView(MacSignInView())
+            case "a02-j": page = AnyView(MacJudgeCodeSheet())
+            case "cs01": page = AnyView(MacConsentView())
+            default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
+            }
+            let view = page.environment(\.colorScheme, .light)
             let r = ImageRenderer(content: view)
             r.scale = 2
             guard let img = r.cgImage else { print("no image", state); continue }
