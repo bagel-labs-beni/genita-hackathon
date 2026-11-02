@@ -9,7 +9,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     @Published var status = "연결 대기"
     @Published var code = ""
     var onMessage: (([String: Any]) -> Void)?
-    private let peer = MCPeerID(displayName: ProcessInfo.processInfo.hostName)
+    private let peer = MCPeerID(displayName: String(ProcessInfo.processInfo.hostName.prefix(40)))
     private lazy var session = MCSession(peer: peer, securityIdentity: nil, encryptionPreference: .required)
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
