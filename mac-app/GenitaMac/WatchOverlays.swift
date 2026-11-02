@@ -91,7 +91,7 @@ struct SpeakerChip: View {
     var name: String
     var body: some View {
         HStack(spacing: 12) {
-            TalkWave().foregroundStyle(WatchPalette.blueOnInk).frame(width: 14, height: 20)
+            WatchTalkWave().foregroundStyle(WatchPalette.blueOnInk).frame(width: 14, height: 20)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Talking on screen: \(name)").font(WatchPalette.sans(15, medium: true)).lineLimit(1)
                 Text("From the shared screen’s sound").font(WatchPalette.sans(12)).foregroundStyle(WatchPalette.onInkSoft)
@@ -169,7 +169,7 @@ private struct SmileIcon: View {
     }
 }
 
-private struct TalkWave: View {
+private struct WatchTalkWave: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(Array([8.0, 12, 9, 12].enumerated()), id: \.offset) { _, h in Capsule().frame(width: 2, height: h) }
