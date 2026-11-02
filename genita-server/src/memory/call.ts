@@ -53,7 +53,10 @@ export class MemoryCall {
   constructor(service: MemoryService, userId: string, sessionId: string, onForget: (revision: number) => void = () => {}) {
     this.service = service; this.userId = userId; this.sessionId = sessionId;
     this.stateKnown = new Promise<void>((r) => { this.markKnown = r; });
-    this.unsubscribe = service.subscribe(userId, (revision) => { this.forgetsSeen++; this.pending = []; this.recentReplies = []; this.revision = revision; onForget(revision); });
+    this.unsubscribe = service.subscribe(userId, (revision) => {
+      this.forgetsSeen++; this.pending = []; this.recentReplies = []; this.revision = revision;
+      if (!this.closed) onForget(revision);
+    });
   }
   async open(greet = true): Promise<Memory | null> {
     let state;
@@ -88,7 +91,10 @@ export class MemoryCall {
   }
   close(): void {
     if (this.closed) return;
-    this.flush(); this.closed = true; this.unsubscribe(); this.service.endCall(this.userId, this.sessionId);
+    this.flush(); this.closed = true; this.service.endCall(this.userId, this.sessionId);
+    // keep hearing Forget until this call's last batch is written or dropped (Codex 11/3: a batch held for
+    // a slow first state read must still see a Forget that lands after the call ended)
+    void this.queue.catch(() => {}).finally(() => this.unsubscribe());
   }
   private async execute(call: FunctionCall): Promise<unknown> {
     let args: Record<string, unknown>;
