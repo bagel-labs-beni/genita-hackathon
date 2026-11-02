@@ -431,7 +431,7 @@ and send me the links"). That turn's reply is a short line ("On it.") — never 
 full answer, which would guess products and links — and the card follows:
 
 ```
-find.started {kind:"product", title:"Looking for 2 that match your style…", detail:"Jacket · searching shops"}
+find.started {kind:"product", title:"Finding 2 for your style…", detail:"Jacket · searching shops"}
 → find.progress {detail:"Light jacket · checking 2 shops"} → find.created (products[], pictures pending)
 → find.image {slot:"product-1"|"product-2"} → the companion says card.say
 ```
