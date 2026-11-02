@@ -144,13 +144,18 @@ export async function startServer(
     if (url.pathname !== "/v1/session") return reject(404, "Not Found");
     if (sessions.size >= config.maxSessions) return reject(503, "Busy");
     principal(req, url).then(
-      (who) =>
+      (who) => {
+        // re-check after the async auth: concurrent upgrades all passed the first check (attach is synchronous below)
+        if (sessions.size >= config.maxSessions) return reject(503, "Busy");
         wss.handleUpgrade(req, socket, head, (ws) => {
+          // a bad frame while closing must not become an unhandled 'error' (that kills the process)
+          ws.on("error", () => ws.terminate());
           // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
           if (!who) return ws.close(4401, "unauthorized");
           if (!who.consented) return ws.close(4403, "consent_required");
           attach(ws, who);
-        }),
+        });
+      },
       () => reject(500, "Internal Server Error"),
     );
   });
