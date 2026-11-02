@@ -4,6 +4,19 @@ import XCTest
 /// ios-app/Tools/onboarding-stub (127.0.0.1:8790, PREP_API.md shapes) and lands in the call on the replay
 /// server (8788). Screenshots `onb-*` go to the workflow artifact for the eye check against Figma.
 final class OnboardingUITests: XCTestCase {
+    /// the stub is shared by the tests of one run: start each from "no companion, voice service up"
+    override func setUp() {
+        super.setUp()
+        stubPost("/__reset")
+    }
+    private func stubPost(_ path: String, json: String = "{}") {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:8790" + path)!)
+        req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "content-type"); req.httpBody = Data(json.utf8)
+        let done = expectation(description: path)
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.fulfill() }.resume()
+        wait(for: [done], timeout: 10)
+    }
+
     func testOnboardingAgainstTheServer() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
@@ -65,10 +78,23 @@ final class OnboardingUITests: XCTestCase {
         capture("V02-T")
         primary.tap()
 
-        // V04 device voices
-        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 5))
-        app.buttons["voice0"].tap()
+        // V04: the server's four voices (Figma "voice model" frames): nothing picked, Continue off
+        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(element("voiceHint").exists, "V04 hint line")
+        XCTAssertTrue((app.buttons["voice0"].label).hasPrefix("Tara"), "first voice is the recommended human default")
+        XCTAssertFalse(primary.isEnabled, "V04: nothing picked yet")
         capture("V04")
+        // play Leah: the clip comes from the server, the card turns to "Playing · …" and Continue stays off
+        app.buttons["play1"].tap()
+        expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Playing'"), evaluatedWith: app.buttons["voice1"])
+        waitForExpectations(timeout: 10)
+        XCTAssertFalse(primary.isEnabled, "V04-P: Continue waits for the clip")
+        capture("V04-P")
+        // when the 1.6 s clip ends the card stays picked
+        expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"])
+        waitForExpectations(timeout: 10)
+        XCTAssertTrue(primary.isEnabled)
+        capture("V04-S")
         primary.tap()
 
         // NM01: pre-filled from the server's suggestion, editable, empty keeps Continue off, 20 characters max
@@ -143,5 +169,50 @@ final class OnboardingUITests: XCTestCase {
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
         capture("I04-S")
+    }
+
+    /// V04 with the voice service down or cold: the list is greyed, says "Voice preview is waking up", and the
+    /// recommended default stays picked so the user can still continue (PUT saves it; the server default already is it).
+    func testVoicePickerWhenTheVoiceServiceIsDown() throws {
+        stubPost("/__voice", json: #"{"down":true}"#)
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = [
+            "GENITA_API_URL": "http://127.0.0.1:8790",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_REVIEW_STILL": "1",
+        ]
+        app.launch()
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        let primary = app.buttons["primaryCTA"]
+        XCTAssertTrue(app.buttons["copyPrompt"].waitForExistence(timeout: 15))
+        primary.tap()
+        let input = element("responseInput")
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.tap()
+        input.typeText("Communication style: warm and direct. Response preferences: two options, one recommended.")
+        app.buttons["Dismiss keyboard"].tap()
+        XCTAssertTrue(primary.waitForExistence(timeout: 5))
+        primary.tap()
+        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15))
+        primary.tap()
+        XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        primary.tap()
+        XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15))
+        primary.tap()
+
+        XCTAssertTrue(element("voiceWaking").waitForExistence(timeout: 15), "V04: Voice preview is waking up")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-V04-waking"; shot.lifetime = .keepAlways; add(shot)
+        XCTAssertTrue(element("voiceWakingSpinner").exists, "a spinner shows while it wakes")
+        XCTAssertFalse(app.buttons["play0"].isEnabled, "greyed: no preview while the voice service is down")
+        XCTAssertTrue(primary.isEnabled, "the default voice is picked, Continue works")
+        // the voice service comes up: the app asks again every 4 s and swaps in the normal list by itself
+        stubPost("/__voice", json: #"{"down":false}"#)
+        XCTAssertTrue(element("voiceHint").waitForExistence(timeout: 20), "V04 back to the normal list")
+        XCTAssertTrue(app.buttons["play0"].isEnabled)
+        let up = XCTAttachment(screenshot: app.screenshot()); up.name = "onb-V04-recovered"; up.lifetime = .keepAlways; add(up)
+        primary.tap()
+        XCTAssertTrue(app.textFields["companionNameInput"].waitForExistence(timeout: 10), "NM01 follows")
     }
 }

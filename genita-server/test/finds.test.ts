@@ -4,7 +4,7 @@ import { cleanName, nameKey, sameIngredient, isStaple } from "../src/finds/names
 import { Candidates, tierOf, toWire, recipeSummary } from "../src/finds/tiers.ts";
 import { parseSeenLine, LineSplitter, lastJsonObject, isYes, findUrl } from "../src/finds/parse.ts";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { confirmItem, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
+import { confirmItem, fridgeLine, fridgePill, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
 import { MemoryFindsStore, FileFindsStore, UNDO_MS } from "../src/finds/store.ts";
 import { checkServerEvent, type FindCard, type ServerEvent } from "../src/protocol.ts";
 import type { FindsVendors } from "../src/finds/vendors.ts";
@@ -278,7 +278,8 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.equal(card.sources[0].domain, "maangchi.com");
   assert.equal(card.steps.length, 3);
   assert.equal(card.steps[0].source, "maangchi.com");
-  assert.equal(card.say, "Found one. You're one pan away.");
+  // D23: the line names only "have" items (kimchi is "맞아?", onion has no box), never the model's own "say"
+  assert.equal(card.say, "I can see eggs and cooked rice. You could make kimchi fried rice, if you have kimchi.");
   assert.ok(card.how.some((h) => /illustrations I made/.test(h)));
   assert.equal(events.filter((e) => e.type === "find.image").length, 4);
   assert.ok(events.some((e) => e.type === "observe.boxes"));
@@ -301,6 +302,7 @@ test("recipe pipeline: nothing seen → find.failed unclear (IC-4), no card, no 
   assert.equal(r.card, null);
   const f = events.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
   assert.equal(f.reason, "unclear");
+  assert.equal(f.message, "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.", "IC-4 Figma copy (title. body)");
   assert.ok(!events.some((e) => e.type === "find.created"));
 });
 
@@ -451,4 +453,40 @@ test("store: Undo works inside 24 h only, even when /restore is called directly"
   assert.equal(await store.remove("o", "card-0001"), true);
   t += UNDO_MS + 1;
   assert.equal(await store.restore("o", "card-0001"), false, "window over");
+});
+
+test("fridge order (D23, #122): one line, spoken after the boxes, naming only YES + box items", async () => {
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\nkimchi | - | red jar\nlimes | 2 | green fruit\ntofu | 1 | white block\n", recipe: RECIPE_JSON });
+  const spoken: { text: string; at: number }[] = [];
+  const { ctx, events } = ctxFor("recipe", v, { images: false, speak: (text) => spoken.push({ text, at: events.length }) });
+  await runRecipe(ctx);
+  assert.equal(spoken.length, 1);
+  assert.equal(spoken[0].text, "I can see eggs, tofu, and cooked rice. You could make kimchi fried rice, if you have kimchi.");
+  const boxesBefore = events.slice(0, spoken[0].at).filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+  const boxed = new Set(boxesBefore.flatMap((b) => b.items.map((i) => i.label.toLowerCase())));
+  for (const name of ["eggs", "tofu", "cooked rice"]) assert.ok(boxed.has(name), `${name} box is up before it is named`);
+  assert.ok(!/see [^.]*kimchi/.test(spoken[0].text), "kimchi (맞아?) is never in the 'I can see' list");
+  for (const no of ["limes", "onion,", "sesame"]) assert.ok(!spoken[0].text.includes(no), no);
+});
+
+test("fridge line: nothing confirmed → no ingredient named", () => {
+  const maybe = [{ id: "1", name: "kimchi", tier: "maybe" as const, from: "camera" as const }];
+  assert.equal(fridgeLine(maybe, "kimchi stew"), "I can't say for sure what's in there yet. Tap what you have on the card — kimchi stew might work.");
+  assert.equal(fridgeLine([{ id: "2", name: "eggs", tier: "have" as const, from: "camera" as const }, { id: "3", name: "tofu", tier: "have" as const, from: "both" as const }], null), "I can see eggs and tofu.");
+});
+
+test("fridge pill (#122 follow-up): the shown line is ≤ 28 chars, whole names, have items only; the sentence is spoken", async () => {
+  const it = (name: string, tier: "have" | "maybe" | "buy" = "have") => ({ id: name, name, tier, from: "camera" as const });
+  assert.equal(fridgePill([it("egg"), it("tofu"), it("milk")]), "Egg, tofu, milk");
+  assert.equal(fridgePill([it("egg"), it("tofu"), it("green onion"), it("whole milk"), it("kimchi", "maybe")]), "Egg, tofu, green onion +1");
+  assert.equal(fridgePill([it("extra firm silken tofu block"), it("egg")]), "I see 2 things.");
+  assert.equal(fridgePill([it("kimchi", "maybe")]), "Not sure yet.");
+  for (const p of ["Egg, tofu, green onion +1", "I see 2 things.", "Not sure yet."]) assert.ok(p.length <= 28, p);
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\ntofu | 1 | white block\n", recipe: RECIPE_JSON });
+  const { ctx, events } = ctxFor("recipe", v, { images: false, speak: () => {} });
+  const r = await runRecipe(ctx);
+  assert.ok(r.card!.pill && r.card!.pill.length <= 28, r.card!.pill);
+  assert.ok(r.card!.say!.length > 28, "the spoken sentence stays whole");
+  const withPill = events.find((e) => e.type === "find.items" && (e as { pill?: string }).pill) as { pill: string } | undefined;
+  assert.equal(withPill?.pill, r.card!.pill, "the pill reaches the app with the items");
 });

@@ -38,6 +38,8 @@ export type Channel = "mic" | "call";
 
 export interface InterpretHost {
   now(): number;
+  /** Synchronous admission after empty/echo/language filters; false drops the utterance. */
+  admitTurn(): boolean;
   send(e: ServerEvent): void;
   /** binary TTS frame for the `audio` event with this seq */
   sendAudio(seq: number, pcm: Buffer): void;
@@ -45,6 +47,8 @@ export interface InterpretHost {
   nextUtteranceId(): number;
   translate(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent>;
   tts(text: string, signal: AbortSignal): AsyncIterable<TtsChunk>;
+  /** Decide once at reply start (device mode or GPU overflow), never between sentences. */
+  useDeviceVoice?(): boolean;
   /**
    * Device voice mode (PROTOCOL.md): when set, each translated sentence goes out as `say` for the app to
    * speak instead of server TTS audio.
@@ -226,6 +230,11 @@ export class Interpreter {
       this.host.log("interpret.detected", { language: r.lang, speaker: r.speaker, relayed: false, reason: r.reason });
       return;
     }
+    if (!this.host.admitTurn()) {
+      spec?.abort.abort();
+      if (b) this.closeBubble(b, "cancelled");
+      return;
+    }
     if (r.setsOther) {
       this.other = r.setsOther;
       this.sendPair();
@@ -260,6 +269,7 @@ export class Interpreter {
       bubble.original = { lang: this.user, text: clean };
       return this.closeBubble(bubble, "skipped", "no_other_language");
     }
+    if (!this.host.admitTurn()) return;
     bubble.original = { lang: this.user, text: clean };
     const abort = new AbortController();
     const now = this.host.now();
@@ -423,6 +433,7 @@ export class Interpreter {
 
   private async runJob(job: Job): Promise<void> {
     const { utteranceId, m } = job;
+    const say = (this.host.useDeviceVoice?.() ?? !!this.host.say) ? this.host.say : undefined;
     const signal = job.abort.signal;
     if (this.phase === "listening") this.setPhase("thinking");
     const splitter = new SentenceSplitter({ firstClauseMaxChars: 60 });
@@ -476,10 +487,10 @@ export class Interpreter {
         job.spoken.push(sentences[i]);
         continue;
       }
-      if (this.host.say) {
+      if (say) {
         // device voice: the app speaks it; timing is an estimate (~70 ms per character, like the chat path)
         if (job.playStart === null) this.firstAudio(job);
-        this.host.say(utteranceId, i, sentences[i], speechLang(sentences[i], job.bubble?.translation?.lang ?? ""));
+        say(utteranceId, i, sentences[i], speechLang(sentences[i], job.bubble?.translation?.lang ?? ""));
         ttsModel = "device";
         job.audioMs += sentences[i].length * DEVICE_MS_PER_CHAR;
         this.playEndAt = job.playStart! + job.audioMs;
@@ -549,10 +560,22 @@ export class Interpreter {
       replyStartToFirstSentenceMs: m.firstSentenceAt ? Math.round(m.firstSentenceAt - m.startAt) : null,
       firstSentenceToFirstAudioMs: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
       speechEndToFirstAudioMs: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
+      stt_ms: m.speechEndAt && m.completeAt ? Math.round(m.completeAt - m.speechEndAt) : null,
+      llm_ms: m.firstTokenAt ? Math.round(m.firstTokenAt - m.startAt) : null,
+      tts_ms: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
+      first_audio_ms: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
       audioMs: Math.round(job.audioMs),
       speculative: job.speculative,
     };
     this.host.send({ type: "turn.metrics", ...metrics });
+    this.host.log("turn.answered", {
+      mode: "interpret",
+      stt_ms: metrics.stt_ms,
+      llm_ms: metrics.llm_ms,
+      tts_ms: metrics.tts_ms,
+      first_audio_ms: metrics.first_audio_ms,
+      utteranceId,
+    });
     if (job.bubble) this.host.log("interpret.relayed", { ms: metrics.speechEndToFirstAudioMs, speaker: job.bubble.speaker, from: job.bubble.original.lang, to: job.bubble.translation?.lang, speculative: job.speculative });
     // speaking off once this utterance should have finished playing
     if (job.playStart !== null) {
