@@ -61,6 +61,15 @@ import UniformTypeIdentifiers
         return Self.jpeg(image)?.base64EncodedString()
     }
 
+    /// PERC-2: the latest frame as an image (nil when off or no frame yet), for the perception face crop.
+    func latestImage() -> CIImage? {
+        guard isOn else { return nil }
+        #if DEBUG
+        if let fixture { return CIImage(cgImage: fixture) }
+        #endif
+        return worker.latest()
+    }
+
     nonisolated static func jpeg(_ image: CIImage, maxSide: CGFloat = 768, quality: CGFloat = 0.6) -> Data? {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
