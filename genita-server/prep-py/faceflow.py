@@ -104,12 +104,43 @@ def lip_map(kind):
 # Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs Peter): same transform on every key and the neutral
 # ROI, so it never flickers. Lifts grey teeth inside the lip hull, pulls the lips toward the photo's pink.
 COLORFIX = {'human': (1.15, 0.88, 1.0)}
+LIP_MATCH = True   # key lips take the neutral's lip colour (all skin tones)
 LOWER_V = 1.0    # lower-half darkening (0.85) measured worse (critic v13 7.0 < v12 7.5): openings read bigger; off
+
+
+def lips_lab_mask(img, mouth_px):
+    """Lips = redder (Lab a*) than the skin in the mouth box; robust across skin tones."""
+    lab = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    bx1, by1, bx2, by2 = mouth_px
+    mw, mh = bx2 - bx1, max(1, by2 - by1)
+    box = np.zeros(lab.shape[:2], np.uint8)
+    box[max(0, by1 - mh):by2 + 3 * mh, max(0, bx1 - mw // 6):bx2 + mw // 6] = 1
+    if not box.any():
+        return lab, box.astype(np.float32)
+    skin_a = np.median(lab[..., 1][box > 0])
+    return lab, (((lab[..., 1] > skin_a + 6) & (box > 0)).astype(np.float32))
+
+
+def lip_match(key, neutral, mouth_px):
+    """Move the key's lip colour (L*, a*, b* means) onto the neutral's lips, so a key never changes lip colour
+    (critic 11/3: dark-skin open keys turned the lower lip lighter and redder)."""
+    lk, mk = lips_lab_mask(key, mouth_px)
+    ln, mn = lips_lab_mask(neutral, mouth_px)
+    if mk.sum() < 20 or mn.sum() < 20:
+        return key
+    d = ln[mn > 0].mean(0) - lk[mk > 0].mean(0)
+    m = cv2.GaussianBlur(mk, (0, 0), 1.5)[..., None]
+    out = np.clip(lk + d[None, None, :] * m, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(out, cv2.COLOR_LAB2BGR).astype(np.float32)
 
 
 def colorfix(img, mouth_px, spec):
     tg, ls, lv = spec
     u8 = np.clip(img, 0, 255).astype(np.uint8)
+    # teeth lift scales with skin lightness (dark skin: bright-white teeth read as pasted on)
+    bx1_, by1_, bx2_, by2_ = mouth_px
+    skinL = np.median(cv2.cvtColor(u8, cv2.COLOR_BGR2LAB)[max(0, by1_ - (by2_ - by1_)):max(1, by1_), max(0, bx1_):max(1, bx2_), 0]) if by1_ > 0 else 170
+    tg = 1 + (tg - 1) * float(np.clip(skinL / 170.0, 0.3, 1.0))
     hsv = cv2.cvtColor(u8, cv2.COLOR_BGR2HSV).astype(np.float32)
     H_, S_, V_ = hsv[..., 0], hsv[..., 1] / 255, hsv[..., 2]
     bx1, by1, bx2, by2 = mouth_px
@@ -392,6 +423,8 @@ def main():
         cr = comp[roiF]
         if cfx:
             cr = NR * (1 - Mr) + colorfix(cr, mouth_px, cfx) * Mr
+        if kind == 'human' and LIP_MATCH:
+            cr = NR * (1 - Mr) + lip_match(cr, NR, mouth_px) * Mr
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
