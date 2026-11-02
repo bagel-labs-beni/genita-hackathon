@@ -19,6 +19,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
+| 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
@@ -29,6 +30,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | F2-L26 naming + D21 first-call wait: new event `companion.named {name}` (the user renamed the companion by voice, already saved — update every {name} label); optional `start.greetAfterMs` (0–3000; the app sends 2000 on the first call after onboarding: the server waits that long for the user to speak or type first, then greets). REST `POST /v1/companion/name/suggest`, `PATCH /v1/companion {name}` (PREP_API.md). Additive: an app that ignores both sees no change. |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
+| 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
 
 ```
 wss://<host>/v1/session
@@ -113,7 +115,12 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 Only `persona.name` is required. Without the memory dependency the app still sends
 persona, profile, memories and recent history itself. With server memory enabled,
 `start.memories` and `start.history` are ignored so stale app snapshots cannot
-restore forgotten memories. The server uses its authenticated user identity and
+restore forgotten memories. **Handoff exception:** a chat call that starts while the
+same account has another live call (or one that ended < 10 min ago) begins with that
+call's turns (server-side, never another account's) and skips the greeting — the
+conversation continues on the new device. A `start` with `handoff: true` uses its own
+`history` only when the server has no such turns. Turns seeded this way are context
+only, never written as memories. The server uses its authenticated user identity and
 retains new conversation history only for this call. New calls receive an ordinary
 greeting, or one qualifying past episode (seen crops first after six hours).
 Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;
@@ -190,6 +197,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `speaking` | `on`, `utteranceId`, `emotion?` | `on:true` with the emotion when a sentence's audio (device mode: its `say`) starts and the emotion changed (switch the face, F4-L13); `on:false` when done or cancelled |
 | `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
 | `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
+| `audio.timing` | `utteranceId`, `sentence`, `seq`, `words`, `phonemes` | server voice with `GENITA_VOICE_ALIGN=1`: forced-aligner timing of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
@@ -272,6 +280,26 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
   timeline (0 = first sample of the reply), from the model's own per-character durations (unit model ×
   vocoder), so they line up with the samples. Ask for `lip:"atlas"` to also get letter-level `mouth` cues
   (any companion kind). The `audio` event always arrives before its binary frame, so timing is never late.
+- **Forced-aligner timing (`audio.timing`, `GENITA_VOICE_ALIGN=1`)**: after a clause's audio, the voice service
+  runs Meta's MMS forced aligner (torchaudio `MMS_FA`, same GPU) on the audio it just made and the text it spoke,
+  and the server sends one `audio.timing` for that clause:
+
+  ```json
+  { "type": "audio.timing", "utteranceId": 4, "sentence": 0, "seq": 41,
+    "words": [{ "w": "Oh", "s": 40, "e": 190 }, { "w": "wow,", "s": 190, "e": 520 }],
+    "phonemes": [{ "p": "AO", "s": 40, "e": 190 }, { "p": "W", "s": 190, "e": 260 }, { "p": "OW", "s": 260, "e": 520 }] }
+  ```
+  - `seq` = the clause's first `audio` seq (the timing covers that clause's frames); `s`/`e` are ms on the reply's
+    timeline, the same clock as `audio.words`, so they can be used as they arrive.
+  - `words[].w` = the spoken form of the word (what the voice said, e.g. "five" for "5"). `phonemes[].p` = ARPAbet
+    (`M`, `AA`, `OW`, `TH`, …; GenitaKit `LipViseme(phoneme:)` maps it). English letters are grouped by spelling
+    rules; Korean is split into jamo. Short gaps (< 120 ms) are held by the previous phoneme, so a phoneme lasts
+    until the next one starts; a real pause stays a gap (mouth at rest).
+  - It never holds audio: the aligner starts after the clause's first audio line is out and the event follows the
+    clause's frames (measured lag below). Prefer it over `audio.words` for the mouth when it is there.
+  - Fallback: if the aligner fails, is late (> 250 ms after the clause's last audio) or is not confident, no
+    `audio.timing` comes for that clause; keep using `audio.words` / text + loudness for it. Nothing comes for a
+    cancelled utterance.
 - Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
   everything else in English (`eng`). Same speaker as the companion.
 - Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →
