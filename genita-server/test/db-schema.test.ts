@@ -98,6 +98,20 @@ test("F1-L4: deleting a user leaves 0 rows in every table (cascade)", async () =
   }
 });
 
+test("005 rollback refuses while memories are stored (a failed multi-step down never erases them)", async () => {
+  const db = await testDb();
+  try {
+    const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "mem" });
+    await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [user.id]);
+    await assert.rejects(migrateDown(db));
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM memory_items")).rows[0].n, 1, "rows kept");
+    await db.query("DELETE FROM memory_items");
+    assert.deepEqual(await migrateDown(db), ["005_memory_store"], "empty tables roll back");
+  } finally {
+    await db.close();
+  }
+});
+
 test("seen memories must keep a crop reference, never only text", async () => {
   const db = await testDb();
   try {

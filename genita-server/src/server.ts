@@ -121,15 +121,25 @@ export async function startServer(
   const appConfig = createAppConfigSource({ file: env.GENITA_APP_CONFIG_FILE || null, bargeInMs: config.bargeInMinMs, log });
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
+  // accounts being deleted: a late socket close must not cache their turns again (Codex P2 11/3 — the
+  // cascade drops memory_state, so the Forget revision reads 0 again)
+  const deletedUsers = new Set<string>();
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
-    // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
-    // before purging. A late vendor completion must never recreate deleted data.
-    const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
-    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
-    await findsDeleted;
-    await prep.runner.forgetUser(userId);
-    await deps.memory?.forget(userId);
-    await deps.finds?.store.removeOwner(ownerKey(userId));
+    deletedUsers.add(userId);
+    dropLastTurns(userId);
+    try {
+      // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
+      // before purging. A late vendor completion must never recreate deleted data.
+      const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+      await findsDeleted;
+      await prep.runner.forgetUser(userId);
+      await deps.memory?.forget(userId);
+      await deps.finds?.store.removeOwner(ownerKey(userId));
+    } catch (err) {
+      deletedUsers.delete(userId); // the account stays (DELETE /me answers 502 and can be retried)
+      throw err;
+    }
   };
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log);
@@ -139,6 +149,7 @@ export async function startServer(
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
     for (const [close, u] of presence) if (u === userId) close();
     handoff.forget(userId);
+    dropLastTurns(userId);
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
@@ -294,18 +305,19 @@ export async function startServer(
   async function cacheTurns(userId: string, session: Session): Promise<void> {
     const turns = session.historySnapshot();
     const revision = session.historyForgetRevision;
-    if (!turns.length) return;
+    if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
       lastTurns.set(userId, { turns, revision, at: Date.now(), unsubscribe });
+      log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
     // Session.close unsubscribes before the socket closes. Keep the snapshot's ORIGINAL revision and
     // refuse a late pre-Forget close, including when newer safe turns are already cached.
     if (revision === null) return;
     await deps.memory.serial(userId, async () => {
-      if ((await deps.memory!.state.getState(userId)).revision === revision) save();
+      if (!deletedUsers.has(userId) && (await deps.memory!.state.getState(userId)).revision === revision) save();
     });
   }
 

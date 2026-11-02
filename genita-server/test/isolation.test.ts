@@ -247,3 +247,23 @@ test("PgMemoryRepository: same contract as the in-memory store (upsert keeps cre
   assert.ok(await svc.remember(u2, "I drink oolong tea every afternoon.", "fact", "s3"), "u1's tombstone is not u2's");
   await accounts.close();
 });
+
+test("account delete (Codex P2 11/3): a call's late socket close never caches the deleted account's turns", { timeout: 30_000 }, async (t) => {
+  const db = await openDb("pglite:memory");
+  const s = await boot(t, db, memBlobs());
+  t.after(s.stop);
+  const a = await signIn(s.accounts, "delete-late@example.test");
+  const ws = new WebSocket(s.base.replace("http:", "ws:") + "/v1/session", { headers: { authorization: `Bearer ${a.token}` } });
+  s.sockets.push(ws);
+  let ready = false; let replies = 0;
+  ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "ready") ready = true; if (m.type === "reply") replies++; });
+  await new Promise((r) => ws.once("open", r));
+  ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => ready);
+  ws.send(JSON.stringify({ type: "text", text: "My private conversation before deleting my account." }));
+  await waitFor(() => replies >= 2);
+  const r = await fetch(s.base + "/me", { method: "DELETE", headers: { authorization: `Bearer ${a.token}` } });
+  assert.equal(r.status, 200);
+  await waitFor(() => s.logs.some((l) => l.event === "session.close"));
+  assert.ok(!s.logs.some((l) => l.event === "history.cached"), "no turn cache for a deleted account");
+});
