@@ -21,7 +21,8 @@
     "smoke:interpret": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke-interpret.ts",
     "eval:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-memory.ts",
     "check:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-memory.ts",
-    "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts"
+    "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts",
+    "demo:template": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/demo-template.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

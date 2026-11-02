@@ -31,8 +31,15 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
 | `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, previewUrl}], suggested}`, already in Spark's recommended order |
 | `GET /v1/companion/voices/{id}/preview` | | `audio/mpeg`, ~8 s |
-| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists` |
-| `GET /v1/companion` | | companion + `prep` + `persona` + `session` (fields for the realtime `start` message) |
+| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists`, except over a `demo:true` companion, which this replaces (below) |
+| `GET /v1/companion` | | companion + `demo` + `prep` + `persona` + `session` (fields for the realtime `start` message) |
+
+### Judge demo companion (D41)
+
+A Judge access account (`POST /auth/judge`) that has no companion gets one at sign-in: **Jin**, ready to call (prep `ready`, persona set, face files copied), so the judge skips the prep wait. `GET /v1/companion` → `demo: true` (every other companion `demo: false`); `/me` and the sign-in body → `companionDemo: true`. The app shows a small "Demo companion" label from either flag.
+
+- **Making their own:** the judge goes through the normal flow (image → voice → name → `POST /v1/companion`). Over a `demo:true` companion, `POST /v1/companion` deletes the demo one (rows, its photo copy, its files) and creates the new one: `201`, `demo: false`. A bad request (unknown image/voice, failed check) keeps the demo companion. From then on B7 applies as usual (`409`), and signing in again does not bring Jin back.
+- **Template:** `npm run demo:template` (ops only, see `scripts/demo-template.ts`) prepares Jin once from `assets/demo/jin.jpg` (Muse Image-generated, `ios-app/ASSET-SOURCES.md`) under a reserved account (`dev` / `demo:template`, not reachable by any login or `x-genita-user`). Re-run with `--force` after the prep pipeline changes so new judge accounts get the new face set. No template = judges onboard like any new user (log `demo.skipped {reason:"no_template"}`).
 
 ## Prep progress (F2-L9, F2-L22)
 
