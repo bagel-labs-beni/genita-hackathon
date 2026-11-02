@@ -184,3 +184,17 @@ test("Muse Image edits sends only the companion image and text; Spark checks the
   assert.deepEqual(Buffer.from(await (form.get("image") as Blob).arrayBuffer()), face);
   assert.equal(form.get("model"), "muse-image-1.0"); assert.equal((requests[1].body as Record<string, unknown>).model, "muse-spark-1.3");
 });
+
+test("reply path: a memory store stuck behind the per-user lock never holds the reply (bounded recall)", async () => {
+  const { deps, memory } = setup();
+  const c = client(); const session = new Session("stuck", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.replies().length === 1);
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const held = memory.serial("trusted", () => gate); // e.g. a background write waiting on the database
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "text", text: "What did I buy?" }));
+  await waitFor(() => c.replies().length === 2);
+  assert.ok(Date.now() - t0 < 1500, `answered in ${Date.now() - t0}ms while the lock was held`);
+  release(); await held; session.close(); await memory.drain();
+});

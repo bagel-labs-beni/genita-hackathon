@@ -131,10 +131,17 @@ export class MemoryService {
       const q = tokens(query);
       const ranked = (await this.repository.list(userId)).map((m) => ({ m, score: [...tokens(m.text)].filter((t) => q.has(t)).length }))
         .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at).slice(0, 3).map((r) => r.m);
+      const at = this.now();
       for (const m of ranked) {
-        m.last_used_at = this.now(); await this.repository.put(userId, m);
-        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((this.now() - m.created_at) / 1000)) });
+        m.last_used_at = at;
+        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
       }
+      // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
+      // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
+      if (ranked.length) this.background(() => this.serial(userId, async () => {
+        const live = new Set((await this.repository.list(userId)).map((m) => m.id));
+        for (const m of ranked) if (live.has(m.id)) await this.repository.put(userId, m);
+      }));
       return ranked;
     });
   }
