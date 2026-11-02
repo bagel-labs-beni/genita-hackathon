@@ -307,10 +307,12 @@ import UniformTypeIdentifiers
     /// the voice service is down; the first voice (the recommended default) stays picked so Continue works.
     @ViewBuilder func voiceContent(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
         let waking = !player.loading && !player.available
-        Text(waking ? "Voice preview is waking up" : "Tap play to hear each one.")
-            .font(.custom("PretendardVariable-Regular", fixedSize: 14)).foregroundStyle(Color(white: 0.45))
-            .frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 187 + top + 9)
-            .accessibilityIdentifier(waking ? "voiceWaking" : "voiceHint")
+        HStack(spacing: 8) {
+            Text(waking ? "Voice preview is waking up" : "Tap play to hear each one.")
+                .font(.custom("PretendardVariable-Regular", fixedSize: 14)).foregroundStyle(Color(white: 0.45))
+                .accessibilityIdentifier(waking ? "voiceWaking" : "voiceHint")
+            if waking { ProgressView().controlSize(.small).tint(Color(white: 0.45)).accessibilityIdentifier("voiceWakingSpinner") }
+        }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 187 + top + 9)
         ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
             if i < voiceList.count {
                 voiceCard(voiceList[i], index: i, waking: waking || (player.loading && !referenceViewport) || model.savingVoice).designSlot(n, width: width, top: top, stretch: stretch)
@@ -356,6 +358,13 @@ import UniformTypeIdentifiers
         if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { selectVoice(i) }
         else if !player.available { selectVoice(0) }
         else { model.setup.voice = nil }
+        // voice service cold: ask again every 4 s for up to 60 s, then the normal list replaces the greyed one
+        var waited = 0
+        while !player.available && waited < 60 && !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            waited += 4
+            await player.refresh(client: model.onboarding, imageId: model.setup.imageId)
+        }
     }
     @ViewBuilder func presence(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
         // The reference frame has "Calm" twice; the fourth chip is "Warm" (PRD v12 F4, B10)

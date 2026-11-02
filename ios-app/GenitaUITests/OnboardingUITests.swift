@@ -167,8 +167,14 @@ final class OnboardingUITests: XCTestCase {
 
         XCTAssertTrue(element("voiceWaking").waitForExistence(timeout: 15), "V04: Voice preview is waking up")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-V04-waking"; shot.lifetime = .keepAlways; add(shot)
+        XCTAssertTrue(element("voiceWakingSpinner").exists, "a spinner shows while it wakes")
         XCTAssertFalse(app.buttons["play0"].isEnabled, "greyed: no preview while the voice service is down")
         XCTAssertTrue(primary.isEnabled, "the default voice is picked, Continue works")
+        // the voice service comes up: the app asks again every 4 s and swaps in the normal list by itself
+        stubPost("/__voice", json: #"{"down":false}"#)
+        XCTAssertTrue(element("voiceHint").waitForExistence(timeout: 20), "V04 back to the normal list")
+        XCTAssertTrue(app.buttons["play0"].isEnabled)
+        let up = XCTAttachment(screenshot: app.screenshot()); up.name = "onb-V04-recovered"; up.lifetime = .keepAlways; add(up)
         primary.tap()
         XCTAssertTrue(app.textFields["companionNameInput"].waitForExistence(timeout: 10), "NM01 follows")
     }
