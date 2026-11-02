@@ -48,6 +48,23 @@ const SEEN_PROMPT =
   "List every food item you can clearly see in this photo, one per line as: name | count or - | where it is and what it looks like (a few words). Short lowercase common names. Nothing else. If you cannot see any food clearly, reply NONE.";
 
 const CHECK_TIMEOUT_MS = 7000;
+export const FRIDGE_PILL_MAX = 28;
+
+/**
+ * The fridge card's pill line (shown, not spoken): the "있음" items, whole names only, ≤ 28 characters —
+ * "Egg, tofu, milk" · "Egg, tofu +2" · "I see 5 things." · "Not sure yet." (#122 follow-up).
+ */
+export function fridgePill(items: FindItem[]): string {
+  const have = items.filter((i) => i.tier === "have").map((i) => i.name);
+  if (!have.length) return "Not sure yet.";
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  for (let n = have.length; n >= 1; n--) {
+    const line = cap(have.slice(0, n).join(", ")) + (n < have.length ? ` +${have.length - n}` : "");
+    if (line.length <= FRIDGE_PILL_MAX) return line;
+  }
+  return `I see ${have.length} thing${have.length > 1 ? "s" : ""}.`;
+}
+
 /** IC-4 for the fridge (Figma copy): title, then body. Other kinds keep their own wording. */
 export const FRIDGE_UNCLEAR = "I can't make out the shelves. Get a little closer or turn on a light. I won't guess what's in there.";
 
@@ -368,7 +385,11 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   if (card) {
     await Promise.race([allChecks, new Promise((r) => setTimeout(r, SPEAK_WAIT_MS))]);
     if (ctx.signal.aborted) return { card, timings };
-    card.say = fridgeLine(toWire(cands.all()), dish);
+    const wire = toWire(cands.all());
+    card.say = fridgeLine(wire, dish);
+    // the pill shows a short line; the full sentence is only spoken (≤ 28 chars, one line on both devices)
+    card.pill = fridgePill(wire);
+    ctx.emit({ type: "find.items", findId: ctx.findId, items: wire, checking: true, subtitle: card.subtitle, ...(card.status ? { status: card.status } : {}), pill: card.pill });
     timings.speakMs = ms();
     ctx.speak?.(card.say);
   }
