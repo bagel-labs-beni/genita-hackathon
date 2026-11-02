@@ -11,6 +11,7 @@
  * "You said" only for explicit lines; other labels read "Your taste".
  */
 import type { FindCard } from "../protocol.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 import { isDislike, type EvidenceLabel, type StyleCard } from "../prep/importProfile.ts";
 
 /** fromCall = said in this call (a voice correction) → grey "You said: …" chip */
@@ -115,17 +116,22 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   return out.slice(0, 2);
 }
 
-const money = (t: string) => {
-  const m = t.replace(/,/g, "").match(/[$€£₩¥]\s?(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s?(?:dollars|usd|eur|euros|won|krw)/i);
-  return m ? Number(m[1] ?? m[2]) : null;
+const CUR: Record<string, string> = { $: "USD", dollars: "USD", usd: "USD", "€": "EUR", eur: "EUR", euros: "EUR", "£": "GBP", "₩": "KRW", won: "KRW", krw: "KRW", "¥": "JPY" };
+/** "$89.00" → {amount 89, cur USD}; null when there's no amount or no currency. */
+const money = (t: string): { amount: number; cur: string } | null => {
+  const m = t.replace(/,/g, "").match(/([$€£₩¥])\s?(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s?(dollars|usd|eur|euros|won|krw)\b/i);
+  if (!m) return null;
+  return m[1] ? { amount: Number(m[2]), cur: CUR[m[1]] } : { amount: Number(m[3]), cur: CUR[m[4].toLowerCase()] };
 };
 
 /** "Budget: usually under $100 for clothes." → "Your budget: under $100" when every priced product fits (none priced → null). */
 export function budgetChip(line: string, card: FindCard): string | null {
   const body = line.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim();
   const max = money(body);
-  if (!body || max === null) return null;
-  const prices = ((card as FindCard & { products?: Array<{ price?: string }> }).products ?? []).map((p) => (p.price ? money(p.price) : null)).filter((x): x is number => x !== null);
-  if (!prices.length || prices.some((p) => p > max)) return null;
+  if (!body || max === null || isSensitiveDetail(line)) return null;
+  // every product priced, in the same currency, within it — else no claim (Codex round 6)
+  const products = (card as FindCard & { products?: Array<{ price?: string }> }).products ?? [];
+  const prices = products.map((p) => (p.price ? money(p.price) : null));
+  if (!prices.length || prices.some((p) => p === null || p.cur !== max.cur || p.amount > max.amount)) return null;
   return `Your budget: ${body[0].toLowerCase()}${body.slice(1)}`.slice(0, 48);
 }

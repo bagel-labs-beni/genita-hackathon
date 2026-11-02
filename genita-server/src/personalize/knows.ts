@@ -7,6 +7,7 @@
  */
 import type { Finding, StyleCard } from "../prep/importProfile.ts";
 import { storyTextProblem } from "./story.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 
 const TZ = /^[A-Za-z_+\-/0-9]{1,40}$/;
 
@@ -25,11 +26,13 @@ export const MENTION_RULE =
   "Bring up something personal you know about the user on your own at most once per call; when they ask for help, use what you know freely.";
 
 /** Which explicit lines make the best first-call nod, best first: taste, then how to answer, then help. */
-const NOD_ORDER: Array<keyof StyleCard["sections"]> = ["likes", "response", "help", "interests", "communication"];
+const NOD_ORDER: Array<keyof StyleCard["sections"]> = ["likes", "response", "help"];
+/** never a place, a person or where they live/work (Codex round 6) */
+const PRIVATE = /\b(?:lives?|living|live in|based in|from|moved?|city|town|neighbou?rhood|address|works? (?:at|for)|job at|my (?:mom|dad|mother|father|sister|brother|wife|husband|partner|boyfriend|girlfriend|kids?|son|daughter))\b/i;
 
 function nodLine(card: StyleCard): Finding | null {
   for (const k of NOD_ORDER) {
-    const f = (card.sections?.[k] ?? []).find((x) => x.label === "explicit" && !/^\s*(?:dislikes?|avoids?|no |never )/i.test(x.text) && !/^budget:/i.test(x.text) && !storyTextProblem(x.text));
+    const f = (card.sections?.[k] ?? []).find((x) => x.label === "explicit" && !/^\s*(?:dislikes?|avoids?|no |never )/i.test(x.text) && !/^budget:/i.test(x.text) && !PRIVATE.test(x.text) && !isSensitiveDetail(x.text) && !storyTextProblem(x.text));
     if (f) return f;
   }
   return null;

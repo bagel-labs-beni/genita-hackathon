@@ -326,6 +326,8 @@ export class Personalize {
   async noteShorter(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null> {
     const at = this.now().toISOString();
     const out = await this.update(userId, (card) => {
+      // they said they want long answers: two cut-offs don't override that
+      if ((card.sections.response ?? []).some((f) => f.label === "explicit" && /\b(?:long|longer|detail\w*|thorough|in depth|in-depth|whole story|explain everything)\b/i.test(f.text))) return null;
       const m = mergeUpdates(card, [{ field: "response", text: "Short replies, one or two sentences.", replaces: [], label: "observed", asOf: at, chip: "shorter replies" }], at);
       return m.applied.length ? { card: m.card, out: m.card } : null;
     });

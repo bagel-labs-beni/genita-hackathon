@@ -477,3 +477,22 @@ test("budget tag is on the Spark-written taste card too", () => {
   const { cards } = toStory({ cards: [sc("taste", { headline: "Clean and simple.", tags: [tag("style", "Clean, minimal")] })], topics: [] }, card);
   assert.deepEqual(cards.find((c) => c.id === "taste")!.tags!.map((t) => t.text), ["Clean, minimal", "Under $100"]);
 });
+
+test("Codex round 6: a boundary naming a condition is dropped; a sensitive Budget line never becomes a tag; no place in the nod; budget chip needs every price in the same currency", async () => {
+  const { isSensitiveDetail } = await import("../src/personalize/sensitive.ts");
+  const { budgetChip } = await import("../src/personalize/reasons.ts");
+  const { budgetTag } = await import("../src/personalize/story.ts");
+  assert.ok(isSensitiveDetail("No unsolicited advice about my HIV."));
+  assert.ok(!isSensitiveDetail("No unsolicited health advice."));
+  assert.equal(budgetTag("Budget: $80k salary."), "");
+  assert.equal(budgetTag("Budget: whatever feels right."), "");
+  const { cards } = toStory(null, rawCard({ likes: [f("Budget: $80k salary."), f("Style: Clean, minimal clothes.")] }));
+  assert.ok(!JSON.stringify(cards).includes("80k"));
+  const nodCard = { ...rawCard({ likes: [], response: [], help: [f("Lives in Seoul.")] }), growth: { calls: 1, asked: [] } };
+  assert.equal(firstCallNod(nodCard), null);
+  const card = (prices: Array<string | undefined>) => ({ ...baseCard({ kind: "product" as "link" }), products: prices.map((price) => ({ price })) }) as unknown as Parameters<typeof budgetChip>[1];
+  assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89", undefined])), null);
+  assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89", "Price unavailable"])), null);
+  assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["$900"])), null);
+  assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["₩89,000"])), "Your budget: under ₩100000");
+});

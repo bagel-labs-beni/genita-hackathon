@@ -67,7 +67,7 @@ function setup(p: Partial<SessionPersonalize> & { slowCorrectionMs?: number; rep
       log.push({ ev: "reply", at: Date.now() });
       if (p.longReply) {
         // a long reply: the first sentence is out, the rest takes a while (the user talks over it)
-        yield { type: "text", delta: "<happy> So there are a few ways to look at this. " };
+        yield { type: "text", delta: "<happy> So there are a few ways to look at this one. Let me walk you through all of them slowly. " };
         await sleep(400);
         if (opts?.signal?.aborted) return;
         yield { type: "text", delta: "First, think about the timing. Second, the cost." };
@@ -258,4 +258,24 @@ test("S1: two long replies cut off → Updated: shorter replies, the next reply 
   await say(s, "Ok.", s.client.json.filter((m) => m.type === "reply").length + 1);
   assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /cut you off twice/, "said once");
   s.session.close();
+});
+
+test("Codex round 6: short replies cut off don't count; 'forget' can empty the taste lines; long-answer profile skips S1", async () => {
+  let noted = 0;
+  const s = setup({ async noteShorter() { noted++; return { text: "Updated: shorter replies", fields: ["response"], profile: "x" }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona }));
+  for (let i = 1; i <= 3; i++) { await s.session.onClientText(JSON.stringify({ type: "text", text: `Hey ${i} there.` })); await sleep(5); }
+  await sleep(100);
+  assert.equal(noted, 0, "'Sure thing.' is not a long reply");
+  s.session.close();
+
+  const l = setup({ longReply: true, async startCall() { return { profile: "- Response: Long, detailed answers please.", taste: [] }; }, async noteShorter() { noted++; return null; } });
+  await l.session.onClientText(JSON.stringify({ type: "start", persona }));
+  for (let i = 1; i <= 3; i++) {
+    await l.session.onClientText(JSON.stringify({ type: "text", text: `Question ${i}, tell me.` }));
+    await l.client.waitFor(() => l.client.json.filter((m) => m.type === "reply.delta").length >= i);
+    await sleep(60);
+  }
+  assert.ok(!l.sparkCalls.some((c) => /cut you off twice/.test(c.instructions!)));
+  l.session.close();
 });

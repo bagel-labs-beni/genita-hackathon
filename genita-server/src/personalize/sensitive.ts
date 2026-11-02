@@ -14,11 +14,18 @@ const BOUNDARY = /\b(?:advice|comments?|commenting|talk(?:ing)? about|bring(?:in
 /** A shopping price range ("Budget: …", "usually spends under $100 on clothes") is a taste. */
 const BUDGET = /^\s*budget:/i;
 
-/** true = a sensitive personal detail: drop it. */
+/**
+ * true = a sensitive personal detail: drop it. Every word above is a specific condition, faith, vote, orientation
+ * or money fact, so a boundary that names one is dropped too ("No advice about my HIV." — Codex round 6);
+ * general boundaries ("No unsolicited health advice.", "Don't bring up politics.") never match.
+ */
 export function isSensitiveDetail(text: string): boolean {
-  if (!TOPIC.test(text)) return false;
-  if (BOUNDARY.test(text)) return false;
-  return true;
+  return TOPIC.test(text);
+}
+
+/** A boundary-shaped line (kept for callers that want to tell topic boundaries apart). */
+export function isBoundaryLine(text: string): boolean {
+  return BOUNDARY.test(text);
 }
 
 export function isBudgetLine(text: string): boolean {

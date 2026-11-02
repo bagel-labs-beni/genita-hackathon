@@ -365,7 +365,12 @@ export function skipTasteTags(card: StyleCard): StoryTag[] {
   return tags;
 }
 /** "Budget: usually under $100 for clothes." → "Under $100" (a taste tag, Chelsea 11/3). */
-export const budgetTag = (t: string) => cap(t.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim()).slice(0, 28);
+export const budgetTag = (t: string): string => {
+  // a price range only ("Under $100"); anything sensitive or not money-shaped is never shown (Codex round 6)
+  if (isSensitiveDetail(t)) return "";
+  const tag = cap(t.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim()).slice(0, 28);
+  return /[$€£₩¥]\s?\d|\d+\s?(?:dollars|usd|eur|euros|won|krw)\b/i.test(tag) && !/\d\s?k\b|salary|income/i.test(tag) && !storyTextProblem(tag) ? tag : "";
+};
 const isDislikeLine = (t: string) => /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(t);
 
 type RawItem = { text?: unknown; evidence?: unknown };

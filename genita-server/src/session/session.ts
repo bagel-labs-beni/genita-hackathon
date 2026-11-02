@@ -785,7 +785,8 @@ export class Session {
     this.reply = null;
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     // the user talked over a reply that was already a sentence or more in: they want it shorter
-    if (reason !== "client" && r.spoken.length >= 1 && this.mode === "chat") this.noteLongCut();
+    // long = two sentences or ~80 characters already out (a "Sure thing." cut is not a long reply — Codex round 6)
+    if (reason !== "client" && this.mode === "chat" && (r.spoken.length >= 2 || r.spoken.join(" ").length >= 80)) this.noteLongCut();
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
     this.log("turn.cancelled", { utteranceId, reason });
@@ -818,10 +819,15 @@ export class Session {
     if (process.env.GENITA_BARGE_SHORTER === "0" || !p?.noteShorter || !this.deps.userId) return;
     this.longCuts++;
     if (this.longCuts !== SHORTER_AFTER_CUTS) return;
-    this.shorterLine = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    // they asked for long answers themselves: two cut-offs don't override that (the server checks the labels too)
+    if (/\b(?:long|longer|detailed|thorough|in[- ]depth|whole story)\b[^.\n]{0,30}\b(?:answers?|repl(?:y|ies)|explanations?)\b/i.test(this.user?.profile ?? "")) return;
+    // set now so the very next reply says it; cleared if the server doesn't save it
+    const line = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    this.shorterLine = line;
     void p.noteShorter(this.deps.userId).then(
       (r) => {
-        if (!r || this.closed) return;
+        if (!r) { if (this.shorterLine === line) this.shorterLine = null; return; }
+        if (this.closed) return;
         this.user = { ...this.user, profile: r.profile };
         this.finds?.setProfile(r.profile, this.taste);
         this.client.sendJson({ type: "profile.updated", text: r.text, fields: r.fields });
@@ -849,7 +855,8 @@ export class Session {
         this.user = { ...this.user, profile: r.profile };
         // lines said in this call are "You said: …" on result cards (grey), the stored ones "Your taste: …" (blue)
         const said = new Set(r.applied.filter((a) => a.field === "likes" && a.text).map((a) => a.text));
-        this.taste = (r.taste.length ? r.taste : this.taste).map((t) => (said.has(t.text) || this.taste.some((x) => x.fromCall && x.text === t.text) ? { ...t, fromCall: true } : t));
+        // the latest taste lines, even none (a "forget that" can empty them — Codex round 6)
+        this.taste = r.taste.map((t) => (said.has(t.text) || this.taste.some((x) => x.fromCall && x.text === t.text) ? { ...t, fromCall: true } : t));
         this.finds?.setProfile(r.profile, this.taste);
         for (const e of r.events) this.client.sendJson({ type: "profile.updated", text: e.text, fields: e.fields });
         this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
