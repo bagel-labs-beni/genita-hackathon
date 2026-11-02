@@ -23,13 +23,14 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.ts";
 import { startServer } from "../src/server.ts";
 import { encodeFrameHeader, CLIENT_FRAME_KIND_CALL, CLIENT_FRAME_KIND_MIC } from "../src/protocol.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const SR = 24000;
 const FRAME = (SR * 2 * 80) / 1000;
-const T7 = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/suite/t7");
+const T7 = fixturePath("suite", "t7");
 const args = process.argv.slice(2);
 const turns = Number(args.find((a) => a.startsWith("--turns="))?.slice(8) ?? 10);
 const callMode = args.includes("--call");

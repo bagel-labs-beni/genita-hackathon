@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isMostlyHangul } from "../src/text/language.ts";
-import { buildTtsBody, isModelRefusal } from "../src/tts/tone.ts";
+import { TAG_MODELS, buildTtsBody, isModelRefusal } from "../src/tts/tone.ts";
 
 test("isMostlyHangul flags Korean speech and not English with a Korean word", () => {
   assert.equal(isMostlyHangul("실례합니다, 여기서 시청 가려면 어떻게 가요?"), true);
@@ -13,16 +13,26 @@ test("isMostlyHangul flags Korean speech and not English with a Korean word", ()
 
 test("v4 turbo body: emotion becomes an audio tag, stability 0.5, no style", () => {
   assert.deepEqual(buildTtsBody("Hi there!", "happy", "eleven_v4_turbo"), {
-    text: "[cheerfully] Hi there!",
+    text: "[bright and upbeat] Hi there!",
     model_id: "eleven_v4_turbo",
     voice_settings: { stability: 0.5, similarity_boost: 0.75 },
   });
 });
 
-test("whisper emotion uses the whispers tag; unknown emotion adds no tag", () => {
-  assert.equal(buildTtsBody("psst", "whisper", "eleven_v3").text, "[whispers] psst");
+test("whisper emotion uses a hushed direction; unknown emotion adds no tag", () => {
+  assert.equal(buildTtsBody("psst", "whisper", "eleven_v3").text, "[hushed voice] psst");
   assert.equal(buildTtsBody("ok", "glorbish", "eleven_v3").text, "ok");
   assert.equal(buildTtsBody("ok", null, "eleven_v3").text, "ok");
+  assert.equal(buildTtsBody("ok", undefined, "eleven_v3").text, "ok");
+});
+
+test("tag-capable models combine the mood with inline cues; other models strip every cue", () => {
+  for (const model of TAG_MODELS) {
+    assert.equal(buildTtsBody("[pause] Hello", "warm", model).text, "[gentle reassurance] [pause] Hello");
+  }
+  for (const model of ["eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_multilingual_v2"]) {
+    assert.equal(buildTtsBody("[hushed voice] Hello [pause] there", "warm", model).text, "Hello there");
+  }
 });
 
 test("models without audio-tag support get tags stripped instead of read aloud", () => {

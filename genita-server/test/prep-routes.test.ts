@@ -13,11 +13,11 @@ import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 
-/** Routes with a real file store and no vendor keys: covers everything that does not call a model. */
-test("prep routes: prompt, validation, one companion per user, prefs → persona", async (t) => {
+/** Routes with a real file store and no vendor keys: covers everything that does not call a model. Flags on = the earlier ElevenLabs/Kling/Peter setup. */
+test("prep routes (GENITA_KLING/PETER/SERVER_TTS on): prompt, validation, one companion per user, prefs → persona", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-routes-"));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {}, kling: true, peter: true, serverTts: true };
   const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
@@ -63,10 +63,10 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(created.json.name, "Mira"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
-  await runner.run("u1"); // no FAL_KEY here → Meta-only runtime: ready at once, clips off
+  await runner.run("u1"); // GENITA_KLING=1 without FAL_KEY → every attempt fails (the default Meta-only path is in prep-meta.test.ts)
   const prep = await call("GET", "/v1/companion/prep");
-  assert.equal(prep.json.status, "ready");
-  assert.equal(prep.json.progress.total, 0, "off steps are not counted");
+  assert.equal(prep.json.status, "failed");
+  assert.equal(prep.json.progress.total, 5);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
@@ -76,10 +76,10 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
-  // Meta-only (D34): no Peter suggested unless GENITA_PETER=1
-  assert.equal(prefs.json.session.lip, "none");
+  // GENITA_PETER on in this test → a human gets Peter; with it off (Meta-only, D34) the lip is "none"
+  assert.deepEqual(prefs.json.session.lip, { mode: "peter", fallback: "none" });
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.persona.card.name, "Mira");
-  assert.equal(after.json.prep.status, "ready");
+  assert.equal(after.json.prep.status, "failed");
 });

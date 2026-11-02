@@ -26,6 +26,28 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 
 Swift types: `shared/GenitaKit` (`shared/GenitaKit/test.sh` runs its tests, also with Command Line Tools only).
 
+## Optional live-check fixtures
+
+Live-check scripts use your own test media, outside the repository. Set
+`GENITA_FIXTURES_DIR` in your environment or `GENITA_ENV_FILE` to that directory.
+Scripts fail with a configuration error when required fixture media has no
+configured root. No developer-specific path is assumed.
+
+| Script | Paths relative to `GENITA_FIXTURES_DIR` | Input override |
+| --- | --- | --- |
+| `smoke` | `out/en.mp3`, `suite/t3/u0.mp3` through `u18.mp3` | Audio file arguments |
+| `check:meta` | `out/dogf.jpg` | Image file argument |
+| `prep:e2e`, `accounts:e2e` | `out/img/p1.jpg` | Image file argument |
+| `watch-sim -- --qa` (also the default mode) | `suite/t5.json`, `suite/t5/<clip-key>.mp4` | `--react <files...>` and `--blank` do not require fixtures |
+| `smoke:interpret` | `suite/t7/0.mp3` through `9.mp3` | — |
+| `finds:e2e` | `suite/t4/ff_0.2.jpg`, `ff_1.4.jpg`, `of_0.6.jpg`, `of_2.0.jpg` | — |
+
+For example, `GENITA_FIXTURES_DIR=/path/to/test-media npm run smoke` uses that
+fixture layout; `npm run smoke -- ./sample.wav` uses an explicit input instead.
+Provide media you have permission to use. These checks call live vendors and
+are separate from `npm test`. Finds reports default to the operating system's
+temporary directory under `genita-finds-e2e`; use `--out=<dir>` to change it.
+
 Accounts and storage (F1-L2/L3/L4/L5/L8) turn on with `DATABASE_URL`:
 `postgres://…` when deployed, `pglite:memory` or `pglite:<dir>` locally (PGlite = Postgres in WASM, a dev dependency; no Docker needed).
 Migrations run on boot (`GENITA_DB_MIGRATE=0` to skip) · `GENITA_JWT_SECRET` (≥32 chars, required off loopback) ·
@@ -36,4 +58,4 @@ blobs: `GENITA_S3_BUCKET` + `GENITA_S3_REGION` + optional `GENITA_S3_ENDPOINT` (
 Without `DATABASE_URL` nothing changes: prep keeps the JSON file store and `/auth/*`, `/me` answer 503.
 Tests use PGlite in memory; set `TEST_DATABASE_URL=postgres://…` to run them on a real Postgres (CI does both).
 
-Layout: `src/auth` (Apple sign-in, session JWT, /me), `src/db` (Postgres adapter + SQL migrations), `src/storage` (S3/file blobs, SigV4), `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language), `src/watch` (Mac screen share: memo, video sound, reactions, speaker chip — F5).
+Layout: `src/auth` (Apple sign-in, session JWT, /me), `src/db` (Postgres adapter + SQL migrations), `src/storage` (S3/file blobs, SigV4), `src/meta` (Meta APIs), `src/tts` (ElevenLabs), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/handoff` (F6-L7 conversation owner: active_device + epoch, presence socket, audio gate), `src/text` (sentence split, tags, language), `src/watch` (Mac screen share: memo, video sound, reactions, speaker chip — F5).
