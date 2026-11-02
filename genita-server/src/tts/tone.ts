@@ -1,26 +1,23 @@
 /**
- * Emotion → how ElevenLabs says the line. Ported from legacy-studio
- * src/lib/ttsEmotion.ts (pattern only; Genita keeps its own table).
- *
- * eleven_v4_turbo (default) and eleven_v3 read [audio tags] in the text;
- * we checked on 11/2 by transcribing the output that neither speaks the tag
- * aloud. v4 takes only stability + similarity_boost. Models without tag
- * support (flash/turbo v2.5, multilingual v2) get tags stripped.
+ * Genita voice delivery cues for the companion's conversational moods.
+ * Tag-capable models receive a bracketed performance direction before the line.
+ * Other models receive clean speech text with inline directions removed.
+ * Voice settings and refusal classification are independent of the mood table.
  */
 const TAG: Record<string, string> = {
-  happy: "[cheerfully]",
-  amused: "[amused]",
-  teasing: "[playfully]",
-  curious: "[curious]",
-  thinking: "[thoughtful]",
-  surprised: "[surprised]",
-  excited: "[excited]",
-  warm: "[warmly]",
-  shy: "[shyly]",
-  sad: "[sad]",
-  relieved: "[relieved]",
-  annoyed: "[annoyed]",
-  whisper: "[whispers]",
+  happy: "[bright and upbeat]",
+  amused: "[light chuckle]",
+  teasing: "[gently teasing]",
+  curious: "[with interest]",
+  thinking: "[considering carefully]",
+  surprised: "[taken aback]",
+  excited: "[eager anticipation]",
+  warm: "[gentle reassurance]",
+  shy: "[soft and hesitant]",
+  sad: "[quietly downcast]",
+  relieved: "[a calming exhale]",
+  annoyed: "[restrained frustration]",
+  whisper: "[hushed voice]",
 };
 
 export const TAG_MODELS = new Set(["eleven_v4_turbo", "eleven_v3"]);
