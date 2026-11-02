@@ -872,9 +872,22 @@ export class Session {
     };
   }
 
-  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>): AsyncIterable<SparkStreamEvent> {
+  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>, lanes = this.deps.config.sparkHedge): AsyncIterable<SparkStreamEvent> {
     const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
-    const source = (request: SparkRequest, parent: AbortSignal) => hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent, (e) => e.type === "text" || e.type === "function_call");
+    const source = (request: SparkRequest, parent: AbortSignal) => {
+      const prefixes: string[] = [];
+      return hedged(lanes, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent,
+        (e, lane) => {
+          if (e.type !== "text") return false;
+          prefixes[lane] = (prefixes[lane] ?? "") + e.delta;
+          // A partial/complete emotion or audio tag is not spoken text. Keep
+          // buffering that lane until actual words arrive, even across deltas.
+          return !!parseTaggedSentence(prefixes[lane].replace(/<[^>]*$|\[[^\]]*$/g, "")).displayText;
+        },
+        // Only if no lane produces text: pass a complete tool call to MemoryCall
+        // for execution/follow-up. Losing lanes never execute memory writes.
+        (e) => e.type === "function_call");
+    };
     const last = typeof req.input === "string" ? req.input : req.input.at(-1);
     const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
     return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed) : source(req, signal);
@@ -914,7 +927,7 @@ export class Session {
 
   private async *stampFirstText(source: AsyncIterable<SparkStreamEvent>, onText: (t: number) => void): AsyncGenerator<SparkStreamEvent> {
     for await (const ev of source) {
-      if (ev.type === "text") onText(this.now());
+      if (ev.type === "text" && ev.delta.trim()) onText(this.now());
       yield ev;
     }
   }
@@ -964,7 +977,7 @@ export class Session {
     if (!self) this.specTimer = null;
     if (spec) {
       // a guess built before a rename still carries the old name: ask again
-      if (spec.norm === normTranscript(text) && !renamedFrom) {
+      if (spec.norm === normTranscript(text) && !renamedFrom && !spec.abort.signal.aborted) {
         speculative = "hit";
         m.specStartAt = spec.at;
         spec.confirm();
@@ -991,20 +1004,27 @@ export class Session {
     }
 
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
-    const splitter = new SentenceSplitter(!device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {});
+    const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
+    let splitter = new SentenceSplitter(splitOptions);
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
     let sparkError: unknown = null;
+    let emptyCause: string | null = null;
     let droppedOpener = false;
-    const pushSentences = (list: string[]) => {
+    let onlyOpener: string | null = null;
+    const pushSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
+        // Delivery/emotion tags alone cannot be displayed or spoken. Do not
+        // enqueue a blank sentence (or call TTS with just "[laughs]").
+        if (!p.displayText) continue;
         let tts = p.ttsText;
-        if (!sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
-        if (!tts) {
+        if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        if (!tts || !parseTaggedSentence(tts).displayText) {
+          onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
           continue;
         }
@@ -1031,28 +1051,45 @@ export class Session {
           pushSentences(splitter.flush());
           return;
         }
-        // An answer with no text (seen once on 11/2 after a web search) gets
-        // one retry without tools rather than silence.
+        // Retry any answer with no usable content, even with no tools, after
+        // an empty speculative hit, or after a pre-text upstream failure.
         for (let attempt = 0; attempt < 2; attempt++) {
           let gotText = false;
           let status = "";
-          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource({ ...req, tools: undefined }, signal, greeting?.item, !interpret);
-          for await (const ev of stream) {
+          let attemptError: unknown = null;
+          try {
+            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource(req, signal, greeting?.item, !interpret, undefined, 1);
+            for await (const ev of stream) {
+              if (signal.aborted) return;
+              if (ev.type === "text") {
+                // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
+                if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
+                gotText ||= !!ev.delta.trim();
+                pushSentences(splitter.push(ev.delta));
+              } else if (ev.type === "tool") {
+                if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
+                this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
+              } else if (ev.type === "done") status = ev.status;
+            }
+          } catch (err) {
             if (signal.aborted) return;
-            if (ev.type === "text") {
-              // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
-              if (m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
-              gotText = true;
-              pushSentences(splitter.push(ev.delta));
-            } else if (ev.type === "tool") {
-              if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
-              this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
-            } else if (ev.type === "done") status = ev.status;
+            attemptError = err;
           }
-          if (gotText || !req.tools?.length) break;
-          this.log("spark.empty", { utteranceId, status, retry: attempt === 0 });
+          if (signal.aborted) return;
+          pushSentences(splitter.flush());
+          // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
+          // opener until EOF so "Oh, the rest" still loses the repeated Oh.
+          if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
+          if (sentences.length) { sparkError = attemptError; break; }
+          emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
+          if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
+          if (attempt === 1) sparkError = attemptError;
+          splitter = new SentenceSplitter(splitOptions);
+          onlyOpener = null;
+          emotion = null;
+          droppedOpener = false;
+          m.firstTokenAt = undefined;
         }
-        pushSentences(splitter.flush());
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
@@ -1197,6 +1234,13 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
+    if (!reply.spoken.join(" ").trim()) {
+      resolveSaid(null);
+      this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
+      this.finishReply(reply);
+      return;
+    }
     if (sparkError) {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });

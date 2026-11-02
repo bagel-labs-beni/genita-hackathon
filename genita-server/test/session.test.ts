@@ -243,7 +243,7 @@ test("a reply opening with the same interjection as a recent reply is spoken and
   session.close();
 });
 
-test("an empty Spark answer (e.g. a web search that never produced text) is retried once without tools", async () => {
+test("an empty Spark answer (e.g. a web search that never produced text) is retried once with the same tools", async () => {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: SparkRequest[] = [];
@@ -270,7 +270,7 @@ test("an empty Spark answer (e.g. a web search that never produced text) is retr
   assert.equal(reply.text, "Try a comedy special tonight.");
   assert.equal(calls.length, 2);
   assert.ok(calls[0].tools?.length);
-  assert.equal(calls[1].tools, undefined);
+  assert.deepEqual(calls[1], calls[0]);
   session.close();
 });
 
