@@ -43,7 +43,7 @@ struct UpdateBanner: View {
         HStack(spacing: 12) {
             Image(systemName: "arrow.down.circle.fill")
                 .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(.white, Palette.accent)
+                .foregroundStyle(.white, Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255))
                 .symbolEffect(.bounce, options: .nonRepeating, value: v.build)
             VStack(alignment: .leading, spacing: 2) {
                 Text(config.text("update.title")).font(TypeStyle.body(15, .semibold))
@@ -57,7 +57,8 @@ struct UpdateBanner: View {
                 .tint(.black)
                 .accessibilityIdentifier("updateBannerAction")
             if !v.required {
-                Button { dismissedBuild = v.build } label: { Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary).padding(6) }
+                Button { dismissedBuild = v.build } label: { Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary).padding(10).contentShape(Rectangle()) }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss")
                     .accessibilityIdentifier("updateBannerDismiss")
             }
