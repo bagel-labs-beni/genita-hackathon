@@ -4,7 +4,7 @@
  * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
-import { sparkJson } from "../meta/spark.ts";
+import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
@@ -22,6 +22,8 @@ export type PrepDeps = {
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** tests: replaces the structured Spark call used by name suggest (F2-L26); unset = Muse Spark */
+  spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
 };
@@ -163,7 +165,8 @@ export async function savePrefs(d: PrepDeps, companion: CompanionRecord, depth: 
   }
   const persona = toPersona(raw, input);
   const prefs = { depth: v.depth, answers: v.answers, updatedAt: new Date().toISOString() };
-  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona }))) ?? { ...companion, prefs, persona };
+  // a rename (PATCH / by voice) may land while Spark writes the card: the stored name wins
+  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona: { ...persona, card: { ...persona.card, name: x.name } } }))) ?? { ...companion, prefs, persona };
   d.log("setup.persona_written", { depth: v.depth, ms: since(t0), spark: !!raw });
   return next;
 }

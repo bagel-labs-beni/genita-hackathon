@@ -17,12 +17,15 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 
 | call | body | answer |
 |---|---|---|
-| `GET /v1/import/prompt` | | `{prompt, chars}`, the text I01 copies |
-| `POST /v1/import` | `{text}` | `200 {status:"ready", style, profile}` (Spark 4–8 s) · `400 import_too_short/too_long/empty` → I02-E · `422 import_empty` |
+| `GET /v1/import/prompt` | | `{prompt, chars}`, the text I01 copies (prompt v3, 10 sections; same bytes as `docs/profile-import/prompt-v3.txt` and the app's bundled `import-prompt.txt` offline fallback, a test keeps all three identical) |
+| `POST /v1/import` | `{text}` | `200 {status:"ready", style, profile}` (Spark 5–11 s, n=4 on 11/2) · `400 import_too_short/too_long/empty` → I02-E · `422 import_empty` |
 | `POST /v1/import` | `{text, background:true}` | `202 {status:"processing"}` ("Continue in the background") |
+| `POST /v1/import/skip` | `{interests: string[≤8, each ≤40], replies: "Talk it out"\|"Show me options"\|"Start with the answer"\|"Ask me questions"\|null, avoid: string[≤8, each ≤60]}` (N1–N3, no Spark call) | `200 {status:"ready", style, profile}` with `style.source:"skip"` · `400 bad_skip`. Answers are `explicit`; unanswered rows stay empty and `toConfirm` lists them |
 | `GET /v1/import` | | `{status:"none"\|"processing"\|"failed"\|"ready", style?, profile?}` |
 
-`style.display` = I04's five rows `[{key, title, items:[{text, label}]}]`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
+Prompt v3 has 10 sections: 1 Thinking style, 2 Communication style, 3 Response preferences, 4 How Genita can help, 5 Support/feedback/disagreement, 6 Interests, 7 Likes and dislikes, 8 Boundaries and initiative, 9 Recommended companion approach ("When …, Genita should …" rules), 10 Preferences still to confirm. Replies to the old 8-section prompt are still accepted: the server reads the headings and maps old "3 Useful help and explanations" to both Response preferences (how to answer) and How Genita can help (tasks), old 5's concrete tastes to Likes & dislikes. `style.sections` keys: `tendencies communication response help support interests likes boundaries approach` (cards saved before v3 may lack `response`/`likes`).
+
+`style.display` = I04's six rows in order `communication` Communication style (section 2) · `response` Response preferences (3, then rules fill free slots) · `help` How Genita can help (4) · `interests` Interests (6) · `likes` Likes & dislikes (7; when there is a dislike, one of the 3 slots shows it) · `boundaries` Boundaries (8), each `{key, title, items:[{text, label}]}` (max 3 items). Sections 1, 5, 9 are not rows; they go into `profile`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile` (≤2,000 chars): Likes & dislikes first as `- Taste:` lines (Finds' outfit and recipe cards read its first 800 chars), then the other five rows' fields, every boundary, the rules, the to-confirm line, then support/thinking/suggestions. The pasted text is never stored.
 
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 
@@ -31,7 +34,7 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
 | `GET /v1/companion/voices?imageId=` | | `{voices:[…], suggested}`, already in Spark's recommended order (see below) |
 | `GET /v1/companion/voices/{id}/preview` | | `audio/wav` from Meta voice service; device voices → `404 {error:"device_preview"}` |
-| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists` |
+| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name; a given name follows the rule below, else `400 bad_name`). Starts prep in the background ("Use this image"). `409 companion_exists` |
 | `GET /v1/companion` | | companion + `prep` + `persona` + `session` (fields for the realtime `start` message) |
 
 ### Voices: device vs server TTS
@@ -40,6 +43,18 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
   `{id:"device:en-US:f1", name:"Mira", blurb:"Warm, steady", locale:"en-US", gender:"female"|"male"|"neutral", style:"warm", previewUrl:null}`.
   The app maps each to the best installed system voice for `locale` + `gender` (Premium/Enhanced first) and previews it locally; the preview endpoint answers `404 {error:"device_preview"}`. `POST /v1/companion {voiceId}` takes the `device:…` id. Same names, blurbs and Spark ordering as before.
 - **Meta voice service configured:** the Meta voice list `{id, name, blurb, previewUrl:"/v1/companion/voices/{id}/preview"}` as before.
+
+## Companion name (F2-L26, NM01, D21)
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/companion/name/suggest` | `{imageId}` (the checked image from `POST /v1/companion/image`; works before the companion exists) | `200 {name, ms, suggested}`. Spark 1.3 looks at the photo + the imported style card and proposes one first name for NM01. `suggested:false` = Spark failed or timed out (4 s) and `name` is a neutral fallback (never a 5xx for that). `404 unknown_image` (not yours / unknown) · `429 rate_limited` (10 per user per minute) |
+| `PATCH /v1/companion` | `{name}` | `200` companion (same shape as `GET`); `name`, `persona.card.name` and `session.persona.name` all carry the new name. `400 bad_name` · `404 no_companion` |
+
+Name rule (PATCH, POST, rename by voice): trimmed, 1–20 characters, letters/digits/spaces/`.` `'` `-`,
+at least one letter. Empty, whitespace-only and 21+ characters are `400 bad_name` — keep NM01's
+Continue disabled for those. A suggestion is letters/spaces/hyphens/apostrophes only and never "Genita".
+Renaming in a call ("Call yourself Max") saves the same way and sends `companion.named` (PROTOCOL.md).
 
 ## Prep progress (F2-L9, F2-L22)
 

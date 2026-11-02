@@ -27,6 +27,7 @@ import { sparkStream } from "./meta/spark.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
+import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
@@ -246,7 +247,9 @@ export async function startServer(
     const ref: { session?: Session } = {};
     const gated = device ? gateCall(handoff, who.userId, device, raw, () => ref.session?.stopForHandoff()) : null;
     const sink = gated?.sink ?? raw;
-    const session = new Session(id, sink, { ...deps, userId: who.userId });
+    // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
+    const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
+    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
