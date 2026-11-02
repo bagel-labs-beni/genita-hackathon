@@ -305,6 +305,18 @@ enum CallStop: Equatable {
     /// Background, screen off, or a phone call: stop the sound and close the mic and camera.
     func suspend() {
         capturePermissions.invalidate()
+        suspendCapture()
+    }
+
+    /// A system permission alert is inactive, but not backgrounded. Keep its answer until active;
+    /// a real background transition still invalidates it, as do end(), handoff and audio interruption.
+    func sceneActivityChanged(_ activity: CapturePermissionRequests.Activity) {
+        let answers = capturePermissions.updateActivity(activity, callEnded: userEnded, isOwner: ownsConversation)
+        if activity != .active { suspendCapture() }
+        for answer in answers { applyCapturePermission(answer) }
+    }
+
+    private func suspendCapture() {
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -332,8 +344,7 @@ enum CallStop: Equatable {
         #endif
         let generation = capturePermissions.generation
         Self.requestMicrophone { [weak self] granted in
-            guard let self, self.capturePermissions.accepts(generation, callEnded: self.userEnded, isOwner: self.ownsConversation) else { return }
-            if granted { self.setMic(true); Self.micWasOn = true } else { self.micDenied = true }
+            self?.receiveCapturePermission(.microphone, granted: granted, generation: generation)
         }
     }
 
@@ -359,14 +370,7 @@ enum CallStop: Equatable {
         cameraDenied = false
         let generation = capturePermissions.generation
         let apply: @MainActor @Sendable (Bool) -> Void = { [weak self] granted in
-            guard let self, self.capturePermissions.accepts(generation, callEnded: self.userEnded, isOwner: self.ownsConversation) else { return }
-            guard granted else { self.cameraDenied = true; return }
-            guard self.camera.available else { return }
-            self.beforeCameraStart?()
-            self.camera.start()
-            self.cameraFront = self.camera.front
-            self.cameraOn = true
-            self.onCameraChange?()
+            self?.receiveCapturePermission(.camera, granted: granted, generation: generation)
         }
         #if DEBUG
         if camera.fixture != nil { apply(true); return }
@@ -376,6 +380,27 @@ enum CallStop: Equatable {
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { MainActor.assumeIsolated { apply(ok) } } }
         default: apply(false)
+        }
+    }
+
+    private func receiveCapturePermission(_ media: CapturePermissionRequests.Media, granted: Bool, generation: UInt64) {
+        guard let answer = capturePermissions.resolve(media, granted: granted, generation: generation,
+                                                     callEnded: userEnded, isOwner: ownsConversation) else { return }
+        applyCapturePermission(answer)
+    }
+
+    private func applyCapturePermission(_ answer: CapturePermissionRequests.Answer) {
+        switch answer.media {
+        case .microphone:
+            if answer.granted { setMic(true); Self.micWasOn = true } else { micDenied = true }
+        case .camera:
+            guard answer.granted else { cameraDenied = true; return }
+            guard camera.available else { return }
+            beforeCameraStart?()
+            camera.start()
+            cameraFront = camera.front
+            cameraOn = true
+            onCameraChange?()
         }
     }
 
