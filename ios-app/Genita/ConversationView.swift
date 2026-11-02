@@ -5,6 +5,10 @@ struct ConversationView: View {
     var connecting = false
     var handoffEnabled = true
     @ObservedObject private var handoff = PhoneHandoff.shared
+    private let call = CallController.shared
+    @State private var moreOpen = false
+    @State private var loopURL: URL?
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         GeometryReader { safe in
             GeometryReader { full in
@@ -13,21 +17,39 @@ struct ConversationView: View {
                 let panelWidth = min(CGFloat(299), full.size.width - 60)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
-                        companionImage.resizable().scaledToFill().frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
+                            .contentShape(Rectangle()).onTapGesture { call.interrupt() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
                             CallGlassControl(icon: "glass-menu-icon", size: 47)
                         }.buttonStyle(.plain).disabled(connecting).position(x: 47.5, y: 86.5 + top)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
-                        Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).position(x: 87.5, y: 700.5 + bottom).accessibilityElement().accessibilityLabel("Your camera is off")
-                        demoControl("camera", label: "Camera — unavailable in demo").position(x: full.size.width - 56, y: 665 + bottom)
-                        demoControl("microphone", label: "Microphone — unavailable in demo").position(x: full.size.width - 56, y: 724 + bottom)
-                        demoControl("more", label: "More — unavailable in demo").position(x: full.size.width - 56, y: 783 + bottom)
+                        selfView.position(x: 87.5, y: 700.5 + bottom)
+                        Button { call.toggleCamera() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom)
+                        Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom)
+                        Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom)
+                        if !connecting {
+                            CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
+                                .position(x: full.size.width / 2, y: 142 + top).animation(.easeOut(duration: 0.18), value: call.cue)
+                        }
                         if connecting {
                             ZStack {
                                 connectingSurface
                                 let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                                 DesignText(node: label, text: "Connecting…").frame(width: label.w, height: label.h)
                             }.frame(width: 175, height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: 142 + top).accessibilityIdentifier("connectingPill")
+                        }
+                        if moreOpen {
+                            CallInk.dim.frame(width: full.size.width, height: full.size.height).onTapGesture { withAnimation(.easeOut(duration: 0.22)) { moreOpen = false } }
+                                .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
+                            VStack(spacing: 0) {
+                                Spacer(minLength: 0)
+                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true }) {
+                                    withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
+                                }
+                            }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                     }.frame(width: full.size.width, height: full.size.height).offset(x: model.menuOpen ? panelWidth : 0)
                     if model.menuOpen {
@@ -44,6 +66,24 @@ struct ConversationView: View {
         }.opacity(handoffEnabled && (handoff.desktop || handoff.motionVisible) ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
+        .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        .onAppear { if !connecting { call.begin(model.callStart) } }
+        .onDisappear { if !connecting { call.end() } }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
+        .onChange(of: handoff.desktop) { _, onMac in if onMac { call.suspend() } }
+    }
+    /// Self view: the live front camera when on, the design's placeholder when off.
+    @ViewBuilder var selfView: some View {
+        if call.cameraOn {
+            SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink).clipShape(RoundedRectangle(cornerRadius: 16))
+                .accessibilityElement().accessibilityLabel("Your camera")
+        } else {
+            Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).accessibilityElement().accessibilityLabel("Your camera is off")
+        }
+    }
+    func openAppSettings() {
+        call.dismissMicBlocked()
+        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
     }
     @ViewBuilder var connectingSurface: some View {
         if #available(iOS 26.0, *) {
@@ -65,11 +105,6 @@ struct ConversationView: View {
     var companionImage: Image {
         if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
         return Image(resource: "companion")
-    }
-    func demoControl(_ name: String, label: String) -> some View {
-        // Camera, microphone and more are explicitly excluded from the hackathon interaction scope.
-        Button(action: {}) { CallGlassControl(icon: name == "camera" ? "glass-camera-icon" : name == "microphone" ? "glass-mic-icon" : "glass-more-icon", size: 46) }
-            .buttonStyle(PreviewControlStyle()).disabled(true).accessibilityLabel(label).accessibilityIdentifier("excluded_\(name)")
     }
 }
 
