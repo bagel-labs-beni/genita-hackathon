@@ -7,22 +7,46 @@ import type { CompanionKind } from "./prompts.ts";
 import type { StyleCard } from "./importProfile.ts";
 
 export type VoiceOption = {
-  id: string;
+  id: string; // Seamless speaker 0..199 as a string; the call resolves it to "seamless:<id>"
   name: string;
   blurb: string;
   tags: string;
+  /** companion looks this voice is offered for; none = every look (GENITA_VOICES overrides) */
+  kind?: CompanionKind;
   /** device voices (server TTS off): the app picks a system voice from these */
   locale?: string;
   gender?: "female" | "male" | "neutral";
   style?: string;
 };
 
+/**
+ * Curated Seamless speakers per companion look (V04 lists 4, as in the Figma frames, for the look the face check found).
+ * Picked from the 11/2 speaker sweep (UTMOS, WER ~0 on English; results/speaker_sweep.json).
+ * The first of each look is the recommended default: human 72, animal 16, character 68.
+ * Names and tone words follow the Figma V04 frames (Tara, Leah, Leo, Dan) and are ours, picked
+ * from pitch/range in the sweep, not Seamless metadata; nobody has auditioned each one yet.
+ */
+const pick = (kind: CompanionKind, id: number, name: string, blurb: string, tags: string): VoiceOption => ({ id: String(id), name, blurb, tags, kind });
 export const DEFAULT_VOICES: VoiceOption[] = [
-  { id: "0", name: "Jin", blurb: "Calm, confident", tags: "calm, confident" },
-  { id: "1", name: "Mira", blurb: "Warm, steady", tags: "warm, conversational" },
-  { id: "2", name: "Theo", blurb: "Easy, playful", tags: "casual, conversational" },
-  { id: "3", name: "Nova", blurb: "Soft, gentle", tags: "soft, smooth" },
+  pick("human", 72, "Tara", "Warm, bright", "warm, bright, mid pitch"),
+  pick("human", 120, "Leah", "Soft, steady", "soft, steady, even"),
+  pick("human", 36, "Leo", "Calm, low", "calm, low pitch, wide range"),
+  pick("human", 24, "Dan", "Easygoing", "easygoing, low pitch"),
+  pick("animal", 16, "Pip", "Cheery, light", "cheery, mid-high, lively"),
+  pick("animal", 22, "Mochi", "Soft, gentle", "soft, even, gentle"),
+  pick("animal", 34, "Juno", "Lively, bright", "lively, high, wide range"),
+  pick("animal", 80, "Rue", "Mellow, easy", "mellow, mid pitch"),
+  pick("character", 68, "Nova", "Bright, clear", "bright, high, even"),
+  pick("character", 64, "Ivy", "Sparkly, light", "sparkly, high, even"),
+  pick("character", 44, "Wren", "Dreamy, soft", "dreamy, soft, steady"),
+  pick("character", 0, "Coco", "Playful, quick", "playful, high, wide range"),
 ];
+
+/** The voices V04 shows for a companion look, recommended default first (voices without a look show for all). */
+export function voicesForKind(voices: VoiceOption[], kind: CompanionKind | null): VoiceOption[] {
+  const k = kind ?? "human";
+  return voices.filter((v) => !v.kind || v.kind === k);
+}
 
 /**
  * Meta voice service unset (the default): the device speaks with
@@ -55,7 +79,7 @@ export function previewLine(v: VoiceOption): string {
 
 export function buildOrderRequest(voices: VoiceOption[], kind: CompanionKind | null, style: StyleCard | null): Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> } {
   const talk = style
-    ? [...style.sections.communication, ...style.sections.support, ...style.sections.approach].map((f) => f.text).slice(0, 8).join("; ")
+    ? [...style.sections.communication, ...(style.sections.response ?? []), ...style.sections.support, ...style.sections.approach].map((f) => f.text).slice(0, 8).join("; ")
     : "unknown";
   return {
     instructions:

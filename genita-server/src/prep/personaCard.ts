@@ -147,7 +147,7 @@ export function buildPersonaRequest(p: PersonaInput): Omit<SparkRequest, "text">
     ...attitudeLines(a).map((l) => `- Attitude: ${l}`),
     ...(a.never?.length ? [`- Never: ${a.never.join("; ")}`] : []),
   ];
-  const profile = p.style ? styleProfileText(p.style, 1500) : "";
+  const profile = p.style ? styleProfileText(p.style) : ""; // full 2,000: the 6 I04 fields + rules (import v3)
   return {
     instructions: [
       "You write the persona card for a personal AI companion from the user's setup answers and, if given, their imported style profile.",

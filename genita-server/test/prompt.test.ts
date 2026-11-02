@@ -110,3 +110,9 @@ test("avoidRepeatedOpener drops a repeated vocative name ('Chelsea, …' 14/20 o
   // a repeated content word without a pause after it is not a vocative: keep it
   assert.equal(avoidRepeatedOpener("Chelsea is the best.", recent), "Chelsea is the best.");
 });
+
+test("F2-L26: the instructions tell the companion to say its own name when asked (5/5 'What's your name?')", () => {
+  const s = buildInstructions({ persona: { name: "Leo", kind: "human", traits: [] }, mode: "chat" });
+  assert.match(s, /^You are Leo,/);
+  assert.match(s, /Asked your name, say "Leo" plainly/);
+});

@@ -91,16 +91,24 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     // MARK: transport
 
-    private struct EmptyReply: Decodable {}
+    struct EmptyReply: Decodable {}
     private struct ErrorReply: Decodable { var error: String? }
 
-    private func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, authorized: Bool = true) async throws -> T {
-        var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
+    /// Shared transport for the account and onboarding calls (OnboardingClient): bearer from the store,
+    /// 401 clears it, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
+    func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                            query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> T {
+        var url = baseURL.appendingPathComponent(String(path.dropFirst()))
+        if let query, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) { c.percentEncodedQuery = query; url = c.url ?? url }
+        var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 20
+        req.timeoutInterval = timeout
         if let json {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
             req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        } else if let body {
+            req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "content-type")
+            req.httpBody = body
         }
         if authorized {
             guard let token = store.load() else { throw GenitaAuthError.unauthorized }

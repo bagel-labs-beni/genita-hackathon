@@ -4,13 +4,13 @@
  * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
-import { sparkJson } from "../meta/spark.ts";
+import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { applyOrder, buildOrderRequest, isDeviceVoice, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
+import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
@@ -22,6 +22,8 @@ export type PrepDeps = {
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** tests: replaces the structured Spark call used by name suggest (F2-L26); unset = Muse Spark */
+  spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
   /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
@@ -122,19 +124,31 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v1";
+export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
 
-export async function orderedVoices(d: PrepDeps, userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: boolean; ms: number }> {
+/**
+ * V04's list: the curated voices for this look, recommended default first (no model call).
+ * `available` = the voice service answers /healthz (cached 15 s); when false the app greys the
+ * list ("Voice preview is waking up") and lets the user continue with the default.
+ */
+export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
   const t0 = performance.now();
-  const style = await d.store.getStyle(userId);
-  try {
-    const r = await sparkJson<{ order: string[] }>(d.metaKey, buildOrderRequest(d.voices, kind, style));
-    return { voices: applyOrder(d.voices, r.order), suggested: true, ms: since(t0) };
-  } catch (err) {
-    d.log("voice.order_failed", { reason: String(err).slice(0, 200) });
-    return { voices: d.voices, suggested: false, ms: since(t0) };
-  }
+  const voices = voicesForKind(d.voices, kind);
+  return { voices, suggested: voices[0]?.id ?? null, available: await voiceAvailable(d), ms: since(t0) };
 }
+
+let probe: { url: string; at: number; ok: boolean } | null = null;
+export async function voiceAvailable(d: PrepDeps, now = Date.now()): Promise<boolean> {
+  if (!d.voice) return false;
+  if (probe && probe.url === d.voice.url && now - probe.at < 15_000) return probe.ok;
+  let ok = false;
+  try {
+    ok = (await fetch(`${d.voice.url}/healthz`, { signal: AbortSignal.timeout(1500) })).ok;
+  } catch { /* down or cold */ }
+  probe = { url: d.voice.url, at: now, ok };
+  return ok;
+}
+export const resetVoiceProbe = () => { probe = null; };
 
 export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer> {
   const v = d.voices.find((x) => x.id === voiceId);
@@ -165,7 +179,9 @@ export async function savePrefs(d: PrepDeps, companion: CompanionRecord, depth: 
   }
   const persona = toPersona(raw, input);
   const prefs = { depth: v.depth, answers: v.answers, updatedAt: new Date().toISOString() };
-  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona }))) ?? { ...companion, prefs, persona };
+  // a rename (PATCH / by voice) may land while Spark writes the card: the stored name wins; a V04 voice pick
+  // saved meanwhile also wins over the card's voice
+  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona: { ...persona, card: { ...persona.card, name: x.name, ...(x.voiceId === companion.voiceId ? {} : { voice: { id: x.voiceId } }) } } }))) ?? { ...companion, prefs, persona };
   d.log("setup.persona_written", { depth: v.depth, ms: since(t0), spark: !!raw });
   return next;
 }
