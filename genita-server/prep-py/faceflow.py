@@ -313,8 +313,10 @@ def interior_tone(img, mouth_px, spec, scale, neutral=None):
     return out * (1 - 0.3 * low3)
 
 
-def interior_mask(img, mouth_px, scale):
-    """Mouth interior of a key (lip rig teeth layer, v41): lip hull minus the lips, 1 px grown, 1 px feather (0..1)."""
+def interior_mask(img, mouth_px, scale, neutral=None):
+    """Mouth interior of a key (lip rig teeth layer; same rules as the prototype v45): lip hull minus the lips (lip-
+    highlight holes closed horizontally); with fewer than two lips found, the mouth-box ellipse's pixels that are new
+    vs the neutral are added; then the one region crossing the mouth middle that is mostly cavity / tooth. 0..1."""
     lab, lips = lips_lab_mask(img, mouth_px)
     lb = (lips > 0).astype(np.uint8)
     n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
@@ -326,20 +328,43 @@ def interior_mask(img, mouth_px, scale):
                 keep[lab_ == c] = 1
     cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     hull = np.zeros_like(keep)
-    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
     if cs:
         cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
-        inn = cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))
-    else:
-        # no red lips (grey photo): the lowered mouth-box ellipse, only its dark (cavity) or bright near-grey (tooth) pixels (codex P2)
-        bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
-        mh_ = max(1, by2 - by1)
-        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
-        L_ = lab[..., 0]; Lm = float(np.median(L_[hull > 0])) if hull.any() else 128.0
-        hs_ = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
-        inn = hull * ((L_ < 0.6 * Lm) | ((hs_[..., 1] < 0.25 * 255) & (L_ > Lm + 15))).astype(np.uint8)
-    inn = cv2.dilate(inn, k3).astype(np.float32)
-    return cv2.GaussianBlur(inn, (0, 0), max(1.0, scale))
+    hsv = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+    L = lab[..., 0]
+    bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
+    mw, mh = max(2, bx2 - bx1), max(1, by2 - by1)
+    if len(cs) < 2:
+        # one lip (dark lips on dark skin) or none (grey photo): the ellipse's new pixels vs the neutral, else its
+        # cavity-dark / tooth pixels (codex P2)
+        el = np.zeros_like(hull)
+        cv2.ellipse(el, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh // 2), (max(1, mw // 2), max(1, int(1.4 * mh))), 0, 0, 360, 1, -1)
+        if neutral is not None:
+            Ln = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB)[..., 0].astype(np.float32)
+            sel = ((Ln - L) > 18) | ((hsv[..., 1] < 0.3 * 255) & ((L - Ln) > 18))
+        else:
+            Lm = float(np.median(L[el > 0])) if el.any() else 128.0
+            sel = (L < 0.6 * Lm) | ((hsv[..., 1] < 0.25 * 255) & (L > Lm + 15))
+        hull = np.maximum(hull, cv2.morphologyEx((el & sel).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)))
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
+    kc = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((1, max(9, int(round(9 * scale)) | 1)), np.uint8))
+    inn = (cv2.erode(hull, k3) * (1 - cv2.dilate(kc, k3))).astype(np.uint8)
+    n2, l3, st3, c3 = cv2.connectedComponentsWithStats(inn)
+    cx, hw = (bx1 + bx2) / 2, mw / 2
+    ok = [c for c in range(1, n2) if st3[c, cv2.CC_STAT_LEFT] <= cx + 0.35 * hw and st3[c, cv2.CC_STAT_LEFT] + st3[c, cv2.CC_STAT_WIDTH] >= cx - 0.35 * hw]
+    V, S = hsv[..., 2].astype(np.float32), hsv[..., 1].astype(np.float32) / 255
+    lv = float(np.median(V[keep > 0])) if keep.any() else 128.0
+    real = (V < 0.6 * lv) | ((S < 0.3) & (V > 1.1 * lv))
+    hy = np.where(hull.any(1))[0]
+    if len(hy):
+        ok = [c for c in ok if (c3[c][1] - hy.min()) / max(1, hy.max() - hy.min()) < 0.62]
+    if not ok:
+        return np.zeros(inn.shape, np.float32)
+    best = max(ok, key=lambda c: int((real & (l3 == c)).sum()))
+    if (real & (l3 == best)).sum() < 0.3 * st3[best, cv2.CC_STAT_AREA]:
+        return np.zeros(inn.shape, np.float32)
+    out = cv2.dilate((l3 == best).astype(np.uint8), k3).astype(np.float32)
+    return cv2.GaussianBlur(out, (0, 0), max(1.0, scale))
 
 
 def colorfix(img, mouth_px, spec):
@@ -723,7 +748,7 @@ def main():
             cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
             ent['lip'] = f'{name}.lip.png'
             if name != 'MBP':   # lip rig teeth layer (v41): where this key's teeth / cavity may show, same size as the lip mask
-                im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0)
+                im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0, NR)
                 cv2.imwrite(os.path.join(a.out, f'{name}.interior.png'), np.clip(im_ * 255 + 0.5, 0, 255).astype(np.uint8))
                 ent['interior'] = f'{name}.interior.png'
         gKr = cv2.cvtColor(cv2.resize(crop, (rw, rh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
