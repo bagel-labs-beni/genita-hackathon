@@ -60,6 +60,7 @@ jobs:
             -only-testing:GenitaUITests/GenitaUITests/testA02LegalLinksOpenSafari \
             -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleByDefault \
             -only-testing:GenitaUITests/GenitaUITests/testA02ShowsGoogleWhenFlagOff \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ESignInFailedCardDoesNotCoverTheTitle \
             -only-testing:GenitaUITests/EmailSignInUITests \
             -only-testing:GenitaUITests/FindsTabUITests \
             -only-testing:GenitaUITests/CameraGuideUITests \

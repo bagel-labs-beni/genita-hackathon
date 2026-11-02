@@ -313,4 +313,24 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["Continue with Google"].exists)
     }
+
+    /// #235 · A02-E: the failure card sits under the subtitle, fully inside the screen, and does not cover the headline.
+    func testA02ESignInFailedCardDoesNotCoverTheTitle() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_REVIEW_SIGNIN_FAILED": "1"]
+        app.launch()
+        let toast = app.descendants(matching: .any)["signInFailed"].firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: 10))
+        // one element that reads the whole message (VoiceOver, and the query is unambiguous)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "signInFailed").count, 1)
+        XCTAssertTrue(toast.label.contains("Couldn’t reach Apple. Check your connection and try again."), toast.label)
+        // headline + subtitle end near canvas y 265 (design) -> the card must start below 250 pt on any phone
+        XCTAssertGreaterThanOrEqual(toast.frame.minY, 250, "the card starts under 'Built from your stories, rhythm and boundaries.'")
+        XCTAssertLessThanOrEqual(toast.frame.width, 342.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02E-toast"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
 }
