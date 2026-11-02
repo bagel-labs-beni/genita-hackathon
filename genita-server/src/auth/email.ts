@@ -4,7 +4,8 @@
  *
  * Codes: 6 random digits (crypto.randomInt), stored only as HMAC-SHA256(server secret, email + code),
  * 10 minutes, 5 tries, single use, and only the newest code for an email works. Per email: one send
- * per 60 s and 5 per hour. Per-IP limits are in routes.ts.
+ * per 60 s, 5 per hour, 10 per day (so at most 50 guesses a day against one address), checked and
+ * written under a per-address lock. Per-IP and global limits are in routes.ts.
  *
  * Env:
  *   RESEND_API_KEY     mail provider key (Resend HTTP API). Unset: loopback dev servers log the code
@@ -17,20 +18,22 @@ import type { Db } from "../db/index.ts";
 export const CODE_TTL_SEC = 10 * 60;
 export const RESEND_AFTER_SEC = 60;
 export const MAX_SENDS_PER_HOUR = 5;
+export const MAX_SENDS_PER_DAY = 10;
 export const MAX_ATTEMPTS = 5;
 
 type Log = (event: string, data: Record<string, unknown>) => void;
 
 export type MailSender = { kind: string; send(to: string, code: string, minutes: number): Promise<void> };
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// plain local@domain.tld only: no display names, lists, quotes or comments a mail API could read as more recipients
+const EMAIL_RE = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
 
 /** trimmed + lowercased, or null when it isn't an address we will mail. */
 export function normalizeEmail(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const e = raw.trim().toLowerCase();
-  // no control characters anywhere (header/HTML safety), RFC 5321 length cap
-  if (e.length > 254 || /[\u0000-\u001f\u007f]/.test(e) || !EMAIL_RE.test(e)) return null;
+  // RFC 5321 length cap
+  if (e.length > 254 || !EMAIL_RE.test(e)) return null;
   return e;
 }
 
@@ -53,28 +56,31 @@ export class EmailCodes {
     return createHmac("sha256", this.key).update(`${email}\n${code}`).digest();
   }
 
-  /** New code for `email` unless the per-email cooldown or hourly cap says wait. Older live codes stop working. */
+  /** New code for `email` unless the per-email cooldown or hourly / daily cap says wait. Older codes stop working. */
   async issue(email: string): Promise<StartResult> {
-    const recent = await this.db.query(
-      `SELECT EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age FROM email_codes
-       WHERE email = $1 AND created_at > now() - interval '1 hour' ORDER BY created_at DESC LIMIT ${MAX_SENDS_PER_HOUR}`,
-      [email],
-    );
-    const ages = recent.rows.map((r) => Number(r.age));
-    if (ages.length && ages[0] < RESEND_AFTER_SEC) return { ok: false, retryAfterSec: Math.max(1, Math.ceil(RESEND_AFTER_SEC - ages[0])) };
-    if (ages.length >= MAX_SENDS_PER_HOUR) return { ok: false, retryAfterSec: Math.max(1, Math.ceil(3600 - ages[ages.length - 1])) };
+    return this.db.tx(async (q) => {
+      // one start per address at a time, so parallel requests can't all pass the limits below
+      await q.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`genita-email:${email}`]);
+      const recent = await q.query(
+        `SELECT EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age FROM email_codes
+         WHERE email = $1 AND created_at > now() - interval '1 day' ORDER BY created_at DESC LIMIT ${MAX_SENDS_PER_DAY}`,
+        [email],
+      );
+      const ages = recent.rows.map((r) => Number(r.age));
+      const hour = ages.filter((a) => a < 3600);
+      if (ages.length && ages[0] < RESEND_AFTER_SEC) return { ok: false as const, retryAfterSec: Math.max(1, Math.ceil(RESEND_AFTER_SEC - ages[0])) };
+      if (hour.length >= MAX_SENDS_PER_HOUR) return { ok: false as const, retryAfterSec: Math.max(1, Math.ceil(3600 - hour[hour.length - 1])) };
+      if (ages.length >= MAX_SENDS_PER_DAY) return { ok: false as const, retryAfterSec: Math.max(1, Math.ceil(86_400 - ages[ages.length - 1])) };
 
-    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    const id = await this.db.tx(async (q) => {
+      const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
       await q.query("UPDATE email_codes SET consumed_at = now() WHERE email = $1 AND consumed_at IS NULL", [email]);
-      await q.query("DELETE FROM email_codes WHERE created_at < now() - interval '1 day'");
+      await q.query("DELETE FROM email_codes WHERE created_at < now() - interval '2 days'");
       const r = await q.query(`INSERT INTO email_codes (email, code_hash, expires_at) VALUES ($1, $2, now() + interval '${CODE_TTL_SEC} seconds') RETURNING id`, [
         email,
         this.hash(email, code).toString("hex"),
       ]);
-      return String(r.rows[0].id);
+      return { ok: true as const, id: String(r.rows[0].id), code };
     });
-    return { ok: true, id, code };
   }
 
   /** The mail never left: forget the row so the user can ask again right away. */
@@ -87,22 +93,17 @@ export class EmailCodes {
    * (atomic, so parallel guesses can't exceed MAX_ATTEMPTS); a match consumes the code exactly once.
    */
   async check(email: string, code: string): Promise<CheckResult> {
-    const live = await this.db.query(
-      "SELECT id FROM email_codes WHERE email = $1 AND consumed_at IS NULL AND expires_at > now() ORDER BY created_at DESC LIMIT 1",
+    // only the newest code for the address counts; an older one never comes back when the newest is burned
+    const newest = await this.db.query(
+      "SELECT id, attempts, consumed_at IS NULL AND expires_at > now() AS live FROM email_codes WHERE email = $1 ORDER BY created_at DESC, id DESC LIMIT 1",
       [email],
     );
-    // the newest code may have been burned by tries: say so instead of "invalid"
-    if (!live.rows[0]) {
-      const burned = await this.db.query(
-        `SELECT 1 FROM email_codes WHERE email = $1 AND expires_at > now() AND attempts >= ${MAX_ATTEMPTS}
-         AND created_at = (SELECT max(created_at) FROM email_codes WHERE email = $1)`,
-        [email],
-      );
-      return burned.rows.length ? "too_many" : "invalid";
-    }
-    const id = live.rows[0].id;
+    const row = newest.rows[0];
+    if (!row) return "invalid";
+    if (!row.live) return Number(row.attempts) >= MAX_ATTEMPTS ? "too_many" : "invalid";
+    const id = row.id;
     const tried = await this.db.query(
-      `UPDATE email_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < ${MAX_ATTEMPTS} RETURNING attempts, code_hash`,
+      `UPDATE email_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND expires_at > now() AND attempts < ${MAX_ATTEMPTS} RETURNING attempts, code_hash`,
       [id],
     );
     if (!tried.rows[0]) return "too_many";

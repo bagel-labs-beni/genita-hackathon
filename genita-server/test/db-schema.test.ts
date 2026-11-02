@@ -36,6 +36,10 @@ test("F1-L4: migrations go up and down on an empty database", async () => {
     assert.deepEqual(await migrateDown(db), ["001_init"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), []);
     assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login"], "up again after down");
+    // with email accounts present the down step refuses instead of deleting them (and their data)
+    await db.query("INSERT INTO users (provider, provider_sub, email) VALUES ('email', 'a@example.com', 'a@example.com')");
+    await assert.rejects(migrateDown(db));
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM users WHERE provider = 'email'")).rows[0].n, 1);
   } finally {
     await db.close();
   }

@@ -91,7 +91,7 @@ test("email login: same email again → the same account; an Apple account with 
   assert.equal(again.json.user.id, first.json.user.id);
   assert.equal(again.json.isNew, false);
 
-  const { user: apple } = await s.accounts.accounts.upsertUser({ provider: "apple", sub: "001.apple", email: "Judge@Example.com", displayName: "Judge" });
+  const { user: apple } = await s.accounts.accounts.upsertUser({ provider: "apple", sub: "001.apple", email: "Judge@Example.com", emailVerified: true, displayName: "Judge" });
   await s.start("judge@example.com");
   const linked = await s.verify("judge@example.com", s.sent[2].code);
   assert.equal(linked.status, 200);
@@ -105,6 +105,14 @@ test("email login: same email again → the same account; an Apple account with 
   const fresh = await s.verify("dev@example.com", s.sent[3].code);
   assert.equal(fresh.json.user.provider, "email");
   assert.equal(fresh.json.isNew, true);
+
+  // an Apple account whose email Apple did not mark verified is never linked
+  const { user: unverified } = await s.accounts.accounts.upsertUser({ provider: "apple", sub: "002.apple", email: "maybe@example.com", emailVerified: false });
+  await s.start("maybe@example.com");
+  const separate = await s.verify("maybe@example.com", s.sent[4].code);
+  assert.equal(separate.status, 200);
+  assert.notEqual(separate.json.user.id, unverified.id);
+  assert.equal(separate.json.user.provider, "email");
 });
 
 test("email login: no user enumeration — start answers the same for a known and an unknown email", async (t) => {
@@ -160,9 +168,35 @@ test("email login: per-email cooldown (60 s) and hourly cap (5); bad input → 4
   assert.equal(s.sent.length, 5);
 
   assert.equal((await s.start("not-an-email")).status, 400);
+  for (const bad of ["x<a@evil.com>", "a@evil.com,b@x.com", "\"a\"@x.com", "a b@x.com", "a;b@x.com"]) assert.equal((await s.start(bad)).status, 400, bad);
   assert.equal((await s.call("POST", "/auth/email/start", { email: 42 })).status, 400);
   assert.equal((await s.verify("cap@example.com", "12ab56")).status, 400);
   assert.equal((await s.verify("cap@example.com", "1234567")).status, 400);
+});
+
+test("email login: per-address daily cap (10 sends / 24 h)", async (t) => {
+  const s = await boot(t);
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await s.start("day@example.com")).status, 200, `send ${i + 1}`);
+    await s.age("day@example.com", 61 * 60); // out of the cooldown and the hour, still inside the day
+  }
+  assert.equal((await s.start("day@example.com")).status, 429, "11th send within a day");
+});
+
+test("email login: parallel starts for one address → one code (cooldown holds under a race)", async (t) => {
+  const s = await boot(t);
+  const rs = await Promise.all(Array.from({ length: 8 }, () => s.accounts.emailCodes.issue("race@example.com")));
+  assert.equal(rs.filter((r) => r.ok).length, 1);
+  const rows = await s.accounts.db.query("SELECT count(*)::int AS n FROM email_codes WHERE email = 'race@example.com'");
+  assert.equal(rows.rows[0].n, 1);
+  const hs = await Promise.all(Array.from({ length: 8 }, () => s.start("race2@example.com")));
+  assert.equal(hs.filter((r) => r.status === 200).length, 1, "over HTTP too");
+});
+
+test("email login: the IP is CloudFront's (last X-Forwarded-For entry), a spoofed first entry doesn't reset limits", async (t) => {
+  const s = await boot(t, { trustProxy: true });
+  for (let i = 0; i < 20; i++) assert.equal((await s.start(`spoof${i}@example.com`, { "x-forwarded-for": `10.9.${i}.1, 198.51.100.4` })).status, 200);
+  assert.equal((await s.start("spoof20@example.com", { "x-forwarded-for": "10.9.99.1, 198.51.100.4" })).status, 429);
 });
 
 test("email login: per-IP limits on sends and on wrong codes", async (t) => {
