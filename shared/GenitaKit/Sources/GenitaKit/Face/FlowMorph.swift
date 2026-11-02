@@ -16,6 +16,8 @@ public struct FaceFlowManifest: Codable, Equatable, Sendable {
         public var key: String
         public var nk: String?
         public var kn: String?
+        /// People (v16 lipmask): where this key's own texture may show (lips + mouth hull), ROI `size`.
+        public var lip: String?
     }
     public var version: Int?
     public var roi: [Double]
@@ -121,17 +123,40 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var liftAll: Double? = nil
         /// Cheek blob [out, up, σx, σy] as fractions of the face box (people: .12, .24, .15, .12).
         public var geometry: [Double]? = nil
+        public init(spread: Double, pull: Double, cheek: Double, naso: Double, lift: Double, liftAll: Double? = nil, geometry: [Double]? = nil) {
+            self.spread = spread; self.pull = pull; self.cheek = cheek; self.naso = naso; self.lift = lift; self.liftAll = liftAll; self.geometry = geometry
+        }
+        enum CodingKeys: String, CodingKey { case spread, pull, cheek, naso, cheekW, nasoW, lift, liftAll, geometry }
+        /// Prep writes `cheekW` / `nasoW` (v16); `cheek` / `naso` are accepted too.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            spread = try c.decode(Double.self, forKey: .spread); pull = try c.decode(Double.self, forKey: .pull)
+            cheek = try c.decodeIfPresent(Double.self, forKey: .cheekW) ?? c.decode(Double.self, forKey: .cheek)
+            naso = try c.decodeIfPresent(Double.self, forKey: .nasoW) ?? c.decode(Double.self, forKey: .naso)
+            lift = try c.decodeIfPresent(Double.self, forKey: .lift) ?? 0
+            liftAll = try c.decodeIfPresent(Double.self, forKey: .liftAll)
+            geometry = try c.decodeIfPresent([Double].self, forKey: .geometry)
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(spread, forKey: .spread); try c.encode(pull, forKey: .pull); try c.encode(cheek, forKey: .cheekW)
+            try c.encode(naso, forKey: .nasoW); try c.encode(lift, forKey: .lift)
+            try c.encodeIfPresent(liftAll, forKey: .liftAll); try c.encodeIfPresent(geometry, forKey: .geometry)
+        }
     }
+    /// v16: per-key amount ceilings (same as `cap`) and consonant gain overrides.
+    public var maxAmount: [String: Double]? = nil
+    public var consonantOverride: [String: Double]? = nil
     public var cheek: Cheek? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
     /// spring instead of stepping with the texture snap; amplitude scaled by stress; the next shape is
     /// blended in ahead; only closures are fast. Texture snap keeps its own hysteresis.
     public struct Motion: Codable, Equatable, Sendable {
-        public var riseMs: Double = 110         // geometry 90% rise time
+        public var riseMs: Double = 75          // geometry 90% rise time (short vowels must land; jerk vs reach)
         public var closeRiseMs: Double = 40     // m/b/p closing
-        public var amplitude: Double = 0.6      // overall geometry scale (vowels)
-        public var unstressed: Double = 0.35    // share for unstressed vowels (stressed = 1)
-        public var anticipation: Double = 0.35  // blend of the shape coming next
+        public var amplitude: Double = 0.7      // overall geometry scale (vowels)
+        public var unstressed: Double = 0.55    // share for unstressed vowels (stressed = 1)
+        public var anticipation: Double = 0.25  // blend of the shape coming next (vowels only)
         public var aheadMs: Double = 120        // how far ahead "next" is
         public var textureOn: Double = 0.55     // hysteresis: a new texture needs this share …
         public var textureOff: Double = 0.45    // … and the shown one must have dropped below this
@@ -168,6 +193,7 @@ public final class FaceFlowData: @unchecked Sendable {
     public let lockY: Double?
     public let map: FlowMap
     let keyImages: [String: CGImage]
+    let lipMasks: [String: CGImage]
     let nk: [String: [Float]]
     let kn: [String: [Float]]
     let mask: CGImage
@@ -187,10 +213,13 @@ public final class FaceFlowData: @unchecked Sendable {
         // People: the full "A" key is yawn-sized (review 11/3: a 2-frame yawn pop on "Oh"); the
         // ladder stops at AH2 when that key exists.
         if m.kind == "human", m.keys.contains("AH2") { rules.ladder.steps.removeAll { $0.key == "A" } }
+        for (k, v) in rules.consonantOverride ?? [:] { rules.consonant[k] = v }
+        if let mx = rules.maxAmount { rules.cap = (rules.cap ?? [:]).merging(mx) { min($0, $1) } }
         map = rules
         mask = try FaceSet.decode(try load(m.mask), name: "flow.mask")
         neutralROI = try m.neutralRoi.map { try FaceSet.decode(try load($0), name: "flow.neutral") }
         var keys: [String] = [], imgs: [String: CGImage] = [:], nk: [String: [Float]] = [:], kn: [String: [Float]] = [:]
+        var lips: [String: CGImage] = [:]
         let n = flowSize.w * flowSize.h * 2
         let flows = rules.drive != "snap"     // 2D snap mouths are composited as they are
         if flows, m.flowSize == nil { throw FaceSetError.undecodable("flow: no flowSize") }
@@ -205,10 +234,11 @@ public final class FaceFlowData: @unchecked Sendable {
                 nk[k] = [Float](repeating: 0, count: n); kn[k] = nk[k]
             }
             imgs[k] = try FaceSet.decode(try load(f.key), name: "flow.\(k)")
+            if let l = f.lip { lips[k] = try FaceSet.decode(try load(l), name: "flow.\(k).lip") }
             keys.append(k)
         }
         guard !keys.isEmpty else { throw FaceSetError.undecodable("flow: no keys") }
-        self.keys = keys; keyImages = imgs; self.nk = nk; self.kn = kn
+        self.keys = keys; keyImages = imgs; self.nk = nk; self.kn = kn; lipMasks = lips
     }
 
     /// IEEE half → Float without Float16 (unavailable on x86_64 macOS).
@@ -245,6 +275,8 @@ final class FlowMorph: @unchecked Sendable {
     private let kx: Float, ky: Float
     private let neutral: [Float]          // RGB, working res
     private let keyPix: [String: [Float]]
+    /// Per-key lip hull (0…1, working res); a key's colour shows only inside it, the skin is the warped neutral.
+    private let lipPix: [String: [Float]]
     private let maskW: [Float]
     private let order: [String]
     private var smooth: [Float]
@@ -276,6 +308,12 @@ final class FlowMorph: @unchecked Sendable {
             kp[key] = Self.rgb(img, crop: CGRect(x: 0, y: 0, width: img.width, height: img.height), width: width, height: height)
         }
         keyPix = kp
+        var lm: [String: [Float]] = [:]
+        for (key, img) in data.lipMasks {
+            let v = Self.rgb(img, crop: CGRect(x: 0, y: 0, width: img.width, height: img.height), width: width, height: height)
+            lm[key] = stride(from: 0, to: v.count, by: 3).map { v[$0] / 255 }
+        }
+        lipPix = lm
         let m = Self.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height), width: width, height: height)
         maskW = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
         order = data.keys
@@ -405,7 +443,8 @@ final class FlowMorph: @unchecked Sendable {
             _ = jm
         }
         // anticipation: blend toward what comes next (not into or out of a closure)
-        if !closing, let ah = ahead, (ah.weights[.MBP] ?? 0) < 0.5 {
+        let aheadTop = ahead?.weights.max { $0.value < $1.value }?.key
+        if !closing, let ah = ahead, (ah.weights[.MBP] ?? 0) < 0.5, let at = aheadTop, at == .A || at == .O || at == .EI || at == .U {
             let ra = amounts(ah)
             let a = Float(mo.anticipation)
             for k in Set(raw.keys).union(ra.keys) where k != "MBP" { raw[k] = (1 - a) * (raw[k] ?? 0) + a * (ra[k] ?? 0) }
@@ -650,7 +689,7 @@ final class FlowMorph: @unchecked Sendable {
             let jy = Float(px * (sin(w * 2.9 + 1.9) * 0.6 + sin(w * 4.1 + 0.3) * 0.4))
             for q in stride(from: 0, to: n2, by: 2) { gn[q] += jx; gn[q + 1] += jy }
         }
-        var drawn: [(key: [Float], w: Float, field: [Float])] = []
+        var drawn: [(key: [Float], w: Float, field: [Float], lip: [Float]?)] = []
         // Every key with colour weight is drawn, including one still held by the snap rule after its
         // amount fell to 0 (leaving it out left that weight unpainted: a black mouth).
         let zero = [Float](repeating: 0, count: n2)
@@ -663,7 +702,7 @@ final class FlowMorph: @unchecked Sendable {
                 g[q] = (cf * f[q] + cb * bk[q]) * kx + gn[q] - gj[q]
                 g[q + 1] = (cf * f[q + 1] + cb * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
             }
-            drawn.append((keyPix[order[idx]]!, cw[idx], g))
+            drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]]))
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -681,7 +720,12 @@ final class FlowMorph: @unchecked Sendable {
                     r = a0 * c0.0; g = a0 * c0.1; b = a0 * c0.2
                     for k in drawn {
                         let dk = Self.bilinear2(k.field, fw, fh, fx, fy)
-                        let c = Self.bilinear3(k.key, w, h, px + dk.0, py + dk.1)
+                        var c = Self.bilinear3(k.key, w, h, px + dk.0, py + dk.1)
+                        if let lip = k.lip {
+                            // the key's colour only inside its lip hull (warped with it); skin = warped neutral
+                            let mk = Self.bilinear1(lip, w, h, px + dk.0, py + dk.1)
+                            c = (c.0 * mk + c0.0 * (1 - mk), c.1 * mk + c0.1 * (1 - mk), c.2 * mk + c0.2 * (1 - mk))
+                        }
                         r += k.w * c.0; g += k.w * c.1; b += k.w * c.2
                     }
                 }
@@ -777,6 +821,15 @@ final class FlowMorph: @unchecked Sendable {
         let dx = (v[i00] * (1 - ax) + v[i10] * ax) * (1 - ay) + (v[i01] * (1 - ax) + v[i11] * ax) * ay
         let dy = (v[i00 + 1] * (1 - ax) + v[i10 + 1] * ax) * (1 - ay) + (v[i01 + 1] * (1 - ax) + v[i11 + 1] * ax) * ay
         return (dx, dy)
+    }
+
+    /// Bilinear single-channel sample; 0 outside (a warped mask has nothing beyond its edge).
+    @inline(__always) static func bilinear1(_ v: [Float], _ w: Int, _ h: Int, _ x: Float, _ y: Float) -> Float {
+        guard x > -1, y > -1, x < Float(w), y < Float(h) else { return 0 }
+        let xc = min(Float(w - 1), max(0, x)), yc = min(Float(h - 1), max(0, y))
+        let x0 = Int(xc), y0 = Int(yc), x1 = min(w - 1, x0 + 1), y1 = min(h - 1, y0 + 1)
+        let ax = xc - Float(x0), ay = yc - Float(y0)
+        return (v[y0 * w + x0] * (1 - ax) + v[y0 * w + x1] * ax) * (1 - ay) + (v[y1 * w + x0] * (1 - ax) + v[y1 * w + x1] * ax) * ay
     }
 
     /// Bilinear RGB sample, edges replicated (cv2 BORDER_REPLICATE).
