@@ -144,8 +144,8 @@ import XCTest
     /// until the call screen shows it, then animates the same set.
     func testAFaceLoadedBeforeTheScreenAnimatesOnlyOnceShown() async throws {
         let call = CallController()
-        call.prepareFace(reduceMotion: true)   // off screen: allowed, starts nothing
-        call.useFace(try Self.fixtureSet(), key: "prepared", reduceMotion: true)   // the load finishing off screen
+        // what prepareFace's load ends in, off screen (the loader itself needs the server; covered by the loader tests)
+        call.useFace(try Self.fixtureSet(), key: "prepared", reduceMotion: true)
         let face = try XCTUnwrap(call.face)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(face.frame, "no frames while the conversation is still on the iPhone")
