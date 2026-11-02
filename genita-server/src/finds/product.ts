@@ -27,6 +27,19 @@ import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 
 export const PRODUCT_COUNT = 2;
+/** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
+export const SEARCH_TITLE = "Finding 2 for your style…";
+
+/** The searching line's item label: whole words only, at most 16 characters ("Simple crewneck sweater" → "Simple crewneck"). */
+export function shortLabel(label: string, max = 16): string {
+  const words = label.trim().split(/\s+/);
+  let out = words[0] ?? "";
+  for (const w of words.slice(1)) {
+    if ((out + " " + w).length > max) break;
+    out += " " + w;
+  }
+  return out;
+}
 const SEARCH_TIMEOUT_MS = 35_000;
 const PAGE_TIMEOUT_MS = 4500;
 
@@ -304,7 +317,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const vendors: FindsVendors = ctx.vendors;
   const at = new Date();
   const label0 = guessLabel(ctx.question, ctx.previous ? guessLabel(ctx.previous, "Things") : "Things");
-  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: `Looking for ${PRODUCT_COUNT} that match your style…`, detail: `${label0} · searching shops` });
+  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label0)} · searching shops` });
 
   const taste = tasteLines(ctx.likes, ctx.profile, ctx.memories);
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
@@ -350,7 +363,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
   }
-  if (cands.length) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${label} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops` });
+  if (cands.length) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops` });
 
   // read each page (in parallel, capped): one product? price? picture?
   const facts = await Promise.all(cands.map((p) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : Promise.resolve(null))));

@@ -131,7 +131,7 @@ export class FindsRunner {
     } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "outfit" ? runOutfit : runLink;
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
-        this.hooks.emit({ type: "find.failed", findId, reason: "error", message: "Something went wrong while I was looking." });
+        this.hooks.emit({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
         this.hooks.log("find.error", { findId, message: String(err).slice(0, 200) });
       }
       return { card: null, timings: {} } as PipelineResult;

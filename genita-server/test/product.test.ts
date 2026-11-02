@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortName, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortLabel, shortName, SEARCH_TITLE, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { likesFromStyle } from "../src/finds/setup.ts";
@@ -209,7 +209,7 @@ test("product pipeline: 2 opened product pages → card with price from the page
   assert.equal(card.say, "Two options. Simple cuts, like you prefer.");
   assert.match(card.how[1], /^Searched the web · northline\.example\.com, fieldandco\.example\.com$/);
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
-  assert.equal((events[0] as { title: string }).title, "Looking for 2 that match your style…");
+  assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
   assert.deepEqual(stored, ["product-1"], "only the product with a page picture gets one");
   // every card URL is in the tool trace
   const opened = new Set(completedOpens(v === undefined ? [] : [SEARCH, OPEN(P1), OPEN(P2)]));
@@ -329,4 +329,16 @@ test("hedged search: the first call that lists 2 opened pages wins; the slow one
   const best = await hedgedSearch(mk([{ ms: 10, r: one }, { ms: 30, r: null }]), "p", 2, new AbortController().signal);
   assert.equal(best, one, "a vendor failure in one call: the other's partial result is used");
   assert.equal(await hedgedSearch(mk([{ ms: 5, r: null }]), "p", 1, new AbortController().signal), null);
+});
+
+test("searching lines fit one line at 390 pt: short title, whole-word labels, short failure titles", () => {
+  assert.ok(SEARCH_TITLE.length <= 28);
+  assert.equal(shortLabel("Simple crewneck sweater"), "Simple crewneck");
+  assert.equal(shortLabel("Light jacket"), "Light jacket");
+  assert.equal(shortLabel("Featherless quilted utility jacket"), "Featherless");
+  // every failure message is "Title. Body" with a title that fits next to Stop/Retry (≤ 28 chars) and a body ≤ 40
+  for (const m of ["Couldn’t find a good match. Try a color or a price, or ask me again.", "Something went wrong. Ask me again in a moment.", "Couldn’t find a recipe. Ask me again in a moment.", "Can’t tell them apart. Hold them up one at a time?", "Couldn’t read that link. Check it, or send another one.", "I couldn't look just now. Ask me again?"]) {
+    const [title, body] = [m.slice(0, m.indexOf(". ")), m.slice(m.indexOf(". ") + 2)];
+    assert.ok(title.length <= 28 && body.length <= 40, m);
+  }
 });
