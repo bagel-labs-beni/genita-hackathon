@@ -49,6 +49,20 @@ final class HandoffScreensUITests: XCTestCase {
         XCTAssertTrue(app.textFields["pairingCode"].waitForExistence(timeout: 5))
         capture(app, "pairing-sheet")
     }
+    func testRegistrationScreens() {
+        // P03: any iPhone (A12+) looks for the MAC-REG picture; Cancel goes back to the call.
+        var app = open(["--handoff-state", "p03"])
+        XCTAssertTrue(app.staticTexts["Point at the picture on your Mac"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["cancelRegistration"].isHittable)
+        capture(app, "P03-registering")
+        app.buttons["cancelRegistration"].tap()
+        XCTAssertFalse(app.staticTexts["Point at the picture on your Mac"].waitForExistence(timeout: 1))
+        app.terminate()
+        // P04: the screen was learned, a 4-second toast over the call.
+        app = open(["--handoff-state", "p04"])
+        XCTAssertTrue(app.staticTexts["Mac screen learned. Touch its edge with this iPhone to move."].waitForExistence(timeout: 5))
+        capture(app, "P04-registered")
+    }
     func testPermissionDeniedSheets() {
         var app = open(["--media-state", "camera-denied"])
         XCTAssertTrue(app.staticTexts["Allow camera access."].waitForExistence(timeout: 10))

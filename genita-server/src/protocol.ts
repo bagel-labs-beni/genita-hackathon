@@ -19,6 +19,8 @@ export type CancelReason = "barge_in" | "text" | "client";
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
+/** ARPAbet label (GenitaKit LipViseme(phoneme:)), ms on the reply's audio timeline */
+export type PhonemeTiming = { p: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
 // F8 interpretation
@@ -204,6 +206,9 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** server voice, GENITA_VOICE_ALIGN: forced-aligner word + phoneme timing of one clause, after its audio.
+   * seq = the clause's first `audio` seq; ms on the reply's audio timeline (like audio.words). */
+  | { type: "audio.timing"; utteranceId: number; sentence: number; seq: number; words: WordTiming[]; phonemes: PhonemeTiming[] }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -218,6 +223,11 @@ export type ServerEvent =
       replyStartToFirstSentenceMs: number | null;
       firstSentenceToFirstAudioMs: number | null;
       speechEndToFirstAudioMs: number | null;
+      /** log/report aliases: ASR finalization, first token, sentence-to-TTS, speech end-to-first sound */
+      stt_ms?: number | null;
+      llm_ms?: number | null;
+      tts_ms?: number | null;
+      first_audio_ms?: number | null;
       audioMs: number;
       speculative?: "hit" | "miss" | "none";
     }
@@ -268,6 +278,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  "audio.timing": { required: ["utteranceId", "sentence", "seq", "words", "phonemes"], optional: [] },
   say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
@@ -283,7 +294,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
       "speechEndToFirstAudioMs",
       "audioMs",
     ],
-    optional: ["speculative"],
+    optional: ["speculative", "stt_ms", "llm_ms", "tts_ms", "first_audio_ms"],
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
