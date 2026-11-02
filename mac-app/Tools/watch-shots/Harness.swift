@@ -30,7 +30,7 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "cs01", "mac-2", "mac-3", "mac-4": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-4": break
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
             default: setenv("GENITA_MAC_REVIEW", state, 1)
             }
@@ -38,6 +38,9 @@ import CoreText
             switch state {
             case "a02": page = AnyView(MacSignInView())
             case "a02-j": page = AnyView(MacJudgeCodeSheet())
+            case "a02-m": page = AnyView(MacEmailSheet())
+            case "a02-m2": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com"))
+            case "a02-m2-error": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com", message: "That code didn’t work. Check it and try again."))
             case "cs01": page = AnyView(MacConsentView())
             // #78: MAC-2 / MAC-3 / MAC-4 home windows (Figma 87:2 / 88:2 / 89:2)
             case "mac-2": page = AnyView(MacHomeView(kind: .noCompanion, name: "Mina", handoff: MacHandoff.shared))
