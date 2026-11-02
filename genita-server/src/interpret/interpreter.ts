@@ -24,8 +24,8 @@
  */
 import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import { SPARK_MODEL } from "../meta/spark.ts";
-import type { TtsChunk } from "../tts/elevenlabs.ts";
-import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
+import type { TtsChunk } from "../tts/types.ts";
+import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { speechLang } from "../text/language.ts";
 import type { Alignment } from "../lips/visemes.ts";
 import type { BubbleReason, BubbleStatus, BubbleVia, InterpretBubbleEvent, InterpretSource, MouthCue, Phase, ServerEvent, WordTiming } from "../protocol.ts";
@@ -53,11 +53,6 @@ export interface InterpretHost {
    */
   say?(utteranceId: number, sentence: number, text: string, lang: string): void;
   timing(alignment: Alignment | null, offsetMs: number): { words: WordTiming[]; mouth?: MouthCue[] };
-  /** Peter lips: true if this utterance's audio goes to the worker */
-  lipBegin(utteranceId: number): boolean;
-  lipAudio(utteranceId: number, pcm: Buffer): void;
-  lipEnd(utteranceId: number): void;
-  lipCancel(utteranceId: number): void;
   log(event: string, data: Record<string, unknown>): void;
 }
 
@@ -101,7 +96,6 @@ type Job = {
   spoken: string[];
   audioMs: number;
   playStart: number | null;
-  peter: boolean;
 };
 
 const LOOKS_FINAL = /[.?!。？！…]["'”’)\]]*$/;
@@ -400,7 +394,7 @@ export class Interpreter {
       bubble.status = "translating";
       this.emit(bubble);
     }
-    this.queue.push({ utteranceId, bubble, stream, abort, speculative, m, spoken: [], audioMs: 0, playStart: null, peter: false });
+    this.queue.push({ utteranceId, bubble, stream, abort, speculative, m, spoken: [], audioMs: 0, playStart: null });
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
     void this.pump();
@@ -523,7 +517,6 @@ export class Interpreter {
           });
           if (chunk.audio.length) {
             this.host.sendAudio(seq, chunk.audio);
-            if (job.peter) this.host.lipAudio(utteranceId, chunk.audio);
           }
           job.audioMs += durationMs;
           this.playEndAt = job.playStart! + job.audioMs;
@@ -539,7 +532,6 @@ export class Interpreter {
     }
     await producer;
     if (signal.aborted) return;
-    if (job.peter) this.host.lipEnd(utteranceId);
     const full = job.spoken.join(" ").trim();
     if (sparkError || !full) {
       this.host.send({ type: "error", code: "spark_unavailable", message: "Could not translate that. Say it again?", retryable: true });
@@ -580,7 +572,6 @@ export class Interpreter {
     const now = this.host.now();
     job.m.firstAudioAt = now;
     job.playStart = Math.max(now, this.playEndAt);
-    job.peter = this.host.lipBegin(job.utteranceId);
     this.setPhase("speaking");
     if (job.bubble) {
       job.bubble.status = "speaking";
@@ -595,7 +586,6 @@ export class Interpreter {
   private cancelJob(job: Job, reason: "client"): void {
     if (job.abort.signal.aborted) return;
     job.abort.abort();
-    if (job.peter) this.host.lipCancel(job.utteranceId);
     const t = this.speakTimers.get(job.utteranceId);
     if (t) clearTimeout(t);
     this.speakTimers.delete(job.utteranceId);

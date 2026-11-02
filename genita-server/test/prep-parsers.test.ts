@@ -132,7 +132,7 @@ test("voices: Spark order applied safely", () => {
   assert.deepEqual(applyOrder(DEFAULT_VOICES, ["nope", ids[3], ids[3]]).map((v) => v.id), [ids[3], ids[0], ids[1], ids[2]]);
   assert.deepEqual(applyOrder(DEFAULT_VOICES, null).map((v) => v.id), ids);
   assert.equal(DEFAULT_VOICES.length, 4);
-  assert.equal(DEFAULT_VOICES[0].id, "7PbNGDB5sJCFnOZuMPNL"); // demo voice
+  assert.equal(DEFAULT_VOICES[0].id, "0"); // Meta speaker
   assert.deepEqual(voicesFromEnv("a1:Ann:Soft,b2:Ben"), [
     { id: "a1", name: "Ann", blurb: "Soft", tags: "Soft" },
     { id: "b2", name: "Ben", blurb: "", tags: "" },

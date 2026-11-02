@@ -16,7 +16,7 @@ generate() would give for an exact copy, without the token-by-token loop.
 
 Timing: the unit model predicts a duration (in 20 ms units) for every character, and the
 vocoder predicts how many frames each unit lasts. Hooks capture both, so each character gets a
-start/end time on the output audio (same shape as ElevenLabs with-timestamps).
+start/end time on the output audio (PCM character timing contract).
 
 Deploy: VOICE_GPU=L4 modal deploy voice_app.py   (needs Modal secret `genita-voice-auth`)
 Scale: python scale.py warm|cold   (min_containers 1 / 0)
@@ -277,7 +277,7 @@ class MmsEngine:
 def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, first_ms=300, chunk_ms=1000):
     """NDJSON lines: a short first piece (first_ms, so playback can start after a few KB even over a slow
     link), then <= chunk_ms pieces; each piece carries the characters that start in it (times stay
-    relative to the start of this request's audio, like ElevenLabs)."""
+    relative to the start of this request's audio)."""
     first = int(OUT_SR * first_ms / 1000) * 2
     step = int(OUT_SR * chunk_ms / 1000) * 2
     bounds = [0, min(len(pcm), first)]

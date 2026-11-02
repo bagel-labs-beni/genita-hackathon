@@ -6,7 +6,7 @@ import { defaultDeps } from "../src/server.ts";
 import { Session, type ClientSink } from "../src/session/session.ts";
 import { checkServerEvent } from "../src/protocol.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 
 // Dynamic import lets every missing behavior report its test name during the first red run.
 async function seats(max: number) {

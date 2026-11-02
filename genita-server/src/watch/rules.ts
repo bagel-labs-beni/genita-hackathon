@@ -49,7 +49,7 @@ const EMOTION_TAG = /<\s*[A-Za-z][A-Za-z_-]{0,23}\s*>/g;
 /**
  * The spoken reaction line: Spark writes the words only; the tags are ours.
  * funny → <laugh> [laughs] (the app plays the laugh clip on speaking.emotion
- * "laugh"; eleven v4 laughs on the [laughs] tag).
+ * "laugh"; spoken normalization removes the bracketed delivery tag).
  */
 export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
