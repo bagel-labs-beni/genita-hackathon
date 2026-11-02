@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 
 struct ReferenceWelcomeView: View {
@@ -23,7 +24,7 @@ struct ReferenceWelcomeView: View {
 struct ReferenceSignInView: View {
     @Bindable var model: AppState
     @State private var provider: String?
-    @State private var legal: String?
+    @State private var legalPage: LegalPage?
     /// A02 Apple: the sheet is up / the server is answering.
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
@@ -50,10 +51,8 @@ struct ReferenceSignInView: View {
                     providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 537 + bottom)
                     providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
                     emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
-                    let node = nodes.first { $0.y == 734 && $0.type == "text" }!
-                    DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
-                    Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
-                    Button { legal = "Privacy Policy" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 85, height: 24).position(x: size.width / 2 + 54, y: 761 + bottom).accessibilityLabel("Privacy Policy")
+                    // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
+                    LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 751 + bottom)
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
@@ -88,12 +87,8 @@ struct ReferenceSignInView: View {
             Text("\(provider ?? "This") sign-in isn’t available yet. Continue with Apple.")
             #endif
         }
-        .onChange(of: legal) { _, doc in
-            // PRD v12 D16: Genita's own pages (live)
-            guard let doc else { return }
-            legal = nil
-            if let url = URL(string: doc == "Terms" ? "https://bagel-labs-beni.github.io/genita-legal/terms/" : "https://bagel-labs-beni.github.io/genita-legal/privacy/") { UIApplication.shared.open(url) }
-        }
+        // D16: Genita's own pages, in an in-app Safari sheet
+        .sheet(item: $legalPage) { page in SafariPage(url: page.url).ignoresSafeArea().accessibilityIdentifier("legalSafari") }
     }
     func providerButton(_ name: String, width: CGFloat) -> some View {
         let label = nodes.first { $0.characters == "Continue with " + name }!
@@ -151,4 +146,40 @@ struct ReferenceSignInView: View {
             }
         }
     }
+}
+
+/// The two live legal pages (PRD v12 D16).
+enum LegalPage: String, Identifiable {
+    case terms, privacy
+    var id: String { rawValue }
+    var url: URL { URL(string: "https://bagel-labs-beni.github.io/genita-legal/" + (self == .terms ? "terms/" : "privacy/"))! }
+}
+
+/// "By continuing, you agree to our Terms and / acknowledge our Privacy Policy" (A02, Figma 7:40) as two rows of
+/// text with real Buttons; each row is at least 44 pt tall so the links are easy to hit.
+struct LegalLinks: View {
+    var open: (LegalPage) -> Void
+    private let grey = Color(white: 0.5435), white = Color(white: 0.9652)
+    var body: some View {
+        VStack(spacing: -14) {
+            row("By continuing, you agree to our", "Terms", " and", .terms)
+            row("acknowledge our", "Privacy Policy", "", .privacy)
+        }
+        .font(TypeStyle.body(13))
+    }
+    private func row(_ lead: String, _ link: String, _ tail: String, _ page: LegalPage) -> some View {
+        HStack(spacing: 0) {
+            Text(lead + " ").foregroundStyle(grey)
+            Button { open(page) } label: {
+                Text(link).foregroundStyle(white).padding(.vertical, 15).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityLabel(link).accessibilityAddTraits(.isLink).accessibilityIdentifier("legal-" + page.rawValue)
+            Text(tail).foregroundStyle(grey)
+        }.frame(minHeight: 44)
+    }
+}
+
+struct SafariPage: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
+    func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
 }
