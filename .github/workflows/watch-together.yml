@@ -47,6 +47,8 @@ jobs:
       - name: Capture and uplink checks
         run: mac-app/Tools/watch-shots/check.sh
       - name: Render watch-together screens
+        # the harness builds MacHandoff, whose MCPeerID rejects some runner host names
+        continue-on-error: true
         run: mac-app/Tools/watch-shots/render.sh build-output/watch-screens
       - uses: actions/upload-artifact@v4
         if: always()
