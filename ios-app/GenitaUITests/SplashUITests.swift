@@ -1,6 +1,7 @@
 import XCTest
 
-/// Launch splash (motion lane): frames of the keyframe timeline, ≤ 1.6 s to the first screen, tap skips.
+/// Launch splash A′ Corona calm (motion lane): frames at the motion page's frame times over the real A02,
+/// ≤ 2.7 s to A02, tap skips.
 /// `--splash-demo` turns it on under UI tests; DEBUG `GENITA_SPLASH_AT=<s>` freezes one instant.
 final class SplashUITests: XCTestCase {
     private func shot(_ app: XCUIApplication, _ name: String) {
@@ -13,7 +14,7 @@ final class SplashUITests: XCTestCase {
     private func launch(at: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--splash-demo"]
-        var env = ["GENITA_REVIEW_STAGE": "name"]
+        var env = ["GENITA_REVIEW_STAGE": "signIn"] // A02 under the splash, as at a first launch
         if let at { env["GENITA_SPLASH_AT"] = at }
         app.launchEnvironment = env
         app.launch()
@@ -21,7 +22,7 @@ final class SplashUITests: XCTestCase {
     }
 
     func testSplashFrames() throws {
-        for t in ["0.2", "0.6", "0.86", "1.2", "1.4"] {
+        for t in ["0.7", "1.1", "1.5", "1.9", "2.05", "2.2", "2.35", "2.5", "2.65"] {
             let app = launch(at: t)
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "splash at \(t)")
             shot(app, "call-splash-t\(Int((Double(t) ?? 0) * 1000))ms") // no "." in the name: the export cuts there
@@ -29,13 +30,13 @@ final class SplashUITests: XCTestCase {
         }
     }
 
-    func testSplashWakesIntoFirstScreenWithin1600ms() throws {
+    func testSplashHandsOverToA02Within2700ms() throws {
         let app = launch()
         let elapsed = app.descendants(matching: .any)["splashElapsedMs"]
         XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
         let ms = Int(elapsed.label) ?? .max
         print("splash held the first screen for \(ms) ms")
-        XCTAssertLessThanOrEqual(ms, 1600, "splash must hand over to the first screen within 1.6 s")
+        XCTAssertLessThanOrEqual(ms, 2700, "splash must hand over to A02 within 2.7 s")
         XCTAssertFalse(app.descendants(matching: .any)["splash"].exists)
         shot(app, "call-splash-first-screen")
     }

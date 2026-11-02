@@ -4,6 +4,8 @@ import SwiftUI
 /// (152 × 70.9945, one filled path: the eye/G outline, then the orbit). Scales to fit its frame.
 public struct BrandMarkShape: Shape {
     public static let size = CGSize(width: 152, height: 70.9945)
+    /// centre of the G's round counter in mark units (radius ≈ 31.5): the splash's eclipse disc sits here
+    public static let pupil = CGPoint(x: 88.5, y: 35.5)
 
     public init() {}
 
