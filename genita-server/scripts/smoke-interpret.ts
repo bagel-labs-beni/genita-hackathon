@@ -11,6 +11,8 @@
  * is in the other language (no mixing) and flags suspiciously long outputs
  * (advice added). --call sends the Korean clips as the Mac call's sound
  * (framed kind 4) and the English ones as the held mic (INT-M1/M2).
+ * --record=<file> also saves the session for ios-app/Tools/call-replay (handshake + timeline, TTS
+ * audio as lengths only), e.g. --turns=3 --record=../ios-app/Tools/call-replay/session-int.json.
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -31,6 +33,9 @@ const T7 = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/suite/t
 const args = process.argv.slice(2);
 const turns = Number(args.find((a) => a.startsWith("--turns="))?.slice(8) ?? 10);
 const callMode = args.includes("--call");
+const recordTo = args.find((a) => a.startsWith("--record="))?.slice(9);
+const recorded: { t: number; event?: Record<string, unknown>; frame?: { header: string; pcmBytes: number } }[] = [];
+let recordFrom = -1;
 // same order as rt.py t7(): ko0, en0, ko1, en1, …
 const KO = ["실례합니다, 여기서 시청 가려면 어떻게 가요?", "이 근처에 맛있는 식당 있어요?", "사진 좀 찍어 주실 수 있어요?", "이거 얼마예요?", "화장실이 어디에 있나요?"];
 const EN = ["Take line two and get off at City Hall.", "There is a great noodle place around the corner.", "Sure, say cheese!", "That one is fifteen thousand won.", "It is on the second floor, next to the elevator."];
@@ -77,9 +82,12 @@ ws.on("message", (data, isBinary) => {
   const t = performance.now();
   if (isBinary) {
     if (!firstAudioAt.has(lastAudioUtt)) firstAudioAt.set(lastAudioUtt, t);
+    const b = data as Buffer;
+    if (recordFrom >= 0) recorded.push({ t: Math.round(t - recordFrom), frame: { header: b.subarray(0, 8).toString("base64"), pcmBytes: b.length - 8 } });
     return;
   }
   const m = JSON.parse(data.toString());
+  if (recordFrom >= 0) recorded.push({ t: Math.round(t - recordFrom), event: m });
   if (m.type === "audio") lastAudioUtt = m.utteranceId;
   inbox.push({ t, m });
 });
@@ -141,6 +149,8 @@ ws.send(
 );
 await waitMsg((m) => m.type === "ready", 0);
 await sleep(1200);
+const handshake = inbox.map((x) => x.m);
+recordFrom = performance.now();
 
 const rows: Record<string, unknown>[] = [];
 for (const [i, f] of files.entries()) {
@@ -209,6 +219,11 @@ const summary = {
   serverSpeechEndToFirstAudioP50: median(ok.map((r) => (r.server as Record<string, number>)?.speechEndToFirstAudioMs).filter((x) => typeof x === "number")),
 };
 console.log("\nSUMMARY " + JSON.stringify(summary, null, 1));
+if (recordTo) {
+  const source = `genita-server feat/interpret, real vendors, ${new Date().toISOString().slice(0, 10)} (npm run smoke:interpret -- ${args.join(" ")}). PCM replaced by a quiet tone of the same length.`;
+  writeFileSync(recordTo, JSON.stringify({ source, handshake, timeline: recorded }));
+  console.log(`recorded ${recorded.length} items → ${recordTo}`);
+}
 mkdirSync(".smoke", { recursive: true });
 writeFileSync(`.smoke/interpret-${callMode ? "call" : "face"}.json`, JSON.stringify({ rows, summary }, null, 1));
 running = false;

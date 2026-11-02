@@ -6,6 +6,8 @@
 	<array>
 		<string>_genita-handoff._tcp</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Genita hears you while you hold to reply, and says it in the other person's language.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect your iPhone to move Genita between devices.</string>
 </dict>

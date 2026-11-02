@@ -85,7 +85,7 @@ import Testing
             r.scale = 2
             let image = try #require(r.cgImage, "\(name) did not render")
             let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("rendered-\(name).png"))
         }
     }
 }

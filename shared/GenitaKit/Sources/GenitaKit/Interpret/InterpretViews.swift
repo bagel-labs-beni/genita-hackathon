@@ -93,12 +93,17 @@ public struct InterpretBarView: View {
     public var body: some View {
         let bar = board.bar
         HStack(spacing: 12) {
-            InterpretIcon(kind: .globe)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(bar.title).font(InterpretInk.sans(14, .medium)).lineSpacing(6).lineLimit(1).minimumScaleFactor(0.85)
-                Text(bar.subtitle).font(InterpretInk.sans(12)).foregroundStyle(InterpretInk.onInkSoft).lineLimit(2)
+            HStack(spacing: 12) {
+                InterpretIcon(kind: .globe)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(bar.title).font(InterpretInk.sans(14, .medium)).lineSpacing(6).lineLimit(1).minimumScaleFactor(0.85)
+                    Text(bar.subtitle).font(InterpretInk.sans(12)).foregroundStyle(InterpretInk.onInkSoft).lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.updatesFrequently)
+            .accessibilityIdentifier("interpretBar")
             Button(action: onClose) {
                 InterpretIcon(kind: .close).frame(width: 44, height: 44).contentShape(Rectangle())
             }
@@ -113,9 +118,6 @@ public struct InterpretBarView: View {
         .overlay {
             if bar.warn { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(InterpretInk.blueOnInk, lineWidth: 1) }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.updatesFrequently)
-        .accessibilityIdentifier("interpretBar")
     }
 }
 
@@ -144,6 +146,7 @@ struct InterpretBubbleView: View {
         .frame(maxWidth: .infinity, alignment: me ? .trailing : .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibility(original))
+        .accessibilityIdentifier("interpretBubble")
     }
     private func accessibility(_ original: String) -> String {
         let who = bubble.speaker == .me ? "You" : "Them"
@@ -162,6 +165,8 @@ struct InterpretSpeakerLineView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(line.name), \(line.detail)")
+        .accessibilityIdentifier("interpretSpeaker")
     }
 }
 
@@ -173,7 +178,8 @@ public struct InterpretPanelView: View {
         VStack(alignment: .leading, spacing: 8) {
             Spacer(minLength: 0)
             if board.showsIntro {
-                Text("Talk the way you normally would. When I hear a second language, I’ll start passing it on.")
+                // hand-broken: the natural wrap leaves "on." alone on the last line at 390 pt
+                Text("Talk the way you normally would.\nWhen I hear a second language,\nI’ll start passing it on.")
                     .font(InterpretInk.sans(17)).lineSpacing(7).foregroundStyle(InterpretInk.onInk)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -247,27 +253,30 @@ public struct InterpretHoldButton: View {
 // MARK: - Whole overlay
 
 /// Everything interpretation draws over the call screen, placed like the 390×844 board frames.
-/// `top` is the safe-area top inset, `bottom` the bottom inset (board frames assume 47/34).
+/// `top` shifts the bar and panel down when the device's top inset is taller than the board's (47 pt).
 public struct InterpretOverlay: View {
     var board: InterpretBoard
+    var top: CGFloat
     var onClose: () -> Void
     var onHold: (Bool) -> Void
-    public init(board: InterpretBoard, onClose: @escaping () -> Void, onHold: @escaping (Bool) -> Void) {
+    public init(board: InterpretBoard, top: CGFloat = 0, onClose: @escaping () -> Void, onHold: @escaping (Bool) -> Void) {
         self.board = board
+        self.top = top
         self.onClose = onClose
         self.onHold = onHold
     }
     public var body: some View {
         GeometryReader { geo in
             let h = geo.size.height
+            let panelTop = 280 + top
             ZStack(alignment: .top) {
                 // ipanel: from 280 down, gradient to ink, content bottom-aligned above the hold button
-                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: InterpretInk.dim, location: 120 / (h - 280)), .init(color: InterpretInk.ink, location: min(1, 260 / (h - 280)))], startPoint: .top, endPoint: .bottom)
-                    .frame(height: max(0, h - 280)).offset(y: 280).allowsHitTesting(false)
+                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: InterpretInk.dim, location: 120 / max(1, h - panelTop)), .init(color: InterpretInk.ink, location: min(1, 260 / max(1, h - panelTop)))], startPoint: .top, endPoint: .bottom)
+                    .frame(height: max(0, h - panelTop)).offset(y: panelTop).allowsHitTesting(false)
                 InterpretPanelView(board: board)
-                    .frame(height: max(0, h - 280 - 120 - 168), alignment: .bottom).offset(y: 280 + 120)
+                    .frame(height: max(0, h - panelTop - 120 - 168), alignment: .bottom).offset(y: panelTop + 120)
                 InterpretBarView(board: board, onClose: onClose)
-                    .padding(.horizontal, 24).offset(y: 124)
+                    .padding(.horizontal, 24).offset(y: 124 + top)
                 InterpretHoldButton(board: board, onHold: onHold)
                     .padding(.horizontal, 38).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 64)
             }
@@ -281,11 +290,11 @@ public struct InterpretOverlay: View {
 public struct MacInterpretCallSheet: View {
     public enum CallApp: String, CaseIterable, Sendable { case faceTime = "FaceTime", zoom = "Zoom" }
     @Binding var app: CallApp
-    var available: Set<CallApp>
+    var warning: String?
     var onStart: () -> Void
-    public init(app: Binding<CallApp>, available: Set<CallApp> = Set(CallApp.allCases), onStart: @escaping () -> Void) {
+    public init(app: Binding<CallApp>, warning: String? = nil, onStart: @escaping () -> Void) {
         self._app = app
-        self.available = available
+        self.warning = warning
         self.onStart = onStart
     }
     public var body: some View {
@@ -306,21 +315,20 @@ public struct MacInterpretCallSheet: View {
                         .background(app == a ? InterpretInk.ink : InterpretInk.field, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .buttonStyle(.plain)
-                    .disabled(!available.contains(a))
-                    .opacity(available.contains(a) ? 1 : 0.4)
                     .accessibilityAddTraits(app == a ? .isSelected : [])
+                    .accessibilityIdentifier("interpretApp\(a.rawValue)")
                 }
             }
             .padding(.top, 20)
-            Text("Wear headphones so my whispers stay with you.")
-                .font(InterpretInk.sans(14)).foregroundStyle(InterpretInk.mute).padding(.top, 16)
+            Text(warning ?? "Wear headphones so my whispers stay with you.")
+                .font(InterpretInk.sans(14)).foregroundStyle(warning == nil ? InterpretInk.mute : Color(red: 0, green: 99 / 255, blue: 159 / 255))
+                .fixedSize(horizontal: false, vertical: true).padding(.top, 16)
             Button(action: onStart) {
                 Text("Start interpreting").font(InterpretInk.sans(16, .medium)).foregroundStyle(InterpretInk.onInk)
                     .frame(maxWidth: .infinity, minHeight: 50)
                     .background(InterpretInk.ink, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(!available.contains(app))
             .padding(.top, 32)
             .accessibilityIdentifier("interpretCallStart")
         }

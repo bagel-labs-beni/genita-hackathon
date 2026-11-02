@@ -15,6 +15,8 @@ struct ConversationView: View {
                 let top = safe.safeAreaInsets.top - 44
                 let bottom = full.size.height - 844
                 let panelWidth = min(CGFloat(299), full.size.width - 60)
+                // F8 INT-1~6: the face stays, the rail and self view give way to the interpretation overlay
+                let interpreting = call.mode == .interpret && !connecting
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
                         CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
@@ -23,6 +25,11 @@ struct ConversationView: View {
                             CallGlassControl(icon: "glass-menu-icon", size: 47)
                         }.buttonStyle(.plain).disabled(connecting).position(x: 47.5, y: 86.5 + top)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
+                        if interpreting {
+                            InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                .frame(width: full.size.width, height: full.size.height)
+                                .transition(.opacity)
+                        } else {
                         selfView.position(x: 87.5, y: 700.5 + bottom)
                         Button { call.toggleCamera() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: full.size.width - 56, y: 665 + bottom)
@@ -30,7 +37,8 @@ struct ConversationView: View {
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom)
                         Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom)
-                        if !connecting {
+                        }
+                        if !connecting && !interpreting {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .position(x: full.size.width / 2, y: 142 + top).animation(.easeOut(duration: 0.18), value: call.cue)
                         }
