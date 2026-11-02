@@ -494,7 +494,9 @@ export class Session {
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
-      useDeviceVoice: () => this.deviceVoiceForReply(),
+      // Overflow stays on the device for the whole interpretation: queued translations would otherwise mix device PCM
+      // and server PCM out of order. The seat is retried on the next chat reply.
+      useDeviceVoice: () => this.voiceOverflow || this.deviceVoiceForReply(),
       say: (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }),
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
       lipBegin: (uid) => {

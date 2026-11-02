@@ -163,7 +163,7 @@ test("voice capacity sessions: third call uses say with zero voice calls and one
 });
 
 for (const interpret of [false, true]) {
-  test(`voice capacity ${interpret ? "interpretation" : "chat"}: running reply stays say; next reply restores server voice`, async (t) => {
+  test(`voice capacity ${interpret ? "interpretation" : "chat"}: running reply stays say; ${interpret ? "interpretation stays on say" : "next reply restores server voice"}`, async (t) => {
     const { gate, call, logs } = await setup(t);
     const pause = latch();
     t.after(() => pause.open());
@@ -180,6 +180,15 @@ for (const interpret of [false, true]) {
     assert.equal(logs.filter((entry) => entry.event === "voice.capacity_restored").length, 0);
     await three.reply();
     await three.client.waitFor("turn.metrics", 2);
+    if (interpret) {
+      // interpretation keeps the device voice while in overflow (no device/server PCM interleaving); chat restores
+      assert.equal(three.calls.length, 0);
+      assert.equal(three.client.bin.length, 0);
+      assert.equal(three.client.of("say").length, 4);
+      assert.equal(logs.filter((entry) => entry.event === "voice.capacity_restored").length, 0);
+      two.session.close();
+      return;
+    }
     assert.ok(three.calls.length > 0);
     assert.ok(three.client.of("audio").length > 0);
     assert.ok(three.client.bin.length > 0);
