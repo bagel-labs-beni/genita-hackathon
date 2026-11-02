@@ -32,10 +32,11 @@ import XCTest
         for i in 0..<n { buffer.floatChannelData![0][i] = 0.5 * sin(2 * .pi * 220 * Float(i) / 22_050) }
         let render = SpeechRender(sampleRate: 24_000, stepMs: 40)
         let out = try XCTUnwrap(render.convert(buffer))
-        let samples = out.pcm.count / 2
-        XCTAssertGreaterThan(samples, 4_400, "≈ 0.2 s at 24 kHz (converter may hold a few samples back)")
-        XCTAssertLessThanOrEqual(samples, 4_800)
-        XCTAssertEqual(out.levels.count, samples / 960)
+        let tail = render.finish()
+        let samples = (out.pcm.count + (tail?.pcm.count ?? 0)) / 2
+        XCTAssertGreaterThan(samples, 4_700, "≈ 0.2 s at 24 kHz once the converter is drained")
+        XCTAssertLessThanOrEqual(samples, 4_900)
+        XCTAssertEqual(out.levels.count + (tail?.levels.count ?? 0), Int((Double(samples) / 960).rounded(.up)))
         XCTAssertGreaterThan(out.levels.first ?? 0, 0.9, "a loud tone is an open mouth")
         XCTAssertEqual(SpeechRender.level(ArraySlice(repeating: Int16(0), count: 960)), 0, "silence is a closed mouth")
     }
