@@ -120,6 +120,48 @@ import XCTest
         XCTAssertEqual(calls.first?.0, "a"); XCTAssertEqual(calls.first?.1, true)
     }
 
+    // MARK: PF-1 product search (#120)
+
+    /// The server's own sample (shared/protocol-samples/server/find.created.product.json), the same file GenitaKit decodes.
+    private func productCreated() throws -> ServerEvent {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("shared/protocol-samples/server/find.created.product.json"))
+        return try ServerEvent.decode(String(decoding: data, as: UTF8.self))
+    }
+
+    func testProductCardDecodesWithOptionalPrice() throws {
+        let m = FindsModel()
+        m.apply(started("4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"))
+        m.apply(try productCreated())
+        let card = try XCTUnwrap(m.current?.card)
+        XCTAssertEqual(card.kind, .product)
+        XCTAssertEqual(card.products?.map(\.store), ["Northline", "Field & Co."])
+        XCTAssertEqual(card.products?.first?.price, "$68")
+        XCTAssertNil(card.products?.last?.price, "no price on the page: the card says Price on site")
+        XCTAssertEqual(card.evidence?.style, "Clean, minimal clothes. Understated colors.")
+    }
+
+    func testProductImageSlotsLandOnTheProducts() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-2","status":"ready","url":"/v1/finds/\#(id)/images/product-2"}"#))
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-1","status":"failed"}"#))
+        let products = try XCTUnwrap(m.current?.card?.products)
+        XCTAssertEqual(products[1].image?.status, .ready)
+        XCTAssertEqual(products[1].image?.url, "/v1/finds/\(id)/images/product-2")
+        XCTAssertEqual(products[0].image?.status, .failed, "a failed picture becomes the calm placeholder, not a hole")
+    }
+
+    func testProductImageSlotOutOfRangeIsIgnored() throws {
+        let m = FindsModel()
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        m.apply(started(id)); m.apply(try productCreated())
+        let before = m.current?.card
+        m.apply(try ServerEvent.decode(#"{"type":"find.image","findId":"\#(id)","slot":"product-3","status":"ready","url":"/x"}"#))
+        XCTAssertEqual(m.current?.card, before)
+    }
+
     func testTokenSubjectSeparatesAccounts() {
         func jwt(_ sub: String) -> String {
             let body = Data(#"{"sub":"\#(sub)"}"#.utf8).base64EncodedString().replacingOccurrences(of: "=", with: "")
