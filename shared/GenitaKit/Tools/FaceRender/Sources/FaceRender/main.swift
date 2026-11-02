@@ -28,6 +28,9 @@ struct Options {
     var width = 540, height = 960
     var emotion: String?
     var seed: UInt64 = 1
+    var still = false
+    var dumpAmounts: String?
+    var amounts: String?
     var framesDir: String?
     var framesPrefix = "face"
     var bitrate = 1_100_000
@@ -56,6 +59,9 @@ func parse() -> Options {
             o.width = p[0]; o.height = p[1]
         case "--emotion": o.emotion = v()
         case "--seed": o.seed = UInt64(v()) ?? 1
+        case "--still": o.still = true
+        case "--dump-amounts": o.dumpAmounts = v()
+        case "--amounts": o.amounts = v()
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -207,7 +213,14 @@ timeline.finishAudio()
 print("mouth timing: \(timeline.hasTimings ? "word timings (\(words.count) words)" : (o.text != nil ? "text + loudness fallback" : "loudness only"))")
 
 let size = CGSize(width: o.width, height: o.height)
-let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed)
+let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: o.still)
+var amountRows: [[Float]] = []
+// --amounts <json>: per-frame key amounts from the prototype (parity check of the morph itself).
+let givenAmounts: [[Float]] = {
+    guard let p = o.amounts, let d = try? Data(contentsOf: URL(fileURLWithPath: p)),
+          let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let rows = j["amounts"] as? [[Double]] else { return [] }
+    return rows.map { $0.map(Float.init) }
+}()
 if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
 // The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
 // timeline), so the alive base's motion does not count as mouth movement.
@@ -294,10 +307,12 @@ func mouthArea(_ pb: CVPixelBuffer) -> [Float] {
 
 func renderFrame(_ i: Int) {
     let t = Double(i) / Double(fps)
-    let lip = timeline.sample(atMs: t * 1000)
-    openness.append(Double(lip.openness))
+    let lip = timeline.sample(atMs: t * 1000 + FaceRenderer.lipLookaheadMs)
+    openness.append(Double(timeline.sample(atMs: t * 1000).openness))
     let r0 = Date()
+    if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
     let image = renderer.image(at: t, lip: lip)
+    if o.dumpAmounts != nil, let keys = faceSet.flow?.keys { let a = renderer.flowAmounts; amountRows.append(keys.map { a[$0] ?? 0 }) }
     var pbOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pbOut)
     guard let pb = pbOut else { fail("no pixel buffer") }
@@ -348,6 +363,11 @@ writer.finishWriting { sem.signal() }
 sem.wait()
 if writer.status != .completed { fail("writer: \(String(describing: writer.error))") }
 let wallSeconds = Date().timeIntervalSince(wall)
+if let path = o.dumpAmounts, let keys = faceSet.flow?.keys {
+    let obj: [String: Any] = ["keys": keys, "fps": fps, "amounts": amountRows.map { $0.map { (Double($0) * 10_000).rounded() / 10_000 } }]
+    try? JSONSerialization.data(withJSONObject: obj).write(to: URL(fileURLWithPath: path))
+}
+print("face engine: \(faceSet.flow != nil && renderer.useFlow ? "flow morph (\(faceSet.flow!.keys.count) keys)" : "key patches")")
 
 // MARK: A/V offset
 

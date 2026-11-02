@@ -41,6 +41,15 @@ public final class FaceRenderer: @unchecked Sendable {
     private let headMask: CIImage
     private let bodyMask: CIImage
     private var motion: AliveMotion
+    /// Option B: full-face key morph (nil → key patches). `useFlow = false` forces patches.
+    let flowMorph: FlowMorph?
+    public var useFlow = true
+    /// Callers sample the lip timeline this far ahead so smoothing lands on the sound.
+    public static let lipLookaheadMs = 50.0
+    /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
+    public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
+    /// Key amounts of the last flow-morph frame (empty without flows).
+    public var flowAmounts: [String: Float] { lock.lock(); defer { lock.unlock() }; return flowMorph?.lastAmounts ?? [:] }
 
     public init(faceSet: FaceSet, outputSize: CGSize, seed: UInt64 = 1, reduceMotion: Bool = false, context: CIContext? = nil) {
         self.faceSet = faceSet
@@ -49,6 +58,9 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        // Flow morph at the output's pixel density (keeps its textures small).
+        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan)
+        flowMorph = faceSet.flow.flatMap { d in faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale) } }
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
         extent = CGRect(x: 0, y: 0, width: w, height: h)
@@ -160,12 +172,21 @@ public final class FaceRenderer: @unchecked Sendable {
         // shape change is a cut on the frame where the new shape's weight overtakes the old one;
         // the jaw warp (driven by the continuous openness) carries the motion across the cut.
         let open = Double(min(1, max(0, lip.openness)))
-        if let v = Self.mouthShape(lip: lip, resolved: faceSet.resolved), let patch = patchImages[v] {
-            img = patch.composited(over: img)
+        if useFlow, let fm = flowMorph {
+            // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
+            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, at: t) }()
+            let r = fm.data.roi
+            img = CIImage(cgImage: cg)
+                .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(fm.width), y: r.height / CGFloat(fm.height)))
+                .transformed(by: CGAffineTransform(translationX: r.minX, y: h - r.maxY))
+                .composited(over: img)
+        } else {
+            if let v = Self.mouthShape(lip: lip, resolved: faceSet.resolved), let patch = patchImages[v] {
+                img = patch.composited(over: img)
+            }
+            // 3. jaw
+            if open > 0.01 { img = jawWarp(img, open: open) }
         }
-
-        // 3. jaw
-        if open > 0.01 { img = jawWarp(img, open: open) }
 
         // 4. blink
         let blink = blinkAmount(at: t)
