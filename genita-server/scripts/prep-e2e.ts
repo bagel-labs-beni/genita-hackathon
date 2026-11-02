@@ -40,6 +40,9 @@ const d: PrepDeps = {
   store: new FileStore(dataDir),
   voices: DEFAULT_VOICES,
   log: (e, data) => events.push(`${e} ${JSON.stringify(data).slice(0, 200)}`),
+  // this script exercises the earlier ElevenLabs + Kling pipeline; `npm run face:e2e` is the Meta-only one
+  kling: true,
+  serverTts: true,
 };
 const timings: Record<string, number> = {};
 async function step<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -67,7 +70,7 @@ const mp3 = await step("3b voice preview mp3", () => voicePreview(d, v.voices[0]
 console.log(`    ${v.voices[0].name} preview ${mp3.length} bytes`);
 
 const voice = v.voices[0];
-const prep = newPrepState();
+const prep = newPrepState({ kling: true });
 if (skipVideo) for (const e of PREP_EMOTIONS) prep.steps.videos[e] = { status: "done", attempts: 0, url: "(skipped)" };
 else for (const e of PREP_EMOTIONS) if (!emotions.includes(e)) prep.steps.videos[e] = { status: "done", attempts: 0, url: "(not requested)" };
 const companion: CompanionRecord = { id: "e2e" + Date.now(), userId: user, imageId: rec.id, type: rec.check.type, voiceId: voice.id, name: voice.name, createdAt: new Date().toISOString(), prep };

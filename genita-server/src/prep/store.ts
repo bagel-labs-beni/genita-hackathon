@@ -16,9 +16,11 @@ import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
 import type { CompanionKind, PrepEmotion } from "./prompts.ts";
+import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-export type StepStatus = "pending" | "running" | "done" | "failed" | "todo";
+/** `skipped` = not part of this pipeline (Kling clips and lips when GENITA_KLING is off) */
+export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
@@ -33,6 +35,8 @@ export type Step = {
   avatarId?: string;
   bundleId?: string;
   nBase?: number;
+  /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
+  face?: FaceState;
 };
 
 export type PrepState = {
@@ -44,6 +48,8 @@ export type PrepState = {
     videos: Record<PrepEmotion, Step>;
     /** human: Peter avatar cache (F2-L22) · animal/character: mouth atlas (F2-L23) */
     lips: Step;
+    /** Meta-only face set (expressions + visemes); absent on the Kling pipeline */
+    face?: Step;
   };
   startedAt: string;
   readyAt?: string;
@@ -87,6 +93,13 @@ export interface PrepStore {
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
   putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
+  /**
+   * Companion images (scene = `neutral`, face set keys), served by GET /v1/companion/face/:key.
+   * Kept under the user (blob key users/<userId>/companions/<companionId>/face/<name>), so
+   * DELETE /me removes them with the user's other files.
+   */
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
+  getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
 }
 
 const safe = (id: string) => {
@@ -185,5 +198,16 @@ export class FileStore implements PrepStore {
   }
   putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
     return this.write(`voices/${safe(voiceId)}-${safe(version)}.mp3`, mp3);
+  }
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
+  }
+  async getAsset(userId: string, companionId: string, name: string) {
+    try {
+      return await readFile(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
   }
 }

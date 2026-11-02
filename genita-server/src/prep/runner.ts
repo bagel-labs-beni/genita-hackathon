@@ -1,8 +1,13 @@
 /**
  * F2-L9 (#24): prep job runner (the clip_jobs queue).
  *
- *   scene (Muse Image) → 3 silent clips in parallel (Kling 3.0, 10 s)
- *   → lips (human: Peter avatar cache on Modal, records bundle_id; animal/character: mouth atlas TODO)
+ * Default (Meta only, GENITA_KLING off):
+ *   scene (Muse Image) → face set (Muse Image expressions + visemes, SAM-checked; face.ts)
+ *   No fal, Kling or Peter call; the clip and lips steps are `skipped`.
+ *
+ * GENITA_KLING=1 (the earlier pipeline):
+ *   scene (Muse Image, gpt-image-2 fallback) → 3 silent clips in parallel (Kling 3.0, 10 s)
+ *   → lips (human: Peter avatar cache on Modal when GENITA_PETER=1; animal/character: mouth atlas TODO)
  *
  * Every step's state is written to the store before and after it runs, and
  * each fal request id is saved the moment it is submitted. On boot,
@@ -18,30 +23,46 @@
 import { EventEmitter } from "node:events";
 import { falSubmit, falWait } from "./fal.ts";
 import { klingSilentInput, PREP_EMOTIONS, type PrepEmotion } from "./prompts.ts";
-import { makeScene, type PrepDeps } from "./pipeline.ts";
+import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { lipBakerFor, type LipBaker } from "./lips.ts";
+import { FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
+import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
 export const KLING_MODEL = "fal-ai/kling-video/v3/pro/image-to-video";
 export const MAX_PREP_ATTEMPTS = 3;
 const STEP_RETRIES = 2;
 
-export function newPrepState(): PrepState {
+export function newPrepState(opts: { kling?: boolean } = {}): PrepState {
   const now = new Date().toISOString();
   const s = (): Step => ({ status: "pending", attempts: 0 });
+  const k = (): Step => (opts.kling ? s() : { status: "skipped", attempts: 0 });
   return {
     status: "running",
     attempts: 0,
-    steps: { scene: s(), videos: { neutral: s(), happy: s(), warm: s() }, lips: s() },
+    steps: { scene: s(), videos: { neutral: k(), happy: k(), warm: k() }, lips: k(), ...(opts.kling ? {} : { face: s() }) },
     startedAt: now,
     updatedAt: now,
   };
 }
 
-/** Pure: {done,total} for the progress bar. A `todo` lips step is not counted. */
+/** Public URL of a companion image (scene = `neutral`); GET /v1/companion/face/:key, same auth as every prep route. */
+export const faceUrl = (key: "neutral" | FaceKey) => `/v1/companion/face/${key}`;
+
+/**
+ * Pure: {done,total} for the progress bar. `todo`/`skipped` steps are not
+ * counted; the face step counts one per image (13), settled = kept or rejected.
+ */
 export function prepProgress(p: PrepState): { done: number; total: number } {
-  const steps = [p.steps.scene, ...PREP_EMOTIONS.map((e) => p.steps.videos[e]), p.steps.lips].filter((s) => s.status !== "todo");
-  return { done: steps.filter((s) => s.status === "done").length, total: steps.length };
+  const steps = [p.steps.scene, ...PREP_EMOTIONS.map((e) => p.steps.videos[e]), p.steps.lips].filter((s) => s.status !== "todo" && s.status !== "skipped");
+  let done = steps.filter((s) => s.status === "done").length;
+  let total = steps.length;
+  const f = p.steps.face;
+  if (f && f.status !== "skipped") {
+    total += FACE_KEYS.length;
+    done += f.status === "done" ? FACE_KEYS.length : Object.keys(f.face?.items ?? {}).length;
+  }
+  return { done, total };
 }
 
 export function emotionVideos(p: PrepState): Partial<Record<PrepEmotion, string>> {
@@ -61,6 +82,8 @@ export function prepView(c: CompanionRecord) {
     sceneUrl: p.steps.scene.url ?? null,
     sceneSource: p.steps.scene.source ?? null,
     emotionVideos: emotionVideos(p),
+    /** Meta-only face set manifest (team/metaface spec), once the face step is done */
+    face: p.steps.face?.status === "done" && p.steps.face.face ? faceManifest(p.steps.face.face, faceUrl) : null,
     lips: {
       status: p.steps.lips.status,
       detail: p.steps.lips.error ?? null,
@@ -72,6 +95,9 @@ export function prepView(c: CompanionRecord) {
     steps: {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
       videos: Object.fromEntries(PREP_EMOTIONS.map((e) => [e, { status: p.steps.videos[e].status, ms: p.steps.videos[e].ms ?? null }])),
+      face: p.steps.face
+        ? { status: p.steps.face.status, settled: Object.keys(p.steps.face.face?.items ?? {}).length, total: FACE_KEYS.length, ms: p.steps.face.ms ?? null }
+        : null,
     },
     startedAt: p.startedAt,
     readyAt: p.readyAt ?? null,
@@ -121,14 +147,19 @@ export class PrepRunner {
     if (!c) throw new Error("no companion");
     if (c.prep.status === "running" && this.isRunning(userId)) return c;
     const steps = c.prep.steps;
-    const reset = (s: Step): Step => (s.status === "failed" ? { status: "pending", attempts: 0 } : s);
+    const reset = (s: Step): Step => (s.status === "failed" ? { status: "pending", attempts: 0, ...(s.face ? { face: s.face } : {}) } : s);
     const next: CompanionRecord = {
       ...c,
       prep: {
         ...c.prep,
         status: "running",
         attempts: 0,
-        steps: { scene: reset(steps.scene), videos: { neutral: reset(steps.videos.neutral), happy: reset(steps.videos.happy), warm: reset(steps.videos.warm) }, lips: reset(steps.lips) },
+        steps: {
+          scene: reset(steps.scene),
+          videos: { neutral: reset(steps.videos.neutral), happy: reset(steps.videos.happy), warm: reset(steps.videos.warm) },
+          lips: reset(steps.lips),
+          ...(steps.face ? { face: reset(steps.face) } : {}),
+        },
       },
     };
     await this.d.store.patchCompanion(userId, (x) => ({ ...x, prep: next.prep }));
@@ -164,6 +195,87 @@ export class PrepRunner {
     }
   }
 
+  /**
+   * Meta-only pass: scene (stored as asset `neutral`) → face set. Never calls
+   * fal, Kling or a lip baker. Finished work is skipped, and the face step
+   * resumes from its saved keys.
+   */
+  private async metaPass(
+    cur: () => CompanionRecord,
+    save: (mut: (c: CompanionRecord) => CompanionRecord) => Promise<void>,
+    setStep: (path: "scene" | "face", patch: Partial<Step>) => Promise<void>,
+  ): Promise<void> {
+    const d = this.d;
+    // a record started on the Kling pipeline: its clips and lips are not part of this one
+    const st = cur().prep.steps;
+    const skip = (x: Step): Step => (x.status === "done" ? x : { status: "skipped", attempts: x.attempts });
+    if (!st.face || PREP_EMOTIONS.some((e) => st.videos[e].status !== "done" && st.videos[e].status !== "skipped") || (st.lips.status !== "done" && st.lips.status !== "skipped"))
+      await save((x) => ({
+        ...x,
+        prep: {
+          ...x.prep,
+          steps: {
+            ...x.prep.steps,
+            videos: { neutral: skip(x.prep.steps.videos.neutral), happy: skip(x.prep.steps.videos.happy), warm: skip(x.prep.steps.videos.warm) },
+            lips: skip(x.prep.steps.lips),
+            face: x.prep.steps.face ?? { status: "pending", attempts: 0 },
+          },
+        },
+      }));
+
+    // 1. scene
+    let c = cur();
+    let scene = c.prep.steps.scene.status === "done" ? await d.store.getAsset(c.userId, c.id, "neutral") : null;
+    if (!scene) {
+      const img = await d.store.getImage(c.imageId);
+      if (!img) throw new Error("source image missing");
+      await setStep("scene", { status: "running", attempts: c.prep.steps.scene.attempts + 1 });
+      try {
+        const s = await makeScene(d, img.bytes, img.rec.mime, c.type);
+        await d.store.putAsset(c.userId, c.id, "neutral", s.bytes);
+        scene = s.bytes;
+        await setStep("scene", { status: "done", url: faceUrl("neutral"), ms: s.ms, source: s.source, error: undefined });
+        d.log("scene.done", { companion: c.id, source: s.source, ms: s.ms });
+      } catch (err) {
+        await setStep("scene", { status: "failed", error: String(err).slice(0, 300) });
+        throw err;
+      }
+    }
+
+    // 2. face set
+    c = cur();
+    const fs = c.prep.steps.face!;
+    if (fs.status === "done") return;
+    await setStep("face", { status: "running", attempts: fs.attempts + 1, error: undefined });
+    const companionId = c.id;
+    const userId = c.userId;
+    try {
+      const out = await makeFaceSet({
+        metaKey: d.metaKey,
+        media: mediaOf(d),
+        scene,
+        kind: c.type,
+        size: SCENE_SIZE,
+        prev: fs.face ?? null,
+        onRef: (s) => setStep("face", { face: { ...s, items: { ...s.items } } }),
+        onItem: async (key, item, bytes) => {
+          if (bytes) await d.store.putAsset(userId, companionId, key, bytes);
+          await save((x) => {
+            const f = x.prep.steps.face!;
+            return { ...x, prep: { ...x.prep, steps: { ...x.prep.steps, face: { ...f, face: { ...f.face!, items: { ...f.face!.items, [key]: item } } } } } };
+          });
+        },
+        log: d.log,
+      });
+      await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
+      const m = faceManifest(out, faceUrl);
+      d.log("face.done", { companion: companionId, ms: out.ms, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
+    } catch (err) {
+      await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
+      throw err;
+    }
+  }
+
   /** One pass over the steps; finished steps are skipped, so a rerun only does what is left. */
   private async once(start: CompanionRecord): Promise<void> {
     const d = this.d;
@@ -178,37 +290,38 @@ export class PrepRunner {
       this.emit(c);
       return chain;
     };
-    const setStep = (path: "scene" | "lips" | PrepEmotion, patch: Partial<Step>) =>
+    const setStep = (path: "scene" | "lips" | "face" | PrepEmotion, patch: Partial<Step>) =>
       save((x) => {
         const steps = { ...x.prep.steps, videos: { ...x.prep.steps.videos } };
-        if (path === "scene" || path === "lips") steps[path] = { ...steps[path], ...patch };
+        if (path === "face") steps.face = { ...(steps.face ?? { status: "pending", attempts: 0 }), ...patch };
+        else if (path === "scene" || path === "lips") steps[path] = { ...steps[path], ...patch };
         else steps.videos[path] = { ...steps.videos[path], ...patch };
         return { ...x, prep: { ...x.prep, steps } };
       });
 
-    // 11/2 Meta-only runtime: no FAL_KEY = no scene picture, Kling clips or lip bake. The companion is
-    // ready right away and the call shows the chosen photo (S09-P); nothing fails, nothing is required.
-    if (!d.falKey) {
-      const off: Partial<Step> = { status: "todo", error: "off: FAL_KEY not set (Meta-only runtime)" };
-      await setStep("scene", off);
-      for (const e of PREP_EMOTIONS) await setStep(e, off);
-      await setStep("lips", off);
+    if (!d.kling) {
+      await this.metaPass(() => c, save, setStep);
       await save((x) => ({ ...x, prep: { ...x.prep, status: "ready", readyAt: new Date().toISOString() } }));
       await chain;
-      d.log("prep.meta_only", { companion: c.id });
-      this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {} });
+      const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl) : null;
+      d.log("prep.completed", { companion: c.id, type: c.type, pipeline: "meta", total_ms: Math.round(performance.now() - t0), rejected: face?.rejected.length ?? null });
+      this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {}, face });
       return;
     }
+
+    if (!d.falKey) throw new Error("FAL_KEY is not set");
     const falKey = d.falKey;
 
     // 1. scene
-    if (c.prep.steps.scene.status !== "done" || !c.prep.steps.scene.url) {
+    // a scene made on the Meta-only pipeline has no fal URL for Kling: make it again
+    if (c.prep.steps.scene.status !== "done" || !c.prep.steps.scene.url?.startsWith("http")) {
       const img = await d.store.getImage(c.imageId);
       if (!img) throw new Error("source image missing");
       await setStep("scene", { status: "running", attempts: c.prep.steps.scene.attempts + 1 });
       try {
         const s = await makeScene(d, img.bytes, img.rec.mime, c.type);
         if (!s.url) throw new Error("scene has no URL");
+        await d.store.putAsset(c.userId, c.id, "neutral", s.bytes);
         await setStep("scene", { status: "done", url: s.url, ms: s.ms, source: s.source, error: undefined });
         d.log("scene.done", { companion: c.id, source: s.source, ms: s.ms });
       } catch (err) {

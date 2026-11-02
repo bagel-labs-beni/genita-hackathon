@@ -53,10 +53,10 @@ export function fakeMedia(o: FakeMediaOpts) {
         await new Promise((r) => setTimeout(r, o.delayMs ?? 1));
         const i = (n.get(k) ?? 0) + 1;
         n.set(k, i);
-        const tag = `${k}#${i}`;
+        const tag = k === "scene" ? "scene" : `${k}#${i}`;
         const err = o.fail?.(tag);
         if (err) throw err;
-        assertIsScene(image);
+        if (k !== "scene") assertIsScene(image);
         const [w, h] = o.size ?? [1000, 2000];
         return fakePng(w, h, tag);
       } finally {
