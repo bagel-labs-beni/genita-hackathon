@@ -94,7 +94,11 @@ export type SessionPersonalize = {
   startCall(userId: string): Promise<CallStart | null>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
+  /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
+  noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
 };
+/** Knows-Me S1 (GENITA_BARGE_SHORTER=0 turns it off): cut off this many times mid-reply → shorter replies */
+const SHORTER_AFTER_CUTS = 2;
 /** the call starts with the app's profile if the store takes longer than this */
 const STARTCALL_TIMEOUT_MS = 1500;
 /** at most this many correction checks per call, one at a time */
@@ -236,6 +240,9 @@ export class Session {
   /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
   private timeZone: string | undefined;
   private nod: string | null = null;
+  /** Knows-Me S1: long replies the user cut off in this call; the one-time "I'll keep it short" line */
+  private longCuts = 0;
+  private shorterLine: string | null = null;
   private taste: TasteLine[] = [];
   private correcting: AbortController | null = null;
   private correctionChecks = 0;
@@ -777,6 +784,8 @@ export class Session {
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
+    // the user talked over a reply that was already a sentence or more in: they want it shorter
+    if (reason !== "client" && r.spoken.length >= 1 && this.mode === "chat") this.noteLongCut();
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
     this.log("turn.cancelled", { utteranceId, reason });
@@ -801,6 +810,25 @@ export class Session {
     this.frames = null;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     return f.images;
+  }
+
+  /** Knows-Me S1: the second long reply cut off → "Updated: shorter replies" + one "I'll keep it short" line. */
+  private noteLongCut(): void {
+    const p = this.deps.personalize;
+    if (process.env.GENITA_BARGE_SHORTER === "0" || !p?.noteShorter || !this.deps.userId) return;
+    this.longCuts++;
+    if (this.longCuts !== SHORTER_AFTER_CUTS) return;
+    this.shorterLine = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    void p.noteShorter(this.deps.userId).then(
+      (r) => {
+        if (!r || this.closed) return;
+        this.user = { ...this.user, profile: r.profile };
+        this.finds?.setProfile(r.profile, this.taste);
+        this.client.sendJson({ type: "profile.updated", text: r.text, fields: r.fields });
+        this.log("profile.updated", { fields: r.fields, by: "cuts" });
+      },
+      (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
+    );
   }
 
   /** lane 개인화: "actually I don't like X" → merge → profile.updated. Beside the reply, never blocking it. */
@@ -875,8 +903,10 @@ export class Session {
       ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only
-      nod: greeting && this.nod ? this.nod : undefined,
+      nod: greeting && this.nod ? this.nod : this.shorterLine ?? undefined,
     });
+    // said once, on the next reply
+    if (!greeting) this.shorterLine = null;
     return {
       interpret,
       detected: null,

@@ -289,3 +289,13 @@ test("Codex round 2: a slow earlier sheet correction can't undo a later one", as
   assert.ok(likes.includes("Dislikes cilantro, really."));
   assert.ok(!likes.includes("Loves cilantro."));
 });
+
+test("S1: noteShorter saves an observed line, never over an explicit one about the same thing", async (t) => {
+  const h = harness(() => null);
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  const r = await h.p.noteShorter("u1");
+  assert.equal(r!.text, "Updated: shorter replies");
+  const resp = (await h.store.getStyle("u1"))!.sections.response;
+  assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
+});

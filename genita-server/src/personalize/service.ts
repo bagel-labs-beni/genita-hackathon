@@ -322,6 +322,18 @@ export class Personalize {
     return { events, applied: out.m.applied, answered: noted.length > 0, profile: styleProfileText(out.card, 2000, { toConfirm: false }), taste: tasteLines(out.card) };
   }
 
+  /** Knows-Me S1: two long replies cut off in one call → an observed "short replies" line (never over an explicit one). */
+  async noteShorter(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null> {
+    const at = this.now().toISOString();
+    const out = await this.update(userId, (card) => {
+      const m = mergeUpdates(card, [{ field: "response", text: "Short replies, one or two sentences.", replaces: [], label: "observed", asOf: at, chip: "shorter replies" }], at);
+      return m.applied.length ? { card: m.card, out: m.card } : null;
+    });
+    if (!out) return null;
+    this.log("profile.voice_updated", { applied: 1, by: "cuts" });
+    return { text: "Updated: shorter replies", fields: ["response"], profile: styleProfileText(out, 2000, { toConfirm: false }) };
+  }
+
   /** After a call: grow the profile. Returns how many updates were applied. */
   async endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
     const userTurns = turns.filter((t) => t.role === "user" && t.text.trim());
