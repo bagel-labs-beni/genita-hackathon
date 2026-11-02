@@ -244,6 +244,8 @@ public final class FaceSet: @unchecked Sendable {
             .intersection(CGRect(x: 0, y: 0, width: base.width, height: base.height)).integral
         guard !r.isNull, r.width >= 4, r.height >= 4 else { return nil }
         let pw = Int(r.width), ph = Int(r.height), ox = Int(r.minX), oy = Int(r.minY)
+        let shade = localShading(base: base, viseme: viseme, shift: (shift.dx, shift.dy), gain: gain, bias: bias,
+                                 rect: r, mouth: union)
         var out = [UInt8](repeating: 0, count: pw * ph * 4)
         let cx = Double(pw) / 2, cy = Double(ph) / 2
         for y in 0..<ph {
@@ -254,16 +256,93 @@ public final class FaceSet: @unchecked Sendable {
                 guard a > 0 else { continue }
                 let vx = ox + x + shift.dx, vy = oy + y + shift.dy
                 let i = (y * pw + x) * 4
+                let j = y * pw + x
+                var src = [0.0, 0.0, 0.0], v = [0.0, 0.0, 0.0]
                 for c in 0..<3 {
-                    let src = viseme.contains(vx, vy) ? Double(viseme.at(vx, vy, c)) : Double(base.at(ox + x, oy + y, c))
-                    let v = min(255, max(0, src * gain[c] + bias[c]))
-                    out[i + c] = UInt8((v * a).rounded())
+                    src[c] = viseme.contains(vx, vy) ? Double(viseme.at(vx, vy, c)) : Double(base.at(ox + x, oy + y, c))
+                    v[c] = src[c] * gain[c] + bias[c] + Double(shade.shade[c][j])
                 }
+                if shade.content[j] {
+                    // Lips, teeth, tongue: brightness change only. A skin hue correction would tint
+                    // the teeth (seen as mint-green teeth on the human set).
+                    let dl = (0..<3).reduce(0.0) { $0 + v[$1] - src[$1] } / 3
+                    for c in 0..<3 { v[c] = src[c] + dl }
+                }
+                for c in 0..<3 { out[i + c] = UInt8((min(255, max(0, v[c])) * a).rounded()) }
                 out[i + 3] = UInt8((255 * a).rounded())
             }
         }
         let image = PixelBuffer.makeImage(out, width: pw, height: ph)
         return FaceMouthPatch(image: image, rect: r, shift: (shift.dx, shift.dy), surroundDiff: surroundDiff)
+    }
+
+    /// Largest per-channel difference (0…255) still read as shading rather than new content
+    /// (lips, teeth, a moved chin line) when estimating the local colour correction.
+    static let shadingMaxDiff = 40.0
+
+    /// Smooth per-pixel colour correction for a patch (per channel, patch pixels, row 0 = top):
+    /// the edit's local shading change (a darker upper lip, a lighter cheek) measured on the skin
+    /// around the mouth and filled in across the mouth by normalised convolution, so the patch
+    /// carries the base's lighting all the way to its feathered edge. Pixels that differ by more
+    /// than `shadingMaxDiff` are content, not shading, and are left out of the estimate; they come
+    /// back flagged in `content`.
+    static func localShading(base: PixelBuffer, viseme: PixelBuffer, shift: (Int, Int), gain: [Double], bias: [Double],
+                             rect r: CGRect, mouth: CGRect) -> (shade: [[Float]], content: [Bool]) {
+        let pw = Int(r.width), ph = Int(r.height), ox = Int(r.minX), oy = Int(r.minY)
+        let hole = mouth.insetBy(dx: -mouth.width * 0.08, dy: -mouth.height * 0.15)
+        var num = [[Float]](repeating: [Float](repeating: 0, count: pw * ph), count: 3)
+        var den = [Float](repeating: 0, count: pw * ph)
+        for y in 0..<ph {
+            for x in 0..<pw {
+                let bx = ox + x, by = oy + y, vx = bx + shift.0, vy = by + shift.1
+                guard viseme.contains(vx, vy), !hole.contains(CGPoint(x: Double(bx) + 0.5, y: Double(by) + 0.5)) else { continue }
+                var d = [0.0, 0.0, 0.0]
+                var big = false
+                for c in 0..<3 {
+                    d[c] = Double(base.at(bx, by, c)) - (Double(viseme.at(vx, vy, c)) * gain[c] + bias[c])
+                    if abs(d[c]) > shadingMaxDiff { big = true }
+                }
+                guard !big else { continue }
+                let i = y * pw + x
+                for c in 0..<3 { num[c][i] = Float(d[c]) }
+                den[i] = 1
+            }
+        }
+        let radius = max(3, Int((mouth.height * 0.5).rounded()))
+        let measured = den   // before the blur: 1 = skin used for the estimate
+        boxBlur(&den, width: pw, height: ph, radius: radius, passes: 2)
+        for c in 0..<3 { boxBlur(&num[c], width: pw, height: ph, radius: radius, passes: 2) }
+        var out = [[Float]](repeating: [Float](repeating: 0, count: pw * ph), count: 3)
+        for i in 0..<(pw * ph) where den[i] > 1e-3 {
+            for c in 0..<3 { out[c][i] = num[c][i] / den[i] }
+        }
+        return (out, measured.map { $0 == 0 })
+    }
+
+    /// In-place separable box blur (edges clamped), repeated `passes` times (≈ Gaussian at 3).
+    static func boxBlur(_ v: inout [Float], width w: Int, height h: Int, radius: Int, passes: Int) {
+        guard w > 0, h > 0, radius > 0 else { return }
+        var tmp = [Float](repeating: 0, count: max(w, h))
+        for _ in 0..<passes {
+            for y in 0..<h {
+                var acc: Float = 0
+                for k in -radius...radius { acc += v[y * w + min(w - 1, max(0, k))] }
+                for x in 0..<w {
+                    tmp[x] = acc / Float(2 * radius + 1)
+                    acc += v[y * w + min(w - 1, x + radius + 1)] - v[y * w + max(0, x - radius)]
+                }
+                for x in 0..<w { v[y * w + x] = tmp[x] }
+            }
+            for x in 0..<w {
+                var acc: Float = 0
+                for k in -radius...radius { acc += v[min(h - 1, max(0, k)) * w + x] }
+                for y in 0..<h {
+                    tmp[y] = acc / Float(2 * radius + 1)
+                    acc += v[min(h - 1, y + radius + 1) * w + x] - v[max(0, y - radius) * w + x]
+                }
+                for y in 0..<h { v[y * w + x] = tmp[y] }
+            }
+        }
     }
 
     /// Skin around a mouth: beside it and up towards the nose, not below.
