@@ -567,13 +567,18 @@ export class Session {
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
     let sparkError: unknown = null;
+    let droppedOpener = false;
     const pushSentences = (list: string[]) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
         let tts = p.ttsText;
         if (!sentences.length && !interpret) tts = avoidRepeatedOpener(tts, this.recentReplies);
-        if (!tts) continue;
+        if (!tts) {
+          droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
+          continue;
+        }
+        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
         sentences.push({ tts, display, emotion });

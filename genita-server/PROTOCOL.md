@@ -21,6 +21,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_SERVER_TTS=1`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_SERVER_TTS=1` (there, an omitted `start.tts` means `server`). |
+| 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
 
 ```
 wss://<host>/v1/session
@@ -170,6 +171,40 @@ Always read `ready.tts`. In `device` mode:
 Threat line: who = the iOS/Mac app on the existing session socket · auth = unchanged (session token) ·
 abuse = nothing new (the text is what `reply.delta` already carries; `start.tts` is an enum, anything
 else = the default) · data = reply text only, already exposed.
+
+## Server voice (Meta voice service)
+
+When the server has `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (SSM `/genita/server/*`), the companion's
+voice is **SeamlessM4T v2** (Meta open model) on our GPU (`deploy/modal-voice`). Without them the server
+runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
+
+- `start.tts` omitted or `"server"` → `ready.tts:"server"`. `"device"` still forces device mode.
+- Voice: `ready.voiceId` = `seamless:<n>` (speaker 0–199). `start.voiceId` / `persona.voice.id` of the form
+  `seamless:<n>` picks that speaker; any other id (old ElevenLabs ids) gets the companion kind's default
+  (`GENITA_VOICE_SPEAKERS`, now human 72 · animal 16 · character 68, picked by UTMOS over 100 speakers).
+- Each reply is spoken clause by clause: the **first clause is cut at its first comma** ("Oh wow,") so the
+  first sound starts while Spark is still writing; later sentences over 140 chars are cut at a comma. The
+  server sends clause n+1 to the voice service while clause n streams. Short clauses ("Hmm,", "Oh!", "Yeah.")
+  are cached per speaker.
+- Per clause: one `audio` event + binary frame for the first ~300 ms, then ≤ 1 s pieces. Each clause ends with
+  a short silence that is part of its audio (comma ~110 ms, period 220 ms, question 260 ms, "..." 320 ms).
+- Timing for the mouth (lane L4): every `audio` event carries `words` `[{w, s, e}]` in ms on the reply's
+  timeline (0 = first sample of the reply), from the model's own per-character durations (unit model ×
+  vocoder), so they line up with the samples. Ask for `lip:"atlas"` to also get letter-level `mouth` cues
+  (any companion kind). The `audio` event always arrives before its binary frame, so timing is never late.
+- Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
+  everything else in English (`eng`). Same speaker as the companion.
+- Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →
+  spoken form; markdown, emojis, URLs dropped). Captions (`reply.delta`, `reply`) keep the written text.
+- **Voice service down or slow** (no first byte in 4 s, 5xx, daily cap): one `tts_unavailable`, then the rest of
+  that reply arrives as `say` events — speak them on-device like device mode. For the next 30 s replies go
+  straight to `say`, then the server tries the voice again. `turn.metrics.ttsModel` = `seamless-m4t-v2+device`
+  (partly) or `device`.
+- Barge-in unchanged: the in-flight voice request is aborted; no `audio` or `say` after `utterance.cancelled`.
+
+Threat line (no new endpoint on genita-server): the voice service is called only by genita-server, bearer
+token from SSM, constant-time compare, 400-char text cap, max 3 GPU containers, daily request cap
+(`VOICE_DAILY_CAP`, 429 → device voice). Data sent = reply text only.
 
 ## Lip source (`start.lip`)
 

@@ -202,3 +202,12 @@ test("voice service: barge-in stops the stream; no audio frame after utterance.c
   assert.ok(calls.some((c) => c.signal?.aborted), "the in-flight voice request was aborted");
   session.close();
 });
+
+test("voice service: when the opener guard drops a whole first clause ('Oh,'), the next clause starts with a capital", async () => {
+  const { client, session } = setup({ sparkText: "<happy> Oh, perfect cozy night! Want a comedy?" });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, history: [{ role: "assistant", text: "Oh, hi there." }] }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "movie?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Perfect cozy night! Want a comedy?");
+  session.close();
+});
