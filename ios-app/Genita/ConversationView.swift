@@ -5,6 +5,9 @@ struct ConversationView: View {
     var connecting = false
     var handoffEnabled = true
     @ObservedObject private var handoff = PhoneHandoff.shared
+    /// Dyno's E01/E02 permission sheets (#2): shown for the call's own denials, and for the review hook.
+    @ObservedObject private var media = PhoneHandoff.shared.media
+    private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
     @State private var loopURL: URL?
@@ -92,6 +95,13 @@ struct ConversationView: View {
                             VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }
                                 .frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
+                        if let denied, waitingCopy == nil {
+                            handoffScrim.opacity(0.5).frame(width: full.size.width, height: full.size.height).onTapGesture { dismissDenied() }
+                            VStack(spacing: 0) {
+                                Spacer(minLength: 0)
+                                MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
+                            }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
+                        }
                         if moreOpen {
                             CallInk.dim.frame(width: full.size.width, height: full.size.height).onTapGesture { withAnimation(.easeOut(duration: 0.22)) { moreOpen = false } }
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
@@ -165,6 +175,7 @@ struct ConversationView: View {
         }
     }
 
+    func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
         call.dismissMicBlocked()
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
