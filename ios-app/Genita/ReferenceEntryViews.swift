@@ -28,6 +28,8 @@ struct ReferenceSignInView: View {
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
     @State private var signInFailed = false
+    /// A02-J Judge access sheet (D41)
+    @State private var judgeSheet = false
     var referenceViewport = false
     var nodes: [DesignNode] { DesignLibrary.nodes("signIn") }
     var body: some View {
@@ -48,6 +50,9 @@ struct ReferenceSignInView: View {
                     providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     let node = nodes.first { $0.y == 734 && $0.type == "text" }!
                     DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
+                    // D41: a small text link under the provider buttons; no new design
+                    Button { judgeSheet = true } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
+                        .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
                     Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
                     Button { legal = "Privacy Policy" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 85, height: 24).position(x: size.width / 2 + 54, y: 761 + bottom).accessibilityLabel("Privacy Policy")
                 }.frame(width: size.width, height: size.height).clipped()
@@ -63,6 +68,7 @@ struct ReferenceSignInView: View {
                     .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
+        .sheet(isPresented: $judgeSheet) { JudgeCodeSheet(model: model) }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             Button("Continue in demo") { model.signedIn(); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }

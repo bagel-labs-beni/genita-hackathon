@@ -250,4 +250,27 @@ final class GenitaUITests: XCTestCase {
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
+
+    /// A02-J (D41): Judge access link → code sheet; an unreachable server shows the offline line, the sheet stays open.
+    func testJudgeAccessSheet() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_VARIANT": ""]
+        app.launch()
+        let link = app.buttons["judgeAccessLink"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+        let a = XCTAttachment(screenshot: app.screenshot()); a.name = "A02-judge-link"; a.lifetime = .keepAlways; add(a)
+        link.tap()
+        let field = app.textFields["judgeCodeField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["judgeCodeContinue"].isEnabled, "empty code can't be sent")
+        field.typeText("not-a-real-code")
+        let server = app.textFields["judgeServerField"]
+        server.tap(); server.typeText("http://127.0.0.1:1")
+        app.buttons["judgeCodeContinue"].tap()
+        XCTAssertTrue(app.staticTexts["judgeCodeError"].waitForExistence(timeout: 10))
+        let b = XCTAttachment(screenshot: app.screenshot()); b.name = "A02-J-sheet-error"; b.lifetime = .keepAlways; add(b)
+        app.buttons["judgeCodeCancel"].tap()
+        XCTAssertTrue(link.waitForExistence(timeout: 5))
+    }
 }

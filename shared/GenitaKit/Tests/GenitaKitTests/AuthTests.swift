@@ -120,6 +120,26 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect((body["fullName"] as? [String: String]) == ["givenName": "Chelsea"])
     }
 
+    @Test func judgeCodeSignsInWithoutAnAppleToken() async throws {
+        StubProtocol.handler = { _ in (200, try! sample("signin.json")) }
+        let r = try await client.signInWithJudgeCode("  my-code \n")
+        #expect(store.load() == r.token)
+        let req = try #require(StubProtocol.seen.last)
+        #expect(req.url?.path == "/auth/judge" && req.httpMethod == "POST")
+        #expect(req.value(forHTTPHeaderField: "authorization") == nil)
+        let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
+        #expect(body["code"] as? String == "my-code" && body["device"] as? String == "iphone")
+    }
+
+    @Test func wrongJudgeCodeStoresNothingAndTooManyTriesIsTyped() async {
+        StubProtocol.handler = { _ in (401, Data(#"{"error":"auth_failed","reason":"wrong_code"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.unauthorized) { try await client.signInWithJudgeCode("nope") }
+        #expect(store.load() == nil)
+        StubProtocol.handler = { _ in (429, Data(#"{"error":"rate_limited"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.signInWithJudgeCode("nope") }
+        #expect(store.load() == nil)
+    }
+
     @Test func unauthorizedClearsTheTokenAndRoutesToSignIn() async {
         store.save("old")
         StubProtocol.handler = { _ in (401, Data(#"{"error":"unauthorized"}"#.utf8)) }

@@ -43,6 +43,15 @@ public final class GenitaAuthClient: @unchecked Sendable {
         return r
     }
 
+    /// A02-J Judge access (D41): a code from the submission form / README → a session for that code's demo account.
+    /// Wrong code = `.unauthorized` (401, nothing stored), too many tries = `.server(status: 429, …)`.
+    @discardableResult
+    public func signInWithJudgeCode(_ code: String, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        let r: GenitaSignInResponse = try await send("POST", "/auth/judge", json: ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue], authorized: false)
+        store.save(r.token)
+        return r
+    }
+
     /// Mac: the URL ASWebAuthenticationSession opens (server 302s to Apple).
     public func macStartURL(challenge: String, device: GenitaDevice = .mac) -> URL {
         var c = URLComponents(url: baseURL.appendingPathComponent("auth/apple/start"), resolvingAgainstBaseURL: false)!
