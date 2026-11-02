@@ -12,6 +12,7 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
+import { isToolNarration, isToolNarrationLead } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import { spokenText } from "../voice/normalize.ts";
@@ -998,10 +999,35 @@ export class Session {
     let sparkDone = false;
     let sparkError: unknown = null;
     let droppedOpener = false;
+    let narrationDecided = interpret || !!self;
+    let pendingNarration: string | null = null;
+    let usedTool = false;
+    const dropNarration = () => {
+      pendingNarration = null;
+      narrationDecided = true;
+      droppedOpener = true;
+      this.log("reply.narration_dropped", { utteranceId });
+    };
     const pushSentences = (list: string[]) => {
-      for (const raw of list) {
+      for (let raw of list) {
+        // Eager TTS can cut "One sec," before "looking that up." arrives.
+        if (!narrationDecided && pendingNarration && isToolNarrationLead(parseTaggedSentence(pendingNarration).displayText)) {
+          raw = pendingNarration + " " + raw;
+          pendingNarration = null;
+        }
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
+        if (!narrationDecided && p.displayText) {
+          if (pendingNarration) dropNarration(); // subsequent content makes it safe to drop the first piece
+          else if (isToolNarration(p.displayText)) {
+            pendingNarration = raw;
+            if (usedTool) dropNarration();
+            continue;
+          } else if (isToolNarrationLead(p.displayText)) {
+            pendingNarration = raw;
+            continue;
+          } else narrationDecided = true;
+        }
         let tts = p.ttsText;
         if (!sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         if (!tts) {
@@ -1045,6 +1071,12 @@ export class Session {
               gotText = true;
               pushSentences(splitter.push(ev.delta));
             } else if (ev.type === "tool") {
+              if (!narrationDecided) {
+                usedTool = true;
+                // A tool may follow a sentence with no trailing space, or an unfinished clause.
+                pushSentences(splitter.flush());
+                if (pendingNarration && isToolNarration(parseTaggedSentence(pendingNarration).displayText)) dropNarration();
+              }
               if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
               this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
             } else if (ev.type === "done") status = ev.status;
@@ -1056,6 +1088,13 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
+        // A lone announcement with no tool or answer must not turn into an empty reply.
+        if (pendingNarration && !signal.aborted) {
+          const raw = pendingNarration;
+          pendingNarration = null;
+          narrationDecided = true;
+          pushSentences([raw]);
+        }
         sparkDone = true;
         waiter.wake?.();
       }

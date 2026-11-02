@@ -28,6 +28,55 @@ function client() {
   return { events, sink, replies: () => events.filter((e) => e.type === "reply") };
 }
 
+for (const tts of ["server", "device"] as const) for (const narration of ["I'll search my memory for that. ", "I'll search my memory for that.", "I'll search my memory for that"]) test(`tool narration never reaches ${tts} speech or captions before a recall: ${JSON.stringify(narration)}`, async (t) => {
+  const { deps, memory } = setup();
+  deps.config = { ...deps.config, serverTts: true, sparkHedge: 1, speculate: false };
+  const c = client();
+  const spoken: string[] = [];
+  const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
+  let atNarration!: () => void;
+  const narrationReady = new Promise<void>((resolve) => { atNarration = resolve; });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  deps.log = (event, data) => logs.push({ event, data });
+  deps.tts = async function* (req) {
+    spoken.push(req.text);
+    yield { audio: Buffer.alloc(960), alignment: null, model: req.model };
+  };
+  deps.spark = async function* (req): AsyncGenerator<SparkStreamEvent> {
+    if (JSON.stringify(req.input).includes("function_call_output")) {
+      yield { type: "text", delta: "<warm> You told me you love tofu." };
+    } else {
+      yield { type: "text", delta: `<curious> ${narration}` };
+      atNarration();
+      await gate;
+      yield { type: "function_call", call_id: "recall-1", name: "recall", arguments: '{"query":"favorite food"}' };
+    }
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const session = new Session("no-narration", c.sink, deps);
+  t.after(async () => { release(); session.close(); await memory.drain(); });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, tts, mic: false, greetAfterMs: 3000 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What food do I like?" }));
+  await narrationReady;
+  await pause();
+  assert.deepEqual(c.events.filter((e) => ["say", "audio", "reply.delta"].includes(e.type)), [], "no narration while the tool is still pending");
+  assert.deepEqual(spoken, []);
+  release();
+  await waitFor(() => c.replies().length === 1);
+  assert.equal(c.replies()[0].text, "You told me you love tofu.");
+  assert.deepEqual(c.events.filter((e) => e.type === "reply.delta").map((e) => e.text), ["You told me you love tofu."]);
+  if (tts === "server") {
+    assert.deepEqual(spoken, ["You told me you love tofu."]);
+    assert.deepEqual(c.events.filter((e) => e.type === "audio").map((e) => e.sentence), [0]);
+  } else {
+    assert.deepEqual(c.events.filter((e) => e.type === "say").map((e) => [e.sentence, e.text]), [[0, "You told me you love tofu."]]);
+  }
+  const reply = c.replies()[0];
+  assert.deepEqual(logs.filter((e) => e.event === "reply.narration_dropped"), [{ event: "reply.narration_dropped", data: { session: "no-narration", utteranceId: reply.utteranceId } }]);
+  assert.equal(session.historySnapshot().at(-1)?.text, "You told me you love tofu.");
+});
+
 test("session-start revisit is voiced through the normal pipeline and opener guard; client cannot choose memory identity", async () => {
   const { repo, deps, memory } = setup();
   await memory.remember("trusted", "I bought tofu for kimchi jjigae.", "episode", "old");

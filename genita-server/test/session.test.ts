@@ -118,6 +118,63 @@ function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: numb
 
 const persona = { name: "Mina", kind: "animal", traits: ["warm"] };
 
+for (const [text, expected] of [
+  ["<curious> I'll look that up. Tofu works.", "Tofu works."],
+  ["<curious> 기억을 찾아볼게요. 두부가 좋아요.", "두부가 좋아요."],
+  ["<curious> I'll look that up.", "I'll look that up."],
+  ["<warm> Let me think — tofu works.", "Let me think — tofu works."],
+  ["<warm> Tofu works. I'll look that up.", "Tofu works. I'll look that up."],
+] as const) test(`first narration only, with more content required: ${text}`, async (t) => {
+  const { session, client } = setup({ sparkText: text });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What works?" }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, expected);
+});
+
+for (const [text, expected] of [
+  ["<curious> One sec, looking that up. Tofu works.", "Tofu works."],
+  ["<curious> 잠시만요, 검색해 볼게요. 두부가 좋아요.", "두부가 좋아요."],
+  ["<curious> I'll look that up — tofu works.", "Tofu works."],
+  ["<warm> One sec, the tofu is burning.", "One sec, the tofu is burning."],
+  ["<warm> One sec,", "One sec,"],
+] as const) test(`eager first clause protects wait prefixes: ${text}`, async (t) => {
+  const { session, client, ttsCalls } = setup({ sparkText: text, deps: { config: { ...config, voice: {
+    url: "http://voice.invalid", token: "fake", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless",
+  } } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What works?" }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, expected);
+  assert.deepEqual(ttsCalls, [expected]);
+});
+
+test("a web_search after narration also suppresses the first clause", async (t) => {
+  const { session, client, ttsCalls } = setup({ deps: { async *spark(): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "<curious> Let me search the web for that." };
+    yield { type: "tool", name: "web_search", status: "in_progress" };
+    yield { type: "text", delta: "Tofu works." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a recipe." }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, "Tofu works.");
+  assert.deepEqual(ttsCalls, ["Tofu works."]);
+});
+
+test("interpretation preserves a translated tool announcement as content", async (t) => {
+  const text = "I'll look that up. Tofu works.";
+  const { session, client, ttsCalls } = setup({ sparkText: text });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "기억을 찾아볼게요. 두부가 좋아요." }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.interpret, true);
+  assert.equal(reply.text, text);
+  assert.deepEqual(ttsCalls, ["I'll look that up.", "Tofu works."]);
+});
+
 test("start → ready with lip plan; a voice turn streams reply text, framed audio and a final reply", async () => {
   const { asr, client, session, ttsCalls } = setup();
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "atlas" }));
