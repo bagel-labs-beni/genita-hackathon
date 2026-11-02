@@ -49,7 +49,13 @@ public final class FaceRenderer: @unchecked Sendable {
     /// Flow-morph working resolution relative to the output (1 = output pixels).
     nonisolated(unsafe) public static var flowDensity = 1.5   // 1 was soft on the lips (review 11/3); 2 costs ~35% more
     /// This face's lookahead (the flow map's `lookaheadMs`, else the default).
-    public var lipLookaheadMs: Double { faceSet.flow?.map.lookaheadMs ?? Self.defaultLipLookaheadMs }
+    /// Profiles that hold shapes (minHold, 2D snap) decide on frames ending now in the app (the
+    /// offline reference looked ahead), so they read the timeline further ahead to stay on time.
+    public var lipLookaheadMs: Double {
+        guard let m = faceSet.flow?.map else { return Self.defaultLipLookaheadMs }
+        let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
+        return max(m.lookaheadMs ?? 0, hold)
+    }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
