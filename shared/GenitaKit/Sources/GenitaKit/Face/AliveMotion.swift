@@ -19,7 +19,7 @@ struct AliveMotion {
     static let nodPitch = 0.006           // vertical foreshortening at full nod
     static let breathingHz = 0.25
     static let breathingScale = 0.006
-    // Kept small: a review of Peter's reference clip measured its background as nearly still.
+    // Kept small: a review of the reference talking-head clip measured its background as nearly still.
     static let cameraDrift = 1.0, cameraJitter = 0.3
     static let cameraRollDegrees = 0.1
     static let cameraZoom = 0.0015
