@@ -24,14 +24,20 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
+| 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
+| 11/3 | Fridge order (#122, D23): a camera cooking turn's reply is now the short line "Let me take a look." (not a full answer from the raw photo); `observe.boxes` follow; then one server-initiated reply names only `have` items ("I can see eggs and tofu. You could make …, if you have kimchi."), also stored as `card.say`. A failed card for such a turn (or a product search) is spoken as its own reply. Same message types; additive. |
+| 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (there, an omitted `start.tts` means `server`). |
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
+| 11/3 | Funnel telemetry: authenticated `POST /v1/events` accepts up to 20 allowlisted, flat app event properties and returns `204`; server logs `call.greeted`, `tts.first_audio`, `tts.fallback_device`, prep readiness, cancellation and mode events. `turn.metrics` adds nullable `stt_ms`, `llm_ms`, `tts_ms`, and `first_audio_ms`. Additive. |
 | 11/3 | F2-L26 naming + D21 first-call wait: new event `companion.named {name}` (the user renamed the companion by voice, already saved — update every {name} label); optional `start.greetAfterMs` (0–3000; the app sends 2000 on the first call after onboarding: the server waits that long for the user to speak or type first, then greets). REST `POST /v1/companion/name/suggest`, `PATCH /v1/companion {name}` (PREP_API.md). Additive: an app that ignores both sees no change. |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
+| 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 
 ```
 wss://<host>/v1/session
@@ -176,6 +182,18 @@ deletion/storage errors return `503`; retries can complete the deletion.
 `GENITA_MEMORY_FILE=./.memory/memories.json` enables atomic local JSON persistence;
 unset means in-memory only. `REVISIT_GAP_HOURS` defaults to `6` (seen crops always
 require six hours), and revisit openers are limited to one per UTC day.
+
+## App funnel events REST
+
+The app may batch its client-only funnel transitions on the same authenticated,
+consented principal as the other `/v1/*` routes. The server discards unknown names
+and every property outside that event's closed schema, then writes one JSON log line
+per accepted event. It never logs a client event body or free-text value. Allowed
+properties are fixed enums, bounded integers, booleans, and safe IDs only.
+
+| method | path | result |
+| --- | --- | --- |
+| POST | `/v1/events` | `{events:[{name,at?,props?}]}`; max 20 events, 120 events/user/minute; `204` accepted, malformed bodies/over-20 `400`, over rate `429` |
 
 The trusted vision adapter supplies only a <=480px SAM crop plus a safe one-line
 summary to `src/memory/`; original camera frames are never persisted. Its pixel
@@ -460,6 +478,40 @@ how[], page?{url, opened}, saved?`. Image `url`s are server-relative
 When the card lands the companion says `card.say` as its own short reply — only
 into silence, after the current reply, and not if the user starts talking first.
 
+**Fridge order (D23, #122).** A camera cooking turn is answered in three steps:
+① the turn's reply is "Let me take a look." at once (a full answer from the raw
+photo named things that were not there, 7/10 on 11/1); ② `observe.boxes` as each
+item is confirmed; ③ once the checks are in (at most 3 s after the card), one
+reply names only `have` items (Spark YES + SAM box, or a confirmed "맞아?") and the
+dish, qualifying any dish ingredient that is not `have` ("…, if you have kimchi").
+That line is also `card.say`. Real vendors, 10 runs on the test fridge photos:
+names outside the photo 0/10, boxes before the line 10/10, short line p50 8 ms
+after the question (server), first boxes p50 4.0 s, line p50 6.1 s, card p50 4.7 s.
+
+**Product search (F7 PF-1 / MAC-RS, D2 D24 D25).** A shopping ask needs no camera
+("can we look for a jacket for this weekend?", "find a couple that match my style,
+and send me the links"). That turn's reply is a short line ("On it.") — never a
+full answer, which would guess products and links — and the card follows:
+
+```
+find.started {kind:"product", title:"Finding 2 for your style…", detail:"Jacket · searching shops", evidence?:{style:"<import line>", situation:""}}
+→ find.progress {detail:"Light jacket · checking 2 shops"} → find.created (products[], pictures pending)
+→ find.image {slot:"product-1"|"product-2"} → the companion says card.say
+```
+
+`products[]` holds at most 2 product detail pages. Each `url` is an `open_page` the
+search really completed (Spark's tool trace); a URL the model only wrote, a failed
+open, or a category / collection / search page (URL shape, or the page's own
+og:type / JSON-LD) is dropped. `price` only when the page showed it (absent → show
+"Price on site"). `taste` (blue chip) follows a line of the account's import
+(I04 Likes & dislikes), quoted in `evidence.style`; empty when there is none.
+`situation` (grey chip) follows what they said (+ weather), quoted in
+`evidence.situation`. One proven product → the card has one and says so; none →
+`find.failed {reason:"search_failed"}` ("Couldn't find a good match…"). A later
+product ask in the same call that names no new thing ("match my style") refines
+the last search. Pictures are the page's og:image, fetched by the server (public
+https hosts only, size-capped) and served like illustrations.
+
 REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 
 | method | path | |
@@ -472,7 +524,7 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 | GET | `/v1/finds/:id/images/:slot` | illustration bytes (`?token=` also accepted) |
 | DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
 
-Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
+Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations · `GENITA_SHOP_REGION` (default `US`) where product search shops.
 
 ## App config (`GET /v1/app-config`)
 
