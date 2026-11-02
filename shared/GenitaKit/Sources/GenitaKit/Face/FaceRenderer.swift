@@ -45,7 +45,11 @@ public final class FaceRenderer: @unchecked Sendable {
     let flowMorph: FlowMorph?
     public var useFlow = true
     /// Callers sample the lip timeline this far ahead so smoothing lands on the sound.
-    public static let lipLookaheadMs = 50.0
+    public static let defaultLipLookaheadMs = 40.0
+    /// Flow-morph working resolution relative to the output (1 = output pixels).
+    nonisolated(unsafe) public static var flowDensity = 1.5   // 1 was soft on the lips (review 11/3); 2 costs ~35% more
+    /// This face's lookahead (the flow map's `lookaheadMs`, else the default).
+    public var lipLookaheadMs: Double { faceSet.flow?.map.lookaheadMs ?? Self.defaultLipLookaheadMs }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
@@ -58,8 +62,8 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
-        // Flow morph at the output's pixel density (keeps its textures small).
-        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan)
+        // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
+        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
         flowMorph = faceSet.flow.flatMap { d in faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale) } }
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
@@ -190,11 +194,12 @@ public final class FaceRenderer: @unchecked Sendable {
 
         // 4. blink
         let blink = blinkAmount(at: t)
-        if blink > 0.001, let mask = blinkMask, let closed = bases[.blink] {
+        if blink > 0.3, let mask = blinkMask, let closed = bases[.blink] {
             let f = CIFilter.blendWithAlphaMask()
             f.inputImage = closed
             f.backgroundImage = img
-            f.maskImage = Self.withOpacity(mask, blink)
+            // A blink is a cut (half-dissolved lids read as glass), held while it is more than 30% closed.
+            f.maskImage = blink > 0.3 ? mask : Self.withOpacity(mask, 0)
             img = f.outputImage!.cropped(to: extent)
         }
 

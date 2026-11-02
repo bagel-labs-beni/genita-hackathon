@@ -109,7 +109,7 @@ struct FlowMorphTests {
     @Test func ladderFollowsLoudnessAndPeopleStopBeforeTheYawnKey() throws {
         let set = try Synth.faceSet()
         let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1)
-        let mid = m.amounts(LipFrame(weights: [.A: 1], openness: 0.5))
+        let mid = m.amounts(LipFrame(weights: [.A: 1], openness: 0.3))
         #expect((mid["AH"] ?? 0) > 0 && (mid["AH2"] ?? 0) > 0 && mid["A"] == nil)
         let loud = m.amounts(LipFrame(weights: [.A: 1], openness: 1))
         #expect(loud["A"] == nil && (loud["AH2"] ?? 0) > 0.9)
@@ -137,4 +137,21 @@ struct FlowMorphTests {
         let k = (14 * m.width + 16) * 4       // inside the key's dark mouth (shifted 1 px by its flow)
         #expect(p[k] < 60 && p[k + 3] == 255)
     }
+
+    /// Through a non-closing consonant the jaw keeps most of the vowel; a closure still shuts.
+    @Test func consonantsKeepTheVowelOpenButClosuresShut() throws {
+        let set = try Synth.faceSet()
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1)
+        let keys = set.flow!.keys
+        func open(_ a: [Float]) -> Float { ["MID", "AH", "AH2"].compactMap { keys.firstIndex(of: $0) }.map { a[$0] }.reduce(0, +) }
+        var a: [Float] = []
+        for i in 0..<6 { a = m.step(LipFrame(weights: [.A: 1], openness: 0.6), at: Double(i) / 25) }
+        let vowel = open(a)
+        a = m.step(LipFrame(weights: [.CDG: 1], openness: 0.6), at: 0.24)
+        a = m.step(LipFrame(weights: [.CDG: 1], openness: 0.6), at: 0.28)
+        #expect(open(a) > 0.45 * vowel)
+        a = m.step(LipFrame(weights: [.MBP: 1], openness: 0.6), at: 0.32)
+        #expect(a[keys.firstIndex(of: "MBP")!] > 0.95)
+    }
 }
+

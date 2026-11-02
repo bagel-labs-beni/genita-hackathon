@@ -81,12 +81,13 @@ struct LipTimelineTests {
         for ms in stride(from: -50.0, through: 300, by: 7) {
             #expect(abs(weightSum(t.sample(atMs: ms)) - 1) < 1e-4, "t=\(ms)")
         }
-        // "ma": MBP weight 1, A weight 2 → boundary at 200/3.
-        let mid = t.sample(atMs: 200.0 / 3)
+        // "ma": MBP weight 1, A weight 2 → boundary at 200/3 (closures keep their own timing).
+        let b = 200.0 / 3
+        let mid = t.sample(atMs: b)
         #expect(abs((mid.weights[.MBP] ?? 0) - 0.5) < 0.05)
         #expect(abs((mid.weights[.A] ?? 0) - 0.5) < 0.05)
         // 60 ms crossfade: 30 ms past the boundary it is all A.
-        #expect((t.sample(atMs: 200.0 / 3 + 31).weights[.A] ?? 0) > 0.99)
+        #expect((t.sample(atMs: b + 31).weights[.A] ?? 0) > 0.99)
     }
 
     @Test func mbpForcesTheMouthClosedWhileOpenVowelsOpenIt() {

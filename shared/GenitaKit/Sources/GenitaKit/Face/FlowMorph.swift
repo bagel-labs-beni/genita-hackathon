@@ -62,15 +62,32 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public var slew: Double? = nil
     /// Keys that close at once (attack 1, e.g. MBP) so a closure is never smoothed away.
     public var instantKeys: [String]? = nil
+    /// Scales the vowel amounts (open more).
+    public var gain: Double? = nil
+    /// The lip timeline is sampled this far ahead (mouth leads the sound).
+    public var lookaheadMs: Double? = nil
+    /// A closure stays fully shut at least this many frames (e.g. {"MBP": 2}).
+    public var holdFrames: [String: Int]? = nil
+    public struct Dissolve: Codable, Equatable, Sendable { public var mode: String; public var ms: Double; public var minAmount: Double }
+    /// Colour mixing: "snap" (one key's texture, `ms` switch, neutral below `minAmount`) or "smooth".
+    public var dissolve: Dissolve? = nil
+    public struct JawFloor: Codable, Equatable, Sendable { public var share: Double; public var windowMs: Double; public var vowels: [String]; public var closed: [String] }
+    /// Co-articulation: frames led by a non-closing consonant keep `share` of the nearby vowel's amounts.
+    public var jawFloor: JawFloor? = nil
+    public struct Blink: Codable, Equatable, Sendable { public var mode: String; public var frames: Int }
+    public var blink: Blink? = nil
 
-    /// The prototype's rules (genita-mouth-proto/render.py, 11/3).
+    /// The v7 rules (prep faceflow.py BASE_MAP, 11/3) for a manifest without a map.
     public static let standard = FlowMap(
-        ladder: .init(viseme: "A", steps: [.init("MID", 0), .init("AH", 0.35), .init("AH2", 0.7), .init("A", 1.15)], gain: [0.8, 0.4]),
+        ladder: .init(viseme: "A", steps: [.init("MID", 0), .init("AH", 0.2), .init("AH2", 0.45)], gain: [0.8, 0.4]),
         mix: ["O": .init(keys: [.init("OH", 0.6), .init("O", 0.4)], gain: [0.75, 0.5]), "EI": .init(keys: [.init("EH", 0.5), .init("EI", 0.5)], gain: [0.75, 0.5])],
         consonant: ["MBP": 1, "FV": 0.9, "TH": 0.85, "L": 0.9, "WQ": 0.8, "U": 0.9, "CDG": 0.9],
         consonantJaw: .init(key: "MID", from: 0.3, gain: 0.8),
         fallback: ["TH": "CDG", "L": "CDG", "U": "OH", "WQ": "O", "FV": "MBP", "CDG": "MID", "AH": "A", "AH2": "A", "MID": "CDG", "EH": "EI", "OH": "O", "O": "OH", "EI": "EH", "A": "AH2"],
-        smoothing: .init(fps: 25, attack: 0.75, release: 0.5), focus: 3, colourEdge: 0.1, slew: 0.25, instantKeys: ["MBP"])
+        smoothing: .init(fps: 25, attack: 0.75, release: 0.5), focus: 6, colourEdge: 0.35, slew: 0.25, instantKeys: ["MBP"],
+        gain: 1.3, lookaheadMs: 40, holdFrames: ["MBP": 2], dissolve: .init(mode: "snap", ms: 40, minAmount: 0.3),
+        jawFloor: .init(share: 0.6, windowMs: 160, vowels: ["A", "O", "EI", "U"], closed: ["MBP", "FV", "rest"]),
+        blink: .init(mode: "snap", frames: 3))
 }
 
 /// Decoded flow data of one face set (ROI pixels at `size`, y down).
@@ -149,6 +166,14 @@ final class FlowMorph: @unchecked Sendable {
     private let order: [String]
     private var smooth: [Float]
     private var lastT: Double?
+    private var closeStart: Double?
+    /// The latest vowel-led frame's amounts, for the jaw floor.
+    private var lastVowel: (t: Double, amounts: [String: Float])?
+    /// Snap mode: colour weights per key and the last dominant switch.
+    private var snapW: [Float]
+    private var snapT: Double?
+    private var dominant: Int?
+    private var dominantSince = -Double.infinity
 
     init(data: FaceFlowData, neutralStill: CGImage, scale: Double) {
         self.data = data
@@ -166,6 +191,7 @@ final class FlowMorph: @unchecked Sendable {
         maskW = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
         order = data.keys
         smooth = [Float](repeating: 0, count: data.keys.count)
+        snapW = smooth
     }
 
     // MARK: amounts
@@ -190,7 +216,7 @@ final class FlowMorph: @unchecked Sendable {
         for (v, w) in lip.weights where v != .rest && w > 0 {
             let wv = Double(w), name = v.rawValue
             if name == m.ladder.viseme {
-                let g = min(1, m.ladder.gain[0] + m.ladder.gain[1] * op)
+                let g = min(1, (m.ladder.gain[0] + m.ladder.gain[1] * op) * (m.gain ?? 1.3))
                 var steps = m.ladder.steps.filter { resolve($0.key) == $0.key }
                 if steps.isEmpty, let last = m.ladder.steps.last { steps = [FlowKeyValue(last.key, 0)] }
                 guard !steps.isEmpty else { continue }
@@ -202,7 +228,7 @@ final class FlowMorph: @unchecked Sendable {
                 }
                 if !placed { add(steps[steps.count - 1].key, wv * g) }
             } else if let mix = m.mix[name] {
-                let g = min(1, mix.gain[0] + mix.gain[1] * op)
+                let g = min(1, (mix.gain[0] + mix.gain[1] * op) * (m.gain ?? 1.3))
                 for kv in mix.keys { add(kv.key, wv * g * kv.value) }
             } else {
                 add(name, wv * (m.consonant[name] ?? 0.9))
@@ -217,8 +243,35 @@ final class FlowMorph: @unchecked Sendable {
 
     /// Smoothed, focused amounts per key in `order` (time-ordered calls; a jump resets).
     func step(_ lip: LipFrame, at t: Double) -> [Float] {
-        let raw = amounts(lip)
-        let x = order.map { raw[$0] ?? 0 }
+        var raw = amounts(lip)
+        let m = data.map
+        // 1) Jaw floor (co-articulation): a frame led by a consonant that does not close the lips
+        //    keeps `share` of the latest vowel frame's amounts within `windowMs` (causal: the
+        //    following vowel is not known yet), so syllables don't fall back to a shut mouth.
+        let top = lip.weights.max { $0.value < $1.value }?.key.rawValue ?? "rest"
+        if let jf = m.jawFloor ?? FlowMap.standard.jawFloor {
+            if jf.vowels.contains(top) { lastVowel = (t, raw) }
+            else if !jf.closed.contains(top), let v = lastVowel, (t - v.t) * 1000 <= jf.windowMs, t >= v.t {
+                for (k, a) in v.amounts { raw[k] = max(raw[k] ?? 0, Float(jf.share) * a) }
+                let s = raw.values.reduce(0, +)
+                if s > 1 { for (k, a) in raw { raw[k] = a / s } }
+            }
+        }
+        var x = order.map { raw[$0] ?? 0 }
+        // 2) Closure hold: a closure shuts fully and lasts at least `holdFrames` from its start;
+        //    a vowel taking over after that minimum wins (no tail added at the end).
+        var closing = false
+        let fps = m.smoothing.fps
+        for (key, frames) in m.holdFrames ?? ["MBP": 2] {
+            guard let jm = order.firstIndex(of: key), let v = LipViseme(rawValue: key) else { continue }
+            if (lip.weights[v] ?? 0) >= 0.5 {
+                if closeStart == nil { closeStart = t }
+                closing = true
+            } else if let s0 = closeStart, t < s0 + Double(frames) / fps - 1e-6 {
+                closing = true
+            } else { closeStart = nil }
+            if closing { x = x.indices.map { $0 == jm ? 1 : 0 } }
+        }
         let first = lastT == nil
         let dt = lastT.map { t - $0 } ?? 0
         lastT = t
@@ -229,7 +282,9 @@ final class FlowMorph: @unchecked Sendable {
             let slew = Float(data.map.slew ?? 0.25) * max(1, frames)
             let instant = Set(data.map.instantKeys ?? ["MBP"])
             for i in 0..<x.count {
-                if instant.contains(order[i]), x[i] > smooth[i] { smooth[i] = x[i]; continue }
+                // Closures land on the frame and, once their hold is over, release on the frame too
+                // (lips part at a plosive); a slewed release kept short vowels after m/b/p shut.
+                if closing || instant.contains(order[i]) { smooth[i] = x[i]; continue }
                 let a = Float(x[i] > smooth[i] ? sm.attack : sm.release)
                 var d = (1 - pow(1 - a, frames)) * (x[i] - smooth[i])
                 d = min(slew, max(-slew, d))
@@ -264,11 +319,8 @@ final class FlowMorph: @unchecked Sendable {
         var am = step(lip, at: t)
         if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil }
         let act = order.indices.filter { am[$0] > 1e-3 }
-        let e0 = Float(data.map.colourEdge), e1 = 1 - e0
-        var cw = am.map { a -> Float in let u = min(1, max(0, (a - e0) / (e1 - e0))); return u * u * (3 - 2 * u) }
-        let cs = cw.reduce(0, +)
-        if cs > 1 { cw = cw.map { $0 / cs } }
-        let a0 = 1 - cs.clampedUnit(cs > 1)
+        let cw = colourWeights(am, at: t)
+        let a0 = max(0, 1 - cw.reduce(0, +))
         let fw = data.flowSize.w, fh = data.flowSize.h, n2 = fw * fh * 2
         let sx = Float(fw) / Float(width), sy = Float(fh) / Float(height)
         // Warp fields on the coarse flow grid (linear in the flows, so this equals combining the
@@ -327,6 +379,40 @@ final class FlowMorph: @unchecked Sendable {
         return PixelBuffer.makeImage(out, width: width, height: height)
     }
 
+    /// Snap: only the dominant key's texture shows (one-frame cross-fade), so no half-dissolved
+    /// grey teeth; a new dominant key must hold `minHoldMs` before the next switch (no chatter),
+    /// closures excepted. Smooth: the prototype's S-curve weights.
+    static let minHoldMs = 80.0
+
+    func colourWeights(_ am: [Float], at t: Double) -> [Float] {
+        let dz = data.map.dissolve ?? FlowMap.standard.dissolve!
+        if dz.mode != "snap" {
+            let e0 = Float(data.map.colourEdge), e1 = 1 - e0
+            var cw = am.map { a -> Float in let u = min(1, max(0, (a - e0) / (e1 - e0))); return u * u * (3 - 2 * u) }
+            let cs = cw.reduce(0, +)
+            if cs > 1 { cw = cw.map { $0 / cs } }
+            return cw
+        }
+        let fps = data.map.smoothing.fps
+        let dt = snapT.map { t - $0 } ?? (1 / fps)
+        snapT = t
+        let frames = Float(max(0, min(0.5, dt)) * fps)
+        var j = am.indices.max { am[$0] < am[$1] }
+        if let jj = j, am[jj] < Float(dz.minAmount) { j = nil }
+        let isClosure = j.map { order[$0] == "MBP" } ?? false
+        if j != dominant {
+            if !isClosure, dominant != nil, (t - dominantSince) * 1000 < Self.minHoldMs, dt > 0 { j = dominant }
+            else { dominant = j; dominantSince = t }
+        }
+        let step = Float(min(1, 1000 / fps / max(1, dz.ms))) * max(1, frames)
+        for i in snapW.indices {
+            let target: Float = i == j ? 1 : 0
+            snapW[i] += min(step, max(-step, target - snapW[i]))
+        }
+        if dt <= 0 || dt > 0.5 { snapW = snapW.indices.map { $0 == j ? 1 : 0 } }
+        return snapW
+    }
+
     // MARK: helpers
 
     @inline(__always) static func bilinear2(_ v: [Float], _ w: Int, _ h: Int, _ x: Float, _ y: Float) -> (Float, Float) {
@@ -366,9 +452,4 @@ final class FlowMorph: @unchecked Sendable {
         for i in 0..<(width * height) { out[i * 3] = Float(d[i * 4]); out[i * 3 + 1] = Float(d[i * 4 + 1]); out[i * 3 + 2] = Float(d[i * 4 + 2]) }
         return out
     }
-}
-
-private extension Float {
-    /// The colour-weight sum after normalisation: 1 when it was normalised, else itself.
-    func clampedUnit(_ normalised: Bool) -> Float { normalised ? 1 : self }
 }

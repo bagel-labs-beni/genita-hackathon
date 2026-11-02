@@ -62,6 +62,7 @@ func parse() -> Options {
         case "--still": o.still = true
         case "--dump-amounts": o.dumpAmounts = v()
         case "--amounts": o.amounts = v()
+        case "--flow-density": FaceRenderer.flowDensity = Double(v()) ?? 1
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -188,9 +189,18 @@ if let say = o.say {
 } else {
     pcm = readAudio(o.audio!)
 }
+var phonemes: [LipPhonemeTiming] = []
 if let tPath = o.timings {
-    guard let d = FileManager.default.contents(atPath: tPath), let list = try? JSONDecoder().decode([JSONWord].self, from: d) else { fail("timings: unreadable") }
-    words = list.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+    // Either a word list [{w,s,e}] or an aligner payload {"timing": {"words": [...], "phonemes": [{p,s,e}]}}.
+    struct JSONPhone: Decodable { let p: String; let s: Int; let e: Int }
+    struct Aligned: Decodable { struct T: Decodable { let words: [JSONWord]; let phonemes: [JSONPhone]? }; let timing: T }
+    guard let d = FileManager.default.contents(atPath: tPath) else { fail("timings: unreadable") }
+    if let list = try? JSONDecoder().decode([JSONWord].self, from: d) {
+        words = list.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+    } else if let a = try? JSONDecoder().decode(Aligned.self, from: d) {
+        words = a.timing.words.map { LipWordTiming(text: $0.w, startMs: $0.s, endMs: $0.e) }
+        phonemes = (a.timing.phonemes ?? []).map { LipPhonemeTiming(phoneme: $0.p, startMs: $0.s, endMs: $0.e) }
+    } else { fail("timings: unreadable") }
 }
 if pcm.count < 4800 { fail("audio too short") }
 
@@ -207,10 +217,11 @@ while off < pcm.count {
     let offsetMs = off / 48
     timeline.appendPCM(pcm.subdata(in: off..<end), offsetMs: offsetMs)
     timeline.appendWords(words.filter { $0.startMs >= offsetMs && $0.startMs < offsetMs + 200 })
+    timeline.appendPhonemes(phonemes.filter { $0.startMs >= offsetMs && $0.startMs < offsetMs + 200 })
     off = end
 }
 timeline.finishAudio()
-print("mouth timing: \(timeline.hasTimings ? "word timings (\(words.count) words)" : (o.text != nil ? "text + loudness fallback" : "loudness only"))")
+print("mouth timing: \(timeline.hasTimings ? "timings (\(words.count) words, \(phonemes.count) phonemes)" : (o.text != nil ? "text + loudness fallback" : "loudness only"))")
 
 let size = CGSize(width: o.width, height: o.height)
 let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: o.still)
@@ -307,7 +318,7 @@ func mouthArea(_ pb: CVPixelBuffer) -> [Float] {
 
 func renderFrame(_ i: Int) {
     let t = Double(i) / Double(fps)
-    let lip = timeline.sample(atMs: t * 1000 + FaceRenderer.lipLookaheadMs)
+    let lip = timeline.sample(atMs: t * 1000 + renderer.lipLookaheadMs)
     openness.append(Double(timeline.sample(atMs: t * 1000).openness))
     let r0 = Date()
     if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
