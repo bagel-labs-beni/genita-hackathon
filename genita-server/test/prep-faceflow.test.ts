@@ -175,6 +175,20 @@ test("faceflow.py lock line: SAM nose bottom when plausible, else upper lip − 
   assert.equal(run("[0.45,0.30,0.55,0.35]")[1], "face-geometry", "a nose box far above the lip is ignored");
 });
 
+test("v41 interior masks: <key>.interior.png → flow_<key>_int, listed and served", () => {
+  assert.equal(flowAssetName("AH.interior.png"), "flow_AH_int");
+  const f = { ...FLOW, files: { AH: { ...FLOW.files.AH, interior: "flow_AH_int" } } };
+  assert.ok(flowAssets(f).has("flow_AH_int"));
+  assert.equal(faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`).flow!.files.AH.interior, "/f/flow_AH_int");
+});
+
+test("v16 lip masks: <key>.lip.png → flow_<key>_lip, listed and served", () => {
+  assert.equal(flowAssetName("AH2.lip.png"), "flow_AH2_lip");
+  const f = { ...FLOW, files: { AH: { ...FLOW.files.AH, lip: "flow_AH_lip" } } };
+  assert.ok(flowAssets(f).has("flow_AH_lip"));
+  assert.equal(faceManifest({ ...state(), flow: f }, (k) => `/f/${k}`, (a) => `/f/${a}`).flow!.files.AH.lip, "/f/flow_AH_lip");
+});
+
 test("2D blink assets (character2d): BLINK.jpg / BLINKMASK.png are store-safe and served only when listed", () => {
   assert.equal(flowAssetName("BLINK.jpg"), "flow_blink");
   assert.equal(flowAssetName("BLINKMASK.png"), "flow_blinkmask");

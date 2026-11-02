@@ -184,3 +184,87 @@ test("Muse Image edits sends only the companion image and text; Spark checks the
   assert.deepEqual(Buffer.from(await (form.get("image") as Blob).arrayBuffer()), face);
   assert.equal(form.get("model"), "muse-image-1.0"); assert.equal((requests[1].body as Record<string, unknown>).model, "muse-spark-1.3");
 });
+
+test("reply path: a memory store stuck behind the per-user lock never holds the reply (bounded recall)", async () => {
+  const { deps, memory } = setup();
+  const c = client(); const session = new Session("stuck", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.replies().length === 1);
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const held = memory.serial("trusted", () => gate); // e.g. a background write waiting on the database
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "text", text: "What did I buy?" }));
+  await waitFor(() => c.replies().length === 2);
+  assert.ok(Date.now() - t0 < 1500, `answered in ${Date.now() - t0}ms while the lock was held`);
+  release(); await held; session.close(); await memory.drain();
+});
+
+test("call start + recall tool: a memory lock held by a stalled write never holds ready, the greeting or a tool answer", { timeout: 20_000 }, async () => {
+  const { deps, memory } = setup();
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const held = memory.serial("trusted", () => gate); // stalled before the call starts
+  let toolTurn = false;
+  deps.spark = async function* (req): AsyncGenerator<SparkStreamEvent> {
+    const input = JSON.stringify(req.input);
+    if (input.includes("function_call_output")) yield { type: "text", delta: "Hmm, can't check right now." };
+    else if (input.includes("What did I buy")) { toolTurn = true; yield { type: "function_call", name: "recall", call_id: "c1", arguments: '{"query":"buy"}' }; }
+    else yield { type: "text", delta: "Hey there." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const c = client(); const session = new Session("stalled", c.sink, deps);
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready") && c.replies().length === 1);
+  assert.ok(Date.now() - t0 < 2500, `ready + greeting in ${Date.now() - t0}ms with the lock held`);
+  const t1 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "text", text: "What did I buy?" }));
+  await waitFor(() => c.replies().length === 2);
+  assert.ok(toolTurn); assert.ok(Date.now() - t1 < 2500, `tool answer in ${Date.now() - t1}ms`);
+  release(); await held; session.close(); await memory.drain();
+});
+
+test("slow start (Codex 11/3): once the store recovers, the call's new turns are extracted under the real revision and can hand off", { timeout: 20_000 }, async () => {
+  const repo = new InMemoryMemoryRepository();
+  const extracted: number[] = [];
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async (turns) => { extracted.push(turns.length); return [{ text: "I like hiking on foggy mornings.", kind: "fact", sensitive: "none", follow_up: false }]; } });
+  await memory.forget("trusted"); // persisted revision 1
+  let slow = true; let releaseState!: () => void; const stateGate = new Promise<void>((r) => { releaseState = r; });
+  const getState = repo.getState.bind(repo);
+  repo.getState = async (u) => { if (slow) { slow = false; await stateGate; } return getState(u); };
+  const { deps } = setup(); deps.memory = memory;
+  const c = client(); const session = new Session("slow-start", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready"));
+  for (let i = 0; i < 4; i++) {
+    const n = c.replies().length;
+    await session.onClientText(JSON.stringify({ type: "text", text: `Turn ${i}: I like hiking on foggy mornings.` }));
+    await waitFor(() => c.replies().length > n);
+  }
+  releaseState(); // the store recovers after the 4-turn batch was already cut
+  await waitFor(() => session.historyForgetRevision === 1);
+  session.close(); await memory.drain();
+  assert.deepEqual(extracted, [4], "the batch waited for the real revision instead of being dropped under 0");
+  assert.equal((await memory.list("trusted")).length, 1);
+});
+
+test("slow start (Codex 11/3): a turn from an ended call that waits for the first state read is dropped by a Forget made after the call ended", { timeout: 20_000 }, async () => {
+  const repo = new InMemoryMemoryRepository();
+  let extracted = 0;
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => { extracted++; return [{ text: "I like hiking on foggy mornings.", kind: "fact", sensitive: "none", follow_up: false }]; } });
+  let slow = true; let releaseState!: () => void; const stateGate = new Promise<void>((r) => { releaseState = r; });
+  const getState = repo.getState.bind(repo);
+  repo.getState = async (u) => { if (slow) { slow = false; await stateGate; } return getState(u); };
+  const { deps } = setup(); deps.memory = memory;
+  const c = client(); const session = new Session("slow-forget", c.sink, deps);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready"));
+  const n = c.replies().length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "I like hiking on foggy mornings." }));
+  await waitFor(() => c.replies().length > n);
+  session.close();
+  await memory.forget("trusted");
+  releaseState();
+  await memory.drain();
+  assert.equal(extracted, 0, "the pre-Forget turn never reached extraction");
+  assert.deepEqual(await memory.list("trusted"), []);
+});
