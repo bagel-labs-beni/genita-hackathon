@@ -19,7 +19,7 @@ npm run watch-sim -- --blank         # black screen: answers that claim to see s
 Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA_ENV_FILE` is loaded):
 `MODEL_API_KEY` (the only required key) · flags, all off by default — `GENITA_SERVER_TTS=1` (ElevenLabs voice, needs `ELEVENLABS_API_KEY`; off = device voice mode, the app speaks `say` text), `GENITA_KLING=1` (fal/Kling in prep, needs `FAL_KEY`), `GENITA_PETER=1` (Peter, needs `GENITA_PETER_URL` + `GENITA_PETER_TOKEN`) · `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
 `GENITA_TTS_MODEL` (eleven_v4_turbo) · `GENITA_TTS_FALLBACK_MODEL` (eleven_v3) · `GENITA_DEFAULT_VOICE_ID` ·
-`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
+`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_APP_CONFIG_FILE` (JSON overrides for `GET /v1/app-config`, PROTOCOL.md) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250) ·
 `GENITA_PETER_URL` + `GENITA_PETER_TOKEN` (Peter worker wss URL and WORKER_TOKEN; read only with `GENITA_PETER=1`).
