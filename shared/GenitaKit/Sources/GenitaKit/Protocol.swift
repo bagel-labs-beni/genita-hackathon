@@ -11,8 +11,6 @@ public enum GenitaProtocol {
     /// Binary server frame header: "GA" | kind u8 | reserved u8 | seq u32 LE.
     public static let frameHeaderBytes = 8
     public static let frameKindTTSPCM: UInt8 = 1
-    /// Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG.
-    public static let frameKindPeter: UInt8 = 2
     /// App → server, Mac call interpretation only (F8): header + mic PCM.
     public static let clientFrameKindMic: UInt8 = 3
     /// App → server, Mac call interpretation only (F8): header + the call's sound (ScreenCaptureKit).
@@ -46,19 +44,13 @@ public struct AudioFrameHeader: Equatable, Sendable {
         frame.dropFirst(GenitaProtocol.frameHeaderBytes)
     }
 
-    /// For kind 2 (Peter): `seq` is the utteranceId; returns the frame index and JPEG.
-    /// Frame k lines up with the utterance's audio at k × 40 ms (25 fps).
-    public static func peterCrop(of frame: Data) -> (frame: UInt32, jpeg: Data)? {
-        let p = [UInt8](frame.dropFirst(GenitaProtocol.frameHeaderBytes).prefix(4))
-        guard p.count == 4 else { return nil }
-        let index = UInt32(p[0]) | UInt32(p[1]) << 8 | UInt32(p[2]) << 16 | UInt32(p[3]) << 24
-        return (index, Data(frame.dropFirst(GenitaProtocol.frameHeaderBytes + 4)))
-    }
 }
 
 // MARK: - Shared value types
 
-public enum LipMode: String, Codable, Sendable { case peter, atlas, none }
+public enum LipMode: String, Codable, Sendable { case atlas, none }
+/// Who speaks the reply: the server (TTS PCM frames) or the device (`say` text, on-device speech).
+public enum TtsMode: String, Codable, Sendable { case server, device }
 public enum ConversationMode: String, Codable, Sendable { case chat, interpret }
 public enum Phase: String, Codable, Sendable { case listening, thinking, speaking, interrupted }
 public enum CancelReason: String, Codable, Sendable { case bargeIn = "barge_in", text, client }
@@ -67,7 +59,7 @@ public enum Viseme: String, Codable, Sendable { case X, A, E, O, U, M, F, L, S }
 public struct LipPlan: Codable, Equatable, Sendable {
     public var requested: LipMode
     public var active: LipMode
-    /// peter_connecting | peter_unavailable | peter_not_deployed | null (wire sends null, not absent)
+    /// Optional reason for the active lip plan (for example device_tts).
     public var reason: String?
 
     private enum K: String, CodingKey { case requested, active, reason }
@@ -116,6 +108,7 @@ public enum ServerEvent: Equatable, Sendable {
     case replyDelta(ReplyDelta)
     case speaking(Speaking)
     case audio(Audio)
+    case say(Say)
     case reply(Reply)
     case utteranceCancelled(UtteranceCancelled)
     case turnMetrics(TurnMetrics)
@@ -131,6 +124,9 @@ public enum ServerEvent: Equatable, Sendable {
     case findCreated(FindCreated)
     case findImage(FindImageEvent)
     case findFailed(FindFailed)
+    /// F2-L26: the user renamed the companion by voice ("Call yourself Max"). Already saved on the server;
+    /// update every {name} label (S07, S09-T, PREP-1 …).
+    case companionNamed(CompanionNamed)
     /// A type this build does not know yet. Ignore it; never fail the socket.
     case unknown(type: String)
 
@@ -151,6 +147,8 @@ public enum ServerEvent: Equatable, Sendable {
         public var lip: LipPlan
         public var voiceId: String
         public var bargeIn: BargeIn
+        /// Voice mode used for this call. Optional: servers before 11/2 (metaface) do not send it (= server).
+        public var tts: TtsMode?
     }
     public struct StateChange: Codable, Equatable, Sendable { public var state: Phase }
     public struct Turn: Codable, Equatable, Sendable { public var turnId: Int }
@@ -242,6 +240,15 @@ public enum ServerEvent: Equatable, Sendable {
         public var words: [WordTiming]
         public var mouth: [MouthCue]?
     }
+    /// Device mode: one sentence for the app to speak, in order. `text` is plain (no tags);
+    /// `lang` is a BCP-47 hint (en-US, ko-KR, …) for the voice.
+    public struct Say: Codable, Equatable, Sendable {
+        public var utteranceId: Int
+        public var sentence: Int
+        public var text: String
+        public var emotion: String
+        public var lang: String
+    }
     public struct Reply: Codable, Equatable, Sendable {
         public var utteranceId: Int
         public var text: String
@@ -274,13 +281,7 @@ public enum ServerEvent: Equatable, Sendable {
         public var by: String
     }
     public struct LipChanged: Codable, Equatable, Sendable {
-        public struct Peter: Codable, Equatable, Sendable {
-            public var bundleId: String
-            public var pasteDy: Int
-            public var fps: Int
-        }
         public var lip: LipPlan
-        public var peter: Peter?
     }
     public struct ServerError: Codable, Equatable, Sendable {
         public var code: String
@@ -288,6 +289,10 @@ public enum ServerEvent: Equatable, Sendable {
         public var retryable: Bool
     }
     public struct Pong: Codable, Equatable, Sendable { public var t: Double? }
+    public struct CompanionNamed: Codable, Equatable, Sendable {
+        public var name: String
+        public init(name: String) { self.name = name }
+    }
 }
 
 private enum TypeKey: String, CodingKey { case type }
@@ -308,6 +313,7 @@ extension ServerEvent: Codable {
         case "reply.delta": self = .replyDelta(try .init(from: decoder))
         case "speaking": self = .speaking(try .init(from: decoder))
         case "audio": self = .audio(try .init(from: decoder))
+        case "say": self = .say(try .init(from: decoder))
         case "reply": self = .reply(try .init(from: decoder))
         case "utterance.cancelled": self = .utteranceCancelled(try .init(from: decoder))
         case "turn.metrics": self = .turnMetrics(try .init(from: decoder))
@@ -323,6 +329,7 @@ extension ServerEvent: Codable {
         case "find.created": self = .findCreated(try .init(from: decoder))
         case "find.image": self = .findImage(try .init(from: decoder))
         case "find.failed": self = .findFailed(try .init(from: decoder))
+        case "companion.named": self = .companionNamed(try .init(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -341,6 +348,7 @@ extension ServerEvent: Codable {
         case .replyDelta: "reply.delta"
         case .speaking: "speaking"
         case .audio: "audio"
+        case .say: "say"
         case .reply: "reply"
         case .utteranceCancelled: "utterance.cancelled"
         case .turnMetrics: "turn.metrics"
@@ -356,6 +364,7 @@ extension ServerEvent: Codable {
         case .findCreated: "find.created"
         case .findImage: "find.image"
         case .findFailed: "find.failed"
+        case .companionNamed: "companion.named"
         case let .unknown(type): type
         }
     }
@@ -373,6 +382,7 @@ extension ServerEvent: Codable {
         case let .replyDelta(p): try p.encode(to: encoder)
         case let .speaking(p): try p.encode(to: encoder)
         case let .audio(p): try p.encode(to: encoder)
+        case let .say(p): try p.encode(to: encoder)
         case let .reply(p): try p.encode(to: encoder)
         case let .utteranceCancelled(p): try p.encode(to: encoder)
         case let .turnMetrics(p): try p.encode(to: encoder)
@@ -388,6 +398,7 @@ extension ServerEvent: Codable {
         case let .findCreated(p): try p.encode(to: encoder)
         case let .findImage(p): try p.encode(to: encoder)
         case let .findFailed(p): try p.encode(to: encoder)
+        case let .companionNamed(p): try p.encode(to: encoder)
         case .unknown: break
         }
         var c = encoder.container(keyedBy: TypeKey.self)
@@ -451,7 +462,7 @@ public enum ClientMessage: Equatable, Sendable {
         public var text: String
         public init(role: Role, text: String) { self.role = role; self.text = text }
     }
-    /// `lip` is either "atlas" or {"mode":"peter","fallback":"none"} on the wire.
+    /// `lip` selects "atlas" or "none" on the wire.
     public struct Lip: Codable, Equatable, Sendable {
         public var mode: LipMode
         public var fallback: LipMode?
@@ -487,11 +498,17 @@ public enum ClientMessage: Equatable, Sendable {
         public var lip: Lip?
         public var bargeIn: BargeIn?
         public var mic: Bool?
+        /// "device" = speak `say` events on-device. Omitted: the server's default (device unless it runs server TTS).
+        public var tts: TtsMode?
         /// F8: read only when `mode` is interpret.
         public var interpret: InterpretOptions?
-        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil, interpret: InterpretOptions? = nil) {
+        /// D21: first call after onboarding — send 2000. The server waits up to this many ms (0–3000) for the
+        /// user to speak or type first; if nobody does, the companion greets. nil = greet as before.
+        public var greetAfterMs: Int?
+        public init(persona: Persona, user: User? = nil, memories: [String]? = nil, history: [HistoryItem]? = nil, mode: ConversationMode? = nil, language: String? = nil, voiceId: String? = nil, lip: Lip? = nil, bargeIn: BargeIn? = nil, mic: Bool? = nil, interpret: InterpretOptions? = nil, tts: TtsMode? = nil, greetAfterMs: Int? = nil) {
             self.persona = persona; self.user = user; self.memories = memories; self.history = history; self.mode = mode
-            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic; self.interpret = interpret
+            self.language = language; self.voiceId = voiceId; self.lip = lip; self.bargeIn = bargeIn; self.mic = mic; self.interpret = interpret; self.tts = tts
+            self.greetAfterMs = greetAfterMs
         }
     }
     public struct Text: Codable, Equatable, Sendable {

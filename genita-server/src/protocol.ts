@@ -9,10 +9,10 @@ export const PROTOCOL_VERSION = 1;
 /** Binary server frame: "GA" | kind u8 | reserved u8 | seq u32 LE | payload */
 export const FRAME_HEADER_BYTES = 8;
 export const FRAME_KIND_TTS_PCM = 1;
-/** Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG (F4-L17) */
-export const FRAME_KIND_PETER = 2;
 
-export type LipMode = "peter" | "atlas" | "none";
+export type LipMode = "atlas" | "none";
+/** Who speaks the reply: the server (Meta voice PCM frames) or the device (`say` text, on-device TTS). */
+export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
 export type CancelReason = "barge_in" | "text" | "client";
@@ -65,11 +65,18 @@ export type StartMessage = {
   mode?: Mode;
   language?: string;
   voiceId?: string;
-  lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
+  lip?: LipMode | { mode: LipMode; fallback?: LipMode };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
+  /** default: "device" unless the server runs server TTS (GENITA_VOICE_URL + GENITA_VOICE_TOKEN) */
+  tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
+  /**
+   * D21 first call after onboarding (app sends 2000): wait up to this many ms (clamped 0–3000) for the user
+   * to speak or type first; if they do, no greeting; if not, the companion greets. Unset = greet as before.
+   */
+  greetAfterMs?: number;
 };
 
 export type ClientMessage =
@@ -168,6 +175,8 @@ export type ServerEvent =
       lip: LipPlan;
       voiceId: string;
       bargeIn: { minMs: number; minWords: number };
+      /** the voice mode actually used for this call */
+      tts: TtsMode;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -191,6 +200,8 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
+  | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
   | { type: "utterance.cancelled"; utteranceId: number; reason: CancelReason }
   | {
@@ -208,7 +219,7 @@ export type ServerEvent =
     }
   | { type: "asr.status"; status: "connected" | "reconnecting" }
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
-  | { type: "lip.changed"; lip: LipPlan; peter?: { bundleId: string; pasteDy: number; fps: number } }
+  | { type: "lip.changed"; lip: LipPlan }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown }
   | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
@@ -218,7 +229,9 @@ export type ServerEvent =
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
-  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string };
+  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
+  /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
+  | { type: "companion.named"; name: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -239,7 +252,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
@@ -251,6 +264,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
   "turn.metrics": {
@@ -269,7 +283,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
-  "lip.changed": { required: ["lip"], optional: ["peter"] },
+  "lip.changed": { required: ["lip"], optional: [] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
   "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },
@@ -279,12 +293,52 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.created": { required: ["findId", "card"], optional: [] },
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
+  "companion.named": { required: ["name"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
 export function checkServerEvent(o: Record<string, unknown>): string[] {
   const spec = SERVER_EVENT_FIELDS[o.type as ServerEventType];
   if (!spec) return [`unknown type ${String(o.type)}`];
+  const problems: string[] = [];
+  for (const k of spec.required) if (!(k in o)) problems.push(`${o.type}: missing ${k}`);
+  for (const k of Object.keys(o)) if (k !== "type" && !spec.required.includes(k) && !spec.optional.includes(k)) problems.push(`${o.type}: extra ${k}`);
+  return problems;
+}
+
+// ───────────────────────── watch socket (F5, /v1/watch) ─────────────────────────
+// A second socket per call, opened by the Mac while it shares its screen.
+// See PROTOCOL.md "Watch together". Binary app → server = system audio PCM
+// s16le mono 24 kHz (the shared screen's sound, never the mic).
+
+export type WatchClientMessage =
+  | { type: "start"; source?: string }
+  | { type: "frame"; image: string; blank?: boolean }
+  | { type: "stop" }
+  | { type: "ping"; t?: unknown };
+
+export type WatchServerEvent =
+  | { type: "ready"; protocol: number; sessionId: string }
+  | { type: "state"; sharing: boolean; blank: boolean; source: string | null }
+  | { type: "reaction"; utteranceId: number; moment: "funny" | "surprising" | "sweet" }
+  | { type: "speaker"; on: boolean; label?: string; name?: string }
+  | { type: "error"; code: "unknown_type" | "bad_message" | "frame_too_large" | "asr_unavailable" | "not_started"; message: string }
+  | { type: "pong"; t: unknown };
+
+export type WatchServerEventType = WatchServerEvent["type"];
+
+export const WATCH_EVENT_FIELDS: Record<WatchServerEventType, { required: string[]; optional: string[] }> = {
+  ready: { required: ["protocol", "sessionId"], optional: [] },
+  state: { required: ["sharing", "blank", "source"], optional: [] },
+  reaction: { required: ["utteranceId", "moment"], optional: [] },
+  speaker: { required: ["on"], optional: ["label", "name"] },
+  error: { required: ["code", "message"], optional: [] },
+  pong: { required: ["t"], optional: [] },
+};
+
+export function checkWatchEvent(o: Record<string, unknown>): string[] {
+  const spec = WATCH_EVENT_FIELDS[o.type as WatchServerEventType];
+  if (!spec) return [`unknown watch type ${String(o.type)}`];
   const problems: string[] = [];
   for (const k of spec.required) if (!(k in o)) problems.push(`${o.type}: missing ${k}`);
   for (const k of Object.keys(o)) if (k !== "type" && !spec.required.includes(k) && !spec.optional.includes(k)) problems.push(`${o.type}: extra ${k}`);

@@ -1,7 +1,7 @@
 # Genita realtime session protocol (v1)
 
 One WebSocket per call. The app streams mic audio up; the server streams the
-companion's voice, captions and state down. Ticket: F0-L3 (#3).
+companion's reply (as text for the device to speak, or as voice audio), captions and state down. Ticket: F0-L3 (#3).
 
 **Types (F0-L4, #4):** TypeScript `genita-server/src/protocol.ts`, Swift
 `shared/GenitaKit/Sources/GenitaKit/Protocol.swift` (package `shared/GenitaKit`,
@@ -16,14 +16,20 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
+| 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
-| 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
+| 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (there, an omitted `start.tts` means `server`). |
+| 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
+| 11/3 | F2-L26 naming + D21 first-call wait: new event `companion.named {name}` (the user renamed the companion by voice, already saved — update every {name} label); optional `start.greetAfterMs` (0–3000; the app sends 2000 on the first call after onboarding: the server waits that long for the user to speak or type first, then greets). REST `POST /v1/companion/name/suggest`, `PATCH /v1/companion {name}` (PREP_API.md). Additive: an app that ignores both sees no change. |
+| 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
+| 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 
 ```
 wss://<host>/v1/session
@@ -48,15 +54,9 @@ Binary header (server → app):
 | bytes | field |
 |---|---|
 | 0–1 | ASCII `GA` |
-| 2 | kind: `1` = TTS PCM, `2` = Peter mouth crop |
+| 2 | kind: `1` = TTS PCM; `2` reserved (never emitted) |
 | 3 | reserved (0) |
-| 4–7 | uint32 LE: kind 1 → `seq` of the `audio` JSON event sent just before it; kind 2 → `utteranceId` |
-
-Kind 2 payload (Peter): `frame` uint32 LE, then a 256 px face-crop JPEG. Frame `k` belongs to
-the utterance's audio at `k × 40 ms` (25 fps). Crops arrive ~0.6–0.9 s after that utterance's
-first audio (A10G, T9) and keep coming a little after its last audio frame; composite them over
-the base video with `lip.changed.peter.pasteDy` (F4-L18). Crops for a cancelled utterance are
-never sent.
+| 4–7 | uint32 LE: `seq` of the `audio` JSON event sent just before it |
 
 Every binary audio frame is preceded by its `audio` JSON event with the same
 `seq` (WebSocket keeps order). Audio arrives faster than real time; the app
@@ -94,7 +94,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
     "traits": ["warm", "dry humor"],
     "speakingStyle": "short, playful",
     "backstory": "Pastry chef in Seoul.",
-    "voice": { "id": "7PbNGDB5sJCFnOZuMPNL" }
+    "voice": { "id": "seamless:0" }
   },
   "user": { "name": "Chelsea", "profile": "<imported profile text>" },
   "memories": ["Her sister Jiwoo visits next week."],
@@ -102,10 +102,12 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
   "mode": "chat",
   "language": "English",
   "voiceId": "optional override",
-  "lip": { "mode": "peter", "fallback": "none" },   // or just "atlas"
+  "lip": { "mode": "atlas" },   // or just "none"
   "bargeIn": { "minMs": 400, "minWords": 2 },
   "mic": true,
-  "interpret": { "source": "face" }          // only read when mode is "interpret"
+  "tts": "device",                         // server | device (see "Device voice mode")
+  "interpret": { "source": "face" },         // only read when mode is "interpret"
+  "greetAfterMs": 2000                       // D21, optional: first call after onboarding only
 }
 ```
 
@@ -117,6 +119,26 @@ retains new conversation history only for this call. New calls receive an ordina
 greeting, or one qualifying past episode (seen crops first after six hours).
 Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;
 there is no synthetic user `transcript` event.
+
+**`greetAfterMs` (D21, first call after onboarding).** Number of ms, clamped to 0–3000; the app
+sends `2000`. The server does not greet right after `ready`: it waits up to that long. If the user
+starts speaking (`speech.start`) or sends `text` inside the window, there is no greeting — the
+companion just answers them ("Hey, what should I call you?" → "You can call me Jin…"). If nobody
+does, it greets as usual. This also works without server memory (plain greeting). Not in interpret
+mode. Without `greetAfterMs` nothing changes (with memory: greet right after `ready`; without: no greeting).
+
+## Companion name (F2-L26)
+
+`persona.name` is the companion's name; the instructions say "You are {name}", so "What's your name?"
+is answered with it. During a chat-mode call the user can rename it by voice or text: "Call yourself
+Max", "Your name is Max now", "I'll call you Max", "Can I call you Max?" (English, detected on the
+server without a model call; questions like "What should I call you?" are not renames; never during
+interpretation). The server then uses the new name from that turn's reply on (the reply briefly takes
+the name), saves it to the user's companion (same as `PATCH /v1/companion {name}`), and sends
+`companion.named {name}` (after the save, before that reply's audio). Update every {name} label (S07, S09-T,
+PREP-1). If the save fails, nothing changes: no event, the call keeps the old name. A negated phrase
+("Don't call yourself Max"), reported speech ("My friend said your name is Max") or a question about the name ("Why do you call yourself Max?", "Should I
+call you Max?") is not a rename; a request ("Can I call you Max?") is.
 
 ## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
 
@@ -157,7 +179,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 
 | type | fields | meaning |
 |---|---|---|
-| `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn` | session is live |
+| `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
@@ -166,14 +188,15 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `interpret.bubble` | `bubbleId`, `speaker`, `via`, `status`, `original {lang, text}`, `translation? {lang, text}`, `utteranceId?`, `reason?` | one two-language bubble; sent again on every change — **upsert by `bubbleId`**. See below. |
 | `tool` | `utteranceId`, `name`, `status` | e.g. `web_search` `searching` — show a hint if you like |
 | `reply.delta` | `utteranceId`, `text` | caption text, one sentence at a time (append) |
-| `speaking` | `on`, `utteranceId`, `emotion?` | `on:true` with the emotion when a sentence's audio starts (switch the face clip, F4-L13); `on:false` when done or cancelled |
-| `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | timing for the binary frame that follows |
+| `speaking` | `on`, `utteranceId`, `emotion?` | `on:true` with the emotion when a sentence's audio (device mode: its `say`) starts and the emotion changed (switch the face, F4-L13); `on:false` when done or cancelled |
+| `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
+| `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
-| `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock) |
+| `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
 | `asr.status` | `status: connected \| reconnecting` | speech recognition reconnecting (show a mic hint) |
 | `mode.changed` | `mode`, `by` | |
-| `lip.changed` | `lip {requested, active, reason}`, `peter? {bundleId, pasteDy, fps}` | Peter worker became ready (`active: "peter"`) or is unavailable (`reason: "peter_unavailable"`, back on the fallback) |
+| `lip.changed` | `lip {requested, active, reason}` | Updated playback lip plan (`atlas` or `none`) |
 | `error` | `code`, `message`, `retryable` | see below |
 | `pong` | `t` | |
 | `find.started` | `findId`, `utteranceId`, `kind: recipe \| outfit \| link`, `title`, `detail` | open the sheet in "searching" (r03 #1) |
@@ -183,30 +206,147 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
 | `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
 | `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
+| `companion.named` | `name` | the user renamed the companion in the call ("Call yourself Max"); already saved. Update every {name} label |
 
 `audio` timing (all ms on the reply's own audio timeline, 0 = first sample of the reply):
 
 ```json
 { "type": "audio", "utteranceId": 3, "seq": 41, "sentence": 0,
-  "offsetMs": 0, "durationMs": 380, "sampleRate": 24000, "model": "eleven_v4_turbo",
+  "offsetMs": 0, "durationMs": 380, "sampleRate": 24000, "model": "seamless-m4t-v2",
   "words": [{ "w": "That's", "s": 80, "e": 310 }],
   "mouth": [{ "t": 80, "v": "A" }, { "t": 140, "v": "L" }, { "t": 310, "v": "X" }] }
 ```
 
 - `words`: always sent (captions/karaoke). A word can rarely split across two chunks.
-- `mouth`: only when `lip.active` is `atlas`. Visemes: `X` rest, `A` open, `E` wide, `O` round, `U` small round, `M` closed (m/b/p), `F` lip-teeth, `L` tongue, `S` small open. Apply each cue at its time against the audio clock. F4-L20 will swap these for legacy-engine atlas cell ids (`{f, cell}`); the field position stays.
+- `mouth`: only when `lip.active` is `atlas`. Visemes: `X` rest, `A` open, `E` wide, `O` round, `U` small round, `M` closed (m/b/p), `F` lip-teeth, `L` tongue, `S` small open. Apply each cue at its time against the audio clock. F4-L20 will swap these for atlas cell ids (`{f, cell}`); the field position stays.
+
+## Device voice mode (`start.tts`)
+
+| `start.tts` | server has server TTS (`GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN`) | server without it (default) |
+|---|---|---|
+| omitted | `server` | `device` |
+| `"server"` | `server` | `device` (no vendor key; `ready.tts` tells the app) |
+| `"device"` | `device` | `device` |
+
+Always read `ready.tts`. In `device` mode:
+
+- Each reply sentence arrives as `say {utteranceId, sentence, text, emotion, lang}` right after its
+  `reply.delta` caption. Speak them in order on-device (AVSpeechSynthesizer) into the call's player,
+  so the voice-processing echo cancellation still covers it.
+- `text` has no `<emotion>` or `[audio]` tags. `lang`: `ko-KR` when the sentence is mostly Hangul,
+  otherwise the reply language (`start.language`; interpretation: the target language) as BCP-47,
+  `en-US` when unknown.
+- No `audio` events and no binary frames. `ready.lip` = `{requested, active:"none", reason:"device_tts"}`;
+  no mouth cues come from the server; the device makes its mouth from its own speech.
+- `speaking {on:true, emotion}` is sent before the first `say` and whenever the emotion changes;
+  `state speaking` goes out with the first `say`.
+- `speaking {on:false}` + `state listening` come on `playback_done` (send it when the last buffer has
+  played, after `reply`) or on the server's estimate: first `say` + 70 ms × characters + 1.5 s, at most 60 s.
+- Barge-in is unchanged: on `utterance.cancelled`, stop synthesis and flush the player now. No `say`
+  for that utterance follows the cancel.
+
+```json
+{ "type": "say", "utteranceId": 3, "sentence": 0, "text": "That's huge, congrats!", "emotion": "happy", "lang": "en-US" }
+```
+
+Threat line: who = the iOS/Mac app on the existing session socket · auth = unchanged (session token) ·
+abuse = nothing new (the text is what `reply.delta` already carries; `start.tts` is an enum, anything
+else = the default) · data = reply text only, already exposed.
+
+## Server voice (Meta voice service)
+
+When the server has `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (SSM `/genita/server/*`), the companion's
+voice is **SeamlessM4T v2** (Meta open model) on our GPU (`deploy/modal-voice`). Without them the server
+runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
+
+- `start.tts` omitted or `"server"` → `ready.tts:"server"`. `"device"` still forces device mode.
+- Voice: `ready.voiceId` = `seamless:<n>` (speaker 0–199). `start.voiceId` / `persona.voice.id` of the form
+  `seamless:<n>` picks that speaker; any other id (legacy voice ids) gets the companion kind's default
+  (`GENITA_VOICE_SPEAKERS`, now human 72 · animal 16 · character 68, picked by UTMOS over 100 speakers).
+- Each reply is spoken clause by clause: the **first clause is cut at its first comma** ("Oh wow,") so the
+  first sound starts while Spark is still writing; later sentences over 140 chars are cut at a comma. The
+  server sends clause n+1 to the voice service while clause n streams. Short clauses ("Hmm,", "Oh!", "Yeah.")
+  are cached per speaker.
+- Per clause: one `audio` event + binary frame for the first ~300 ms, then ≤ 1 s pieces. Each clause ends with
+  a short silence that is part of its audio (comma ~110 ms, period 220 ms, question 260 ms, "..." 320 ms).
+- Timing for the mouth (lane L4): every `audio` event carries `words` `[{w, s, e}]` in ms on the reply's
+  timeline (0 = first sample of the reply), from the model's own per-character durations (unit model ×
+  vocoder), so they line up with the samples. Ask for `lip:"atlas"` to also get letter-level `mouth` cues
+  (any companion kind). The `audio` event always arrives before its binary frame, so timing is never late.
+- Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
+  everything else in English (`eng`). Same speaker as the companion.
+- Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →
+  spoken form; markdown, emojis, URLs dropped). Captions (`reply.delta`, `reply`) keep the written text.
+- **Voice service down or slow** (no first byte in 4 s, 5xx, daily cap): one `tts_unavailable`, then the rest of
+  that reply arrives as `say` events — speak them on-device like device mode. For the next 30 s replies go
+  straight to `say`, then the server tries the voice again. `turn.metrics.ttsModel` = `seamless-m4t-v2+device`
+  (partly) or `device`.
+- Barge-in unchanged: the in-flight voice request is aborted; no `audio` or `say` after `utterance.cancelled`.
+
+Threat line (no new endpoint on genita-server): the voice service is called only by genita-server, bearer
+token from SSM, constant-time compare, 400-char text cap, max 3 GPU containers, daily request cap
+(`VOICE_DAILY_CAP`, 429 → device voice). Data sent = reply text only.
+
+## Watch together (F5, Mac screen share)
+
+A second WebSocket per call, opened by the Mac only while it shares its screen.
+Same auth as the call socket. Kept separate so ~100 KB frames never queue in
+front of mic audio and the mic's binary format stays unchanged.
+
+```
+wss://<host>/v1/watch?session=<ready.sessionId>     Authorization: Bearer … (or &token=…)
+```
+
+`404` at upgrade = no such call, or a call of another user (same principal as `/v1/session`; it closes
+`4401`/`4403` after the upgrade like the call socket). Closes `4409` when a newer watch socket replaces it,
+`1000` when the call ends. Closing it (or `stop`) ends the share; nothing is kept but a
+few minutes of 1–2 line story notes for this call. Watch traffic keeps a muted call
+from hitting the 120 s idle close.
+
+| Direction | Frame | Content |
+|---|---|---|
+| app → server | text | `start {source?}` first (source = shared app name, "Safari"), then `frame {image, blank?}`, `stop`, `ping {t}` |
+| app → server | binary | the shared screen's **system audio**, PCM s16le mono 24 kHz, real time (ScreenCaptureKit `capturesAudio`, `excludesCurrentProcessAudio` so Genita's voice is never in it). Gaps are padded with silence on the server. |
+| server → app | text | events below |
+
+`frame.image`: base64 JPEG (or data URL), long side ≤ 1024 px, < 1.5 MB, sent **only when the
+picture changed** (≤ 1 per second). `blank: true` when the frame is (almost) black — protected
+windows capture black; the app decides (≥ 1 s of black).
+
+| event | fields | meaning |
+|---|---|---|
+| `ready` | `protocol`, `sessionId` | socket attached to the call |
+| `state` | `sharing`, `blank`, `source` | `blank:true` → MS-3 card. The companion also says once that the window shows up black. |
+| `reaction` | `utteranceId`, `moment` (`funny`\|`surprising`\|`sweet`) | the companion is reacting first (MS-2 "Reacting" 1.5 s). Its voice arrives on the call socket as utterance `utteranceId`; `funny` speaks with `speaking.emotion: "laugh"`. |
+| `speaker` | `on`, `label?`, `name?` | FT-SPK chip: who is talking in the video ("the chef", or `Voice A` when unsure). Only after two voices were heard; `on:false` after 3 s of quiet. Never the words. |
+| `error` | `code`, `message` | `frame_too_large`, `asr_unavailable` (frames still work), `bad_message`, `unknown_type`, `not_started` |
+| `pong` | `t` | |
+
+Server side (genita-server/src/watch): the system audio gets its own Muse Transcribe session
+(DIARIZATION), so the video never becomes a user turn; a user turn that repeats a line the
+video just said (speakers, no earphones) is dropped. Every ~12 s, or 4 s after a new line,
+Spark writes a 1–2 line memo from the new frames and lines and judges whether a friend would
+react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
+the user or companion talks or the video's dialogue is running. A question while sharing gets
+the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
+
+Measured 11/2 (`npm run watch-sim`, local server, real vendors; T5 clips played in real time, then asked as typed turns):
+T5 set 38/50 correct (T5 video-file baseline 42/50; same judge re-run: 37 vs 42 strict, 39 vs 45 tone-tolerant — most misses are
+where the generated video differs from its prompt, e.g. range hood vs "ceiling"); dialogue questions 7/7 on clips that have
+dialogue; question → first audio p50 2.73 s (max 4.47 s; T5 was 3.4 s to text without voice); memo call p50 ≈ 3.2 s.
+Reactions over a 250 s share: 3 (3.6 per 5 min), min gap 33 s, 0 rule violations, 2 with the laugh. Black screen: 5/5 answers
+say it can't see, 0 claim to see something.
 
 ## Lip source (`start.lip`)
 
 | mode | who | what the server sends |
 |---|---|---|
-| `peter` | humans | MuseTalk mouth crops (binary kind 2) from the Peter GPU worker. The worker cold-starts (~34 s), so `ready.lip` = `{requested:"peter", active:<fallback>, reason:"peter_connecting"}` and `lip.changed` follows with `active:"peter"` (or `reason:"peter_unavailable"`). Server without a worker configured: `reason:"peter_not_deployed"`. |
 | `atlas` | animals, characters | `mouth` cues in each `audio` event; device composites its mouth atlas |
 | `none` | anyone | audio + `words` only; app plays its speaking clip |
 
 Default: `atlas` for animal/character personas, `none` for humans. Always read `ready.lip.active`.
 
-`start.lip.avatarId` (optional, `peter` only): the companion's baked Peter cache, from `GET /v1/companion/prep` → `lips.peter.avatarId` (PREP_API.md). The server passes it in the worker HELLO, and `lip.changed.peter.bundleId` then equals `lips.peter.bundleId`. If it is omitted, the worker uses its demo avatar.
+Unknown legacy lip modes select `none`. Removed worker metadata is ignored; the server never emits it.
 
 ## Turn-taking and barge-in
 
@@ -218,8 +358,8 @@ Default: `atlas` for animal/character personas, `none` for humans. Always read `
 - `text` and `barge_in` cancel immediately.
 - On cancel: `utterance.cancelled` → `speaking {on:false}` → `state interrupted` → `state listening`.
   The server sends no more audio for that utterance. The interrupting speech becomes the next turn.
-- `speaking` lasts until the reply's audio should have finished playing (first audio + audio length + 250 ms)
-  or `playback_done`, so barge-in keeps working while the app is still playing.
+- `speaking` lasts until the reply's audio should have finished playing (first audio + audio length + 250 ms;
+  device mode: the estimate above) or `playback_done`, so barge-in keeps working while the app is still playing.
 
 ## Interpretation (F8)
 
@@ -259,8 +399,8 @@ person → the speaker the call app's mic hears.
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
 decided in those tickets and will be added here as additive changes.
 
-`mouth {f, cell}` (F4-L20 atlas cells) ·
-`camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
+`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`camera`, `frame` (F5) · `claim`, `ownership` (handoff: now defined, see **Handoff**) ·
 `interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
 
 ## Finds (result cards, F10)
@@ -330,6 +470,52 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 
 Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations · `GENITA_SHOP_REGION` (default `US`) where product search shops.
 
+## Handoff (F6-L7): which device has the sound
+
+One conversation per user, stored as `conversations.active_device` (`iphone` | `mac` | null) and `epoch`.
+The rule is the apps' `ConversationOwnership`: **the highest epoch wins; equal epochs with different owners → the Mac**.
+Opening an app is never a claim. A lock, a background or a dropped socket never changes the owner.
+
+```
+wss://<host>/v1/presence?device=iphone|mac     (same auth as /v1/session; consent not needed)
+```
+
+The device is the JWT's device when it is `iphone`/`mac`, else `?device=`. Missing → close `4400`.
+The server pings every 2 s and drops a socket silent for 6 s, so the other device learns "not responding" (R1-E / R2-E) within ~6 s.
+
+| app → server | fields | meaning |
+|---|---|---|
+| `hello` | `owner?`, `epoch?`, `active?` | first message: the device's last known owner/epoch (`phone` accepted for `iphone`). A newer one than the server's (a tap made offline) is applied as a claim with trigger `sync`; otherwise nothing moves. |
+| `claim` | `epoch?`, `trigger?` | this device takes the conversation. Without `epoch` the server uses current + 1 (no-op if it already owns it). `trigger`: `button` \| `touch` \| `continue` \| `start` \| `move` |
+| `release` | `epoch?` | the owner gives it up → owner null until the next call `start` or claim |
+| `move.request` | `to` | Move to Mac / Move to iPhone. Relayed to the other device, which answers by sending `claim`. |
+| `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
+| `ping` | `t` | → `pong {t}` |
+
+| server → app | fields | meaning |
+|---|---|---|
+| `ownership` | `owner`, `epoch`, `conversationId`, `by`, `trigger` | the owner now (sent on connect, on hello, and to every device on each change). `trigger: "current"` = no change. |
+| `claim.result` | `accepted`, `owner`, `epoch` | answer to this device's `claim`/`release`. `accepted` = this device holds the sound now. |
+| `peer` | `device`, `online`, `active` | the other device's presence |
+| `move.request` | `from` | the other device asked to move here: claim if the app is in front |
+| `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
+| `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
+
+What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
+device's reply (`utterance.cancelled`, reason `client`), (2) writes the row, (3) sends `ownership` to every
+presence and call socket of the user, (4) opens the gate for the new owner after a 250 ms handover lease
+(the apps don't acknowledge the cancel, so the lease covers its delivery and the queue flush). Between (1) and (4) nobody plays.
+
+On `/v1/session?device=…` (the query opts in; a JWT's device alone does not gate an older build): `audio` events and binary frames go only to the owner; mic audio from a non-owner is dropped;
+captions and state still flow. A `start` on a conversation nobody holds (fresh, or released) makes that device the owner;
+a `start` while the other device owns it does not move it.
+
+HTTP (same auth): `GET /v1/handoff` → `{owner, epoch, conversationId}` ·
+`POST /v1/handoff/claim {device, epoch?, trigger?}` / `POST /v1/handoff/release {device, epoch?}` → `{accepted, owner, epoch, conversationId}` (400 on a bad device or an epoch outside int4).
+
+Events for analytics: the server logs `handoff.preparing {from, to, trigger}`, `handoff.committed {from, to, total_ms, trigger, epoch}`, `handoff.failed {reason}`.
+One process holds the gate (in memory); several server instances would need a shared channel for it.
+
 ## Errors
 
 | code | retryable | what the app does |
@@ -353,7 +539,6 @@ End of voice = last voiced 20 ms of the user's audio; "file end" = end of the au
 - Hedging: 2 identical Spark requests, first text wins, the other is aborted. Mostly trims the tail (max 3.3 → 2.6 s); costs up to 2× Spark input tokens. `GENITA_SPARK_HEDGE=1` turns it off.
 - Barge-in: ASR speechStart → `utterance.cancelled` ≈ 400 ms (= the 400 ms min-speech rule); user voice start → cancelled ≈ 620 ms; 0 audio frames after cancel.
 - First words over 20 replies: most repeated = 3 (opener guard on).
-- Peter (live A10G worker on Modal, `npm run smoke -- --turns=4 --lip=peter`): `lip.changed` 30.6 s after start (cold start); first mouth crop 350–684 ms after the reply's first TTS audio (p50 385 ms); crops arrive at 36–38 fps (faster than the 25 fps playback), max gap 200–320 ms (worker sends batches of 8); 102–113 crops per reply = audio length / 40 ms (±1); a barge-in stopped crops for that utterance (24 of 116).
 
 ### Interpretation (11/2, `npm run smoke:interpret`, real vendors, the T7 clips: 5 Korean + 5 English alternating)
 
