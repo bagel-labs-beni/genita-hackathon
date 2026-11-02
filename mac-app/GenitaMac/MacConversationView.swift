@@ -4,6 +4,9 @@ struct MacConversationView: View {
     @ObservedObject private var handoff = MacHandoff.shared
     @State private var model = AppState()
     @StateObject private var sharing = ScreenSharingController()
+    /// F8-L4 · ⋮ → Interpret a call (INT-M0~M2)
+    @State private var interpret = MacInterpretController()
+    private let call = CallController.shared
     @State private var menuOpen = false
     @State private var settingsOpen = false
     @State private var hoverShare = false
@@ -14,7 +17,7 @@ struct MacConversationView: View {
         ""
         #endif
     }
-    private var displaySharing: Bool { sharing.isSharing || reviewState == "sharing" }
+    private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
     private let ink = Color(white: 17.0 / 255)
@@ -25,12 +28,22 @@ struct MacConversationView: View {
                 companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: 86.5).accessibilityIdentifier("macOpenMenu")
+                if interpret.isLive {
+                    InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
+                        .frame(width: 390, height: 844)
+                } else {
                 resourceImage("selfPreview").resizable().frame(width: 113, height: 211).position(x: 87.5, y: 700.5).accessibilityLabel("Your camera is off")
                 VStack(spacing: 13) {
                     excluded("glass-camera-icon", "Camera unavailable in demo")
                     excluded("glass-mic-icon", "Microphone unavailable in demo")
-                    excluded("glass-more-icon", "More unavailable in demo")
+                    if MacInterpretController.enabled {
+                        Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                            .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                    } else {
+                        excluded("glass-more-icon", "More unavailable in demo")
+                    }
                 }.position(x: 334, y: 724)
+                }
                 if handoff.desktop && handoff.motion == nil {
                 Button { sharing.requestSharing() } label: {
                     if displaySharing || permissionVisible {
@@ -44,8 +57,10 @@ struct MacConversationView: View {
                     Text("화면 공유").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
                         .frame(width: 61, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
                 }
+                WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
+            if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
             MacDemoSystemBar().allowsHitTesting(false).accessibilityHidden(true)
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
@@ -56,11 +71,34 @@ struct MacConversationView: View {
             if reviewState == "menu" { menuOpen = true }
         }
         .onDisappear { sharing.stop() }
+        // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
+        .onChange(of: call.sessionId) { _, id in
+            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+        }
         .onChange(of: handoff.motion?.id) { _, id in if id != nil {sharing.stop()} }
         .onChange(of: handoff.desktop) { _, value in if !value { sharing.stop() } }
         .overlay(alignment:.bottom) { Button("아이폰으로") { handoff.returnToPhone() }.disabled(!handoff.canReturn).buttonStyle(.borderedProminent).padding(.bottom,20) }
         .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
+        .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
+            Button("OK") { interpret.stage = .idle }
+        } message: { if case let .failed(message) = interpret.stage { Text(message) } }
+        .onDisappear { if interpret.isLive { interpret.stop() } }
         .alert("Screen sharing could not start", isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+    }
+    /// INT-M0 · pick the call app, then Start interpreting.
+    private var interpretSheet: some View {
+        ZStack(alignment: .bottom) {
+            Color(white: 17.0 / 255).opacity(0.46).frame(width: 390, height: 844)
+                .onTapGesture { withAnimation(.easeOut(duration: 0.22)) { interpret.cancel() } }
+                .accessibilityLabel("Close").accessibilityAddTraits(.isButton)
+            MacInterpretCallSheet(app: $interpret.app, warning: interpret.headphones ? nil : "No headphones on: the other person would hear my whispers too.") {
+                interpret.start(.companion(name: "Jin", userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
+            }
+            .frame(width: 390)
+            .transition(.move(edge: .bottom))
+        }
+        .frame(width: 390, height: 844)
+        .accessibilityIdentifier("macInterpretSheet")
     }
     private var companionImage: Image {
         if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")

@@ -76,6 +76,7 @@ test("prep routes (GENITA_KLING/PETER/SERVER_TTS on): prompt, validation, one co
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
+  // GENITA_PETER on in this test → a human gets Peter; with it off (Meta-only, D34) the lip is "none"
   assert.deepEqual(prefs.json.session.lip, { mode: "peter", fallback: "none" });
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");

@@ -9,6 +9,10 @@
  * words of partial transcript. A short "yeah" that ends first is ignored
  * (no cancel, no new reply). bargeInMinMs = 0 cancels on speechStart.
  * Typed text and an explicit client barge_in cancel immediately.
+ *
+ * self_speak: the companion speaks on its own — a Finds card's line (F10) or a
+ * watch-together reaction (F5-L14) — only from an idle state, never over the
+ * user or its own reply. One path for both (11/2).
  */
 export type Phase = "listening" | "thinking" | "speaking";
 export type EmittedPhase = Phase | "interrupted";
@@ -30,12 +34,15 @@ export type TurnEvent =
   | { type: "speech_complete"; text: string }
   | { type: "barge_timer" }
   | { type: "text"; text: string }
+  /** the companion speaks on its own: a Finds card's line (F10) or a watch reaction (F5-L14) */
+  | { type: "self_speak"; text: string; origin: "card" | "watch" }
   | { type: "client_barge_in" }
   | { type: "first_audio"; utteranceId: number }
-  | { type: "reply_done"; utteranceId: number };
+  | { type: "reply_done"; utteranceId: number }
+  /** the server wants the companion to say a line on its own (a result card landed) */;
 
 export type Effect =
-  | { type: "start_reply"; text: string; utteranceId: number }
+  | { type: "start_reply"; text: string; utteranceId: number; self?: "card" | "watch" }
   | { type: "cancel_reply"; utteranceId: number; reason: CancelReason }
   | { type: "arm_barge_timer"; ms: number }
   | { type: "emit_state"; phase: EmittedPhase };
@@ -60,12 +67,12 @@ function cancel(s: TurnState, reason: CancelReason): { state: TurnState; effects
   };
 }
 
-function start(s: TurnState, text: string): { state: TurnState; effects: Effect[] } {
+function start(s: TurnState, text: string, self?: "card" | "watch"): { state: TurnState; effects: Effect[] } {
   const utteranceId = s.utteranceId + 1;
   return {
     state: { ...s, phase: "thinking", utteranceId, pendingBargeIn: false, backchannel: false },
     effects: [
-      { type: "start_reply", text, utteranceId },
+      self ? { type: "start_reply", text, utteranceId, self } : { type: "start_reply", text, utteranceId },
       { type: "emit_state", phase: "thinking" },
     ],
   };
@@ -109,6 +116,10 @@ export function reduceTurn(s: TurnState, e: TurnEvent, cfg: TurnConfig): { state
       }
       return start(s, e.text);
     }
+    case "self_speak":
+      // only into silence: never over the user, a pending barge-in, or another reply
+      if (!e.text.trim() || busy(s) || s.userSpeaking || s.pendingBargeIn) return none();
+      return start(s, e.text, e.origin);
     case "client_barge_in":
       return busy(s) ? cancel(s, "client") : none();
     case "first_audio":

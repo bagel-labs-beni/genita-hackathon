@@ -101,3 +101,13 @@ test("an empty final transcript does not start a reply", () => {
   assert.equal(r.state.phase, "listening");
   assert.ok(!kinds(r.effects).includes("start_reply"));
 });
+
+test("self_speak (card line) starts a reply only into silence", () => {
+  const idle = reduceTurn(initialTurnState(), { type: "self_speak", text: "Found one.", origin: "card" }, cfg);
+  assert.equal(idle.effects[0].type, "start_reply");
+  assert.equal((idle.effects[0] as { self?: string }).self, "card");
+  const busy = reduceTurn(idle.state, { type: "self_speak", text: "Another.", origin: "card" }, cfg);
+  assert.deepEqual(busy.effects, []);
+  const talking = reduceTurn(initialTurnState(), { type: "speech_start" }, cfg);
+  assert.deepEqual(reduceTurn(talking.state, { type: "self_speak", text: "x", origin: "watch" }, cfg).effects, []);
+});

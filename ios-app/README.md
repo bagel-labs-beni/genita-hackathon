@@ -39,7 +39,7 @@ Conversation → **Mac으로 이동** opens pairing. Enter the six-digit code sh
 
 The Mac briefly displays a cyan registration surface. Point the rear camera at the complete display once; after automatic registration the surface closes. Move the phone next to either display edge. Its gravity-aligned centre determines where the native Mac window appears. A stable edge contact starts the existing 3.2-second Duo effect. The Mac's **아이폰으로** action is enabled only with fresh tracking at the same side and within 4 cm of the recorded height. Leave the edge before initiating another phone→Mac transfer.
 
-The accepted LiDAR plane, perspective-corner intersection, tilt correction and saved AR world-map algorithm are ported from `handoff-effects-lab`. Camera-centre calibration persists in UserDefaults; it is device-specific. For the current test phone, launch with `--lidar-center-down 28 --lidar-center-right -6` to migrate the accepted values. Other devices retain adjustable defaults, not that phone's calibration.
+The coordinate tracker uses LiDAR planes, perspective-corner intersections, tilt correction and a saved AR world map. Camera-centre calibration persists in UserDefaults and is device-specific. Set `--lidar-center-down <millimetres>` and `--lidar-center-right <millimetres>` for your device after measuring its camera offset.
 
 `--handoff-demo` opens the existing conversation without changing onboarding/profile state. `--handoff-code <Mac code>` pairs the test installation automatically. Normal launches preserve the onboarding flow. The actual companion image is transferred only to the explicitly paired local Mac. Camera/video calling is not implemented; ARKit uses the rear camera for spatial tracking.
 

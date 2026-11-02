@@ -1,0 +1,9 @@
+{
+  "type": "interpret.bubble",
+  "bubbleId": 4,
+  "speaker": "unknown",
+  "via": "voice",
+  "status": "unknown",
+  "original": { "lang": null, "text": "…" },
+  "reason": "language_unclear"
+}
