@@ -62,8 +62,10 @@ struct SavedSetup: Codable {
     var serverPersona: ClientMessage.Persona?
     /// The account this setup belongs to (`/me` user id). Another account on this phone starts clean.
     var accountId: String?
+    /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
+    var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona, accountId }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 @MainActor @Observable final class AppState {

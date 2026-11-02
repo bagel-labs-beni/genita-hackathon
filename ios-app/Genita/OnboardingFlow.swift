@@ -25,8 +25,9 @@ extension AppState {
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
-        // a companion on the server but not on this phone (reinstall, new phone): bring its name and card back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil { await restoreCompanion() }
+        // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
+        // bring its name, card and face back first
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion() }
         apply(route, me: me)
     }
 
@@ -36,6 +37,7 @@ extension AppState {
         setup.imageId = c.imageId
         setup.imageType = c.type
         setup.companionCreated = true
+        setup.companionDemo = c.demo
         if let p = c.session?.persona { setup.serverPersona = p }
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
@@ -59,7 +61,8 @@ extension AppState {
         case .name: if !onboardingStages.contains(stage) || stage == .conversation { returnTo(.name) }
         case .importPrompt:
             // a companion isn't made yet: resume where this phone left off, else I01
-            if setup.hasOnboarded || !onboardingStages.contains(stage) { setup.hasOnboarded = false; returnTo(.prompt) }
+            // (A03 stays: right after CS01 the user still confirms their name, B8)
+            if setup.hasOnboarded || !(onboardingStages.contains(stage) || stage == .name) { setup.hasOnboarded = false; returnTo(.prompt) }
         case .connecting, .textWhilePreparing:
             // the companion exists: straight to the call (photo face until prep lands, D28)
             setup.companionCreated = true

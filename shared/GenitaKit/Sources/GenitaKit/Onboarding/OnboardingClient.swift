@@ -78,6 +78,8 @@ public struct CompanionInfo: Decodable, Equatable, Sendable {
     public var imageId: String?
     public var voiceId: String?
     public var prep: PrepProgress?
+    /// the ready-made judge companion (PR #178 seeds it on first judge sign-in); the app labels it "Demo companion"
+    public var demo: Bool?
     /// ready-made realtime `start` fields (persona card, imported profile) once the setup answers are saved
     public var session: Session?
     public struct Session: Decodable, Equatable, Sendable {

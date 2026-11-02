@@ -61,6 +61,8 @@ struct ConsentView: View {
                 try await GenitaAuthClient().consent()
                 guard model.stage == .consent else { return } // left this screen meanwhile
                 model.consentAccepted()
+                // a judge account already has its ready-made companion: /me sends it straight to the call
+                await model.routeOnLaunch()
             } catch GenitaAuthError.unauthorized {
                 // the session expired here: the token is gone, sign in again (A02)
                 model.signedOut()

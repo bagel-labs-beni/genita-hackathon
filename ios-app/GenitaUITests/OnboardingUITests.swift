@@ -97,10 +97,9 @@ final class OnboardingUITests: XCTestCase {
         // PREP-1: stages follow the server, Continue once the scene exists, then S07 "Connecting to Max…"
         XCTAssertTrue(element("PREP-1").waitForExistence(timeout: 10))
         capture("PREP1-start")
-        let scene = element("prepStage-scene")
-        expectation(for: NSPredicate(format: "value == 'done'"), evaluatedWith: scene)
+        // Continue lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 15)
-        XCTAssertTrue(app.buttons["prepContinue"].isEnabled)
         capture("PREP1-scene-done")
         app.buttons["prepContinue"].tap()
         let pill = element("connectingPill")
