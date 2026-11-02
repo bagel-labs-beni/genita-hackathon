@@ -166,7 +166,7 @@ final class OnboardingUITests: XCTestCase {
 
     /// The stub keeps one companion for the whole run; forget it so this test starts as a fresh account.
     private func resetStub() {
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:8790/__reset")!); req.httpMethod = "POST"
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:8790/__reset")!); req.httpMethod = "POST"; req.setValue("Bearer stub-token", forHTTPHeaderField: "Authorization")
         let done = expectation(description: "stub reset")
         URLSession.shared.dataTask(with: req) { _, _, _ in done.fulfill() }.resume()
         wait(for: [done], timeout: 5)
