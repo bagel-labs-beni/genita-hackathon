@@ -213,8 +213,11 @@ struct CallMoreSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             Capsule().fill(CallInk.handle).frame(width: 47, height: 5).padding(.bottom, 24)
-            row("globe", "Interpret a conversation", "For talking across languages", id: "moreInterpret", toggle: call.mode == .interpret) {
-                call.setInterpreting(call.mode != .interpret)
+            row("globe", "Interpret a conversation", call.mode == .interpret ? call.interpretBoard.moreSubtitle : "For talking across languages", id: "moreInterpret", toggle: call.mode == .interpret) {
+                // INT-0: switching on closes the sheet and shows INT-1
+                let on = call.mode != .interpret
+                call.setInterpreting(on)
+                if on { close() }
             }
             row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
             row("bookmark", "Finds", call.findsCount == 0 ? "Nothing looked up yet" : call.findsCount == 1 ? "1 thing I looked up" : "\(call.findsCount) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }

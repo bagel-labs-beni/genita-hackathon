@@ -21,6 +21,29 @@ export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
+// F8 interpretation
+export type InterpretSource = "face" | "call";
+/** how the original reached Genita: mic by language, mic while held, the Mac call's sound, typed */
+export type BubbleVia = "voice" | "hold" | "call" | "text";
+export type BubbleStatus = "hearing" | "translating" | "speaking" | "done" | "unknown" | "skipped" | "cancelled";
+export type BubbleReason = "language_unclear" | "no_other_language" | "same_language" | "echo" | "empty";
+export type InterpretOptionsWire = { source?: InterpretSource; other?: string; app?: string };
+export type InterpretBubbleEvent = {
+  type: "interpret.bubble";
+  bubbleId: number;
+  speaker: "them" | "me" | "unknown";
+  via: BubbleVia;
+  status: BubbleStatus;
+  original: { lang: string | null; text: string };
+  translation?: { lang: string; text: string };
+  utteranceId?: number;
+  reason?: BubbleReason;
+};
+
+/** Client binary frames, only when interpret.source is "call": "GA" | kind | 0 | 0 u32, then PCM */
+export const CLIENT_FRAME_KIND_MIC = 3;
+export const CLIENT_FRAME_KIND_CALL = 4;
+
 // ───────────────────────── app → server ─────────────────────────
 
 export type PersonaWire = {
@@ -44,6 +67,8 @@ export type StartMessage = {
   lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
+  /** F8: only read when mode is "interpret" */
+  interpret?: InterpretOptionsWire;
 };
 
 export type ClientMessage =
@@ -54,7 +79,8 @@ export type ClientMessage =
   | { type: "frames"; images: string[] }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
-  | { type: "mode"; mode: Mode }
+  | { type: "mode"; mode: Mode; interpret?: InterpretOptionsWire }
+  | { type: "hold"; on: boolean }
   | { type: "ping"; t?: unknown }
   | { type: "stop" };
 
@@ -76,6 +102,8 @@ export type ServerEvent =
   | { type: "speech.end"; turnId: number }
   | { type: "transcript"; text: string; final: boolean; turnId?: number; source?: "voice" | "text" }
   | { type: "interpret.detected"; from: string; to: string }
+  | { type: "interpret.pair"; user: string; other: string | null; source: InterpretSource; by: "auto" | "client"; app?: string }
+  | InterpretBubbleEvent
   | { type: "tool"; utteranceId: number; name: string; status: string }
   | { type: "reply.delta"; utteranceId: number; text: string }
   | { type: "speaking"; on: boolean; utteranceId: number; emotion?: string }
@@ -137,6 +165,8 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "speech.end": { required: ["turnId"], optional: [] },
   transcript: { required: ["text", "final"], optional: ["turnId", "source"] },
   "interpret.detected": { required: ["from", "to"], optional: [] },
+  "interpret.pair": { required: ["user", "other", "source", "by"], optional: ["app"] },
+  "interpret.bubble": { required: ["bubbleId", "speaker", "via", "status", "original"], optional: ["translation", "utteranceId", "reason"] },
   tool: { required: ["utteranceId", "name", "status"], optional: [] },
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
