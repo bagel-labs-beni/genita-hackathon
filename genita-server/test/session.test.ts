@@ -6,16 +6,15 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 
+// these tests cover server TTS mode (Meta voice service); device mode: session-device.test.ts
 const config: Config = {
   metaKey: "x",
-  elevenKey: "y",
+  serverTts: true,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English", "Korean"],
@@ -80,7 +79,7 @@ class FakeClient implements ClientSink {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number } = {}) {
+function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number; deps?: Partial<SessionDeps> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const sparkCalls: SparkRequest[] = [];
@@ -111,6 +110,7 @@ function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: numb
         yield { audio: Buffer.alloc(960), alignment: { chars: ["a", "b"], startsSec: [0.0, 0.01], endsSec: [0.01, 0.02] }, model: req.model };
       }
     },
+    ...opts.deps,
   };
   const session = new Session("s1", client, deps);
   return { asr, client, session, sparkCalls, ttsCalls, ttsAborted: () => ttsAborted };
@@ -123,6 +123,7 @@ test("start → ready with lip plan; a voice turn streams reply text, framed aud
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "atlas" }));
   const ready = client.json.find((m) => m.type === "ready")!;
   assert.deepEqual(ready.lip, { requested: "atlas", active: "atlas", reason: null });
+  assert.equal(ready.tts, "server");
 
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
@@ -152,11 +153,11 @@ test("start → ready with lip plan; a voice turn streams reply text, framed aud
   session.close();
 });
 
-test("no server voice (ELEVENLABS_API_KEY unset): reply text streams, no audio, no tts error, back to listening", async () => {
+test("server-mode session on the real 'off' TTS dep (no Meta voice service): reply text streams, no audio, no tts error, back to listening", async () => {
   const { loadConfig } = await import("../src/config.ts");
   const { defaultDeps } = await import("../src/server.ts");
   const meta = loadConfig({ MODEL_API_KEY: "m" });
-  assert.equal(meta.elevenKey, "", "config loads without ElevenLabs");
+  // (with serverTts off a real session runs in device mode and never calls tts: session-device.test.ts)
   const { asr, client, session } = setup();
   (session as unknown as { deps: SessionDeps }).deps.tts = defaultDeps(meta, () => {}).tts; // the real "off" dep, no vendor call
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "none" }));
@@ -218,13 +219,13 @@ test("camera frames attach as input_image to the next turn only", async () => {
   session.close();
 });
 
-test("messages before start are rejected; peter without a worker degrades to the fallback", async () => {
+test("messages before start are rejected; unknown lip modes degrade to none", async () => {
   const { client, session } = setup();
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   assert.equal(client.json[0].code, "not_started");
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: { mode: "peter", fallback: "none" } }));
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Companion", kind: "human" }, lip: { mode: "retired", fallback: "none" } }));
   const ready = client.json.find((m) => m.type === "ready")!;
-  assert.deepEqual(ready.lip, { requested: "peter", active: "none", reason: "peter_not_deployed" });
+  assert.deepEqual(ready.lip, { requested: "none", active: "none", reason: null });
   session.close();
 });
 
@@ -329,118 +330,6 @@ test("speculation: an unpunctuated partial waits until it has been stable for sp
   asr.fire({ type: "partial", text: "so I was thinking" });
   assert.equal(calls.length, 0);
   session.close();
-});
-
-class FakePeter extends EventEmitter {
-  isReady = false;
-  avatarId: string | undefined;
-  calls: string[] = [];
-  audioBytes = 0;
-  private readonly fail: boolean;
-  constructor(fail = false) {
-    super();
-    this.fail = fail;
-  }
-  async connect() {
-    await sleep(5);
-    if (this.fail) throw new Error("busy");
-    this.isReady = true;
-    return { bundleId: "b1", pasteDy: -3, fps: 25 };
-  }
-  begin(id: number) {
-    this.calls.push(`begin ${id}`);
-  }
-  audio24k(_id: number, pcm: Buffer) {
-    this.audioBytes += pcm.length;
-  }
-  end(id: number) {
-    this.calls.push(`end ${id}`);
-  }
-  cancel(id: number) {
-    this.calls.push(`cancel ${id}`);
-  }
-  close() {
-    this.calls.push("close");
-  }
-}
-
-function peterSetup(fail = false, ttsChunks = 2, ttsDelayMs = 1) {
-  const asr = new FakeAsr();
-  const client = new FakeClient();
-  const peter = new FakePeter(fail);
-  const session = new Session("peter", client, {
-    config,
-    openAsr: () => asr,
-    openPeter: (o) => ((peter.avatarId = o?.avatarId), peter),
-    async *spark(): AsyncGenerator<SparkStreamEvent> {
-      yield { type: "text", delta: "<warm> Hi there. How are you today? Tell me." };
-      yield { type: "done", responseId: "r", text: "x", status: "completed" };
-    },
-    async *tts(req): AsyncGenerator<TtsChunk> {
-      for (let i = 0; i < ttsChunks; i++) {
-        await sleep(ttsDelayMs);
-        if (req.signal?.aborted) return;
-        yield { audio: Buffer.alloc(960), alignment: null, model: "m" };
-      }
-    },
-  });
-  return { asr, client, peter, session };
-}
-
-test("peter: starts on the fallback, switches with lip.changed when the worker is READY, streams TTS audio and relays crops", async () => {
-  const { client, peter, session } = peterSetup();
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: { mode: "peter", fallback: "none" }, mic: false }));
-  assert.deepEqual(client.json.find((m) => m.type === "ready")!.lip, { requested: "peter", active: "none", reason: "peter_connecting" });
-  const changed = await client.waitFor((m) => m.type === "lip.changed");
-  assert.deepEqual(changed, { type: "lip.changed", lip: { requested: "peter", active: "peter", reason: null }, peter: { bundleId: "b1", pasteDy: -3, fps: 25 } });
-  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
-  await client.waitFor((m) => m.type === "reply");
-  assert.deepEqual(peter.calls, ["begin 1", "end 1"]);
-  assert.equal(peter.audioBytes, 960 * 6, "every TTS chunk went to Peter");
-  const before = client.bin.length;
-  peter.emit("crop", { requestId: 1, frame: 3, jpeg: Buffer.from([0xff, 0xd8]) });
-  const f = client.bin[before];
-  assert.equal(f.readUInt8(2), 2);
-  assert.equal(f.readUInt32LE(4), 1, "header seq = utteranceId");
-  assert.equal(f.readUInt32LE(8), 3, "frame index");
-  assert.deepEqual([...f.subarray(12)], [0xff, 0xd8]);
-  session.close();
-  assert.equal(peter.calls.at(-1), "close");
-});
-
-test("peter: barge-in cancels the worker utterance and drops its late crops", async () => {
-  const { asr, client, peter, session } = peterSetup(false, 50, 5);
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: "peter" }));
-  await client.waitFor((m) => m.type === "lip.changed");
-  asr.fire({ type: "speechComplete", turnId: 0, text: "tell me a story" });
-  await client.waitFor((m) => m.type === "state" && m.state === "speaking");
-  await session.onClientText(JSON.stringify({ type: "barge_in" }));
-  assert.deepEqual(peter.calls, ["begin 1", "cancel 1"]);
-  const before = client.bin.length;
-  peter.emit("crop", { requestId: 1, frame: 9, jpeg: Buffer.from([1]) });
-  assert.equal(client.bin.length, before, "late crop of a cancelled utterance is dropped");
-  session.close();
-});
-
-test("peter: a worker that fails to connect leaves the fallback with reason peter_unavailable", async () => {
-  const { client, session } = peterSetup(true);
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: { mode: "peter", fallback: "none" }, mic: false }));
-  const changed = await client.waitFor((m) => m.type === "lip.changed");
-  assert.deepEqual(changed.lip, { requested: "peter", active: "none", reason: "peter_unavailable" });
-  session.close();
-});
-
-test("peter: start.lip.avatarId reaches the worker connection; bad ids are dropped", async () => {
-  const ok = peterSetup();
-  await ok.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mira", kind: "human" }, lip: { mode: "peter", fallback: "none", avatarId: "c1_ab-2" }, mic: false }));
-  await ok.client.waitFor((m) => m.type === "lip.changed");
-  assert.equal(ok.peter.avatarId, "c1_ab-2");
-  ok.session.close();
-  const bad = peterSetup();
-  await bad.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mira", kind: "human" }, lip: { mode: "peter", avatarId: "../x" }, mic: false }));
-  await bad.client.waitFor((m) => m.type === "lip.changed");
-  assert.equal(bad.peter.avatarId, undefined);
-  bad.session.close();
 });
 
 test("finds: a camera cooking question is answered in voice first, the card lands after, then the companion says its line", async () => {
@@ -555,5 +444,181 @@ test("finds × interpretation: a card line is not spoken while interpreting; 'As
   assert.ok(!ttsCalls.some((t) => t.includes("Found a recipe")), "card line stays silent during interpretation");
   assert.ok(!client.json.some((m) => m.type === "interpret.bubble"), "card question not translated");
   assert.ok(!client.json.some((m) => m.type === "transcript" && m.text === "Walk me through it"));
+  session.close();
+});
+
+// ───────────── F2-L26 rename by voice · D21 first-call wait ─────────────
+
+const GREET = "The call just connected. Greet the user.";
+const asksGreeting = (reqs: SparkRequest[]) => reqs.filter((r) => JSON.stringify(r.input).includes(GREET)).length;
+
+test("rename: 'Call yourself Max' renames for the rest of the call, persists via the dep, and emits companion.named", async () => {
+  const saved: Array<[string, string]> = [];
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async (u, n) => void saved.push([u, n]) } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  const named = await client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(named, { type: "companion.named", name: "Max" });
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(saved, [["u1", "Max"]]);
+  // the reply to the rename turn already uses the new name and is told to acknowledge it
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  assert.match(sparkCalls[0].instructions!, /renamed you from Jin to Max/);
+  // the event comes before the reply's first caption
+  assert.ok(client.json.indexOf(named) < client.json.findIndex((m) => m.type === "reply.delta"));
+
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "What's your name?" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.match(sparkCalls[1].instructions!, /^You are Max,/);
+  assert.doesNotMatch(sparkCalls[1].instructions!, /renamed you/, "the acknowledgement line is for the rename turn only");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 1);
+  session.close();
+});
+
+test("rename: by voice too; questions are not renames; no rename while interpreting", async () => {
+  const saved: string[] = [];
+  const a = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await a.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  a.asr.fire({ type: "speechComplete", turnId: 0, text: "What should I call you?" });
+  await a.client.waitFor((m) => m.type === "reply");
+  assert.equal(a.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(a.sparkCalls[0].instructions!, /^You are Jin,/);
+  await sleep(80);
+  a.asr.fire({ type: "speechComplete", turnId: 1, text: "Your name is Max now." });
+  await a.client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(saved, ["Max"]);
+  a.session.close();
+
+  const b = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mode: "interpret" }));
+  await b.session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await sleep(60);
+  assert.equal(b.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.deepEqual(saved, ["Max"], "nothing persisted from interpretation");
+  b.session.close();
+});
+
+test("rename: works without a rename dep (no store / no user) — the call still renames itself", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I'll call you Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.ok(client.json.some((m) => m.type === "companion.named"));
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  session.close();
+});
+
+test("D21 greetAfterMs: the user speaks inside the window → no greeting, the user's turn is answered", async () => {
+  const { asr, client, session, sparkCalls } = setup();
+  // the window outlasts the user's whole reply, so only the cancel (not "busy replying") keeps the greeting out
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await sleep(40);
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "Hey, what should I call you?" });
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 2);
+  await sleep(750); // past the window
+  assert.equal(asksGreeting(sparkCalls), 0, "companion spoke first 0 times");
+  assert.equal(client.json.filter((m) => m.type === "reply").length, 1);
+  // the user's first line was an ordinary turn (kept in history), not swallowed as "the greeting"
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes("what should I call you"));
+  session.close();
+});
+
+test("D21 greetAfterMs: typed text inside the window also cancels the greeting", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  await sleep(900);
+  assert.equal(asksGreeting(sparkCalls), 0);
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes('"hi"'), "the typed line is a normal turn");
+  session.close();
+});
+
+test("D21 greetAfterMs: silence → exactly one greeting after about the window, without the memory dependency", async () => {
+  const { client, session, sparkCalls } = setup();
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 150 }));
+  await sleep(60);
+  assert.equal(sparkCalls.length, 0, "no greeting inside the window");
+  const reply = await client.waitFor((m) => m.type === "reply", 2000);
+  assert.ok(Date.now() - t0 >= 140, `greeted after ${Date.now() - t0} ms`);
+  assert.equal(asksGreeting(sparkCalls), 1);
+  assert.ok(!client.json.some((m) => m.type === "transcript"), "no synthetic user transcript");
+  assert.equal(reply.text, "Hey you! That sounds great.");
+  // the greeting prompt is not kept as a user line in the history
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "how are you" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(!JSON.stringify(sparkCalls[1].input).includes(GREET));
+  session.close();
+});
+
+test("D21: without greetAfterMs (and no memory) nothing changes — no greeting; values are clamped to 0–3000", async () => {
+  const a = setup();
+  await a.session.onClientText(JSON.stringify({ type: "start", persona }));
+  await sleep(80);
+  assert.equal(a.sparkCalls.length, 0);
+  a.session.close();
+
+  const b = setup();
+  await b.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: -50 }));
+  await b.client.waitFor((m) => m.type === "reply", 1000); // clamped to 0 → greets right away
+  b.session.close();
+
+  const c = setup();
+  await c.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: "2000" }));
+  await sleep(60);
+  assert.equal(c.sparkCalls.length, 0, "a non-number is ignored");
+  c.session.close();
+
+  const d = setup();
+  await d.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 2000, mode: "interpret" }));
+  await sleep(60);
+  d.session.close();
+  assert.equal(asksGreeting(d.sparkCalls), 0, "never greets into interpretation");
+});
+
+test("rename (Codex P2): a failed save keeps the old name — no companion.named, the call stays consistent", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async () => { throw new Error("db down"); } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(sparkCalls[0].instructions!, /^You are Jin,/);
+  session.close();
+});
+
+test("rename (Codex P2): the save finishes before companion.named goes out", async () => {
+  let saved = false;
+  const { client, session } = setup({ deps: { userId: "u1", renameCompanion: async () => { await sleep(30); saved = true; } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  let savedAtEvent: boolean | null = null;
+  const orig = client.sendJson.bind(client);
+  client.sendJson = (m) => { if (m.type === "companion.named") savedAtEvent = saved; orig(m); };
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(savedAtEvent, true);
+  session.close();
+});
+
+test("D21 (Codex P2): a greeting the window could not deliver (companion busy) is dropped, not given to the user's next turn", async () => {
+  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {} } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, greetAfterMs: 50 }));
+  // the companion is already speaking on its own (e.g. a watch reaction / card line) when the window ends
+  (session as unknown as { dispatch(e: unknown): void }).dispatch({ type: "self_speak", text: "Ooh, look at that.", origin: "card" });
+  await sleep(120);
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "companion.named");
+  assert.equal(asksGreeting(sparkCalls), 0);
   session.close();
 });
