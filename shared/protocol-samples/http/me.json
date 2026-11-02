@@ -1,0 +1,14 @@
+{
+  "user": {
+    "id": "3f2c1d1e-6a3b-4c1d-9f7e-2b8a1c0d9e11",
+    "provider": "apple",
+    "email": "x7k2@privaterelay.appleid.com",
+    "displayName": "Chelsea",
+    "aiConsentAt": "2026-11-02T08:30:00.000Z",
+    "createdAt": "2026-11-02T08:29:40.000Z"
+  },
+  "consented": true,
+  "hasCompanion": true,
+  "prepStatus": "running",
+  "conversation": { "activeDevice": "iphone", "epoch": 3 }
+}

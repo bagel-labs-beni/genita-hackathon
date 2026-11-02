@@ -1,5 +1,5 @@
 /**
- * Prep storage. Until F1-L4 (Postgres) and S3 land, this is a JSON-file
+ * Prep storage. Without DATABASE_URL this is a JSON-file
  * store under GENITA_DATA_DIR (default ~/.genita-data). The interface is
  * what the DB version must keep: user_styles, companion images, companions
  * (+ prep state = clip_jobs), companion_prefs, voice preview cache.

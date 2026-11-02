@@ -13,8 +13,9 @@
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
  *
- * The user is `x-genita-user` (default "demo") until login lands (F1-L5).
- * Auth (bearer token) is checked by server.ts before handle() is called.
+ * The user comes from server.ts (session JWT → users.id, F1-L5). Without one
+ * (shared-token dev mode, tests) it is `x-genita-user` (default "demo").
+ * Auth and the AI-consent gate are checked by server.ts before handle().
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -79,15 +80,15 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
 
 type ImportJob = { status: "processing" | "failed"; error?: string };
 
-export type PrepRoutes = { handles(req: IncomingMessage): boolean; handle(req: IncomingMessage, res: ServerResponse): Promise<void> };
+export type PrepRoutes = { handles(req: IncomingMessage): boolean; handle(req: IncomingMessage, res: ServerResponse, userId?: string): Promise<void> };
 
 export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   const importJobs = new Map<string, ImportJob>();
 
-  async function route(req: IncomingMessage, res: ServerResponse, url: URL) {
+  async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
     const p = url.pathname.replace(/\/+$/, "");
-    const user = userIdOf(req);
+    const user = userId ?? userIdOf(req);
 
     if (m === "GET" && p === "/v1/import/prompt") return send(res, 200, { prompt: IMPORT_PROMPT, chars: IMPORT_PROMPT.length });
 
@@ -219,10 +220,10 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const p = new URL(req.url ?? "/", "http://localhost").pathname;
       return p === "/v1/import" || p.startsWith("/v1/import/") || p === "/v1/companion" || p.startsWith("/v1/companion/");
     },
-    async handle(req, res) {
+    async handle(req, res, userId) {
       const url = new URL(req.url ?? "/", "http://localhost");
       try {
-        await route(req, res, url);
+        await route(req, res, url, userId);
       } catch (err) {
         if (res.headersSent) return void res.end();
         if (err instanceof PrepError) return send(res, err.status, { error: err.code, message: err.message });

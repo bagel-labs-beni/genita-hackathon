@@ -1,0 +1,71 @@
+import Foundation
+
+/// Wire types for genita-server accounts (genita-server/src/auth/routes.ts).
+public enum GenitaDevice: String, Codable, Sendable { case iphone, mac }
+
+public struct GenitaMe: Codable, Equatable, Sendable {
+    public struct User: Codable, Equatable, Sendable {
+        public var id: String
+        public var provider: String
+        public var email: String?
+        public var displayName: String?
+        public var aiConsentAt: String?
+        public var createdAt: String
+    }
+    public struct Conversation: Codable, Equatable, Sendable {
+        /// "iphone" | "mac" | nil — which device holds the sound (F6 conversation layer)
+        public var activeDevice: String?
+        public var epoch: Int
+    }
+    public enum PrepStatus: String, Codable, Sendable { case none, running, ready, failed }
+
+    public var user: User
+    public var consented: Bool
+    public var hasCompanion: Bool
+    public var prepStatus: PrepStatus
+    public var conversation: Conversation?
+
+    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?) {
+        self.user = user
+        self.consented = consented
+        self.hasCompanion = hasCompanion
+        self.prepStatus = prepStatus
+        self.conversation = conversation
+    }
+}
+
+/// `POST /auth/apple` and `POST /auth/exchange` reply: the session token plus the `/me` view.
+public struct GenitaSignInResponse: Decodable, Sendable {
+    public var token: String
+    public var expiresAt: String
+    public var isNew: Bool
+    public var me: GenitaMe
+
+    enum CodingKeys: String, CodingKey { case token, expiresAt, isNew }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        token = try c.decode(String.self, forKey: .token)
+        expiresAt = try c.decode(String.self, forKey: .expiresAt)
+        isNew = try c.decode(Bool.self, forKey: .isNew)
+        me = try GenitaMe(from: decoder)
+    }
+}
+
+public struct GenitaDeleteResult: Decodable, Equatable, Sendable {
+    public var deleted: Bool
+    public var appleRevoked: Bool?
+    public var blobsDeleted: Int
+}
+
+public enum GenitaAuthError: Error, Equatable, Sendable {
+    /// 401: no/expired/revoked session → A02
+    case unauthorized
+    /// 403 consent_required → CS01
+    case consentRequired
+    /// no connection → A02-E
+    case offline
+    /// Mac web login: the user closed the sheet
+    case cancelled
+    case server(status: Int, code: String?)
+    case badResponse
+}
