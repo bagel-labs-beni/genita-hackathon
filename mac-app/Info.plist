@@ -27,6 +27,8 @@
 	<integer>86400</integer>
 	<key>SUVerifyUpdateBeforeExtraction</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Genita notices when your iPhone is close to this Mac, so the conversation can move over by itself.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect your iPhone to move Genita between devices.</string>
 	<key>NSMicrophoneUsageDescription</key>

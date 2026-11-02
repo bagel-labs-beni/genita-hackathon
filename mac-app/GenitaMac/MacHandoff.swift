@@ -74,6 +74,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         link.host()
+        DispatchQueue.main.async { MacProximity.shared.attach(self) }  // GENITA_PROXIMITY_HANDOFF: bring the iPhone close
         // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
         if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion();MacCall.shared.conversationArrived() }}
         refreshSurface()
