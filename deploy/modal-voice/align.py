@@ -12,7 +12,9 @@ The aligner takes romanized letters (a-z, '). Text -> letters is rule-based, no 
 Output (`timing`), all ms from the start of this request's audio:
   {"words": [{"w": "Hey", "s": 40, "e": 260}, ...], "phonemes": [{"p": "HH", "s": 40, "e": 90}, ...]}
 CTC spans are spiky (a letter lasts 1-2 frames of 20 ms), so each phoneme is held until the next one
-starts when the gap is short (< FILL_S); after a longer gap (a real pause) it is held TAIL_S at most.
+starts when the gap is short (< FILL_S). Around a real pause the audio itself decides (signal level, no model):
+the last phoneme before it is held while the audio is still voiced (<= HOLD_S), and the first phoneme after it
+starts at the speech onset (<= LEAD_S earlier than its CTC spike). Without level data: held TAIL_S.
 
 Everything above the `Aligner` class is pure Python (unit-tested without torch: test_align.py).
 """
@@ -24,7 +26,9 @@ import unicodedata
 from dataclasses import dataclass, field
 
 FILL_S = 0.12  # gaps up to this are held by the previous phoneme (connected speech)
-TAIL_S = 0.04  # before a pause, a phoneme is held this much longer than its CTC span
+TAIL_S = 0.04  # before a pause, without level data: held this much longer than its CTC span
+HOLD_S = 0.30  # before a pause: held while voiced, at most this long after its CTC span
+LEAD_S = 0.12  # after a pause: starts at the speech onset, at most this much before its CTC spike
 # Mean letter probability below this = the text does not match the audio: no timing. Low on purpose: the text is
 # what was synthesized, and silent letters (the h in "oh", the w in "wow") score near 0 even when the alignment is
 # right (isolated "Oh wow," = 0.09, "Hmm," = 0.07; a full sentence 0.6-0.9).
@@ -193,9 +197,11 @@ def letters_of(words: list[Word]) -> str:
     return "".join(u.letters for w in words for u in w.units)
 
 
-def build_timing(words: list[Word], spans: list[tuple[int, int, float]], frame_s: float, audio_s: float) -> dict | None:
+def build_timing(words: list[Word], spans: list[tuple[int, int, float]], frame_s: float, audio_s: float,
+                 voiced: list[bool] | None = None) -> dict | None:
     """Letter spans (start frame incl., end frame excl., prob) in `letters_of(words)` order -> timing dict
-    (ms), or None when the spans do not fit or the alignment is not confident."""
+    (ms), or None when the spans do not fit or the alignment is not confident. voiced: per frame (same
+    frames as the spans), True where the audio is loud enough to be speech."""
     n = sum(len(u.letters) for w in words for u in w.units)
     if n == 0 or len(spans) != n:
         return None
@@ -221,13 +227,35 @@ def build_timing(words: list[Word], spans: list[tuple[int, int, float]], frame_s
             ph.append([wi, u.label, s, e])
     if not ph:
         return None
+    def is_voiced(f: int) -> bool:
+        return voiced is not None and 0 <= f < len(voiced) and voiced[f]
+
+    # run boundaries first (CTC times), so a moved edge never decides its neighbour
+    starts_run = [i == 0 or ph[i][2] - ph[i - 1][3] > FILL_S for i in range(len(ph))]
+    ends_run = [i + 1 == len(ph) or starts_run[i + 1] for i in range(len(ph))]
+    orig = [(p[2], p[3]) for p in ph]
     for i, p in enumerate(ph):
-        nxt = ph[i + 1][2] if i + 1 < len(ph) else audio_s
-        gap = nxt - p[3]
-        if i + 1 < len(ph) and gap <= FILL_S:
-            p[3] = max(p[3], nxt)
+        if starts_run[i] and voiced is not None:
+            floor = max(orig[i - 1][1] if i else 0.0, orig[i][0] - LEAD_S)
+            f = int(round(orig[i][0] / frame_s))
+            while f - 1 >= 0 and (f - 1) * frame_s >= floor - 1e-9 and is_voiced(f - 1):
+                f -= 1
+            p[2] = min(p[2], f * frame_s)
+        if ends_run[i]:
+            ceil = min(orig[i + 1][0] if i + 1 < len(ph) else audio_s, orig[i][1] + (HOLD_S if voiced is not None else TAIL_S))
+            if voiced is None:
+                p[3] = max(p[3], ceil)
+            else:
+                f = int(round(orig[i][1] / frame_s))
+                while (f + 1) * frame_s <= ceil + 1e-9 and is_voiced(f):
+                    f += 1
+                p[3] = max(p[3], f * frame_s)
         else:
-            p[3] = min(p[3] + TAIL_S, max(p[3], nxt))
+            p[3] = max(p[3], orig[i + 1][0])
+    for i in range(1, len(ph)):  # a voiced gap pulled from both sides: split it
+        if ph[i][2] < ph[i - 1][3]:
+            mid = (ph[i][2] + ph[i - 1][3]) / 2
+            ph[i - 1][3] = ph[i][2] = mid
     ms = lambda x: int(round(x * 1000))
     phonemes, word_out = [], []
     for p in ph:
@@ -239,6 +267,18 @@ def build_timing(words: list[Word], spans: list[tuple[int, int, float]], frame_s
             s, e = ms(mine[0][2]), ms(mine[-1][3])
             word_out.append({"w": w.text, "s": s, "e": max(e, s + 1)})
     return {"words": word_out, "phonemes": phonemes}
+
+
+def voiced_frames(wav16, frames: int) -> list[bool]:
+    """Per aligner frame: is the audio loud enough to be speech (RMS above 5% of the utterance's p95)?"""
+    import numpy as np
+    x = np.asarray(wav16, dtype=np.float32)
+    if frames <= 0 or not len(x):
+        return []
+    edges = np.linspace(0, len(x), frames + 1).astype(int)
+    rms = np.array([float(np.sqrt(np.mean(x[a:b] ** 2))) if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:])])
+    thr = max(1e-4, 0.05 * float(np.percentile(rms, 95)))
+    return [bool(r > thr) for r in rms]
 
 
 # ---------------- GPU aligner ----------------
@@ -277,5 +317,6 @@ class Aligner:
             ali, scores = ali[0].cpu(), scores[0].exp().cpu()
         spans = F.merge_tokens(ali, scores)
         frame_s = len(wav16) / self.SR / frames
-        timing = build_timing(words, [(s.start, s.end, float(s.score)) for s in spans], frame_s, len(wav16) / self.SR)
+        timing = build_timing(words, [(s.start, s.end, float(s.score)) for s in spans], frame_s, len(wav16) / self.SR,
+                              voiced=voiced_frames(wav16, frames))
         return timing, (time.perf_counter() - t0) * 1000

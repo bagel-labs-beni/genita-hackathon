@@ -110,6 +110,44 @@ class Timing(unittest.TestCase):
         self.assertEqual(t["phonemes"][0]["s"], 200)
         self.assertEqual(t["words"][0]["s"], 200)
 
+    def test_a_run_before_a_pause_is_held_while_the_audio_is_still_voiced(self):
+        # CTC puts the last letter on a 1-2 frame spike; the vowel keeps sounding after it
+        words = plan("Hey")
+        spans = [(3, 4, 0.9), (7, 8, 0.9), (11, 12, 0.9)]  # last letter ends at frame 12 = 240 ms
+        voiced = [False] * 3 + [True] * 17 + [False] * 30  # sound until frame 20 = 400 ms
+        t = build_timing(words, spans, self.FRAME, 1.0, voiced=voiced)
+        self.assertEqual(t["phonemes"][-1]["e"], 400)
+        self.assertEqual(t["words"][0]["e"], 400)
+
+    def test_a_run_after_a_pause_starts_at_the_speech_onset(self):
+        # "I'm" starts with a vowel; CTC spikes its first letter ~3 frames into the sound
+        words = plan("I'm")
+        spans = [(13, 14, 0.9), (17, 18, 0.9)]
+        voiced = [False] * 10 + [True] * 12 + [False] * 10  # onset at frame 10 = 200 ms
+        t = build_timing(words, spans, self.FRAME, 1.0, voiced=voiced)
+        self.assertEqual(t["words"][0]["s"], 200)
+        self.assertEqual(t["phonemes"][0]["s"], 200)
+
+    def test_snapping_never_crosses_the_neighbouring_run_or_goes_far(self):
+        words = plan("Hey you")
+        n = len(letters_of(words))
+        spans = [(2, 3, 0.9), (5, 6, 0.9), (8, 9, 0.9)] + [(30 + 3 * k, 31 + 3 * k, 0.9) for k in range(n - 3)]
+        voiced = [True] * 60  # never quiet: hold is capped, runs do not overlap
+        t = build_timing(words, spans, self.FRAME, 2.0, voiced=voiced)
+        hey, you = t["words"]
+        self.assertLessEqual(hey["e"], you["s"])
+        self.assertLessEqual(hey["e"], 180 + 300)
+        self.assertGreaterEqual(you["s"], 600 - 120)
+
+    def test_a_voiced_gap_is_split_not_double_booked(self):
+        words = plan("Hey you")
+        n = len(letters_of(words))
+        spans = [(2, 3, 0.9), (5, 6, 0.9), (8, 9, 0.9)] + [(20 + 2 * k, 21 + 2 * k, 0.9) for k in range(n - 3)]
+        t = build_timing(words, spans, self.FRAME, 2.0, voiced=[True] * 60)  # 220 ms gap, all voiced
+        ph = t["phonemes"]
+        for a, b in zip(ph, ph[1:]):
+            self.assertLessEqual(a["e"], b["s"])
+
     def test_fallback_none_on_span_count_mismatch(self):
         words = plan("Hey you")
         self.assertIsNone(build_timing(words, even_spans(3), self.FRAME, 1.0))
