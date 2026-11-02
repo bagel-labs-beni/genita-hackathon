@@ -193,6 +193,29 @@ test("email login: parallel starts for one address → one code (cooldown holds 
   assert.equal(hs.filter((r) => r.status === 200).length, 1, "over HTTP too");
 });
 
+test("email login: parallel sends from one IP can't pass the per-IP cap", async (t) => {
+  const s = await boot(t, { trustProxy: true });
+  const rs = await Promise.all(Array.from({ length: 30 }, (_, i) => s.start(`burst${i}@example.com`, { "x-forwarded-for": "198.51.100.9" })));
+  assert.equal(rs.filter((r) => r.status === 200).length, 20);
+  assert.equal(s.sent.length, 20);
+});
+
+test("email login: an email account, once made, stays the one this address signs into", async (t) => {
+  const s = await boot(t);
+  // an Apple account from before email_verified existed (unverified) → email sign-in makes its own account
+  const { user: a } = await s.accounts.accounts.upsertUser({ provider: "apple", sub: "003.apple", email: "later@example.com", emailVerified: false });
+  await s.start("later@example.com");
+  const b = await s.verify("later@example.com", s.sent[0].code);
+  assert.equal(b.json.user.provider, "email");
+  // the Apple user signs in again and Apple marks the address verified
+  await s.accounts.accounts.upsertUser({ provider: "apple", sub: "003.apple", email: "later@example.com", emailVerified: true });
+  await s.age("later@example.com", 120);
+  await s.start("later@example.com");
+  const again = await s.verify("later@example.com", s.sent[1].code);
+  assert.equal(again.json.user.id, b.json.user.id, "still the email account, not a switch to the Apple one");
+  assert.notEqual(again.json.user.id, a.id);
+});
+
 test("email login: the IP is CloudFront's (last X-Forwarded-For entry), a spoofed first entry doesn't reset limits", async (t) => {
   const s = await boot(t, { trustProxy: true });
   for (let i = 0; i < 20; i++) assert.equal((await s.start(`spoof${i}@example.com`, { "x-forwarded-for": `10.9.${i}.1, 198.51.100.4` })).status, 200);

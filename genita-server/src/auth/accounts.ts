@@ -60,11 +60,16 @@ export class Accounts {
   }
 
   /**
-   * Email code sign-in: the oldest account whose provider verified this address (Apple with
-   * email_verified, or an earlier email sign-in), else a new 'email' account. Dev/judge rows never match.
+   * Email code sign-in: the account an earlier email sign-in made for this address, else the oldest
+   * account whose provider verified it (Apple with email_verified), else a new 'email' account.
+   * Dev/judge rows never match.
    */
   async userForVerifiedEmail(email: string): Promise<{ user: User; isNew: boolean }> {
-    const r = await this.db.query("SELECT * FROM users WHERE lower(email) = $1 AND email_verified AND provider <> 'dev' ORDER BY created_at, id LIMIT 1", [email]);
+    // an email account made for this address wins over any later-verified one, so the address never switches accounts
+    const r = await this.db.query(
+      "SELECT * FROM users WHERE lower(email) = $1 AND email_verified AND provider <> 'dev' ORDER BY (provider = 'email') DESC, created_at, id LIMIT 1",
+      [email],
+    );
     if (r.rows[0]) return { user: toUser(r.rows[0]), isNew: false };
     return this.upsertUser({ provider: "email", sub: email, email, emailVerified: true });
   }

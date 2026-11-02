@@ -54,6 +54,17 @@ function windowCounter(limit: number, windowMs: number) {
         m.set(k, { n: 1, reset: Date.now() + windowMs });
       }
     },
+    /** check + count in one synchronous step (before any await), so parallel requests can't all pass */
+    take(k: string): boolean {
+      if ((live(k)?.n ?? 0) >= limit) return false;
+      this.add(k);
+      return true;
+    },
+    /** hand a taken slot back (nothing was sent) */
+    give(k: string) {
+      const h = live(k);
+      if (h && h.n > 0) h.n--;
+    },
   };
 }
 const STATE_TTL_SEC = 10 * 60;
@@ -279,25 +290,37 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const ip = clientIp(req, core.trustProxy);
       const email = normalizeEmail((await readJson(req)).email);
       if (!email) throw new HttpError(400, "bad_email");
-      if (emailSends.full(ip) || emailSendsAll.full("all")) {
-        log("auth.failed", { provider: "email", reason: emailSends.full(ip) ? "ip_send_limit" : "global_send_limit" });
-        return send(res, 429, { error: "rate_limited" });
-      }
       if (!core.mail) {
         log("auth.failed", { provider: "email", reason: "no_mail_sender" });
         throw new HttpError(503, "email_unavailable", "Email sign-in isn't available right now.");
       }
-      const issued = await core.emailCodes.issue(email);
+      if (!emailSends.take(ip)) {
+        log("auth.failed", { provider: "email", reason: "ip_send_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      if (!emailSendsAll.take("all")) {
+        emailSends.give(ip);
+        log("auth.failed", { provider: "email", reason: "global_send_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      const giveBack = () => {
+        emailSends.give(ip);
+        emailSendsAll.give("all");
+      };
+      const issued = await core.emailCodes.issue(email).catch((e) => {
+        giveBack();
+        throw e;
+      });
       if (!issued.ok) {
+        giveBack();
         log("auth.failed", { provider: "email", reason: "email_send_limit" });
         return send(res, 429, { error: "rate_limited", retryAfterSec: issued.retryAfterSec });
       }
-      emailSends.add(ip);
-      emailSendsAll.add("all");
       try {
         await core.mail.send(email, issued.code, CODE_TTL_SEC / 60);
       } catch (e) {
         await core.emailCodes.discard(issued.id);
+        giveBack();
         log("auth.email_send_failed", { to: maskEmail(email), sender: core.mail.kind, message: String(e).slice(0, 80) });
         throw new HttpError(502, "send_failed", "Couldn't send the code. Try again.");
       }
@@ -311,14 +334,18 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const email = normalizeEmail(b.email);
       const code = typeof b.code === "string" ? b.code.trim() : "";
       if (!email || !/^\d{6}$/.test(code)) throw new HttpError(400, "bad_request");
-      if (emailFails.full(ip)) {
+      // every try holds a "wrong code" slot until it turns out right, so parallel guesses can't overshoot
+      if (!emailFails.take(ip)) {
         log("auth.failed", { provider: "email", reason: "ip_fail_limit" });
         return send(res, 429, { error: "rate_limited" });
       }
       const device: Device = b.device === "mac" ? "mac" : "iphone";
-      const r = await core.emailCodes.check(email, code);
-      if (r !== "ok") {
-        emailFails.add(ip);
+      const r = await core.emailCodes.check(email, code).catch((e) => {
+        emailFails.give(ip);
+        throw e;
+      });
+      if (r === "ok") emailFails.give(ip);
+      else {
         if (r === "too_many") {
           log("auth.failed", { provider: "email", reason: "too_many_attempts" });
           return send(res, 429, { error: "too_many_attempts", message: "Too many tries. Ask for a new code." });
