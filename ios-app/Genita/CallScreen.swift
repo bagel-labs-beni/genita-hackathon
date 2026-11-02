@@ -1,0 +1,283 @@
+import AVFoundation
+import SwiftUI
+import UIKit
+
+// F4-U-S09 · Call screen pieces: the face, the one-line status, the More sheet.
+// Values are from the full-flow board r01 §5 (S09) and §7 (MORE-B2).
+
+enum CallInk {
+    static let ink = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    static let onInk = Color(red: 253 / 255, green: 253 / 255, blue: 253 / 255)
+    static let pill = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84)
+    static let blueOnInk = Color(red: 84 / 255, green: 193 / 255, blue: 1)
+    static let mute = Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
+    static let handle = Color(red: 219 / 255, green: 219 / 255, blue: 219 / 255)
+    static let sheet = Color(red: 254 / 255, green: 254 / 255, blue: 254 / 255)
+    static let field = Color(red: 241 / 255, green: 241 / 255, blue: 241 / 255)
+    static let dim = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.46)
+}
+
+/// Reduce Motion stops the wave and spinner (board: `animation:none`). Debug UI tests set
+/// GENITA_REVIEW_STILL=1 for the same, plus a still face, so XCUITest sees an idle app and can catch
+/// short states like S09-X.
+enum CallMotion {
+    static var reviewStill: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["GENITA_REVIEW_STILL"] == "1"
+        #else
+        false
+        #endif
+    }
+}
+
+// MARK: - Face
+
+/// Where the moving mouth comes from. Only `.none` exists today: the silent loop plays as is.
+/// F4-L18 adds `.peter` (MuseTalk frames composited over the loop) and F4-L19/20 `.atlas`; each draws in
+/// `LipLayer`, above the base video and below the controls.
+enum LipSource: Equatable { case none }
+
+struct CompanionFaceView: View {
+    let still: Image
+    /// Silent loop of this companion (Dyno's clip for the demo face). nil → the still breathes (S09-P).
+    let loop: URL?
+    var lip: LipSource = .none
+    var body: some View {
+        ZStack {
+            still.resizable().scaledToFill()
+            if let loop, !CallMotion.reviewStill { LoopingVideo(url: loop).allowsHitTesting(false) }
+            LipLayer(source: lip).allowsHitTesting(false)
+        }
+    }
+}
+
+struct LipLayer: View {
+    let source: LipSource
+    var body: some View {
+        switch source {
+        case .none: Color.clear
+        }
+    }
+}
+
+/// Muted, looping, aspect-fill video. It never touches the call's audio.
+struct LoopingVideo: UIViewRepresentable {
+    let url: URL
+    func makeUIView(context: Context) -> LoopingVideoView { LoopingVideoView(url: url) }
+    func updateUIView(_ view: LoopingVideoView, context: Context) {}
+}
+
+final class LoopingVideoView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    private let player = AVQueuePlayer()
+    private var looper: AVPlayerLooper?
+    init(url: URL) {
+        super.init(frame: .zero)
+        let layer = self.layer as! AVPlayerLayer
+        layer.videoGravity = .resizeAspectFill
+        layer.player = player
+        player.isMuted = true
+        player.preventsDisplaySleepDuringVideoPlayback = true
+        player.audiovisualBackgroundPlaybackPolicy = .pauses
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        player.play()
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}
+
+// MARK: - Status line
+
+struct CallCueView: View {
+    let cue: CallCue
+    let name: String
+    var retry: () -> Void = {}
+    var openSettings: () -> Void = {}
+    var body: some View {
+        if let content {
+            HStack(spacing: 8) {
+                content.icon
+                Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                if let action = content.action {
+                    Button(action: action.run) {
+                        Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).padding(.vertical, -4).padding(.trailing, -8).accessibilityIdentifier("cueAction")
+                }
+            }
+            .padding(.leading, 16).padding(.trailing, content.action == nil ? 16 : 8).padding(.vertical, 8)
+            .frame(minHeight: 36)
+            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.updatesFrequently)
+            .accessibilityIdentifier("callCue")
+            // One line swaps in place: a crossfade overlaps two texts in the pill.
+        }
+    }
+
+    private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+    private var content: Content? {
+        switch cue {
+        case .none: nil
+        case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
+        case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
+        case .speaking: Content(icon: AnyView(CueWave()), text: "\(name) is talking", action: nil)
+        case .interrupted: Content(icon: AnyView(CueDot()), text: "Stopped. Go ahead.", action: nil)
+        case .reconnecting: Content(icon: AnyView(CueSpinner()), text: "Reconnecting…", action: nil)
+        case .answerFailed: Content(icon: AnyView(CueAlert()), text: "Couldn’t get an answer.", action: ("Try again", retry))
+        case .micBlocked: Content(icon: AnyView(CueAlert()), text: "Microphone is off for Genita.", action: ("Settings", openSettings))
+        }
+    }
+}
+
+private struct CueDot: View {
+    var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
+}
+
+private struct CueAlert: View {
+    var body: some View { Image(systemName: "exclamationmark.circle").font(.system(size: 17, weight: .semibold)).foregroundStyle(CallInk.onInk).frame(width: 20, height: 20) }
+}
+
+private struct CueSpinner: View {
+    @State private var turn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
+            .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.onInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+            .frame(width: 16, height: 16)
+            .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
+    }
+}
+
+/// Four bars, 2 × 12 pt, moving while the companion's voice plays.
+private struct CueWave: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 2) {
+                ForEach(0..<4, id: \.self) { i in
+                    let phase = (t * 1000 + [0, 200, 450, 650][i]).truncatingRemainder(dividingBy: 900) / 900
+                    RoundedRectangle(cornerRadius: 1).fill(CallInk.blueOnInk).frame(width: 2, height: 12 * (0.35 + 0.65 * abs(sin(phase * .pi))))
+                }
+            }.frame(height: 20)
+        }
+    }
+}
+
+// MARK: - Rail toggle
+
+/// Camera and mic buttons: glass when off, white with a dark icon when on (board `.glass[aria-pressed=true]`).
+struct CallToggleGlass: View {
+    let icon: String
+    let on: Bool
+    var body: some View {
+        ZStack {
+            CallGlassControl(icon: icon, size: 46)
+            if on {
+                Circle().fill(CallInk.onInk)
+                if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: image).resizable().colorInvert().frame(width: image.size.width / 4, height: image.size.height / 4)
+                }
+            }
+        }.frame(width: 46, height: 46).contentShape(Circle())
+    }
+}
+
+struct SelfCameraView: UIViewRepresentable {
+    let session: AVCaptureSession
+    func makeUIView(context: Context) -> SelfCameraSurface {
+        let view = SelfCameraSurface()
+        view.preview.session = session
+        view.preview.videoGravity = .resizeAspectFill
+        return view
+    }
+    func updateUIView(_ view: SelfCameraSurface, context: Context) {}
+}
+
+final class SelfCameraSurface: UIView {
+    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+    var preview: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+}
+
+// MARK: - More sheet (MORE-B2)
+
+struct CallMoreSheet: View {
+    let call: CallController
+    var moveToMacSubtitle: String
+    var moveToMac: () -> Void
+    /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
+    var openTextChat: (() -> Void)?
+    var openFinds: (() -> Void)?
+    var close: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(CallInk.handle).frame(width: 47, height: 5).padding(.bottom, 24)
+            row("globe", "Interpret a conversation", "For talking across languages", id: "moreInterpret", toggle: call.mode == .interpret) {
+                call.setInterpreting(call.mode != .interpret)
+            }
+            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            row("bookmark", "Finds", call.findsCount == 0 ? "Nothing looked up yet" : call.findsCount == 1 ? "1 thing I looked up" : "\(call.findsCount) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
+            row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
+            row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
+        }
+        .padding(.top, 28).padding(.horizontal, 16).padding(.bottom, 40)
+        .frame(maxWidth: .infinity)
+        .background(CallInk.sheet, in: UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30))
+        .shadow(color: CallInk.ink.opacity(0.18), radius: 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("More")
+        .accessibilityIdentifier("moreSheet")
+    }
+
+    private func row(_ symbol: String, _ title: String, _ subtitle: String, id: String, enabled: Bool = true, toggle: Bool? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                Image(systemName: symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(enabled ? CallInk.ink : CallInk.handle).frame(width: 20, height: 20)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(TypeStyle.body(16, .medium)).foregroundStyle(enabled ? CallInk.ink : CallInk.mute)
+                    Text(subtitle).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                if let toggle { CallSwitch(on: toggle) }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 60).contentShape(Rectangle())
+        }
+        .buttonStyle(MoreRowStyle())
+        .disabled(!enabled)
+        .accessibilityIdentifier(id)
+        .accessibilityValue(toggle.map { $0 ? "On" : "Off" } ?? "")
+        .accessibilityHint(enabled ? "" : subtitle)
+    }
+}
+
+private struct MoreRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.background(configuration.isPressed ? CallInk.field : .clear, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct CallSwitch: View {
+    let on: Bool
+    var body: some View {
+        Capsule().fill(on ? CallInk.ink : CallInk.handle).frame(width: 52, height: 32)
+            .overlay(alignment: on ? .trailing : .leading) { Circle().fill(.white).frame(width: 28, height: 28).shadow(color: CallInk.ink.opacity(0.18), radius: 2, y: 2).padding(2) }
+            .animation(.easeOut(duration: 0.18), value: on)
+    }
+}
+
+// MARK: - Wiring
+
+extension AppState {
+    /// The silent loop only matches the bundled demo face. A user's own photo stays a still (S09-P)
+    /// until its own silent video exists (F2-L9).
+    var companionLoopURL: URL? {
+        guard let loop = Bundle.main.url(forResource: "companion-silent", withExtension: "mp4") else { return nil }
+        guard let mine = setup.imageData else { return loop }
+        guard let bundled = Bundle.main.url(forResource: "companion", withExtension: "png"), let demo = try? Data(contentsOf: bundled) else { return nil }
+        return mine == demo ? loop : nil
+    }
+
+    var callStart: ClientMessage.Start {
+        .companion(name: "Jin", userName: setup.name, profile: setup.response, traits: setup.presence.sorted(), voiceId: nil)
+    }
+}
