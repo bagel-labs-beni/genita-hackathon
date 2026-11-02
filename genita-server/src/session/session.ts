@@ -4,6 +4,7 @@
  * GENITA_SERVER_TTS=1). Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
+import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
@@ -82,6 +83,9 @@ export type SessionDeps = {
   voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  ops?: OpsLimits;
+  /** null: shared-token dev identity has no persisted user row. */
+  turnUserId?: string | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -215,6 +219,7 @@ export class Session {
   private watch: WatchController | null = null;
   private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
+  private specCheck = 0;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private metrics: TurnMetrics = {};
@@ -275,7 +280,7 @@ export class Session {
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
-        if (this.interp) return this.interp.typed(text);
+        if (this.interp) return this.limitInterpret(() => this.interp?.typed(text));
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -437,7 +442,7 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate,
+      speculate: this.deps.config.speculate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
@@ -465,7 +470,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.interp.final("call", e.text);
+      else if (e.type === "speechComplete") void this.limitInterpret(() => this.interp?.final("call", e.text));
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -624,7 +629,8 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        return interp.final("mic", e.text);
+        void this.limitInterpret(() => interp.final("mic", e.text));
+        return;
     }
   }
 
@@ -833,14 +839,18 @@ export class Session {
     if (this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS) return; // frames are consumed per turn; don't guess
     if (this.specTimer) clearTimeout(this.specTimer);
     this.specTimer = null;
-    if (LOOKS_FINAL.test(text.trim())) return this.startSpeculation(text);
+    if (LOOKS_FINAL.test(text.trim())) { void this.startSpeculation(text); return; }
     this.specTimer = setTimeout(() => {
       this.specTimer = null;
-      if (this.turn.phase === "listening") this.startSpeculation(text);
+      if (this.turn.phase === "listening") void this.startSpeculation(text);
     }, this.deps.config.speculateStableMs);
   }
 
-  private startSpeculation(text: string): void {
+  private async startSpeculation(text: string): Promise<void> {
+    const check = ++this.specCheck;
+    const ops = this.deps.ops ?? getOps();
+    if (ops.cappedUser(this.limitUserId()) && !(await ops.canSpeculate(this.limitUserId()).catch(() => false))) return;
+    if (check !== this.specCheck || this.turn.phase !== "listening") return;
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -853,6 +863,7 @@ export class Session {
   }
 
   private dropSpeculation(): void {
+    this.specCheck++;
     if (this.specTimer) clearTimeout(this.specTimer);
     this.specTimer = null;
     this.spec?.abort.abort();
@@ -870,6 +881,15 @@ export class Session {
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
+    const spec = self ? null : this.spec;
+    if (!self) this.spec = null; // keep the accepted turn's guess alive across async admission
+    if (spec) signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
+    if (!self && !greeting && this.limitUserId()) {
+      let admitted = false;
+      await (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+      if (signal.aborted || this.reply !== reply) return;
+      if (!admitted) { spec?.abort.abort(); this.dropSpeculation(); return this.finishReply(reply); }
+    }
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
       firstTokenAt?: number;
@@ -880,8 +900,6 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = self ? null : this.spec;
-    if (!self) this.spec = null;
     if (!self && this.specTimer) clearTimeout(this.specTimer);
     if (!self) this.specTimer = null;
     if (spec) {
@@ -890,7 +908,6 @@ export class Session {
         spec.confirm();
         built = spec.built;
         pre = spec.stream;
-        signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
       } else {
         speculative = "miss";
         spec.abort.abort();
@@ -1152,6 +1169,14 @@ export class Session {
     this.reply = null;
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
+  }
+
+  private limitUserId(): string | null | undefined {
+    return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
+  }
+
+  private limitInterpret(accepted: () => void): Promise<void> {
+    return (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { if (!this.closed) accepted(); }, (message) => this.error("spark_unavailable", message, false));
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {

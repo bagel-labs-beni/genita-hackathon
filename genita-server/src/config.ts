@@ -5,6 +5,11 @@
  */
 export type Config = {
   metaKey: string;
+  /** Operational controls (D46); optional for legacy embedded/test configs. */
+  paused?: boolean;
+  metaDailyCalls?: number;
+  metaDailyImages?: number;
+  userDailyTurns?: number;
   /** ElevenLabs key; read only when serverTts is on, else null */
   elevenKey: string | null;
   /** server voice on: the Meta voice service (GENITA_VOICE_URL) or, legacy, GENITA_SERVER_TTS=1 ElevenLabs. Off = the app speaks (`say`, device mode) */
@@ -106,6 +111,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (peter && !env.GENITA_PETER_TOKEN) throw new Error("GENITA_PETER=1 needs GENITA_PETER_TOKEN");
   return {
     metaKey,
+    paused: flag(env.GENITA_PAUSED),
+    metaDailyCalls: num(env.GENITA_META_DAILY_CALLS, 20_000),
+    metaDailyImages: num(env.GENITA_META_DAILY_IMAGES, 600),
+    userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),
     elevenKey,
     serverTts,
     voice,

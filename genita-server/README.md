@@ -24,6 +24,30 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250) ·
 `GENITA_PETER_URL` + `GENITA_PETER_TOKEN` (Peter worker wss URL and WORKER_TOKEN; read only with `GENITA_PETER=1`).
 
+D46 operational controls (SSM env changes take effect after a server restart):
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `GENITA_PAUSED` | `0` | `1` rejects generation REST with `503 {"error":"paused"}` and new call WebSockets with `503 Paused`. Config is checked at admission; running calls, health, status, saved Finds, auth and account deletion keep working. |
+| `GENITA_META_DAILY_CALLS` | `20000` | Global outbound Meta requests per UTC day, including retries, streaming requests, file uploads and each Transcribe socket open. |
+| `GENITA_META_DAILY_IMAGES` | `600` | Muse Image generations/edits per UTC day, also counted as Meta calls. |
+| `GENITA_USER_DAILY_TURNS` | `300` | Accepted final user turns per UTC day across sessions; shared dev sessions without an explicit user are exempt. |
+
+A cap of `0` or less is unlimited. REST admission returns `429 {"error":"limit_reached","limit":"meta_calls"}`
+(or `meta_images` for an image route); every outbound Meta request is checked again
+before sending. Failed vendor requests still count. Global counters and the no-DB
+user counters live in memory on the single EC2 host: **a restart resets them**
+(accepted worst case: one extra day's budget). With accounts enabled, user turns
+persist in `usage_daily` with an atomic capped upsert and an explicit UTC date;
+DB errors refuse the turn. Session caps use the existing `spark_unavailable` code
+with `retryable:false`. Chat speculation checks available turns first; interpreter
+speculation is disabled for capped users so partial transcripts do not spend turns.
+CloudWatch events: `ops.paused` once per kind/minute, `limit.reached` once per
+limit/day, and nonzero `ops.usage` at most once per 10 minutes when requests occur.
+The pause switch blocks new work at admission; background prep already started
+and calls already running finish subject to the budgets. A paused restart leaves
+persisted prep jobs queued; they resume on the next unpaused restart.
+
 Swift types: `shared/GenitaKit` (`shared/GenitaKit/test.sh` runs its tests, also with Command Line Tools only).
 
 ## Optional live-check fixtures

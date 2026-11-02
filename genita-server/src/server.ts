@@ -33,6 +33,7 @@ import { createMemory } from "./memory/index.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
+import { configureOps, rejectGeneration } from "./ops/limits.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
 
@@ -95,6 +96,7 @@ export async function startServer(
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
+  const ops = configureOps(config, { log, db: accounts?.db });
   const sessions = new Map<string, Session>();
   /** resets a call's idle timer; watch traffic keeps a muted call alive */
   const touches = new Map<string, () => void>();
@@ -134,6 +136,7 @@ export async function startServer(
 
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (rejectGeneration(req, res, ops)) return;
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.
@@ -198,9 +201,11 @@ export async function startServer(
       return;
     }
     if (url.pathname !== "/v1/session") return reject(404, "Not Found");
+    if (ops.isPaused("ws.session")) return reject(503, "Paused");
     if (sessions.size >= config.maxSessions) return reject(503, "Busy");
     principal(req, url).then(
       (who) => {
+        if (ops.isPaused("ws.session")) return reject(503, "Paused");
         // re-check after the async auth: concurrent upgrades all passed the first check (attach is synchronous below)
         if (sessions.size >= config.maxSessions) return reject(503, "Busy");
         wss.handleUpgrade(req, socket, head, (ws) => {
@@ -209,21 +214,21 @@ export async function startServer(
           // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
           if (!who) return ws.close(4401, "unauthorized");
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who);
+          attach(ws, who, who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId);
         });
       },
       () => reject(500, "Internal Server Error"),
     );
   });
 
-  function attach(ws: WebSocket, who: Principal) {
+  function attach(ws: WebSocket, who: Principal, turnUserId: string | null) {
     const id = randomUUID();
     const sink: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
       close: (code, reason) => ws.readyState === ws.OPEN && ws.close(code, reason),
     };
-    const session = new Session(id, sink, { ...deps, userId: who.userId });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId });
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
