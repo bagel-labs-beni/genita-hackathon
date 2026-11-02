@@ -3,6 +3,7 @@
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
+ *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
  *
@@ -23,6 +24,7 @@ import { Session, type ClientSink, type SessionDeps } from "./session/session.ts
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
+import { createSeamless } from "./tts/seamless.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
 import { likesFromStyle } from "./finds/setup.ts";
@@ -33,29 +35,37 @@ import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
 import { ownerKey } from "./finds/store.ts";
+import { attachWatchSocket } from "./watch/socket.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
 
 export type LogFn = (event: string, data: Record<string, unknown>) => void;
 
-/** No ElevenLabs key: every sentence goes out as text only (the session's ttsFailed path), no vendor call. */
-async function* ttsOff(): AsyncGenerator<never> {
+/**
+ * Server TTS off: sessions run in device mode and never call this. If one did, it refuses
+ * without reaching a vendor; "tts_off" is the session's text-only (no error) path.
+ */
+async function* serverTtsOff(): AsyncGenerator<never> {
   throw new Error("tts_off");
 }
 
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
+  const elevenKey = config.serverTts ? config.elevenKey : null;
+  const peterUrl = process.env.GENITA_PETER_URL;
+  const peterToken = process.env.GENITA_PETER_TOKEN;
+  // Meta voice service (Seamless on our GPU) wins; ElevenLabs only as the legacy flag path; else device mode
+  const voice = config.voice ? createSeamless(config.voice, { log }) : null;
   return {
     config,
     ...createMemory(config.metaKey, log),
-    openAsr: (languages) => new TranscribeStream({ key: config.metaKey, languages }),
+    openAsr: (languages, mode) => new TranscribeStream({ key: config.metaKey, languages, mode }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
-    tts: config.elevenKey ? (req) => streamSpeech({ ...req, apiKey: config.elevenKey }) : ttsOff,
-    // one Peter connection per call = one Modal container = one GPU
+    tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
+    voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
-      process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
-        ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
-        : undefined,
+      config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
     finds: findsFromEnv(config.metaKey),
     log,
   };
@@ -87,6 +97,8 @@ export async function startServer(
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
   const sessions = new Map<string, Session>();
+  /** resets a call's idle timer; watch traffic keeps a muted call alive */
+  const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
   // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
@@ -167,6 +179,26 @@ export async function startServer(
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
+    if (url.pathname === "/v1/watch") {
+      // F5 + 11/2 auth: same principal as the call; only the user who owns the call can share into it.
+      // Someone else's session id looks exactly like a missing one (404).
+      const id = url.searchParams.get("session") ?? "";
+      principal(req, url).then(
+        (who) => {
+          const session = sessions.get(id);
+          if (who && who.consented && (!session || sessionUsers.get(id) !== who.userId)) return reject(404, "Not Found");
+          wss.handleUpgrade(req, socket, head, (ws) => {
+            ws.on("error", () => ws.terminate());
+            if (!who) return ws.close(4401, "unauthorized");
+            if (!who.consented) return ws.close(4403, "consent_required");
+            ws.on("message", () => touches.get(id)?.());
+            attachWatchSocket(ws, session!, log);
+          });
+        },
+        () => reject(500, "Internal Server Error"),
+      );
+      return;
+    }
     if (url.pathname !== "/v1/session") return reject(404, "Not Found");
     if (sessions.size >= config.maxSessions) return reject(503, "Busy");
     principal(req, url).then(
@@ -198,10 +230,14 @@ export async function startServer(
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
-    const life = setTimeout(() => session.close(4001, "max_duration"), config.maxSessionMs);
-    ws.on("message", (data, isBinary) => {
+    const touch = () => {
       clearTimeout(idle);
       idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
+    };
+    touches.set(id, touch);
+    const life = setTimeout(() => session.close(4001, "max_duration"), config.maxSessionMs);
+    ws.on("message", (data, isBinary) => {
+      touch();
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
       if (isBinary) session.onClientAudio(buf);
       else void session.onClientText(buf.toString("utf8")).catch((err) => log("session.error", { session: id, message: String(err).slice(0, 200) }));
@@ -212,6 +248,7 @@ export async function startServer(
       session.close();
       sessions.delete(id);
       sessionUsers.delete(id);
+      touches.delete(id);
       log("session.close", { session: id, sessions: sessions.size });
     });
     ws.on("error", () => ws.terminate());

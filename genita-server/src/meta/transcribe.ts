@@ -7,6 +7,8 @@
  *   {sessionId} → speechStart{turnId,audioProcessedMs}
  *   → transcript{transcript,final:false} (cumulative partials)
  *   → speechEnd{turnId} → speechComplete{turnId,transcript}
+ * DIARIZATION adds {type:"speaker",label:"A"} just before each speechEnd
+ * (one label per turn; labels reset per connection).
  * Close: {"type":"endStream"} → server closes 1000.
  * 1013 (try again later) → reconnect after 1 s (F4-L5).
  */
@@ -19,7 +21,8 @@ export type AsrEvent =
   | { type: "speechStart"; turnId: number }
   | { type: "partial"; text: string }
   | { type: "speechEnd"; turnId: number }
-  | { type: "speechComplete"; turnId: number; text: string };
+  | { type: "speechComplete"; turnId: number; text: string }
+  | { type: "speaker"; label: string };
 
 export type TranscribeOptions = {
   key: string;
@@ -78,7 +81,7 @@ export class TranscribeStream extends EventEmitter<TranscribeEvents> {
       });
       ws.on("message", (data, isBinary) => {
         if (isBinary) return;
-        let e: { type?: string; turnId?: number; transcript?: string; final?: boolean; message?: string };
+        let e: { type?: string; turnId?: number; transcript?: string; final?: boolean; message?: string; label?: string };
         try {
           e = JSON.parse(data.toString());
         } catch {
@@ -96,6 +99,9 @@ export class TranscribeStream extends EventEmitter<TranscribeEvents> {
             break;
           case "speechComplete":
             this.emit("event", { type: "speechComplete", turnId: e.turnId ?? 0, text: e.transcript ?? "" });
+            break;
+          case "speaker":
+            if (e.label) this.emit("event", { type: "speaker", label: String(e.label).slice(0, 8) });
             break;
           case "error":
             this.emit("error", new Error(`asr error: ${e.message ?? JSON.stringify(e).slice(0, 200)}`));

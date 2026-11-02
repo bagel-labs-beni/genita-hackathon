@@ -85,7 +85,8 @@ export class FindsRunner {
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(t: TurnInput): TurnStarted | null {
     if (this.closed) return null;
-    const intent = classifyTurn(t.text, t.frames.length > 0);
+    const afterProduct = !!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS;
+    const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct);
     if (!intent) return null;
     const findId = randomUUID();
     const abort = new AbortController();
