@@ -16,7 +16,7 @@
 import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
-import { buildMemoRequest, buildQuestionContext, parseMemoVerdict, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
+import { buildMemoRequest, buildQuestionContext, earlyVerdict, parseMemoVerdict, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
 import { echoNow, isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
@@ -80,7 +80,7 @@ const QUESTION_LINES_MS = 90_000;
 const QUESTION_FRAMES = 3;
 const QUESTION_FRAME_SPACING_MS = 700;
 /** the running scene memo refreshes this often while the screen changes (was 12 s) */
-const MEMO_EVERY_MS = 3_000;
+const MEMO_EVERY_MS = 2_000;
 /** a finished line of the video (often the punchline) gets its memo this soon, so a laugh lands ~4 s after (was 4 s) */
 const MEMO_AFTER_LINE_MS = 1_200;
 /** a reaction held back by the video's dialogue or by the conversation waits for a pause, until it is stale */
@@ -90,13 +90,13 @@ const MEMO_FRAMES = 4;
 /** memo Spark lanes raced per memo (GENITA_WATCH_MEMO_LANES, default 2) */
 const MEMO_LANES = Number(process.env.GENITA_WATCH_MEMO_LANES ?? 1) || 1;
 /** memos in flight at once (GENITA_WATCH_MEMOS, default 2), started at least this far apart */
-const MEMO_CONCURRENCY = Number(process.env.GENITA_WATCH_MEMOS ?? 2) || 1;
-const MEMO_STAGGER_MS = 1_500;
+const MEMO_CONCURRENCY = Number(process.env.GENITA_WATCH_MEMOS ?? 3) || 1;
+const MEMO_STAGGER_MS = 1_000;
 const MEMO_FRAME_SPACING_MS = 600;
 /** a frame this different from the last one (a cut, a fall, a big move) asks for the memo right away */
-export const MOTION_SPIKE = 0.1;
+export const MOTION_SPIKE = 0.06;
 /** …after this long, so the frames show what the move turned into */
-const SPIKE_SETTLE_MS = 700;
+const SPIKE_SETTLE_MS = 400;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
 /** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
@@ -363,7 +363,9 @@ export class WatchController {
     const now = this.deps.now();
     const since = now - this.lastMemoAt;
     const busy = this.memosInFlight.size >= (this.deps.memoConcurrency ?? MEMO_CONCURRENCY) || (this.memosInFlight.size > 0 && since < MEMO_STAGGER_MS);
-    if (!this.sharing || busy || this.closed) return this.maybeSpeakBlank();
+    // while the user and the companion talk, no new memo starts: the reply gets Spark's full attention (and its
+    // frames come straight from the buffer anyway); the timeline catches up in the next pause
+    if (!this.sharing || busy || this.closed || !this.host.conversationQuiet()) return this.maybeSpeakBlank();
     const newFrames = this.frames.some((f) => f.at > this.lastMemoAt);
     const spike = this.salientAt !== null && this.salientAt > this.lastMemoAt && now - this.salientAt >= SPIKE_SETTLE_MS;
     const due =
@@ -416,9 +418,15 @@ export class WatchController {
     const abort = new AbortController();
     this.memosInFlight.add(abort);
     let raw = "";
+    let early = false;
     try {
-      // two lanes, first complete JSON wins (a reaction is only as quick as its memo; Spark's tail is long)
-      raw = await this.memoRace(req, abort.signal);
+      // lanes race, first complete JSON wins; the reaction can go out as soon as the verdict part has streamed
+      // (before the memo text is written)
+      raw = await this.memoRace(req, abort.signal, (e) => {
+        early = true;
+        this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [] }, at);
+      });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
       return null;
@@ -445,11 +453,12 @@ export class WatchController {
       this.speakProtected();
       return v;
     }
-    if (v.moment !== "none") this.tryReact(v, at);
+    if (v.moment !== "none" && !early) this.tryReact(v, at);
     return v;
   }
 
-  private async memoRace(req: SparkRequest, signal: AbortSignal): Promise<string> {
+  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string }) => void): Promise<string> {
+    let earlyDone = false;
     const lanes = Math.max(1, this.deps.memoLanes ?? MEMO_LANES);
     const kids = Array.from({ length: lanes }, () => new AbortController());
     const stop = () => kids.forEach((k) => k.abort());
@@ -459,6 +468,10 @@ export class WatchController {
       for await (const ev of this.deps.spark(req, { signal: k.signal, firstEventTimeoutMs: 10_000 })) {
         if (ev.type === "text") raw += ev.delta;
         else if (ev.type === "done" && !raw) raw = ev.text;
+        if (!earlyDone && onEarly && ev.type === "text") {
+          const e = earlyVerdict(raw);
+          if (e) { earlyDone = true; onEarly(e); }
+        }
       }
       if (!parseMemoVerdict(raw)) throw new Error("memo: no verdict");
       return raw;

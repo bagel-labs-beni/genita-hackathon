@@ -227,17 +227,24 @@ test("watch: memo after a line → funny moment → one reaction, then the 25 s 
 
 test("watch: no reaction while the user or companion is talking; it waits for the pause, then goes stale", async () => {
   const funny = '{"memo":"x","moment":"funny","reaction":"ha","speakers":[]}';
-  const quiet = { quiet: false };
-  const { c, reacted, at } = controller([funny], quiet);
+  const quiet = { quiet: true };
+  const { c, reacted, at, sparkCalls } = controller([funny], quiet);
   c.onMessage({ type: "start" });
   at(13_000);
   c.onMessage({ type: "frame", image: frame });
-  c.tick();
+  c.tick(); // the memo starts in a pause…
+  quiet.quiet = false; // …and the user starts talking before it answers
   await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 1);
   assert.deepEqual(reacted, [], "never over the conversation");
   at(14_000);
   c.tick();
   assert.deepEqual(reacted, [], "still talking: still held");
+  at(13_500);
+  c.onMessage({ type: "frame", image: frame + "2" });
+  at(16_000);
+  c.tick();
+  assert.equal(sparkCalls.length, 1, "no new memo starts while they talk");
   at(30_000);
   quiet.quiet = true;
   c.tick();
@@ -630,51 +637,51 @@ test("realtime: a turn gets the last ~1.4 s as a short sequence (newest last), a
   assert.match(q.instructions, /If they name someone and no person is visible/, "only a naming turn looks for a person (Codex P2)");
 });
 
-test("realtime: the scene timeline (memo) refreshes every 3 s while the screen changes (was 12 s)", async () => {
+test("realtime: the scene timeline (memo) refreshes every 2 s while the screen changes (was 12 s)", async () => {
   const { c, at, sparkCalls } = controller([]);
   c.onMessage({ type: "start", source: "YouTube" });
-  at(2_000);
+  at(1_000);
   c.onMessage({ type: "frame", image: frame });
+  at(1_500);
   c.tick();
   assert.equal(sparkCalls.length, 0);
-  at(3_000);
+  at(2_000);
   c.tick();
   await wait(5);
   assert.equal(sparkCalls.length, 1);
-  at(5_000);
+  at(3_000);
   c.onMessage({ type: "frame", image: frame });
   c.tick();
   await wait(5);
-  assert.equal(sparkCalls.length, 1, "not before 3 s since the last memo");
-  at(6_000);
+  assert.equal(sparkCalls.length, 1, "not before 2 s since the last memo");
+  at(4_000);
   c.tick();
   await wait(5);
   assert.equal(sparkCalls.length, 2);
 });
 
-test("motion: a spike (cut / fall / big move) asks for the memo 0.7 s later, with a short sequence ~0.6 s apart", async () => {
+test("motion: a spike (cut / fall / big move) asks for the memo 0.4 s later, with a short sequence ~0.6 s apart", async () => {
   const { c, at, sparkCalls } = controller([]);
   c.onMessage({ type: "start", source: "YouTube" });
-  at(2_500);
+  at(1_500);
   c.onMessage({ type: "frame", image: frame });
-  at(3_000);
+  at(2_000);
   c.tick();
   await wait(5);
-  assert.equal(sparkCalls.length, 1, "the 3 s cadence memo");
-  for (let ms = 3_300; ms <= 4_800; ms += 300) {
+  assert.equal(sparkCalls.length, 1, "the 2 s cadence memo");
+  for (const ms of [2_300, 2_600, 2_900, 3_200]) {
     at(ms);
-    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: ms === 4_200 ? 0.4 : 0.03 });
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: ms === 2_900 ? 0.4 : 0.03 });
   }
-  at(4_800);
   c.tick();
   await wait(5);
-  assert.equal(sparkCalls.length, 1, "the spike settles 0.7 s first (4.2 → 4.9 s), and the 3 s cadence isn't due");
-  at(4_950);
+  assert.equal(sparkCalls.length, 1, "the spike settles 0.4 s first (2.9 → 3.3 s); the cadence isn't due");
+  at(3_350);
   c.tick();
   await wait(5);
-  assert.equal(sparkCalls.length, 2, "memo right after the spike, not at the next cadence (6 s)");
+  assert.equal(sparkCalls.length, 2, "memo right after the spike, not at the next cadence (4 s)");
   const images = (sparkCalls[1].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
-  assert.equal(images.length, 3, "≤4 frames, ≥0.6 s apart: 3.6/4.2/4.8 picked from 6 fresh frames");
+  assert.equal(images.length, 2, "≥0.6 s apart: 2.6 and 3.2 from 2.3/2.6/2.9/3.2");
   assert.match(sparkCalls[1].instructions!, /read the motion across them/);
 });
 
@@ -738,27 +745,51 @@ test("memo: two Spark lanes race and the first complete verdict wins; a lane wit
   assert.deepEqual(reacted, ["<surprised> [surprised] What a dunk!"]);
 });
 
-test("memo pipeline: a second memo starts 1.5 s after the first while it runs, never a third", async () => {
+test("memo pipeline: memos overlap (≤3 in flight, started ≥1 s apart), so a moment never waits on one slow memo", async () => {
   let running = 0, peak = 0, calls = 0;
   const { c, at } = controller([], {}, {
     async *spark(): AsyncGenerator<SparkStreamEvent> {
       calls++; running++; peak = Math.max(peak, running);
       await new Promise((r) => setTimeout(r, 60));
       running--;
-      const text = '{"memo":"x","moment":"none","reaction":"","speakers":[],"protectedVideo":false}';
+      const text = '{"protectedVideo":false,"moment":"none","reaction":"","memo":"x","speakers":[]}';
       yield { type: "text", delta: text };
       yield { type: "done", responseId: null, text, status: "completed" };
     },
   });
   c.onMessage({ type: "start", source: "YouTube" });
-  // 3.0 s cadence memo; a spike at 3.5 s settles by 4.2 s but waits for the 1.5 s stagger (4.5 s); then two run, so a
-  // third (cadence at 7.6 s would be due) waits while both are out
-  for (const [ms, motion, expect] of [[3_000, 0.03, 1], [3_500, 0.4, 1], [4_300, 0.03, 1], [4_600, 0.03, 2], [5_000, 0.4, 2], [8_000, 0.03, 2]] as const) {
+  // 2.0 s cadence memo; spikes at 2.5 / 3.5 / 4.5 s each start one after the 0.4 s settle and the 1 s stagger;
+  // the one at 5 s waits: three are still running
+  for (const [ms, motion, expect] of [[2_000, 0.03, 1], [2_500, 0.4, 1], [3_000, 0.03, 2], [3_500, 0.4, 2], [4_000, 0.03, 3], [4_500, 0.4, 3], [5_000, 0.03, 3]] as const) {
     at(ms);
     c.onMessage({ type: "frame", image: `${frame}${ms}`, motion });
     c.tick();
     assert.equal(calls, expect, `at ${ms} ms`);
   }
   await wait(80);
-  assert.equal(peak, 2);
+  assert.equal(peak, 3);
+});
+
+test("memo: the reaction goes out as soon as its verdict streams, before the memo text is written", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const { c, at, reacted } = controller([], {}, {
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: '{"protectedVideo":false,"moment":"funny","reaction":"He fed the ceiling!",' };
+      await gate; // the memo text is still being written
+      const rest = '"memo":"Pancake on the ceiling.","speakers":[]}';
+      yield { type: "text", delta: rest };
+      yield { type: "done", responseId: null, text: "", status: "completed" };
+    },
+  });
+  c.onMessage({ type: "start", source: "YouTube" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame });
+  const memo = c.runMemo();
+  await wait(5);
+  assert.deepEqual(reacted, ["<laugh> [smileopen] [laughs] He fed the ceiling!"], "spoken before the memo finished");
+  release();
+  await memo;
+  assert.equal(reacted.length, 1, "not twice");
+  assert.match(c.questionContext()!.instructions, /Pancake on the ceiling/);
 });

@@ -16,12 +16,14 @@ export type MemoVerdict = { memo: string; moment: Moment; reaction: string; spea
 export const MEMO_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["memo", "moment", "reaction", "speakers", "protectedVideo"],
+  // order matters: the verdict (protectedVideo, moment, reaction) streams first, so a reaction can start before the
+  // memo text is written (watch.ts earlyVerdict)
+  required: ["protectedVideo", "moment", "reaction", "memo", "speakers"],
   properties: {
-    memo: { type: "string" },
     protectedVideo: { type: "boolean" },
     moment: { type: "string", enum: ["none", "funny", "surprising", "sweet"] },
     reaction: { type: "string" },
+    memo: { type: "string" },
     speakers: {
       type: "array",
       items: {
@@ -86,6 +88,22 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     maxOutputTokens: 2000,
     text: { format: { type: "json_schema", name: "watch_memo", schema: MEMO_SCHEMA, strict: true } },
   };
+}
+
+/**
+ * The reaction part of a memo still streaming: moment + the finished reaction string (protectedVideo false).
+ * null until both are complete, or when there is nothing to react to.
+ */
+export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string } | null {
+  if (/"protectedVideo"\s*:\s*true/.test(raw)) return null;
+  if (!/"protectedVideo"\s*:\s*false/.test(raw)) return null;
+  const m = raw.match(/"moment"\s*:\s*"(funny|surprising|sweet)"/);
+  const r = raw.match(/"reaction"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (!m || !r) return null;
+  let reaction: string;
+  try { reaction = JSON.parse(`"${r[1]}"`) as string; } catch { return null; }
+  reaction = reaction.trim().slice(0, 120);
+  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction } : null;
 }
 
 export function parseMemoVerdict(raw: string): MemoVerdict | null {
