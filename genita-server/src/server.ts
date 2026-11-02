@@ -27,6 +27,7 @@ import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createPrep } from "./prep/index.ts";
+import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
@@ -98,6 +99,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
+  if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
   const appConfig = createAppConfigSource({ file: env.GENITA_APP_CONFIG_FILE || null, bargeInMs: config.bargeInMinMs, log });
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a

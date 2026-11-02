@@ -176,6 +176,8 @@ struct FindRowView: View {
         case .recipe: "fork.knife"
         case .outfit: "tshirt"
         case .link: "link"
+        case .product: "bag"
+        case .unknown: "bookmark"
         }
     }
 }

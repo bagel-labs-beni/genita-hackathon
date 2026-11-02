@@ -104,6 +104,11 @@ struct FindsRow: Identifiable, Equatable {
         case .link:
             if card.page?.opened == false { return "Your link · couldn’t open" }
             return "Your link" + (card.status.map { " · " + $0 } ?? "")
+        case .product:
+            let n = card.products?.count ?? 0
+            return "Products · \(n) link\(n == 1 ? "" : "s")"
+        case .unknown:
+            return card.status ?? ""
         }
     }
 }
