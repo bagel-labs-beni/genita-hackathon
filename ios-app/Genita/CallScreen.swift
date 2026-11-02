@@ -111,7 +111,7 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
-            .transition(.opacity)
+            // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
 
