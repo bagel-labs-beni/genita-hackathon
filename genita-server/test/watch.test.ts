@@ -10,7 +10,7 @@ import type { TtsChunk } from "../src/tts/elevenlabs.ts";
 import { initialTurnState, reduceTurn } from "../src/session/turnMachine.ts";
 import { isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, type ReactGate } from "../src/watch/rules.ts";
 import { buildMemoRequest, buildQuestionContext, parseMemoVerdict } from "../src/watch/memo.ts";
-import { WatchController, type WatchHost, type WatchSink } from "../src/watch/watch.ts";
+import { WatchController, type WatchDeps, type WatchHost, type WatchSink } from "../src/watch/watch.ts";
 
 // ───────────────────────── rules ─────────────────────────
 
@@ -144,7 +144,7 @@ class FakeSink implements WatchSink {
   }
 }
 
-function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}) {
+function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}, extra: Partial<WatchDeps> = {}) {
   let t = 0;
   const asr = new FakeAsr();
   const sparkCalls: SparkRequest[] = [];
@@ -170,6 +170,7 @@ function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}) {
       yield { type: "done", responseId: null, text, status: "completed" };
     },
     manualTick: true,
+    ...extra,
   });
   const sink = new FakeSink();
   c.attach(sink);
@@ -265,6 +266,28 @@ test("watch: speaker chip only once two voices alternate; off after 3 s of quiet
   assert.deepEqual(sink.events.at(-1), { type: "speaker", on: false });
 });
 
+test("watch D40: reactions off → a funny verdict speaks nothing; speaker chip off → no chip with two voices", async () => {
+  const funny = '{"memo":"Pancake stuck to the ceiling.","moment":"funny","reaction":"He fed the ceiling!","speakers":[]}';
+  const { c, asr, sink, reacted, sparkCalls, at } = controller([funny], {}, { reactions: false, speakerChip: false });
+  c.onMessage({ type: "start", source: "YouTube" });
+  const line = (label: string, text: string) => {
+    asr.fire({ type: "speechStart", turnId: 0 });
+    asr.fire({ type: "speaker", label });
+    asr.fire({ type: "speechEnd", turnId: 0 });
+    asr.fire({ type: "speechComplete", turnId: 0, text });
+  };
+  line("A", "Checkmate, finally.");
+  line("B", "Best of three then.");
+  at(9_000);
+  c.onMessage({ type: "frame", image: frame });
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 1, "the memo still runs, so a question can use it");
+  assert.deepEqual(reacted, []);
+  assert.equal(sink.events.filter((e) => e.type === "reaction" || e.type === "speaker").length, 0);
+  assert.match(c.questionContext()!.instructions, /Pancake stuck to the ceiling/);
+});
+
 test("watch: echo check waits for the video's open line, then compares", async () => {
   const { c, asr } = controller([]);
   c.onMessage({ type: "start" });
@@ -318,7 +341,10 @@ const config: Config = {
   sparkFirstTokenTimeoutMs: 8000,
   sparkHedge: 1,
   speculate: false,
-  speculateStableMs: 250,
+  speculateStableMs: 250,  // #157: these session tests exercise server-voice frames
+  serverTts: true,
+  kling: false,
+  peter: false,
 };
 
 class Client implements ClientSink {
@@ -390,6 +416,23 @@ test("session: a question while sharing carries the watch context and frames; a 
   const reply = client.json.find((m) => m.type === "reply" && m.utteranceId === 2)!;
   assert.equal(reply.text, "He fed the ceiling!");
   s.close();
+});
+
+test("session: by default first reactions are on and the speaker chip is off (D40 + Chelsea 11/2 21:10)", async () => {
+  const prev = [process.env.GENITA_WATCH_REACTIONS, process.env.GENITA_WATCH_SPEAKER];
+  delete process.env.GENITA_WATCH_REACTIONS; delete process.env.GENITA_WATCH_SPEAKER;
+  try {
+    const { s } = session();
+    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+    const watch = s.attachWatch(new FakeSink())!;
+    const deps = (watch as unknown as { deps: WatchDeps }).deps;
+    assert.equal(deps.reactions, true);
+    assert.equal(deps.speakerChip, false);
+    s.close();
+  } finally {
+    if (prev[0] !== undefined) process.env.GENITA_WATCH_REACTIONS = prev[0];
+    if (prev[1] !== undefined) process.env.GENITA_WATCH_SPEAKER = prev[1];
+  }
 });
 
 test("session: the video's line leaking into the mic is dropped, not answered", async () => {

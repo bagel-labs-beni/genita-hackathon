@@ -110,7 +110,9 @@ struct SavedSetup: Codable {
         if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
         setup.imageData = try? Data(contentsOf: imageURL)
+        // auth state first (a restart must not skip a pending A02 / CS01 by restoring the call)
         if storage.bool(forKey: Self.signedOutKey) { setup.stage = .signIn }
+        else if storage.bool(forKey: Self.needsConsentKey) { setup.stage = .consent }
         else if setup.hasOnboarded { setup.stage = .conversation }
         else if setup.stage == .preparing { setup.stage = .paste }
         else if setup.stage == .imageCheck { setup.stage = .image }
@@ -169,14 +171,23 @@ struct SavedSetup: Codable {
         else if let i = setup.depth.path.firstIndex(of: stage), i > 0 { setup.stage = setup.depth.path[i - 1] }
     }
     static let signedOutKey = "genita.signedOut"
-    /// CS01 "Not now" or an expired session: A02, and a restart stays there instead of restoring the call.
+    static let needsConsentKey = "genita.needsConsent"
+    static let userKey = "genita.userId"
+    /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         storage.set(true, forKey: Self.signedOutKey)
+        storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
-    /// Past A02 again: an onboarded user goes back to the call, a new one on to A03.
-    func signedIn() {
+    /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
+    /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
+    func signedIn(userId: String? = nil, consented: Bool = true) {
         storage.removeObject(forKey: Self.signedOutKey)
+        if let userId {
+            if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
+            storage.set(userId, forKey: Self.userKey)
+        }
+        if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
         if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
     }
     /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
@@ -190,16 +201,34 @@ struct SavedSetup: Codable {
         }
         setup.accountId = id
     }
-    /// CS01 agreed: back to the call if that's where the user came from, else on to A03 (name).
+    /// CS01 agreed: back to the call if the account is set up, else on to A03 (name).
     func consentAccepted() {
         storage.removeObject(forKey: Self.signedOutKey)
+        storage.removeObject(forKey: Self.needsConsentKey)
         if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+    }
+    /// M02 account deleted: nothing of it stays on this iPhone.
+    func accountDeleted() {
+        resetLocalProfile()
+        storage.removeObject(forKey: Self.userKey)
+        signedOut()
+    }
+    func resetLocalProfile() {
+        storage.removeObject(forKey: Self.storageKey)
+        try? FileManager.default.removeItem(at: imageURL)
+        history = []
+        setup = SavedSetup()
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {
         switch stop {
-        case .signIn?: if stage != .signIn { go(.signIn) }
-        case .consent?: if stage != .consent { go(.consent) }
+        case .signIn?:
+            // the token is dead (expired, revoked, account deleted): drop it so the next call doesn't reuse it
+            KeychainTokenStore().clear()
+            if stage != .signIn { signedOut() }
+        case .consent?:
+            storage.set(true, forKey: Self.needsConsentKey)
+            if stage != .consent { go(.consent) }
         default: break
         }
     }

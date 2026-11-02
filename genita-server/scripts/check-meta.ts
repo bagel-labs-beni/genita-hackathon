@@ -9,11 +9,12 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { sparkJson } from "../src/meta/spark.ts";
 import { jpegDataUrl, museImageGenerate, samDetect, uploadFile } from "../src/meta/media.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
+const img = process.argv.slice(2).find((a) => !a.startsWith("--")) ?? fixturePath("out", "dogf.jpg");
 const { metaKey } = loadConfig();
-const img = process.argv[2] ?? join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/out/dogf.jpg");
 const skipImage = process.argv.includes("--no-image");
 
 async function step(name: string, fn: () => Promise<unknown>) {

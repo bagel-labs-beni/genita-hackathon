@@ -6,10 +6,12 @@ import AVFoundation
 struct SettingsView: View {
     @Bindable var model: AppState
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
+    /// M02-D: delete confirmation; M02: account actions only when signed in.
     @State private var confirmDelete = false
     @State private var working = false
-    @State private var failed = false
+    @State private var accountError: String?
+    /// model.onboarding.auth (not a fresh GenitaAuthClient) so the --stub-signin UI-test session counts too
+    private var signedIn: Bool { model.onboarding.auth.isSignedIn }
     static let labels = ["help": "Help with", "relationship": "Relationship", "challenge": "Challenge", "tempo": "Tempo", "initiative": "Reach out", "presenceDescription": "Presence"]
     static let scales = ["challenge": ["Gentle", "Direct"], "tempo": ["Reflective", "Quick"], "initiative": ["Only when asked", "Anticipate"]]
     static func label(for key: String) -> String { labels[key] ?? key.capitalized }
@@ -41,14 +43,16 @@ struct SettingsView: View {
                     LabeledContent("Setup", value: model.setup.depth.title)
                     ForEach(model.setup.answers.keys.sorted(), id: \.self) { key in LabeledContent(Self.label(for: key), value: Self.display(key, model.setup.answers[key] ?? "")) }
                 }
-                Section {
-                    Button("Privacy Policy") { if let u = URL(string: "https://thebeni.ai/genita/privacy") { openURL(u) } }
-                    Button("Terms") { if let u = URL(string: "https://thebeni.ai/genita/terms") { openURL(u) } }
+                if signedIn {
+                    // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
+                    Section("Account") {
+                        Button("Sign out") { signOut() }.disabled(working).accessibilityIdentifier("signOut")
+                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working).accessibilityIdentifier("deleteAccount")
+                    }
                 }
                 Section {
-                    // M02: sign out without a confirm; delete asks once (M02-D) and says it's done (M02-X)
-                    Button("Sign out") { signOut() }.disabled(working).accessibilityIdentifier("signOut")
-                    Button("Delete account", role: .destructive) { confirmDelete = true }.disabled(working).accessibilityIdentifier("deleteAccount")
+                    Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                    Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
                 }
             }.navigationTitle("Settings")
             #if os(iOS)
@@ -58,8 +62,10 @@ struct SettingsView: View {
             .confirmationDialog("Delete your account?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text("Your companion, conversations and memories are deleted. This can't be undone.") }
-            .alert("Couldn’t do that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
+            } message: { Text("This deletes your companion, your conversation, memories and Finds on your iPhone and Mac. It can’t be undone.") }
+            .alert("Couldn’t delete your account", isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(accountError ?? "") }
         }
         #if os(iOS)
         .presentationDetents([.large])
@@ -71,13 +77,12 @@ struct SettingsView: View {
     private func signOut() {
         working = true
         Task { @MainActor in
+            defer { working = false }
             await model.onboarding.auth.logout()
-            working = false
             dismiss()
             model.signedOut()
         }
     }
-
     private func deleteAccount() {
         working = true
         Task { @MainActor in
@@ -85,9 +90,10 @@ struct SettingsView: View {
             do {
                 _ = try await model.onboarding.auth.deleteAccount()
                 dismiss()
-                model.setup = SavedSetup()
-                model.signedOut()
-            } catch { failed = true }
+                model.accountDeleted()
+            } catch {
+                accountError = "Try again in a moment. Nothing was deleted."
+            }
         }
     }
 }

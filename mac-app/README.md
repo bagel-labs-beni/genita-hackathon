@@ -47,7 +47,9 @@ The native conversation stays visible until WebGL reports the first rendered fra
 
 The current checks cover builds, geometry and native WebGL rendering; they do not establish physical tracking accuracy, end-to-end hardware pairing reliability or live call continuity. Full profile/preferences/session synchronization remains separate from this local visual handoff.
 
-## Call interpretation (F8-L4, INT-M0~M2)
+## Call interpretation (F8-L4, INT-M0~M2) — cut for the hackathon build (D40)
+
+`MacInterpretController.enabled = false`: the ⋮ control is the disabled "More" again and the sheet never opens. iPhone face-to-face interpretation is not affected. The code below stays for later.
 
 ⋮ (More) → **Interpret a call** → pick FaceTime or Zoom → **Start interpreting**. Code: `GenitaMac/Interpret/`.
 
