@@ -21,9 +21,10 @@ enum FindsInk {
 struct FindReasonChips: View {
     let reasons: [FindCard.Reason]
     var body: some View {
-        HStack(spacing: 6) {
+        // wraps: each chip reads whole (two short chips usually share a line)
+        ChipLayout(spacing: 6) {
             ForEach(Array(reasons.enumerated()), id: \.offset) { _, r in
-                Text(r.text).font(TypeStyle.body(13, .medium)).foregroundStyle(FindsInk.blueText).lineLimit(1).truncationMode(.tail)
+                Text(r.text).font(TypeStyle.body(13, .medium)).foregroundStyle(FindsInk.blueText).lineLimit(1).truncationMode(.tail).frame(maxWidth: 260)
                     .padding(.horizontal, 10).frame(height: 26).background(FindsInk.blueSoft, in: Capsule())
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

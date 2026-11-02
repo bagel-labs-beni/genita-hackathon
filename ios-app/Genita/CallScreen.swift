@@ -134,6 +134,7 @@ struct CallCueView: View {
 /// The status line's pill, smaller, just under it.
 struct ProfileChipView: View {
     let text: String
+    @State private var shown = false
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
@@ -141,6 +142,8 @@ struct ProfileChipView: View {
         }
         .padding(.horizontal, 14).frame(height: 30)
         .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
+        .onAppear { withAnimation(.fade) { shown = true } }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("profileChip")
     }

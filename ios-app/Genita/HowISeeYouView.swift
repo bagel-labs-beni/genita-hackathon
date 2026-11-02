@@ -155,7 +155,7 @@ struct StoryCardView: View {
                 Spacer(minLength: 0)
                 if let ack {
                     Label(ack, systemImage: "checkmark.circle.fill").font(TypeStyle.body(14, .medium)).foregroundStyle(StoryInk.blueText)
-                        .labelStyle(.titleAndIcon).padding(.top, 6).accessibilityIdentifier("storyAck")
+                        .labelStyle(.titleAndIcon).padding(.top, 6).accessibilityElement(children: .combine).accessibilityIdentifier("storyAck")
                         .transition(.opacity)
                 }
                 Button(action: notMe) {
@@ -247,7 +247,7 @@ private struct TasteTags: View {
     @ViewBuilder private func row(_ name: String, _ items: [String], faded: Bool) -> some View {
         if !items.isEmpty {
             HStack(alignment: .top, spacing: 8) {
-                Text(name).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).frame(width: 52, height: 26, alignment: .leading)
+                Text(name).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute).lineLimit(1).fixedSize().frame(width: 70, height: 26, alignment: .leading)
                 ChipLayout(spacing: 6) {
                     ForEach(items.prefix(4), id: \.self) { t in
                         Text(t).font(TypeStyle.body(13, .medium)).foregroundStyle(faded ? CallInk.mute : CallInk.ink).strikethrough(faded, color: CallInk.mute.opacity(0.6))

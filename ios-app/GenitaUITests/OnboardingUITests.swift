@@ -80,7 +80,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(send.isEnabled)
         send.tap()
         XCTAssertTrue(send.waitForNonExistence(timeout: 15), "the sheet closes once it's saved")
-        let ack = taste.descendants(matching: .any)["storyAck"]
+        let ack = taste.descendants(matching: .any).matching(identifier: "storyAck").firstMatch
         XCTAssertTrue(ack.waitForExistence(timeout: 5), "ack line on the card")
         XCTAssertTrue(ack.label.contains("I'll remember that"))
         XCTAssertTrue(taste.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'cilantro'")).firstMatch.exists, "the card shows the correction")
