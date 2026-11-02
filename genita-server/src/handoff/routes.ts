@@ -140,8 +140,8 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
 }
 
 /**
- * The call socket's side of the gate. Audio frames (and their `audio` timing events) reach the
- * device only while it owns the conversation; the mic is ignored while it doesn't. Everything
+ * The call socket's side of the gate. Audio frames (and their `audio` timing events) and device-voice
+ * `say` lines (#157: the app speaks those itself) reach the device only while it owns the conversation; the mic is ignored while it doesn't. Everything
  * else (captions, state) still flows so the app stays in sync.
  */
 export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void): { sink: ClientSink; call: CallHandle } {
@@ -150,7 +150,7 @@ export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice,
     call,
     sink: {
       sendJson: (m) => {
-        if (m.type === "audio" && !call.mayPlay()) return;
+        if ((m.type === "audio" || m.type === "say") && !call.mayPlay()) return;
         sink.sendJson(m);
       },
       sendBinary: (b) => {

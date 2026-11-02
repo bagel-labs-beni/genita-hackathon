@@ -5,7 +5,20 @@
  */
 export type Config = {
   metaKey: string;
-  elevenKey: string;
+  /** ElevenLabs key; read only when serverTts is on, else null */
+  elevenKey: string | null;
+  /** server voice on: the Meta voice service (GENITA_VOICE_URL) or, legacy, GENITA_SERVER_TTS=1 ElevenLabs. Off = the app speaks (`say`, device mode) */
+  serverTts: boolean;
+  /**
+   * Server voice on our GPU (D3, Meta open model SeamlessM4T v2 on Modal): set by GENITA_VOICE_URL +
+   * GENITA_VOICE_TOKEN. Optional: without it the server runs device mode (the app speaks), so a
+   * judge can run the public repo with only a Meta key.
+   */
+  voice?: VoiceConfig | null;
+  /** GENITA_KLING=1: fal (gpt-image-2 scene fallback, Kling clips) in prep; needs FAL_KEY */
+  kling: boolean;
+  /** GENITA_PETER=1: Peter live worker (GENITA_PETER_URL/TOKEN) + Peter prepare */
+  peter: boolean;
   host: string;
   port: number;
   /** shared bearer token apps must present; unset = loopback-only dev mode */
@@ -28,19 +41,76 @@ export type Config = {
   speculateStableMs: number;
 };
 
+export type VoiceConfig = {
+  url: string;
+  token: string;
+  /** Seamless speaker per companion kind (0..199), picked by the 11/2 UTMOS sweep */
+  speakers: { human: number; animal: number; character: number };
+  /** speaking rate (1 = model default) */
+  speed: number;
+  /** give up on a sentence if its first audio takes longer than this (then the app speaks it) */
+  timeoutMs: number;
+  /** "seamless" (default) or "mms" (Meta MMS-TTS backup on the same service, no timing) */
+  model: "seamless" | "mms";
+};
+
+/** "human:12,animal:7,character:33" → per-kind Seamless speaker ids */
+export function parseSpeakers(v: string | undefined, d: VoiceConfig["speakers"]): VoiceConfig["speakers"] {
+  const out = { ...d };
+  for (const part of (v ?? "").split(",")) {
+    const [k, n] = part.split(":").map((x) => x.trim());
+    const id = Number(n);
+    if ((k === "human" || k === "animal" || k === "character") && Number.isInteger(id) && id >= 0 && id < 200) out[k] = id;
+  }
+  return out;
+}
+
 function num(v: string | undefined, d: number): number {
   const n = Number(v);
   return v !== undefined && v !== "" && Number.isFinite(n) ? n : d;
 }
 
+const DEFAULT_SPEAKERS: VoiceConfig["speakers"] = { human: 0, animal: 0, character: 0 };
+
+const flag = (v: string | undefined) => v === "1";
+
+/**
+ * Only MODEL_API_KEY is required (11/2: everything at call time is Meta or on
+ * the device). Each non-Meta vendor sits behind a flag that is off by default;
+ * its key is read and required only when its flag is on.
+ */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
-  const elevenKey = env.ELEVENLABS_API_KEY ?? "";
   if (!metaKey) throw new Error("MODEL_API_KEY is not set");
-  if (!elevenKey) throw new Error("ELEVENLABS_API_KEY is not set");
+  const voiceUrl = (env.GENITA_VOICE_URL ?? "").replace(/\/+$/, "");
+  const voice: VoiceConfig | null =
+    voiceUrl && env.GENITA_VOICE_TOKEN
+      ? {
+          url: voiceUrl,
+          token: env.GENITA_VOICE_TOKEN,
+          speakers: parseSpeakers(env.GENITA_VOICE_SPEAKERS, DEFAULT_SPEAKERS),
+          speed: Math.min(1.3, Math.max(0.8, num(env.GENITA_VOICE_SPEED, 1))),
+          timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
+          model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
+        }
+      : null;
+  if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
+  const serverTts = flag(env.GENITA_SERVER_TTS) || !!voice;
+  const kling = flag(env.GENITA_KLING);
+  const peter = flag(env.GENITA_PETER);
+  // ElevenLabs only as the legacy path when no Meta voice service is configured
+  const elevenKey = serverTts && !voice ? env.ELEVENLABS_API_KEY || null : null;
+  if (serverTts && !voice && !elevenKey) throw new Error("GENITA_SERVER_TTS=1 needs ELEVENLABS_API_KEY");
+  if (kling && !env.FAL_KEY) throw new Error("GENITA_KLING=1 needs FAL_KEY");
+  if (peter && !env.GENITA_PETER_URL) throw new Error("GENITA_PETER=1 needs GENITA_PETER_URL");
+  if (peter && !env.GENITA_PETER_TOKEN) throw new Error("GENITA_PETER=1 needs GENITA_PETER_TOKEN");
   return {
     metaKey,
     elevenKey,
+    serverTts,
+    voice,
+    kling,
+    peter,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,

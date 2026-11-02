@@ -143,6 +143,11 @@ export class Accounts {
     };
   }
 
+  /** Companion ids = Peter avatar ids (avatars/<id>/ in blob storage, /avatars/<id> on the GPU box). */
+  async companionIds(userId: string): Promise<string[]> {
+    return (await this.db.query("SELECT id FROM companions WHERE user_id = $1", [userId])).rows.map((r) => String(r.id));
+  }
+
   /** Deletes the user row; ON DELETE CASCADE clears every user-owned table. */
   async deleteUser(userId: string): Promise<boolean> {
     return (await this.db.query("DELETE FROM users WHERE id = $1", [userId])).rowCount > 0;

@@ -94,3 +94,29 @@ test("S3 blob store speaks S3 (path-style endpoint, list pagination, deletes)", 
   assert.ok(calls.some((c) => c.startsWith("GET /genita-media?continuation-token=2")), "followed the continuation token");
   assert.match(s.signedUrl("users/u2/images/z"), /^https:\/\/acct\.r2\.example\.com\/genita-media\/users\/u2\/images\/z\?X-Amz-Algorithm=AWS4-HMAC-SHA256&/);
 });
+
+test("S3 blob store with EC2 instance-role credentials (IMDSv2) sends the session token", async () => {
+  const { ImdsCredentials } = await import("../src/storage/imds.ts");
+  const calls: string[] = [];
+  const imdsFetch = (async (url: string | URL, init?: RequestInit) => {
+    const u = String(url);
+    calls.push(`${init?.method ?? "GET"} ${u.replace("http://imds", "")}`);
+    if (u.endsWith("/api/token")) return new Response("tok");
+    assert.equal((init?.headers as Record<string, string>)["x-aws-ec2-metadata-token"], "tok");
+    if (u.endsWith("/security-credentials/")) return new Response("genita-server-role\n");
+    return Response.json({ AccessKeyId: "ASIAEXAMPLE", SecretAccessKey: "secret", Token: "sess-token", Expiration: new Date(Date.now() + 6 * 3600_000).toISOString() });
+  }) as typeof fetch;
+  const imds = new ImdsCredentials({ fetch: imdsFetch, base: "http://imds" });
+  let seen: Record<string, string> = {};
+  const s3Fetch = (async (_url: string | URL, init?: RequestInit) => {
+    seen = init?.headers as Record<string, string>;
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  const s3 = new S3BlobStore({ bucket: "b", region: "us-east-1", creds: () => imds.current(), ready: imds.ready, fetch: s3Fetch });
+  await s3.put("users/u1/a.jpg", Buffer.from("x"), "image/jpeg");
+  imds.close();
+  assert.deepEqual(calls, ["PUT /latest/api/token", "GET /latest/meta-data/iam/security-credentials/", "GET /latest/meta-data/iam/security-credentials/genita-server-role"]);
+  assert.equal(seen["x-amz-security-token"], "sess-token");
+  assert.match(seen.authorization, /Credential=ASIAEXAMPLE\//);
+  assert.match(s3.signedUrl("users/u1/a.jpg") ?? "", /X-Amz-Security-Token=sess-token/);
+});

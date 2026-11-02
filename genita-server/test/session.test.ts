@@ -8,9 +8,13 @@ import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/elevenlabs.ts";
 
+// these tests cover server TTS mode (GENITA_SERVER_TTS=1); device mode: session-device.test.ts
 const config: Config = {
   metaKey: "x",
   elevenKey: "y",
+  serverTts: true,
+  kling: false,
+  peter: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
@@ -123,6 +127,7 @@ test("start → ready with lip plan; a voice turn streams reply text, framed aud
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "atlas" }));
   const ready = client.json.find((m) => m.type === "ready")!;
   assert.deepEqual(ready.lip, { requested: "atlas", active: "atlas", reason: null });
+  assert.equal(ready.tts, "server");
 
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
@@ -148,6 +153,27 @@ test("start → ready with lip plan; a voice turn streams reply text, framed aud
   assert.equal(deltas, "Hey you! That sounds great.");
   const states = client.json.filter((m) => m.type === "state").map((m) => m.state);
   assert.deepEqual(states.slice(0, 3), ["listening", "thinking", "speaking"]);
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 0, 2000);
+  session.close();
+});
+
+test("server-mode session on the real 'off' TTS dep (no GENITA_SERVER_TTS): reply text streams, no audio, no tts error, back to listening", async () => {
+  const { loadConfig } = await import("../src/config.ts");
+  const { defaultDeps } = await import("../src/server.ts");
+  const meta = loadConfig({ MODEL_API_KEY: "m" });
+  assert.equal(meta.elevenKey, null, "config loads without ElevenLabs");
+  // (with serverTts off a real session runs in device mode and never calls tts: session-device.test.ts)
+  const { asr, client, session } = setup();
+  (session as unknown as { deps: SessionDeps }).deps.tts = defaultDeps(meta, () => {}).tts; // the real "off" dep, no vendor call
+  await session.onClientText(JSON.stringify({ type: "start", persona, lip: "none" }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "I got the job" });
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Hey you! That sounds great.");
+  assert.equal(client.json.filter((m) => m.type === "reply.delta").map((m) => m.text).join(""), "Hey you! That sounds great.");
+  assert.equal(client.bin.length, 0, "no audio frames");
+  assert.equal(client.json.filter((m) => m.type === "error").length, 0, "text-only is not an error");
   await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 0, 2000);
   session.close();
 });

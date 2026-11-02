@@ -8,10 +8,11 @@
  *   GENITA_S3_BUCKET            enables S3; unset = files under GENITA_DATA_DIR/blobs
  *   GENITA_S3_REGION            default us-east-1
  *   GENITA_S3_ENDPOINT          e.g. https://<acct>.r2.cloudflarestorage.com (path-style); unset = AWS virtual-host
- *   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
+ *   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN, or GENITA_S3_CREDS=imds (EC2 instance role)
  */
 import { mkdir, readFile, readdir, rm, writeFile, rename } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
+import { ImdsCredentials } from "./imds.ts";
 import { canonicalQuery, presign, sha256Hex, signHeaders, uriEncode, type Credentials } from "./sigv4.ts";
 
 export interface BlobStore {
@@ -80,7 +81,7 @@ export class FsBlobStore implements BlobStore {
   }
 }
 
-export type S3Options = { bucket: string; region: string; endpoint?: string; creds: Credentials; fetch?: typeof fetch };
+export type S3Options = { bucket: string; region: string; endpoint?: string; creds: Credentials | (() => Credentials); ready?: Promise<void>; fetch?: typeof fetch };
 
 const xmlText = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 
@@ -106,7 +107,12 @@ export class S3BlobStore implements BlobStore {
     }
   }
 
+  private creds(): Credentials {
+    return typeof this.o.creds === "function" ? this.o.creds() : this.o.creds;
+  }
+
   private async req(method: string, key: string | null, opts: { query?: Record<string, string>; body?: Buffer; contentType?: string } = {}) {
+    if (this.o.ready) await this.o.ready;
     const path = key === null ? this.base || "/" : `${this.base}/${uriEncode(checkKey(key), true)}`;
     const payloadHash = sha256Hex(opts.body ?? "");
     const headers = signHeaders({
@@ -117,7 +123,7 @@ export class S3BlobStore implements BlobStore {
       headers: opts.contentType ? { "content-type": opts.contentType } : {},
       payloadHash,
       region: this.o.region,
-      creds: this.o.creds,
+      creds: this.creds(),
     });
     delete headers.host; // fetch sets it
     const qs = opts.query ? "?" + canonicalQuery(opts.query) : "";
@@ -157,13 +163,18 @@ export class S3BlobStore implements BlobStore {
     return keys.length;
   }
   signedUrl(key: string, expiresSec = 600) {
-    return presign({ method: "GET", host: this.host, protocol: this.protocol, path: `${this.base}/${uriEncode(checkKey(key), true)}`, region: this.o.region, creds: this.o.creds, expiresSec });
+    return presign({ method: "GET", host: this.host, protocol: this.protocol, path: `${this.base}/${uriEncode(checkKey(key), true)}`, region: this.o.region, creds: this.creds(), expiresSec });
   }
 }
 
 export function blobStoreFromEnv(env: NodeJS.ProcessEnv, fallbackDir: string): BlobStore {
   if (!env.GENITA_S3_BUCKET) return new FsBlobStore(fallbackDir);
-  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) throw new Error("GENITA_S3_BUCKET is set but AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not");
+  if (!env.AWS_ACCESS_KEY_ID || !env.AWS_SECRET_ACCESS_KEY) {
+    // On EC2 (GENITA_S3_CREDS=imds): instance-role credentials, refreshed in the background.
+    if (env.GENITA_S3_CREDS !== "imds") throw new Error("GENITA_S3_BUCKET is set but AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not (or set GENITA_S3_CREDS=imds on EC2)");
+    const imds = new ImdsCredentials();
+    return new S3BlobStore({ bucket: env.GENITA_S3_BUCKET, region: env.GENITA_S3_REGION || "us-east-1", creds: () => imds.current(), ready: imds.ready });
+  }
   return new S3BlobStore({
     bucket: env.GENITA_S3_BUCKET,
     region: env.GENITA_S3_REGION || "us-east-1",
