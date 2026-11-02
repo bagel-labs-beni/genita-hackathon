@@ -235,3 +235,56 @@ test("a story still being written after the import answered: GET story waits for
   assert.equal(s.ms, 9000);
   assert.equal(h.calls.length, 0);
 });
+
+test("Codex #3: a story written while the profile changed stays stale (the next read rewrites it)", async (t) => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async (req) => {
+    if (req.schemaName === "story_cards") { await gate; return STORY_RAW; }
+    return { updates: [{ field: "likes", text: "Avoids mushrooms.", replaces: [], chip: "no mushrooms" }], answered: { field: "", text: "", chip: "" } };
+  });
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  const first = h.p.story("u1", 0);
+  await first;
+  await h.p.voiceCorrection("u1", "Actually I don't eat mushrooms anymore.");
+  release();
+  await new Promise((r) => setTimeout(r, 30));
+  const stored = (await h.store.getStyle("u1"))!;
+  assert.ok(stored.story, "the story was saved");
+  assert.ok((stored.story!.stale ?? []).includes("taste"), "but marked stale");
+});
+
+test("Codex #2: the import replaces the style under the same lock as a call start", async (t) => {
+  const h = harness(() => null);
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  const fresh = toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Food: Vegetarian meals.")] } }, "import");
+  // a call start and an import at the same moment: the import must win whatever the order of their reads
+  await Promise.all([h.p.startCall("u1"), h.p.replaceStyle("u1", fresh)]);
+  assert.deepEqual((await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text), ["Food: Vegetarian meals."]);
+});
+
+test("Codex round 2: a slow earlier sheet correction can't undo a later one", async (t) => {
+  let n = 0;
+  let releaseA!: () => void;
+  const gateA = new Promise<void>((r) => (releaseA = r));
+  let clock = Date.parse("2026-11-03T01:00:00Z");
+  const h = harness(async (req) => {
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    const mine = ++n;
+    if (mine === 1) { await gateA; return { updates: [{ field: "likes", text: "Loves cilantro.", replaces: ["Dislikes cilantro."], chip: "cilantro" }], answered: { field: "", text: "", chip: "" } }; }
+    return { updates: [{ field: "likes", text: "Dislikes cilantro, really.", replaces: [], chip: "no cilantro" }], answered: { field: "", text: "", chip: "" } };
+  });
+  t.after(h.cleanup);
+  (h.p as unknown as { now: () => Date }).now = () => new Date((clock += 1000));
+  await withStory(h);
+  const a = h.p.correct("u1", { cardId: "taste", text: "I love cilantro" });
+  await new Promise((r) => setTimeout(r, 20));
+  await h.p.correct("u1", { cardId: "taste", text: "No wait, I hate cilantro" });
+  releaseA();
+  await a;
+  const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
+  assert.ok(likes.includes("Dislikes cilantro, really."));
+  assert.ok(!likes.includes("Loves cilantro."));
+});

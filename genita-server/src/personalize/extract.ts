@@ -46,9 +46,11 @@ export const CALL_EXTRACT_SCHEMA = {
 const strip = (s: string) => s.replace(/<\/?(?:call|current_profile|asked)>/gi, "");
 
 export function buildCallExtractRequest(card: StyleCard, turns: CallTurn[], asked: string | null): Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> } {
+  // only the user's own lines: the companion may repeat web pages or cards, which must never become profile lines
   const transcript = turns
-    .slice(-24)
-    .map((t) => `${t.role === "user" ? "User" : "Companion"}: ${t.text.slice(0, 500)}`)
+    .filter((t) => t.role === "user")
+    .slice(-16)
+    .map((t) => `User: ${t.text.slice(0, 500)}`)
     .join("\n");
   return {
     instructions: [

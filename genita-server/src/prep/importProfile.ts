@@ -234,6 +234,10 @@ export type StyleCard = {
   growth?: { calls: number; asked: Array<{ item: string; at: string; answered?: boolean; declined?: boolean }> };
   /** last correction / call update */
   updatedAt?: string;
+  /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
+  importedAt?: string;
+  /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
+  removed?: Array<{ text: string; at: string; field?: string }>;
 };
 
 type FindingKey = Exclude<SectionKey, "to_confirm">;

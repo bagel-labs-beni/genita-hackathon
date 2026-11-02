@@ -30,6 +30,8 @@ export type ProfileUpdate = {
   answers?: string;
   /** short "Updated: …" chip text (calls) */
   chip?: string;
+  /** when the user said it (ISO). A line saved after this wins: the update can't remove or contradict it */
+  asOf?: string;
 };
 export type AppliedUpdate = { field: ProfileField; text: string; label: "explicit" | "observed"; removed: string[]; chip?: string };
 
@@ -46,9 +48,10 @@ export function contradicts(a: string, b: string): boolean {
   const wa = words(a);
   const wb = words(b);
   if (!wa.size || !wb.size) return false;
-  let shared = 0;
-  for (const w of wa) if (wb.has(w)) shared++;
-  return shared / Math.min(wa.size, wb.size) >= 0.5;
+  // the same thing: every content word of the shorter line is in the longer one ("spicy noodles" ≠ "spicy curry")
+  const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
 }
 
 function safe(text: string): boolean {
@@ -60,8 +63,14 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   let toConfirm = [...(card.toConfirm ?? [])];
   const applied: AppliedUpdate[] = [];
   const stale = new Set<StoryId>();
+  // what was removed and when: an older analysis can't bring it back (Codex round 2)
+  // only removals from before this batch guard it: one correction's own replace must not block its own rewrite (Codex round 4)
+  const priorTombs = [...(card.removed ?? [])];
+  const tombs = [...priorTombs];
   for (const u of updates) {
     if (!u || !PROFILE_FIELDS.includes(u.field) || (u.label !== "explicit" && u.label !== "observed")) continue;
+    // said before the current profile was imported: belongs to an older profile
+    if (u.asOf && card.importedAt && card.importedAt > u.asOf) continue;
     const text = typeof u.text === "string" ? u.text.replace(/\s+/g, " ").trim().slice(0, 160) : "";
     const list = sections[u.field];
     const replaces = new Set((Array.isArray(u.replaces) ? u.replaces : []).filter((r) => typeof r === "string").map(norm));
@@ -70,7 +79,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
       const removed: string[] = [];
       for (const key of PROFILE_FIELDS) {
         const l = sections[key];
-        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text))) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); }
+        // a slow removal can't take out a line (re)saved after the user asked for it (Codex round 3)
+        for (let i = l.length - 1; i >= 0; i--) if (replaces.has(norm(l[i].text)) && !(u.asOf && l[i].at && l[i].at! > u.asOf)) { removed.unshift(l.splice(i, 1)[0].text); for (const id of cardsForField(key)) stale.add(id); tombs.push({ text: removed[0], at: u.asOf ?? at, field: key }); }
       }
       if (removed.length) applied.push({ field: u.field, text: "", label: "explicit", removed, ...(u.chip ? { chip: u.chip } : {}) });
       continue;
@@ -81,10 +91,17 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     // an observed pattern can't touch what the user said
     const target = (x: Finding) => x !== same && (replaces.has(norm(x.text)) || contradicts(x.text, text));
     if (u.label === "observed" && list.some((x) => x.label === "explicit" && target(x))) continue;
+    // newer wins by when it was said: a late call analysis can't undo a correction saved after that call started
+    if (u.asOf && list.some((x) => target(x) && x.at && x.at > u.asOf!)) continue;
+    // …nor bring back (or contradict) a line the user removed after it
+    // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
+    if (u.asOf && text && priorTombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
     for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
+    for (const r of removed) tombs.push({ text: r, at: u.asOf ?? at, field: u.field });
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
-    list.unshift({ text, label, scope: same?.scope ?? "any", at });
+    // `at` = when the user said it (order of what they said, not of when Spark finished) — Codex round 4
+    list.unshift({ text, label, scope: same?.scope ?? "any", at: u.asOf ?? at });
     while (list.length > SECTION_MAX) {
       const drop = [...list].reverse().find((x) => x.label !== "explicit") ?? list[list.length - 1];
       list.splice(list.lastIndexOf(drop), 1);
@@ -104,6 +121,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   }
   next.dropped = card.dropped;
   if (card.growth) next.growth = card.growth;
+  if (card.importedAt) next.importedAt = card.importedAt;
+  if (tombs.length) next.removed = tombs.slice(-40);
   if (card.story) next.story = { ...card.story, stale: [...new Set([...(card.story.stale ?? []), ...stale])] };
   next.updatedAt = at;
   return { card: next, applied, staleCards: [...stale] };

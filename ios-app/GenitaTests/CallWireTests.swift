@@ -50,15 +50,15 @@ import XCTest
     // MARK: server events
 
     func testDecodesReadyAndReadsLipPlan() throws {
-        let json = #"{"type":"ready","protocol":1,"sessionId":"s1","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"peter","active":"none","reason":"peter_not_deployed"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#
+        let json = #"{"type":"ready","protocol":1,"sessionId":"s1","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"atlas","active":"none","reason":"device_tts"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#
         guard case let .ready(r) = try ServerEvent.decode(json) else { return XCTFail() }
         XCTAssertEqual(r.lip.active, .none)
-        XCTAssertEqual(r.lip.reason, "peter_not_deployed")
+        XCTAssertEqual(r.lip.reason, "device_tts")
         XCTAssertEqual(r.bargeIn.minMs, 400)
     }
 
     func testDecodesAudioTimingWithAtlasMouth() throws {
-        let json = #"{"type":"audio","utteranceId":3,"seq":41,"sentence":0,"offsetMs":0,"durationMs":380,"sampleRate":24000,"model":"eleven_v4_turbo","words":[{"w":"That's","s":80,"e":310}],"mouth":[{"t":80,"v":"A"}]}"#
+        let json = #"{"type":"audio","utteranceId":3,"seq":41,"sentence":0,"offsetMs":0,"durationMs":380,"sampleRate":24000,"model":"seamless-m4t-v2","words":[{"w":"That's","s":80,"e":310}],"mouth":[{"t":80,"v":"A"}]}"#
         guard case let .audio(a) = try ServerEvent.decode(json) else { return XCTFail() }
         XCTAssertEqual(a.utteranceId, 3)
         XCTAssertEqual(a.seq, 41)
@@ -172,9 +172,8 @@ import XCTest
 
     func testLipChangedReplacesTheReadyPlan() {
         let call = CallController()
-        call.handle(#"{"type":"lip.changed","lip":{"requested":"peter","active":"peter","reason":null},"peter":{"bundleId":"genita-demo-native","pasteDy":12,"fps":25}}"#)
-        XCTAssertEqual(call.lip?.active, .peter)
-        XCTAssertEqual(call.peter?.pasteDy, 12)
+        call.handle(#"{"type":"lip.changed","lip":{"requested":"atlas","active":"atlas","reason":null}}"#)
+        XCTAssertEqual(call.lip?.active, .atlas)
     }
 
     func testToolCallsCountFindsOncePerReply() {
@@ -183,38 +182,6 @@ import XCTest
         call.handle(#"{"type":"tool","utteranceId":1,"name":"web_search","status":"done"}"#)
         call.handle(#"{"type":"tool","utteranceId":2,"name":"web_search","status":"searching"}"#)
         XCTAssertEqual(call.findsCount, 2)
-    }
-
-    // MARK: Peter hook (F4-L18)
-
-    func testPeterCropsWaitForJitterThenFollowThePlayhead() {
-        var mouth = PeterMouthBuffer()
-        let jpeg = { (k: UInt32) in Data([UInt8(k & 0xff)]) }
-        for k in 0..<5 { mouth.add(utteranceId: 1, frame: UInt32(k), jpeg: jpeg(UInt32(k))) }
-        XCTAssertNil(mouth.frame(utteranceId: 1, positionMs: 0), "only 200 ms buffered: keep the silent loop")
-        for k in 5..<20 { mouth.add(utteranceId: 1, frame: UInt32(k), jpeg: jpeg(UInt32(k))) }
-        XCTAssertEqual(mouth.frame(utteranceId: 1, positionMs: 85), jpeg(2), "k = 85 ms / 40 ms")
-        XCTAssertEqual(mouth.frame(utteranceId: 1, positionMs: 21 * 40), jpeg(19), "a late batch reuses the last crop briefly")
-        XCTAssertNil(mouth.frame(utteranceId: 1, positionMs: 40 * 40), "far past the crops: back to the loop")
-    }
-
-    func testCancelledUtteranceDropsLateCrops() {
-        var mouth = PeterMouthBuffer()
-        for k in 0..<20 { mouth.add(utteranceId: 4, frame: UInt32(k), jpeg: Data([1])) }
-        mouth.cancel(4)
-        mouth.add(utteranceId: 4, frame: 20, jpeg: Data([1]))
-        XCTAssertEqual(mouth.count(4), 0)
-        XCTAssertNil(mouth.frame(utteranceId: 4, positionMs: 0))
-    }
-
-    func testPeterBinaryFrameLayout() throws {
-        // header seq = utteranceId 3, payload = frame 7 (u32 LE) + JPEG bytes
-        let data = Data([0x47, 0x41, 2, 0, 3, 0, 0, 0, 7, 0, 0, 0, 0xFF, 0xD8])
-        let header = try XCTUnwrap(AudioFrameHeader(frame: data))
-        XCTAssertEqual(header.kind, GenitaProtocol.frameKindPeter)
-        let crop = try XCTUnwrap(AudioFrameHeader.peterCrop(of: data))
-        XCTAssertEqual(crop.frame, 7)
-        XCTAssertEqual(Array(crop.jpeg), [0xFF, 0xD8])
     }
 
     func testHandoffPeerNameFitsMultipeerLimit() {

@@ -27,7 +27,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
-import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { FACE_KEYS, type FaceKey } from "./face.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
@@ -72,17 +72,12 @@ export function userIdOf(req: IncomingMessage): string {
 
 const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
 
-/**
- * Session `lip`: Peter for humans only when GENITA_PETER is on; the mouth atlas
- * only on the Kling pipeline; otherwise "none" (the device animates the face set).
- */
-function sessionLip(c: CompanionRecord, flags: { peter?: boolean; kling?: boolean }) {
-  if (c.type === "human" && flags.peter) return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
-  if (c.type !== "human" && flags.kling) return "atlas";
+/** All companion kinds animate the Meta face set on the device. */
+function sessionLip(_c: CompanionRecord): "none" {
   return "none";
 }
 
-export function companionView(c: CompanionRecord, style: StyleCard | null, flags: { peter?: boolean; kling?: boolean } = {}) {
+export function companionView(c: CompanionRecord, style: StyleCard | null) {
   return {
     id: c.id,
     type: c.type,
@@ -95,7 +90,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null, flags
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c, flags), peter: prepView(c).lips.peter }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c) }
       : null,
   };
 }
@@ -109,6 +104,8 @@ const SUGGEST_PER_MIN = 10;
 /** a profile correction is up to two Spark calls: same budget */
 const CORRECT_PER_MIN = 10;
 const STORY_WAIT_MAX_S = 10;
+/** a story read can start a Spark write: 20 reads per user per minute (the app polls at most 3 times) */
+const STORY_PER_MIN = 20;
 const PROFILE_JSON_LIMIT = 2048;
 
 export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
@@ -127,6 +124,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   };
   const allowSuggest = limiter(SUGGEST_PER_MIN);
   const allowCorrect = limiter(CORRECT_PER_MIN);
+  const allowStory = limiter(STORY_PER_MIN);
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
@@ -157,7 +155,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/import/skip") {
       const r = skipStyleCard(await readJson(req));
       if (!r.ok) throw new PrepError(400, "bad_skip", "Pick up to 8 short answers.");
-      await d.store.putStyle(user, r.card);
+      if (d.personalize) await d.personalize.replaceStyle(user, r.card);
+      else await d.store.putStyle(user, r.card);
       d.log("import.skipped", { item_count: r.card.itemCount, partial: r.card.partial });
       return send(res, 200, { status: "ready", style: r.card, profile: styleProfileText(r.card) });
     }
@@ -215,9 +214,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       } catch {
         throw new PrepError(404, "unknown_voice");
       }
-      const mp3 = await voicePreview(d, id);
-      res.writeHead(200, { "content-type": "audio/mpeg", "content-length": mp3.length, "cache-control": "public, max-age=86400" });
-      return void res.end(mp3);
+      const wav = await voicePreview(d, id);
+      res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length, "cache-control": "public, max-age=86400" });
+      return void res.end(wav);
     }
 
     if (m === "POST" && p === "/v1/companion") {
@@ -240,12 +239,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voiceId: voice.id,
         name,
         createdAt: new Date().toISOString(),
-        prep: newPrepState({ kling: d.kling }),
+        prep: newPrepState(),
       };
       await d.store.putCompanion(c);
       d.log("voice.selected", { voice_id: voice.id });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 201, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "POST" && p === "/v1/companion/name/suggest") {
@@ -268,7 +267,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      return send(res, 200, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 200, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "GET" && p === "/v1/companion/prep") {
@@ -293,7 +292,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/companion/prep/retry") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      if (c.prep.status === "ready") return send(res, 200, prepView(c));
+      if (c.prep.status === "ready" && !needsFaceSet(c)) return send(res, 200, prepView(c));
       return send(res, 202, prepView(await runner.retry(user)));
     }
 
@@ -302,12 +301,13 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       const next = await savePrefs(d, c, b.depth, b.answers);
-      const v = companionView(next, await d.store.getStyle(user), d);
+      const v = companionView(next, await d.store.getStyle(user));
       return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
     }
 
     if (m === "GET" && p === "/v1/profile/story") {
       if (!d.personalize) throw new PrepError(404, "not_found");
+      if (!allowStory(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
       const w = Number(url.searchParams.get("wait") ?? 0);
       const waitMs = Number.isFinite(w) ? Math.round(Math.min(STORY_WAIT_MAX_S, Math.max(0, w)) * 1000) : 0;
       return send(res, 200, await d.personalize.story(user, waitMs));

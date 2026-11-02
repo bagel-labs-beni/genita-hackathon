@@ -28,6 +28,7 @@ export const STORY_IDS = ["think", "talk", "taste", "help", "lines", "unknowns"]
 export type StoryId = (typeof STORY_IDS)[number];
 export type SparkStoryId = Exclude<StoryId, "unknowns">;
 const SPARK_IDS: SparkStoryId[] = ["think", "talk", "taste", "help", "lines"];
+export const SPARK_STORY_IDS: readonly SparkStoryId[] = SPARK_IDS;
 
 export type Evidence = "explicit" | "observed" | "memory";
 export type StoryItem = { text: string; evidence: Evidence };
@@ -333,14 +334,34 @@ function tasteFallback(card: StyleCard, base: StoryCard): StoryCard {
 type RawItem = { text?: unknown; evidence?: unknown };
 type RawCard = { id?: unknown; headline?: unknown; items?: unknown; promise?: unknown; evidence?: unknown; tags?: unknown; help?: unknown };
 
+const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []).map((w) => w.slice(0, 6)));
+/**
+ * Evidence for one shown line: the best label among the card's source lines it echoes. A line that only echoes
+ * suggestions is not shown (null); a line that echoes nothing gets the weakest fact label behind the card.
+ */
+function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence | null {
+  const words = keyWords(text);
+  const sources = SOURCES[id].flatMap((k) => card.sections?.[k] ?? []);
+  const hits = sources.filter((f) => [...keyWords(f.text)].some((w) => words.has(w)));
+  const factHits = hits.filter((f) => f.label !== "suggested");
+  if (factHits.length) return factHits.reduce((b, f) => (RANK[f.label] > RANK[b] ? (f.label as Evidence) : b), factHits[0].label as Evidence);
+  if (hits.length) return null;
+  const facts = sources.filter((f) => f.label !== "suggested");
+  return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
+}
+
 function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence): StoryCard | null {
   const headline = FIXED_HEADLINE[id] ?? headlineOf(r.headline);
   if (!headline) return null;
   const sc: StoryCard = { id, eyebrow: EYEBROWS[id], headline, items: [], evidence: clamp(r.evidence, best) };
   if (id === "think" || id === "talk" || id === "lines") {
     const items = (Array.isArray(r.items) ? (r.items as RawItem[]) : [])
-      .map((i) => ({ text: clean(i?.text, 240), evidence: clamp(i?.evidence, best) }))
-      .filter((i) => i.text && !storyTextProblem(i.text))
+      .map((i) => {
+        const text = clean(i?.text, 240);
+        const ev = text ? lineEvidence(text, card, id) : null;
+        return { text, evidence: ev ? clamp(i?.evidence, ev) : null };
+      })
+      .filter((i): i is StoryItem => !!i.text && !!i.evidence && !storyTextProblem(i.text))
       .slice(0, id === "lines" ? 4 : 2);
     if (!items.length) return null;
     sc.items = items;
@@ -354,7 +375,7 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
     const seen = new Set<string>();
     sc.tags = (Array.isArray(r.tags) ? (r.tags as Array<{ group?: unknown; text?: unknown; dislike?: unknown }>) : [])
       .map((t) => ({ group: (groups.includes(t?.group as string) ? t.group : "style") as StoryTag["group"], text: clean(t?.text, 40), dislike: t?.dislike === true }))
-      .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
+      .filter((t) => t.text && t.text.length <= 28 && !storyTextProblem(t.text) && lineEvidence(t.text, card, id) !== null && !seen.has(t.text.toLowerCase()) && !!seen.add(t.text.toLowerCase()))
       .slice(0, 14);
     if (!sc.tags.length) return null;
     if (!card.sections.likes.some((x) => x.label !== "suggested")) sc.note = NO_FAVORITES;
@@ -362,7 +383,7 @@ function sparkCard(id: SparkStoryId, r: RawCard, card: StyleCard, best: Evidence
   if (id === "help") {
     sc.help = (Array.isArray(r.help) ? (r.help as Array<{ label?: unknown; sub?: unknown; mode?: unknown }>) : [])
       .map((h) => ({ label: clean(h?.label, 48), sub: clean(h?.sub, 40), mode: h?.mode === "just_do_it" ? ("just_do_it" as const) : ("ask_first" as const) }))
-      .filter((h) => h.label && h.label.length <= 40 && !storyTextProblem(h.label) && !storyTextProblem(h.sub))
+      .filter((h) => h.label && h.label.length <= 40 && !storyTextProblem(h.label) && !storyTextProblem(h.sub) && lineEvidence(`${h.label} ${h.sub}`, card, id) !== null)
       .slice(0, 3);
     if (!sc.help.length) return null;
   }
