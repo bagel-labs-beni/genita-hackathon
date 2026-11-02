@@ -1,7 +1,8 @@
 name: Accounts and storage
 
 # genita-server tests on a real Postgres (the local default is PGlite) and the
-# GenitaKit Swift package tests (auth client, start routing, protocol samples).
+# GenitaKit Swift package tests (auth client, start routing, protocol samples, face + lips)
+# and a FaceRender sample mp4 from the fixture face set (artifact face-kit-sample).
 on:
   pull_request:
     paths:
@@ -72,3 +73,24 @@ jobs:
       - name: build for iOS
         working-directory: shared/GenitaKit
         run: xcodebuild -scheme GenitaKit -destination "generic/platform=iOS Simulator" -derivedDataPath "$RUNNER_TEMP/dd" build CODE_SIGNING_ALLOWED=NO | tail -3
+      - name: FaceRender sample (fixture face set → mp4, fps, A/V offset)
+        working-directory: shared/GenitaKit/Tools/FaceRender
+        run: |
+          swift build -c release 2>&1 | tail -3
+          OUT="$RUNNER_TEMP/face"; FACE=../../Tests/GenitaKitTests/Fixtures/face-animal
+          mkdir -p "$OUT"
+          TEXT="Oh wow, you are home. Want to go for a walk? I found the best stick in the whole park today."
+          if say -o "$OUT/sample.aiff" "$TEXT"; then
+            .build/release/FaceRender --face "$FACE" --audio "$OUT/sample.aiff" --text "$TEXT" --out "$OUT/animal-text-loudness.mp4" --frames-dir "$OUT/frames" --frames-prefix animal
+          else
+            echo "::warning::say could not write audio on this runner"
+          fi
+          .build/release/FaceRender --face "$FACE" --say "$TEXT" --out "$OUT/animal-word-timings.mp4" || echo "::warning::AVSpeechSynthesizer unavailable on this runner"
+          ls "$OUT"/*.mp4
+      - name: Upload face sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: face-kit-sample
+          path: ${{ runner.temp }}/face
+          if-no-files-found: warn
