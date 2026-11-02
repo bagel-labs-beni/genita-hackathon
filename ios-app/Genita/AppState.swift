@@ -56,6 +56,8 @@ struct SavedSetup: Codable {
     var skipInterests: [String]?
     var skipReplies: String?
     var skipAvoid: [String]?
+    /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
+    var skipLikes: [String]?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
@@ -65,7 +67,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 @MainActor @Observable final class AppState {

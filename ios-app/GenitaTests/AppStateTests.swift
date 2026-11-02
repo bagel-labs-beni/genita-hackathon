@@ -217,4 +217,15 @@ import UIKit
         XCTAssertTrue(AppState.prompt.hasPrefix("Create an evidence-based personalization profile for Genita"))
         XCTAssertTrue(AppState.prompt.contains("How Genita can help"))
     }
+
+    /// N1–N3 answers → what the skip import sends (N3 = taste picker: likes and things to avoid).
+    func testSkipAnswersFromTheTastePicker() {
+        var s = SavedSetup()
+        s.skipInterests = ["Design", "Food"]; s.skipLikes = ["Minimal", "Spicy", "Food"]; s.skipAvoid = ["Seafood"]
+        let a = AppState.skipAnswers(s)
+        XCTAssertEqual(a.interests, ["Design", "Food", "Minimal", "Spicy"])
+        XCTAssertEqual(a.avoid, ["Seafood"])
+        s.skipLikes = (1...10).map { "c\($0)" }
+        XCTAssertEqual(AppState.skipAnswers(s).interests.count, 8, "the server takes at most 8")
+    }
 }

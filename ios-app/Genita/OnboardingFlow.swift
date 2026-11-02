@@ -110,6 +110,13 @@ extension AppState {
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
 
+    /// What N1–N3 send: N1 interests plus the N3 likes as interests, the N3 avoids as things to avoid
+    /// (the server takes at most 8 of each).
+    static func skipAnswers(_ s: SavedSetup) -> (interests: [String], avoid: [String]) {
+        func unique(_ xs: [String]) -> [String] { var seen = Set<String>(); return xs.filter { seen.insert($0).inserted } }
+        return (Array(unique((s.skipInterests ?? []) + (s.skipLikes ?? [])).prefix(8)), Array(unique(s.skipAvoid ?? []).prefix(8)))
+    }
+
     /// N1–N3 Continue → I04-S (same rows, from the chips).
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
@@ -117,7 +124,8 @@ extension AppState {
         Task {
             defer { importing = false }
             do {
-                applyStyle(try await onboarding.importSkip(interests: setup.skipInterests ?? [], replies: setup.skipReplies, avoid: setup.skipAvoid ?? []))
+                let answers = Self.skipAnswers(setup)
+                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, avoid: answers.avoid))
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }
