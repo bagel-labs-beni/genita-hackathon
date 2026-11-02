@@ -1,5 +1,5 @@
 /**
- * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge] [--url=wss://…/v1/session] [--tts=device|server]
+ * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge] [--url=wss://…/v1/session] [--tts=device|server] [--mode=interpret]
  *
  * Real keys, real vendors. Starts the server in-process on loopback, then acts
  * like the app: streams mic PCM (24 kHz s16le) in real time, 80 ms frames,
@@ -30,6 +30,8 @@ const ttsArg = args.find((a) => a.startsWith("--tts="))?.slice(6) ?? "device";
 if (ttsArg !== "device" && ttsArg !== "server") throw new Error("--tts must be device or server");
 if (ttsArg === "server") process.env.GENITA_SERVER_TTS = "1";
 const doBarge = !args.includes("--no-barge");
+// --mode=interpret: every turn is translated (Korean → English for the user, English → Korean for the other person)
+const modeArg = args.find((a) => a.startsWith("--mode="))?.slice(7) === "interpret" ? "interpret" : "chat";
 const lipArg = args.find((a) => a.startsWith("--lip="))?.slice(6) ?? "atlas";
 type PeterStat = { firstAudio?: number; firstCrop?: number; lastCrop?: number; crops: number; gaps: number[]; jpegs: Map<number, Buffer> };
 const peterStats = new Map<number, PeterStat>();
@@ -179,6 +181,7 @@ ws.send(
     user: { name: "Chelsea" },
     lip: lipArg === "peter" ? { mode: "peter", fallback: "none" } : lipArg,
     tts: ttsArg,
+    mode: modeArg,
   }),
 );
 const ready = await waitMsg((m) => m.type === "ready", 0);
