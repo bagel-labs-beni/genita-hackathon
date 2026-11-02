@@ -801,8 +801,21 @@ export class Session {
     let resolveSaid: (t: string | null) => void = () => {};
     if (!interpret && !announce && !greeting && this.finds) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
-      this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said });
+      // history already holds this turn (remember above): the lines before it
+      const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
+      const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
+      if (started?.ack) {
+        // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
+        // the card's own line follows when it lands
+        if (spec && speculative === "hit") spec.abort.abort();
+        const ack = started.ack;
+        pre = (async function* () {
+          yield { type: "text" as const, delta: ack };
+          yield { type: "done" as const, responseId: null, text: ack, status: "completed" };
+        })();
+        this.log("finds.ack", { utteranceId, kind: started.kind });
+      }
     }
 
     const splitter = new SentenceSplitter();

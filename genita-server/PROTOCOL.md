@@ -22,6 +22,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 
 ```
@@ -291,6 +292,30 @@ how[], page?{url, opened}, saved?`. Image `url`s are server-relative
 When the card lands the companion says `card.say` as its own short reply — only
 into silence, after the current reply, and not if the user starts talking first.
 
+**Product search (F7 PF-1 / MAC-RS, D2 D24 D25).** A shopping ask needs no camera
+("can we look for a jacket for this weekend?", "find a couple that match my style,
+and send me the links"). That turn's reply is a short line ("On it.") — never a
+full answer, which would guess products and links — and the card follows:
+
+```
+find.started {kind:"product", title:"Looking for 2 that match your style…", detail:"Jacket · searching shops"}
+→ find.progress {detail:"Light jacket · checking 2 shops"} → find.created (products[], pictures pending)
+→ find.image {slot:"product-1"|"product-2"} → the companion says card.say
+```
+
+`products[]` holds at most 2 product detail pages. Each `url` is an `open_page` the
+search really completed (Spark's tool trace); a URL the model only wrote, a failed
+open, or a category / collection / search page (URL shape, or the page's own
+og:type / JSON-LD) is dropped. `price` only when the page showed it (absent → show
+"Price on site"). `taste` (blue chip) follows a line of the account's import
+(I04 Likes & dislikes), quoted in `evidence.style`; empty when there is none.
+`situation` (grey chip) follows what they said (+ weather), quoted in
+`evidence.situation`. One proven product → the card has one and says so; none →
+`find.failed {reason:"search_failed"}` ("Couldn't find a good match…"). A later
+product ask in the same call that names no new thing ("match my style") refines
+the last search. Pictures are the page's og:image, fetched by the server (public
+https hosts only, size-capped) and served like illustrations.
+
 REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 
 | method | path | |
@@ -303,7 +328,7 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 | GET | `/v1/finds/:id/images/:slot` | illustration bytes (`?token=` also accepted) |
 | DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
 
-Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
+Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations · `GENITA_SHOP_REGION` (default `US`) where product search shops.
 
 ## Errors
 

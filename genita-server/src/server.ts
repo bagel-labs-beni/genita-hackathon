@@ -25,6 +25,7 @@ import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
+import { likesFromStyle } from "./finds/setup.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
 import { createMemory } from "./memory/index.ts";
@@ -88,6 +89,8 @@ export async function startServer(
   const sessions = new Map<string, Session>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
+  if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried

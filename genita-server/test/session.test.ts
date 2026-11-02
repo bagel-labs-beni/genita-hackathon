@@ -499,6 +499,58 @@ test("finds: a camera cooking question is answered in voice first, the card land
   s2.close();
 });
 
+test("finds: a product ask by voice alone → 'On it.' at once (no guessed answer), then the card and its line; saved to the account", async () => {
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<happy> Sure! Try the Acme jacket at acme.example.com." });
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  const store = new MemoryFindsStore();
+  const P = ["https://shop.example.com/products/chore-jacket", "https://store.example.com/product/overshirt-123456.html"];
+  const likesAsked: string[] = [];
+  const vendors = {
+    async spark(req: SparkRequest) {
+      assert.match(JSON.stringify(req.input), /Clean, minimal clothes/, "the account's own import line");
+      await sleep(5);
+      return {
+        text: JSON.stringify({ label: "Light jacket", title: "Two for the weekend", style_line: "Clean, minimal clothes.", situation_line: "This weekend", items: P.map((url, i) => ({ name: `Jacket ${i + 1}`, url, store: "Shop", price: "", taste: "Clean, minimal", situation: "For the weekend" })), say: "Two options. Simple cuts, like you prefer." }),
+        output: P.map((url) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url } })),
+      };
+    },
+    async *sparkStream() {
+      yield { type: "done" as const, responseId: null, text: "", status: "completed" };
+    },
+    async sam() { return []; },
+    async image() { return Buffer.from([0xff, 0xd8]); },
+    async pageFacts() { return { kind: "product" as const }; },
+    async productImage() { return null; },
+  };
+  const s2 = new Session("fp", client, {
+    ...(session as unknown as { deps: SessionDeps }).deps,
+    finds: { vendors, store, images: true, imageBase: "/v1/finds", likes: async (u: string) => (likesAsked.push(u), ["Clean, minimal clothes."]) },
+    userId: "acct-7",
+  });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const before = sparkCalls.length;
+  await s2.onClientText(JSON.stringify({ type: "text", text: "Jin, can we look for a jacket for this weekend?" }));
+  const ack = await client.waitFor((m) => m.type === "reply", 3000);
+  assert.equal(ack.text, "On it.");
+  assert.equal(sparkCalls.length, before, "no full Spark answer for the turn (it would guess products and links)");
+  const started = await client.waitFor((m) => m.type === "find.started", 3000);
+  assert.equal(started.kind, "product");
+  const created = await client.waitFor((m) => m.type === "find.created", 3000);
+  const ackDelta = client.json.find((m) => m.type === "reply.delta" && m.text === "On it.")!;
+  assert.ok(client.json.indexOf(ackDelta) < client.json.indexOf(created), "the short line comes before the card");
+  const card = created.card as { products: { url: string }[] };
+  assert.deepEqual(card.products.map((p) => p.url), P);
+  await client.waitFor((m) => m.type === "reply" && m.text === "Two options. Simple cuts, like you prefer.", 3000);
+  assert.deepEqual(ttsCalls.slice(-3), ["On it.", "Two options.", "Simple cuts, like you prefer."]);
+  await sleep(10);
+  assert.deepEqual(likesAsked, ["acct-7"]);
+  const saved = await store.list(ownerKey("acct-7"));
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].kind, "product");
+  s2.close();
+});
+
 test("finds: no card for a plain chat turn, and none without the finds deps", async () => {
   const { client, session } = setup();
   await session.onClientText(JSON.stringify({ type: "start", persona }));

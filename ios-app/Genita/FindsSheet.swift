@@ -299,6 +299,8 @@ struct FindsSheet: View {
         case .recipe: "Walk me through it"
         case .outfit: "Show me one more"
         case .link: "Read it with me"
+        case .product: "Save to Finds"
+        case .unknown: "Tell me more"
         }
     }
 
@@ -354,7 +356,7 @@ struct FindCardPage: View {
                 switch card.kind {
                 case .recipe: recipe
                 case .outfit: outfit
-                case .link: link
+                case .link, .product, .unknown: link
                 }
                 if !card.ask.isEmpty { askSection.id("ask") }
                 if !card.sources.isEmpty { sourcesSection.id("sources") }

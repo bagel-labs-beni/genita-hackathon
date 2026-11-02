@@ -1,0 +1,47 @@
+{
+  "type": "find.created",
+  "findId": "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43",
+  "card": {
+    "id": "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43",
+    "kind": "product",
+    "createdAt": "2026-11-03T06:10:00.000Z",
+    "eyebrow": "From what you said",
+    "title": "Two for the weekend",
+    "subtitle": "Light jackets, matched to your style.",
+    "status": "2 links · northline.example.com, fieldandco.example.com",
+    "say": "Two options. Simple cuts, like you prefer.",
+    "items": [],
+    "steps": [],
+    "options": [],
+    "why": [],
+    "ask": [],
+    "sources": [
+      { "title": "Cotton chore jacket", "url": "https://northline.example.com/products/cotton-chore-jacket-navy", "domain": "northline.example.com" },
+      { "title": "Linen overshirt", "url": "https://fieldandco.example.com/product/linen-overshirt-123456.html", "domain": "fieldandco.example.com" }
+    ],
+    "how": ["Blue: your style, from your import. Grey: what you said.", "Searched the web · northline.example.com, fieldandco.example.com"],
+    "products": [
+      {
+        "id": "p1",
+        "name": "Cotton chore jacket",
+        "url": "https://northline.example.com/products/cotton-chore-jacket-navy",
+        "domain": "northline.example.com",
+        "store": "Northline",
+        "price": "$68",
+        "image": { "slot": "product-1", "status": "pending" },
+        "taste": "Clean, minimal",
+        "situation": "Light for a weekend"
+      },
+      {
+        "id": "p2",
+        "name": "Linen overshirt",
+        "url": "https://fieldandco.example.com/product/linen-overshirt-123456.html",
+        "domain": "fieldandco.example.com",
+        "store": "Field & Co.",
+        "taste": "Understated color",
+        "situation": "Easy to layer"
+      }
+    ],
+    "evidence": { "style": "Clean, minimal clothes. Understated colors.", "situation": "Mild and dry this weekend, 18°C" }
+  }
+}

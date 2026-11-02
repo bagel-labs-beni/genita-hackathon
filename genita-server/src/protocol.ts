@@ -89,7 +89,7 @@ export type ClientMessage =
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 
-export type FindKind = "recipe" | "outfit" | "link";
+export type FindKind = "recipe" | "outfit" | "link" | "product";
 /** checking → have (Spark YES + SAM box) | maybe (Spark YES, no box: "맞아?") | buy (recipe only) */
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */
@@ -132,6 +132,28 @@ export type FindCard = {
   how: string[];
   page?: { url: string; opened: boolean };
   saved?: boolean;
+  /** kind "product" (F7 PF-1 / MAC-RS): up to 2 product detail pages the search really opened */
+  products?: FindProduct[];
+  /** kind "product": what this answer is based on (MAC-RS evidence line) */
+  evidence?: { style: string; situation: string };
+};
+/**
+ * One product card. `url` is a product detail page found in Spark's tool trace
+ * (open_page completed) — never a category or search page, never a URL the
+ * model only wrote. `price` only when it was on the page. Reasons are the two
+ * chips: `taste` from the user's import (Likes & dislikes), `situation` from what
+ * they said ("this weekend", weather).
+ */
+export type FindProduct = {
+  id: string;
+  name: string;
+  url: string;
+  domain: string;
+  store: string;
+  price?: string;
+  image?: FindImage;
+  taste: string;
+  situation: string;
 };
 
 // ───────────────────────── server → app ─────────────────────────
