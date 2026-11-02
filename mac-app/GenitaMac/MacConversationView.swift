@@ -158,8 +158,9 @@ struct MacConversationView: View {
         if linkOpened != nil { return nil }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
+        // the server's spoken line for the card (one line in the pill); otherwise the call cue, as on the iPhone —
+        // no app copy (the searching "On it." is the server's spoken reply, heard as "{name} is talking")
         if sheetFull, let say = call.finds.current?.card?.say, !say.isEmpty { return say }
-        if call.finds.state == .searching { return "On it…" }
         return MacCallCue.text(call.cue, name: macCall.companionName ?? call.companionName)
     }
     /// Face tap: folds an open sheet (r03), otherwise stops the companion mid-sentence.

@@ -32,10 +32,9 @@ struct MacCallCue: View {
     /// One line of Pretendard 14 medium plus the pill's 8 + 8 padding (render check in Tools/watch-shots).
     static let oneLineHeight: CGFloat = 34
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            if wave { MacTalkWave(color: MacSheetInk.onInk).padding(.top, 4) }
-            Text(text).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.onInk).lineSpacing(4).lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .center, spacing: 8) {
+            if wave { MacTalkWave(color: MacSheetInk.onInk) }
+            OneLineText(text: text, font: MacSheetInk.sans(14, .medium), color: MacSheetInk.onInk, alternates: CueLine.summaries(text))
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(MacSheetInk.pill, in: RoundedRectangle(cornerRadius: 18))

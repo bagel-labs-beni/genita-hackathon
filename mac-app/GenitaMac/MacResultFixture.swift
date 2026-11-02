@@ -6,7 +6,7 @@ import Foundation
 /// with the Figma frames' copy. Pictures stay pending (the renders have no server), so the cards show the bag.
 enum MacResultFixture {
     static let findId = "mac-rs-fixture"
-    static let started = #"{"type":"find.started","findId":"mac-rs-fixture","utteranceId":3,"kind":"product","title":"Looking for 2 that match your style…","detail":"Light jacket · this weekend"}"#
+    static let started = #"{"type":"find.started","findId":"mac-rs-fixture","utteranceId":3,"kind":"product","title":"Finding 2 for your style…","detail":"Light jacket · searching shops"}"#
     static let created = card(id: findId)
     /// PF-1d: the server's search_failed line (product.ts), split "Title. Body" by the shared model.
     static let failed = #"{"type":"find.failed","findId":"mac-rs-fixture","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
