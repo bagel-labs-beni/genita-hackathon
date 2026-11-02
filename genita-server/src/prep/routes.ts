@@ -7,8 +7,8 @@
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
  *   GET  /v1/companion/voices?imageId=      F2-L8  four voices, Spark order
  *   GET  /v1/companion/voices/:id/preview   F2-L8  mp3 (cached)
- *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
- *   GET  /v1/companion                      companion + prep + persona
+ *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists; a D41 demo one is replaced) + start prep
+ *   GET  /v1/companion                      companion + prep + persona + demo
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, emotionVideos}
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
@@ -68,6 +68,8 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     voiceId: c.voiceId,
     imageId: c.imageId,
     createdAt: c.createdAt,
+    /** D41: the ready-made judge demo companion; POST /v1/companion replaces it */
+    demo: c.demo === true,
     prep: prepView(c),
     prefs: c.prefs ?? null,
     persona: c.persona ?? null,
@@ -161,13 +163,19 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "POST" && p === "/v1/companion") {
       const b = await readJson(req);
-      if (await d.store.getCompanion(user)) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
+      const existing = await d.store.getCompanion(user);
+      if (existing && !existing.demo) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
       const img = typeof b.imageId === "string" ? await d.store.getImage(b.imageId).catch(() => null) : null;
       if (!img || img.rec.userId !== user) throw new PrepError(404, "unknown_image");
       if (!img.rec.check.passed || !img.rec.check.type) throw new PrepError(422, "image_not_passed");
       const voice = d.voices.find((v) => v.id === b.voiceId);
       if (!voice) throw new PrepError(400, "unknown_voice");
       const name = typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 40) : voice.name;
+      // B7 keeps one companion per user: a judge's own companion takes the demo one's place (checked above, so a bad request keeps it)
+      if (existing?.demo) {
+        await d.store.deleteCompanion(user);
+        d.log("demo.replaced", { companion: existing.id });
+      }
       const c: CompanionRecord = {
         id: randomUUID().replace(/-/g, ""),
         userId: user,
