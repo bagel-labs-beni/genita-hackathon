@@ -135,7 +135,7 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
             self.attach(session: session, device: device)
             self.orient()
             session.commitConfiguration()
-            // sample buffers run on this same queue: the ones queued before here were the old camera's
+            // from here on only the new input's buffers are kept (captureOutput checks the source input)
             self.lock.withLock { self.frame = nil; self.switching = false }
         }
     }
@@ -158,6 +158,8 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        // a buffer from the camera we just switched away from (queued behind the switch) is not the current camera's
+        guard connection.inputPorts.first?.input === input else { return }
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let image = CIImage(cvPixelBuffer: pixels)
         lock.withLock { if !switching { frame = image } }
