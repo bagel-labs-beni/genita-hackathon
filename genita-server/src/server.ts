@@ -198,6 +198,9 @@ export async function startServer(
   }
 
   const http = createServer((req, res) => {
+    // #232: the API is HTTPS-only behind CloudFront (it forwards origin headers); writeHead merges these
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     route(req, res).catch((err) => {
       log("http.error", { path: req.url?.split("?")[0], message: String(err).slice(0, 200) });
       if (!res.headersSent) json(res, 500, { error: "server_error" });
