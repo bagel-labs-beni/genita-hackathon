@@ -28,6 +28,8 @@ export type PerceptionDeps = {
   timeoutMs?: number;
   /** global Meta budget admission (default: the ops daily cap) */
   admit?: () => boolean;
+  /** whether to read faces at all right now (session: chat mode, not watching together); default always */
+  active?: () => boolean;
 };
 
 type Pending = { url: string; at: number; convo: Convo };
@@ -42,6 +44,7 @@ export class PerceptionController implements PerceptionSource {
   private hint: { text: string; at: number } | null = null;
   private listeners = new Set<(t: PerceptionTrigger) => void>();
   private closed = false;
+  private gapTimer: NodeJS.Timeout | null = null;
   private readonly deps: PerceptionDeps;
 
   constructor(deps: PerceptionDeps) {
@@ -50,12 +53,12 @@ export class PerceptionController implements PerceptionSource {
 
   /** `perception.frame.image`: base64 JPEG or a JPEG data URL. Invalid input is ignored. */
   frame(image: unknown): void {
-    if (this.closed || typeof image !== "string") return;
+    if (this.closed || typeof image !== "string" || !this.isActive()) return;
     const b64 = image.startsWith("data:image/jpeg;base64,") ? image.slice("data:image/jpeg;base64,".length) : image;
     if (!b64 || b64.length > MAX_IMAGE_CHARS || !B64.test(b64)) return;
     const now = this.deps.now();
     const p: Pending = { url: `data:image/jpeg;base64,${b64}`, at: now, convo: { ...this.deps.convo() } };
-    if (this.inFlight) {
+    if (this.inFlight || this.gapTimer) {
       this.pending = p; // the newest face wins
       return;
     }
@@ -86,6 +89,8 @@ export class PerceptionController implements PerceptionSource {
   close(): void {
     this.closed = true;
     this.pending = null;
+    if (this.gapTimer) clearTimeout(this.gapTimer);
+    this.gapTimer = null;
     this.inFlight?.abort();
     this.inFlight = null;
     this.listeners.clear();
@@ -117,6 +122,8 @@ export class PerceptionController implements PerceptionSource {
         clearTimeout(timer);
       }
       if (this.closed || abort.signal.aborted) return;
+      // a read that lands after a switch to interpretation / watch together says nothing to anyone
+      if (!this.isActive()) return;
       const sample = parseSample(text);
       ok = !!sample;
       if (sample) {
@@ -140,10 +147,25 @@ export class PerceptionController implements PerceptionSource {
       if (this.inFlight === abort) this.inFlight = null;
       if (!this.closed) this.log("perception.sample", { ok, ms: Math.round(this.deps.now() - started) });
     }
-    const next = this.pending;
-    this.pending = null;
-    // a waiting face older than the stale window says nothing about now
-    if (next && !this.closed && this.deps.now() - next.at <= 3000) void this.run(next);
+    if (this.pending) this.runPendingAfterGap();
+  }
+
+  /** The waiting face goes next, but never sooner than minGapMs after the last call started (Codex P2). */
+  private runPendingAfterGap(): void {
+    const wait = Math.max(0, (this.deps.minGapMs ?? 1000) - (this.deps.now() - this.lastStartAt));
+    const go = () => {
+      this.gapTimer = null;
+      const next = this.pending;
+      this.pending = null;
+      // a waiting face older than the stale window says nothing about now
+      if (next && !this.closed && this.isActive() && this.deps.now() - next.at <= 3000) void this.run(next);
+    };
+    if (wait === 0) return go();
+    this.gapTimer = setTimeout(go, wait);
+  }
+
+  private isActive(): boolean {
+    return this.deps.active?.() ?? true;
   }
 
   private log(event: string, data: Record<string, unknown>): void {

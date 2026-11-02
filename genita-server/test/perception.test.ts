@@ -166,12 +166,17 @@ test("looks_confused: confused conf ≥ 0.65 during or ≤ 6 s after the reply",
 test("looked_away: away/down ≥ 10 s, not while the user speaks; re-arms only after looking back", () => {
   const away = S({ gaze: "away" });
   assert.deepEqual(run(series(0, 8000, 2000, away)).kinds, []);
-  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "down" }))).kinds, ["looked_away"]);
+  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "down", engagement: 0.3 }))).kinds, ["looked_away"]);
   assert.deepEqual(run(series(0, 12_000, 2000, away, { ...QUIET, userSpeaking: true })).kinds, [], "talking while looking away is normal");
   const long = run(series(0, 200_000, 2000, away));
   assert.deepEqual(long.kinds, ["looked_away"], "one continuous look-away = one trigger");
   const back = run([...series(0, 10_000, 2000, away), [12_000, S()], [14_000, S()], ...series(80_000, 90_000, 2000, away)]);
   assert.deepEqual(back.kinds, ["looked_away", "looked_away"]);
+});
+
+test("looking down while engaged is reading the screen, not looking away (eval 11/3: 6/8 reading stills read 'down')", () => {
+  assert.deepEqual(run(series(0, 20_000, 2000, S({ gaze: "down", engagement: 0.8 }))).kinds, []);
+  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "down", engagement: 0.3 }))).kinds, ["looked_away"], "down at a phone");
 });
 
 test("engagement_drop: engagement < 0.35 for ≥ 20 s", () => {

@@ -201,3 +201,52 @@ test("close aborts the call in flight; nothing after close", async () => {
   assert.equal(h.c.state(), null);
   assert.equal(h.c.contextLine(), null);
 });
+
+test("a waiting frame still respects minGapMs after the call in flight ends (Codex P2)", async () => {
+  const starts: number[] = [];
+  let clock = 0;
+  let release: () => void = () => {};
+  const c = new PerceptionController({
+    now: () => clock,
+    convo: () => QUIET,
+    minGapMs: 1000,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      starts.push(clock);
+      await new Promise<void>((r) => (release = r));
+      yield { type: "done", responseId: null, text: read(), status: "completed" };
+    },
+  });
+  c.frame(JPEG);
+  await new Promise((r) => setImmediate(r));
+  clock = 100;
+  c.frame(JPEG);
+  clock = 200;
+  release();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(starts, [0], "not right after a 200 ms call");
+  clock = 1000;
+  await new Promise((r) => setTimeout(r, 900));
+  assert.deepEqual(starts, [0, 1000]);
+  c.close();
+});
+
+test("inactive (interpreting / watching): no new call for a waiting frame, no triggers from a late read (Codex P2)", async () => {
+  let active = true;
+  const h = harness({ active: () => active });
+  const got: string[] = [];
+  h.c.onTrigger((t) => got.push(t.kind));
+  h.set({ next: () => read({ expression: "laugh", intensity: 0.9 }) });
+  h.c.frame(JPEG);
+  await h.settle();
+  h.set({ now: 2000 });
+  h.c.frame(JPEG); // waits
+  active = false; // switched to interpretation
+  await h.release();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(h.calls.length, 1, "the waiting frame is dropped");
+  assert.deepEqual(got, [], "a read that lands while inactive fires nothing");
+  h.set({ now: 5000 });
+  h.c.frame(JPEG);
+  await h.settle();
+  assert.equal(h.calls.length, 1, "frames while inactive are ignored");
+});

@@ -22,6 +22,8 @@ export const TIRED_CONF = 0.75;
 export const TIRED_MIN_MS = 6_000;
 export const TIRED_SILENCE_MS = 8_000;
 export const AWAY_MIN_MS = 10_000;
+/** "down" counts as away only when attention is low: on an iPhone, reading the screen looks down (eval 11/3) */
+export const DOWN_AWAY_ENGAGEMENT = 0.5;
 export const LOW_ENGAGEMENT = 0.35;
 export const ENGAGEMENT_REARM = 0.5;
 export const LOW_ENGAGEMENT_MIN_MS = 20_000;
@@ -112,7 +114,8 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
   const silent = !c.userSpeaking && (c.lastUserSpeechAt === null || at - c.lastUserSpeechAt >= TIRED_SILENCE_MS);
   if (tired.since !== null && !tired.fired && at - tired.since >= TIRED_MIN_MS && silent && fire("looks_tired")) tired = { ...tired, fired: true };
 
-  let away: Run = s.gaze === "at_screen" ? NO_RUN : { since: base.away.since ?? at, fired: base.away.fired };
+  const looksAway = s.gaze === "away" || (s.gaze === "down" && s.engagement < DOWN_AWAY_ENGAGEMENT);
+  let away: Run = looksAway ? { since: base.away.since ?? at, fired: base.away.fired } : NO_RUN;
   if (away.since !== null && !away.fired && at - away.since >= AWAY_MIN_MS && !c.userSpeaking && fire("looked_away")) away = { ...away, fired: true };
 
   let low: Run;

@@ -278,6 +278,8 @@ export class Session {
           lastUserSpeechAt: this.lastUserSpeechAt,
         }),
         log: (event, data) => this.log(event, data),
+        // nobody reacts in interpretation or while watching together: no reads there (also for a waiting frame)
+        active: () => this.mode === "chat" && !this.watch?.isSharing,
       });
       this.perception = this.perceptionCtl;
     }
@@ -364,8 +366,8 @@ export class Session {
         this.setFrames(msg.images);
         return;
       case "perception.frame":
-        // PERC-1: background face read; never in interpretation or while watching together (nobody reacts there)
-        if (this.mode === "chat" && !this.watch?.isSharing) this.perceptionCtl?.frame(msg.image);
+        // PERC-1: background face read (the controller skips it in interpretation / watch together)
+        this.perceptionCtl?.frame(msg.image);
         return;
       case "stop":
         return this.close(1000, "stopped");

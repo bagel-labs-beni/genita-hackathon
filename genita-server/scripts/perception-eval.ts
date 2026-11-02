@@ -50,7 +50,7 @@ const LOOKS: { key: string; expression: Expression; gaze: Gaze; how: string }[] 
   { key: "neutral", expression: "neutral", gaze: "at_screen", how: "a relaxed neutral expression, looking straight into the camera" },
   { key: "frown", expression: "frown", gaze: "at_screen", how: "frowning with displeasure, looking at the camera" },
   { key: "surprised", expression: "surprised", gaze: "at_screen", how: "surprised, eyebrows raised, mouth slightly open, looking at the camera" },
-  { key: "confused", expression: "confused", gaze: "at_screen", how: "confused and puzzled, brows knit, head slightly tilted, looking at the camera" },
+  { key: "confused", expression: "confused", gaze: "at_screen", how: "a puzzled \"huh?\" look, one eyebrow raised, eyes squinting, head tilted, mouth pulled to one side, looking at the camera" },
   { key: "tired", expression: "tired", gaze: "at_screen", how: "visibly exhausted, heavy drooping eyelids, mid-yawn, looking at the camera" },
   { key: "sad", expression: "sad", gaze: "at_screen", how: "sad and downcast, corners of the mouth turned down, looking at the camera" },
   { key: "focused", expression: "focused", gaze: "at_screen", how: "calm and attentive, reading something on the screen with relaxed brows, lips closed" },
