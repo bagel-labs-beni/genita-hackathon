@@ -21,6 +21,7 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_TTS_MODEL` (eleven_v4_turbo) · `GENITA_TTS_FALLBACK_MODEL` (eleven_v3) · `GENITA_DEFAULT_VOICE_ID` ·
 `GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
+`GENITA_VOICE_MAX_CALLS` (3; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 3) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250) ·
 `GENITA_PETER_URL` + `GENITA_PETER_TOKEN` (Peter worker wss URL and WORKER_TOKEN; read only with `GENITA_PETER=1`).
 

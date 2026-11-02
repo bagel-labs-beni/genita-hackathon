@@ -25,6 +25,7 @@ import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { createSeamless } from "./tts/seamless.ts";
+import { createVoiceSeats } from "./tts/capacity.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -62,6 +63,8 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // Construct once with the process's voice client; all sessions share these seats.
+    voiceSeats: voice ? createVoiceSeats(config.voiceMaxCalls ?? 3) : undefined,
     // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
       config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,

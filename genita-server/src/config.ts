@@ -15,6 +15,8 @@ export type Config = {
    * judge can run the public repo with only a Meta key.
    */
   voice?: VoiceConfig | null;
+  /** Concurrent voice-GPU calls; default 3, 0 = unlimited. Older injected configs may omit it. */
+  voiceMaxCalls?: number;
   /** GENITA_KLING=1: fal (gpt-image-2 scene fallback, Kling clips) in prep; needs FAL_KEY */
   kling: boolean;
   /** GENITA_PETER=1: Peter live worker (GENITA_PETER_URL/TOKEN) + Peter prepare */
@@ -98,6 +100,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const serverTts = flag(env.GENITA_SERVER_TTS) || !!voice;
   const kling = flag(env.GENITA_KLING);
   const peter = flag(env.GENITA_PETER);
+  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 3);
   // ElevenLabs only as the legacy path when no Meta voice service is configured
   const elevenKey = serverTts && !voice ? env.ELEVENLABS_API_KEY || null : null;
   if (serverTts && !voice && !elevenKey) throw new Error("GENITA_SERVER_TTS=1 needs ELEVENLABS_API_KEY");
@@ -109,6 +112,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     elevenKey,
     serverTts,
     voice,
+    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 3,
     kling,
     peter,
     host: env.HOST ?? "127.0.0.1",

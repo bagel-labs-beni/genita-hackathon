@@ -45,6 +45,8 @@ export interface InterpretHost {
   nextUtteranceId(): number;
   translate(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent>;
   tts(text: string, signal: AbortSignal): AsyncIterable<TtsChunk>;
+  /** Decide once at reply start (device mode or GPU overflow), never between sentences. */
+  useDeviceVoice?(): boolean;
   /**
    * Device voice mode (PROTOCOL.md): when set, each translated sentence goes out as `say` for the app to
    * speak instead of server TTS audio.
@@ -429,6 +431,7 @@ export class Interpreter {
 
   private async runJob(job: Job): Promise<void> {
     const { utteranceId, m } = job;
+    const say = (this.host.useDeviceVoice?.() ?? !!this.host.say) ? this.host.say : undefined;
     const signal = job.abort.signal;
     if (this.phase === "listening") this.setPhase("thinking");
     const splitter = new SentenceSplitter({ firstClauseMaxChars: 60 });
@@ -482,10 +485,10 @@ export class Interpreter {
         job.spoken.push(sentences[i]);
         continue;
       }
-      if (this.host.say) {
+      if (say) {
         // device voice: the app speaks it; timing is an estimate (~70 ms per character, like the chat path)
         if (job.playStart === null) this.firstAudio(job);
-        this.host.say(utteranceId, i, sentences[i], speechLang(sentences[i], job.bubble?.translation?.lang ?? ""));
+        say(utteranceId, i, sentences[i], speechLang(sentences[i], job.bubble?.translation?.lang ?? ""));
         ttsModel = "device";
         job.audioMs += sentences[i].length * DEVICE_MS_PER_CHAR;
         this.playEndAt = job.playStart! + job.audioMs;

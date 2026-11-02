@@ -14,6 +14,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang } from "../tts/seamless.ts";
+import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
@@ -80,6 +81,8 @@ export type SessionDeps = {
   now?: () => number;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
+  /** Shared by all calls to the process's voice GPU (not one gate per session). */
+  voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
   memory?: MemoryService;
@@ -107,7 +110,7 @@ type Reply = {
   peter: boolean;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
-  /** server mode: the voice failed mid-reply and the rest went to the app as `say` */
+  /** server mode: GPU capacity or a voice failure sent this reply to the app as `say` */
   fellBack: boolean;
 };
 
@@ -198,6 +201,7 @@ export class Session {
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
+  private voiceOverflow = false;
   /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
   private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
@@ -362,6 +366,7 @@ export class Session {
     this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
     // Server TTS runs only when the server has it on; then the app may still ask for device speech.
     this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
+    this.deviceVoiceForReply();
     // Device speech: no server audio to sync, so no mouth cues and no Peter; the device makes its own.
     if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
@@ -408,7 +413,7 @@ export class Session {
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
-    if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
+    if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
   }
 
@@ -489,7 +494,8 @@ export class Session {
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
-      say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
+      useDeviceVoice: () => this.deviceVoiceForReply(),
+      say: (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }),
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
       lipBegin: (uid) => {
         if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
@@ -554,6 +560,7 @@ export class Session {
   close(code = 1000, reason = "closed"): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.tts === "server" && this.deps.config.voice) this.deps.voiceSeats?.release(this.id);
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
     this.dropSpeculation();
     if (this.reply) {
@@ -859,6 +866,18 @@ export class Session {
     this.spec = null;
   }
 
+  /** Decide at call/reply start only: a running reply keeps its voice even if a seat frees. */
+  private deviceVoiceForReply(): boolean {
+    if (this.closed || this.tts === "device") return true;
+    const seats = this.deps.config.voice ? this.deps.voiceSeats : undefined;
+    if (!seats) return false;
+    const overflow = !seats.tryTake(this.id);
+    if (overflow && !this.voiceOverflow) this.log("voice.capacity_fallback", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
+    if (!overflow && this.voiceOverflow) this.log("voice.capacity_restored", { sessionId: this.id });
+    this.voiceOverflow = overflow;
+    return overflow;
+  }
+
   /**
    * self: the companion speaks on its own (one path, 11/2) — "card" = a Finds card's line (F10),
    * "watch" = a watch-together reaction (F5-L14). Spoken as is: no Spark, no user turn, no memory write.
@@ -866,7 +885,7 @@ export class Session {
   private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
