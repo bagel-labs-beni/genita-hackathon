@@ -1,0 +1,15 @@
+{
+  "type": "audio.timing",
+  "utteranceId": 4,
+  "sentence": 0,
+  "seq": 41,
+  "words": [
+    { "w": "Oh", "s": 40, "e": 190 },
+    { "w": "wow,", "s": 190, "e": 520 }
+  ],
+  "phonemes": [
+    { "p": "AO", "s": 40, "e": 190 },
+    { "p": "W", "s": 190, "e": 260 },
+    { "p": "OW", "s": 260, "e": 520 }
+  ]
+}

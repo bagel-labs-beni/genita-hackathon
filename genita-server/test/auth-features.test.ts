@@ -27,7 +27,7 @@ export async function bootAccounts(t: TestContext, patch: (deps: SessionDeps) =>
   globalThis.fetch = apple.fetch;
   const dir = mkdtempSync(join(tmpdir(), "genita-authf-"));
   const env: NodeJS.ProcessEnv = { GENITA_DATA_DIR: dir, GENITA_JWT_SECRET: "j".repeat(40), GENITA_PUBLIC_URL: "https://genita-api.example", GENITA_AUTH_RATE_PER_MIN: "1000", ...apple.env };
-  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED };
+  const config = { ...loadConfig({ MODEL_API_KEY: "m" }), port: 0, sessionToken: SHARED };
   const log = () => {};
   const accounts = (await createAccounts(env, log, { loopback: true, db: await testDb(false) }))!;
   const deps = defaultDeps(config, log);

@@ -113,16 +113,31 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     // MARK: transport
 
-    private struct EmptyReply: Decodable {}
+    struct EmptyReply: Decodable {}
     private struct ErrorReply: Decodable { var error: String? }
 
-    private func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, authorized: Bool = true) async throws -> T {
-        var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
+    /// Shared transport for the account and onboarding calls (OnboardingClient): bearer from the store,
+    /// 401 clears it, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
+    func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                            query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> T {
+        let data = try await sendData(method, path, json: json, body: body, contentType: contentType, query: query, timeout: timeout, authorized: authorized)
+        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+    }
+
+    /// Same transport, raw bytes back (V04 voice previews are `audio/wav`).
+    func sendData(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                  query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> Data {
+        var url = baseURL.appendingPathComponent(String(path.dropFirst()))
+        if let query, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) { c.percentEncodedQuery = query; url = c.url ?? url }
+        var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 20
+        req.timeoutInterval = timeout
         if let json {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
             req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        } else if let body {
+            req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "content-type")
+            req.httpBody = body
         }
         if authorized {
             guard let token = store.load() else { throw GenitaAuthError.unauthorized }
@@ -140,7 +155,7 @@ public final class GenitaAuthClient: @unchecked Sendable {
         let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
         if status == 403, code == "consent_required" { throw GenitaAuthError.consentRequired }
         guard (200..<300).contains(status) else { throw GenitaAuthError.server(status: status, code: code) }
-        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+        return data
     }
 }
 

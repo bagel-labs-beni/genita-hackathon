@@ -32,7 +32,7 @@ test("frame header round-trips", () => {
 });
 
 test("every client sample is accepted by a live Session (no bad_message / unknown_type)", async () => {
-  const config = { metaKey: "x", elevenKey: "y", serverTts: true, kling: false, peter: false, host: "127.0.0.1", port: 0, sessionToken: null, ttsModel: "m", ttsFallbackModel: "m", defaultVoiceId: "v", webSearch: false, asrLanguages: ["English"], bargeInMinMs: 400, bargeInMinWords: 2, maxSessions: 1, maxSessionMs: 1000, sparkFirstTokenTimeoutMs: 1000, sparkHedge: 1, speculate: false, speculateStableMs: 250 } satisfies Config;
+  const config = { metaKey: "x", serverTts: true, host: "127.0.0.1", port: 0, sessionToken: null, defaultVoiceId: "v", webSearch: false, asrLanguages: ["English"], bargeInMinMs: 400, bargeInMinWords: 2, maxSessions: 1, maxSessionMs: 1000, sparkFirstTokenTimeoutMs: 1000, sparkHedge: 1, speculate: false, speculateStableMs: 250 } satisfies Config;
   const sent: ServerEvent[] = [];
   const asr = Object.assign(new EventEmitter(), { isOpen: true, connect: async () => {}, sendAudio: () => {}, end: () => {} });
   const session = new Session("p", { sendJson: (m) => sent.push(m), sendBinary: () => {}, close: () => {} }, {

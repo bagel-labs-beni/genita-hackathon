@@ -87,7 +87,7 @@ test("interpret instructions translate Korean to English for the user and Englis
 
 test("golden snapshot of the full chat instructions (update with UPDATE_SNAPSHOTS=1)", () => {
   const s = buildInstructions({
-    persona: { ...mina, voice: { id: "7PbNGDB5sJCFnOZuMPNL", description: "bright, mid-20s" } },
+    persona: { ...mina, voice: { id: "seamless:0", description: "bright, mid-20s" } },
     user: { name: "Chelsea", profile: "Founder. Loves spicy food. Lives in Seoul." },
     memories: ["Her sister Jiwoo is visiting next week.", "She is nervous about a demo on Nov 4."],
     mode: "chat",
@@ -109,4 +109,10 @@ test("avoidRepeatedOpener drops a repeated vocative name ('Chelsea, …' 14/20 o
   assert.equal(avoidRepeatedOpener("Chelsea!", recent), "");
   // a repeated content word without a pause after it is not a vocative: keep it
   assert.equal(avoidRepeatedOpener("Chelsea is the best.", recent), "Chelsea is the best.");
+});
+
+test("F2-L26: the instructions tell the companion to say its own name when asked (5/5 'What's your name?')", () => {
+  const s = buildInstructions({ persona: { name: "Leo", kind: "human", traits: [] }, mode: "chat" });
+  assert.match(s, /^You are Leo,/);
+  assert.match(s, /Asked your name, say "Leo" plainly/);
 });
