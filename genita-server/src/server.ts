@@ -194,6 +194,7 @@ export async function startServer(
           wss.handleUpgrade(req, socket, head, (ws) => {
             ws.on("error", () => ws.terminate());
             if (!who) return ws.close(4401, "unauthorized");
+            if (who.kind === "dev" && !config.sessionToken && req.headers.origin !== undefined) return ws.close(4401, "unauthorized");
             if (!who.consented) return ws.close(4403, "consent_required");
             ws.on("message", () => touches.get(id)?.());
             attachWatchSocket(ws, session!, log);
@@ -215,6 +216,8 @@ export async function startServer(
           ws.on("error", () => ws.terminate());
           // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
           if (!who) return ws.close(4401, "unauthorized");
+          // Browser pages can open localhost WebSockets too. Keyless dev access is for native apps.
+          if (who.kind === "dev" && !config.sessionToken && req.headers.origin !== undefined) return ws.close(4401, "unauthorized");
           if (isPresence) {
             // presence carries no conversation content, so consent is not needed to know the owner
             const device = deviceFor(who.device, url);
