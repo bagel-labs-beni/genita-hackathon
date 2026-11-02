@@ -34,7 +34,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     // one Peter connection per call = one Modal container = one GPU
     openPeter:
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
-        ? () => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN! })
+        ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
         : undefined,
     log,
   };

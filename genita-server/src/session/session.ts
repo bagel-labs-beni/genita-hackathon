@@ -55,7 +55,7 @@ export type SessionDeps = {
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
   /** Peter worker connection factory; unset = Peter not deployed */
-  openPeter?: () => PeterLike;
+  openPeter?: (opts?: { avatarId?: string }) => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
 
@@ -126,6 +126,8 @@ export class Session {
   private language = "English";
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
+  /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
+  private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
@@ -236,6 +238,7 @@ export class Session {
     this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
+    this.peterAvatarId = typeof lip.avatarId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(lip.avatarId) ? lip.avatarId : undefined;
     this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
@@ -265,7 +268,7 @@ export class Session {
 
   private async connectPeter(): Promise<void> {
     const fallback = this.lip.active;
-    const peter = this.deps.openPeter!();
+    const peter = this.deps.openPeter!({ avatarId: this.peterAvatarId });
     this.peter = peter;
     peter.on("crop", (c) => {
       if (this.closed || this.peterCancelled.has(c.requestId)) return;

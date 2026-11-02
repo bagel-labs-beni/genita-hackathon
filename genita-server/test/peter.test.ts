@@ -87,3 +87,18 @@ test("bridge: a wrong token rejects connect", async () => {
   await assert.rejects(new PeterClient({ url: w.url(), token: "nope" }).connect(), /closed|4401/);
   w.wss.close();
 });
+
+test("bridge: HELLO carries avatar_id only when the companion has a baked cache (F2-L22)", async () => {
+  const w = fakeWorker("secret");
+  await new Promise((r) => w.wss.once("listening", r));
+  const a = new PeterClient({ url: w.url(), token: "secret", avatarId: "c123" });
+  await a.connect();
+  a.close();
+  const b = new PeterClient({ url: w.url(), token: "secret" });
+  await b.connect();
+  b.close();
+  const hellos = w.log.control.filter((m) => m.type === "HELLO");
+  assert.equal(hellos[0].avatar_id, "c123");
+  assert.ok(!("avatar_id" in hellos[1]));
+  w.wss.close();
+});

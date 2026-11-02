@@ -41,7 +41,7 @@ export type StartMessage = {
   mode?: Mode;
   language?: string;
   voiceId?: string;
-  lip?: LipMode | { mode: LipMode; fallback?: LipMode };
+  lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
 };
