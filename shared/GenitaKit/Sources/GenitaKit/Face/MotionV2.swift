@@ -21,7 +21,7 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var stressK = 0.6
     public var preemphMs = 40.0
     public var closureFrames = 2
-    public var springHz = 9.0
+    public var springHz = 8.0
     public var idle = 0.2
     public var stressPercentile = 70.0
     public var shortStressedMs = 150.0

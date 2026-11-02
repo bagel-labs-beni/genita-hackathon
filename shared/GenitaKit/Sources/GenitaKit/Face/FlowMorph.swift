@@ -763,6 +763,7 @@ final class FlowMorph: @unchecked Sendable {
                 let f = 0.35 * (ew["smileopen"] ?? 0) + 0.55 * (ew["laugh"] ?? 0)
                 am[eh] = max(am[eh], Float(f))
             }
+            if let sw = ew["surprised"], let ah = order.firstIndex(of: "AH") { am[ah] = max(am[ah], Float(0.3 * sw)) }
             if let lw = ew["laugh"], let ah2 = order.firstIndex(of: "AH2") {
                 let pulse = pow(sin(2 * Double.pi * 4.5 * ctx.audioMs / 1000), 2)
                 am[ah2] = max(am[ah2], Float(0.25 * lw * (0.6 + 0.4 * pulse)))
@@ -838,8 +839,10 @@ final class FlowMorph: @unchecked Sendable {
                 g[q] = (cf * f[q] + cb * bk[q]) * kx + gn[q] - gj[q]
                 g[q + 1] = (cf * f[q + 1] + cb * bk[q + 1]) * ky + gn[q + 1] - gj[q + 1]
             }
-            let u = Float(smoothstep(0, 1, (Double(a) - 0.06) / 0.14))
-            drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], usedV2 ? teethPix[order[idx]] : nil, u))
+            let u = Float(smoothstep(0, 1, (Double(a) - 0.1) / 0.2))   // v30: teeth leave earlier on closing
+            // teeth fade off: prep bakes the mouth's inside tone now (#266); the runtime fade read lip
+            // highlights as teeth and left dark blotches on the upper lip (v8.6 render)
+            drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], nil, u))
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -1107,7 +1110,7 @@ final class CheekRig: @unchecked Sendable {
     static func expressionFields(face: CGRect, mouth: CGRect, lockY: Double, stillHeight H0: Double, region: CGRect,
                                  width: Int, height: Int, scale s: Double) -> [String: [Float]] {
         let W = Double(face.width), H = Double(face.height)
-        let fsc = (H * 960 / H0) / 356 * 2.2 * (H0 / 960)      // spec px (960-high frame) → still px
+        let fsc = (H * 960 / H0) / 356 * 3.2 * (H0 / 960)   // v30 gain 3.2      // spec px (960-high frame) → still px
         let mcx = Double(mouth.midX), mcy = Double(mouth.midY)
         let corners = [(Double(mouth.minX), mcy, -1.0), (Double(mouth.maxX), mcy, 1.0)]
         // eyes box from the face box (T9-measured proportions: x .23–.80 W, y .354–.419 H)
@@ -1116,18 +1119,19 @@ final class CheekRig: @unchecked Sendable {
         let eyes = [(ex1 + 0.25 * (ex2 - ex1), -1.0), (ex1 + 0.75 * (ex2 - ex1), 1.0)]
         let feather = 0.03 * W
         typealias Part = (cx: Double, cy: Double, sx: Double, sy: Double, dx: Double, dy: Double)
+        // only the corner tips move (a wide corner warp bent the closed lip line into a bitten-lip curl)
         func corner(_ kx: Double, _ ky: Double, _ inward: Bool = false, dx0: Double = 3, dy0: Double = -4) -> [Part] {
-            corners.map { (c) in (c.0, c.1, 0.045 * W, 0.03 * H, (inward ? -c.2 : c.2) * dx0 * kx, dy0 * ky) }
+            corners.map { (c) in (c.0 + c.2 * 0.02 * W, c.1, 0.028 * W, 0.025 * H, (inward ? -c.2 : c.2) * dx0 * kx, dy0 * ky) }
         }
         func cheekApple(_ k: Double) -> [Part] { eyes.map { e in (e.0 + 0.15 * (e.0 - mcx), eyeY + 0.17 * H, 0.09 * W, 0.06 * H, 0, -3 * k) } }
         func lowerLid(_ k: Double, _ dy: Double = -1.6, _ off: Double = 0.9) -> [Part] { eyes.map { e in (e.0, eyeY + off * eh, 0.07 * W, 0.6 * eh, 0, dy * k) } }
         func brows(_ dy: Double) -> [Part] { eyes.map { e in (e.0, eyeY - 2.2 * eh, 0.09 * W, 1.0 * eh, 0, dy) } }
-        // review 11/3: a real smile widens more than it lifts, and the eyes join in (×1.5 overall)
-        let smile = corner(1.5, 0.9) + cheekApple(1.5) + lowerLid(1.6)
+        // v30: an eye-led smile (cheek apples −3.6, lower lids −2.4)
+        let smile = corner(1, 1) + cheekApple(1.6) + lowerLid(2.0)
         var tags: [String: [Part]] = [:]
         tags["smile"] = smile
         tags["smileopen"] = smile.map { ($0.cx, $0.cy, $0.sx, $0.sy, $0.dx * 1.15, $0.dy * 1.15) }
-        tags["laugh"] = corner(2.1, 1.35) + cheekApple(1.6) + lowerLid(2.6) + brows(-2.2)
+        tags["laugh"] = corner(1.4, 1.5) + cheekApple(1.2) + lowerLid(1.9 * 1.5) + brows(-1.5)
         tags["surprised"] = brows(-5) + eyes.map { e in (e.0, eyeY - 0.6 * eh, 0.06 * W, 0.35 * eh, 0, -1.6) } + lowerLid(1, 0.8, 0.7)
         tags["concerned"] = eyes.map { e in (e.0 + 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.035 * W, 0.8 * eh, (mcx - e.0 > 0 ? 1.6 : -1.6), -2.6) }
             + eyes.map { e in (e.0 - 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.05 * W, 0.8 * eh, 0, 1.2) }

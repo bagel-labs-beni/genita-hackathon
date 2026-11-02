@@ -233,7 +233,8 @@ public final class FaceRenderer: @unchecked Sendable {
         var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
         // laugh: the head bobs with the "ha-ha" (4.5 Hz), 2.5 px at 960 high
         if let lw = flowMorph?.lastLaugh, lw.w > 0.01 {
-            let bob = 2.5 * lw.w * pow(sin(2 * Double.pi * 4.5 * lw.ms / 1000), 2) * Double(extent.height) / 960
+            // bob plus a 4 px tilt back (v30)
+            let bob = (2.5 * pow(sin(2 * Double.pi * 4.5 * lw.ms / 1000), 2) - 4) * lw.w * Double(extent.height) / 960
             m.head = m.head.concatenating(CGAffineTransform(translationX: 0, y: -CGFloat(bob)))
         }
         let inv = fill.inverted()
