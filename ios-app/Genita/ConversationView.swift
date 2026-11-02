@@ -71,6 +71,8 @@ struct ConversationView: View {
         .onDisappear { if !connecting { call.end() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
         .onChange(of: handoff.desktop) { _, onMac in if onMac { call.suspend() } }
+        // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
+        .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
     /// Self view: the live front camera when on, the design's placeholder when off.
     @ViewBuilder var selfView: some View {

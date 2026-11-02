@@ -24,6 +24,29 @@ import UIKit
         XCTAssertEqual(reopened.setup.imageData, image)
         XCTAssertEqual(reopened.stage, .conversation)
     }
+    func testCallStopRoutesToSignInAndConsent() {
+        let model = AppState(storage: store)
+        model.go(.connecting); model.go(.conversation)
+        model.route(.consent)
+        XCTAssertEqual(model.stage, .consent, "4403 → CS01")
+        model.consentAccepted()
+        XCTAssertEqual(model.stage, .conversation, "agree → back to the call")
+        model.route(.signIn)
+        XCTAssertEqual(model.stage, .signIn, "4401 → A02")
+        model.route(.timeLimit)
+        XCTAssertEqual(model.stage, .signIn, "4001 is not a route")
+    }
+    func testSignOutSurvivesARestartAndSignInReturnsToTheCall() {
+        let model = AppState(storage: store)
+        model.setup.hasOnboarded = true; model.go(.conversation); model.save()
+        model.signedOut()
+        XCTAssertEqual(model.stage, .signIn)
+        let restarted = AppState(storage: store)
+        XCTAssertEqual(restarted.stage, .signIn, "a signed-out user does not land back in the call")
+        restarted.signedIn()
+        XCTAssertEqual(restarted.stage, .conversation)
+        XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
         model.go(.prompt); model.go(.paste); model.go(.preparing); model.go(.preferences)
