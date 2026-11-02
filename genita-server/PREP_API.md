@@ -20,9 +20,10 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 | `GET /v1/import/prompt` | | `{prompt, chars}`, the text I01 copies |
 | `POST /v1/import` | `{text}` | `200 {status:"ready", style, profile}` (Spark 4–8 s) · `400 import_too_short/too_long/empty` → I02-E · `422 import_empty` |
 | `POST /v1/import` | `{text, background:true}` | `202 {status:"processing"}` ("Continue in the background") |
+| `POST /v1/import/skip` | `{interests: string[≤8, each ≤40], replies: "Talk it out"\|"Show me options"\|"Start with the answer"\|"Ask me questions"\|null, avoid: string[≤8, each ≤60]}` (N1–N3, no Spark call) | `200 {status:"ready", style, profile}` with `style.source:"skip"` · `400 bad_skip`. Answers are `explicit`; unanswered rows stay empty and `toConfirm` lists them |
 | `GET /v1/import` | | `{status:"none"\|"processing"\|"failed"\|"ready", style?, profile?}` |
 
-`style.display` = I04's five rows `[{key, title, items:[{text, label}]}]`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
+`style.display` = I04's six rows in order `communication` Communication style · `response` Response preferences · `help` How Genita can help · `interests` Interests · `likes` Likes & dislikes · `boundaries` Boundaries, each `{key, title, items:[{text, label}]}` (max 3 items). `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
 
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 

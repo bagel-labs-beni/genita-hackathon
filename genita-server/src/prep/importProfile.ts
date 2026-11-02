@@ -7,8 +7,9 @@
  *   - all 8 sections, each finding with its evidence label
  *   - "When …, Genita should …" rules
  *   - up to 4 things to confirm (asked on the first call, PRD F3 [결정])
- * then this file groups it into the 5 rows of I04 (r02): Communication style,
- * Response preferences, Interests, Likes & dislikes, Boundaries.
+ * then this file groups it into the 6 rows of I04 (PRD v12 F2): Communication style,
+ * Response preferences, How Genita can help, Interests, Likes & dislikes,
+ * Boundaries.
  *
  * Safety (PRD F3 경험 정책):
  *   - The pasted text is data. It goes in a delimited block, the instructions
@@ -167,7 +168,7 @@ export type StyleCard = {
   sections: ImportRaw["sections"];
   rules: ConditionalRule[];
   toConfirm: string[];
-  /** I04: five rows; empty rows render "Not enough information yet" (I04-P) */
+  /** I04: six rows; empty rows render "Not enough information yet" (I04-P) */
   display: DisplayRow[];
   partial: boolean;
   itemCount: number;
@@ -177,7 +178,8 @@ export type StyleCard = {
 
 const ROWS: Array<{ key: string; title: string; from: Array<Exclude<SectionKey, "to_confirm">>; rules?: boolean }> = [
   { key: "communication", title: "Communication style", from: ["communication"] },
-  { key: "response", title: "Response preferences", from: ["help", "approach"], rules: true },
+  { key: "response", title: "Response preferences", from: ["approach"], rules: true },
+  { key: "help", title: "How Genita can help", from: ["help"] },
   { key: "interests", title: "Interests", from: ["interests"] },
   { key: "likes", title: "Likes & dislikes", from: ["support", "tendencies"] },
   { key: "boundaries", title: "Boundaries", from: ["boundaries"] },
@@ -212,7 +214,7 @@ export function toStyleCard(raw: Partial<ImportRaw> | null | undefined, source: 
     if (k === "to_confirm") continue;
     const list = Array.isArray(raw?.sections?.[k]) ? raw!.sections![k] : [];
     sections[k] = list
-      .map((f) => ({ text: clean(f?.text), label: k === "approach" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any" }))
+      .map((f) => ({ text: clean(f?.text), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any" }))
       .filter((f) => keep(f.text))
       .slice(0, 12) as Finding[];
   }
@@ -276,4 +278,65 @@ export function styleProfileText(card: StyleCard, max = 2000): string {
   let out = parts.join("\n");
   if (out.length > max) out = out.slice(0, out.lastIndexOf("\n", max));
   return out;
+}
+
+
+// ---------- N1–N3: skip the import (PRD v12 D33) ----------
+
+export const SKIP_REPLIES: Record<string, string> = {
+  "Talk it out": "Talk it through with me.",
+  "Show me options": "Show a few options to choose from.",
+  "Start with the answer": "Start with the answer, then explain.",
+  "Ask me questions": "Ask me questions to understand first.",
+};
+const SKIP_AVOID: Record<string, string> = {
+  "unasked advice": "Don't give advice I didn't ask for.",
+  "too many questions": "Don't ask too many questions.",
+  "jokes when i'm serious": "No jokes when I'm being serious.",
+  "comments on my looks": "Don't comment on my looks.",
+};
+const SKIP_MAX_ITEMS = 8;
+const SKIP_INTEREST_MAX = 40;
+const SKIP_AVOID_MAX = 60;
+
+function skipList(v: unknown, max: number): string[] | null {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > SKIP_MAX_ITEMS) return null;
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") return null;
+    // control and bidi characters become spaces; the text stays data
+    const t = x.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+    if (t.length > max) return null;
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+/** N1–N3 answers → the same card the import makes, without Spark. null = bad_skip. */
+export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { ok: false } {
+  const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  if (!b) return { ok: false };
+  const interests = skipList(b.interests, SKIP_INTEREST_MAX);
+  const avoid = skipList(b.avoid, SKIP_AVOID_MAX);
+  const reply = b.replies === undefined || b.replies === null ? null : typeof b.replies === "string" && Object.hasOwn(SKIP_REPLIES, b.replies) ? SKIP_REPLIES[b.replies] : false;
+  if (!interests || !avoid || reply === false) return { ok: false };
+  const f = (text: string): Finding => ({ text, label: "explicit", scope: "any" });
+  const raw: ImportRaw = {
+    sections: {
+      tendencies: [],
+      communication: [],
+      help: [],
+      support: [],
+      interests: interests.map(f),
+      boundaries: avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+      approach: reply ? [f(reply)] : [],
+    },
+    rules: [],
+    to_confirm: [],
+  };
+  const card = toStyleCard(raw, "skip");
+  if (card.itemCount === 0) return { ok: false };
+  card.toConfirm = card.display.filter((r) => r.items.length === 0).map((r) => r.title).slice(0, 4);
+  return { ok: true, card };
 }

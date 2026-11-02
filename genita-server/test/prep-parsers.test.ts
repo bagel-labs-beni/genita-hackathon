@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { interpretCheck, pickHeadBox, sniffImage, buildClassifyRequest, type ClassifyRaw } from "../src/prep/classify.ts";
-import { checkPaste, looksLikeInjection, redactSensitive, ruleLine, styleProfileText, toStyleCard, buildImportRequest, IMPORT_MIN_CHARS } from "../src/prep/importProfile.ts";
+import { checkPaste, looksLikeInjection, redactSensitive, ruleLine, styleProfileText, toStyleCard, buildImportRequest, skipStyleCard, IMPORT_MIN_CHARS } from "../src/prep/importProfile.ts";
 import { applyOrder, DEFAULT_VOICES, voicesFromEnv } from "../src/prep/voices.ts";
 import type { SamBox } from "../src/meta/sam.ts";
 
@@ -82,7 +82,7 @@ test("import request wraps the paste as data and strips fake closing tags", () =
   assert.equal((String(r.input).match(/<\/pasted_profile>/g) ?? []).length, 1);
 });
 
-test("style card: 8 sections → I04's 5 rows, suggestions never become facts, filters drop bad items", () => {
+test("style card: 8 sections → I04's 6 rows, suggestions never become facts, filters drop bad items", () => {
   const card = toStyleCard({
     sections: {
       tendencies: [{ text: "Sketches two options before deciding.", label: "observed", scope: "work" }],
@@ -99,14 +99,16 @@ test("style card: 8 sections → I04's 5 rows, suggestions never become facts, f
     rules: [{ when: "When the user is deciding", then: "Genita should give two options and pick one", label: "suggested" }],
     to_confirm: ["Humor in serious moments", "a", "b", "c", "d"],
   });
-  assert.deepEqual(card.display.map((r) => r.title), ["Communication style", "Response preferences", "Interests", "Likes & dislikes", "Boundaries"]);
+  assert.deepEqual(card.display.map((r) => r.title), ["Communication style", "Response preferences", "How Genita can help", "Interests", "Likes & dislikes", "Boundaries"]);
   assert.deepEqual(card.dropped, { injection: 1, sensitive: 1 });
   assert.equal(card.sections.approach[0].label, "suggested"); // section 7 is always a suggestion
-  assert.equal(card.display[2].items.length, 0);
+  assert.equal(card.display[3].items.length, 0); // Interests: the only item had an email → dropped
+  assert.equal(card.display[2].items[0].text, "Two options first when deciding."); // row 3 = help findings
   assert.equal(card.partial, true); // I04-P
   assert.equal(card.toConfirm.length, 4);
   const resp = card.display[1].items;
-  assert.equal(resp[0].label, "explicit"); // facts before suggestions
+  assert.ok(!resp.some((i) => i.text === "Two options first when deciding.")); // help moved to its own row
+  assert.equal(resp[0].label, "suggested"); // approach + rules are suggestions only
   assert.ok(resp.some((i) => i.text === "When the user is deciding, give two options and pick one." && i.label === "suggested"));
   const text = styleProfileText(card);
   assert.match(text, /How the user wants to be treated:[\s\S]*Suggestions \(not confirmed by the user\):[\s\S]*candid creative partner/);
@@ -117,7 +119,7 @@ test("style card: 8 sections → I04's 5 rows, suggestions never become facts, f
 test("style card survives garbage from the model", () => {
   const card = toStyleCard({ sections: { communication: "nope" } as never, rules: null as never });
   assert.equal(card.itemCount, 0);
-  assert.equal(card.display.length, 5);
+  assert.equal(card.display.length, 6);
 });
 
 test("ruleLine normalizes casing and 'Genita should'", () => {
@@ -137,4 +139,66 @@ test("voices: Spark order applied safely", () => {
     { id: "a1", name: "Ann", blurb: "Soft", tags: "Soft" },
     { id: "b2", name: "Ben", blurb: "", tags: "" },
   ]);
+});
+
+test("style card: a reply with no help section → partial, empty 'How Genita can help'", () => {
+  const card = toStyleCard({
+    sections: {
+      tendencies: [{ text: "Likes a plan.", label: "observed", scope: "any" }],
+      communication: [{ text: "Warm and direct.", label: "explicit", scope: "any" }],
+      help: [],
+      support: [{ text: "Honest feedback.", label: "explicit", scope: "any" }],
+      interests: [{ text: "Design.", label: "explicit", scope: "any" }],
+      boundaries: [{ text: "No unasked advice.", label: "explicit", scope: "any" }],
+      approach: [{ text: "Be brief.", label: "suggested", scope: "any" }],
+    },
+    rules: [],
+    to_confirm: [],
+  });
+  assert.equal(card.display.length, 6);
+  const help = card.display.find((r) => r.key === "help")!;
+  assert.equal(help.title, "How Genita can help");
+  assert.equal(help.items.length, 0);
+  assert.equal(card.partial, true);
+});
+
+test("skip card: N1–N3 → explicit findings, unchosen rows stay empty and are listed to confirm", () => {
+  const r = skipStyleCard({ interests: ["Design", "Film & TV", "Ceramics"], replies: "Show me options", avoid: ["Unasked advice", "Too many questions", "no loud puns"] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  const c = r.card;
+  assert.equal(c.source, "skip");
+  assert.deepEqual(c.display.map((x) => x.key), ["communication", "response", "help", "interests", "likes", "boundaries"]);
+  assert.deepEqual(c.display[3].items, [
+    { text: "Design", label: "explicit" },
+    { text: "Film & TV", label: "explicit" },
+    { text: "Ceramics", label: "explicit" },
+  ]);
+  assert.deepEqual(c.display[1].items, [{ text: "Show a few options to choose from.", label: "explicit" }]);
+  assert.deepEqual(c.display[5].items, [
+    { text: "Don't give advice I didn't ask for.", label: "explicit" },
+    { text: "Don't ask too many questions.", label: "explicit" },
+    { text: "Avoid: no loud puns", label: "explicit" },
+  ]);
+  assert.equal(c.partial, true);
+  assert.deepEqual(c.toConfirm, ["Communication style", "How Genita can help", "Likes & dislikes"]);
+  assert.match(styleProfileText(c), /Interests: Design/);
+});
+
+test("skip card: validation and control chars", () => {
+  const bad = (b: unknown) => {
+    const r = skipStyleCard(b);
+    assert.equal(r.ok, false, JSON.stringify(b));
+  };
+  bad({ interests: "Design" });
+  bad({ interests: Array(9).fill("a") });
+  bad({ interests: ["x".repeat(41)] });
+  bad({ avoid: ["x".repeat(61)] });
+  bad({ avoid: [5] });
+  bad({ replies: "Whatever" });
+  bad({});
+  bad({ interests: ["", "  "] });
+  const r = skipStyleCard({ interests: ["De\u0000si\ngn\u202e"], replies: null, avoid: [] });
+  assert.ok(r.ok);
+  if (r.ok) assert.equal(r.card.display[3].items[0].text, "De si gn");
 });
