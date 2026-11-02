@@ -98,6 +98,13 @@ public final class GenitaAuthClient: @unchecked Sendable {
     /// 401 clears it, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
     func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
                             query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> T {
+        let data = try await sendData(method, path, json: json, body: body, contentType: contentType, query: query, timeout: timeout, authorized: authorized)
+        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+    }
+
+    /// Same transport, raw bytes back (V04 voice previews are `audio/wav`).
+    func sendData(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                  query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> Data {
         var url = baseURL.appendingPathComponent(String(path.dropFirst()))
         if let query, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) { c.percentEncodedQuery = query; url = c.url ?? url }
         var req = URLRequest(url: url)
@@ -126,7 +133,7 @@ public final class GenitaAuthClient: @unchecked Sendable {
         let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
         if status == 403, code == "consent_required" { throw GenitaAuthError.consentRequired }
         guard (200..<300).contains(status) else { throw GenitaAuthError.server(status: status, code: code) }
-        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+        return data
     }
 }
 
