@@ -52,12 +52,25 @@ final class FindsTabUITests: XCTestCase {
         XCTAssertEqual(sheet.value as? String, "half")
         XCTAssertTrue(any(app, "findCamera").exists, "the camera moment is kept with the card")
         XCTAssertTrue(app.buttons["findTalk"].exists, "button continues the call")
+        // Figma F2 (138:2): 520 tall sheet with the X, CTA 58 above the bottom
+        XCTAssertTrue(app.buttons["findCloseCard"].exists, "F2 has the X close button")
         capture(app, "finds-tab-F2-reopen")
         app.buttons["findTalk"].tap()
         Thread.sleep(forTimeInterval: 0.8)
         XCTAssertFalse(any(app, "findsTab").exists, "tab closed, the card stays over the call")
         XCTAssertEqual(sheet.value as? String, "half")
         capture(app, "finds-tab-F2-talk")
+    }
+
+    /// The X on a reopened card goes back to the list (nothing to undo: it never left Finds).
+    func testReopenedCardCloseGoesBackToList() throws {
+        let app = launch(["GENITA_FINDS_TAB": "detail"])
+        XCTAssertTrue(any(app, "findsSheet").waitForExistence(timeout: 25))
+        let x = app.buttons["findCloseCard"]
+        XCTAssertTrue(x.waitForExistence(timeout: 5))
+        x.tap()
+        XCTAssertTrue(any(app, "findsList").waitForExistence(timeout: 5), "back on the list")
+        XCTAssertFalse(any(app, "findsSheet").exists, "the sheet is gone")
     }
 
     func testSwipeDeleteThenUndo() throws {
@@ -97,5 +110,80 @@ final class FindsTabUITests: XCTestCase {
         XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 15))
         Thread.sleep(forTimeInterval: 1.0)
         capture(app, "cam-H-chip-egg")
+    }
+}
+
+// MARK: - CAM-1 and FT-NOSEE
+
+/// F5-U-CAM: CAM-1 first camera notice (Figma 57:2) and FT-NOSEE "I don't see X" card (Figma 59:2).
+final class CameraGuideUITests: XCTestCase {
+    private let camera = ["GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-1", "GENITA_FIXTURE_SCRIPT": "none"]
+
+    private func launch(_ extra: [String: String]) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        var env = ["GENITA_REVIEW_STAGE": "conversation", "GENITA_SERVER_URL": "ws://127.0.0.1:8789/v1/session"]
+        env.merge(camera) { $1 }
+        env.merge(extra) { $1 }
+        app.launchEnvironment = env
+        app.launch()
+        return app
+    }
+
+    private func capture(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-" + name
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    private func any(_ app: XCUIApplication, _ id: String) -> XCUIElement { app.descendants(matching: .any)[id] }
+
+    /// First tap on the camera button: the notice, not the camera. "Turn on camera" then starts it.
+    func testFirstCameraTapShowsGuideThenTurnsOn() throws {
+        let app = launch(["GENITA_CAM1": "fresh"])
+        let toggle = app.buttons["cameraToggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 25))
+        toggle.tap()
+        XCTAssertTrue(any(app, "cameraGuide").waitForExistence(timeout: 5), "CAM-1 first camera notice")
+        XCTAssertTrue(app.staticTexts["I only see when it’s on."].exists)
+        XCTAssertFalse(any(app, "cameraStage").exists, "the camera is not on yet")
+        Thread.sleep(forTimeInterval: 0.8)
+        capture(app, "cam-1-first-notice")
+        app.buttons["cameraGuideTurnOn"].tap()
+        XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 8), "Turn on camera starts the camera")
+        XCTAssertFalse(any(app, "cameraGuide").exists)
+    }
+
+    func testNotNowLeavesCameraOff() throws {
+        let app = launch(["GENITA_CAM1": "fresh"])
+        let toggle = app.buttons["cameraToggle"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 25))
+        toggle.tap()
+        XCTAssertTrue(app.buttons["cameraGuideNotNow"].waitForExistence(timeout: 5))
+        app.buttons["cameraGuideNotNow"].tap()
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertFalse(any(app, "cameraGuide").exists, "guide away")
+        XCTAssertFalse(any(app, "cameraStage").exists, "camera stays off")
+    }
+
+    /// The card says what the camera did not show and to move the camera; it is not a sheet and guesses nothing.
+    func testNoSeeCardOverCamera() throws {
+        let app = launch(["GENITA_CALL_AUTOCAMERA": "1", "GENITA_FINDS_STATE": "25"])
+        XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 25), "camera is the stage")
+        let card = any(app, "noSeeCard")
+        XCTAssertTrue(card.waitForExistence(timeout: 15), "FT-NOSEE card")
+        XCTAssertTrue(card.label.contains("I don’t see cooked rice"), card.label)
+        XCTAssertTrue(card.label.contains("Move the camera if it’s there."))
+        XCTAssertFalse(any(app, "findsSheet").exists, "no sheet")
+        Thread.sleep(forTimeInterval: 0.8)
+        capture(app, "cam-NOSEE-card")
+        card.tap()
+        XCTAssertTrue(waitGone(card), "tap puts it away")
+    }
+
+    private func waitGone(_ e: XCUIElement) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: e)
+        return XCTWaiter().wait(for: [gone], timeout: 4) == .completed
     }
 }

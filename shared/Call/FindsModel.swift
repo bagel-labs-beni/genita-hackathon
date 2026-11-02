@@ -79,6 +79,9 @@ struct FindEntry: Identifiable, Equatable {
     private(set) var undoState: SheetState?
     /// Boxes on the live camera preview (F5-U-CAM, CAM-H).
     let boxes = CameraBoxes()
+    /// FT-NOSEE: a small card on the camera says what the companion cannot see and asks to move the camera. Never a guess.
+    private(set) var noSee: NoSeeCheck?
+    @ObservationIgnored private var noSeeTask: Task<Void, Never>?
     @ObservationIgnored private var risingTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
 
@@ -357,7 +360,21 @@ struct FindEntry: Identifiable, Equatable {
         undoState = nil
     }
 
+    /// FT-NOSEE: show the card; it leaves by itself after `hold` (nil = stays until tapped, for screenshots).
+    func showNoSee(_ check: NoSeeCheck, hold: Duration? = .seconds(8)) {
+        noSeeTask?.cancel()
+        noSee = check
+        guard let hold else { return }
+        noSeeTask = Task { [weak self] in
+            try? await Task.sleep(for: hold)
+            guard !Task.isCancelled else { return }
+            self?.noSee = nil
+        }
+    }
+    func dismissNoSee() { noSeeTask?.cancel(); noSee = nil }
+
     func reset() {
+        dismissNoSee()
         callEnded()
         entries = []
         page = 0
@@ -396,5 +413,31 @@ extension FindCard.Source {
     static func make(title: String, url: String, domain: String) -> FindCard.Source? {
         let body = try? JSONSerialization.data(withJSONObject: ["title": title, "url": url, "domain": domain])
         return body.flatMap { try? JSONDecoder().decode(FindCard.Source.self, from: $0) }
+    }
+}
+
+/// FT-NOSEE (Figma 59:2): "For kimchi fried rice · ✓ Eggs · ✓ Scallions · ✗ I don't see cooked rice · Move the camera if it's there."
+/// The ✗ rows are only what the camera did not show; the card never says the thing is not there.
+struct NoSeeCheck: Equatable {
+    struct Row: Equatable, Identifiable {
+        let name: String
+        let seen: Bool
+        var id: String { name }
+    }
+    var title: String
+    var rows: [Row]
+    var hint = "Move the camera if it’s there."
+
+    /// From a recipe card made with the camera on: `have` = in frame, `maybe`/`buy` = not seen. Nil when everything was seen.
+    static func from(card: FindCard, maxRows: Int = 4) -> NoSeeCheck? {
+        guard card.kind == .recipe else { return nil }
+        let seen = card.items.filter { $0.tier == .have }
+        let missing = card.items.filter { $0.tier == .maybe || $0.tier == .buy }
+        guard !missing.isEmpty else { return nil }
+        let missingShown = Array(missing.prefix(2))
+        let seenShown = Array(seen.prefix(max(0, maxRows - missingShown.count)))
+        let title = "For " + card.title.prefix(1).lowercased() + String(card.title.dropFirst())
+        return NoSeeCheck(title: title, rows: seenShown.map { Row(name: $0.name.prefix(1).uppercased() + String($0.name.dropFirst()), seen: true) }
+                          + missingShown.map { Row(name: $0.name, seen: false) })
     }
 }

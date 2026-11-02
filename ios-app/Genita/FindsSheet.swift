@@ -146,9 +146,12 @@ struct FindsSheet: View {
     @State private var scrolledPage: Int?
     private var finds: FindsModel { call.finds }
     private var offline: Bool { call.link == .reconnecting || call.finds.offline }
+    /// Figma F2 (138:2): a card reopened from Finds is 520 tall (picture 196, CTA 58 above the bottom), not the call's 468.
+    static let reopenedHeight: CGFloat = 520
+    private var reopenedHalf: Bool { finds.state == .half && finds.current?.reopened == true }
 
     var body: some View {
-        let visible = finds.state.height
+        let visible = reopenedHalf ? Self.reopenedHeight : finds.state.height
         ZStack(alignment: .top) {
             UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(CallInk.sheet)
                 .shadow(color: CallInk.ink.opacity(0.18), radius: 16, y: -8)
@@ -252,13 +255,14 @@ struct FindsSheet: View {
 
     private var mainLayer: some View {
         let full = finds.state == .full
+        let pageHeight: CGFloat = full ? 612 : reopenedHalf ? 396 : 344
         return ZStack(alignment: .top) {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 0) {
                     ForEach(Array(finds.entries.enumerated()), id: \.element.id) { i, entry in
                         if let card = entry.card {
                             FindCardPage(call: call, entry: entry, card: card, index: i, full: full, offline: offline, openFinds: openFinds)
-                                .frame(width: size.width, height: full ? 612 : 344, alignment: .top)
+                                .frame(width: size.width, height: pageHeight, alignment: .top)
                                 .id(i)
                         }
                     }
@@ -270,14 +274,14 @@ struct FindsSheet: View {
             .onChange(of: scrolledPage) { _, p in if let p, p != finds.page { finds.showPage(p) } }
             .onChange(of: finds.page) { _, p in if scrolledPage != p { withAnimation(.drawer) { scrolledPage = p } } }
             .onAppear { scrolledPage = finds.page }
-            .frame(height: full ? 612 : 344)
+            .frame(height: pageHeight)
             if full {
                 // r03 `.main::before/after`: clean top and bottom edges under the face window
                 CallInk.sheet.frame(height: 64).allowsHitTesting(false)
                 LinearGradient(colors: [CallInk.sheet.opacity(0), CallInk.sheet], startPoint: .top, endPoint: .bottom).frame(height: 32).offset(y: 580).allowsHitTesting(false)
             }
             // r03 `.foot` top 620, translateY(-260) unless full; while rising it sits below the visible part
-            foot.offset(y: full ? 620 : 360)
+            foot.offset(y: full ? 620 : reopenedHalf ? 412 : 360)
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -429,11 +433,10 @@ struct FindCardPage: View {
                 Button { finds.toggleSave() } label: {
                     Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
-                if !entry.reopened {
+                // Figma F2: the X is there on a reopened card too (it goes back to the list)
                 Button { withAnimation(.drawer) { finds.close() } } label: {
                     Image(systemName: "xmark").font(.system(size: 17, weight: .medium)).foregroundStyle(CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
-                }
+                }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.reopened ? "Close" : "Close. It stays in Finds").accessibilityIdentifier("findCloseCard")
             }.padding(.trailing, -10)
         }.frame(height: 44)
     }
@@ -465,7 +468,7 @@ struct FindCardPage: View {
     @ViewBuilder private var recipe: some View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? 84 : 132))
+                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 20 ? 196 : 150) : 132))
         }
         chipRow
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
