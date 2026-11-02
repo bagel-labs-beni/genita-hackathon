@@ -15,6 +15,7 @@
  *     I04 row that is no longer empty leaves it too.
  */
 import { isDislike, looksLikeInjection, redactSensitive, toStyleCard, type Finding, type ImportRaw, type StyleCard } from "../prep/importProfile.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 import { cardsForField, type StoryId } from "./story.ts";
 
 export const PROFILE_FIELDS = ["likes", "interests", "communication", "response", "help", "boundaries", "support", "tendencies"] as const;
@@ -55,7 +56,7 @@ export function contradicts(a: string, b: string): boolean {
 }
 
 function safe(text: string): boolean {
-  return !!text && !looksLikeInjection(text) && redactSensitive(text) === text && !/\[(?:email|link|number|phone|secret)\]/.test(text);
+  return !!text && !looksLikeInjection(text) && !isSensitiveDetail(text) && redactSensitive(text) === text && !/\[(?:email|link|number|phone|secret)\]/.test(text);
 }
 
 export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: string): { card: StyleCard; applied: AppliedUpdate[]; staleCards: StoryId[] } {

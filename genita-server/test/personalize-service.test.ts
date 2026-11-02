@@ -249,8 +249,9 @@ test("Codex #3: a story written while the profile changed stays stale (the next 
   await first;
   await h.p.voiceCorrection("u1", "Actually I don't eat mushrooms anymore.");
   release();
-  await new Promise((r) => setTimeout(r, 30));
-  const stored = (await h.store.getStyle("u1"))!;
+  // wait for the write (file store; a fixed 30 ms flaked on a busy machine)
+  let stored = (await h.store.getStyle("u1"))!;
+  for (let i = 0; i < 100 && !stored.story; i++) { await new Promise((r) => setTimeout(r, 20)); stored = (await h.store.getStyle("u1"))!; }
   assert.ok(stored.story, "the story was saved");
   assert.ok((stored.story!.stale ?? []).includes("taste"), "but marked stale");
 });

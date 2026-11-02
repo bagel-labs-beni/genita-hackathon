@@ -18,9 +18,10 @@ import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
-import { buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
+import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
 import { tasteLines, type TasteLine } from "./reasons.ts";
+import { firstCallNod } from "./knows.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -38,7 +39,7 @@ export class PersonalizeError extends Error {
   constructor(status: number, code: string, message = code) { super(message); this.status = status; this.code = code; }
 }
 
-export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[] };
+export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[]; nod?: string };
 /** events: "Noted: …" (the planned question was answered) and/or "Updated: …" (a correction) */
 export type VoiceUpdate = { events: Array<{ text: string; fields: string[] }>; applied: AppliedUpdate[]; answered: boolean; profile: string; taste: TasteLine[] };
 
@@ -285,7 +286,7 @@ export class Personalize {
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
       return {
         card: r.card,
-        out: { profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
+        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
       };
     });
   }
@@ -302,7 +303,8 @@ export class Personalize {
     const asOf = this.now().toISOString();
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
-    const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)].map((u) => ({ ...u, asOf }));
+    // "forget that…" may remove a line by voice (removal-only updates are otherwise only from the profile screen)
+    const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw, { allowRemove: FORGET.test(line) })].map((u) => ({ ...u, asOf }));
     if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return null; }
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());

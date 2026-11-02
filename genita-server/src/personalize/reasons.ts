@@ -83,7 +83,7 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   const want: Kind = card.kind === "recipe" ? "food" : card.kind === "outfit" || card.kind === ("product" as FindCard["kind"]) ? "style" : null;
   if (!want || !lines.length) return [];
   const text = cardText(card);
-  const mine = lines.filter((l) => kindOf(l.text) === want);
+  const mine = lines.filter((l) => kindOf(l.text) === want && !/^\s*budget:/i.test(l.text));
   const out: FindReason[] = [];
   const respected = (l: TasteLine) => !contentWords(shortTaste(l.text)).some((w) => text.includes(w));
   const echoed = (l: TasteLine) => contentWords(shortTaste(l.text)).some((w) => text.includes(w));
@@ -103,5 +103,29 @@ export function reasonChips(lines: TasteLine[], card: FindCard): FindReason[] {
   const general = (l: TasteLine) => want === "style" || GENERAL_FOOD.test(l.text);
   push(likes.find(echoed) ?? likes.find(general), want === "style" ? "Your style" : "Your taste", "profile");
   if (out.length < 2) push(stored.find((l) => isDislike(l.text) && respected(l)), "Your taste", "profile");
+  // Knows-Me (Chelsea 11/3: a shopping price range is a taste): only when every priced product is within it
+  if (card.kind === ("product" as FindCard["kind"])) {
+    const b = lines.find((l) => /^\s*budget:/i.test(l.text));
+    const chip = b ? budgetChip(b.text, card) : null;
+    if (b && chip) {
+      if (out.length >= 2) out.pop();
+      out.push({ text: chip, source: b.text, from: b.fromCall ? "call" : "profile" });
+    }
+  }
   return out.slice(0, 2);
+}
+
+const money = (t: string) => {
+  const m = t.replace(/,/g, "").match(/[$€£₩¥]\s?(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s?(?:dollars|usd|eur|euros|won|krw)/i);
+  return m ? Number(m[1] ?? m[2]) : null;
+};
+
+/** "Budget: usually under $100 for clothes." → "Your budget: under $100" when every priced product fits (none priced → null). */
+export function budgetChip(line: string, card: FindCard): string | null {
+  const body = line.replace(/^\s*budget:\s*/i, "").replace(/\b(?:usually|about|around|roughly)\s+/gi, "").replace(/\s+(?:for|on)\s+.*$/i, "").replace(/[.!]+$/, "").trim();
+  const max = money(body);
+  if (!body || max === null) return null;
+  const prices = ((card as FindCard & { products?: Array<{ price?: string }> }).products ?? []).map((p) => (p.price ? money(p.price) : null)).filter((x): x is number => x !== null);
+  if (!prices.length || prices.some((p) => p > max)) return null;
+  return `Your budget: ${body[0].toLowerCase()}${body.slice(1)}`.slice(0, 48);
 }

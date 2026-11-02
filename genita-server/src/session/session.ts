@@ -44,6 +44,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 
@@ -232,6 +233,9 @@ export class Session {
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private callStartedAt: string | null = null;
+  /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
+  private timeZone: string | undefined;
+  private nod: string | null = null;
   private taste: TasteLine[] = [];
   private correcting: AbortController | null = null;
   private correctionChecks = 0;
@@ -425,6 +429,7 @@ export class Session {
         this.callStartedAt = new Date().toISOString();
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
+        if (p?.nod) this.nod = p.nod;
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
@@ -433,7 +438,8 @@ export class Session {
       if (this.closed) return;
     }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
-    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40), taste: this.taste });
+    this.timeZone = str(u.timeZone, 40);
+    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
     if (this.micOn) {
       try {
         await this.ensureAsr();
@@ -831,7 +837,7 @@ export class Session {
   }
 
   /** Pure apart from consuming pending camera frames. */
-  private buildRequest(text: string, renamedFrom?: string): Built {
+  private buildRequest(text: string, renamedFrom?: string, greeting = false): Built {
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
     const interpret = this.mode === "interpret" || hangul;
@@ -867,6 +873,9 @@ export class Session {
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
       ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
+      // call 1's greeting only
+      nod: greeting && this.nod ? this.nod : undefined,
     });
     return {
       interpret,
@@ -974,7 +983,8 @@ export class Session {
       }
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
-    built ??= this.buildRequest(text, renamedFrom);
+    built ??= this.buildRequest(text, renamedFrom, !!greeting);
+    if (greeting) this.nod = null;
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!greeting && !self) this.memoryCall?.userMessage();

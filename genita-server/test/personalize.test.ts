@@ -394,3 +394,74 @@ test("skip S2 (Figma 269:228): N1 tiles + N3 like/no chips are the taste tags, e
   const bare = toStory(null, skip.card).cards.find((c) => c.id === "taste")!;
   assert.equal(bare.note, "No favorites yet. Tell me one anytime, or show me on camera.");
 });
+
+// ---------- Knows-Me Map (11/3) ----------
+import { MENTION_RULE, firstCallNod, localTimeLine } from "../src/personalize/knows.ts";
+import { buildInstructions } from "../src/prompt/persona.ts";
+
+test("K4: the user's local weekday + time, timing only; bad zones give nothing", () => {
+  const at = new Date("2026-11-03T09:52:00Z");
+  assert.equal(localTimeLine("Asia/Seoul", at), "It's Tuesday 6:52 PM for the user. Use it only for timing (meals, plans, how long something takes); never mention where they are or their habits.");
+  assert.equal(localTimeLine("Not/AZone", at), null);
+  assert.equal(localTimeLine("../etc", at), null);
+  assert.equal(localTimeLine(undefined, at), null);
+});
+
+test("06: call 1's greeting nods to one explicit taste line (never a dislike, budget or suggestion); other calls don't", () => {
+  const card = { ...rawCard({ likes: [f("Dislikes cilantro."), f("Budget: usually under $100 for clothes."), f("Style: Clean, minimal clothes in black and grey.")] }), growth: { calls: 1, asked: [] } };
+  const nod = firstCallNod(card)!;
+  assert.match(nod, /"Style: Clean, minimal clothes in black and grey\."/);
+  assert.match(nod, /one personal mention/);
+  assert.equal(firstCallNod({ ...card, growth: { calls: 2, asked: [] } }), null);
+  assert.equal(firstCallNod({ ...rawCard({ likes: [f("Loud prints.", "suggested")], response: [], help: [], interests: [], communication: [] }), growth: { calls: 1, asked: [] } }), null);
+});
+
+test("mention rule rides with the profile, in sync with knows.ts", () => {
+  const s = buildInstructions({ persona: { name: "Jin", kind: "human", traits: [] }, mode: "chat", user: { profile: "- Taste: x" }, localTime: "It's Tuesday 6:52 PM for the user.", nod: "NOD" } as Parameters<typeof buildInstructions>[0]);
+  assert.ok(s.includes(MENTION_RULE));
+  assert.match(s, /It's Tuesday 6:52 PM for the user\.\n\nNOD/);
+  assert.ok(!buildInstructions({ persona: { name: "Jin", kind: "human", traits: [] }, mode: "chat" } as Parameters<typeof buildInstructions>[0]).includes(MENTION_RULE));
+});
+
+test("01: the recipe prompt asks for the 'left out' line only when there's a profile", async () => {
+  const { recipePrompt } = await import("../src/finds/pipeline.ts");
+  assert.match(recipePrompt("What can I make?", "- Taste: Dislikes seafood."), /left the shrimp out/);
+  assert.doesNotMatch(recipePrompt("What can I make?"), /left the shrimp out/);
+});
+
+test("K5: health, religion, politics, sexuality and finances never stored or shown; topic boundaries and a shopping budget are fine", async () => {
+  const { isSensitiveDetail } = await import("../src/personalize/sensitive.ts");
+  for (const t of ["Has diabetes.", "Goes to church on Sundays.", "Voted conservative.", "Is bisexual.", "Earns about 80k a year.", "Paying off student loans.", "Has credit card debt."]) assert.ok(isSensitiveDetail(t), t);
+  for (const t of ["No unsolicited health advice.", "Don't bring up politics.", "Budget: usually under $100 for clothes.", "Loves Korean home cooking.", "Short replies."]) assert.ok(!isSensitiveDetail(t), t);
+  const card = rawCard();
+  const r = mergeUpdates(card, [
+    { field: "likes", text: "Budget: usually under $100 for clothes.", replaces: [], label: "explicit" },
+    { field: "interests", text: "Paying off student loans.", replaces: [], label: "explicit" },
+    { field: "support", text: "Earns about 80k a year.", replaces: [], label: "explicit" },
+  ], "2026-11-03T05:00:00Z");
+  assert.deepEqual(r.applied.map((a) => a.text), ["Budget: usually under $100 for clothes."]);
+  assert.equal(storyTextProblem("You're paying off a loan, so I'll keep it cheap."), "unsafe");
+  assert.equal(storyTextProblem("You keep clothes under a hundred dollars."), null);
+});
+
+test("K5: voice \"forget that…\" reaches Spark and may remove a line", () => {
+  assert.ok(mightBeCorrection("Forget that I said I like jazz."));
+  assert.ok(mightBeCorrection("Please don't remember that, okay?"));
+  const removeOnly = { updates: [{ field: "interests", text: "", replaces: ["Into jazz."], chip: "forgot jazz" }] };
+  assert.equal(toCorrectionUpdates(removeOnly).length, 0, "not from an ordinary line");
+  assert.deepEqual(toCorrectionUpdates(removeOnly, { allowRemove: true }).map((u) => [u.text, u.replaces, u.chip]), [["", ["Into jazz."], "forgot jazz"]]);
+});
+
+test("budget: a taste tag on HISY and a product reason chip only when every priced product fits", async () => {
+  const { budgetChip } = await import("../src/personalize/reasons.ts");
+  const { budgetTag } = await import("../src/personalize/story.ts");
+  assert.equal(budgetTag("Budget: usually under $100 for clothes."), "Under $100");
+  const card = (prices: string[]) => ({ ...baseCard({ kind: "product" as "link" }), products: prices.map((price) => ({ price })) }) as unknown as Parameters<typeof budgetChip>[1];
+  assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89.00", "$64"])), "Your budget: under $100");
+  assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89.00", "$140"])), null);
+  assert.equal(budgetChip("Budget: usually under $100 for clothes.", card([])), null, "no prices → no claim");
+  const chips = reasonChips([{ text: "Budget: usually under $100 for clothes.", label: "explicit" }, ...tasteLines(rawCard())], card(["$80"]));
+  assert.deepEqual(chips.map((c) => c.text), ["Your style: clean, minimal clothes", "Your budget: under $100"]);
+  const { cards } = toStory(null, rawCard({ likes: [f("Budget: usually under $100 for clothes."), f("Style: Clean, minimal clothes.")] }));
+  assert.ok(cards.find((c) => c.id === "taste")!.tags!.some((t) => t.text === "Under $100"));
+});
