@@ -83,6 +83,14 @@ public final class FaceDriver: ObservableObject {
         queue.async { r.resetMouth() }
     }
 
+    /// A new realtime session numbers its utterances from 1 again: forget the old ids and rest the
+    /// mouth (callers that remap ids across sessions, like the app's CallSession, don't need this).
+    public func resetForNewSession() {
+        newestUtteranceId = nil
+        cancel()
+        newestUtteranceId = nil
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }

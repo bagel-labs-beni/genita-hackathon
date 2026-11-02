@@ -117,6 +117,10 @@ public struct FlowMap: Codable, Equatable, Sendable {
     /// pulled back by the same amount, spread vowels lift the cheeks (px at 540 wide). s40 (11/3).
     public struct Cheek: Codable, Equatable, Sendable {
         public var spread: Double; public var pull: Double; public var cheek: Double; public var naso: Double; public var lift: Double
+        /// 1 = the lift follows the whole opening (animal whisker pads), else only spread vowels.
+        public var liftAll: Double? = nil
+        /// Cheek blob [out, up, σx, σy] as fractions of the face box (people: .12, .24, .15, .12).
+        public var geometry: [Double]? = nil
     }
     public var cheek: Cheek? = nil
 
@@ -566,7 +570,9 @@ final class FlowMorph: @unchecked Sendable {
             let g = act.isEmpty ? (Float(0), Float(0)) : Self.bilinear2(gn, fw, fh, fx, fy)
             d.append((-Double(g.0) / workScale, -Double(g.1) / workScale))
         }
-        let lift = ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
+        let lift = (rig.rules.liftAll ?? 0) >= 1
+            ? min(1, am.reduce(0, +))
+            : ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
         let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift))
         cornerD = d
         return image
@@ -671,7 +677,8 @@ final class CheekRig: @unchecked Sendable {
     /// Mouth corners in ROI still px (for sampling the morph's warp field).
     let cornersROI: [(x: Double, y: Double)]
     private let scale: Double, stillToOut: Double
-    private let rules: FlowMap.Cheek
+    let rules: FlowMap.Cheek
+    private var geom: [Double] = []
     private let neutral: [Float]
     private let wCorner: [[Float]], wCheek: [[Float]]
     private let alpha: [Float]
@@ -683,12 +690,17 @@ final class CheekRig: @unchecked Sendable {
         stillToOut = 540 / stillWidth           // the rules' pixel values are at 540 px wide
         let fw = Double(face.width), fh = Double(face.height)
         let cy = Double(mouth.midY)
-        let corners = [(Double(mouth.minX), cy, -1.0), (Double(mouth.maxX), cy, 1.0)]
+        let geo = rules.geometry.flatMap { $0.count == 4 ? $0 : nil } ?? [0.12, 0.24, 0.15, 0.12]
+        geom = geo
+        // A small mouth (cats, rabbits: < 12% of the face width) puts the corners at the nose ±6%.
+        let small = Double(mouth.width) < 0.12 * fw
+        let cxL = small ? Double(mouth.midX) - 0.06 * fw : Double(mouth.minX), cxR = small ? Double(mouth.midX) + 0.06 * fw : Double(mouth.maxX)
+        let corners = [(cxL, cy, -1.0), (cxR, cy, 1.0)]
         var r = data.roi
         for (cx, cy, sx) in corners {
             r = r.union(CGRect(x: cx - 0.15 * fw, y: cy - 0.12 * fh, width: 0.3 * fw, height: 0.24 * fh))
-            let kx = cx + sx * 0.12 * fw, ky = cy - 0.24 * fh
-            r = r.union(CGRect(x: kx - 0.3 * fw, y: ky - 0.24 * fh, width: 0.6 * fw, height: 0.48 * fh))
+            let kx = cx + sx * geo[0] * fw, ky = cy - geo[1] * fh
+            r = r.union(CGRect(x: kx - 2 * geo[2] * fw, y: ky - 2 * geo[3] * fh, width: 4 * geo[2] * fw, height: 4 * geo[3] * fh))
         }
         region = r.intersection(CGRect(x: 0, y: 0, width: neutralStill.width, height: neutralStill.height)).integral
         width = max(8, Int((Double(region.width) * s).rounded())); height = max(8, Int((Double(region.height) * s).rounded()))
@@ -718,7 +730,7 @@ final class CheekRig: @unchecked Sendable {
                     }
                     let k = j * width + i
                     a[k] = Float(g(cx, cy, 0.05 * fw, 0.04 * fh) * free)
-                    b[k] = Float((rules.cheek * g(cx + sx * 0.12 * fw, cy - 0.24 * fh, 0.15 * fw, 0.12 * fh)
+                    b[k] = Float((rules.cheek * g(cx + sx * geo[0] * fw, cy - geo[1] * fh, geo[2] * fw, geo[3] * fh)
                                   + rules.naso * g(cx + sx * 0.04 * fw, cy - 0.09 * fh, 0.05 * fw, 0.06 * fh)) * free)
                     total[k] += a[k] + b[k]
                 }
