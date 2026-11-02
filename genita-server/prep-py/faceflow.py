@@ -749,10 +749,13 @@ def main():
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
         if kind == 'human' or RIG_RUNTIME:
-            # 6 px at a 540-wide frame, scaled to this face set's resolution (also for kinds on the human lip rig, codex P2)
-            lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
-            cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
-            ent['lip'] = f'{name}.lip.png'
+            if kind == 'human':
+                # 6 px at a 540-wide frame, scaled to this face set's resolution. Not for the non-human kinds on the human
+                # rig: a missed lip border on a wide 3D key would hide part of its opening (codex P2) — they keep the
+                # full key texture and only get the teeth-layer interior below.
+                lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
+                cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
+                ent['lip'] = f'{name}.lip.png'
             if name != 'MBP':   # lip rig teeth layer (v41): where this key's teeth / cavity may show, same size as the lip mask
                 im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0, NR)
                 cv2.imwrite(os.path.join(a.out, f'{name}.interior.png'), np.clip(im_ * 255 + 0.5, 0, 255).astype(np.uint8))
