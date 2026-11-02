@@ -78,6 +78,30 @@ import UIKit
         await model.signInRouting?.value
         XCTAssertEqual(routed, 1, "no consent yet: CS01 first (it re-routes itself after Agree)")
     }
+    /// Codex P1: a sign-out cancels the routing of the account before it and bumps the generation, so a late
+    /// /me or /v1/companion answer for A can never land on B.
+    func testSignOutCancelsTheEarlierAccountsRouting() async {
+        let model = AppState(storage: store)
+        var started: Task<Void, Never>?
+        model.routeAfterSignIn = { try? await Task.sleep(for: .seconds(30)) }
+        model.signedIn(userId: "user-a")
+        started = model.signInRouting
+        let before = model.authGeneration
+        model.signedOut()
+        XCTAssertTrue(started?.isCancelled == true, "A's routing is cancelled at sign-out")
+        XCTAssertNil(model.signInRouting)
+        XCTAssertGreaterThan(model.authGeneration, before, "answers asked before the sign-out are dropped")
+    }
+    /// Codex P2: Next on A03 while /me is on its way must not keep a returning account in onboarding.
+    func testRoutingRightAfterSignInIgnoresAnOnboardingStepJustStarted() {
+        let model = AppState(storage: store)
+        model.go(.name); model.go(.prompt)
+        model.apply(.connecting)
+        XCTAssertEqual(model.stage, .prompt, "mid-onboarding on this phone (launch path): stays")
+        model.apply(.connecting, afterSignIn: true)
+        XCTAssertNotEqual(model.stage, .prompt, "right after sign-in: the returning account goes to its call")
+        XCTAssertTrue(model.setup.hasOnboarded)
+    }
     func testPendingConsentSurvivesARestart() {
         let model = AppState(storage: store)
         model.setup.hasOnboarded = true; model.go(.conversation); model.save()
