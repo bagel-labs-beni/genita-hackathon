@@ -7,6 +7,8 @@
  *   - returning, nothing to follow → gap-aware hello, never an invented shared past
  * Pure. Intent only, never a line to copy (studio bake-off: quoted lines come back verbatim).
  */
+import { safeMemoryText } from "../memory/extract.ts";
+
 export type OpenerInput = {
   hasProfile: boolean;
   /** ms since the user's last message in an earlier call; null = never talked before; undefined = unknown */
@@ -24,12 +26,17 @@ export type OpenerInput = {
  * styleProfileText writes one finding per line ("- Taste: …", "- Interests: …"); free-form profiles may list
  * several on one line ("Into: a, b, c"), which are split on commas. Dislikes, talk style and boundaries are not hooks.
  */
+/** unconfirmed suggestions and to-confirm asks are not things we know about them (Codex #352 P2) */
+const STOP_SECTION = /^\s*(?:suggestions\b|ask naturally\b)/i;
+/** a hook is said out loud on the first line: never health, money, a place, a person (Codex #352 P1) */
+const PRIVATE_HOOK = /\b(?:lives?|living|based in|from|moved|city|town|address|neighbou?rhood|works? (?:at|for)|job at|friend|boyfriend|girlfriend|partner|wife|husband|mom|dad|mother|father|sister|brother|son|daughter|kids?|coworker|boss)\b/i;
 const HOOK_LINE = /^\s*-?\s*(taste|interests?|into|likes?|loves?|hobbies|favou?rites?)\s*:\s*(.+)$/i;
 const NOT_A_HOOK = /^\s*(?:dislikes?|hates?|avoids?|no |never |not |doesn'?t|don'?t)/i;
 
 export function profileHooks(profile: string | undefined): string[] {
   const out: string[] = [];
   for (const line of (profile ?? "").split("\n")) {
+    if (STOP_SECTION.test(line)) break;
     const m = line.match(HOOK_LINE);
     if (!m) continue;
     const label = m[1].toLowerCase();
@@ -38,11 +45,15 @@ export function profileHooks(profile: string | undefined): string[] {
     const items = /^(?:into|likes?|loves?|hobbies|favou?rites?)$/.test(label) ? value.split(/\s*[,;]\s*/) : [value];
     for (const raw of items) {
       const item = raw.replace(/[.\s]+$/, "").replace(/["\n]/g, " ").trim().slice(0, 80);
-      if (item.length < 3 || NOT_A_HOOK.test(item)) continue;
+      if (item.length < 3 || NOT_A_HOOK.test(item) || !isSafeHook(item)) continue;
       if (!out.some((o) => o.toLowerCase() === item.toLowerCase())) out.push(item);
     }
   }
   return out.slice(0, 8);
+}
+
+export function isSafeHook(item: string): boolean {
+  return safeMemoryText(item) && !PRIVATE_HOOK.test(item);
 }
 
 /**

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { noteHook, openerBlock, pickOpenerHook, profileHooks } from "../src/convo/opener.ts";
-import { noteOpenerTopic, recentFromState, resetOpenerTopics } from "../src/convo/openerTopics.ts";
+import { forgetOpenerTopics, pickOpenerTopic, storedTopics, resetOpenerTopics } from "../src/convo/openerTopics.ts";
 import { Session, type ClientSink } from "../src/session/session.ts";
 import type { Config } from "../src/config.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
@@ -55,14 +55,21 @@ test("openerBlock names the hook and keeps the last call's off the first line", 
   assert.doesNotMatch(openerBlock({ hasProfile: true, sinceLastMs: 30 * 3_600_000, hasItem: true, hook: null, lastHook: "x" }), /Don't open on/, "a memory follow-up is its own topic");
 });
 
-test("opener topics: stored state wins over an older in-process copy; the note is capped at 3", () => {
+test("opener topics (Codex #352 P1/P2): no health, place or people hooks; suggestions are not known; stored junk is dropped", () => {
+  const p = ["- Interests: Therapy for anxiety", "- Interests: Lives in Seoul", "- Interests: Hiking with my friend Alice", "- Interests: Film photography", "Suggestions (not confirmed by the user):", "- Interests: Pottery"].join("\n");
+  assert.deepEqual(profileHooks(p), ["Film photography"]);
+  assert.deepEqual(storedTopics({ opener_topics: ["Film photography", "Therapy for anxiety", 3] }), ["Film photography"]);
+});
+
+test("opener topics (Codex #352 P2): two calls of one account picking a moment apart never pick the same; Forget drops the list", () => {
   resetOpenerTopics();
-  let r = noteOpenerTopic("u9", [], "a");
-  r = noteOpenerTopic("u9", r, "b");
-  assert.deepEqual(recentFromState("u9", null), ["a", "b"]);
-  assert.deepEqual(recentFromState("u9", { opener_topics: ["x", "y", "z"] }), ["x", "y", "z"]);
-  r = noteOpenerTopic("u9", ["a", "b", "c"], "d");
-  assert.deepEqual(r, ["b", "c", "d"]);
+  const hooks = ["a thing", "b thing", "c thing"];
+  const iphone = pickOpenerTopic("u7", hooks, [], 0);
+  const mac = pickOpenerTopic("u7", hooks, [], 0); // same stale stored list as the iPhone's call start
+  assert.notEqual(iphone.hook, mac.hook);
+  assert.deepEqual(mac.recent, [iphone.hook]);
+  forgetOpenerTopics("u7");
+  assert.deepEqual(pickOpenerTopic("u7", hooks, [], 0).recent, []);
 });
 
 const config: Config = {

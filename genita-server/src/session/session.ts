@@ -47,8 +47,8 @@ import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
-import { daySeed, openerBlock, openerKind, pickOpenerHook, profileHooks } from "../convo/opener.ts";
-import { noteOpenerTopic, recentFromState, recentLocal } from "../convo/openerTopics.ts";
+import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
+import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
@@ -487,6 +487,9 @@ export class Session {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
+        // #341: what greetings opened on goes too (Codex #352)
+        this.openerRecent = [];
+        forgetOpenerTopics(userId, memory, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       });
       // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
       // budget the call starts without memory context, and the late result never touches this call.
@@ -508,7 +511,7 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = recentFromState(userId, state); }
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -998,13 +1001,11 @@ export class Session {
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
-      const recent = this.openerRecent ?? recentLocal(this.deps.userId);
-      const hook = rotates ? pickOpenerHook(profileHooks(this.user?.profile), recent, daySeed(now) + recent.length) : null;
+      const hooks = rotates ? profileHooks(this.user?.profile) : [];
+      // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
+      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       opener = openerBlock({ ...o, hook, lastHook: recent.at(-1) ?? null });
-      if (hook) {
-        this.openerRecent = noteOpenerTopic(this.deps.userId, recent, hook, this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
-        this.log("convo.opener", { kind, hooks: profileHooks(this.user?.profile).length, recent: recent.length });
-      }
+      if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
     }
     let perception: string | undefined;
     let perceptionHint: string | undefined;

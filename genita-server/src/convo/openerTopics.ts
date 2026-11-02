@@ -1,46 +1,60 @@
 /**
  * #341: which profile things this user's last greetings opened on, so the next call opens on a different one.
- * Persisted in the memory lane's per-user call state JSON (`opener_topics`, an extra field the Postgres and JSON
- * adapters keep as is; Forget leaves it, it holds the user's own profile words only), with an in-process copy so a
- * call without the memory store, or one whose store is slow, still rotates. Never on the reply path's critical wait.
+ *
+ * The pick is atomic per process: `pickOpenerTopic` reads this process's newest list, picks, and records in one
+ * synchronous step, so an iPhone and a Mac greeting the same account a moment apart never pick the same hook
+ * (Codex #352 P2; the server is one process). The list is also persisted in the memory lane's per-user call
+ * state JSON (`opener_topics`, last 3) so a restart keeps rotating; the store copy is used only when this
+ * process has none. Every stored or read value passes the same safe-text check as a memory (no health, money,
+ * places, people). Forget and account deletion drop both copies.
  */
 import type { MemoryService } from "../memory/service.ts";
-import { noteHook, OPENER_RECENT_KEEP } from "./opener.ts";
+import { isSafeHook, noteHook, OPENER_RECENT_KEEP, pickOpenerHook } from "./opener.ts";
 
 type WithTopics = { opener_topics?: unknown };
 const LOCAL_MAX_USERS = 5000;
 const local = new Map<string, string[]>();
 
 function clean(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length <= 80).slice(-OPENER_RECENT_KEEP) : [];
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length <= 80 && isSafeHook(x)).slice(-OPENER_RECENT_KEEP) : [];
 }
 
-/** recent hooks from a call state already read (oldest → newest), merged with this process's copy */
-export function recentFromState(userId: string | undefined, state: unknown): string[] {
-  const stored = clean((state as WithTopics | null)?.opener_topics);
-  const mine = userId ? local.get(userId) ?? [] : [];
-  return stored.length >= mine.length ? stored : mine;
+/** the persisted list from a call state already read (oldest → newest) */
+export function storedTopics(state: unknown): string[] {
+  return clean((state as WithTopics | null)?.opener_topics);
 }
 
-export function recentLocal(userId: string | undefined): string[] {
-  return userId ? local.get(userId) ?? [] : [];
-}
-
-/** record this call's opener hook: in process now, in the store in the background (errors are only logged) */
-export function noteOpenerTopic(userId: string | undefined, recent: string[], hook: string, memory?: MemoryService, onError?: (e: unknown) => void): string[] {
+/** pick this call's hook and record it, in one step; `stored` is the call state's list (used if this process has none) */
+export function pickOpenerTopic(userId: string | undefined, hooks: string[], stored: string[] | undefined, seed: number, memory?: MemoryService, onError?: (e: unknown) => void): { hook: string | null; recent: string[] } {
+  const recent = (userId ? local.get(userId) : undefined) ?? clean(stored);
+  const hook = pickOpenerHook(hooks, recent, seed + recent.length);
+  if (!hook) return { hook: null, recent };
   const next = noteHook(recent, hook);
-  if (!userId) return next;
-  local.delete(userId);
-  local.set(userId, next);
-  if (local.size > LOCAL_MAX_USERS) local.delete(local.keys().next().value!);
-  if (memory) {
-    void memory.serial(userId, async () => {
-      const s = await memory.state.getState(userId);
-      (s as typeof s & { opener_topics?: string[] }).opener_topics = noteHook(clean((s as WithTopics).opener_topics), hook);
-      await memory.state.putState(userId, s);
-    }).catch((e) => onError?.(e));
+  if (userId) {
+    local.delete(userId);
+    local.set(userId, next);
+    if (local.size > LOCAL_MAX_USERS) local.delete(local.keys().next().value!);
+    if (memory) {
+      void memory.serial(userId, async () => {
+        const s = await memory.state.getState(userId);
+        (s as typeof s & { opener_topics?: string[] }).opener_topics = noteHook(clean((s as WithTopics).opener_topics), hook);
+        await memory.state.putState(userId, s);
+      }).catch((e) => onError?.(e));
+    }
   }
-  return next;
+  return { hook, recent };
+}
+
+/** Forget / account deletion: this process's copy now, the stored copy in the background when a store is given */
+export function forgetOpenerTopics(userId: string, memory?: MemoryService, onError?: (e: unknown) => void): void {
+  local.delete(userId);
+  if (!memory) return;
+  void memory.serial(userId, async () => {
+    const s = await memory.state.getState(userId);
+    if (!(s as WithTopics).opener_topics) return;
+    delete (s as WithTopics).opener_topics;
+    await memory.state.putState(userId, s);
+  }).catch((e) => onError?.(e));
 }
 
 /** test seam */

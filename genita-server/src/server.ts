@@ -45,6 +45,7 @@ import { attachWatchSocket } from "./watch/socket.ts";
 import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
+import { forgetOpenerTopics } from "./convo/openerTopics.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
@@ -128,6 +129,7 @@ export async function startServer(
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
     deletedUsers.add(userId);
     dropLastTurns(userId);
+    forgetOpenerTopics(userId); // #341 in-process copy (the DB copy goes with the memory_state cascade)
     try {
       // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
       // before purging. A late vendor completion must never recreate deleted data.
