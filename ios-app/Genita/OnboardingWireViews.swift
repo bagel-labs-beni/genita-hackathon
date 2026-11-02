@@ -175,7 +175,9 @@ struct CompanionNameView: View {
                  action: { focused = false; model.saveCompanionName() }) { width, top, _ in
             avatar.frame(width: 72, height: 72).clipShape(Circle()).position(x: 31 + 36, y: 200 + 36 + top)
             ZStack {
+                // NM01-E / NM01-0 (153:2, 154:2): the field gets a 1.5 pt ink border while typing
                 RoundedRectangle(cornerRadius: 12).fill(Color(white: 0.9333))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.ink, lineWidth: focused ? 1.5 : 0))
                 if model.suggestingName && (model.setup.companionName ?? "").isEmpty {
                     ProgressView().accessibilityLabel("Suggesting a name")
                 } else {
@@ -191,9 +193,17 @@ struct CompanionNameView: View {
                         .accessibilityLabel("Clear name").accessibilityIdentifier("clearName")
                 }
             }.frame(width: width - 64, height: 56).position(x: width / 2, y: 300 + 28 + top)
-            Text(model.nameError ?? "Keep it, or type a new one.").font(TypeStyle.body(13))
-                .foregroundStyle(model.nameError == nil ? CallInk.mute : Color(red: 0.85, green: 0.2, blue: 0.2))
-                .frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 378 + top).accessibilityIdentifier("nameHint")
+            if model.nameError == nil, (model.setup.companionName ?? "").isEmpty, let suggested = model.suggestedCompanionName {
+                // NM01-0 (154:2): "Use Jin" puts the suggestion back
+                Button { model.setup.companionName = suggested } label: {
+                    Text("Use \(suggested)").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.ink).frame(height: 44)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 378 + top)
+                    .accessibilityIdentifier("useSuggestedName")
+            } else {
+                Text(model.nameError ?? "Keep it, or type a new one.").font(TypeStyle.body(14))
+                    .foregroundStyle(model.nameError == nil ? CallInk.mute : Color(red: 0.85, green: 0.2, blue: 0.2))
+                    .frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 378 + top).accessibilityIdentifier("nameHint")
+            }
         }
         .onAppear { model.suggestName() }
     }
@@ -453,89 +463,183 @@ struct ChipLayout: Layout {
 
 // MARK: PREP-1 "Bringing {name} to life" (D38)
 
-/// Styling hooks for PREP-1. DS-7 (#129) is the approved look once it lands; until then this is the
-/// functional version in the reference screens' language (photo, slow breathing, a light sweep, three stages).
+/// PREP-1 motion and colours (Figma rp1wR9pxV0IsgyjvOcwo92 182:51 / 182:3 / 182:96 / 182:142 notes):
+/// photo breathes 1.00 → 1.03 over 8 s, a light band sweeps top → bottom every 2.8 s, a finished stage's check
+/// scales 0.8 → 1 in 200 ms, ready = 400 ms crossfade then S07 0.8 s later. Reduce Motion: no breathing, no sweep.
 enum PrepStyle {
-    static var breathScale: CGFloat = 1.012
-    static var breathSeconds: Double = 3.2
-    static var sweepSeconds: Double = 2.4
-    static let stageTitles: [PrepProgress.Stage: String] = [.scene: "Scene", .expressions: "Expressions", .mouth: "Mouth"]
-    static let stageDetails: [PrepProgress.Stage: String] = [
-        .scene: "Framing them for a video call",
-        .expressions: "Smiles, blinks and warmth",
-        .mouth: "How they move when they talk",
-    ]
+    static let breathScale: CGFloat = 1.03
+    static let breathSeconds: Double = 8
+    static let sweepSeconds: Double = 2.8
+    static let checkSeconds: Double = 0.2
+    static let crossfadeSeconds: Double = 0.4
+    static var readyHoldSeconds: Double {
+        #if DEBUG
+        // UI tests: long enough for XCUITest to see and capture PREP-1c before S07
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return 3 }
+        #endif
+        return 0.8
+    }
+    static let photoHeight: CGFloat = 560
+    static let background = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
+    static let sub = Color.white.opacity(0.78)
+    static let dim = Color.white.opacity(0.46)
+    static let disabledFill = Color.white.opacity(0.12)
 }
 
 struct BringingView: View {
     @Bindable var model: AppState
     @State private var breathe = false
-    @State private var sweep = -1.0
+    @State private var sweep = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var prep: PrepProgress? { model.prep }
-    /// Continue as soon as the call can start (the scene exists, or prep is done/failed); unwired review builds always can.
-    private var canContinue: Bool { !model.serverWired || (prep?.canStartCall ?? false) }
+    private var screen: PrepScreen {
+        var s = PrepScreen(model.prep, name: model.companionDisplayName)
+        // unwired review builds (no server) can always go on
+        if !model.serverWired, s.phase == .working { s.primaryEnabled = true }
+        return s
+    }
+    private var still: Bool { reduceMotion || CallMotion.reviewStill }
 
     var body: some View {
-        WirePage(title: "Bringing \(model.companionDisplayName)\nto life", pageID: "PREP-1", subtitle: nil, back: nil,
-                 primary: "Continue", primaryEnabled: canContinue, primaryID: "prepContinue", action: { model.startFirstCall() }) { width, top, bottom in
-            photo.frame(width: width - 48, height: 300)
-                .scaleEffect(breathe ? PrepStyle.breathScale : 1)
-                .overlay {
-                    LinearGradient(colors: [.clear, .white.opacity(0.35), .clear], startPoint: .leading, endPoint: .trailing)
-                        .frame(width: 120).offset(x: (width - 48) * CGFloat(sweep) / 2).blendMode(.plusLighter).opacity(reduceMotion ? 0 : 1)
+        let s = screen
+        GeometryReader { full in
+            ZStack(alignment: .top) {
+                PrepStyle.background
+                photoLayer(width: full.size.width)
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
+                    Text(s.title).font(TypeStyle.title(35)).kerning(-0.35).foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader).accessibilityIdentifier("PREP-1")
+                    Text(s.subtitle).font(TypeStyle.body(15)).foregroundStyle(PrepStyle.sub).lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true).padding(.top, 8).accessibilityIdentifier("prepNote")
+                    VStack(spacing: 4) { ForEach(s.rows, id: \.stage) { stageRow($0) } }.padding(.top, 20)
+                    buttons(s).padding(.top, 20)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .position(x: width / 2, y: 210 + 150 + top)
-                .accessibilityLabel("\(model.companionDisplayName)'s photo")
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(PrepProgress.Stage.allCases, id: \.self) { stage in stageRow(stage) }
-            }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 540 + 60 + top)
-            Text(footnote).font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).multilineTextAlignment(.center)
-                .frame(width: width - 62).position(x: width / 2, y: bottom - 24).accessibilityIdentifier("prepNote")
+                .padding(.horizontal, 24).padding(.bottom, s.phase == .ready ? 168 : 58)
+                .frame(width: full.size.width, height: full.size.height)
+            }
+            .frame(width: full.size.width, height: full.size.height)
         }
-        .task { await model.followPrep() }
+        .ignoresSafeArea()
+        .task(id: model.prep?.status) { await model.followPrep() }
         .task {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: PrepStyle.breathSeconds).repeatForever(autoreverses: true)) { breathe = true }
-            withAnimation(.linear(duration: PrepStyle.sweepSeconds).repeatForever(autoreverses: false)) { sweep = 1 }
+            guard !still else { return }
+            withAnimation(.easeInOut(duration: PrepStyle.breathSeconds / 2).repeatForever(autoreverses: true)) { breathe = true }
+            withAnimation(.linear(duration: PrepStyle.sweepSeconds).repeatForever(autoreverses: false)) { sweep = true }
         }
-        .onChange(of: prep?.isReady) { _, ready in if ready == true { model.startFirstCall() } }
+        .task(id: s.phase == .ready) {
+            // PREP-1c: no button, "Saying hi…", then S07 by itself
+            guard s.phase == .ready else { return }
+            try? await Task.sleep(for: .seconds(PrepStyle.crossfadeSeconds + PrepStyle.readyHoldSeconds))
+            if !Task.isCancelled { model.startFirstCall() }
+        }
     }
 
-    private var footnote: String {
-        if prep?.isFailed == true { return "\(model.companionDisplayName) will use this photo for now." }
-        return canContinue ? "You can start now. Their face comes alive during the call." : "This takes a minute or two."
+    /// The uploaded photo, crossfading (400 ms) to the server's call scene once it exists; it fades into the
+    /// background over its lower half and a soft light band passes over it while the face is being made.
+    private func photoLayer(width: CGFloat) -> some View {
+        ZStack {
+            uploaded.frame(width: width, height: PrepStyle.photoHeight).clipped()
+            if let data = model.sceneImageData, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFill().frame(width: width, height: PrepStyle.photoHeight).clipped()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: PrepStyle.crossfadeSeconds), value: model.sceneImageData != nil)
+        .task(id: model.prep?.sceneURL) { await model.loadScene() }
+        .scaleEffect(breathe ? PrepStyle.breathScale : 1)
+        .frame(width: width, height: PrepStyle.photoHeight).clipped()
+        .overlay(alignment: .top) {
+            if screen.phase == .working && !still {
+                LinearGradient(colors: [.clear, .white.opacity(0.16), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(width: width * 1.6, height: 300).rotationEffect(.degrees(-8))
+                    .offset(y: sweep ? PrepStyle.photoHeight : -300).blendMode(.plusLighter).allowsHitTesting(false)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            LinearGradient(colors: [PrepStyle.background.opacity(0), PrepStyle.background], startPoint: .top, endPoint: .bottom)
+                .frame(height: 300)
+        }
+        .frame(width: width, height: PrepStyle.photoHeight).clipped()
+        .accessibilityLabel("\(model.companionDisplayName)'s photo")
     }
 
-    private func status(_ stage: PrepProgress.Stage) -> PrepProgress.Status {
-        guard let prep else { return stage == .scene ? .running : .pending }
-        return prep.stages[stage] ?? .pending
-    }
-
-    private func stageRow(_ stage: PrepProgress.Stage) -> some View {
-        let s = status(stage)
-        return HStack(spacing: 12) {
-            ZStack {
-                Circle().fill(s == .done ? CallInk.ink : Color(white: 0.92)).frame(width: 24, height: 24)
-                switch s {
-                case .done: Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(CallInk.onInk)
-                case .running: ProgressView().controlSize(.mini)
-                case .failed: Image(systemName: "minus").font(.system(size: 11, weight: .bold)).foregroundStyle(CallInk.mute)
-                case .pending: EmptyView()
+    @ViewBuilder private func buttons(_ s: PrepScreen) -> some View {
+        if let primary = s.primary {
+            VStack(spacing: 14) {
+                Button {
+                    if case .failed = s.phase { model.retryPrep() } else { model.startFirstCall() }
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12).fill(s.primaryEnabled ? Color.white : PrepStyle.disabledFill)
+                        if model.retryingPrep { ProgressView().tint(PrepStyle.background) }
+                        else { Text(primary).font(TypeStyle.body(16, .medium)).foregroundStyle(s.primaryEnabled ? CallInk.ink : PrepStyle.dim) }
+                    }.frame(height: 50)
+                }.buttonStyle(.plain).disabled(!s.primaryEnabled || model.retryingPrep)
+                    .accessibilityLabel(primary).accessibilityIdentifier(s.secondary == nil ? "prepContinue" : "prepRetry")
+                if let secondary = s.secondary {
+                    // off while Try again is in flight: its answer restarts the polling the call relies on
+                    Button(secondary) { model.startFirstCall() }.buttonStyle(.plain).disabled(model.retryingPrep)
+                        .font(TypeStyle.body(15, .medium)).foregroundStyle(.white.opacity(model.retryingPrep ? 0.46 : 1)).frame(height: 18)
+                        .accessibilityIdentifier("prepContinuePhoto")
+                }
+                if let error = model.prepError, s.secondary != nil {
+                    Text(error).font(TypeStyle.body(13)).foregroundStyle(PrepStyle.sub).accessibilityIdentifier("prepError")
                 }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(PrepStyle.stageTitles[stage] ?? "").font(TypeStyle.body(16, .medium)).foregroundStyle(s == .pending ? CallInk.mute : CallInk.ink)
-                Text(PrepStyle.stageDetails[stage] ?? "").font(TypeStyle.body(13)).foregroundStyle(CallInk.mute)
-            }
-        }.accessibilityElement(children: .combine).accessibilityIdentifier("prepStage-\(stage.rawValue)")
-            .accessibilityValue(s.rawValue)
+        }
     }
 
-    @ViewBuilder private var photo: some View {
+    private func stageRow(_ row: PrepScreen.Row) -> some View {
+        HStack(spacing: 12) {
+            PrepIndicator(status: row.status, still: still).frame(width: 20, height: 20)
+            Text(row.title).font(TypeStyle.body(16, .medium)).foregroundStyle(row.status == .pending ? PrepStyle.dim : .white)
+            Spacer(minLength: 8)
+            Text(row.detail).font(TypeStyle.body(13)).foregroundStyle(PrepStyle.dim)
+        }
+        .frame(height: 36)
+        .accessibilityElement(children: .combine).accessibilityIdentifier("prepStage-\(row.stage.rawValue)")
+        .accessibilityValue(row.status.rawValue)
+    }
+
+    @ViewBuilder private var uploaded: some View {
         if let data = model.setup.imageData, let image = UIImage(data: data) { Image(uiImage: image).resizable().scaledToFill() }
         else { Image(resource: "companion").resizable().scaledToFill() }
+    }
+}
+
+/// PREP-1 stage mark (20 pt): done = white disc + black check (scales in), working = blue arc turning,
+/// pending = grey ring, failed = white ring with "!" (no warning colour, Figma 182:142).
+private struct PrepIndicator: View {
+    let status: PrepProgress.Status
+    let still: Bool
+    @State private var turn = false
+    @State private var shown = false
+
+    var body: some View {
+        ZStack {
+            switch status {
+            case .done:
+                Circle().fill(.white)
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(CallInk.ink)
+            case .running:
+                Circle().stroke(Color.white.opacity(0.22), lineWidth: 1.5)
+                Circle().trim(from: 0, to: 0.3).stroke(CallInk.blueOnInk, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                    .rotationEffect(.degrees(turn ? 360 : 0))
+                    .onAppear { if !still { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
+            case .failed:
+                Circle().stroke(Color.white, lineWidth: 1.5)
+                Text("!").font(TypeStyle.body(12, .semibold)).foregroundStyle(.white)
+            case .pending:
+                Circle().stroke(PrepStyle.dim, lineWidth: 1.5)
+            }
+        }
+        .scaleEffect(status == .done && !shown ? 0.8 : 1)
+        .onChange(of: status) { _, s in
+            guard s == .done else { return }
+            shown = false
+            withAnimation(.easeOut(duration: PrepStyle.checkSeconds)) { shown = true }
+        }
+        .onAppear { shown = true }
     }
 }

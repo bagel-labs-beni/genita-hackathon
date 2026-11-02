@@ -92,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var micOn = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
+    /// The front camera's preview is mirrored, the frames sent to the server are not: boxes need to know (CAM-H).
+    private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
     private(set) var playing = false
@@ -145,6 +147,9 @@ enum CallStop: Equatable {
     @ObservationIgnored private var lastUserText: String?
     @ObservationIgnored private var seqToUtterance: [UInt32: Int] = [:]
     @ObservationIgnored private var cancelled: Set<Int> = []
+    /// Utterances the server sent as `say` while `ready.tts` is server (voice GPU full or failed): complete them
+    /// after the device voice has rendered them, not when `reply` arrives.
+    @ObservationIgnored private var saidOnDevice: Set<Int> = []
     @ObservationIgnored private var currentUtterance: Int?
     @ObservationIgnored private var lookedUp: Set<Int> = []
     @ObservationIgnored private var playingUtterance: Int?
@@ -178,6 +183,7 @@ enum CallStop: Equatable {
             self.audio.markComplete(utteranceId: id)
         }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
         finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
     }
 
@@ -204,6 +210,9 @@ enum CallStop: Equatable {
         guard let (_, res) = try? await URLSession.shared.data(for: req) else { return false }
         return (res as? HTTPURLResponse)?.statusCode == 200
     }
+
+    /// REST client for the Finds tab, on the same host and token as the call.
+    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: fixedEndpoint ?? .current(), user: Self.installId) }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
     static var installId: String {
@@ -260,6 +269,10 @@ enum CallStop: Equatable {
         // B12: mic on again if it was on when the last call ended (asks for permission the usual way)
         if Self.micWasOn && mode == .chat { toggleMic() }
     }
+
+    /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
+    /// away and back, so the conversation resumes where it was (#118).
+    var historySnapshot: [ClientMessage.HistoryItem] { history }
 
     func end() {
         userEnded = true
@@ -320,12 +333,13 @@ enum CallStop: Equatable {
     @ObservationIgnored var onCameraChange: (() -> Void)?
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; onCameraChange?(); return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
         cameraDenied = false
         let go = { [weak self] in
             guard let self, self.camera.available else { return }
             self.beforeCameraStart?()
             self.camera.start()
+            self.cameraFront = self.camera.front
             self.cameraOn = true
             self.onCameraChange?()
         }
@@ -340,7 +354,7 @@ enum CallStop: Equatable {
         }
     }
 
-    func flipCamera() { camera.flip() }
+    func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
 
     /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
     static var interruptedHoldMs: Int {
@@ -400,6 +414,17 @@ enum CallStop: Equatable {
     func retryAnswer() {
         answerFailed = false
         guard let text = lastUserText else { return }
+        socket?.send(.text(.init(text: text, frames: nil)))
+    }
+
+    /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
+    func lookAgain() {
+        let question = finds.lookAgain() ?? lastUserText
+        guard let text = question else { return }
+        if cameraOn, let frame = camera.snapshotBase64() {
+            finds.latestFrames = [frame]
+            socket?.send(.frames(.init(images: [frame])))
+        }
         socket?.send(.text(.init(text: text, frames: nil)))
     }
 
@@ -567,6 +592,7 @@ enum CallStop: Equatable {
         case let .transcript(t):
             if t.final {
                 lastUserText = t.text
+                finds.latestQuestion = t.text
                 history.append(.init(role: .user, text: t.text))
                 if t.source == .text { speechEndAt = Date() }
             }
@@ -577,15 +603,17 @@ enum CallStop: Equatable {
             // Device voice mode: speak it into the call's player (same AEC, flush and playback_done as server audio).
             guard !cancelled.contains(sentence.utteranceId) else { break }
             currentUtterance = sentence.utteranceId
+            saidOnDevice.insert(sentence.utteranceId)
             voice.say(sentence)
         case let .reply(r):
             if !r.interpret, !r.text.isEmpty { history.append(.init(role: .assistant, text: r.text)) }
             if !cancelled.contains(r.utteranceId), !routed.contains(r.utteranceId) {
                 // Device mode: complete once every `say` of the reply is rendered into the player.
-                if tts == .device { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
+                if tts == .device || saidOnDevice.remove(r.utteranceId) != nil { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
+            saidOnDevice.remove(c.utteranceId)
             flushPlayback()
             if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
@@ -618,7 +646,7 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
     }

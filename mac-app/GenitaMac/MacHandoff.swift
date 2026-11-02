@@ -11,6 +11,9 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     let sharing = ScreenSharingController()
     let media = LocalCallMedia()
     let ownership = OwnershipCoordinator(device:.mac)
+    /// F6-L7: the server's conversation layer; the local link stays as fallback and effect layer.
+    let server = ServerOwnershipLink(device:.mac)
+    private var fanout: OwnershipFanout?
     @Published var status = "Waiting for your iPhone"
     @Published fileprivate(set) var surface = HandoffSurface.active
     @Published private(set) var companionVisible = false
@@ -22,7 +25,18 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     func effectReady(_ id:String) { guard motion?.id==id else{return};renderedMotionID=id }
     /// An arriving window shows only the effect; a departing one stays visible until its first frame.
     var conversationHidden:Bool { guard let motion else{return false};return motion.outgoing ? motionVisible : true }
-    var canMoveToPhone:Bool { ownership.isOwner && phoneReachable && motion == nil }
+    /// Only when a request can actually reach an iPhone that is in front (local link, or the server says active).
+    var canMoveToPhone:Bool {
+        #if DEBUG
+        if let review=reviewCanMove {return review}
+        #endif
+        return ownership.isOwner && (linkReachable || server.peerActive) && motion == nil
+    }
+    #if DEBUG
+    /// CI review only: pins "an iPhone is in front" so MC-M and MAC-4 render their enabled state.
+    var reviewCanMove:Bool?
+    #endif
+    private var linkReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
     private var returnOrigin:NSPoint?
     @Published var profile: Data?
     private var image = ""
@@ -44,15 +58,24 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var epoch=0
     private var bestRTT=Double.infinity
     private var subscriptions=Set<AnyCancellable>()
-    private var phoneReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
+    /// The iPhone counts as reachable over the local link (pongs) or the server (presence).
+    private var phoneReachable:Bool { (link.connected && Date().timeIntervalSince1970-lastPong<3) || server.peerOnline }
     init() {
-        ownership.transport=link
+        let fanout=OwnershipFanout([link,server]);self.fanout=fanout
+        ownership.transport=fanout
+        server.onEffect = { [weak self] in self?.serverEffect($0) }
+        server.onConnect = { [weak self] in
+            guard let self else{return}
+            self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":true])
+        }
+        server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {server.start()}
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         link.host()
         // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
-        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion() }}
+        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion();MacCall.shared.conversationArrived() }}
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
     }
@@ -61,11 +84,18 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard let screen else{return}
         registration?.close()
         let window=NSWindow(contentRect:screen.frame,styleMask:.borderless,backing:.buffered,defer:false)
-        window.isReleasedWhenClosed=false;window.level = .floating;window.backgroundColor = NSColor(red:0.027,green:0.592,blue:0.592,alpha:1)
-        window.contentView=NSHostingView(rootView:RegistrationView())
+        window.isReleasedWhenClosed=false;window.level = .floating;window.backgroundColor = .white
+        window.contentView=NSHostingView(rootView:RegistrationView(aspect:screen.frame.width/screen.frame.height))
         window.setFrame(screen.frame,display:true);window.makeKeyAndOrderFront(nil);registration=window
         NSApp.presentationOptions=[.autoHideDock,.autoHideMenuBar]
+        // MAC-REG fills the screen, so the picture's physical size is the screen's (CGDisplayScreenSize, mm).
+        if let geometry=registrationGeometry(screen) {link.send(geometry.message)}
         status="Point your iPhone’s rear camera at this whole screen once"
+    }
+    private func registrationGeometry(_ screen:NSScreen)->RegistrationGeometry? {
+        let display=(screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+        let mm=CGDisplayScreenSize(display)
+        return RegistrationGeometry(widthM:mm.width/1000,heightM:mm.height/1000)
     }
     func closeRegistration() { guard registration != nil else{return};registration?.close();registration=nil;NSApp.presentationOptions=[] }
     private func ensureCompanion() {
@@ -98,18 +128,40 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     func continueHere() {
         guard !ownership.isOwner else{return}
         let atEdge=freshAtDock
+        server.nextTrigger = atEdge ? "touch" : "continue"
         ownership.claimHere()
         status="Conversation on this Mac"
         if atEdge {prepare(outgoing:true)}
     }
-    func moveToPhone() { guard canMoveToPhone else{return};link.send(["type":"moveRequest"]);status="Moving to your iPhone" }
+    func moveToPhone() {
+        guard canMoveToPhone else{return}
+        // One channel per request, so a late duplicate can't undo a later Continue here.
+        if server.peerActive {server.moveRequest(to:.phone)} else {link.send(["type":"moveRequest"])}
+        status="Moving to your iPhone"
+    }
+    private func serverEffect(_ effect:PresenceEffect) {
+        switch effect {
+        case let .apply(claim):
+            // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
+            if pending != nil || motion != nil {
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+            } else {ownership.receive(claim)}
+        case .moveRequested:
+            if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
+        case .moveFailed:
+            status="Your iPhone isn’t available. Still on this Mac."
+        case .peerChanged: refreshSurface()
+        }
+    }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         if new == .mac {
             sharingStopped=false;showCompanion()
+            MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
         } else {
             if old == .mac {sharingStopped=sharing.isSharing}
             // The conversation left: sharing stops now and does not come back by itself.
             sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
+            MacCall.shared.conversationLeft()
             candidate=nil;armed=false
             status="Conversation on your iPhone"
         }
@@ -133,9 +185,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             image=message["image"] as? String ?? "";profile=(message["profile"] as? String).flatMap { Data(base64Encoded:$0) }
             if let h=message["phoneHeight"] as? Double,let w=message["phoneWidth"] as? Double,(0.09...0.2).contains(h),(0.04...0.1).contains(w){phoneHeight=h;phoneWidth=w}
             if message["register"] as? Bool == true {showRegistration()}
+            else if let screen=screen ?? NSScreen.main,let geometry=registrationGeometry(screen) {link.send(geometry.message)}
             let display=(screen ?? NSScreen.main)?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
             link.send(["type":"welcome","identity":link.macID+"-"+(display?.stringValue ?? "main")])
         case "register": showRegistration()
+        case "registerCancel": closeRegistration()
         case "ownership":
             if let claim=OwnershipClaim(message) {ownership.receive(claim)}
         case "moveRequest":
@@ -168,7 +222,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             renderedMotionID=nil
             motion=TransitionPayload(id:pending.id,image:image,start:start,outgoing:!pending.outgoing,reverse:(!pending.outgoing) != dock.right)
             // The move commits as the effect starts. The effect only decorates it.
-            if pending.outgoing,!ownership.isOwner {ownership.claimHere()}
+            if pending.outgoing,!ownership.isOwner {server.nextTrigger="touch";ownership.claimHere()}
             showCompanion();self.pending=nil;epoch+=1;let e=epoch
             DispatchQueue.main.asyncAfter(deadline:.now()+4) {
                 guard self.epoch==e else{return}
@@ -223,13 +277,25 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
 }
 
+/// MAC-REG (design-flow r01): the feature-rich picture fills the screen; the note sits in the bottom-right
+/// corner only, so the middle of the picture stays visible to the iPhone. It closes by itself once the
+/// iPhone has found the screen.
 struct RegistrationView: View {
+    let aspect: CGFloat
     var body:some View {
-        ZStack {
-            Color(red:0.027,green:0.592,blue:0.592)
-            Rectangle().stroke(.white,lineWidth:7).padding(4)
-            VStack(spacing:14){Text("Register this screen").font(.title);Text("Point your iPhone’s rear camera at this whole screen once.\nIt closes by itself when it’s registered.").multilineTextAlignment(.center);Button("Close"){MacHandoff.shared.closeRegistration()}}
-                .padding(24).background(.black.opacity(0.6),in:RoundedRectangle(cornerRadius:16)).foregroundStyle(.white)
+        ZStack(alignment:.bottomTrailing) {
+            if let image=RegistrationPattern.image(width:1600,aspect:aspect) {
+                Image(decorative:image,scale:1).resizable().interpolation(.high).ignoresSafeArea()
+            }
+            HStack(spacing:16) {
+                Text("Show this to your iPhone").font(.custom("KMUTTF-SungkokSemiSerif",fixedSize:22)).foregroundStyle(Color(white:253.0/255)).fixedSize()
+                Button { MacHandoff.shared.closeRegistration() } label: {
+                    Text("Close").font(.custom("PretendardVariable-Medium",fixedSize:16)).foregroundStyle(Color(white:17.0/255))
+                        .padding(.horizontal,24).frame(height:44).background(Color(white:253.0/255),in:RoundedRectangle(cornerRadius:12)).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("closeRegistration")
+            }
+            .padding(EdgeInsets(top:8,leading:16,bottom:8,trailing:8))
+            .background(Color(white:17.0/255).opacity(0.84),in:UnevenRoundedRectangle(topLeadingRadius:20))
         }.ignoresSafeArea()
     }
 }
@@ -244,18 +310,98 @@ struct MacHandoffSurface: View {
         }
     }
 }
+/// The Mac's home window: MAC-2 (no companion yet), MAC-3 (conversation on the iPhone), MAC-4 (conversation here).
+/// Figma rp1wR9pxV0IsgyjvOcwo92 87:2 / 88:2 / 89:2: 420 wide, 32 pt padding, serif 28 title, one status row, 50 pt button.
+enum MacHomeKind: Equatable { case noCompanion, onPhone, here, offline(String) }
 struct MacHandoffControls:View {
     @ObservedObject private var handoff=MacHandoff.shared
+    @ObservedObject private var call=MacCall.shared
+    private let tick=Timer.publish(every:10,on:.main,in:.common).autoconnect()
+    private var kind:MacHomeKind {
+        switch call.account {
+        case .offline(let reason): return .offline(reason)
+        case .noCompanion,.checking,.signingIn: return .noCompanion   // "Checking for your companion"
+        default: return handoff.ownership.isOwner && handoff.ownership.state.epoch>0 ? .here : .onPhone
+        }
+    }
     var body:some View {
-        VStack(spacing:16) {
-            Text("Genita").font(.largeTitle)
-            Text("First time? Enter this code on your iPhone.").foregroundStyle(.secondary)
-            Text(handoff.link.code).font(.system(size:40,weight:.medium,design:.monospaced)).textSelection(.enabled)
-            Text(handoff.link.status)
-            Text(handoff.status).font(.callout).multilineTextAlignment(.center)
-            HStack {Button("Register screen"){handoff.showRegistration()}.disabled(!handoff.link.connected);Button("Move to iPhone"){handoff.moveToPhone()}.disabled(!handoff.canMoveToPhone)}
-            Text("The conversation itself isn’t connected yet. Screen sharing is available while the conversation is on this Mac.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }.padding(28).frame(width:420)
+        MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff)
+            // 4401 → MAC-1, 4403 → CS01 (this window is always there, so it sees every stop of the call)
+            .onChange(of:CallController.shared.stopped) { _,stop in if let stop {call.callStopped(stop)} }
+            // MAC-2 / offline: the window coming to the front, and every 10 s while it waits, asks /me again
+            .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in recheck() }
+            .onReceive(tick) { _ in recheck() }
+    }
+    private func recheck() {
+        switch call.account { case .noCompanion,.offline: Task { await call.refresh() }; default: break }
+    }
+}
+struct MacHomeView:View {
+    let kind:MacHomeKind
+    let name:String
+    @ObservedObject var handoff:MacHandoff
+    private static let blue=Color(red:0,green:162.0/255,blue:1)
+    private var paired:Bool { handoff.link.connected }
+    private var spacedCode:String { let c=handoff.link.code;return c.count==6 ? String(c.prefix(3))+" "+String(c.suffix(3)) : c }
+    var body:some View {
+        VStack(alignment:.leading,spacing:12) {
+            Text(title).font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height:34,alignment:.leading)
+                .fixedSize(horizontal:true,vertical:false).accessibilityAddTraits(.isHeader)
+            switch kind {
+            case .noCompanion:
+                Text("Your companion is made on iPhone: face, voice and setup. Open Genita there. They’ll show up here when you’re done.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3.5).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                HStack(spacing:8) {
+                    Circle().strokeBorder(Color(white:227.0/255),lineWidth:2).frame(width:16,height:16)
+                    Text("Checking for your companion").font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.mute)
+                }.frame(height:22)
+                button("Get Genita for iPhone",filled:false,id:"macGetGenita") { if let url=URL(string:"https://testflight.apple.com/join/Ybqh482p") {NSWorkspace.shared.open(url)} }
+            case .onPhone:
+                statusRow("Conversation on your iPhone",live:true)
+                button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
+                pairingBlock
+            case .here:
+                statusRow(paired ? "Paired with your iPhone" : handoff.server.connected ? "Signed in. Moves go through your account." : "No iPhone paired yet",live:paired || handoff.server.connected)
+                HStack(spacing:8) {
+                    button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() }.disabled(!handoff.canMoveToPhone).opacity(handoff.canMoveToPhone ? 1 : 0.4)
+                    button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() }.disabled(!paired).opacity(paired ? 1 : 0.4)
+                }
+                Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
+                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                if !paired { pairingBlock }   // first time, before any iPhone is paired: the code must stay reachable
+            case .offline(let reason):
+                statusRow(reason,live:false)
+                button("Try again",filled:true,id:"macTryAgain") { Task { await MacCall.shared.refresh() } }
+            }
+            // Not in the Figma frames: the old window's "Sign out" link, so an account can still be switched on the Mac.
+            Button("Sign out") { MacCall.shared.signOut() }
+                .buttonStyle(.plain).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).underline().accessibilityIdentifier("macSignOut")
+        }
+        .padding(.horizontal,32).padding(.top,32).padding(.bottom,28).frame(width:420,alignment:.topLeading)
+        .background(MacSheetInk.sheet)
+    }
+    private var title:String {
+        switch kind { case .noCompanion: "Set up on your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac."; case .offline: "Can’t reach Genita." }
+    }
+    /// "First time with this iPhone?" + the six digits (MAC-3 88:19 / 88:21).
+    @ViewBuilder private var pairingBlock:some View {
+        Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
+            .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
+        Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)
+            .frame(maxWidth:.infinity).padding(.vertical,16).background(Color(white:241.0/255),in:RoundedRectangle(cornerRadius:12))
+            .accessibilityLabel("Pairing code "+spacedCode).accessibilityIdentifier("macPairingCode")
+    }
+    private func statusRow(_ text:String,live:Bool)->some View {
+        HStack(spacing:8) {
+            Circle().fill(live ? Self.blue : Color(white:227.0/255)).frame(width:8,height:8)
+            Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.mute)
+        }.frame(height:22).accessibilityElement(children:.combine)
+    }
+    private func button(_ label:String,filled:Bool,height:CGFloat=50,id:String,action:@escaping()->Void)->some View {
+        Button(action:action) {
+            Text(label).font(MacSheetInk.sans(16,.medium)).foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
+                .frame(maxWidth:.infinity).frame(height:height).background(filled ? MacSheetInk.ink : Color.white,in:RoundedRectangle(cornerRadius:12))
+        }.buttonStyle(.plain).accessibilityIdentifier(id)
     }
 }
 
@@ -276,6 +422,62 @@ extension MacHandoff {
                 try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
             }
             window.orderOut(nil)
+        }
+        // #118 / #121: the call window's cue and MAC-RS / MAC-LINK, from wire events (no server)
+        let call=CallController.shared
+        call.companionName="Mina"
+        for (name,results,state,review) in [("C01-mac-thinking",false,SheetState.idle,""),("MAC-RS-a",false,.searching,""),("MAC-RS-b",true,.full,""),("MAC-RS-half",true,.half,""),("MAC-LINK-prompt",true,.half,"link")] {
+            surface = .active;sharingStopped=false
+            if let ready=try? ServerEvent.decode(#"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#) {call.handle(ready)}
+            if let thinking=try? ServerEvent.decode(#"{"type":"state","state":"thinking"}"#) {call.handle(thinking)}
+            if state == .idle {call.finds.reset()} else {call.finds.load(recorded:MacResultFixture.events(results:results),frames:[]);call.finds.force(state)}
+            let host=NSHostingView(rootView:MacConversationView(reviewOverride:review).frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+            }
+            window.orderOut(nil)
+        }
+        // MAC-2 / MAC-3 / MAC-4 home windows (420 wide, height follows the content) and MC-M (the menu over the call)
+        call.companionName="Mina"
+        do {
+            reviewCanMove=true
+            for (name,kind) in [("MAC-2",MacHomeKind.noCompanion),("MAC-3",.onPhone),("MAC-4",.here)] {
+                let host=NSHostingView(rootView:MacHomeView(kind:kind,name:"Mina",handoff:self))
+                let size=host.fittingSize
+                host.frame=NSRect(origin:.zero,size:size)
+                let window=NSWindow(contentRect:NSRect(origin:.zero,size:size),styleMask:.borderless,backing:.buffered,defer:false)
+                window.contentView=host;window.orderFront(nil)
+                try? await Task.sleep(for:.seconds(1))
+                if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                    host.cacheDisplay(in:host.bounds,to:rep)
+                    try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+                }
+                window.orderOut(nil)
+            }
+            surface = .active;sharingStopped=false
+            let host=NSHostingView(rootView:MacConversationView(reviewOverride:"menu").frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-M.png"))
+            }
+            window.orderOut(nil)
+        }
+        // MAC-REG at a 14-inch MacBook Pro's point size
+        let size=NSSize(width:1512,height:982)
+        let host=NSHostingView(rootView:RegistrationView(aspect:size.width/size.height).frame(width:size.width,height:size.height))
+        let window=NSWindow(contentRect:NSRect(origin:.zero,size:size),styleMask:.borderless,backing:.buffered,defer:false)
+        window.contentView=host;window.orderFront(nil)
+        try? await Task.sleep(for:.seconds(1))
+        if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+            host.cacheDisplay(in:host.bounds,to:rep)
+            try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MAC-REG.png"))
         }
         exit(0)
     }

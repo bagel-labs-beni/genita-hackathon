@@ -42,10 +42,19 @@ extension AppState {
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
-        if setup.imageData == nil, let url = c.prep?.sceneURL, url.scheme == "https",
-           let (data, res) = try? await URLSession.shared.data(from: url), (res as? HTTPURLResponse)?.statusCode == 200, UIImage(data: data) != nil {
+        // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
+        if setup.imageData == nil, let url = c.prep?.sceneURL,
+           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
             setup.imageData = data
         }
+    }
+
+    /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
+    func loadScene() async {
+        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
+              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
+        // the account or companion may have changed while the image was on its way
+        if sceneKey == key { sceneImage = (key, data) }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil) {
@@ -228,6 +237,23 @@ extension AppState {
         suggestName()
     }
 
+    // MARK: V04
+
+    /// V04 Continue: the picked voice is saved on the companion. The companion already has the recommended
+    /// voice from "Use this image", so an unreachable server (or no pick while the voice service wakes) just continues.
+    func saveVoiceAndContinue() {
+        if setup.deviceVoice == nil { setup.deviceVoice = VoicePlayer.deviceFallbackID }   // silent offline fallback, not a choice
+        UserDefaults.standard.set(setup.deviceVoice, forKey: VoicePlayer.deviceFallbackKey)
+        guard serverWired, let voiceId = setup.voiceId else { go(.companionName); return }
+        savingVoice = true
+        Task {
+            defer { savingVoice = false }
+            await companionTask?.value
+            if setup.companionCreated == true { voiceUnsaved = (try? await onboarding.saveVoice(voiceId)) == nil }   // else NM01's create sends it
+            go(.companionName)
+        }
+    }
+
     // MARK: NM01 (D21)
 
     /// Pre-fills NM01 from the server's suggestion (photo + imported style). The user's own edit wins.
@@ -236,7 +262,9 @@ extension AppState {
         suggestingName = true
         Task {
             defer { suggestingName = false }
-            if let s = try? await onboarding.suggestName(imageId: imageId), (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
+            guard let s = try? await onboarding.suggestName(imageId: imageId) else { return }
+            if CompanionName.isValid(s.name) { suggestedCompanionName = CompanionName.clean(s.name) }
+            if (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
         }
     }
 
@@ -252,9 +280,10 @@ extension AppState {
             defer { savingName = false }
             await companionTask?.value
             do {
+                if voiceUnsaved, let voiceId = setup.voiceId, (try? await onboarding.saveVoice(voiceId)) != nil { voiceUnsaved = false }
                 if setup.companionCreated == true { try await onboarding.renameCompanion(setup.companionName ?? "") }
                 else if let imageId = setup.imageId {
-                    try await onboarding.createCompanion(imageId: imageId, name: setup.companionName)
+                    try await onboarding.createCompanion(imageId: imageId, voiceId: setup.voiceId, name: setup.companionName)
                     setup.companionCreated = true
                 }
                 go(.depth)
@@ -289,24 +318,43 @@ extension AppState {
         }
     }
 
-    /// PREP-1: poll `GET /v1/companion/prep` every 2 s while the screen is up (scene → expressions → mouth).
-    func followPrep() async {
+    /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
+    /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
+    func followPrep(every seconds: Double = 2) async {
         guard serverWired else { return }
+        if prep?.isReady == true { return }
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
                 prep = p
-                if p.isReady { return }
+                if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
+            } catch GenitaAuthError.server(404, _) {
+                return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(seconds))
         }
     }
 
-    /// PREP-1 Continue (or everything ready): S07 → S09. Before ready the call starts with the photo face.
+    /// PREP-1e Try again: the server redoes only what didn't finish; the screen polls again (its task is keyed on
+    /// `prep.status`).
+    func retryPrep() {
+        guard serverWired, !retryingPrep else { return }
+        retryingPrep = true; prepError = nil
+        Task {
+            defer { retryingPrep = false }
+            do { prep = try await onboarding.retryPrep() } catch { prepError = Self.errorLine(error); route(error) }
+        }
+    }
+
+    /// S09-PREP: the stage still being made while the call is up ("Getting the mouth ready"), nil when ready/failed.
+    var callPrepIndicator: String? { PrepScreen.callIndicator(prep) }
+
+    /// PREP-1 Start talking / Continue with the photo (or everything ready): S07 → S09. Before ready the call starts
+    /// with the photo face (S09-P); after a failure it stays the photo (S09-PF).
     func startFirstCall() { if stage == .bringing { go(.connecting) } }
 
     // MARK: call start
