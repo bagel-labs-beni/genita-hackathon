@@ -59,11 +59,12 @@ test("full human and animal prep only requests Meta hosts", async (t) => {
     await new PrepRunner(d).run("u1");
     const view = prepView((await d.store.getCompanion("u1"))!);
     assert.equal(view.status, "ready");
-    assert.deepEqual(view.progress, { done: 14, total: 14 });
+    assert.deepEqual(view.progress, { done: 19, total: 19 });
     assert.equal(Object.keys(view.face!.visemes).length, 10);
-    assert.equal(models.filter((m) => m === "muse-image-1.0").length, 14);
+    assert.equal(models.filter((m) => m === "muse-image-1.0").length, 19);
+    assert.equal(Object.keys(view.face!.mouthKeys).length, 5);
     assert.deepEqual([...new Set(models)].sort(), ["muse-image-1.0", "muse-spark-1.3", "sam-3.1"]);
-    assert.ok(seen.length > 14);
+    assert.ok(seen.length > 19);
     assert.ok(seen.every((url) => url.hostname === "api.meta.ai"));
   });
 });

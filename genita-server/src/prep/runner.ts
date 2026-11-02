@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { FACE_KEYS, faceManifest, makeFaceSet, type FaceKey } from "./face.ts";
+import { makeFaceFlow } from "./faceflow.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
@@ -32,6 +33,8 @@ export function newPrepState(): PrepState {
 
 /** Public URL of a companion image (scene = `neutral`); GET /v1/companion/face/:key, same auth as every prep route. */
 export const faceUrl = (key: "neutral" | FaceKey) => `/v1/companion/face/${key}`;
+/** Face-flow assets (`flow_*`) are served by the same route. */
+export const flowUrl = (asset: string) => `/v1/companion/face/${asset}`;
 
 /**
  * Pure: scene + 13 face images for the progress bar; settled = kept or rejected.
@@ -61,7 +64,7 @@ export function prepView(c: CompanionRecord) {
     // Keep the legacy prep response shape neutral for existing clients.
     emotionVideos: {},
     /** Meta-only face set manifest (team/metaface spec), once the face step is done */
-    face: p.steps.face?.status === "done" && p.steps.face.face ? faceManifest(p.steps.face.face, faceUrl) : null,
+    face: p.steps.face?.status === "done" && p.steps.face.face ? faceManifest(p.steps.face.face, faceUrl, flowUrl) : null,
     lips: { status: "skipped", detail: null, url: null, ms: null },
     steps: {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
@@ -273,8 +276,22 @@ export class PrepRunner {
         log: d.log,
         signal,
       });
+      // optical-flow morph data (optional: without Python/OpenCV the device draws the viseme patches)
+      if (d.python) {
+        out.flow = await makeFaceFlow({
+          python: d.python,
+          scene,
+          state: out,
+          kind: c.type,
+          image: (k) => d.store.getAsset(userId, companionId, k),
+          put: (asset, bytes) => d.store.putAsset(userId, companionId, asset, bytes),
+          log: (e, x) => d.log(e, { companion: companionId, ...x }),
+          signal,
+        });
+        signal.throwIfAborted();
+      }
       await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
-      const m = faceManifest(out, faceUrl);
+      const m = faceManifest(out, faceUrl, flowUrl);
       d.log("face.done", { companion: companionId, ms: out.ms, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
     } catch (err) {
       if (!signal.aborted) await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
@@ -322,7 +339,7 @@ export class PrepRunner {
       }
     }
     if (gone) throw new Error("companion deleted");
-    const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl) : null;
+    const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl, flowUrl) : null;
     d.log("prep.completed", { companion: c.id, type: c.type, pipeline: "meta", total_ms: Math.round(performance.now() - t0), rejected: face?.rejected.length ?? null });
     this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {}, face });
   }

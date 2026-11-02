@@ -13,11 +13,11 @@ import { fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
 
 test("progress ignores legacy video and lip steps, and views never expose their URLs", () => {
   const p = newPrepState();
-  assert.deepEqual(prepProgress(p), { done: 0, total: 14 });
+  assert.deepEqual(prepProgress(p), { done: 0, total: 19 });
   p.steps.scene = { status: "done", attempts: 1, url: "/v1/companion/face/neutral" };
   p.steps.videos.neutral = { status: "done", attempts: 1, url: "https://retired.test/n.mp4" };
   p.steps.lips = { status: "done", attempts: 1, url: "https://retired.test/lips" };
-  assert.deepEqual(prepProgress(p), { done: 1, total: 14 });
+  assert.deepEqual(prepProgress(p), { done: 1, total: 19 });
   const view = prepView({ ...companion(), prep: p });
   assert.deepEqual(view.emotionVideos, {});
   assert.deepEqual(view.lips, { status: "skipped", detail: null, url: null, ms: null });

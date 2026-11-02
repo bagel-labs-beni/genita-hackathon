@@ -70,7 +70,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   await runner.run("u1"); // fake input has no usable scene; route validation remains available
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
-  assert.equal(prep.json.progress.total, 14);
+  assert.equal(prep.json.progress.total, 19);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
