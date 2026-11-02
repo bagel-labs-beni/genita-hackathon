@@ -66,7 +66,14 @@ public final class FaceRenderer: @unchecked Sendable {
         return max(m.lookaheadMs ?? 0, hold)
     }
     /// Expression events for the current reply (audio-clock ms). Ignored when the layer is off.
-    public func addExpression(_ e: FaceExpressionEvent) { lock.lock(); flowMorph?.expressionEvents.append(e); lock.unlock() }
+    public func addExpression(_ e: FaceExpressionEvent) {
+        var e = e
+        // demo (11/3): laugh over the lip rig reads rubbery; it plays as an open smile
+        if Self.laughAsSmileOpen, e.tag == "laugh", flowMorph?.data.map.rig != nil { e.tag = "smileopen" }
+        lock.lock(); flowMorph?.expressionEvents.append(e); lock.unlock()
+    }
+    /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
+    nonisolated(unsafe) public static var laughAsSmileOpen = true
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame.
     public func resetMouth() { lock.lock(); flowMorph?.reset(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).

@@ -207,17 +207,17 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// ramp start below the mouth box bottom and its length (× still height)
         public var chinRamp = [0.035, 0.03]
         /// texture blend: w_k = a_k/Σa × clip((Σa − blendFloor[0]) / blendFloor[1])
-        public var blendFloor = [0.04, 0.16]
+        public var blendFloor = [0.12, 0.40]      // v43+
         /// keys never textured (geometry only)
         public var noTex = ["MBP"]
         /// teeth layer: top key (hysteresis, none below teethMin), alpha = interior × clip((a − teethAlpha[0]) / teethAlpha[1])
         public var teethHyst = 0.05, teethMin = 0.08, teethAlpha = [0.06, 0.12]
         /// v44: the teeth layer leaves on the frame before a closure
-        public var teethExitBeforeClose = false
+        public var teethExitBeforeClose = true
         /// v44 teeth-layer texture tone (teethTop.tone): darker, warmer cavity; an upper band of bright,
         /// unsaturated pixels lifted toward white. nil = the key texture as it is.
         public struct TeethTone: Codable, Equatable, Sendable {
-            public var cavityDark = 0.5, teethLift = 0.5, band = 0.85, split = 0.55, thrPct = 50.0
+            public var cavityDark = 0.5, teethLift = 0.5, band = 0.90, split = 0.40, thrPct = 50.0   // v9.1 release
             public init() {}
             enum CodingKeys: String, CodingKey { case cavityDark, teethLift, band, split, thrPct }
             public init(from decoder: Decoder) throws {
