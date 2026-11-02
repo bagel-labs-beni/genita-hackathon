@@ -15,8 +15,26 @@ import { isMostlyHangul } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
-import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
+import {
+  PROTOCOL_VERSION,
+  FRAME_HEADER_BYTES,
+  FRAME_KIND_TTS_PCM,
+  FRAME_KIND_PETER,
+  CLIENT_FRAME_KIND_MIC,
+  CLIENT_FRAME_KIND_CALL,
+  encodeFrameHeader,
+  type ServerEvent,
+  type ErrorCode,
+  type CancelReason,
+  type InterpretOptionsWire,
+} from "../protocol.ts";
+import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
+import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
+import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
+import type { Memory } from "../memory/repository.ts";
+import type { CompanionFaceResolver } from "../memory/photos.ts";
+import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -54,9 +72,16 @@ export type SessionDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** Identity is assigned by the authenticated upgrade, never by start.user. */
+  userId?: string;
+  memory?: MemoryService;
+  photos?: UsPhotoService;
+  resolveCompanionFace?: CompanionFaceResolver;
   /** Peter worker connection factory; unset = Peter not deployed */
   openPeter?: (opts?: { avatarId?: string }) => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
+  /** result cards (F10); unset = spoken answers only */
+  finds?: FindsDeps;
 };
 
 type Mode = "chat" | "interpret";
@@ -75,8 +100,8 @@ type Reply = {
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null };
-type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent> };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[] };
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
 export function normTranscript(s: string): string {
@@ -89,6 +114,19 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** spoken after "Can you interpret for me?" */
+const INTERPRET_ON_LINE = "Sure, I'll pass on what I hear.";
+
+function parseInterpretOptions(v: unknown): InterpretOptionsWire {
+  if (!v || typeof v !== "object") return {};
+  const o = v as Record<string, unknown>;
+  return {
+    source: o.source === "call" ? "call" : "face",
+    other: str(o.other, 40),
+    app: str(o.app, 40),
+  };
+}
+const ANNOUNCE_WAIT_MS = 20_000;
 
 function str(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -122,6 +160,8 @@ export class Session {
   private persona: PersonaCard | null = null;
   private user: UserProfile | undefined;
   private memories: string[] = [];
+  private memoryCall: MemoryCall | null = null;
+  private greeting: { item: Memory | null } | null = null;
   private mode: Mode = "chat";
   private language = "English";
   private voiceId: string;
@@ -132,6 +172,10 @@ export class Session {
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
   private asr: AsrLike | null = null;
+  /** F8 · set while mode is "interpret" */
+  private interp: Interpreter | null = null;
+  /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
+  private callAsr: AsrLike | null = null;
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
@@ -143,6 +187,9 @@ export class Session {
   private metrics: TurnMetrics = {};
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
+  private finds: FindsRunner | null = null;
+  /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
+  private pendingAnnounce: { text: string; at: number } | null = null;
 
   constructor(id: string, client: ClientSink, deps: SessionDeps) {
     this.id = id;
@@ -151,6 +198,14 @@ export class Session {
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    if (deps.finds) {
+      this.finds = new FindsRunner(deps.finds, {
+        emit: (e) => !this.closed && this.client.sendJson(e),
+        announce: (text) => this.announce(text),
+        log: (event, data) => this.log(event, data),
+        now: this.now,
+      });
+    }
   }
 
   // ───────────────────────── client input ─────────────────────────
@@ -180,12 +235,24 @@ export class Session {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
+        if (this.interp && typeof msg.findId === "string") {
+          // "Ask about this" on a card while interpreting would be translated to the other person: not sent
+          this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
+          return;
+        }
+        if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
+        if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
+        if (this.interp) return this.interp.bargeIn();
         return this.dispatch({ type: "client_barge_in" });
+      case "hold":
+        this.interp?.hold(msg.on === true);
+        return;
       case "playback_done": {
+        if (this.interp && typeof msg.utteranceId === "number") this.interp.playbackDone(msg.utteranceId);
         const r = this.reply;
         if (r && msg.utteranceId === r.utteranceId && r.doneTimer) {
           clearTimeout(r.doneTimer);
@@ -194,23 +261,40 @@ export class Session {
         return;
       }
       case "mode":
-        if (msg.mode === "chat" || msg.mode === "interpret") {
-          this.mode = msg.mode;
-          this.client.sendJson({ type: "mode.changed", mode: this.mode, by: "client" });
-        }
+        if (msg.mode === "chat" || msg.mode === "interpret") this.switchMode(msg.mode, "client", parseInterpretOptions(msg.interpret));
         return;
       case "frames":
         this.setFrames(msg.images);
         return;
       case "stop":
         return this.close(1000, "stopped");
+      case "find.confirm":
+        if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
+        return;
+      case "find.stop":
+        if (typeof msg.findId === "string") this.finds?.stop(msg.findId);
+        return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);
     }
   }
 
-  onClientAudio(pcm: Buffer): void {
-    if (!this.started || !this.micOn) return;
+  onClientAudio(frame: Buffer): void {
+    if (!this.started) return;
+    let pcm = frame;
+    // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
+    if (frame.length > FRAME_HEADER_BYTES && frame[0] === 0x47 && frame[1] === 0x41 && frame[3] === 0 && (frame[2] === CLIENT_FRAME_KIND_MIC || frame[2] === CLIENT_FRAME_KIND_CALL)) {
+      pcm = frame.subarray(FRAME_HEADER_BYTES);
+      if (frame[2] === CLIENT_FRAME_KIND_CALL) {
+        if (this.interp?.source !== "call") return;
+        if (!this.callAsr?.isOpen) void this.ensureCallAsr();
+        this.callAsr?.sendAudio(pcm);
+        return;
+      }
+    }
+    if (!this.micOn) return;
+    // "Hold to reply": outside the hold the mic is silence, which also ends the held turn quickly
+    if (this.interp?.micGated) pcm = Buffer.alloc(pcm.length);
     if (!this.asr?.isOpen) void this.ensureAsr();
     this.asr?.sendAudio(pcm);
   }
@@ -224,8 +308,8 @@ export class Session {
     this.persona = persona;
     const u = msg.user && typeof msg.user === "object" ? (msg.user as Record<string, unknown>) : {};
     this.user = { name: str(u.name, 80), profile: str(u.profile, 4000) };
-    this.memories = Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
-    if (Array.isArray(msg.history)) {
+    this.memories = !this.deps.memory && Array.isArray(msg.memories) ? msg.memories.map((m) => str(m, 300)).filter((m): m is string => !!m).slice(-24) : [];
+    if (Array.isArray(msg.history) && !this.deps.memory) {
       for (const h of msg.history.slice(-MAX_HISTORY)) {
         const item = h as Record<string, unknown>;
         const text = str(item?.text, 1000);
@@ -233,7 +317,7 @@ export class Session {
       }
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
-    this.mode = msg.mode === "interpret" ? "interpret" : "chat";
+    const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
     this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -245,6 +329,23 @@ export class Session {
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
     this.started = true;
+    if (this.deps.memory && this.deps.userId) {
+      this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
+        this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
+        this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+      });
+      try {
+        // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
+        // and the greeting prompt would be sent to the translator
+        const item = await this.memoryCall.open(startMode === "chat");
+        this.greeting = startMode === "chat" ? { item } : null;
+        this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+      }
+      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
+    }
+    if (this.closed) return;
+    // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
+    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
       try {
         await this.ensureAsr();
@@ -252,18 +353,114 @@ export class Session {
         this.error("asr_unavailable", "Speech recognition could not connect; text still works", true);
       }
     }
+    if (this.closed) return;
     this.client.sendJson({
       type: "ready",
       protocol: PROTOCOL_VERSION,
       sessionId: this.id,
-      mode: this.mode,
+      mode: startMode,
       audio: { in: "pcm_s16le_24000_mono", out: "pcm_s16le_24000_mono", frameHeaderBytes: FRAME_HEADER_BYTES },
       lip: this.lip,
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
+    if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
+  }
+
+  // ───────────────────────── F8 interpretation ─────────────────────────
+
+  private switchMode(mode: Mode, by: "client" | "model", opts: InterpretOptionsWire = {}): void {
+    if (mode === "interpret") {
+      // a chat reply in progress is cut; the interpreter owns the voice now
+      if (this.turn.phase !== "listening") this.dispatch({ type: "client_barge_in" });
+      this.dropSpeculation();
+      this.mode = "interpret";
+      this.client.sendJson({ type: "mode.changed", mode, by });
+      this.enterInterpret(opts);
+      return;
+    }
+    this.leaveInterpret();
+    this.mode = "chat";
+    this.client.sendJson({ type: "mode.changed", mode, by });
+  }
+
+  private enterInterpret(opts: InterpretOptionsWire): void {
+    this.interp?.stop();
+    this.mode = "interpret";
+    this.interp = new Interpreter(this.interpretHost(), {
+      userLanguage: this.language,
+      source: opts.source ?? "face",
+      other: opts.other ?? null,
+      app: opts.app,
+      speculate: this.deps.config.speculate,
+      speculateStableMs: this.deps.config.speculateStableMs,
+    });
+    this.interp.begin();
+    if (this.interp.source === "call") void this.ensureCallAsr().catch(() => this.error("asr_unavailable", "Could not listen to the call's sound", true));
+    else this.dropCallAsr();
+  }
+
+  private leaveInterpret(): void {
+    this.interp?.stop();
+    this.interp = null;
+    this.dropCallAsr();
+  }
+
+  private dropCallAsr(): void {
+    const a = this.callAsr;
+    this.callAsr = null;
+    a?.end();
+  }
+
+  private async ensureCallAsr(): Promise<void> {
+    if (this.closed || this.callAsr) return;
+    const asr = this.deps.openAsr(this.deps.config.asrLanguages);
+    this.callAsr = asr;
+    asr.on("event", (e) => {
+      if (this.callAsr !== asr || !this.interp) return;
+      if (e.type === "partial") this.interp.partial("call", e.text);
+      else if (e.type === "speechEnd") this.interp.speechEnd("call");
+      else if (e.type === "speechComplete") this.interp.final("call", e.text);
+    });
+    asr.on("status", (s) => {
+      if (s === "closed" && this.callAsr === asr) this.callAsr = null;
+    });
+    asr.on("error", (err) => this.log("asr.call.error", { message: err.message.slice(0, 200) }));
+    await asr.connect();
+  }
+
+  private interpretHost(): InterpretHost {
+    return {
+      now: this.now,
+      send: (e) => this.client.sendJson(e),
+      sendAudio: (seq, pcm) => this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), pcm])),
+      nextSeq: () => ++this.seq,
+      nextUtteranceId: () => {
+        // shares the turn machine's counter so ids never repeat across modes
+        this.turn = { ...this.turn, utteranceId: this.turn.utteranceId + 1 };
+        return this.turn.utteranceId;
+      },
+      // no memory context or recall/remember tools in translation (useMemory = false)
+      translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
+      tts: (text, signal) =>
+        this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
+      timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
+      lipBegin: (uid) => {
+        if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
+        this.peter.begin(uid);
+        return true;
+      },
+      lipAudio: (uid, pcm) => this.peter?.audio24k(uid, pcm),
+      lipEnd: (uid) => this.peter?.end(uid),
+      lipCancel: (uid) => {
+        this.peterCancelled.add(uid);
+        this.peter?.cancel(uid);
+      },
+      log: (event, data) => this.log(event, data),
+    };
   }
 
   private async connectPeter(): Promise<void> {
@@ -320,8 +517,13 @@ export class Session {
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
+    this.interp?.stop();
+    this.dropCallAsr();
     this.asr?.end();
     this.peter?.close();
+    this.memoryCall?.close();
+    // account deleted: Finds stop now and never write again (the delete runs right after)
+    this.finds?.close({ purge: reason === "account_deleted" });
     this.client.close(code, reason);
   }
 
@@ -329,6 +531,7 @@ export class Session {
 
   private onAsr(e: AsrEvent): void {
     const t = this.now();
+    if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
@@ -344,17 +547,57 @@ export class Session {
       case "speechComplete":
         this.metrics.completeAt = t;
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        if (interpretCommand(e.text) === "start") {
+          // INT-0 by voice: "Can you interpret for me?"
+          this.switchMode("interpret", "model");
+          (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
+          return;
+        }
         this.dispatch({ type: "speech_complete", text: e.text });
         // not consumed by a reply (backchannel / empty): stop the guess
         return this.dropSpeculation();
     }
   }
 
+  /** Interpret mode: the mic's ASR events become bubbles, not chat turns. */
+  private onInterpretAsr(e: AsrEvent): void {
+    const interp = this.interp!;
+    switch (e.type) {
+      case "speechStart":
+        this.client.sendJson({ type: "speech.start", turnId: e.turnId });
+        return;
+      case "partial":
+        this.client.sendJson({ type: "transcript", final: false, text: e.text });
+        return interp.partial("mic", e.text);
+      case "speechEnd":
+        this.client.sendJson({ type: "speech.end", turnId: e.turnId });
+        return interp.speechEnd("mic");
+      case "speechComplete":
+        this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
+        return interp.final("mic", e.text);
+    }
+  }
+
   private dispatch(e: TurnEvent): void {
     if (this.closed) return;
+    if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
     const r = reduceTurn(this.turn, e, this.bargeCfg);
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
+    if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
+      const p = this.pendingAnnounce;
+      this.pendingAnnounce = null;
+      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "announce", text: p.text });
+    }
+  }
+
+  /** Say a card's line now if the companion is idle, else right after the current reply. */
+  private announce(text: string): void {
+    // interpretation owns the voice: a card that lands mid-interpretation stays on the sheet, unspoken
+    if (this.closed || this.mode === "interpret") return;
+    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "announce", text });
+    if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
   private run(fx: Effect): void {
@@ -372,7 +615,7 @@ export class Session {
       case "cancel_reply":
         return this.cancelReply(fx.utteranceId, fx.reason);
       case "start_reply":
-        void this.runReply(fx.text, fx.utteranceId);
+        void this.runReply(fx.text, fx.utteranceId, fx.announce === true);
         return;
     }
   }
@@ -432,6 +675,7 @@ export class Session {
         interpret,
         detected: this.mode === "chat" ? { from, to } : null,
         req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
+        images: [],
       };
     }
     const images = this.takeFrames();
@@ -449,17 +693,22 @@ export class Session {
       mode: "chat",
       language: this.language,
       cameraAttached: images.length > 0,
+      onScreen: this.finds?.onScreen(),
     });
     return {
       interpret,
       detected: null,
+      images,
       req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
     };
   }
 
-  private sparkSource(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent> {
+  private sparkSource(req: SparkRequest, signal: AbortSignal, opening?: Memory | null, useMemory = true, confirmed?: Promise<void>): AsyncIterable<SparkStreamEvent> {
     const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
-    return hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(req, { ...opts, signal: sig }), signal, (e) => e.type === "text");
+    const source = (request: SparkRequest, parent: AbortSignal) => hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(request, { ...opts, signal: sig }), parent, (e) => e.type === "text" || e.type === "function_call");
+    const last = typeof req.input === "string" ? req.input : req.input.at(-1);
+    const query = typeof last === "string" ? last : last && "role" in last && typeof last.content === "string" ? last.content : "";
+    return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed) : source(req, signal);
   }
 
   // ───────────────────────── speculation ─────────────────────────
@@ -486,7 +735,10 @@ export class Session {
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
-    this.spec = { norm, abort, built, stream: new Eager(this.sparkSource(built.req, abort.signal)) };
+    let confirm!: () => void;
+    const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
+    abort.signal.addEventListener("abort", confirm, { once: true });
+    this.spec = { norm, abort, built, confirm, stream: new Eager(this.sparkSource(built.req, abort.signal, undefined, !built.interpret, confirmed)) };
   }
 
   private dropSpeculation(): void {
@@ -496,7 +748,14 @@ export class Session {
     this.spec = null;
   }
 
-  private async runReply(text: string, utteranceId: number): Promise<void> {
+  /** A line the companion says on its own (a card landed); see turnMachine "announce". */
+  private announceRequest(text: string): Built {
+    return { interpret: false, detected: null, images: [], req: { input: text } };
+  }
+
+  private async runReply(text: string, utteranceId: number, announce = false): Promise<void> {
+    const greeting = this.greeting;
+    this.greeting = null;
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
@@ -510,13 +769,21 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = this.spec;
-    this.spec = null;
-    if (this.specTimer) clearTimeout(this.specTimer);
-    this.specTimer = null;
+    const spec = announce ? null : this.spec;
+    if (!announce) this.spec = null;
+    if (!announce && this.specTimer) clearTimeout(this.specTimer);
+    if (!announce) this.specTimer = null;
+    if (announce) {
+      built = this.announceRequest(text);
+      pre = (async function* () {
+        yield { type: "text" as const, delta: `<warm> ${text}` };
+        yield { type: "done" as const, responseId: null, text, status: "completed" };
+      })();
+    }
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
+        spec.confirm();
         built = spec.built;
         pre = spec.stream;
         signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
@@ -528,7 +795,15 @@ export class Session {
     built ??= this.buildRequest(text);
     const { req, interpret } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!interpret) this.remember("user", text);
+    if (!greeting && !announce) this.memoryCall?.userMessage();
+    if (!interpret && !greeting && !announce) this.remember("user", text);
+    // F10: a card pipeline runs beside the spoken answer (answer first, card after)
+    let resolveSaid: (t: string | null) => void = () => {};
+    if (!interpret && !announce && !greeting && this.finds) {
+      const said = new Promise<string | null>((r) => (resolveSaid = r));
+      this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said });
+      signal.addEventListener("abort", () => resolveSaid(null), { once: true });
+    }
 
     const splitter = new SentenceSplitter();
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
@@ -560,7 +835,7 @@ export class Session {
         for (let attempt = 0; attempt < 2; attempt++) {
           let gotText = false;
           let status = "";
-          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal)) : this.sparkSource({ ...req, tools: undefined }, signal);
+          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret)) : this.sparkSource({ ...req, tools: undefined }, signal, greeting?.item, !interpret);
           for await (const ev of stream) {
             if (signal.aborted) return;
             if (ev.type === "text") {
@@ -569,7 +844,7 @@ export class Session {
               pushSentences(splitter.push(ev.delta));
             } else if (ev.type === "tool") {
               this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
-            } else status = ev.status;
+            } else if (ev.type === "done") status = ev.status;
           }
           if (gotText || !req.tools?.length) break;
           this.log("spark.empty", { utteranceId, status, retry: attempt === 0 });
@@ -676,7 +951,9 @@ export class Session {
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     const full = reply.spoken.join(" ").trim();
-    if (full && !interpret) this.remember("assistant", full);
+    resolveSaid(full || null);
+    if (full && !interpret) { this.remember("assistant", full); this.memoryCall?.assistantMessage(full); }
+    if (full && !interpret && !greeting) this.memoryCall?.completedTurn(text, full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,

@@ -1,0 +1,5 @@
+{
+  "type": "mode",
+  "mode": "interpret",
+  "interpret": { "source": "call", "app": "FaceTime" }
+}

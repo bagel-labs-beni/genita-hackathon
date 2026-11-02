@@ -1,0 +1,8 @@
+{
+  "type": "interpret.bubble",
+  "bubbleId": 3,
+  "speaker": "them",
+  "via": "voice",
+  "status": "hearing",
+  "original": { "lang": "Korean", "text": "혹시 이 근처에 약국" }
+}

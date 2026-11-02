@@ -2,6 +2,7 @@
  * HTTP + WebSocket entry.
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
+ *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
  *
@@ -26,6 +27,11 @@ import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
+import { createMemory } from "./memory/index.ts";
+import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
+import { findsFromEnv } from "./finds/setup.ts";
+import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
+import { ownerKey } from "./finds/store.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -40,6 +46,7 @@ async function* ttsOff(): AsyncGenerator<never> {
 export function defaultDeps(config: Config, log: LogFn): SessionDeps {
   return {
     config,
+    ...createMemory(config.metaKey, log),
     openAsr: (languages) => new TranscribeStream({ key: config.metaKey, languages }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: config.elevenKey ? (req) => streamSpeech({ ...req, apiKey: config.elevenKey }) : ttsOff,
@@ -48,6 +55,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
         ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
         : undefined,
+    finds: findsFromEnv(config.metaKey),
     log,
   };
 }
@@ -81,6 +89,14 @@ export async function startServer(
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
+  // memories (and other feature data) live outside Postgres: erased before the account rows, and a
+  // failure keeps the account so DELETE /me can be retried
+  if (accounts) accounts.beforeUserDeleted = async (userId) => {
+    // end the user's calls first so no running card or memory job writes after the erase
+    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+    await deps.memory?.forget(userId);
+    await deps.finds?.store.removeOwner(ownerKey(userId));
+  };
   if (accounts) accounts.onUserDeleted = (userId) => {
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
@@ -105,6 +121,21 @@ export async function startServer(
 
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (deps.memory && isMemoryRoute(url.pathname)) {
+      // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
+      // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return memoryRoute(req, res, url, { memory: deps.memory, photos: deps.photos, resolveCompanionFace: deps.resolveCompanionFace, resolveUser: () => who.userId }).catch(() => json(res, 503, { error: "memory_unavailable" }));
+    }
+    if (deps.finds && isFindsRoute(url.pathname)) {
+      // F10-L6 Finds REST: same principal and consent gate; the owner is the account, never a header
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return handleFindsHttp(req, res, deps.finds.store, who.userId);
+    }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
     if (prep.routes.handles(req)) {
@@ -159,7 +190,7 @@ export async function startServer(
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
       close: (code, reason) => ws.readyState === ws.OPEN && ws.close(code, reason),
     };
-    const session = new Session(id, sink, deps);
+    const session = new Session(id, sink, { ...deps, userId: who.userId });
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     log("session.open", { session: id, sessions: sessions.size, auth: who.kind });

@@ -1,0 +1,62 @@
+{
+  "type": "find.created",
+  "findId": "5b0c7a3e-1d2f-4e8a-9c41-0f6a2b7d9e10",
+  "card": {
+    "id": "5b0c7a3e-1d2f-4e8a-9c41-0f6a2b7d9e10",
+    "kind": "recipe",
+    "createdAt": "2026-11-02T10:12:00.000Z",
+    "eyebrow": "From your fridge",
+    "title": "Kimchi fried rice",
+    "subtitle": "About 15 min · You have 4, need cooked rice",
+    "status": "Need cooked rice",
+    "say": "Found a few. The first one uses what you've got.",
+    "hero": {
+      "slot": "hero",
+      "status": "pending"
+    },
+    "camera": {
+      "frame": 1,
+      "at": "2026-11-02T10:12:00.000Z",
+      "w": 480,
+      "h": 854,
+      "label": "Your camera · 7:12 PM"
+    },
+    "items": [
+      {
+        "id": "i1",
+        "name": "eggs",
+        "tier": "checking",
+        "from": "both",
+        "count": 6
+      }
+    ],
+    "steps": [
+      {
+        "text": "Fry the kimchi in butter until it darkens.",
+        "source": "maangchi.com",
+        "image": {
+          "slot": "step-1",
+          "status": "pending"
+        }
+      }
+    ],
+    "options": [],
+    "why": [],
+    "ask": [
+      "No rice. Noodles?",
+      "How spicy is it?"
+    ],
+    "sources": [
+      {
+        "title": "Kimchi fried rice (Kimchi-bokkeumbap)",
+        "url": "https://www.maangchi.com/recipe/kimchi-bokkeumbap",
+        "domain": "maangchi.com"
+      }
+    ],
+    "how": [
+      "Searched the web; the steps come from the search results.",
+      "The pictures are illustrations I made, not photos of this recipe.",
+      "Boxes are drawn on your camera frame from 7:12 PM."
+    ]
+  }
+}

@@ -16,7 +16,9 @@ export type ContentPart =
 export type InputMessage =
   | { role: "user"; content: string | ContentPart[] }
   | { role: "assistant"; content: string };
-export type SparkInput = string | InputMessage[];
+export type FunctionCall = { type: "function_call"; call_id: string; name: string; arguments: string };
+export type SparkInputItem = InputMessage | FunctionCall | { type: "function_call_output"; call_id: string; output: string };
+export type SparkInput = string | SparkInputItem[];
 export type Tool = { type: "web_search" } | Record<string, unknown>;
 
 export type SparkRequest = {
@@ -30,6 +32,7 @@ export type SparkRequest = {
 
 export type SparkStreamEvent =
   | { type: "text"; delta: string }
+  | FunctionCall
   | { type: "tool"; name: string; status: string }
   | { type: "done"; responseId: string | null; text: string; status: string };
 
@@ -65,10 +68,11 @@ export async function* sparkStream(
     const dec = new TextDecoder();
     let text = "";
     let responseId: string | null = null;
+    const calls = new Set<string>();
     for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
       for (const ev of parser.feed(dec.decode(chunk, { stream: true }))) {
         if (ev.data === "[DONE]") continue;
-        let e: { type?: string; delta?: string; response?: { id?: string; status?: string; error?: { message?: string } | null } };
+        let e: { type?: string; delta?: string; item?: FunctionCall; response?: { id?: string; status?: string; output?: FunctionCall[]; error?: { message?: string } | null } };
         try {
           e = JSON.parse(ev.data);
         } catch {
@@ -80,12 +84,18 @@ export async function* sparkStream(
           clearTimeout(timer);
           text += e.delta;
           yield { type: "text", delta: e.delta };
+        } else if (type === "response.output_item.done" && e.item?.type === "function_call") {
+          clearTimeout(timer);
+          if (!calls.has(e.item.call_id)) { calls.add(e.item.call_id); yield e.item; }
         } else if (type.startsWith("response.web_search_call.")) {
           clearTimeout(timer);
           yield { type: "tool", name: "web_search", status: type.split(".").pop() ?? "" };
         } else if (type === "response.failed" || type === "error") {
           throw new UpstreamError("meta", null, e.response?.error?.message ?? ev.data);
         } else if (type === "response.completed" || type === "response.incomplete") {
+          for (const item of e.response?.output ?? []) {
+            if (item.type === "function_call" && !calls.has(item.call_id)) { calls.add(item.call_id); yield item; }
+          }
           yield { type: "done", responseId: e.response?.id ?? responseId, text, status: e.response?.status ?? type.split(".")[1] };
           return;
         }

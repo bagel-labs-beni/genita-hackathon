@@ -312,6 +312,12 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         log("account.delete_failed", { stage: "blobs", message: String(e).slice(0, 120) });
         throw new HttpError(502, "delete_failed", "Couldn't delete your files. Try again.");
       }
+      try {
+        await core.beforeUserDeleted?.(who.userId);
+      } catch (e) {
+        log("account.delete_failed", { stage: "features", message: String(e).slice(0, 120) });
+        throw new HttpError(502, "delete_failed", "Couldn't delete your data. Try again.");
+      }
       await accounts.deleteUser(who.userId);
       core.onUserDeleted?.(who.userId);
       log("account.deleted", { blobs: blobsDeleted, apple_revoked: appleStatus === 200 });
