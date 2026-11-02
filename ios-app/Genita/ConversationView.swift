@@ -14,6 +14,7 @@ struct ConversationView: View {
     @State private var findsTabOpen = false
     @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
     @State private var loopURL: URL?
+    @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
     /// The waiting sheet for R1 and R1-E (#2, Dyno). A running effect covers the change of owner until it ends.
     private var waitingCopy: HandoffCopy? { handoffEnabled && !connecting && handoff.motion == nil ? HandoffCopy.phone(handoff.surface) : nil }
@@ -143,7 +144,7 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
+                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
                                               openFinds: { openFindsTab() }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }

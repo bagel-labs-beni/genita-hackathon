@@ -17,6 +17,7 @@ struct AppConfigTests {
         #expect(c.flag("textChat", default: true) == false)
         #expect(c.number("bargeInMs", default: 0) == 400)
         #expect(c.text("prep.title", name: "Jin") == "Bringing Jin to life")
+        #expect(c.text("prep.stage.mouth", name: "Jin") == "Mouth")
     }
 
     @Test func testBundledDefaultsMatchTheServerDefaults() throws {
