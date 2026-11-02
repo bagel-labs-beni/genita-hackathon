@@ -7,6 +7,8 @@ export type Config = {
   metaKey: string;
   /** Operational controls (D46); optional for legacy embedded/test configs. */
   paused?: boolean;
+  /** GENITA_PAUSE_FILE: while this file exists, generation is paused (no restart needed) */
+  pauseFile?: string | null;
   metaDailyCalls?: number;
   metaDailyImages?: number;
   userDailyTurns?: number;
@@ -112,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     metaKey,
     paused: flag(env.GENITA_PAUSED),
+    pauseFile: env.GENITA_PAUSE_FILE?.trim() || null,
     metaDailyCalls: num(env.GENITA_META_DAILY_CALLS, 20_000),
     metaDailyImages: num(env.GENITA_META_DAILY_IMAGES, 600),
     userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),

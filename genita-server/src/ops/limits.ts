@@ -2,9 +2,14 @@
  * D46 operational limits for the single EC2 host. Global Meta counters are in
  * memory: a restart resets them (acceptable worst case: one extra day's budget).
  * UTC days, synchronous check-and-increment before I/O; failed vendor requests
- * still count. Image endpoints consume BOTH counters atomically. User turns use
- * usage_daily when accounts have a DB, otherwise memory. No keys/input are logged.
+ * still count. Image endpoints consume BOTH counters atomically.
+ * User turns are admitted synchronously from memory (no DB wait on the reply path, order kept); with a DB
+ * each accepted turn is written to usage_daily in the background and the stored total flows back into
+ * memory, so other hosts/restarts are caught up within one turn. No keys/input are logged.
+ * Pause: GENITA_PAUSED=1 (needs a restart) or the file GENITA_PAUSE_FILE exists (checked every 5 s, no
+ * restart, running calls keep going).
  */
+import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Config } from "../config.ts";
 import type { Queryable } from "../db/index.ts";
@@ -13,7 +18,7 @@ import { UpstreamError } from "../meta/http.ts";
 type Log = (event: string, data: Record<string, unknown>) => void;
 type Options = { now?: () => number; log?: Log; db?: Queryable };
 type Limit = "calls" | "images" | "user_turns";
-type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns">;
+type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns"> & { pauseFile?: string | null };
 
 export class OpsLimits {
   private readonly config: OpsConfig;
@@ -62,9 +67,24 @@ export class OpsLimits {
     return true;
   }
 
+  private pauseCheckedAt = -Infinity;
+  private pauseFileOn = false;
+
+  private pausedNow(): boolean {
+    if (this.config.paused) return true;
+    const file = this.config.pauseFile;
+    if (!file) return false;
+    const now = this.now();
+    if (now - this.pauseCheckedAt >= 5_000) {
+      this.pauseCheckedAt = now;
+      try { this.pauseFileOn = existsSync(file); } catch { this.pauseFileOn = false; }
+    }
+    return this.pauseFileOn;
+  }
+
   isPaused(kind: string): boolean {
-    // Consult config on every admission; never abort an already running call.
-    if (!this.config.paused) return false;
+    // Consult on every admission; never abort an already running call.
+    if (!this.pausedNow()) return false;
     const now = this.now();
     if (now - (this.pausedLogs.get(kind) ?? -Infinity) >= 60_000) {
       this.pausedLogs.set(kind, now);
@@ -98,52 +118,50 @@ export class OpsLimits {
     return { calls: this.calls, images: this.images };
   }
 
-  /** Used before speculative Spark, without spending a turn on a partial. */
-  async canSpeculate(userId?: string | null): Promise<boolean> {
+  /** Used before speculative Spark, without spending a turn on a partial. Memory only: never waits. */
+  canSpeculate(userId?: string | null): boolean {
     const day = this.today();
     if (!userId || this.cap("user_turns") <= 0) return true;
-    const count = this.db
-      ? Number((await this.db.query("SELECT turns FROM usage_daily WHERE user_id = $1 AND day = $2::date", [userId, day])).rows[0]?.turns ?? 0)
-      : this.turns.get(userId) ?? 0;
-    return !this.exhausted("user_turns", count, day);
-  }
-
-  /** Atomic DB upsert admits no more than cap, even across concurrent sessions. */
-  async acceptUserTurn(userId?: string | null): Promise<boolean> {
-    const day = this.today();
-    if (!userId) return true; // shared dev sessions without an authenticated user
-    const cap = this.cap("user_turns");
-    if (this.db) {
-      const result = await this.db.query(
-        `INSERT INTO usage_daily (user_id, day, turns) VALUES ($1, $2::date, 1)
-         ON CONFLICT (user_id, day) DO UPDATE SET turns = usage_daily.turns + 1
-         WHERE $3::double precision <= 0 OR usage_daily.turns < $3::double precision
-         RETURNING turns`,
-        [userId, day, cap],
-      );
-      if (result.rows.length) return true;
-      this.exhausted("user_turns", cap, day);
-      return false;
-    }
-    const count = this.turns.get(userId) ?? 0;
-    if (this.exhausted("user_turns", count, day)) return false;
-    this.turns.set(userId, count + 1);
-    return true;
+    return !this.exhausted("user_turns", this.turns.get(userId) ?? 0, day);
   }
 
   /**
-   * Over the cap → the session's existing non-retryable error path. A DB error fails OPEN (the turn goes on):
-   * a database hiccup must not mute every call; the global Meta budget above still bounds spend.
+   * Synchronous admission from memory. With a DB the turn is also counted in usage_daily in the background;
+   * the stored total (other hosts, earlier processes today) is merged back, so a restart allows at most one
+   * extra turn before the cap applies again. A DB error is logged and the in-memory count still enforces the cap.
    */
-  async userTurn(userId: string | null | undefined, accepted: () => void, rejected: (message: string) => void): Promise<void> {
-    let ok: boolean;
+  acceptUserTurn(userId?: string | null): boolean {
+    const day = this.today();
+    if (!userId) return true; // shared dev sessions without an authenticated user
+    const count = this.turns.get(userId) ?? 0;
+    if (this.cap("user_turns") > 0 && this.exhausted("user_turns", count, day)) return false;
+    this.turns.set(userId, count + 1);
+    this.pending = this.persistTurn(userId, day);
+    return true;
+  }
+
+  /** Last background usage_daily write (tests await it). */
+  pending: Promise<void> = Promise.resolve();
+
+  private async persistTurn(userId: string, day: string): Promise<void> {
+    if (!this.db) return;
     try {
-      ok = await this.acceptUserTurn(userId);
+      const r = await this.db.query(
+        `INSERT INTO usage_daily (user_id, day, turns) VALUES ($1, $2::date, 1)
+         ON CONFLICT (user_id, day) DO UPDATE SET turns = usage_daily.turns + 1
+         RETURNING turns`,
+        [userId, day],
+      );
+      const stored = Number(r.rows[0]?.turns);
+      if (Number.isFinite(stored) && this.day === day) this.turns.set(userId, Math.max(this.turns.get(userId) ?? 0, stored));
     } catch (err) {
       this.log("ops.turn_error", { message: String(err).slice(0, 120) });
-      ok = true;
     }
-    if (ok) accepted();
+  }
+
+  /** Over the cap → the session's existing non-retryable error path. Runs synchronously (keeps turn order). */
+  userTurn(userId: string | null | undefined, accepted: () => void, rejected: (message: string) => void): void {
+    if (this.acceptUserTurn(userId)) accepted();
     else rejected("daily_cap:user_turns");
   }
 
@@ -165,6 +183,8 @@ export function getOps(): OpsLimits { return active; }
  */
 function generation(req: IncomingMessage, path: string): { image: boolean } | null {
   if (req.method === "GET" && path === "/v1/companion/voices") return { image: false };
+  // voice previews render through the voice service on a cache miss
+  if (req.method === "GET" && /^\/v1\/companion\/voices\/[^/]+\/preview$/.test(path)) return { image: false };
   if (req.method !== "POST") return null;
   if (["/v1/companion", "/v1/companion/prep/retry", "/v1/us-photos"].includes(path)) return { image: true };
   if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs"].includes(path)) return { image: false };

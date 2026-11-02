@@ -470,7 +470,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") void this.limitInterpret(() => this.interp?.final("call", e.text));
+      else if (e.type === "speechComplete") this.limitInterpret(() => this.interp?.final("call", e.text));
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -629,7 +629,7 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        void this.limitInterpret(() => interp.final("mic", e.text));
+        this.limitInterpret(() => interp.final("mic", e.text));
         return;
     }
   }
@@ -849,7 +849,7 @@ export class Session {
   private async startSpeculation(text: string): Promise<void> {
     const check = ++this.specCheck;
     const ops = this.deps.ops ?? getOps();
-    if (ops.cappedUser(this.limitUserId()) && !(await ops.canSpeculate(this.limitUserId()).catch(() => false))) return;
+    if (ops.cappedUser(this.limitUserId()) && !ops.canSpeculate(this.limitUserId())) return;
     if (check !== this.specCheck || this.turn.phase !== "listening") return;
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
@@ -886,8 +886,7 @@ export class Session {
     if (spec) signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
     if (!self && !greeting && this.limitUserId()) {
       let admitted = false;
-      await (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
-      if (signal.aborted || this.reply !== reply) return;
+      (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
       if (!admitted) { spec?.abort.abort(); this.dropSpeculation(); return this.finishReply(reply); }
     }
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
@@ -1175,8 +1174,8 @@ export class Session {
     return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
   }
 
-  private limitInterpret(accepted: () => void): Promise<void> {
-    return (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { if (!this.closed) accepted(); }, (message) => this.error("spark_unavailable", message, false));
+  private limitInterpret(accepted: () => void): void {
+    (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { if (!this.closed) accepted(); }, (message) => this.error("spark_unavailable", message, false));
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {

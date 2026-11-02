@@ -85,7 +85,7 @@ test("pause: generation REST and new WS get 503; health and read-only routes sta
   const server = await startServer(c, log, fake.deps, env, null);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    for (const [path, method] of [["/v1/import", "POST"], ["/v1/companion/image", "POST"], ["/v1/companion", "POST"], ["/v1/companion/prefs", "POST"], ["/v1/companion/prep/retry", "POST"], ["/v1/companion/voices", "GET"], ["/v1/us-photos", "POST"]]) {
+    for (const [path, method] of [["/v1/import", "POST"], ["/v1/companion/image", "POST"], ["/v1/companion", "POST"], ["/v1/companion/prefs", "POST"], ["/v1/companion/prep/retry", "POST"], ["/v1/companion/voices", "GET"], ["/v1/companion/voices/seamless:3/preview", "GET"], ["/v1/us-photos", "POST"]]) {
       assert.deepEqual(await http(base, path, method), { status: 503, body: { error: "paused" } });
     }
     assert.equal((await http(base, "/healthz")).status, 200);
@@ -182,7 +182,7 @@ test("zero or negative caps are unlimited, and sessions without a user id are ex
   assert.equal(await ops.acceptUserTurn(undefined), true);
 });
 
-test("database turns: atomic UTC usage_daily upsert survives limiter restart and concurrent turns", async () => {
+test("database turns: admission never waits on the DB; usage_daily totals flow back, a restart allows at most one extra turn", async () => {
   const { OpsLimits } = await import("../src/ops/limits.ts");
   const db = await openDb("pglite:memory");
   try {
@@ -193,14 +193,49 @@ test("database turns: atomic UTC usage_daily upsert survives limiter restart and
     let now = Date.parse("2026-11-04T00:00:01Z");
     const c = config({ GENITA_USER_DAILY_TURNS: "2" });
     const ops = new OpsLimits(c, { db, now: () => now, log });
-    assert.deepEqual(await Promise.all([ops.acceptUserTurn(a), ops.acceptUserTurn(a), ops.acceptUserTurn(a)]), [true, true, false]);
-    assert.equal(await new OpsLimits(c, { db, now: () => now }).acceptUserTurn(a), false);
-    assert.equal(await ops.acceptUserTurn(b), true);
+    // synchronous: no promise, order kept
+    assert.deepEqual([ops.acceptUserTurn(a), ops.acceptUserTurn(a), ops.acceptUserTurn(a)], [true, true, false]);
+    await ops.pending;
     const rows = await db.query("SELECT turns, day::text FROM usage_daily WHERE user_id = $1", [a]);
     assert.deepEqual(rows.rows, [{ turns: 2, day: "2026-11-04" }]);
+    const restarted = new OpsLimits(c, { db, now: () => now });
+    assert.equal(restarted.acceptUserTurn(a), true, "memory starts at 0 after a restart");
+    await restarted.pending;
+    assert.equal(restarted.acceptUserTurn(a), false, "the stored total (3) came back from usage_daily");
+    assert.equal(ops.acceptUserTurn(b), true);
     now += 86_400_000;
-    assert.equal(await ops.acceptUserTurn(a), true);
+    assert.equal(ops.acceptUserTurn(a), true);
   } finally { await db.close(); }
+});
+
+test("database errors neither block nor bypass the per-user cap (memory still counts)", async () => {
+  const { OpsLimits } = await import("../src/ops/limits.ts");
+  const logs: string[] = [];
+  const broken = new OpsLimits(config({ GENITA_USER_DAILY_TURNS: "2" }), { log: (e) => logs.push(e), db: { query: async () => { throw new Error("synthetic db failure"); } } as never });
+  assert.deepEqual([broken.acceptUserTurn("u"), broken.acceptUserTurn("u"), broken.acceptUserTurn("u")], [true, true, false]);
+  await broken.pending;
+  assert.ok(logs.includes("ops.turn_error"));
+});
+
+test("pause file: generation pauses while the file exists, without a restart", async () => {
+  const { OpsLimits } = await import("../src/ops/limits.ts");
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "genita-pause-"));
+  const file = join(dir, "PAUSED");
+  let now = 0;
+  const ops = new OpsLimits({ pauseFile: file }, { now: () => now });
+  try {
+    assert.equal(ops.isPaused("x"), false);
+    writeFileSync(file, "");
+    assert.equal(ops.isPaused("x"), false, "checked at most every 5 s");
+    now += 5_000;
+    assert.equal(ops.isPaused("x"), true);
+    rmSync(file);
+    now += 5_000;
+    assert.equal(ops.isPaused("x"), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("all Meta wrappers count exactly once: SAM, files, forms, Finds and Spark streaming", async () => {

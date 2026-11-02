@@ -29,6 +29,7 @@ D46 operational controls (SSM env changes take effect after a server restart):
 | Environment variable | Default | Effect |
 | --- | --- | --- |
 | `GENITA_PAUSED` | `0` | `1` rejects generation REST with `503 {"error":"paused"}` and new call WebSockets with `503 Paused`. Config is checked at admission; running calls, health, status, saved Finds, auth and account deletion keep working. |
+| `GENITA_PAUSE_FILE` | unset | While this file exists, the same pause applies **without a restart** (checked every 5 s; running calls keep going). On AWS e.g. `/var/lib/genita/PAUSED`: `touch` to pause, `rm` to resume. |
 | `GENITA_META_DAILY_CALLS` | `20000` | Global outbound Meta requests per UTC day, including retries, streaming requests, file uploads and each Transcribe socket open. |
 | `GENITA_META_DAILY_IMAGES` | `600` | Muse Image generations/edits per UTC day, also counted as Meta calls. |
 | `GENITA_USER_DAILY_TURNS` | `300` | Accepted final user turns per UTC day across sessions; shared dev sessions without an explicit user are exempt. |
@@ -37,9 +38,11 @@ A cap of `0` or less is unlimited. REST admission returns `429 {"error":"limit_r
 (or `meta_images` for an image route); every outbound Meta request is checked again
 before sending. Failed vendor requests still count. Global counters and the no-DB
 user counters live in memory on the single EC2 host: **a restart resets them**
-(accepted worst case: one extra day's budget). With accounts enabled, user turns
-persist in `usage_daily` with an atomic capped upsert and an explicit UTC date;
-DB errors refuse the turn. Session caps use the existing `spark_unavailable` code
+(accepted worst case: one extra day's budget). User turns are admitted from memory
+without waiting on the database; with accounts enabled each accepted turn is also
+written to `usage_daily` (UTC date) in the background and the stored total flows back,
+so a restart allows at most one extra turn. A DB error is logged (`ops.turn_error`)
+and the in-memory count still enforces the cap. Session caps use the existing `spark_unavailable` code
 with `retryable:false`. Chat speculation checks available turns first; interpreter
 speculation is disabled for capped users so partial transcripts do not spend turns.
 CloudWatch events: `ops.paused` once per kind/minute, `limit.reached` once per
