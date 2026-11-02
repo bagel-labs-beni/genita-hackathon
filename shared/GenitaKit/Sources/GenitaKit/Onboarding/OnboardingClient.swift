@@ -216,8 +216,10 @@ public final class OnboardingClient: @unchecked Sendable {
     }
 
     /// N1–N3 (no AI assistant): chips → the same style card, no Spark call.
-    public func importSkip(interests: [String], replies: String?, avoid: [String]) async throws -> ImportedStyle {
+    /// `n3` = the taste picker's `{clothes|food|chats: {like: [...], no: [...]}}` (Figma 269:2).
+    public func importSkip(interests: [String], replies: String?, avoid: [String] = [], n3: [String: [String: [String]]]? = nil) async throws -> ImportedStyle {
         var body: [String: Any] = ["interests": interests, "avoid": avoid]
+        if let n3 { body["n3"] = n3 }
         body["replies"] = replies ?? NSNull()
         return try style(try await auth.send("POST", "/v1/import/skip", json: body))
     }

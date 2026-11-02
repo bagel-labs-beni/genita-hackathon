@@ -216,71 +216,205 @@ struct CompanionNameView: View {
 
 // MARK: N1–N3 (no AI assistant, D33)
 
+/// Shared look of N1 / N2 / N3 (Figma 142:2 / 143:2 / 144:2).
+private enum SkipInk {
+    static let blue = Color(red: 0xd7 / 255, green: 0xf1 / 255, blue: 1)
+    static let blueText = Color(red: 0, green: 0x63 / 255, blue: 0x9f / 255)
+    static let line = Color(white: 0xe3 / 255)
+    static let mute = Color(white: 0x73 / 255)
+    static let skipped = Color(white: 0xef / 255)
+}
+
+/// The dark-blue check badge on a selected tile / card.
+private struct SkipBadge: View {
+    var size: CGFloat
+    var body: some View {
+        ZStack {
+            Circle().fill(SkipInk.blueText)
+            Image(systemName: "checkmark").font(.system(size: size * 0.5, weight: .bold)).foregroundStyle(.white)
+        }.frame(width: size, height: size).accessibilityHidden(true)
+    }
+}
+
 struct SkipImportView: View {
     @Bindable var model: AppState
+    @State private var customOpen = false
     @State private var custom = ""
     @FocusState private var typing: Bool
 
     private var step: Stage { model.stage }
+    /// Merged Dyno + PRD spec (Figma section 267:2, 11/3): N1 267:4, N2 267:57, N3 269:2.
     private var title: String {
         switch step {
-        case .skipTopics: "What do you want\nto talk about?"
-        case .skipReplies: "How do you\nlike replies?"
-        default: "What should\nI avoid?"
+        case .skipTopics: "What do you keep\ncoming back to?"
+        case .skipReplies: "How do you like to\nthink it through?"
+        default: "A little about\nyour taste"
         }
     }
-    private var chips: [String] {
-        switch step {
-        case .skipTopics: ["Design", "Building things", "Food", "Style", "Film & TV", "Travel"]
-        case .skipReplies: ["Talk it out", "Show me options", "Start with the answer", "Ask me questions"]
-        default: ["Unasked advice", "Too many questions", "Jokes when I'm serious", "Comments on my looks"]
-        }
-    }
+    static let topics = ["Design", "Building things", "Food", "Style", "Film & TV", "Travel"]
+    static let replies: [(String, String)] = [("Talk it out", "Think out loud and land somewhere together"), ("Show me options", "Two or three paths to compare"),
+                                              ("Start with the answer", "Then walk me through why"), ("Ask me questions", "Help me find it myself")]
+    static let clothes = ["Minimal", "Classic", "Street", "Colorful", "Comfy", "Dressy"]
+    static let foods = ["Spicy", "Noodles", "Rice dishes", "Seafood", "Cheese", "Sweet"]
+    static let chats = ["Jokes", "Unasked advice", "Lots of questions", "Talk about looks"]
+
+    // MARK: answers
     private var selected: [String] {
         switch step {
         case .skipTopics: model.setup.skipInterests ?? []
         case .skipReplies: model.setup.skipReplies.map { [$0] } ?? []
-        default: model.setup.skipAvoid ?? []
+        default: []
         }
     }
     private func toggle(_ v: String) {
         switch step {
         case .skipTopics: var s = model.setup.skipInterests ?? []; if let i = s.firstIndex(of: v) { s.remove(at: i) } else if s.count < 8 { s.append(v) }; model.setup.skipInterests = s
         case .skipReplies: model.setup.skipReplies = model.setup.skipReplies == v ? nil : v
-        default: var s = model.setup.skipAvoid ?? []; if let i = s.firstIndex(of: v) { s.remove(at: i) } else if s.count < 8 { s.append(v) }; model.setup.skipAvoid = s
+        default: break
         }
     }
+    /// N3 chips: tap once = like, twice = avoid, three times = clear (Chelsea 11/3: likes and things to avoid).
+    private func cycleTaste(_ v: String) {
+        var like = model.setup.skipLikes ?? [], avoid = model.setup.skipAvoid ?? []
+        if let i = like.firstIndex(of: v) { like.remove(at: i); avoid.append(v) }
+        else if let i = avoid.firstIndex(of: v) { avoid.remove(at: i) }
+        else { like.append(v) }
+        model.setup.skipLikes = like; model.setup.skipAvoid = avoid
+    }
+    private func addCustom() {
+        let t = custom.trimmingCharacters(in: .whitespacesAndNewlines)
+        custom = ""; customOpen = false
+        guard !t.isEmpty, !selected.contains(t) else { return }
+        toggle(String(t.prefix(step == .skipTopics ? 40 : 60)))
+    }
 
+    // MARK: body
     var body: some View {
-        WirePage(title: title, pageID: step.rawValue, subtitle: step == .skipReplies ? "Pick one." : "Pick any. You can skip this.", back: { model.back() },
+        WirePage(title: title, pageID: step.rawValue, subtitle: nil, back: { model.back() },
                  primary: "Continue", primaryBusy: model.importing,
                  action: {
-                     addCustom()
                      switch step {
                      case .skipTopics: model.go(.skipReplies)
                      case .skipReplies: model.go(.skipAvoid)
                      default: model.finishSkip()
                      }
                  }) { width, top, _ in
-            VStack(alignment: .leading, spacing: 10) {
-                FlowChips(items: chips + selected.filter { !chips.contains($0) }, selected: Set(selected), toggle: toggle)
-                if step != .skipReplies {
-                    HStack {
-                        TextField("Add your own", text: $custom).font(TypeStyle.body(16)).focused($typing).submitLabel(.done)
-                            .onSubmit(addCustom).accessibilityIdentifier("skipCustom")
-                        if !custom.isEmpty { Button("Add", action: addCustom).font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink) }
-                    }.padding(.horizontal, 16).frame(height: 48).background(Color(white: 0.9333), in: RoundedRectangle(cornerRadius: 12))
-                }
-                if let e = model.flowError { Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2)) }
-            }.frame(width: width - 48, alignment: .topLeading).position(x: width / 2, y: 220 + 130 + top)
+            switch step {
+            case .skipTopics: topicsPage(width: width, top: top)
+            case .skipReplies: repliesPage(width: width, top: top)
+            default: tastePage(width: width, top: top)
+            }
+        }
+        .alert("Add your own", isPresented: $customOpen) {
+            TextField("Add your own", text: $custom)
+            Button("Add") { addCustom() }
+            Button("Cancel", role: .cancel) { custom = "" }
         }
     }
 
-    private func addCustom() {
-        let t = custom.trimmingCharacters(in: .whitespacesAndNewlines)
-        custom = ""
-        guard !t.isEmpty, !selected.contains(t) else { return }
-        toggle(String(t.prefix(step == .skipTopics ? 40 : 60)))
+    /// The particle picture behind the content (Figma "Image" node: x, y, w, h in the 390 × 844 frame).
+    private func blob(_ name: String, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, top: CGFloat) -> some View {
+        Image(resource: name).resizable().scaledToFit().frame(width: w, height: h)
+            .position(x: x + w / 2, y: y + h / 2 + top).allowsHitTesting(false).accessibilityHidden(true)
+    }
+
+    // N1 · 267:4 — 2 × 3 tiles of 150 × 65 at (38, 431), then "Add your own" 313 × 65; picture 0.9 behind
+    private func topicsPage(width: CGFloat, top: CGFloat) -> some View {
+        let extras = (model.setup.skipInterests ?? []).filter { !Self.topics.contains($0) }
+        let items = Self.topics + extras
+        return ZStack(alignment: .topLeading) {
+            blob("skip-blob-n1", x: -93, y: -70, w: 576, h: 751, top: top)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 9) {
+                    LazyVGrid(columns: [GridItem(.fixed(150), spacing: 13), GridItem(.fixed(150))], spacing: 9) {
+                        ForEach(items, id: \.self) { item in topicTile(item) }
+                    }
+                    Button { customOpen = true } label: {
+                        Text("Add your own").font(TypeStyle.body(16, .medium)).foregroundStyle(SkipInk.mute)
+                            .frame(width: 313, height: 65)
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(SkipInk.line, style: StrokeStyle(lineWidth: 1, dash: [2, 1])))
+                            .background(.white, in: RoundedRectangle(cornerRadius: 12))
+                    }.buttonStyle(.plain).accessibilityIdentifier("skipCustom")
+                }.frame(width: 313)
+            }.frame(width: 313, height: 287).position(x: 38 + 313 / 2, y: 431 + 287 / 2 + top)
+        }
+    }
+    private func topicTile(_ item: String) -> some View {
+        let on = selected.contains(item)
+        return Button { toggle(item) } label: {
+            Text(item).font(TypeStyle.body(18, .semibold)).foregroundStyle(on ? SkipInk.blueText : CallInk.ink)
+                .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal, 8)
+                .frame(maxWidth: .infinity).frame(height: 65)
+                .background(on ? SkipInk.blue : .white, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? SkipInk.blue : SkipInk.line, lineWidth: 1))
+                .overlay(alignment: .topLeading) { if on { SkipBadge(size: 16).offset(x: 126, y: 6) } }
+        }.buttonStyle(.plain).accessibilityAddTraits(on ? .isSelected : []).accessibilityIdentifier("skipChip-\(item)")
+    }
+
+    // N2 · 143:2 — four 342 × 68 cards with a one-line hint, one choice
+    private func repliesPage(width: CGFloat, top: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            blob("skip-blob-n2", x: -61, y: -50, w: 512, h: 667, top: top)
+            VStack(spacing: 16) {
+                ForEach(Self.replies, id: \.0) { r in
+                    let on = model.setup.skipReplies == r.0
+                    Button { toggle(r.0) } label: {
+                        HStack(spacing: 0) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(r.0).font(TypeStyle.body(18, .semibold)).foregroundStyle(on ? SkipInk.blueText : CallInk.ink).frame(height: 22)
+                                Text(r.1).font(TypeStyle.body(13, .medium)).foregroundStyle(on ? SkipInk.blueText : SkipInk.mute).frame(height: 16)
+                            }
+                            Spacer(minLength: 0)
+                            if on { SkipBadge(size: 26).padding(.trailing, 2) }
+                        }.padding(.horizontal, 21).frame(width: 342, height: 68)
+                            .background(on ? SkipInk.blue : .white, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(on ? SkipInk.blue : SkipInk.line, lineWidth: 1))
+                    }.buttonStyle(.plain).accessibilityElement(children: .ignore).accessibilityLabel(r.0 + ", " + r.1)
+                        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton).accessibilityIdentifier("skipChip-\(r.0)")
+                }
+            }.frame(width: 342).position(x: 24 + 171, y: 384 + 320 / 2 + top)
+        }
+    }
+
+    // N3 · 269:2 — three groups, every chip has three states (off → like → no → off); no picture
+    private func tastePage(width: CGFloat, top: CGFloat) -> some View {
+        let like = Set(model.setup.skipLikes ?? []), no = Set(model.setup.skipAvoid ?? [])
+        func state(_ v: String) -> TasteState { like.contains(v) ? .on : no.contains(v) ? .skipped : .off }
+        return ZStack(alignment: .topLeading) {
+            Text("Tap once if you like it, twice if it\u{2019}s a no.").font(TypeStyle.body(14)).foregroundStyle(SkipInk.mute)
+                .frame(width: 342, height: 20, alignment: .leading).position(x: 31 + 171, y: 186 + 10 + top)
+            group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, state: state)
+            group("Food", Self.foods, columns: 3, y: 376, top: top, state: state)
+            group("In our chats", Self.chats, columns: 2, y: 524, top: top, state: state)
+            if let e = model.flowError {   // the import failed (offline / 5xx): say so, Continue retries
+                Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
+                    .frame(width: 342, alignment: .leading).position(x: 24 + 171, y: 690 + top).accessibilityIdentifier("skipError")
+            }
+        }
+    }
+    private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, state: @escaping (String) -> TasteState) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(TypeStyle.body(14, .semibold)).foregroundStyle(CallInk.ink).frame(height: 20).padding(.bottom, 0)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: columns == 3 ? 7.5 : 8), count: columns), spacing: 8) {
+                ForEach(items, id: \.self) { tasteChip($0, state: state($0)) { cycleTaste($0) } }
+            }.padding(.top, 0)
+        }.frame(width: 342, height: 124, alignment: .topLeading).position(x: 24 + 171, y: y + 62 + top)
+    }
+    private enum TasteState { case off, on, skipped }
+    private func tasteChip(_ item: String, state: TasteState, action: @escaping (String) -> Void) -> some View {
+        Button { UISelectionFeedbackGenerator().selectionChanged(); action(item) } label: {
+            HStack(spacing: 5) {
+                if state == .skipped { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 12, height: 12) }
+                Text(item).font(TypeStyle.body(16, .medium)).lineLimit(1).minimumScaleFactor(0.7)
+            }.padding(.horizontal, 4)
+                .foregroundStyle(state == .on ? SkipInk.blueText : state == .skipped ? Color(white: 0x94 / 255) : CallInk.ink)
+                .frame(maxWidth: .infinity).frame(height: 44)
+                .background(state == .on ? SkipInk.blue : .white, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(state == .on ? SkipInk.blue : SkipInk.line,
+                                                                       style: StrokeStyle(lineWidth: 1, dash: state == .skipped ? [4, 3] : [])))
+        }.buttonStyle(.plain).accessibilityAddTraits(state == .on ? .isSelected : []).accessibilityHint("Double-tap to change")
+            .accessibilityValue(state == .skipped ? "Not for me" : state == .on ? "Liked" : "Not selected")
+            .accessibilityIdentifier("skipChip-\(item)")
     }
 }
 

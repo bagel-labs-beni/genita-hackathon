@@ -119,6 +119,15 @@ extension AppState {
 
     func cancelImport() { importTask?.cancel(); importTask = nil; importing = false; returnTo(.paste) }
 
+    /// What N1–N3 send (`POST /v1/import/skip`): the N1 topics as interests and the taste picker as
+    /// `n3.{clothes,food,chats}.{like,no}` (each chip is off, liked or "no").
+    static func skipAnswers(_ s: SavedSetup) -> (interests: [String], n3: [String: [String: [String]]]) {
+        let like = Set(s.skipLikes ?? []), no = Set(s.skipAvoid ?? [])
+        func group(_ items: [String]) -> [String: [String]] { ["like": items.filter { like.contains($0) }, "no": items.filter { no.contains($0) }] }
+        return (Array((s.skipInterests ?? []).prefix(8)),
+                ["clothes": group(SkipImportView.clothes), "food": group(SkipImportView.foods), "chats": group(SkipImportView.chats)])
+    }
+
     /// N1–N3 Continue → I04-S (same rows, from the chips).
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
@@ -126,7 +135,8 @@ extension AppState {
         Task {
             defer { importing = false }
             do {
-                applyStyle(try await onboarding.importSkip(interests: setup.skipInterests ?? [], replies: setup.skipReplies, avoid: setup.skipAvoid ?? []))
+                let answers = Self.skipAnswers(setup)
+                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }

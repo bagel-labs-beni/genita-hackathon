@@ -202,14 +202,33 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(skip.waitForExistence(timeout: 15), "StartRouter → I01")
         skip.tap()
         XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5), "N1")
-        app.buttons["Design"].tap()
+        // Figma 267:4 shows Design, Food and Film & TV picked
+        for chip in ["Design", "Food", "Film & TV"] { app.buttons["skipChip-" + chip].tap() }
+        XCTAssertTrue(app.buttons["skipChip-Building things"].exists && app.buttons["skipCustom"].exists, "N1 tiles + Add your own")
         capture("N1")
+        // Add your own → an extra selected tile
+        app.buttons["skipCustom"].tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText("Pottery")
+        app.alerts.buttons["Add"].tap()
+        XCTAssertTrue(app.buttons["skipChip-Pottery"].waitForExistence(timeout: 5), "custom topic becomes a tile")
+        app.buttons["skipChip-Pottery"].tap()   // and off again, so the capture above stays the Figma state
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(element("skipReplies").waitForExistence(timeout: 5), "N2")
-        app.buttons["Show me options"].tap()
+        app.buttons["skipChip-Start with the answer"].tap()   // Figma 267:57
         capture("N2")
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5), "N3")
+        capture("N3-0")   // Figma 269:112: nothing picked, Continue still on
+        XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
+        // Figma 269:2: like = Minimal, Comfy, Spicy, Noodles, Jokes; no (two taps) = Colorful, Seafood, Unasked advice, Talk about looks
+        for chip in ["Minimal", "Comfy", "Spicy", "Noodles", "Jokes"] { app.buttons["skipChip-" + chip].tap() }
+        for chip in ["Colorful", "Seafood", "Unasked advice", "Talk about looks"] { app.buttons["skipChip-" + chip].tap(); app.buttons["skipChip-" + chip].tap() }
+        for _ in 0..<3 { app.buttons["skipChip-Street"].tap() }   // three taps clear
+        XCTAssertEqual(app.buttons["skipChip-Seafood"].value as? String, "Not for me")
+        XCTAssertEqual(app.buttons["skipChip-Spicy"].value as? String, "Liked")
+        XCTAssertEqual(app.buttons["skipChip-Street"].value as? String, "Not selected")
         capture("N3")
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
