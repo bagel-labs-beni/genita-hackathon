@@ -69,6 +69,8 @@ export type SessionDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: TtsRequest) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** Test-only clock seam for the delayed first greeting. Returns a cancellation function. */
+  greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
   /** Shared by all calls to the process's voice GPU (not one gate per session). */
@@ -91,6 +93,11 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+};
+
+const schedule = (fn: () => void, ms: number) => {
+  const timer = setTimeout(fn, ms);
+  return () => clearTimeout(timer);
 };
 
 type Mode = "chat" | "interpret";
@@ -195,7 +202,7 @@ export class Session {
   private memoryCall: MemoryCall | null = null;
   private greeting: { item: Memory | null } | null = null;
   /** D21: start.greetAfterMs window; the user speaking or typing inside it cancels the greeting */
-  private greetTimer: NodeJS.Timeout | null = null;
+  private greetTimer: (() => void) | null = null;
   /** this call continues the account's other call (handoff): no greeting */
   private continued = false;
   private mode: Mode = "chat";
@@ -462,7 +469,7 @@ export class Session {
     // D21: also without the memory dependency, the plain greeting
     if (startMode === "chat" && !this.greeting) this.greeting = { item: null };
     if (!this.greeting || this.closed) return;
-    this.greetTimer = setTimeout(() => {
+    this.greetTimer = (this.deps.greetScheduler ?? schedule)(() => {
       this.greetTimer = null;
       if (!this.greeting || this.closed) return;
       if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
@@ -477,7 +484,7 @@ export class Session {
   /** D21: the user spoke or typed first inside the greetAfterMs window → no greeting, just answer them. */
   private skipPendingGreeting(by: "speech" | "text" | "mode"): void {
     if (!this.greetTimer) return;
-    clearTimeout(this.greetTimer);
+    this.greetTimer();
     this.greetTimer = null;
     this.greeting = null;
     this.log("call.greet_skipped", { by });
@@ -594,7 +601,7 @@ export class Session {
     this.closed = true;
     if (this.tts === "server" && this.deps.config.voice) this.deps.voiceSeats?.release(this.id);
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
-    if (this.greetTimer) clearTimeout(this.greetTimer);
+    if (this.greetTimer) this.greetTimer();
     this.dropSpeculation();
     if (this.reply) {
       this.reply.abort.abort();
