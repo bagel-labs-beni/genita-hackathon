@@ -43,16 +43,26 @@ import UIKit
         XCTAssertEqual(model.stage, .signIn)
         let restarted = AppState(storage: store)
         XCTAssertEqual(restarted.stage, .signIn, "a signed-out user does not land back in the call")
-        restarted.signedIn()
+        restarted.signedIn(consented: true)
         XCTAssertEqual(restarted.stage, .conversation)
         XCTAssertEqual(AppState(storage: store).stage, .conversation)
     }
+    /// #218: a sign-in whose consent is not recorded (or any new account) always lands on CS01, and the account
+    /// stays "needs consent" across a restart until CS01 is agreed.
+    func testSignInWithoutConsentGoesToCS01AndStaysThereAfterRestart() {
+        let model = AppState(storage: store)
+        model.signedIn(consented: false)
+        XCTAssertEqual(model.stage, .consent)
+        XCTAssertEqual(AppState(storage: store).stage, .consent, "killing the app does not skip CS01")
+        model.consentAccepted()
+        XCTAssertNotEqual(model.stage, .consent)
+    }
     func testAnotherAccountStartsWithAFreshLocalProfile() {
         let model = AppState(storage: store)
-        model.signedIn(userId: "user-a")
+        model.signedIn(userId: "user-a", consented: true)
         model.setup.name = "A"; model.setup.hasOnboarded = true
         model.signedOut()
-        model.signedIn(userId: "user-a")
+        model.signedIn(userId: "user-a", consented: true)
         XCTAssertEqual(model.setup.name, "A", "same account keeps its profile")
         XCTAssertEqual(model.stage, .conversation)
         model.signedOut()

@@ -74,9 +74,20 @@ struct ReferenceSignInView: View {
             #endif
         }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
-            Button("Continue in demo") { model.signedIn(); provider = nil }
+            #if DEBUG
+            // UI-test hook only: Release builds have no way past A02 without a real account, so CS01 can never be skipped (#218)
+            Button("Continue in demo") { model.signedIn(consented: true); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
-        } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
+            #else
+            Button("OK", role: .cancel) { provider = nil }
+            #endif
+        } message: {
+            #if DEBUG
+            Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.")
+            #else
+            Text("\(provider ?? "This") sign-in isn’t available yet. Continue with Apple.")
+            #endif
+        }
         .onChange(of: legal) { _, doc in
             // PRD v12 D16: Genita's own pages (live)
             guard let doc else { return }
