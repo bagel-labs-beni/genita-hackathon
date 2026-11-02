@@ -120,7 +120,7 @@ struct CallCueView: View {
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
     private var content: Content? {
         if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
-        switch cue {
+        return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
         case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
