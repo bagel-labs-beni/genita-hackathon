@@ -9,6 +9,8 @@ struct EmailSignInSheet: View {
     enum Step: Equatable { case address, code }
     @State private var step: Step
     @State private var email: String
+    /// the address the code went to (verify uses this, not whatever the field holds now)
+    @State private var sentTo: String
     @State private var code = ""
     @State private var sending = false
     @State private var message: String?
@@ -23,13 +25,14 @@ struct EmailSignInSheet: View {
         self.model = model
         _step = State(initialValue: step)
         _email = State(initialValue: email)
+        _sentTo = State(initialValue: email)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(TypeStyle.title(28)).foregroundStyle(CallInk.ink).padding(.top, 32)
                 .accessibilityAddTraits(.isHeader).accessibilityIdentifier("emailSheetTitle")
-            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(email.trimmingCharacters(in: .whitespaces)).")
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
                 .font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {
@@ -47,7 +50,7 @@ struct EmailSignInSheet: View {
                         .accessibilityIdentifier("emailCodeField")
                 }
             }
-            .focused($focused).font(TypeStyle.body(16)).foregroundStyle(CallInk.ink)
+            .focused($focused).disabled(sending).font(TypeStyle.body(16)).foregroundStyle(CallInk.ink)
             .padding(.horizontal, 16).frame(height: 50)
             .background(CallInk.field, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(message == nil ? .clear : CallInk.ink, lineWidth: 1))
@@ -84,6 +87,8 @@ struct EmailSignInSheet: View {
         .background(CallInk.sheet.ignoresSafeArea())
         .preferredColorScheme(.light)
         .presentationDetents([.medium, .large])
+        // a request in flight finishes on this sheet: a late answer must not sign in after it closed
+        .interactiveDismissDisabled(sending)
         .onAppear { focused = true }
         .onReceive(tick) { now = $0 }
     }
@@ -96,13 +101,15 @@ struct EmailSignInSheet: View {
     }
 
     private func sendCode() {
-        guard !sending, GenitaAuthClient.looksLikeEmail(email) else { return }
+        let address = step == .code ? sentTo : email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sending, GenitaAuthClient.looksLikeEmail(address) else { return }
         sending = true
         message = nil
         Task { @MainActor in
             defer { sending = false }
             do {
-                let r = try await GenitaAuthClient().startEmailSignIn(email: email)
+                let r = try await GenitaAuthClient().startEmailSignIn(email: address)
+                sentTo = address
                 resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
                 code = ""
                 step = .code
@@ -120,7 +127,7 @@ struct EmailSignInSheet: View {
         Task { @MainActor in
             defer { sending = false }
             do {
-                let r = try await GenitaAuthClient().signInWithEmailCode(email: email, code: code)
+                let r = try await GenitaAuthClient().signInWithEmailCode(email: sentTo, code: code)
                 dismiss()
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented)
             } catch {
