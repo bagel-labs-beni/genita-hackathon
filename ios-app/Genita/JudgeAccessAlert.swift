@@ -6,8 +6,9 @@ import SwiftUI
 struct JudgeAccessAlert: ViewModifier {
     @Bindable var model: AppState
     @Binding var isPresented: Bool
+    /// Shared with A02's Apple sign-in: one sign-in at a time, so a late answer can't swap the account.
+    @Binding var busy: Bool
     @State private var code = ""
-    @State private var sending = false
     @State private var failure: Failure?
     #if DEBUG
     /// Simulator / Mac debug runs: point the app at a server on this machine (README "Run locally").
@@ -46,13 +47,13 @@ struct JudgeAccessAlert: ViewModifier {
 
     private func submit() {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !sending, !trimmed.isEmpty else { return }
-        sending = true
+        guard !busy, !trimmed.isEmpty else { return }
+        busy = true
         #if DEBUG
         Self.applyDebugServer(serverURL)
         #endif
         Task { @MainActor in
-            defer { sending = false }
+            defer { busy = false }
             do {
                 let r = try await GenitaAuthClient().signInWithJudgeCode(trimmed)
                 code = ""
@@ -86,7 +87,7 @@ struct JudgeAccessAlert: ViewModifier {
 
 extension View {
     /// A02-J Judge access (D41): stock alert with a code field.
-    func judgeAccessAlert(isPresented: Binding<Bool>, model: AppState) -> some View {
-        modifier(JudgeAccessAlert(model: model, isPresented: isPresented))
+    func judgeAccessAlert(isPresented: Binding<Bool>, busy: Binding<Bool>, model: AppState) -> some View {
+        modifier(JudgeAccessAlert(model: model, isPresented: isPresented, busy: busy))
     }
 }

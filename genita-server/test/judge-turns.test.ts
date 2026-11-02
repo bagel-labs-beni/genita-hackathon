@@ -147,7 +147,7 @@ test("session: over the judge cap → daily_limit error, no Spark call, socket s
   assert.equal(spark.n, 1, "no Spark call over the cap");
   assert.equal(client.of("reply").length, 1);
   assert.equal(client.closed, null, "the call is not closed");
-  assert.ok(client.json.slice(client.json.indexOf(err)).some((m) => m.type === "state" && m.state === "listening"), "back to listening");
+  assert.equal(client.of("state").at(-1)?.state, "listening", "the last state is listening (not a stuck thinking)");
 
   // still usable: pings answer, a further turn gets the same clear refusal
   await session.onClientText(JSON.stringify({ type: "ping", t: 1 }));
@@ -169,6 +169,23 @@ test("session: no gate (Apple / dev users) → never capped", async () => {
   }
   assert.equal(spark.n, 3);
   assert.equal(client.of("error").length, 0);
+  session.close();
+});
+
+test("session: interpretation lines count too; over the cap the line closes as unknown (no stuck bubble), no Spark call", async () => {
+  const turns = new JudgeDailyTurns(1);
+  const { client, session, spark } = setup(turns.gate("alpha"));
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, mode: "interpret", interpret: { other: "Korean" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Tuesday works." }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(spark.n, 1);
+  await session.onClientText(JSON.stringify({ type: "text", text: "Can we do 3 pm?" }));
+  await client.waitFor((m) => m.type === "reply" && client.of("reply").length === 2);
+  assert.equal(spark.n, 1, "no translation call over the cap");
+  assert.ok(client.of("error").some((e) => e.code === "daily_limit"));
+  const last = client.of("interpret.bubble").at(-1)!;
+  assert.equal(last.status, "unknown", "the refused line's bubble is closed, not left hearing");
+  assert.equal(client.closed, null);
   session.close();
 });
 
