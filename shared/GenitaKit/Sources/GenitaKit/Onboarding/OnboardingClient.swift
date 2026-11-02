@@ -231,13 +231,17 @@ public final class OnboardingClient: @unchecked Sendable {
 
     public func prep() async throws -> PrepProgress { try await auth.send("GET", "/v1/companion/prep") }
 
-    private struct PrefsReply: Decodable { var summary: SetupSummary? }
+    public struct PrefsResult: Decodable, Sendable {
+        public struct Session: Decodable, Sendable { public var persona: ClientMessage.Persona? }
+        public var summary: SetupSummary?
+        /// the realtime `start.persona` the server wrote (traits, speaking style, backstory, name)
+        public var session: Session?
+    }
 
     /// D01 / P1–P7 → persona card + SUM lines. `answers` uses the server keys (help, relationship, presence,
     /// challenge, pace, reachOut, never) — see `SetupAnswersWire`.
-    public func savePrefs(depth: String, answers: [String: Any]) async throws -> SetupSummary? {
-        let r: PrefsReply = try await auth.send("POST", "/v1/companion/prefs", json: ["depth": depth, "answers": answers], timeout: 30)
-        return r.summary
+    public func savePrefs(depth: String, answers: [String: Any]) async throws -> PrefsResult {
+        try await auth.send("POST", "/v1/companion/prefs", json: ["depth": depth, "answers": answers], timeout: 30)
     }
 }
 
