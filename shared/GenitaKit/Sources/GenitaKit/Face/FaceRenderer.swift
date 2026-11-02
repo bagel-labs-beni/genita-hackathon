@@ -41,13 +41,6 @@ public final class FaceRenderer: @unchecked Sendable {
     private let headMask: CIImage
     private let bodyMask: CIImage
     private var motion: AliveMotion
-    /// Lower-face rig (nil when the face set has no open key); `useRig = false` uses key patches.
-    let rig: MouthRig?
-    public var useRig = true
-    private var rigValue = MouthRigParams.rest, rigVelocity = MouthRigParams.rest
-    private var rigT: Double?
-    /// The driver samples the lip timeline this far ahead so the spring lands on time.
-    public static let rigLookaheadMs = 45.0
 
     public init(faceSet: FaceSet, outputSize: CGSize, seed: UInt64 = 1, reduceMotion: Bool = false, context: CIContext? = nil) {
         self.faceSet = faceSet
@@ -56,7 +49,6 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
-        rig = MouthRig(faceSet: faceSet)
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
         extent = CGRect(x: 0, y: 0, width: w, height: h)
@@ -164,24 +156,16 @@ public final class FaceRenderer: @unchecked Sendable {
             img = f.outputImage!.cropped(to: extent)
         }
 
-        // 2–3. mouth. With a rig: the photo's own lower face is warped by continuous jaw / spread /
-        // press (spring-smoothed), and only the lip opening is filled from a Muse key. Without one:
-        // one key patch per frame (cuts) plus the strip jaw warp.
+        // 2. mouth: one shape at a time. Blending two different mouths shows two outlines, so a
+        // shape change is a cut on the frame where the new shape's weight overtakes the old one;
+        // the jaw warp (driven by the continuous openness) carries the motion across the cut.
         let open = Double(min(1, max(0, lip.openness)))
-        if useRig, let rig {
-            let p = rigParams(target: MouthRigParams(lip: lip), at: t)
-            let cg = rig.render(p, expressions: expressionWeights(at: t))
-            let r = rig.region
-            img = CIImage(cgImage: cg)
-                .transformed(by: CGAffineTransform(scaleX: 1 / rig.scale, y: 1 / rig.scale))
-                .transformed(by: CGAffineTransform(translationX: r.minX, y: h - r.maxY))
-                .composited(over: img)
-        } else {
-            if let v = Self.mouthShape(lip: lip, resolved: faceSet.resolved), let patch = patchImages[v] {
-                img = patch.composited(over: img)
-            }
-            if open > 0.01 { img = jawWarp(img, open: open) }
+        if let v = Self.mouthShape(lip: lip, resolved: faceSet.resolved), let patch = patchImages[v] {
+            img = patch.composited(over: img)
         }
+
+        // 3. jaw
+        if open > 0.01 { img = jawWarp(img, open: open) }
 
         // 4. blink
         let blink = blinkAmount(at: t)
@@ -245,27 +229,6 @@ public final class FaceRenderer: @unchecked Sendable {
     static let headMaskInner: CGFloat = 0.72
     static func headEllipse(face: CGRect) -> (center: CGPoint, rx: CGFloat, ry: CGFloat) {
         (CGPoint(x: face.midX, y: face.midY + face.height * 0.12), face.width * 0.78, face.height * 0.82)
-    }
-
-    /// Critically damped spring toward the rig target (time-ordered calls; a jump resets).
-    private func rigParams(target: MouthRigParams, at t: Double) -> MouthRigParams {
-        lock.lock(); defer { lock.unlock() }
-        let dt = rigT.map { t - $0 } ?? -1
-        rigT = t
-        guard dt > 0, dt <= 0.5 else { rigValue = target; rigVelocity = .rest; return target }   // first call, same time or a jump
-        let omega = 32.0
-        let steps = max(1, Int((dt * 240).rounded(.up)))
-        let h = dt / Double(steps)
-        func step(_ x: inout Double, _ v: inout Double, _ goal: Double) {
-            let a = omega * omega * (goal - x) - 2 * omega * v
-            v += a * h; x += v * h
-        }
-        for _ in 0..<steps {
-            step(&rigValue.jaw, &rigVelocity.jaw, target.jaw)
-            step(&rigValue.spread, &rigVelocity.spread, target.spread)
-            step(&rigValue.press, &rigVelocity.press, target.press)
-        }
-        return rigValue
     }
 
     /// Openness below which an open vowel shows the rest mouth (no sound, no open mouth).

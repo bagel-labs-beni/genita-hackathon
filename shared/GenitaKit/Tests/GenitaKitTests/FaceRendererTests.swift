@@ -152,7 +152,7 @@ struct FaceRendererTests {
         }
         let mouthY = Int(animalSet.mouthBox.midY / animalSet.pixelSize.height * Double(h))
         #expect(rowDiff(0, h / 5) < 0.2)                  // top of the frame untouched
-        #expect(rowDiff(mouthY - 10, mouthY + 20) > 1)    // mouth + jaw changed
+        #expect(rowDiff(mouthY - 10, mouthY + 20) > 2)    // mouth + jaw changed
     }
 
     @Test func expressionCrossfadesOverAQuarterSecond() {
@@ -259,7 +259,6 @@ struct MouthQualityTests {
     @Test func midCrossfadeShowsOneMouthNotTwo() {
         #expect(animalSet.patches[.A] != nil && animalSet.patches[.O] != nil)
         let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
-        r.useRig = false   // the key-patch path
         let mixed = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 0.55, .O: 0.45], openness: 0.9)))
         let pureA = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.9)))
         #expect(meanDiff(mixed, pureA) < 0.001)
@@ -267,7 +266,6 @@ struct MouthQualityTests {
 
     @Test func anOpenVowelWithoutSoundIsTheRestMouth() {
         let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
-        r.useRig = false   // the key-patch path
         let quiet = bytes(r.render(at: 1, lip: LipFrame(weights: [.A: 1], openness: 0.01)))
         let rest = bytes(r.render(at: 1, lip: LipFrame(weights: [.rest: 1], openness: 0.01)))
         #expect(meanDiff(quiet, rest) < 0.001)
@@ -390,57 +388,6 @@ struct MouthQualityTests {
         print(String(format: "nod: max %.2f px", maxDiff))
         #expect(maxDiff > 1)
         #expect(maxDiff < 4)
-    }
-
-    // MARK: lower-face rig (v4)
-
-    @Test func rigParamsBlendContinuouslyAcrossShapes() {
-        let ee = MouthRigParams(lip: LipFrame(weights: [.EI: 1], openness: 0.5))
-        let oo = MouthRigParams(lip: LipFrame(weights: [.O: 1], openness: 0.5))
-        let mid = MouthRigParams(lip: LipFrame(weights: [.EI: 0.5, .O: 0.5], openness: 0.5))
-        #expect(mid.spread < ee.spread && mid.spread > oo.spread)
-        #expect(MouthRigParams(lip: LipFrame(weights: [.MBP: 1], openness: 0.8)).jaw == 0)
-        #expect(MouthRigParams(lip: LipFrame(weights: [.MBP: 1], openness: 0.8)).press == 1)
-    }
-
-    @Test func rigAtRestLeavesThePhotoAsIs() {
-        let size = CGSize(width: 180, height: 320)
-        let rig = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
-        let plain = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
-        plain.useRig = false
-        #expect(rig.rig != nil)
-        let d = meanDiff(bytes(rig.render(at: 1, lip: .rest)), bytes(plain.render(at: 1, lip: .rest)))
-        print(String(format: "rig at rest vs photo: %.3f", d))
-        #expect(d < 0.6)
-    }
-
-    /// The jaw opens smoothly frame by frame (no swap spikes) and drags the chin down.
-    @Test func rigOpensSmoothlyAndMovesTheChin() {
-        let size = CGSize(width: 180, height: 320)
-        let r = FaceRenderer(faceSet: animalSet, outputSize: size, reduceMotion: true)
-        let w = Int(size.width)
-        let face = animalSet.faceBox, k = size.height / animalSet.pixelSize.height
-        let y0 = Int(animalSet.mouthBox.minY * k) - 4, y1 = min(Int(size.height), Int((face.maxY + face.height * 0.15) * k))
-        var frames: [[UInt8]] = []
-        for i in 0..<20 {
-            let lip = LipFrame(weights: [.A: 0.5, .EI: 0.5 - Float(i) * 0.02, .O: Float(i) * 0.02], openness: Float(i) / 19)
-            frames.append(bytes(r.render(at: 1 + Double(i) / 25, lip: lip)))
-        }
-        func delta(_ a: [UInt8], _ b: [UInt8]) -> Double {
-            var s = 0.0, n = 0.0
-            for y in y0..<y1 { for x in 0..<w { for c in 0..<3 { let i = (y * w + x) * 4 + c; s += abs(Double(a[i]) - Double(b[i])); n += 1 } } }
-            return s / n
-        }
-        let deltas = (1..<frames.count).map { delta(frames[$0 - 1], frames[$0]) }
-        let sorted = deltas.sorted(), median = sorted[sorted.count / 2]
-        print(String(format: "rig continuity: median %.3f max %.3f", median, sorted.last!))
-        #expect(sorted.last! < max(4 * median, 0.5))
-        // chin rows change between closed and open
-        let chinY = Int(face.maxY * k)
-        var chin = 0.0, n = 0.0
-        for y in max(0, chinY - 6)..<min(Int(size.height), chinY + 6) { for x in 0..<w { for c in 0..<3 { let i = (y * w + x) * 4 + c; chin += abs(Double(frames[0][i]) - Double(frames[19][i])); n += 1 } } }
-        print(String(format: "chin change closed→open: %.2f", chin / n))
-        #expect(chin / n > 1)
     }
 }
 
