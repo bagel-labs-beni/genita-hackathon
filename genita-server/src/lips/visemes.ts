@@ -1,5 +1,5 @@
 /**
- * Character alignment (ElevenLabs with-timestamps) → mouth cues for the
+ * Character alignment (Meta voice with-timestamps) → mouth cues for the
  * on-device mouth atlas used by animal / character companions.
  *
  * Viseme set (9 shapes, the atlas has one sprite per shape):
@@ -8,7 +8,7 @@
  *   L tongue-teeth (l, t, d, n, th) · S small-open (s, z, k, g, r, h, …)
  *
  * Letter-level, not phoneme-level: good enough for stylised mouths. Humans
- * go through Peter (real lip-sync video), which ignores these cues.
+ * go through lip worker (real lip-sync video), which ignores these cues.
  */
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
@@ -85,6 +85,37 @@ export function alignmentToMouth(a: Alignment, offsetMs: number): MouthCue[] {
 }
 
 export type WordTiming = { w: string; s: number; e: number };
+/** One phoneme (ARPAbet label) in ms; GenitaKit LipPhonemeTiming(phoneme: p, startMs: s, endMs: e). */
+export type PhonemeTiming = { p: string; s: number; e: number };
+/** Forced-aligner timing of one clause (`audio.timing`). */
+export type ClauseTiming = { words: WordTiming[]; phonemes: PhonemeTiming[] };
+
+/** The same timing moved by `ms` (a clause's place on the reply timeline). */
+export function shiftTiming(t: ClauseTiming, ms: number): ClauseTiming {
+  const r = (x: number) => Math.round(x + ms);
+  return {
+    words: t.words.map((w) => ({ w: w.w, s: r(w.s), e: r(w.e) })),
+    phonemes: t.phonemes.map((p) => ({ p: p.p, s: r(p.s), e: r(p.e) })),
+  };
+}
+
+/** A timing object from the voice service, or null when its shape is off (then nothing is sent). */
+export function parseClauseTiming(v: unknown): ClauseTiming | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as { words?: unknown; phonemes?: unknown };
+  if (!Array.isArray(o.words) || !Array.isArray(o.phonemes)) return null;
+  const span = (x: unknown, key: "w" | "p"): x is Record<string, unknown> => {
+    if (!x || typeof x !== "object") return false;
+    const r = x as Record<string, unknown>;
+    return typeof r[key] === "string" && typeof r.s === "number" && typeof r.e === "number" && Number.isFinite(r.s) && Number.isFinite(r.e) && r.s >= 0 && r.e > r.s;
+  };
+  if (!o.words.every((w) => span(w, "w")) || !o.phonemes.every((p) => span(p, "p"))) return null;
+  if (!o.words.length && !o.phonemes.length) return null;
+  return {
+    words: (o.words as WordTiming[]).map((w) => ({ w: w.w, s: Math.round(w.s), e: Math.round(w.e) })),
+    phonemes: (o.phonemes as PhonemeTiming[]).map((p) => ({ p: p.p, s: Math.round(p.s), e: Math.round(p.e) })),
+  };
+}
 
 /** Word timings (ms, utterance timeline) for captions; [audio tags] skipped. */
 export function alignmentToWords(a: Alignment, offsetMs: number): WordTiming[] {

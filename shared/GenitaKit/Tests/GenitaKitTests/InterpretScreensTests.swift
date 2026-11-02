@@ -22,7 +22,7 @@ import Testing
 
     static func screens() -> [(String, InterpretBoard, Bool)] {
         var s: [(String, InterpretBoard, Bool)] = []
-        var b = InterpretBoard()
+        var b = InterpretBoard(companionName: "Jin")
         b.apply(T.pair(nil))
         s.append(("INT-1-listening", b, false))
         b.apply(T.pair("Korean"))
@@ -40,7 +40,7 @@ import Testing
         b.apply(T.bubble(3, .unknown, .unknown, "…", reason: "language_unclear"))
         s.append(("INT-6-unclear", b, false))
 
-        var m = InterpretBoard()
+        var m = InterpretBoard(companionName: "Jin")
         s.append(("INT-M0-pick-call-app", m, true))
         m.apply(T.pair("Korean", source: .call, app: "FaceTime"))
         m.apply(T.bubble(1, .them, .speaking, "다음 주 화요일 회의 괜찮으세요?", lang: "Korean", via: .call, translation: "Does next Tuesday’s meeting work for you?", to: "English", utterance: 1))

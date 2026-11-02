@@ -2,7 +2,7 @@
  * PrepStore on Postgres + blob storage (F1-L4). Same contract as FileStore:
  *   user_styles            ← getStyle/putStyle
  *   companion_images       ← putImage/getImage (bytes in blobs at users/<uid>/images/<id>)
- *   companions + clip_jobs (+ companion_emotions, companion_prefs)  ← companion record
+ *   companions + clip_jobs (+ companion_prefs)  ← companion record
  *   blobs cache/voices/…   ← voice preview cache (not personal data)
  * patchCompanion is a SELECT … FOR UPDATE transaction, so the runner and the
  * prefs route can write the same companion without losing either update.
@@ -10,10 +10,12 @@
 import { iso, json, type Db, type Queryable } from "../db/index.ts";
 import type { BlobStore } from "../storage/blob.ts";
 import type { StyleCard } from "./importProfile.ts";
-import { PREP_EMOTIONS } from "./prompts.ts";
+import { sniffImage } from "./classify.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 const imageKey = (userId: string, id: string) => `users/${userId}/images/${id}`;
+/** face set images; under users/<id>/ so DELETE /me removes them */
+const assetKey = (userId: string, companionId: string, name: string) => `users/${userId}/companions/${companionId}/face/${name}`;
 
 export class PgPrepStore implements PrepStore {
   readonly db: Db;
@@ -114,16 +116,6 @@ export class PgPrepStore implements PrepStore {
          ready_at = EXCLUDED.ready_at, updated_at = now()`,
       [rec.id, rec.userId, prep.status, prep.attempts, json(prep), prep.startedAt, prep.readyAt ?? null],
     );
-    for (const e of PREP_EMOTIONS) {
-      const url = prep.steps.videos[e]?.url;
-      if (url)
-        await q.query(
-          `INSERT INTO companion_emotions (companion_id, emotion, video_url) VALUES ($1, $2, $3)
-           ON CONFLICT (companion_id, emotion) DO UPDATE SET video_url = EXCLUDED.video_url`,
-          [rec.id, e, url],
-        );
-      else await q.query("DELETE FROM companion_emotions WHERE companion_id = $1 AND emotion = $2", [rec.id, e]);
-    }
     if (rec.prefs)
       await q.query(
         `INSERT INTO companion_prefs (companion_id, depth, answers_json, updated_at) VALUES ($1, $2, $3::jsonb, $4)
@@ -161,10 +153,24 @@ export class PgPrepStore implements PrepStore {
   }
 
   getVoicePreview(voiceId: string, version: string) {
-    return this.blobs.get(`cache/voices/${voiceId}-${version}.mp3`).catch(() => null);
+    return this.blobs.get(`cache/voices/${voiceId}-${version}.wav`).catch(() => null);
   }
 
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.blobs.put(`cache/voices/${voiceId}-${version}.mp3`, mp3, "audio/mpeg");
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.blobs.put(`cache/voices/${voiceId}-${version}.wav`, audio, "audio/wav");
+  }
+
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.blobs.put(assetKey(userId, companionId, name), bytes, sniffMime(bytes));
+  }
+
+  getAsset(userId: string, companionId: string, name: string) {
+    return this.blobs.get(assetKey(userId, companionId, name));
+  }
+
+  async deleteAssets(userId: string, companionId?: string) {
+    await this.blobs.deletePrefix(companionId ? `users/${userId}/companions/${companionId}/` : `users/${userId}/companions/`);
   }
 }
+
+const sniffMime = (b: Buffer) => sniffImage(b) ?? "application/octet-stream";

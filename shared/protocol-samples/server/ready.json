@@ -9,13 +9,14 @@
     "frameHeaderBytes": 8
   },
   "lip": {
-    "requested": "peter",
+    "requested": "none",
     "active": "none",
-    "reason": "peter_not_deployed"
+    "reason": null
   },
-  "voiceId": "7PbNGDB5sJCFnOZuMPNL",
+  "voiceId": "seamless:0",
   "bargeIn": {
     "minMs": 400,
     "minWords": 2
-  }
+  },
+  "tts": "server"
 }

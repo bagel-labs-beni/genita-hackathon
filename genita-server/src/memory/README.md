@@ -1,5 +1,7 @@
 # Genita memory lane — F7-L1/L2/L5/L6, F9-L1, F5-L17
 
+> **Hackathon build (D40, 11/2):** Us photo and seen memory are cut. `createMemory` turns them on only with `GENITA_US_PHOTOS=1` / `GENITA_SEEN_MEMORY=1`; otherwise `POST /v1/us-photos` answers 404 `feature_off` and `rememberSeen` saves nothing. General memory and the revisit greeting stay on.
+
 Implementation is in this folder; shared edits are the session hooks, Spark
 function-call parsing, route registration and additive PROTOCOL documentation.
 No database migrations, app changes, deployment, push or PR are part of this lane.
@@ -155,5 +157,4 @@ The main session can commit these reviewable groups with its normal Git access:
 3. `evals/memory/`, `scripts/{eval-memory,check-memory}.ts`,
    `test/memory-eval.test.ts`, `package.json`, `.gitignore`, this README (eval/handoff).
 
-Use `git -c user.name=summerlee -c user.email=chelsea@users.noreply.github.com commit` and end each
-message with `Co-Authored-By: Codex <noreply@openai.com>`. No push or PR was made.
+Commit with your own Git identity.
