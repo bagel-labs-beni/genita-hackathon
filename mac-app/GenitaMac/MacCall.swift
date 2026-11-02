@@ -171,6 +171,7 @@ import Foundation
 
     func signOut() {
         generation += 1
+        MacHandoff.shared.sharing.resetForSignOut()
         account = .signedOut
         face = nil
         history = []

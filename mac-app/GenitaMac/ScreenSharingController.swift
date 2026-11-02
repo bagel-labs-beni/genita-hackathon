@@ -28,6 +28,7 @@ import CoreMedia
         didSet { if isSharing, watchConfig != oldValue { uplink?.stop(); uplink = nil; connectUplink(source: sourceName) } }
     }
     private var stream: SCStream?
+    private var captureRequest = ScreenSharingRequest()
     private var uplink: WatchUplink?
     private let capture = WatchCapture()
     private var reactingTask: Task<Void, Never>?
@@ -49,6 +50,7 @@ import CoreMedia
         showPicker()
     }
     func showPicker() {
+        captureRequest.begin()
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = [.singleDisplay, .singleWindow]
         if let id = Bundle.main.bundleIdentifier { configuration.excludedBundleIDs = [id] }
@@ -60,20 +62,37 @@ import CoreMedia
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
     }
     func stop() {
+        captureRequest.invalidate()
         let old = stream; stream = nil; isSharing = false
         SCContentSharingPicker.shared.isActive = false
         if let old { Task { try? await old.stopCapture() } }
         uplink?.stop(); uplink = nil
+        reactingTask?.cancel(); reactingTask = nil
         blank = false; reacting = false; speakerName = nil; sourceName = nil
         let capture = capture
         queue.async { capture.reset() }
     }
+    /// End this account's capture, including a picker/start still in flight, before another account can sign in.
+    func resetForSignOut() {
+        stop()
+        watchConfig = nil
+        noticeVisible = false; permissionRequired = false; error = nil
+    }
     private func start(_ picked: SCContentFilter) {
+        guard let request = captureRequest.current else { return }
         Task {
             do {
+                guard captureRequest.isCurrent(request) else { return }
                 let filter = await Self.excludingGenita(picked)
+                guard captureRequest.isCurrent(request) else { return }
                 let name = Self.sourceName(of: picked)
-                if let stream { try await stream.updateContentFilter(filter); sourceName = name; return }
+                if let stream {
+                    try await stream.updateContentFilter(filter)
+                    guard captureRequest.isCurrent(request), self.stream === stream else { return }
+                    wireCapture(request: request)
+                    sourceName = name
+                    return
+                }
                 let config = SCStreamConfiguration()
                 // long side ≤ 1024 px (uploads are ≤1024 JPEG); frames are sampled ~2 fps and sent only when changed
                 let px = CGSize(width: picked.contentRect.width * CGFloat(picked.pointPixelScale), height: picked.contentRect.height * CGFloat(picked.pointPixelScale))
@@ -89,23 +108,41 @@ import CoreMedia
                 let newStream = SCStream(filter: filter, configuration: config, delegate: self)
                 try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
                 try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
-                wireCapture()
+                stream = newStream // stop() must also see a stream whose startCapture() is still pending.
+                wireCapture(request: request)
                 try await newStream.startCapture()
-                stream = newStream; isSharing = true; permissionRequired = false; sourceName = name
+                guard captureRequest.isCurrent(request), stream === newStream else {
+                    try? await newStream.stopCapture()
+                    return
+                }
+                isSharing = true; permissionRequired = false; sourceName = name
                 connectUplink(source: name)
-            } catch { self.error = error.localizedDescription; isSharing = false }
+            } catch {
+                guard captureRequest.isCurrent(request) else { return }
+                stop()
+                self.error = error.localizedDescription
+            }
         }
     }
-    private func wireCapture() {
+    private func wireCapture(request: UInt64) {
         let capture = capture
         capture.onFrame = { [weak self] jpeg, blank in
-            Task { @MainActor in self?.uplink?.sendFrame(jpeg, blank: blank) }
+            Task { @MainActor in
+                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                self.uplink?.sendFrame(jpeg, blank: blank)
+            }
         }
         capture.onAudio = { [weak self] pcm in
-            Task { @MainActor in self?.uplink?.sendAudio(pcm) }
+            Task { @MainActor in
+                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                self.uplink?.sendAudio(pcm)
+            }
         }
         capture.onBlank = { [weak self] on in
-            Task { @MainActor in self?.blank = on }
+            Task { @MainActor in
+                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                self.blank = on
+            }
         }
     }
     private func connectUplink(source: String?) {
@@ -152,7 +189,12 @@ extension ScreenSharingController: SCContentSharingPickerObserver {
     nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) { Task { @MainActor in self.error = error.localizedDescription } }
 }
 extension ScreenSharingController: SCStreamDelegate, SCStreamOutput {
-    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) { Task { @MainActor in self.stop(); self.error = error.localizedDescription } }
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Task { @MainActor in
+            guard self.stream === stream else { return }
+            self.stop(); self.error = error.localizedDescription
+        }
+    }
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         // Frames and sound go to the watch uplink only while sharing; nothing is stored on disk.
         switch type {

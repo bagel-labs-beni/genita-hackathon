@@ -124,7 +124,7 @@ struct MacConversationView: View {
         }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
-            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+            sharing.watchConfig = id.map { .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: $0) }
         }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
         .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
