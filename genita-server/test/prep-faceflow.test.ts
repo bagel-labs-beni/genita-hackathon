@@ -255,6 +255,11 @@ test("faceflow.py end to end (non-human port): toy derives AH2 from AH; small-mu
     const toy = run("toy", `AH=${join(dir, "ah.png")}`);
     assert.deepEqual(toy.flow.keys.sort(), ["AH", "AH2"], "AH2 derived from the single felt key");
     assert.equal(toy.res.diag.AH2.derivedFrom, "AH");
+    const bird = run("animal", `AH=${join(dir, "ah.png")}`, "parrot");
+    assert.equal(bird.flow.lockSource, "bird-split", "codex P2: the beak split line is the lock line");
+    assert.ok(Math.abs(bird.flow.lockY - (0.50 + 0.4 * 0.03)) < 1e-4, `upper half of the beak locked (${bird.flow.lockY})`);
+    assert.deepEqual(toy.flow.map.jaw.steps.map((s: [string, number]) => s[0]), ["AH", "AH2"], "codex P2: the open drive reaches the derived AH2");
+    assert.equal(toy.flow.map.cheek.cheekW, 1.0, "codex P2: toy cheek weight, not character3d's");
     const ham = run("animal", `AH=${join(dir, "ah.png")}`, "hamster");
     assert.ok(ham.flow.keys.includes("AH"));
     assert.equal(ham.flow.map.profile, "animal");

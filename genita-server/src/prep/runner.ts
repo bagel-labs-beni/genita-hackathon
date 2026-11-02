@@ -293,7 +293,8 @@ export class PrepRunner {
     const companionId = c.id;
     const userId = c.userId;
     // mouth profile from the image check (species / character style); a resumed set keeps its own
-    const raw = fs.face?.profile ? null : (await d.store.getImage(c.imageId).catch(() => null))?.rec.check.raw;
+    // the image check is read on a resume too: a kept profile still needs the species for faceflow's animal rules (codex P2)
+    const raw = (await d.store.getImage(c.imageId).catch(() => null))?.rec.check.raw;
     const profile: FlowProfile = fs.face?.profile ?? flowProfileOf(c.type, raw);
     const species = raw?.species || undefined;
     try {

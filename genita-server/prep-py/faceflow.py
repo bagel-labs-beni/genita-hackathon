@@ -600,12 +600,14 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     face, mouth, nose = box(a.face), box(a.mouth), box(a.nose)
     rule = animal_rule(kind, prof, a.species, face, mouth)
+    bird_lock = None
     if rule:
         # non-human lane 11/3: species / geometry sub-rules (profiles animal.bird / smallMuzzle / smallMuzzle.longSnoutDog)
         name_, sub = rule
         if name_ == 'bird':                       # SAM's mouth box is the whole beak: upper part locked (nose), lower mandible moves
             fr = float(sub.get('split', 0.5)); ym = mouth[1] + fr * (mouth[3] - mouth[1])
             nose, mouth = [mouth[0], mouth[1], mouth[2], ym], [mouth[0], ym, mouth[2], mouth[3]]
+            bird_lock = ym                            # the split line IS the lock line (lock_line's nose test rejects nose[3] == mouth[1])
         prep.update(sub.get('prep') or {})
     N = cv2.imread(a.neutral, cv2.IMREAD_COLOR)
     if N is None:
@@ -614,6 +616,8 @@ def main():
     s = WORK_H / H                       # full -> work
     w, h = int(round(W * s)), WORK_H
     lock_y, lock_src = lock_line(face, mouth, nose)
+    if bird_lock is not None:
+        lock_y, lock_src = bird_lock, 'bird-split'
     if isinstance(prep.get('mask'), dict):
         mk = prep['mask']; SHAPE[kind] = (mk['rx'], mk['ry'], mk['dy'])
 
