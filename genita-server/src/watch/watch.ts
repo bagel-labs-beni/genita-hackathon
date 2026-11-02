@@ -47,9 +47,9 @@ export type WatchDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   diarize?: boolean;
   /**
-   * D40 (PRD v12, 11/2): watch together is cut down to "share a window + ask".
-   * First reactions (MS-2) and the speaker chip (FT-SPK) stay in the code; the session turns them
-   * on only with GENITA_WATCH_REACTIONS=1 / GENITA_WATCH_SPEAKER=1. Undefined = on (direct use, tests).
+   * Watch together = watch YouTube together and chat (Chelsea 11/2 21:10): first reactions (MS-2) are on
+   * (the session turns them off only with GENITA_WATCH_REACTIONS=0). The speaker chip (FT-SPK) stays cut (D40):
+   * on only with GENITA_WATCH_SPEAKER=1. Undefined = on (direct use, tests).
    */
   reactions?: boolean;
   speakerChip?: boolean;

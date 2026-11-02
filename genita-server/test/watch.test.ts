@@ -415,7 +415,7 @@ test("session: a question while sharing carries the watch context and frames; a 
   s.close();
 });
 
-test("session D40: by default the watch controller has first reactions and the speaker chip off", async () => {
+test("session: by default first reactions are on and the speaker chip is off (D40 + Chelsea 11/2 21:10)", async () => {
   const prev = [process.env.GENITA_WATCH_REACTIONS, process.env.GENITA_WATCH_SPEAKER];
   delete process.env.GENITA_WATCH_REACTIONS; delete process.env.GENITA_WATCH_SPEAKER;
   try {
@@ -423,7 +423,7 @@ test("session D40: by default the watch controller has first reactions and the s
     await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
     const watch = s.attachWatch(new FakeSink())!;
     const deps = (watch as unknown as { deps: WatchDeps }).deps;
-    assert.equal(deps.reactions, false);
+    assert.equal(deps.reactions, true);
     assert.equal(deps.speakerChip, false);
     s.close();
   } finally {

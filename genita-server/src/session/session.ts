@@ -629,8 +629,9 @@ export class Session {
         now: this.now,
         openAsr: (mode) => this.deps.openAsr(this.deps.config.asrLanguages, mode),
         spark: this.deps.spark,
-        // D40: share a window + ask only; first reactions and the speaker chip are off unless flagged on
-        reactions: process.env.GENITA_WATCH_REACTIONS === "1",
+        // Chelsea 11/2 21:10: watch YouTube together and chat — first reactions ON (GENITA_WATCH_REACTIONS=0 turns
+        // them off); the speaker chip stays cut (D40), on only with GENITA_WATCH_SPEAKER=1
+        reactions: process.env.GENITA_WATCH_REACTIONS !== "0",
         speakerChip: process.env.GENITA_WATCH_SPEAKER === "1",
         log: (event, data) => this.log(event, data),
       },
