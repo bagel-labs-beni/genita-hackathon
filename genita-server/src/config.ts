@@ -13,8 +13,6 @@ export type Config = {
   voice?: VoiceConfig | null;
   /** Whether the Meta voice service is configured; otherwise the app speaks. */
   serverTts: boolean;
-  /** GENITA_KLING=1: fal (Kling clips and CDN uploads) in prep; needs FAL_KEY */
-  kling: boolean;
   host: string;
   port: number;
   /** shared bearer token apps must present; unset = loopback-only dev mode */
@@ -66,11 +64,9 @@ function num(v: string | undefined, d: number): number {
 
 const DEFAULT_SPEAKERS: VoiceConfig["speakers"] = { human: 0, animal: 0, character: 0 };
 
-const flag = (v: string | undefined) => v === "1";
-
 /**
  * Only MODEL_API_KEY is required (11/2: everything at call time is Meta or on
- * the device). Kling clip generation remains gated pending the Meta face pipeline (#158).
+ * the device). Prep uses Meta scene and face generation.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
@@ -89,13 +85,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
   const serverTts = !!voice;
-  const kling = flag(env.GENITA_KLING);
-  if (kling && !env.FAL_KEY) throw new Error("GENITA_KLING=1 needs FAL_KEY");
   return {
     metaKey,
     serverTts,
     voice,
-    kling,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,

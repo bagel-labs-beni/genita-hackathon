@@ -1,12 +1,11 @@
 /**
  * Onboarding prep services: the vendor calls behind the /v1/import and
  * /v1/companion routes. Pure decisions live in the sibling modules; this file
- * only wires them to Spark, SAM, Muse Image, Meta voice and optional CDN uploads.
+ * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
 import { sparkJson } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
-import { falUpload, falSubmit, falWait } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
@@ -19,14 +18,10 @@ export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
 export type PrepDeps = {
   metaKey: string;
-  /** read only when `kling` is on */
-  falKey: string | null;
   voice?: import("../config.ts").VoiceConfig | null;
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
-  /** GENITA_KLING=1: fal scene fallback + Kling clips + lips step. Off (default): scene → face set, Meta only */
-  kling?: boolean;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
 };
@@ -107,9 +102,9 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
 
 // ---------- F2-L21: call scene ----------
 
-export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number; url: string | null };
+export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number };
 
-/** Muse Image edit, retried once on failure; optional CDN upload for clips. */
+/** Muse Image edit, retried once on failure. */
 export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: CompanionKind, signal?: AbortSignal): Promise<SceneResult> {
   const t0 = performance.now();
   let out: Buffer;
@@ -120,8 +115,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
     d.log("scene.retry", { reason: "muse_image_failed" });
     out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   }
-  const url = d.kling && d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
-  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
+  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0) };
 }
 
 // ---------- F2-L8: voices ----------

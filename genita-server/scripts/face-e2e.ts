@@ -3,8 +3,7 @@
  *
  * Meta-only prep, end to end, with the real Meta API and the same code the
  * routes use: image check (Spark + SAM) → scene (Muse Image) → face set
- * (Muse Image expressions + visemes, SAM drift check). No fal, Kling, Peter
- * or ElevenLabs. Writes the face set to <outDir>: neutral/blink/smile/warm and
+ * (Muse Image expressions + visemes, SAM drift check). Writes the face set to <outDir>: neutral/blink/smile/warm and
  * the visemes as image files + manifest.json (file names instead of URLs, plus
  * timings). Costs 14–30 Muse Image edits. One pass, then exit.
  *
@@ -33,7 +32,6 @@ const t0 = performance.now();
 const at = () => `${((performance.now() - t0) / 1000).toFixed(1).padStart(6)} s`;
 const d: PrepDeps = {
   metaKey,
-  falKey: null,
   store: new FileStore(dataDir),
   voices: DEVICE_VOICES,
   log: (e, data) => {

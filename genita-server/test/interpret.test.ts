@@ -28,7 +28,6 @@ const config: Config = {
   speculateStableMs: 250,
   // #157: these interpretation tests exercise server-voice frames
   serverTts: true,
-  kling: false,
 };
 
 class FakeAsr extends EventEmitter {

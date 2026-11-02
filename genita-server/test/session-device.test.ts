@@ -17,7 +17,6 @@ import { speechLang } from "../src/text/language.ts";
 const config: Config = {
   metaKey: "x",
   serverTts: false,
-  kling: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,

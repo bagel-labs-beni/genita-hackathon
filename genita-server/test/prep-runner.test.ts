@@ -4,25 +4,28 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileStore, type CompanionRecord } from "../src/prep/store.ts";
-import { MAX_PREP_ATTEMPTS, PrepRunner, emotionVideos, newPrepState, prepProgress, prepView } from "../src/prep/runner.ts";
+import { MAX_PREP_ATTEMPTS, PrepRunner, newPrepState, prepProgress, prepView } from "../src/prep/runner.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 import { FACE_KEYS, faceEditPrompt } from "../src/prep/face.ts";
 import { SCENE_PROMPT } from "../src/prep/prompts.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import { fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
 
-test("progress (GENITA_KLING=1) counts scene + 3 clips + lips, and drops a `todo` lips step", () => {
-  const p = newPrepState({ kling: true });
-  assert.deepEqual(prepProgress(p), { done: 0, total: 5 });
-  p.steps.scene = { status: "done", attempts: 1, url: "s" };
-  p.steps.videos.neutral = { status: "done", attempts: 1, url: "n" };
-  p.steps.lips = { status: "todo", attempts: 1 };
-  assert.deepEqual(prepProgress(p), { done: 2, total: 4 });
-  assert.deepEqual(emotionVideos(p), { neutral: "n" });
+test("progress ignores legacy video and lip steps, and views never expose their URLs", () => {
+  const p = newPrepState();
+  assert.deepEqual(prepProgress(p), { done: 0, total: 14 });
+  p.steps.scene = { status: "done", attempts: 1, url: "/v1/companion/face/neutral" };
+  p.steps.videos.neutral = { status: "done", attempts: 1, url: "https://retired.test/n.mp4" };
+  p.steps.lips = { status: "done", attempts: 1, url: "https://retired.test/lips" };
+  assert.deepEqual(prepProgress(p), { done: 1, total: 14 });
+  const view = prepView({ ...companion(), prep: p });
+  assert.deepEqual(view.emotionVideos, {});
+  assert.deepEqual(view.lips, { status: "skipped", detail: null, url: null, ms: null });
+  for (const step of Object.values(view.steps.videos)) assert.deepEqual(step, { status: "skipped", ms: null });
 });
 
 function companion(): CompanionRecord {
-  return { id: "c1", userId: "u1", imageId: "img1", type: "human", voiceId: "v", name: "Mira", createdAt: new Date().toISOString(), prep: newPrepState({ kling: true }) };
+  return { id: "c1", userId: "u1", imageId: "img1", type: "human", voiceId: "v", name: "Mira", createdAt: new Date().toISOString(), prep: newPrepState() };
 }
 
 test("file store: patchCompanion serializes writers so prep and persona do not clobber each other", async () => {
@@ -51,7 +54,7 @@ test("runner stops at the attempt cap and marks the companion failed (S09-PF)", 
     const store = new FileStore(dir);
     await store.putCompanion(companion());
     const logs: string[] = [];
-    const d: PrepDeps = { metaKey: "k", falKey: "fal-test", store, voices: [], log: (e) => logs.push(e), kling: true };
+    const d: PrepDeps = { metaKey: "k", store, voices: [], log: (e) => logs.push(e) };
     const runner = new PrepRunner(d);
     let failed = false;
     runner.events.on("prep.failed", () => (failed = true));
@@ -72,8 +75,8 @@ test("resumeAll picks up only companions still running", async () => {
   try {
     const store = new FileStore(dir);
     await store.putCompanion(companion());
-    await store.putCompanion({ ...companion(), id: "c2", userId: "u2", prep: { ...newPrepState({ kling: true }), status: "ready" } });
-    const d: PrepDeps = { metaKey: "k", falKey: null, store, voices: [], log: () => {}, kling: true };
+    await store.putCompanion({ ...companion(), id: "c2", userId: "u2", prep: { ...newPrepState(), status: "ready" } });
+    const d: PrepDeps = { metaKey: "k", store, voices: [], log: () => {} };
     const runner = new PrepRunner(d);
     assert.equal(await runner.resumeAll(), 1);
     await runner.run("u1");
@@ -82,14 +85,14 @@ test("resumeAll picks up only companions still running", async () => {
   }
 });
 
-test("Meta-only runtime: no FAL_KEY and GENITA_KLING unset → scene + face set, clips and lips skipped, ready (no failure)", async () => {
+test("Meta-only runtime: scene + face set, clips and lips skipped, ready (no failure)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-only-"));
   try {
     const store = new FileStore(dir);
     await store.putImage({ ...imageRec(), id: "img1" }, fakePng(800, 1000, "upload"));
     await store.putCompanion({ ...companion(), prep: newPrepState() });
     const { media } = fakeMedia({ keyOf: (p) => (p === SCENE_PROMPT.human ? "scene" : FACE_KEYS.find((k) => faceEditPrompt(k, "human", false) === p) ?? "x") });
-    const d: PrepDeps = { metaKey: "k", falKey: null, store, voices: [], log: () => {}, media };
+    const d: PrepDeps = { metaKey: "k", store, voices: [], log: () => {}, media };
     const runner = new PrepRunner(d);
     let ready = false;
     runner.events.on("prep.ready", () => (ready = true));

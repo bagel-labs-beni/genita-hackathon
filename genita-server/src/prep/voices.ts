@@ -25,8 +25,8 @@ export const DEFAULT_VOICES: VoiceOption[] = [
 ];
 
 /**
- * Server TTS off (GENITA_SERVER_TTS unset, the default): the device speaks with
- * its own system voices, so V04 lists descriptors, not ElevenLabs ids. Same
+ * Meta voice service unset (the default): the device speaks with
+ * its own system voices, so V04 lists device descriptors. Same
  * four cards (names, blurbs, order); the app maps each to the best installed
  * voice for `locale` + `gender` (Premium/Enhanced first) and previews locally.
  */

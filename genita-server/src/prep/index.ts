@@ -1,4 +1,4 @@
-/** Onboarding prep: Meta scene → face set, with optional clip generation until #158 integration. */
+/** Onboarding prep: Meta scene → face set. */
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
@@ -14,11 +14,9 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
   const deps: PrepDeps = {
     metaKey: config.metaKey,
     voice: config.voice,
-    falKey: config.kling ? env.FAL_KEY || null : null,
     store: store ?? new FileStore(env.GENITA_DATA_DIR || join(homedir(), ".genita-data")),
     voices: config.serverTts ? voicesFromEnv(env.GENITA_VOICES) : DEVICE_VOICES,
     log,
-    kling: config.kling,
   };
   const runner = new PrepRunner(deps);
   void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));

@@ -11,7 +11,6 @@
  */
 import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
@@ -19,21 +18,15 @@ import type { CompanionKind, PrepEmotion } from "./prompts.ts";
 import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-/** `skipped` = not part of this pipeline (Kling clips and lips when GENITA_KLING is off) */
+/** `skipped` = a legacy video/lip step outside the Meta pipeline */
 export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
   error?: string;
   ms?: number;
-  fal?: FalRequest;
   url?: string;
   source?: string;
-  /** lips: remote bake job id (Modal FunctionCall), saved before polling */
-  callId?: string;
-  avatarId?: string;
-  bundleId?: string;
-  nBase?: number;
   /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
   face?: FaceState;
 };
@@ -47,7 +40,7 @@ export type PrepState = {
     videos: Record<PrepEmotion, Step>;
     /** Legacy lip step retained for persisted records. */
     lips: Step;
-    /** Meta-only face set (expressions + visemes); absent on the Kling pipeline */
+    /** Meta-only face set (expressions + visemes); absent on older persisted records */
     face?: Step;
   };
   startedAt: string;

@@ -65,12 +65,12 @@ export function userIdOf(req: IncomingMessage): string {
 
 const FACE_ASSETS = new Set<string>(["neutral", ...FACE_KEYS]);
 
-/** The Meta face set is animated on the device; clips may still supply an atlas. */
-function sessionLip(c: CompanionRecord, flags: { kling?: boolean }) {
-  return c.type !== "human" && flags.kling ? "atlas" : "none";
+/** All companion kinds animate the Meta face set on the device. */
+function sessionLip(_c: CompanionRecord): "none" {
+  return "none";
 }
 
-export function companionView(c: CompanionRecord, style: StyleCard | null, flags: { kling?: boolean } = {}) {
+export function companionView(c: CompanionRecord, style: StyleCard | null) {
   return {
     id: c.id,
     type: c.type,
@@ -83,7 +83,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null, flags
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c, flags) }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c) }
       : null,
   };
 }
@@ -196,18 +196,18 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voiceId: voice.id,
         name,
         createdAt: new Date().toISOString(),
-        prep: newPrepState({ kling: d.kling }),
+        prep: newPrepState(),
       };
       await d.store.putCompanion(c);
       d.log("voice.selected", { voice_id: voice.id });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 201, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "GET" && p === "/v1/companion") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      return send(res, 200, companionView(c, await d.store.getStyle(user), d));
+      return send(res, 200, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "GET" && p === "/v1/companion/prep") {
@@ -241,7 +241,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       const next = await savePrefs(d, c, b.depth, b.answers);
-      const v = companionView(next, await d.store.getStyle(user), d);
+      const v = companionView(next, await d.store.getStyle(user));
       return send(res, 200, { summary: next.persona!.summary, persona: next.persona!.card, rules: next.persona!.rules, session: v.session });
     }
 

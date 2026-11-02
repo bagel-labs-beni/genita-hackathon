@@ -1,7 +1,7 @@
 # genita-server
 
 Realtime conversation core: Muse Voice Transcribe → Muse Spark 1.3 → Meta SeamlessM4T v2 (or on-device speech), over one WebSocket per call. Protocol: [PROTOCOL.md](PROTOCOL.md). Ticket F0-L3 (#3).
-Onboarding prep (import, image check, clips, Meta voices, persona): [PREP_API.md](PREP_API.md). Uploads should be ≤1024 px JPEG.
+Onboarding prep (import, image check, scene and face set, Meta voices, persona): [PREP_API.md](PREP_API.md). Uploads should be ≤1024 px JPEG.
 
 ```sh
 cd genita-server && npm ci
@@ -21,7 +21,6 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (our GPU's Meta voice service; both required to enable server speech) ·
 `GENITA_VOICE_SPEAKERS` (`human:0,animal:0,character:0`) · `GENITA_VOICE_MODEL` (`seamless`, or Meta `mms`) ·
 `GENITA_VOICE_SPEED` (1) · `GENITA_VOICE_TIMEOUT_MS` (4000; failure falls back to device speech) ·
-`GENITA_KLING=1` (temporary fal/Kling clips pending #158; requires `FAL_KEY`) ·
 `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
 `GENITA_DEFAULT_VOICE_ID` (`seamless:0`) ·
 `GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
@@ -64,4 +63,4 @@ Tests use PGlite in memory; set `TEST_DATABASE_URL=postgres://…` to run them o
 
 Layout: `src/auth` (Apple sign-in, session JWT, /me), `src/db` (Postgres adapter + SQL migrations), `src/storage` (S3/file blobs, SigV4), `src/meta` (Meta APIs), `src/tts` (Meta voice service), `src/prompt` (persona → instructions, pure), `src/session` (turn machine + session), `src/lips` (visemes, lip source plan), `src/text` (sentence split, tags, language), `src/watch` (Mac screen share: memo, video sound, reactions, speaker chip — F5).
 
-ElevenLabs, Peter, MiniMax H3 and gpt-image-2 are not used. Kling/fal removal is tracked in #158; that temporary clip path remains disabled unless explicitly configured.
+ElevenLabs, Kling, fal, Peter, MiniMax H3 and gpt-image-2 are not used.

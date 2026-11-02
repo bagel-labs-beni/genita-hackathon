@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |

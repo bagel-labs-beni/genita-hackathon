@@ -8,17 +8,11 @@ test("config: only MODEL_API_KEY is required; device voice is the default", () =
   assert.equal(c.metaKey, "m");
   assert.equal(c.serverTts, false);
   assert.equal(c.voice, null);
-  assert.equal(c.kling, false);
   assert.equal(c.defaultVoiceId, "seamless:0");
 });
 
 test("config: missing MODEL_API_KEY throws", () => {
   assert.throws(() => loadConfig({}), /MODEL_API_KEY/);
-});
-
-test("config: GENITA_KLING=1 needs FAL_KEY until the Meta face pipeline replaces clips", () => {
-  assert.throws(() => loadConfig({ MODEL_API_KEY: "m", GENITA_KLING: "1" }), /FAL_KEY/);
-  assert.equal(loadConfig({ MODEL_API_KEY: "m", GENITA_KLING: "1", FAL_KEY: "f" }).kling, true);
 });
 
 test("server deps: without Meta voice, TTS refuses without any network request", async () => {
