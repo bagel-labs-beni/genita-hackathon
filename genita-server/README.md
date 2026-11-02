@@ -8,18 +8,18 @@ cd genita-server && npm ci
 npm test            # unit tests (node:test, no network)
 npm run typecheck   # tsc --noEmit
 npm start           # ws://127.0.0.1:8787/v1/session
-npm run smoke -- --turns=20   # real vendors: end-of-speech → first-audio + barge-in timing (needs ffmpeg)
+npm run smoke -- --turns=20   # real vendors: end-of-speech → first say (device, default) or first audio (--tts=server) + barge-in timing (needs ffmpeg)
 npm run check:meta  # one live call each: Spark JSON, SAM 3.1, files, Muse Image
 npm run db:migrate  # apply migrations to DATABASE_URL (`-- down [n|all]` rolls back)
 ```
 
 Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA_ENV_FILE` is loaded):
-`MODEL_API_KEY`, `ELEVENLABS_API_KEY` (required) · `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
+`MODEL_API_KEY` (the only required key) · flags, all off by default — `GENITA_SERVER_TTS=1` (ElevenLabs voice, needs `ELEVENLABS_API_KEY`; off = device voice mode, the app speaks `say` text), `GENITA_KLING=1` (fal/Kling in prep, needs `FAL_KEY`), `GENITA_PETER=1` (Peter, needs `GENITA_PETER_URL` + `GENITA_PETER_TOKEN`) · `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
 `GENITA_TTS_MODEL` (eleven_v4_turbo) · `GENITA_TTS_FALLBACK_MODEL` (eleven_v3) · `GENITA_DEFAULT_VOICE_ID` ·
 `GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250) ·
-`GENITA_PETER_URL` + `GENITA_PETER_TOKEN` (Peter worker wss URL and WORKER_TOKEN; unset = Peter not deployed).
+`GENITA_PETER_URL` + `GENITA_PETER_TOKEN` (Peter worker wss URL and WORKER_TOKEN; read only with `GENITA_PETER=1`).
 
 Swift types: `shared/GenitaKit` (`shared/GenitaKit/test.sh` runs its tests, also with Command Line Tools only).
 

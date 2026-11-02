@@ -5,8 +5,14 @@
  */
 export type Config = {
   metaKey: string;
-  /** "" = server-side TTS off (text-only replies) */
-  elevenKey: string;
+  /** ElevenLabs key; read only when serverTts is on, else null */
+  elevenKey: string | null;
+  /** GENITA_SERVER_TTS=1: ElevenLabs streaming + voice previews. Off = the app speaks (`say`, device mode) */
+  serverTts: boolean;
+  /** GENITA_KLING=1: fal (gpt-image-2 scene fallback, Kling clips) in prep; needs FAL_KEY */
+  kling: boolean;
+  /** GENITA_PETER=1: Peter live worker (GENITA_PETER_URL/TOKEN) + Peter prepare */
+  peter: boolean;
   host: string;
   port: number;
   /** shared bearer token apps must present; unset = loopback-only dev mode */
@@ -34,15 +40,30 @@ function num(v: string | undefined, d: number): number {
   return v !== undefined && v !== "" && Number.isFinite(n) ? n : d;
 }
 
+const flag = (v: string | undefined) => v === "1";
+
+/**
+ * Only MODEL_API_KEY is required (11/2: everything at call time is Meta or on
+ * the device). Each non-Meta vendor sits behind a flag that is off by default;
+ * its key is read and required only when its flag is on.
+ */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
-  const elevenKey = env.ELEVENLABS_API_KEY ?? "";
   if (!metaKey) throw new Error("MODEL_API_KEY is not set");
-  // ELEVENLABS_API_KEY is optional (11/2: runtime AI is Meta-only, the app speaks on-device):
-  // without it the server streams reply text (reply.delta / reply) and sends no TTS audio.
+  const serverTts = flag(env.GENITA_SERVER_TTS);
+  const kling = flag(env.GENITA_KLING);
+  const peter = flag(env.GENITA_PETER);
+  const elevenKey = serverTts ? env.ELEVENLABS_API_KEY || null : null;
+  if (serverTts && !elevenKey) throw new Error("GENITA_SERVER_TTS=1 needs ELEVENLABS_API_KEY");
+  if (kling && !env.FAL_KEY) throw new Error("GENITA_KLING=1 needs FAL_KEY");
+  if (peter && !env.GENITA_PETER_URL) throw new Error("GENITA_PETER=1 needs GENITA_PETER_URL");
+  if (peter && !env.GENITA_PETER_TOKEN) throw new Error("GENITA_PETER=1 needs GENITA_PETER_TOKEN");
   return {
     metaKey,
     elevenKey,
+    serverTts,
+    kling,
+    peter,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,

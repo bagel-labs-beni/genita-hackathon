@@ -1,6 +1,7 @@
 /**
  * One realtime conversation: app socket ↔ Muse Transcribe ↔ Muse Spark ↔
- * ElevenLabs. Turn-taking decisions live in turnMachine.ts (pure); this
+ * the app's on-device voice (`say`, device mode) or ElevenLabs (server mode,
+ * GENITA_SERVER_TTS=1). Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
 import type { Config } from "../config.ts";
@@ -11,11 +12,11 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { isMostlyHangul } from "../text/language.ts";
+import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
-import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
+import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason, type TtsMode } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -72,10 +73,13 @@ type Reply = {
   doneTimer: NodeJS.Timeout | null;
   /** this reply's audio is going to Peter */
   peter: boolean;
+  /** device mode: characters sent in `say` (drives the speaking estimate) */
+  chars: number;
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null };
+/** lang = the language the reply is written in (interpretation: the target) */
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; lang: string };
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent> };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
@@ -89,6 +93,14 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+const DEVICE_MS_PER_CHAR = 70;
+const DEVICE_SLACK_MS = 1500;
+const DEVICE_MAX_MS = 60_000;
+
+/** Device mode: how long the app should take to speak `chars` characters, if it never sends playback_done. */
+export function deviceSpeechEstimateMs(chars: number): number {
+  return Math.min(DEVICE_MAX_MS, chars * DEVICE_MS_PER_CHAR + DEVICE_SLACK_MS);
+}
 
 function str(v: unknown, max = 4000): string | undefined {
   return typeof v === "string" ? v.slice(0, max) : undefined;
@@ -126,6 +138,7 @@ export class Session {
   private language = "English";
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
+  private tts: TtsMode = "device";
   /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
   private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
@@ -240,6 +253,10 @@ export class Session {
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
     this.peterAvatarId = typeof lip.avatarId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(lip.avatarId) ? lip.avatarId : undefined;
     this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
+    // Server TTS runs only when the server has it on; then the app may still ask for device speech.
+    this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
+    // Device speech: no server audio to sync, so no mouth cues and no Peter; the device makes its own.
+    if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
@@ -261,6 +278,7 @@ export class Session {
       lip: this.lip,
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
+      tts: this.tts,
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
@@ -431,6 +449,7 @@ export class Session {
       return {
         interpret,
         detected: this.mode === "chat" ? { from, to } : null,
+        lang: to,
         req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
       };
     }
@@ -453,6 +472,7 @@ export class Session {
     return {
       interpret,
       detected: null,
+      lang: this.language,
       req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
     };
   }
@@ -497,7 +517,8 @@ export class Session {
   }
 
   private async runReply(text: string, utteranceId: number): Promise<void> {
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0 };
+    const device = this.tts === "device";
     this.reply = reply;
     const signal = reply.abort.signal;
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
@@ -526,7 +547,7 @@ export class Session {
       }
     }
     built ??= this.buildRequest(text);
-    const { req, interpret } = built;
+    const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!interpret) this.remember("user", text);
 
@@ -607,6 +628,23 @@ export class Session {
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
       const s = sentences[i];
+      if (device) {
+        // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
+        reply.spoken.push(s.display);
+        if (!s.display) continue;
+        if (reply.firstAudioAt === null) {
+          reply.firstAudioAt = this.now();
+          m.firstAudioAt = reply.firstAudioAt;
+          this.dispatch({ type: "first_audio", utteranceId });
+        }
+        if (s.emotion !== sentEmotion) {
+          sentEmotion = s.emotion;
+          this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
+        }
+        this.client.sendJson({ type: "say", utteranceId, sentence: i, text: s.display, emotion: s.emotion ?? "neutral", lang: speechLang(s.display, lang) });
+        reply.chars += s.display.length;
+        continue;
+      }
       if (ttsFailed) {
         reply.spoken.push(s.display);
         continue;
@@ -675,6 +713,10 @@ export class Session {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
+    if (device) {
+      ttsModelUsed = "device";
+      reply.audioMs = reply.firstAudioAt === null ? 0 : deviceSpeechEstimateMs(reply.chars);
+    }
     const full = reply.spoken.join(" ").trim();
     if (full && !interpret) this.remember("assistant", full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
@@ -695,8 +737,9 @@ export class Session {
 
     // The app is still playing what we sent faster than real time; stay in
     // "speaking" (so barge-in still works) until playback should be over or
-    // the app says playback_done.
-    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + PLAYBACK_SLACK_MS;
+    // the app says playback_done. Device mode: audioMs is already the estimate
+    // (70 ms/char + 1.5 s, ≤ 60 s) counted from the first `say`.
+    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
   }
