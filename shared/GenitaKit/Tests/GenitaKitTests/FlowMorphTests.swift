@@ -114,6 +114,9 @@ struct FlowMorphTests {
         let loud = m.amounts(LipFrame(weights: [.A: 1], openness: 1))
         #expect(loud["A"] == nil && (loud["AH2"] ?? 0) > 0.9)
         #expect(!set.flow!.map.ladder.steps.contains { $0.key == "A" })
+        // Codex P2 check: a barely open A interpolates within the first segment only.
+        let tiny = m.amounts(LipFrame(weights: [.A: 1], openness: 0.001))
+        #expect((tiny["MID"] ?? 0) > 20 * (tiny["AH"] ?? 0))
     }
 
     @Test func amountsMoveAtMostASlewPerFrameButClosuresAreInstant() throws {
