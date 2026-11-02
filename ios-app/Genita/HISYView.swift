@@ -124,12 +124,15 @@ struct HISYView: View {
         let title = skip ? "From your three\nanswers, here’s\nmy first take." : "I read what\nyou shared.\nHere’s how\nI see you."
         let cardsLine = n == 0 ? "A few short cards." : "\(count) short card\(n == 1 ? "" : "s")."
         let sub = skip ? "\(cardsLine) I’ll learn the rest in our calls." : "\(cardsLine) If one is off, tell me."
-        let titleLines: CGFloat = skip ? 3 : 4
-        HISYTitle(text: title).frame(width: w - 62, alignment: .leading).position(x: 31 + (w - 62) / 2, y: 106 + top + titleLines * 39 / 2)
-            .accessibilityIdentifier("hisyOpener")
-        Text(model.storyLoading && n == 0 ? "Putting it into words…" : sub).hisyBody(16, line: 24, color: HISYInk.mute)
-            .frame(width: w - 62, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            .position(x: 31 + (w - 62) / 2, y: 106 + titleLines * 39 + 8 + top + 12)
+        // title + subline stacked from y 106 (8 pt apart): a narrow screen that wraps the title pushes the subline down
+        VStack(alignment: .leading, spacing: 8) {
+            HISYTitle(text: title).accessibilityIdentifier("hisyOpener")
+            Text(model.storyLoading && n == 0 ? "Putting it into words…" : sub).hisyBody(16, line: 24, color: HISYInk.mute)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: w - 62, alignment: .leading)
+        .padding(.leading, 31).padding(.top, 106 + top)
+        .frame(width: w, height: h, alignment: .topLeading)
         HISYGlobe().position(x: w / 2, y: 339 + top + 321 / 2 + (h - 844) / 2)
         HISYPrimary(title: "Show me", busy: n == 0 && model.serverWired && !model.storyFailed, id: "hisyShowMe") { go(n == 0 ? facePage : 1) }
             .position(x: w / 2, y: h - 140 + 25)
@@ -141,10 +144,14 @@ struct HISYView: View {
     // MARK: HISY-7
 
     @ViewBuilder private func face(width w: CGFloat, height h: CGFloat, top: CGFloat) -> some View {
-        HISYTitle(text: "Now give me\na face.").frame(width: w - 62, alignment: .leading).position(x: 31 + (w - 62) / 2, y: 106 + top + 39)
-            .accessibilityIdentifier("hisyFace")
-        Text("Choose a photo for how I’ll look on our calls.\nYou can change it later.").hisyBody(16, line: 24, color: HISYInk.mute)
-            .frame(width: w - 62, alignment: .leading).position(x: 31 + (w - 62) / 2, y: 192 + top + 24)
+        VStack(alignment: .leading, spacing: 8) {
+            HISYTitle(text: "Now give me\na face.").accessibilityIdentifier("hisyFace")
+            Text("Choose a photo for how I’ll look on our calls.\nYou can change it later.").hisyBody(16, line: 24, color: HISYInk.mute)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(width: w - 62, alignment: .leading)
+        .padding(.leading, 31).padding(.top, 106 + top)
+        .frame(width: w, height: h, alignment: .topLeading)
         HISYGlobe().position(x: w / 2, y: 312 + top + 321 / 2 + (h - 844) / 2)
         HISYPrimary(title: "Choose a photo", id: "hisyChoosePhoto") { model.go(.image) }.position(x: w / 2, y: h - 140 + 25)
         HISYTextButton(title: "Back to the cards", id: "hisyBackToCards") { go(cards.isEmpty ? 0 : cards.count) }
@@ -202,8 +209,10 @@ struct HISYTitle: View {
     let text: String
     var size: CGFloat = 35
     var line: CGFloat = 39
+    /// Dynamic Type: the title grows with the text size like the old `.largeTitle`-relative serif (1 at the default size)
+    @ScaledMetric(relativeTo: .largeTitle) private var scale: CGFloat = 1
     var body: some View {
-        HISYSerifText(text: text, size: size, line: line).padding(.vertical, -HISYSerifText.overflow)
+        HISYSerifText(text: text, size: size * scale, line: line * scale).padding(.vertical, -HISYSerifText.overflow)
     }
 }
 
