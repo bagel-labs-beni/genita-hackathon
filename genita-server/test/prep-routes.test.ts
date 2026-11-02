@@ -65,7 +65,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
 
   const created = await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id });
   assert.equal(created.status, 201);
-  assert.equal(created.json.name, "Mira"); // card name = companion name
+  assert.equal(created.json.name, "Leah"); // card name = companion name
   assert.equal(created.json.type, "human");
   assert.equal((await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[1].id })).status, 409);
   await runner.run("u1"); // fake input has no usable scene; route validation remains available
@@ -77,15 +77,23 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   // no Meta key → Spark fails → deterministic persona fallback still answers
   const prefs = await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } });
   assert.equal(prefs.status, 200);
-  assert.equal(prefs.json.persona.name, "Mira");
+  assert.equal(prefs.json.persona.name, "Leah");
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
+  // V04 save: PUT /v1/companion/voice changes the companion and the persona card, rejects ids outside the list
+  assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: "nope" })).json.error, "unknown_voice");
+  assert.equal((await call("PUT", "/v1/companion/voice", { voiceId: DEFAULT_VOICES[2].id }, "nobody")).json.error, "no_companion");
+  const picked = await call("PUT", "/v1/companion/voice", { voiceId: DEFAULT_VOICES[2].id });
+  assert.equal(picked.status, 200);
+  assert.equal(picked.json.voiceId, DEFAULT_VOICES[2].id);
+  assert.equal((await call("GET", "/v1/companion")).json.session.voiceId, DEFAULT_VOICES[2].id);
+  assert.equal(((await store.getCompanion("u1"))!.persona!.card as any).voice.id, DEFAULT_VOICES[2].id);
   // Human face sets animate on the device.
   assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
-  assert.equal(after.json.persona.card.name, "Mira");
+  assert.equal(after.json.persona.card.name, "Leah");
   assert.equal(after.json.prep.status, "failed");
 });
 

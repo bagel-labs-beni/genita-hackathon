@@ -23,9 +23,37 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_VOICE_SPEED` (1) · `GENITA_VOICE_TIMEOUT_MS` (4000; failure falls back to device speech) ·
 `HOST`/`PORT` · `GENITA_SESSION_TOKEN` (shared dev token; required off loopback unless accounts are on) ·
 `GENITA_DEFAULT_VOICE_ID` (`seamless:0`) ·
-`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
+`GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_APP_CONFIG_FILE` (JSON overrides for `GET /v1/app-config`, PROTOCOL.md) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
+`GENITA_VOICE_MAX_CALLS` (3; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 3) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250).
+
+D46 operational controls (SSM env changes take effect after a server restart):
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `GENITA_PAUSED` | `0` | `1` rejects generation REST with `503 {"error":"paused"}` and new call WebSockets with `503 Paused`. Config is checked at admission; running calls, health, status, saved Finds, auth and account deletion keep working. |
+| `GENITA_PAUSE_FILE` | unset | While this file exists, the same pause applies **without a restart** (checked every 5 s; running calls keep going). On AWS e.g. `/var/lib/genita/PAUSED`: `touch` to pause, `rm` to resume. |
+| `GENITA_META_DAILY_CALLS` | `20000` | Global outbound Meta requests per UTC day, including retries, streaming requests, file uploads and each Transcribe socket open. |
+| `GENITA_META_DAILY_IMAGES` | `600` | Muse Image generations/edits per UTC day, also counted as Meta calls. |
+| `GENITA_USER_DAILY_TURNS` | `300` | Accepted final user turns per UTC day across sessions; shared dev sessions without an explicit user are exempt. |
+
+A cap of `0` or less is unlimited. REST admission returns `429 {"error":"limit_reached","limit":"meta_calls"}`
+(or `meta_images` for an image route); every outbound Meta request is checked again
+before sending. Failed vendor requests still count. Global counters and the no-DB
+user counters live in memory on the single EC2 host: **a restart resets them**
+(accepted worst case: one extra day's budget). User turns are admitted from memory
+without waiting on the database; with accounts enabled each accepted turn is also
+written to `usage_daily` (UTC date) in the background and the stored total flows back,
+so a restart allows at most one extra turn. A DB error is logged (`ops.turn_error`)
+and the in-memory count still enforces the cap. Session caps use the existing `spark_unavailable` code
+with `retryable:false`. Chat speculation checks available turns first; interpreter
+speculation is disabled for capped users so partial transcripts do not spend turns.
+CloudWatch events: `ops.paused` once per kind/minute, `limit.reached` once per
+limit/day, and nonzero `ops.usage` at most once per 10 minutes when requests occur.
+The pause switch blocks new work at admission; background prep already started
+and calls already running finish subject to the budgets. A paused restart leaves
+persisted prep jobs queued; they resume on the next unpaused restart.
 
 Swift types: `shared/GenitaKit` (`shared/GenitaKit/test.sh` runs its tests, also with Command Line Tools only).
 
