@@ -107,7 +107,7 @@ export class MemoryCall {
     const forgets = this.forgetsSeen;
     // Bounded: a slow store never holds the call start; no notes = the old behavior.
     const notes = this.service.sessionMemory
-      ? Promise.race([this.service.summaries(this.userId, this.threadId, SUMMARY_INJECT).catch(() => []), new Promise<CallSummary[]>((r) => setTimeout(() => r([]), SUMMARY_LOAD_MS).unref?.())])
+      ? within(this.service.summaries(this.userId, this.threadId, SUMMARY_INJECT), SUMMARY_LOAD_MS, [] as CallSummary[])
       : Promise.resolve([]);
     let state;
     try { state = await this.service.state.getState(this.userId); } catch (err) { this.markKnown(); throw err; }
