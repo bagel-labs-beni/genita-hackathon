@@ -124,6 +124,11 @@ import XCTest
         XCTAssertEqual(CameraBoxes.labelOffsetY(normal, topInset: 120), -32)
     }
 
+    func testBoxEndingAboveTheStatusAreaIsNotDrawn() {
+        XCTAssertTrue(CameraBoxes.aboveView(CGRect(x: 0, y: -40, width: 60, height: 70), topInset: 120))
+        XCTAssertFalse(CameraBoxes.aboveView(CGRect(x: 0, y: 60, width: 60, height: 120), topInset: 120))
+    }
+
     func testBoxesUnderTheNoSeeCardAreHidden() {
         let card = CGRect(x: 24, y: 124, width: 220, height: 140)
         XCTAssertTrue(CameraBoxes.hidden(CGRect(x: 40, y: 200, width: 50, height: 50), avoiding: card))

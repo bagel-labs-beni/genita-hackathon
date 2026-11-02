@@ -96,6 +96,9 @@ struct LiveBox: Identifiable, Equatable {
         return max(y, topInset - rect.minY)
     }
 
+    /// A box that ends above the status/menu area has nothing to show (its label would float over the menu button).
+    static func aboveView(_ rect: CGRect, topInset: CGFloat) -> Bool { rect.maxY <= topInset }
+
     /// FT-NOSEE: a box (with its label) under the card is not drawn, so the card stays readable.
     static func hidden(_ rect: CGRect, avoiding card: CGRect?) -> Bool {
         guard let card else { return false }

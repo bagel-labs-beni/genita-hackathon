@@ -65,7 +65,7 @@ struct CameraBoxOverlay: View {
                 ForEach(boxes.boxes) { item in
                     let rect = CameraBoxes.rect(item.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)
                     // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
-                    if !CameraBoxes.hidden(rect, avoiding: avoid) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
+                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
                            dimmed: boxes.highlighted != nil && boxes.highlighted != item.id) }
                 }
             }
