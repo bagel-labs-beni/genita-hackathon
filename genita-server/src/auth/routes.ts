@@ -72,6 +72,19 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
 
 const str = (v: unknown, max = 8192) => (typeof v === "string" && v.length <= max ? v : "");
 
+/**
+ * The id_token Apple returns from /auth/token came straight from Apple over TLS, so its
+ * payload is trusted without a JWKS check; only its subject is compared to the signed-in user.
+ */
+export function sameAppleSub(idToken: string, sub: string): boolean {
+  try {
+    const p = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8")) as { sub?: unknown };
+    return typeof p.sub === "string" && p.sub === sub;
+  } catch {
+    return false;
+  }
+}
+
 /** Signed, expiring state for the Mac web flow: carries the PKCE challenge and the nonce seed. */
 export function signState(secret: string, p: { c: string; d: Device; n: string; x: number }): string {
   const body = b64url(JSON.stringify(p));
@@ -159,7 +172,8 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const code = str(b.authorizationCode, 2048);
       if (code && apple.canExchange) {
         const t = await apple.exchangeCode(code, apple.cfg.bundleId).catch(() => null);
-        if (t?.refreshToken) await accounts.setAppleRefreshToken(user.id, t.refreshToken, apple.cfg.bundleId);
+        // the code must belong to the same Apple ID, or deleting this account would revoke someone else's
+        if (t?.refreshToken && sameAppleSub(t.idToken, id.sub)) await accounts.setAppleRefreshToken(user.id, t.refreshToken, apple.cfg.bundleId);
         else log("auth.apple_exchange_skipped", { reason: t ? "no_refresh_token" : "exchange_failed" });
       }
       return send(res, 200, await issue(user.id, device, isNew, "apple"));
@@ -203,7 +217,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const code = form.get("code");
       if (code && apple.canExchange) {
         const t = await apple.exchangeCode(code, apple.cfg.servicesId, core.callbackUrl).catch(() => null);
-        if (t?.refreshToken) await accounts.setAppleRefreshToken(user.id, t.refreshToken, apple.cfg.servicesId);
+        if (t?.refreshToken && sameAppleSub(t.idToken, id.sub)) await accounts.setAppleRefreshToken(user.id, t.refreshToken, apple.cfg.servicesId);
       }
       return back({ code: await accounts.createCode(user.id, st.d, st.c, isNew) });
     }

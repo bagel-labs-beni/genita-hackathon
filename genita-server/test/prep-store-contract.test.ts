@@ -1,7 +1,7 @@
 /** The same PrepStore contract on the JSON-file store and the Postgres store. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileStore, type CompanionRecord, type ImageRecord, type PrepStore } from "../src/prep/store.ts";
@@ -80,6 +80,21 @@ test("PrepStore contract: PgPrepStore (Postgres + blobs), emotions table follows
     assert.deepEqual(em.rows, [{ emotion: "happy", video_url: "https://cdn/h.mp4" }]);
     const job = await db.query("SELECT status, attempts FROM clip_jobs");
     assert.deepEqual(job.rows, [{ status: "running", attempts: 0 }]);
+  } finally {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("PgPrepStore: a photo whose DB row can't be written (account deleted mid-upload) leaves no blob", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-pg-orphan-"));
+  const db = await testDb();
+  try {
+    const ghost = "00000000-0000-0000-0000-00000000dead"; // no users row → FK fails
+    const store = new PgPrepStore(db, new FsBlobStore(dir));
+    const img = { id: "img_orphan", userId: ghost, mime: "image/jpeg", bytes: 4, check: { passed: true } as any, headBox: null as any, rightsAck: true, createdAt: "2026-11-02T00:00:00.000Z", ms: {} } as ImageRecord;
+    await assert.rejects(store.putImage(img, Buffer.from([1, 2, 3, 4])));
+    assert.equal(existsSync(join(dir, "users", ghost, "images", "img_orphan")), false, "blob removed when the row fails");
   } finally {
     await db.close();
     rmSync(dir, { recursive: true, force: true });

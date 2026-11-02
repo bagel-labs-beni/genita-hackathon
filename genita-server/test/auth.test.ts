@@ -35,7 +35,7 @@ const nullable = (live: unknown, ref: unknown): boolean => {
 
 const SHARED = "shared-dev-token-0123456789";
 
-async function boot(t: import("node:test").TestContext) {
+async function boot(t: import("node:test").TestContext, over: Partial<ReturnType<typeof loadConfig>> = {}) {
   const apple = fakeApple();
   const realFetch = globalThis.fetch;
   globalThis.fetch = apple.fetch;
@@ -47,7 +47,7 @@ async function boot(t: import("node:test").TestContext) {
     GENITA_AUTH_RATE_PER_MIN: "1000",
     ...apple.env,
   };
-  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED };
+  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED, ...over };
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => events.push({ event, data });
   const accounts = (await createAccounts(env, log, { loopback: true, db: await testDb(false) }))!;
@@ -86,7 +86,7 @@ async function boot(t: import("node:test").TestContext) {
       ws.on("close", (code) => resolve({ code, opened }));
       ws.on("error", () => {});
     });
-  return { apple, env, call, wsClose, events, dir, accounts };
+  return { apple, env, call, wsClose, events, dir, accounts, base };
 }
 
 test("Apple identity tokens: forged, expired, other audience, bad nonce, alg confusion → rejected", async () => {
@@ -133,6 +133,9 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   assert.equal((await wsClose("x.y.z")).code, 4401, "WS with a bad JWT closes 4401");
 
   // ── F1-L2 iPhone native ──
+  apple.codeFor("c-1", "001234.abcd.0001");
+  apple.codeFor("c-2", "001234.abcd.0001");
+  apple.codeFor("c-3", "001234.abcd.0001");
   const nonce = randomBytes(16).toString("hex");
   const idToken = apple.idToken({ sub: "001234.abcd.0001", aud: "ai.thebeni.genita", nonce: apple.nonceHash(nonce), email: "chel@privaterelay.appleid.com" });
   const bad = await call("POST", "/auth/apple", { body: { identityToken: apple.idToken({ sub: "001234.abcd.0001", aud: "ai.thebeni.genita.other", nonce: apple.nonceHash(nonce) }), nonce } });
@@ -257,4 +260,57 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   const names = events.map((e) => e.event);
   for (const e of ["auth.signed_in", "auth.failed", "consent.accepted", "name.entered", "auth.logged_out", "account.deleted"]) assert.ok(names.includes(e), `logged ${e}`);
   assert.ok(!JSON.stringify(events).includes(token), "tokens never logged");
+});
+
+test("Apple code from another Apple ID: its refresh token is not stored, so deleting this account revokes nothing of theirs", async (t) => {
+  const { apple, call } = await boot(t);
+  apple.codeFor("code-of-b", "001.apple.b");
+  const nonce = randomBytes(16).toString("hex");
+  const a = await call("POST", "/auth/apple", { body: { identityToken: apple.idToken({ sub: "001.apple.a", aud: "ai.thebeni.genita", nonce: apple.nonceHash(nonce) }), nonce, authorizationCode: "code-of-b" } });
+  assert.equal(a.status, 200);
+  await call("POST", "/me/consent", { token: a.json.token, body: {} });
+  const del = await call("DELETE", "/me", { token: a.json.token });
+  assert.equal(del.json.appleRevoked, null, "no stored Apple link to revoke");
+  assert.ok(!apple.requests.some((r) => r.url.endsWith("/auth/revoke")), "B's Apple authorization is never revoked");
+});
+
+test("WS: a garbage frame on a 4401-closing socket does not crash the server", async (t) => {
+  const { call, base } = await boot(t);
+  const net = await import("node:net");
+  const { port } = new URL(base);
+  const sock = net.connect(Number(port), "127.0.0.1");
+  await new Promise<void>((r) => sock.once("connect", () => r()));
+  sock.write(`GET /v1/session HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`);
+  await new Promise<void>((r) => sock.once("data", () => r())); // 101, then the server starts the 4401 close
+  sock.write(Buffer.from([0x83, 0x80, 0, 0, 0, 0])); // masked frame with reserved opcode 3 → ws emits 'error'
+  await new Promise((r) => setTimeout(r, 100));
+  sock.destroy();
+  assert.equal((await call("GET", "/healthz")).status, 200, "server still up");
+});
+
+test("WS: the session cap holds when several upgrades finish auth at the same time", async (t) => {
+  const { base, apple, call, accounts } = await boot(t, { maxSessions: 1 });
+  const tokens: string[] = [];
+  for (const sub of ["cap.1", "cap.2", "cap.3"]) {
+    const nonce = randomBytes(16).toString("hex");
+    const r = await call("POST", "/auth/apple", { body: { identityToken: apple.idToken({ sub, aud: "ai.thebeni.genita", nonce: apple.nonceHash(nonce) }), nonce } });
+    await call("POST", "/me/consent", { token: r.json.token, body: {} });
+    tokens.push(r.json.token);
+  }
+  // a slow token check (DB under load) keeps all three upgrades in flight past the first cap check
+  const verify = accounts.verifyToken.bind(accounts);
+  accounts.verifyToken = async (tok) => (await new Promise((r) => setTimeout(r, 150)), verify(tok));
+  const url = base.replace("http", "ws") + "/v1/session";
+  const sockets: WebSocket[] = [];
+  const open = (token: string) =>
+    new Promise<boolean>((resolve) => {
+      const ws = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } });
+      sockets.push(ws);
+      ws.on("open", () => resolve(true));
+      ws.on("unexpected-response", (_q, res) => { res.resume(); resolve(false); });
+      ws.on("error", () => resolve(false));
+    });
+  const results = await Promise.all(tokens.map(open));
+  for (const ws of sockets) ws.terminate();
+  assert.equal(results.filter(Boolean).length, 1, `one session at maxSessions=1, got ${results.join(",")}`);
 });
