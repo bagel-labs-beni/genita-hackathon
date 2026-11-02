@@ -10,7 +10,7 @@ import { STORY_IDS, STORY_SCHEMA, buildStoryRequest, cardTexts, storyTextProblem
 import { mergeUpdates } from "../src/personalize/merge.ts";
 import { ASK_CALLS, askLine, beginCall, replyAsks } from "../src/personalize/unknowns.ts";
 import { mightBeCorrection, toAnswer, toCorrectionUpdates, buildCorrectionRequest } from "../src/personalize/corrections.ts";
-import { toCallUpdates } from "../src/personalize/extract.ts";
+import { buildCallExtractRequest, toCallUpdates } from "../src/personalize/extract.ts";
 import { reasonChips, shortTaste, tasteLines } from "../src/personalize/reasons.ts";
 import type { FindCard } from "../src/protocol.ts";
 
@@ -495,4 +495,19 @@ test("Codex round 6: a boundary naming a condition is dropped; a sensitive Budge
   assert.equal(budgetChip("Budget: usually under $100 for clothes.", card(["$89", "Price unavailable"])), null);
   assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["$900"])), null);
   assert.equal(budgetChip("Budget: under ₩100000 for clothes.", card(["₩89,000"])), "Your budget: under ₩100000");
+});
+
+test("adaptive style (memory lane 11/3): how-to-talk-to-me phrasings the first prefilter missed reach the correction check", () => {
+  for (const s of ["Can you be more direct with me?", "Just get to the point please.", "Less detail, more answers.", "Skip the small talk today.", "Give it to me in one sentence.", "No more questions, just tell me.", "That's way too long for me."]) assert.ok(mightBeCorrection(s), s);
+  for (const s of ["Tell me more about Seoul.", "Can you be here at five?", "What's the point of this?", "One more thing about dinner."]) assert.ok(!mightBeCorrection(s), s);
+});
+
+test("adaptive style: the post-call growth prompt asks for lit-up topics and repeated reactions as observed lines (times ≥ 2)", () => {
+  const sk = skipStyleCard({ interests: ["Hiking"], avoid: [] });
+  assert.ok(sk.ok);
+  const req = buildCallExtractRequest((sk as { card: StyleCard }).card, [{ role: "user", text: "Tell me about trail running." }], null);
+  assert.match(req.instructions!, /lit up on/);
+  assert.match(req.instructions!, /label observed/);
+  assert.deepEqual(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 1 }], answered: { item: "", field: "", text: "" } }, null), [], "once is not a pattern");
+  assert.equal(toCallUpdates({ updates: [{ field: "interests", text: "Trail running.", replaces: [], label: "observed", times: 2 }], answered: { item: "", field: "", text: "" } }, null).length, 1);
 });
