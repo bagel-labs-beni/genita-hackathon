@@ -22,7 +22,7 @@ const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSear
 const pause = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
 async function waitFor(check: () => boolean, ms = 3000) { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("test timed out"); await pause(); } }
 const MAC_LINE = /move this call to their Mac/;
-const ASK = "I have no idea what to wear today. Peter, can you help me pick an outfit?";
+const ASK = "I have no idea what to wear today. Rio, can you help me pick an outfit?";
 
 function setup(macNearby?: () => boolean) {
   const requests: SparkRequest[] = [];
@@ -58,7 +58,7 @@ test("isOutfitAsk: the S4 phone line and 'what should I wear' count; cooking, sh
 test("iPhone call, Mac app open: an outfit ask gets the move-to-Mac line, once per call", async () => {
   const { deps, sink, requests, events } = setup(() => true);
   const s = new Session("p1", sink, deps);
-  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
   await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
   await waitFor(() => replies(events) >= 1);
   assert.match(requests.at(-1)!.instructions ?? "", MAC_LINE, "the companion is told to suggest the Mac");
@@ -76,7 +76,7 @@ test("no Mac, a Mac call, or a non-outfit question: no move-to-Mac line", async 
   ] as const) {
     const { deps, sink, requests, events } = setup(nearby);
     const s = new Session("p2", sink, deps);
-    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter" }, mic: false }));
+    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
     await s.onClientText(JSON.stringify({ type: "text", text }));
     await waitFor(() => replies(events) >= 1);
     assert.doesNotMatch(requests.at(-1)!.instructions ?? "", MAC_LINE, label);
@@ -88,7 +88,7 @@ test("camera still on (from the kitchen): the suggest turn starts no outfit card
   const { deps, sink, requests, events, vendors, findCalls } = setup(() => true);
   const { MemoryFindsStore } = await import("../src/finds/store.ts");
   const s = new Session("p3", sink, { ...deps, finds: { vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" } });
-  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
   await s.onClientText(JSON.stringify({ type: "text", text: ASK, frames: ["AAAA", "BBBB"] }));
   await waitFor(() => replies(events) >= 1);
   await new Promise((r) => setTimeout(r, 30));
@@ -133,7 +133,7 @@ test("server: the iPhone call hears about the account's open Mac app; the Mac's 
   });
   const ask = async (path: string, user?: string) => {
     const call = await open(path, user);
-    call.ws.send(JSON.stringify({ type: "start", persona: { name: "Peter" }, mic: false }));
+    call.ws.send(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
     await waitFor(() => call.json.some((m) => m.type === "ready"));
     const n = requests.length;
     call.ws.send(JSON.stringify({ type: "text", text: ASK }));
