@@ -37,13 +37,37 @@ export function isPrivateAddress(ip: string): boolean {
     );
   }
   if (v === 6) {
-    const s = ip.toLowerCase();
-    if (s === "::" || s === "::1") return true;
-    const mapped = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isPrivateAddress(mapped[1]);
-    return /^(fc|fd|fe[89ab]|ff)/.test(s) || s.startsWith("64:ff9b:") || s.startsWith("2001:db8");
+    const w = ipv6Words(ip);
+    if (!w) return true;
+    // ::/96 (incl. :: and ::1, IPv4-compatible), ::ffff:0:0/96 (IPv4-mapped, any spelling), 64:ff9b::/96 (NAT64)
+    const top5zero = w.slice(0, 5).every((x) => x === 0);
+    if ((top5zero && (w[5] === 0 || w[5] === 0xffff)) || (w[0] === 0x64 && w[1] === 0xff9b && w.slice(2, 6).every((x) => x === 0))) {
+      if (top5zero && w[5] === 0 && w[6] === 0 && w[7] <= 1) return true;
+      return isPrivateAddress(`${w[6] >> 8}.${w[6] & 255}.${w[7] >> 8}.${w[7] & 255}`);
+    }
+    if (w[0] === 0x2002) return isPrivateAddress(`${w[1] >> 8}.${w[1] & 255}.${w[2] >> 8}.${w[2] & 255}`); // 6to4
+    return (w[0] & 0xfe00) === 0xfc00 || (w[0] & 0xffc0) === 0xfe80 || (w[0] & 0xff00) === 0xff00 || (w[0] === 0x2001 && w[1] === 0x0db8) || w[0] === 0;
   }
   return true;
+}
+
+/** Eight 16-bit words of an IPv6 address (handles "::", embedded dotted IPv4, zone ids). */
+export function ipv6Words(ip: string): number[] | null {
+  let s = ip.toLowerCase().replace(/%.*$/, "");
+  const dotted = s.match(/(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const o = dotted[1].split(".").map(Number);
+    if (o.some((x) => x > 255)) return null;
+    s = s.slice(0, -dotted[1].length) + `${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const words = [...head, ...Array(fill).fill("0"), ...tail].map((h) => (/^[0-9a-f]{1,4}$/.test(h) ? Number.parseInt(h, 16) : NaN));
+  return words.length === 8 && words.every((x) => Number.isFinite(x)) ? words : null;
 }
 
 /** DNS lookup that refuses non-public answers (used by the socket itself). */
@@ -203,8 +227,10 @@ export function readPageFacts(html: string, base: string): PageFacts {
   const list = nodes.some((n) => typeOf(n).some((t) => /^(ItemList|CollectionPage|SearchResultsPage|OfferCatalog)$/.test(t)));
   const ogType = meta(html, "og:type")?.toLowerCase();
   const metaPrice = meta(html, "product:price:amount") ?? meta(html, "og:price:amount");
-  if (product || ogType === "product" || ogType === "og:product" || metaPrice) facts.kind = "product";
+  // a collection page often embeds Product nodes for its tiles: a list type wins unless the page itself says product
+  if (ogType === "product" || ogType === "og:product") facts.kind = "product";
   else if (list) facts.kind = "list";
+  else if (product || metaPrice) facts.kind = "product";
   facts.title = (typeof product?.name === "string" ? product.name : undefined) ?? meta(html, "og:title");
   const ldImage = product?.image;
   const firstImage = Array.isArray(ldImage) ? ldImage[0] : ldImage;
