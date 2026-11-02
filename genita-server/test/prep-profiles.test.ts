@@ -36,8 +36,20 @@ test("profile keys and prompts come from prep-py/profiles.json; humans keep the 
   assert.doesNotMatch(j2, /\{species\}/);
   assert.match(faceEditPrompt("J2", "animal", true, { profile: "animal", species: "dog" }), /same position and size in the frame\.$/);
   assert.equal(faceEditPrompt("blink", "animal", false, { profile: "animal", species: "dog" }), profilePrompt("animal", "BLINK", "dog"));
-  // a refused J3 retries with the cat lane's calm prompt; humans are unchanged
-  assert.equal(faceSoftPrompt("J3", "animal", { profile: "animal", species: "dog" }), profilePrompt("cat", "C2", "dog"));
+  // humans are unchanged
   assert.equal(faceEditPrompt("AH", "human", false, { profile: "human" }), faceEditPrompt("AH", "human", false));
   assert.throws(() => faceEditPrompt("J2", "animal", false), /no prompt for J2/);
+});
+
+test("codex round 3: a profile's blink / mouth-key retry keeps its own prompt and species; the plan is saved with the first state", async () => {
+  const blink = faceEditPrompt("blink", "animal", false, { profile: "animal", species: "dog" });
+  assert.equal(faceSoftPrompt("blink", "animal", { profile: "animal", species: "dog" }), blink);
+  assert.equal(faceSoftPrompt("J3", "animal", { profile: "animal", species: "dog" }), faceEditPrompt("J3", "animal", false, { profile: "animal", species: "dog" }));
+  const { makeFaceSet } = await import("../src/prep/face.ts");
+  const { fakeMedia, fakePng } = await import("./helpers/fakeMedia.ts");
+  const { media } = fakeMedia({ keyOf: () => "x" });
+  const refs: Array<{ keys?: string[]; profile?: string }> = [];
+  await makeFaceSet({ metaKey: "k", media, scene: fakePng(1000, 2000, "scene"), kind: "animal", size: "1024x1820", profile: "cat", species: "cat", onRef: async (s) => void refs.push({ keys: s.keys, profile: s.profile }) });
+  assert.equal(refs[0].profile, "cat");
+  assert.ok(refs[0].keys?.includes("C2") && !refs[0].keys?.includes("J2"));
 });

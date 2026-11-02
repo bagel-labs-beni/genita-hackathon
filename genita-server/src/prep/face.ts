@@ -212,9 +212,10 @@ const SOUND: Record<Viseme | (typeof MOUTH_KEYS)[number], string> = {
  * speech instead of a mouth shape: "caught mid-word saying 'ah'".
  */
 export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx = {}): string {
-  // profile keys: the lane's own fallback (cat: the C2 prompt), else the same prompt again
+  // profile keys (and a profile's blink): the lane's own prompt again, same species; its wording is already
+  // the filter-safe "talking / calm" one (codex P2: never swap a blink retry for a mouth prompt)
   if (isProfileKey(key) || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
-    return (ctx.profile === "animal" ? profilePrompt("cat", "C2", ctx.species) : null) ?? faceEditPrompt(key, kind, false, ctx);
+    return faceEditPrompt(key, kind, false, ctx);
   }
   const s = NOUN[kind];
   const { part, keep } = region(key, kind);
@@ -353,6 +354,11 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     const r = await sam(o.scene);
     if (!r.face || !r.mouth) throw new Error(`face set: face_not_found on the scene (${r.face ? "no mouth" : "no face"})`);
     state = { size: r.size, ref: { face: r.face, mouth: r.mouth }, items: {}, ms: { total: 0, edits: 0, sam: 0 } };
+    // the plan is saved with the first state, so progress counts the right total from the start (codex P3)
+    if (o.profile) {
+      state.profile = o.profile;
+      state.keys = [...faceKeysFor(o.kind, o.profile)];
+    }
     await o.onRef?.(state);
   }
   const ref = state.ref;

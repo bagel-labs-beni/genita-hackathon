@@ -74,13 +74,19 @@ def profiles():
         return {}
 
 
+def deep_merge(a, b):
+    """b over a; nested dicts merge key by key (codex P2: cat's `jaw` must keep animal's `floor`)."""
+    out = json.loads(json.dumps(a))
+    for k, v in b.items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else json.loads(json.dumps(v))
+    return out
+
+
 def profile_of(name):
     """Merged profile dict for human | animal | cat | character3d | character2d (cat = animal + cat_override)."""
     P = profiles()
     if name == 'cat':
-        out = json.loads(json.dumps(P.get('animal', {})))
-        out.update(json.loads(json.dumps(P.get('cat_override', {}))))
-        return out
+        return deep_merge(P.get('animal', {}), P.get('cat_override', {}))
     return json.loads(json.dumps(P.get(name, {})))
 
 
@@ -96,7 +102,7 @@ def lip_map(kind):
 # Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs Peter): same transform on every key and the neutral
 # ROI, so it never flickers. Lifts grey teeth inside the lip hull, pulls the lips toward the photo's pink.
 COLORFIX = {'human': (1.15, 0.88, 1.0)}
-LOWER_V = 0.85   # low-saturation lower-teeth / tongue film in the lower half of the opening
+LOWER_V = 1.0    # lower-half darkening (0.85) measured worse (critic v13 7.0 < v12 7.5): openings read bigger; off
 
 
 def colorfix(img, mouth_px, spec):
@@ -129,7 +135,7 @@ def colorfix(img, mouth_px, spec):
     if len(rows):
         mid = int((rows.min() + rows.max()) / 2)
         upper[:mid + 1] = 1
-    teeth = cv2.GaussianBlur(grey * upper, (0, 0), 0.8)
+    teeth = cv2.GaussianBlur(grey * (upper if LOWER_V < 1 else 1.0), (0, 0), 0.8)   # v12: lift the whole opening
     lower = cv2.GaussianBlur(grey * (1 - upper), (0, 0), 0.8)
     lips = cv2.GaussianBlur(lips, (0, 0), 1.5)
     hsv[..., 2] = np.clip(V_ * (1 + (tg - 1) * teeth) * (1 - (1 - LOWER_V) * lower) * (1 + (lv - 1) * lips), 0, 255)
