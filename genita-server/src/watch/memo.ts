@@ -117,7 +117,7 @@ export type QuestionContext = { instructions: string; images: string[] };
 export const NAMING_RULE =
   "If the user names someone on screen (\"oh, it's Karina!\"), react like a friend watching with them: use the name they gave and add one specific thing you can see on that person in the last image right now — what they're wearing, where they are, what they're doing. " +
   "Never say who anyone is from their face or looks, never confirm or deny it, and add no facts about a real person (group, age, news) that you didn't see or hear. " +
-  "If no person is visible in the last image, say you can't spot them right now.";
+  "If they name someone and no person is visible in the last image, say you can't spot them right now.";
 
 /**
  * Added to the companion's instructions when the user asks something while

@@ -556,9 +556,24 @@ test("realtime: a user line over the video's singing is answered without the 1.5
   asr.fire({ type: "partial", text: "and the night is young we dance until the morning comes" });
   const t0 = performance.now();
   assert.equal(await c.isEcho("Oh, it's Karina!"), false);
-  assert.ok(performance.now() - t0 < 100, "no wait for the video's line to finish");
-  // the video's own words in the mic are still dropped, also at once
+  const waited = performance.now() - t0;
+  assert.ok(waited < 500, `one partial's settle at most, not the 1.5 s line wait (${Math.round(waited)} ms)`);
+  // the video's own words in the mic are still dropped, at once
+  const t1 = performance.now();
   assert.equal(await c.isEcho("we dance until the morning"), true);
+  assert.ok(performance.now() - t1 < 50);
+});
+
+test("realtime: a partial that lags the mic catches up within one update and the echo is still dropped (Codex P2)", async () => {
+  const { c, asr } = controller([]);
+  c.onMessage({ type: "start", source: "YouTube" });
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "welcome everyone today we are making" });
+  setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce" }), 40);
+  assert.equal(await c.isEcho("pasta with tomato sauce"), true);
+  // a real user line over the same video: the next partial still doesn't match → theirs
+  setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce and basil" }), 40);
+  assert.equal(await c.isEcho("Oh, it's Karina!"), false);
 });
 
 test("realtime: a turn gets the newest frame last plus one ~2 s older, and the naming rule", () => {
@@ -574,6 +589,7 @@ test("realtime: a turn gets the newest frame last plus one ~2 s older, and the n
   assert.match(q.instructions, /use the name they gave/);
   assert.match(q.instructions, /Never say who anyone is from their face/);
   assert.match(q.instructions, /what they're wearing/);
+  assert.match(q.instructions, /If they name someone and no person is visible/, "only a naming turn looks for a person (Codex P2)");
 });
 
 test("realtime: the scene memo refreshes every 5 s while the screen changes (was 12 s)", async () => {

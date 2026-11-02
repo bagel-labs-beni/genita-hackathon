@@ -81,6 +81,8 @@ export const MEMO_EVERY_MS = 5_000;
 const MEMO_FRAMES = 3;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
+/** a partial that doesn't match the user's words gets this long to catch up before the turn counts as theirs */
+const ECHO_SETTLE_MS = 350;
 const BLANK_LINE = "<neutral> Hmm, that window shows up black to me. Some apps block screen capture, so I won't guess what's on it.";
 const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 /** Transcribe errors with "Ingress audio slower than real-time" when audio stops (11/2): pad silence */
@@ -300,6 +302,7 @@ export class WatchController {
       }
       case "partial":
         if (this.dialogueActive) this.openLine = e.text.slice(0, 400);
+        this.flushWaiters();
         return;
     }
   }
@@ -447,23 +450,37 @@ export class WatchController {
 
   /**
    * Is this "user turn" really the video's sound in the mic? If the video is
-   * mid-line, its partial transcript usually decides at once; only a partial
-   * too short to tell waits (≤1.5 s) for that line before deciding.
+   * mid-line, its partial transcript usually decides within one update
+   * (≤ 350 ms); only a partial too short to tell waits (≤ 1.5 s) for the line.
    */
   async isEcho(userText: string): Promise<boolean> {
     if (!this.sharing) return false;
     const recent = () => this.lines.filter((l) => this.deps.now() - l.at <= ECHO_WINDOW_MS).map((l) => l.text);
-    const early = this.dialogueActive ? echoNow(userText, this.openLine) : "user";
-    if (early === "echo") return true;
-    if (early === "user") return isVideoEcho(userText, recent());
-    await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, ECHO_WAIT_MS);
+    const t0 = Date.now();
+    let partials = 0;
+    while (this.sharing && this.dialogueActive) {
+      const v = echoNow(userText, this.openLine);
+      if (v === "echo") return true;
+      // A mismatching partial may lag the mic by a word or two: give it one update before trusting it (Codex P2).
+      if (v === "user" && partials > 0) break;
+      const left = ECHO_WAIT_MS - (Date.now() - t0);
+      if (left <= 0) break;
+      const heard = await this.nextSound(v === "user" ? Math.min(ECHO_SETTLE_MS, left) : left);
+      if (!heard && v === "user") break;
+      partials++;
+    }
+    return isVideoEcho(userText, recent());
+  }
+
+  /** Resolves true on the video's next partial or finished line, false after `ms`. */
+  private nextSound(ms: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const t = setTimeout(() => resolve(false), ms);
       this.lineWaiters.push(() => {
         clearTimeout(t);
-        resolve();
+        resolve(true);
       });
     });
-    return isVideoEcho(userText, recent());
   }
 
   summary(): Record<string, unknown> {

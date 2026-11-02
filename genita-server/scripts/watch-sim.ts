@@ -360,7 +360,12 @@ Answer as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":fa
           effort: "low",
         });
         const m = g.match(/\{[\s\S]*\}/);
-        if (m) return { contradicts: false, ...(JSON.parse(m[0]) as { grounded: boolean; invented: boolean; identity: boolean; contradicts?: boolean }) };
+        if (!m) continue;
+        const o = JSON.parse(m[0]) as Record<string, unknown>;
+        // every verdict must be a real boolean, or the judge is asked again (Codex P2: a partial answer passed)
+        const keys = visible ? ["grounded", "invented", "identity", "contradicts"] : ["grounded", "invented", "identity"];
+        if (!keys.every((k) => typeof o[k] === "boolean")) continue;
+        return { grounded: o.grounded as boolean, invented: o.invented as boolean, identity: o.identity as boolean, contradicts: o.contradicts === true };
       } catch {
         await sleep(2000);
       }
