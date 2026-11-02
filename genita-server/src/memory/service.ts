@@ -15,14 +15,18 @@ export type MemoryOptions = {
   /** Seen memory (SM-1~3). Off in the hackathon build via createMemory (D40); defaults on for direct use/tests. */
   seenMemory?: boolean;
   isSafe?: (text: string) => Promise<boolean>;
+  /** createMemory's default in-process store: the server swaps it for Postgres when accounts are on (useStore). */
+  ephemeral?: boolean;
   log?: Log;
 };
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
 const tokens = (s: string) => new Set(s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 
 export class MemoryService {
-  readonly repository: MemoryRepository;
-  readonly state: CallStateRepository;
+  repository: MemoryRepository;
+  state: CallStateRepository;
+  /** true while memory lives only in this process (lost on restart) */
+  ephemeral: boolean;
   private readonly options: MemoryOptions;
   private locks = new Map<string, Promise<unknown>>();
   private listeners = new Map<string, Set<(revision: number) => void>>();
@@ -31,6 +35,11 @@ export class MemoryService {
   readonly now: () => number;
   constructor(options: MemoryOptions) {
     this.options = options; this.repository = options.repository; this.state = options.state; this.now = options.now ?? Date.now;
+    this.ephemeral = options.ephemeral === true;
+  }
+  /** Durable store swap (server start, before any traffic): P0 11/3, memory survives deploys. */
+  useStore(store: MemoryRepository & CallStateRepository): void {
+    this.repository = store; this.state = store; this.ephemeral = false;
   }
   async serial<T>(userId: string, fn: () => Promise<T>): Promise<T> {
     const task = (this.locks.get(userId) ?? Promise.resolve()).catch(() => {}).then(fn);

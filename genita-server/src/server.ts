@@ -34,7 +34,7 @@ import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
-import { createMemory } from "./memory/index.ts";
+import { createMemory, PgMemoryRepository } from "./memory/index.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -105,6 +105,10 @@ export async function startServer(
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
   const ops = configureOps(config, { log, db: accounts?.db });
+  // P0 11/3: without GENITA_MEMORY_FILE, memory lived in this process and every deploy erased it.
+  // With accounts on, long-term memory goes to Postgres (migration 005), keyed by users.id.
+  if (accounts && deps.memory?.ephemeral) deps.memory.useStore(new PgMemoryRepository(accounts.db));
+  if (deps.memory) log("memory.store", { kind: deps.memory.ephemeral ? "process" : deps.memory.repository instanceof PgMemoryRepository ? "pg" : deps.memory.repository.constructor.name });
   const sessions = new Map<string, Session>();
   /** resets a call's idle timer; watch traffic keeps a muted call alive */
   const touches = new Map<string, () => void>();
