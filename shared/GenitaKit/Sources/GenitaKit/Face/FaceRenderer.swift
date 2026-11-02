@@ -51,6 +51,8 @@ public final class FaceRenderer: @unchecked Sendable {
     /// This face's lookahead (the flow map's `lookaheadMs`, else the default).
     /// Profiles that hold shapes (minHold, 2D snap) decide on frames ending now in the app (the
     /// offline reference looked ahead), so they read the timeline further ahead to stay on time.
+    /// How far past the lookahead the "next shape" is sampled for anticipation (0 = no motion model).
+    public var lipAheadMs: Double { flowMorph?.motion?.aheadMs ?? 0 }
     public var lipLookaheadMs: Double {
         guard let m = faceSet.flow?.map else { return Self.defaultLipLookaheadMs }
         let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
@@ -166,7 +168,7 @@ public final class FaceRenderer: @unchecked Sendable {
     // MARK: drawing
 
     /// The frame as a Core Image graph with extent (0, 0, outputSize).
-    public func image(at t: Double, lip: LipFrame) -> CIImage {
+    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CIImage {
         let h = extent.height
         // 1. expression: running weighted average of the stills in the mix
         var img: CIImage = bases[.neutral]!
@@ -188,7 +190,7 @@ public final class FaceRenderer: @unchecked Sendable {
         let open = Double(min(1, max(0, lip.openness)))
         if useFlow, let fm = flowMorph {
             // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
-            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, at: t) }()
+            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, at: t) }()
             let r = fm.outputRect
             img = CIImage(cgImage: cg)
                 .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(cg.width), y: r.height / CGFloat(cg.height)))
@@ -240,8 +242,8 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// Rendered RGBA frame (sRGB).
-    public func render(at t: Double, lip: LipFrame) -> CGImage? {
-        context.createCGImage(image(at: t, lip: lip), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CGImage? {
+        context.createCGImage(image(at: t, lip: lip, ahead: ahead), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via

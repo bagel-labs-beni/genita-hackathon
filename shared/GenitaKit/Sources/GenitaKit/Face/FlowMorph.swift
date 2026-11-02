@@ -123,6 +123,26 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var geometry: [Double]? = nil
     }
     public var cheek: Cheek? = nil
+    /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
+    /// spring instead of stepping with the texture snap; amplitude scaled by stress; the next shape is
+    /// blended in ahead; only closures are fast. Texture snap keeps its own hysteresis.
+    public struct Motion: Codable, Equatable, Sendable {
+        public var riseMs: Double = 110         // geometry 90% rise time
+        public var closeRiseMs: Double = 40     // m/b/p closing
+        public var amplitude: Double = 0.6      // overall geometry scale (vowels)
+        public var unstressed: Double = 0.35    // share for unstressed vowels (stressed = 1)
+        public var anticipation: Double = 0.35  // blend of the shape coming next
+        public var aheadMs: Double = 120        // how far ahead "next" is
+        public var textureOn: Double = 0.55     // hysteresis: a new texture needs this share …
+        public var textureOff: Double = 0.45    // … and the shown one must have dropped below this
+        public var textureMin: Double = 0.15    // below: the neutral texture
+        /// Idle life: a slow, small jaw drift (amount of the first jaw key) so the mouth is never frozen.
+        public var idleJaw: Double = 0.2
+        /// Skin micro-motion of the lower face (px at 540 wide, smooth noise ~2–4 Hz): a live face is
+        /// never pixel-still between frames.
+        public var microPx: Double = 0.5
+    }
+    public var motion: Motion? = nil
 
     /// The v7 rules (prep faceflow.py BASE_MAP, 11/3) for a manifest without a map.
     public static let standard = FlowMap(
@@ -242,6 +262,7 @@ final class FlowMorph: @unchecked Sendable {
         self.data = data
         let s = min(1, max(0.1, scale))
         workScale = s
+        stillWidth = Double(neutralStill.width)
         width = max(8, Int((Double(data.roi.width) * s).rounded()))
         height = max(8, Int((Double(data.roi.height) * s).rounded()))
         kx = Float(width) / Float(data.size.w); ky = Float(height) / Float(data.size.h)
@@ -260,12 +281,13 @@ final class FlowMorph: @unchecked Sendable {
         order = data.keys
         smooth = [Float](repeating: 0, count: data.keys.count)
         snapW = smooth
-        let cheekRules = data.map.cheek ?? (data.kind == "human" ? FlowMap.Cheek(spread: 0.4, pull: 1.0, cheek: 1.2, naso: 0.35, lift: 2.0) : nil)
+        let cheekRules = data.map.cheek ?? (data.kind == "human" ? FlowMap.Cheek(spread: 0.52, pull: 1.0, cheek: 1.2, naso: 0.35, lift: 2.0) : nil)
         if let c = cheekRules, let face, let mouth, data.map.drive != "snap" {
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width))
         } else { cheekRig = nil }
     }
     let workScale: Double
+    let stillWidth: Double
     /// Cheek / nasolabial coupling (people); nil = the morph ROI is the output.
     let cheekRig: CheekRig?
     /// Where the last output sits (still px, y down).
@@ -348,6 +370,93 @@ final class FlowMorph: @unchecked Sendable {
         return amt
     }
 
+    private var motionX: [Float] = [], motionV: [Float] = []
+    private var motionT: Double?
+    private var loudPeak: Float = 0.3
+    /// Texture amounts of the last motion step (focused, before amplitude), for the snap.
+    private(set) var textureAmounts: [Float] = []
+
+    var motion: FlowMap.Motion? { data.map.motion ?? (data.kind == "human" && data.map.drive == nil ? FlowMap.Motion() : nil) }
+
+    /// Jaw floor shared by both steppers.
+    private func applyJawFloor(_ raw: inout [String: Float], lip: LipFrame, at t: Double) {
+        let top = lip.weights.max { $0.value < $1.value }?.key.rawValue ?? "rest"
+        guard let jf = data.map.jawFloor ?? FlowMap.standard.jawFloor else { return }
+        if jf.vowels.contains(top) { lastVowel = (t, raw) }
+        else if !jf.closed.contains(top), let v = lastVowel, (t - v.t) * 1000 <= jf.windowMs, t >= v.t {
+            for (k, a) in v.amounts { raw[k] = max(raw[k] ?? 0, Float(jf.share) * a) }
+            let s = raw.values.reduce(0, +)
+            if s > 1 { for (k, a) in raw { raw[k] = a / s } }
+        }
+    }
+
+    /// Continuous geometry (spring) + separate texture amounts. `ahead` = the lip frame `aheadMs` later.
+    func stepMotion(_ lip: LipFrame, ahead: LipFrame?, at t: Double, _ mo: FlowMap.Motion) -> [Float] {
+        var raw = amounts(lip)
+        applyJawFloor(&raw, lip: lip, at: t)
+        let fps = data.map.smoothing.fps
+        // closures: shut now, hold the map's minimum from the start
+        var closing = false
+        if let jm = order.firstIndex(of: "MBP") {
+            let frames = (data.map.holdFrames ?? ["MBP": 2])["MBP"] ?? 2
+            if (lip.weights[.MBP] ?? 0) >= 0.5 { if closeStart == nil { closeStart = t }; closing = true }
+            else if let s0 = closeStart, t < s0 + Double(frames) / fps - 1e-6 { closing = true }
+            else { closeStart = nil }
+            _ = jm
+        }
+        // anticipation: blend toward what comes next (not into or out of a closure)
+        if !closing, let ah = ahead, (ah.weights[.MBP] ?? 0) < 0.5 {
+            let ra = amounts(ah)
+            let a = Float(mo.anticipation)
+            for k in Set(raw.keys).union(ra.keys) where k != "MBP" { raw[k] = (1 - a) * (raw[k] ?? 0) + a * (ra[k] ?? 0) }
+        }
+        var x = order.map { raw[$0] ?? 0 }
+        if closing, let jm = order.firstIndex(of: "MBP") { x = x.indices.map { $0 == jm ? 1 : 0 } }
+        // texture: the prototype's focus on the unscaled amounts
+        var tex = x
+        let tt = tex.reduce(0, +)
+        if data.map.focus > 1, tt > 1e-4 {
+            let pw = tex.map { pow($0, Float(data.map.focus)) }; let ps = max(1e-9, pw.reduce(0, +))
+            tex = pw.map { min(1, tt) * $0 / ps }
+        }
+        textureAmounts = tex
+        // stress: loudness against a slowly decaying recent peak
+        let op = min(1, max(0, lip.openness))
+        let dtPeak = motionT.map { max(0, t - $0) } ?? 0
+        loudPeak = max(op, loudPeak * Float(exp(-dtPeak / 1.2)), 0.05)
+        let rel = Double(op / loudPeak)
+        let stress = smoothstep(0.45, 0.85, rel)
+        let gain = Float(mo.amplitude * (mo.unstressed + (1 - mo.unstressed) * stress))
+        var target = order.indices.map { order[$0] == "MBP" ? x[$0] : x[$0] * gain }
+        // idle micro-motion on the smallest jaw key (never through a closure)
+        if !closing, mo.idleJaw > 0, let j0 = order.firstIndex(of: data.map.ladder.steps.first?.key ?? "MID") {
+            let w = 2 * Double.pi * t
+            let n = 0.5 + 0.5 * (sin(w * 0.37 + 1.3) * 0.6 + sin(w * 0.83 + 0.4) * 0.4)
+            target[j0] += Float(mo.idleJaw * n) * (1 - min(1, op * 3))
+        }
+        // critically damped spring per key (closing m/b/p rises faster)
+        if motionX.count != order.count { motionX = target; motionV = target.map { _ in 0 } }
+        let dt = motionT.map { t - $0 } ?? 0
+        motionT = t
+        if dt <= 0 || dt > 0.5 { motionX = target; motionV = motionV.map { _ in 0 } } else {
+            let steps = max(1, Int((dt * 240).rounded(.up))); let h = Float(dt) / Float(steps)
+            for i in order.indices {
+                let fast = order[i] == "MBP" && target[i] > motionX[i]
+                let omega = Float(3.9 / ((fast ? mo.closeRiseMs : mo.riseMs) / 1000))
+                for _ in 0..<steps {
+                    let acc = omega * omega * (target[i] - motionX[i]) - 2 * omega * motionV[i]
+                    motionV[i] += acc * h; motionX[i] += motionV[i] * h
+                }
+            }
+        }
+        var geo = motionX.map { min(1, max(0, $0)) }
+        let gs = geo.reduce(0, +)
+        if gs > 1 { geo = geo.map { $0 / gs } }
+        if let cap = data.map.cap { for (k, c) in cap { if let j = order.firstIndex(of: k) { geo[j] = min(geo[j], Float(c)) } } }
+        lastAmounts = Dictionary(uniqueKeysWithValues: zip(order, geo))
+        return geo
+    }
+
     /// Smoothed, focused amounts per key in `order` (time-ordered calls; a jump resets).
     func step(_ lip: LipFrame, at t: Double) -> [Float] {
         var raw = amounts(lip)
@@ -427,6 +536,7 @@ final class FlowMorph: @unchecked Sendable {
     func reset() {
         smooth = smooth.map { _ in 0 }; snapW = smooth
         lastT = nil; snapT = nil; closeStart = nil; lastVowel = nil
+        motionX = []; motionV = []; motionT = nil; loudPeak = 0.3
         dominant = nil; dominantSince = -.infinity; candidate = nil; candidateRun = 0; shownHeld = 0
         snapKey = nil; snapHeld = 99; recentOpen = []; lastImage = nil; lastFrame = .min
         cornerD = [(0, 0), (0, 0)]
@@ -435,12 +545,12 @@ final class FlowMorph: @unchecked Sendable {
     /// Parity checks: use these amounts (in `keys` order) instead of the lip timeline once.
     var amountsOverride: [Float]?
 
-    func render(_ lip: LipFrame, at t: Double) -> CGImage {
+    func render(_ lip: LipFrame, ahead: LipFrame? = nil, at t: Double) -> CGImage {
         let fps = data.map.smoothing.fps
         let frame = Int((t * fps).rounded())
         // On twos (3D characters): odd frames repeat the previous mouth (replacement-mouth look).
         if data.map.onTwos == true, frame % 2 == 1, let last = lastImage, lastFrame == frame - 1 { lastFrame = frame; return last }
-        let image = data.map.drive == "snap" ? render2D(lip, at: t, frame: frame) : renderFlow(lip, at: t)
+        let image = data.map.drive == "snap" ? render2D(lip, at: t, frame: frame) : renderFlow(lip, ahead: ahead, at: t)
         lastImage = image; lastFrame = frame
         return image
     }
@@ -492,12 +602,24 @@ final class FlowMorph: @unchecked Sendable {
 
     // MARK: flow morph
 
-    private func renderFlow(_ lip: LipFrame, at t: Double) -> CGImage {
-        var am = step(lip, at: t)
-        if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil }
-        let (cw, shown) = colourWeights(am, at: t)
+    private func renderFlow(_ lip: LipFrame, ahead: LipFrame?, at t: Double) -> CGImage {
+        let mo = motion
+        var am = mo.map { stepMotion(lip, ahead: ahead, at: t, $0) } ?? step(lip, at: t)
+        var overridden = false
+        if let o = amountsOverride, o.count == am.count { am = o; amountsOverride = nil; overridden = true }
+        var (cw, shown) = colourWeights(mo == nil || overridden ? am : textureAmounts, at: t)
+        if mo != nil, !overridden {
+            // Teeth/cavity texture only where the lips are really apart (a 1–2 px gap showed the
+            // warped teeth as a silver wire); a closure shows the closed texture.
+            let mbp = order.firstIndex(of: "MBP")
+            if closeStart != nil { cw = cw.indices.map { $0 == mbp ? 1 : 0 }; if mbp == nil { cw = cw.map { _ in 0 } } }
+            else {
+                // each key's texture fades in with its own geometry: a key barely opened shows the still
+                cw = cw.indices.map { $0 == mbp ? cw[$0] : cw[$0] * Float(smoothstep(0.16, 0.32, Double(am[$0]))) }
+            }
+        }
         // With a minimum hold the geometry follows the shown key too (no one-frame flow pops).
-        if let n = data.map.minHold, n > 1 {
+        if mo == nil, let n = data.map.minHold, n > 1 {
             let top = am.max() ?? 0
             if let j = shown { am = am.indices.map { $0 == j ? max(am[j], top, Float(data.map.shownFloor ?? 0)) : 0 } }
             else { am = am.map { min($0, Float(data.map.snapMin ?? 0.3)) * Float(data.map.neutralFlow ?? 1) } }
@@ -519,6 +641,14 @@ final class FlowMorph: @unchecked Sendable {
                 gn[q] += g[q]; gn[q + 1] += g[q + 1]
             }
             gs.append(g)
+        }
+        // Micro-motion: a tiny smooth drift of the whole lower-face warp (people / motion profiles).
+        if let mo = motion, mo.microPx > 0 {
+            let w = 2 * Double.pi * t
+            let px = mo.microPx * workScale * stillWidth / 540     // px at 540 wide → working px
+            let jx = Float(px * (sin(w * 2.3 + 0.7) * 0.6 + sin(w * 3.7 + 2.1) * 0.4))
+            let jy = Float(px * (sin(w * 2.9 + 1.9) * 0.6 + sin(w * 4.1 + 0.3) * 0.4))
+            for q in stride(from: 0, to: n2, by: 2) { gn[q] += jx; gn[q + 1] += jy }
         }
         var drawn: [(key: [Float], w: Float, field: [Float])] = []
         // Every key with colour weight is drawn, including one still held by the snap rule after its
@@ -601,6 +731,16 @@ final class FlowMorph: @unchecked Sendable {
         snapT = t
         let frames = Float(max(0, min(0.5, dt)) * fps)
         var j = am.indices.max { am[$0] < am[$1] }
+        if let mo = motion {
+            // Texture only, with hysteresis: a new key needs `textureOn` of the total and the shown one
+            // must have fallen below `textureOff`; nothing shows below `textureMin`.
+            let total = max(1e-6, am.reduce(0, +))
+            if let jj = j, am[jj] < Float(mo.textureMin) { j = nil }
+            if j != dominant, let jj = j, let d = dominant, am[d] >= Float(mo.textureMin) {
+                if Double(am[jj] / total) < mo.textureOn || Double(am[d] / total) > mo.textureOff { j = d }
+            }
+            if j != dominant { dominant = j; dominantSince = t }
+        } else {
         if let jj = j, am[jj] < Float(data.map.snapMin ?? dz.minAmount) { j = nil }
         if let n = data.map.minHold, n > 1 {
             // Profiles with minHold: a shown key stays ≥ n frames; a new one must lead n−1 frames running.
@@ -616,6 +756,7 @@ final class FlowMorph: @unchecked Sendable {
                 if !isClosure, dominant != nil, (t - dominantSince) * 1000 < Self.minHoldMs, dt > 0 { j = dominant }
                 else { dominant = j; dominantSince = t }
             }
+        }
         }
         let step = Float(min(1, 1000 / fps / max(1, dz.ms))) * max(1, frames)
         for i in snapW.indices {

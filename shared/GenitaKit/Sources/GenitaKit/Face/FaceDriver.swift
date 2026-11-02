@@ -22,6 +22,7 @@ public final class FaceDriver: ObservableObject {
     public let timeline = LipTimeline()
     /// Lip lookahead of this face (read once; the renderer itself lives on the render queue).
     private let lookaheadMs: Double
+    private let aheadMs: Double
     public private(set) var currentUtteranceId: Int?
     /// Milliseconds of the current utterance heard so far (CallAudio.playbackPositionMs), or nil
     /// when nothing is playing.
@@ -45,6 +46,7 @@ public final class FaceDriver: ObservableObject {
     public init(faceSet: FaceSet, outputSize: CGSize, reduceMotion: Bool = false, seed: UInt64 = UInt64.random(in: 1...UInt64.max)) {
         renderer = FaceRenderer(faceSet: faceSet, outputSize: outputSize, seed: seed, reduceMotion: reduceMotion)
         lookaheadMs = renderer.lipLookaheadMs
+        aheadMs = renderer.lipAheadMs
         self.reduceMotion = reduceMotion
     }
 
@@ -150,9 +152,10 @@ public final class FaceDriver: ObservableObject {
         rendering = true
         let ms = currentUtteranceId == nil ? nil : playbackClock()
         let lip = ms.map { timeline.sample(atMs: $0 + lookaheadMs) } ?? .rest
+        let ahead = aheadMs > 0 ? ms.map { timeline.sample(atMs: $0 + lookaheadMs + aheadMs) } : nil
         let r = renderer, t = now()
         queue.async { [weak self] in
-            let image = r.render(at: t, lip: lip)
+            let image = r.render(at: t, lip: lip, ahead: ahead)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rendering = false
