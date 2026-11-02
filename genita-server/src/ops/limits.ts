@@ -226,7 +226,8 @@ export function getOps(): OpsLimits { return active; }
 /** Exact current generation routes, including GET voices (Spark ordering).
  * Finds REST only reads/edits stored cards on this base; its model calls are WS
  * pipelines and are counted by the common Meta clients. Memory settings/erase
- * and account/auth routes never generate. sam.ts only parses; SAM uses media.ts.
+ * and account/auth routes never generate. Import skip only stores choices.
+ * sam.ts only parses; SAM uses media.ts.
  */
 function generation(req: IncomingMessage, path: string): { image: boolean } | null {
   if (req.method === "GET" && path === "/v1/companion/voices") return { image: false };
@@ -234,7 +235,7 @@ function generation(req: IncomingMessage, path: string): { image: boolean } | nu
   if (req.method === "GET" && /^\/v1\/companion\/voices\/[^/]+\/preview$/.test(path)) return { image: false };
   if (req.method !== "POST") return null;
   if (["/v1/companion", "/v1/companion/prep/retry", "/v1/us-photos"].includes(path)) return { image: true };
-  if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs"].includes(path)) return { image: false };
+  if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs", "/v1/companion/name/suggest"].includes(path)) return { image: false };
   return null;
 }
 

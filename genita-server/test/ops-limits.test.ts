@@ -44,7 +44,7 @@ function stubFetch() {
   }) as typeof fetch;
   return calls;
 }
-function http(base: string, path: string, method = "GET"): Promise<{ status: number; body: any }> {
+function http(base: string, path: string, method = "GET", body?: unknown): Promise<{ status: number; body: any }> {
   return new Promise((resolve, reject) => {
     const req = request(base + path, { method }, (res) => {
       let text = "";
@@ -52,7 +52,7 @@ function http(base: string, path: string, method = "GET"): Promise<{ status: num
       res.on("end", () => resolve({ status: res.statusCode!, body: JSON.parse(text) }));
     });
     req.on("error", reject);
-    req.end();
+    req.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 function fakeSession(c = config(), userId?: string, ops?: SessionDeps["ops"], replyText = "Hi.") {
@@ -85,12 +85,16 @@ test("pause: generation REST and new WS get 503; health and read-only routes sta
   const server = await startServer(c, log, fake.deps, env, null);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    for (const [path, method] of [["/v1/import", "POST"], ["/v1/companion/image", "POST"], ["/v1/companion", "POST"], ["/v1/companion/prefs", "POST"], ["/v1/companion/prep/retry", "POST"], ["/v1/companion/voices", "GET"], ["/v1/companion/voices/seamless:3/preview", "GET"], ["/v1/us-photos", "POST"]]) {
+    for (const [path, method] of [["/v1/import", "POST"], ["/v1/companion/image", "POST"], ["/v1/companion", "POST"], ["/v1/companion/prefs", "POST"], ["/v1/companion/prep/retry", "POST"], ["/v1/companion/name/suggest", "POST"], ["/v1/companion/voices", "GET"], ["/v1/companion/voices/seamless:3/preview", "GET"], ["/v1/us-photos", "POST"]]) {
       assert.deepEqual(await http(base, path, method), { status: 503, body: { error: "paused" } });
     }
     assert.equal((await http(base, "/healthz")).status, 200);
     assert.equal((await http(base, "/v1/import")).status, 200);
     assert.equal((await http(base, "/v1/import/prompt")).status, 200);
+    assert.equal((await http(base, "/v1/import/skip", "POST", { interests: ["Design"], replies: "Talk it out", avoid: ["Unasked advice"] })).status, 200);
+    for (const path of ["/auth/email/start", "/auth/email/verify"]) {
+      assert.deepEqual(await http(base, path, "POST"), { status: 503, body: { error: "accounts_disabled" } });
+    }
     await http(base, "/v1/import", "POST");
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(base.replace("http", "ws") + "/v1/session");
@@ -287,6 +291,8 @@ test("REST budgets return structured 429 before starting generation, with indepe
     assert.notEqual((await http(base, "/v1/import", "POST")).status, 429);
     getOps().consumeMeta();
     assert.deepEqual(await http(base, "/v1/import", "POST"), { status: 429, body: { error: "limit_reached", limit: "meta_calls" } });
+    assert.deepEqual(await http(base, "/v1/companion/name/suggest", "POST"), { status: 429, body: { error: "limit_reached", limit: "meta_calls" } });
+    assert.equal((await http(base, "/v1/import/skip", "POST", { replies: "Talk it out" })).status, 200);
     assert.equal((await http(base, "/v1/import")).status, 200);
   } finally { await new Promise<void>((resolve) => server.close(() => resolve())); await rm(dir, { recursive: true, force: true }); }
 });
