@@ -178,6 +178,10 @@ export class PgPrepStore implements PrepStore {
   getAsset(userId: string, companionId: string, name: string) {
     return this.blobs.get(assetKey(userId, companionId, name));
   }
+
+  async deleteAssets(userId: string, companionId: string) {
+    await this.blobs.deletePrefix(`users/${userId}/companions/${companionId}/`);
+  }
 }
 
 const sniffMime = (b: Buffer) => sniffImage(b) ?? "application/octet-stream";

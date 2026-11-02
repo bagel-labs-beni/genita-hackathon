@@ -107,6 +107,7 @@ export function prepView(c: CompanionRecord) {
 export class PrepRunner {
   readonly events = new EventEmitter();
   private running = new Map<string, Promise<void>>();
+  private aborts = new Map<string, AbortController>();
   private d: PrepDeps;
   private peter: LipBaker;
   private atlas: LipBaker;
@@ -124,9 +125,25 @@ export class PrepRunner {
   run(userId: string): Promise<void> {
     const existing = this.running.get(userId);
     if (existing) return existing;
-    const p = this.loop(userId).finally(() => this.running.delete(userId));
+    const ac = new AbortController();
+    this.aborts.set(userId, ac);
+    const p = this.loop(userId, ac).finally(() => {
+      this.running.delete(userId);
+      this.aborts.delete(userId);
+    });
     this.running.set(userId, p);
     return p;
+  }
+
+  /**
+   * Stops a running prep (account deletion, shutdown). No new vendor call
+   * starts and nothing more is saved; the record stays as it was (`running`),
+   * so a later run resumes it if the companion still exists.
+   */
+  cancel(userId: string): boolean {
+    const ac = this.aborts.get(userId);
+    ac?.abort(new Error("prep cancelled"));
+    return !!ac;
   }
 
   async resumeAll(): Promise<number> {
@@ -171,8 +188,9 @@ export class PrepRunner {
     this.events.emit("prep.progress", { userId: c.userId, companionId: c.id, ...prepProgress(c.prep) });
   }
 
-  private async loop(userId: string): Promise<void> {
+  private async loop(userId: string, ac: AbortController): Promise<void> {
     for (;;) {
+      if (ac.signal.aborted) return;
       let c = await this.d.store.getCompanion(userId);
       if (!c || c.prep.status !== "running") return;
       if (c.prep.attempts >= MAX_PREP_ATTEMPTS) {
@@ -187,9 +205,13 @@ export class PrepRunner {
       const prep = c.prep;
       await this.d.store.patchCompanion(userId, (x) => ({ ...x, prep }));
       try {
-        await this.once(c);
+        await this.once(c, ac);
         return;
       } catch (err) {
+        if (ac.signal.aborted) {
+          this.d.log("prep.stopped", { companion: c.id, reason: String(ac.signal.reason).slice(0, 120) });
+          return;
+        }
         this.d.log("prep.attempt_failed", { companion: c.id, attempt: c.prep.attempts, reason: String(err).slice(0, 300) });
       }
     }
@@ -204,6 +226,7 @@ export class PrepRunner {
     cur: () => CompanionRecord,
     save: (mut: (c: CompanionRecord) => CompanionRecord) => Promise<void>,
     setStep: (path: "scene" | "face", patch: Partial<Step>) => Promise<void>,
+    signal: AbortSignal,
   ): Promise<void> {
     const d = this.d;
     // a record started on the Kling pipeline: its clips and lips are not part of this one
@@ -231,18 +254,20 @@ export class PrepRunner {
       if (!img) throw new Error("source image missing");
       await setStep("scene", { status: "running", attempts: c.prep.steps.scene.attempts + 1 });
       try {
-        const s = await makeScene(d, img.bytes, img.rec.mime, c.type);
+        const s = await makeScene(d, img.bytes, img.rec.mime, c.type, signal);
+        signal.throwIfAborted();
         await d.store.putAsset(c.userId, c.id, "neutral", s.bytes);
         scene = s.bytes;
         await setStep("scene", { status: "done", url: faceUrl("neutral"), ms: s.ms, source: s.source, error: undefined });
         d.log("scene.done", { companion: c.id, source: s.source, ms: s.ms });
       } catch (err) {
-        await setStep("scene", { status: "failed", error: String(err).slice(0, 300) });
+        if (!signal.aborted) await setStep("scene", { status: "failed", error: String(err).slice(0, 300) });
         throw err;
       }
     }
 
     // 2. face set
+    signal.throwIfAborted();
     c = cur();
     const fs = c.prep.steps.face!;
     if (fs.status === "done") return;
@@ -259,6 +284,7 @@ export class PrepRunner {
         prev: fs.face ?? null,
         onRef: (s) => setStep("face", { face: { ...s, items: { ...s.items } } }),
         onItem: async (key, item, bytes) => {
+          signal.throwIfAborted();
           if (bytes) await d.store.putAsset(userId, companionId, key, bytes);
           await save((x) => {
             const f = x.prep.steps.face!;
@@ -266,27 +292,36 @@ export class PrepRunner {
           });
         },
         log: d.log,
+        signal,
       });
       await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
       const m = faceManifest(out, faceUrl);
       d.log("face.done", { companion: companionId, ms: out.ms, visemes: Object.keys(m.visemes).length, rejected: m.rejected.map((r) => `${r.key}:${r.reason}`) });
     } catch (err) {
-      await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
+      if (!signal.aborted) await setStep("face", { status: "failed", error: String(err).slice(0, 300) });
       throw err;
     }
   }
 
   /** One pass over the steps; finished steps are skipped, so a rerun only does what is left. */
-  private async once(start: CompanionRecord): Promise<void> {
+  private async once(start: CompanionRecord, ac: AbortController): Promise<void> {
     const d = this.d;
     const t0 = performance.now();
     let c = start;
+    // the companion row vanished under us (DELETE /me): stop, then drop the images this run wrote
+    let gone = false;
     // serialize all store writes for this companion through one mutable record
     let chain = Promise.resolve();
     const save = (mut: (c: CompanionRecord) => CompanionRecord) => {
       c = mut(c);
       const prep = c.prep;
-      chain = chain.then(() => d.store.patchCompanion(c.userId, (x) => ({ ...x, prep })).then(() => {}));
+      chain = chain.then(() =>
+        d.store.patchCompanion(c.userId, (x) => ({ ...x, prep })).then((r) => {
+          if (r || gone) return;
+          gone = true;
+          ac.abort(new Error("companion deleted"));
+        }),
+      );
       this.emit(c);
       return chain;
     };
@@ -300,9 +335,17 @@ export class PrepRunner {
       });
 
     if (!d.kling) {
-      await this.metaPass(() => c, save, setStep);
-      await save((x) => ({ ...x, prep: { ...x.prep, status: "ready", readyAt: new Date().toISOString() } }));
-      await chain;
+      try {
+        await this.metaPass(() => c, save, setStep, ac.signal);
+        await save((x) => ({ ...x, prep: { ...x.prep, status: "ready", readyAt: new Date().toISOString() } }));
+        await chain;
+      } finally {
+        if (gone) {
+          await d.store.deleteAssets(start.userId, start.id).catch(() => {});
+          d.log("prep.companion_gone", { companion: start.id });
+        }
+      }
+      if (gone) throw new Error("companion deleted");
       const face = c.prep.steps.face?.face ? faceManifest(c.prep.steps.face.face, faceUrl) : null;
       d.log("prep.completed", { companion: c.id, type: c.type, pipeline: "meta", total_ms: Math.round(performance.now() - t0), rejected: face?.rejected.length ?? null });
       this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {}, face });

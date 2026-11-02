@@ -236,3 +236,48 @@ test("createPrep: flags come from env; off by default (no FAL_KEY read, device v
   assert.equal(on.deps.elevenKey, "e");
   assert.ok(on.deps.voices[0].id && !on.deps.voices[0].id.startsWith("device:"));
 });
+
+test("runner (codex P1): companion deleted mid face step → stops, and the face images it wrote are removed", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-del-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf, delayMs: 5 });
+  // DELETE /me: rows go after the 3rd face image is written
+  let puts = 0;
+  const put = store.putAsset.bind(store);
+  store.putAsset = async (u, c, n, b) => {
+    await put(u, c, n, b);
+    if (n !== "neutral" && ++puts === 3) {
+      await store.patchCompanion("u1", (x) => x); // let queued writes land, then the row goes
+      rmSync(join(dir, "companions", "u1.json"));
+    }
+  };
+  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  await runner.run("u1");
+  assert.equal(await store.getCompanion("u1"), null);
+  assert.ok(calls.edits.length < 14, `stopped early (${calls.edits.length} edits)`);
+  for (const k of ["neutral", ...FACE_KEYS]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} removed`);
+});
+
+test("runner.cancel stops a face step without marking it failed", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-cancel-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf, delayMs: 20 });
+  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const p = runner.run("u1");
+  await new Promise((r) => setTimeout(r, 30));
+  runner.cancel("u1");
+  await p;
+  assert.equal(runner.isRunning("u1"), false);
+  assert.ok(calls.edits.length < 14);
+  assert.notEqual((await store.getCompanion("u1"))?.prep.status, "failed");
+});

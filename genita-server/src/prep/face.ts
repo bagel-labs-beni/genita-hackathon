@@ -245,7 +245,9 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
   };
 
   let state: FaceState;
-  if (o.prev?.ref) state = { ...o.prev, items: { ...o.prev.items }, ms: { ...o.prev.ms } };
+  // a saved set that kept nothing (all rejected) is redone from scratch, or a retry would skip every key
+  const kept = !!o.prev && Object.values(o.prev.items).some((i) => i?.status === "done");
+  if (o.prev?.ref) state = { ...o.prev, items: kept ? { ...o.prev.items } : {}, ms: { ...o.prev.ms } };
   else {
     const r = await sam(o.scene);
     if (!r.face || !r.mouth) throw new Error(`face set: face_not_found on the scene (${r.face ? "no mouth" : "no face"})`);
@@ -266,7 +268,13 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     } finally {
       ms.edits += Math.round(performance.now() - t);
     }
-    const r = await sam(out);
+    let r: Awaited<ReturnType<typeof sam>>;
+    try {
+      r = await sam(out);
+    } catch (err) {
+      if (o.signal?.aborted) throw err;
+      throw new EditError("edit_failed", err);
+    }
     if (Math.abs(r.size[0] / r.size[1] - aspect) > 0.01) return "size_mismatch";
     const bad = driftCheck(ref, r, state.size);
     return bad ?? { bytes: out, box: { face: r.face!, mouth: r.mouth! } };
@@ -302,10 +310,21 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
 
   const todo = FACE_KEYS.filter((k) => !state.items[k]);
   let next = 0;
+  let failure: { err: unknown } | null = null;
   const lanes = Math.min(o.concurrency ?? FACE_CONCURRENCY, todo.length);
+  // every lane stops taking keys after a failure or an abort, and the call settles only when all have
+  // stopped, so nothing is saved after it returns or throws (the runner may already be on its next attempt)
   await Promise.all(Array.from({ length: lanes }, async () => {
-    while (next < todo.length) await one(todo[next++]);
+    while (next < todo.length && !failure && !o.signal?.aborted) {
+      try {
+        await one(todo[next++]);
+      } catch (err) {
+        failure ??= { err };
+      }
+    }
   }));
+  if (failure) throw (failure as { err: unknown }).err;
+  if (o.signal?.aborted) throw o.signal.reason ?? new Error("face set: aborted");
 
   const total = Math.round(performance.now() - t0);
   state.ms = { total: state.ms.total + total, edits: state.ms.edits + ms.edits, sam: state.ms.sam + ms.sam };

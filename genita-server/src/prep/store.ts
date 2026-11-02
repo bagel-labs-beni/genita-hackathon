@@ -9,7 +9,7 @@
  * from it (F2-L9 "서버 재시작해도 이어짐").
  * Raw pasted import text is never passed in here.
  */
-import { mkdir, readFile, rename, writeFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
@@ -100,6 +100,8 @@ export interface PrepStore {
    */
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
   getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
+  /** drops every image of a companion (prep found the companion deleted mid-run) */
+  deleteAssets(userId: string, companionId: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -201,6 +203,9 @@ export class FileStore implements PrepStore {
   }
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
     return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
+  }
+  async deleteAssets(userId: string, companionId: string) {
+    await rm(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}`), { recursive: true, force: true });
   }
   async getAsset(userId: string, companionId: string, name: string) {
     try {

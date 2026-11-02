@@ -238,3 +238,60 @@ test("makeFaceSet: SAM misses 'the person's mouth' → falls back to the lips / 
   assert.ok(calls.sam.some((s) => s.prompt === "the person's mouth"), "the primary prompt is tried first");
   assert.deepEqual(MOUTH_PROMPTS("animal"), ["the animal's mouth", "the animal's muzzle", "mouth"]);
 });
+
+test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, and nothing is saved after the call settles", async () => {
+  const { media } = fakeMedia({
+    keyOf: keyOf("human"),
+    delayMs: 5,
+    sam: (tag, part) => {
+      if (/^L!?#/.test(tag)) throw new Error("meta 500: sam down");
+      return [part === "face" ? FACE : MOUTH];
+    },
+  });
+  let settled = false;
+  const late: string[] = [];
+  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", onItem: async (k) => void (settled && late.push(k)) });
+  settled = true;
+  assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "L", reason: "edit_failed", retried: true }]);
+  assert.equal(Object.keys(st.items).length, 13);
+
+  // an unexpected failure (here: saving one key) rejects only after every lane has stopped
+  const b = fakeMedia({ keyOf: keyOf("human"), delayMs: 5 });
+  const saved: string[] = [];
+  let rejected = false;
+  await assert.rejects(
+    () =>
+      makeFaceSet({
+        metaKey: "k",
+        media: b.media,
+        scene: scene(),
+        kind: "human",
+        size: "1024x1820",
+        onItem: async (k) => {
+          if (rejected) late.push(k);
+          if (k === "blink") throw new Error("store down");
+          saved.push(k);
+        },
+      }).finally(() => (rejected = true)),
+    /store down/,
+  );
+  await new Promise((r) => setTimeout(r, 40));
+  assert.deepEqual(late, [], "no lane keeps saving after makeFaceSet settled");
+  assert.ok(b.calls.edits.length < 13, "no new edit starts once a lane failed");
+});
+
+test("makeFaceSet (codex P2): a saved set with no kept image is redone, not skipped", async () => {
+  const first = fakeMedia({ keyOf: keyOf("human"), sam: (t, part) => (t === "scene" || part === "face" ? [part === "face" ? FACE : MOUTH] : []) });
+  const saved: Record<string, unknown> = {};
+  let ref: unknown = null;
+  await assert.rejects(
+    () => makeFaceSet({ metaKey: "k", media: first.media, scene: scene(), kind: "human", size: "1024x1820", onRef: async (s) => void (ref = s.ref), onItem: async (k, item) => void (saved[k] = item) }),
+    /every edit failed/,
+  );
+  assert.equal(Object.keys(saved).length, 13, "all 13 were saved as no_mouth");
+  const prev = { size: [1000, 2000] as [number, number], ref: ref as any, items: saved as any, ms: { total: 0, edits: 0, sam: 0 } };
+  const again = fakeMedia({ keyOf: keyOf("human") });
+  const st = await makeFaceSet({ metaKey: "k", media: again.media, scene: scene(), kind: "human", size: "1024x1820", prev });
+  assert.equal(again.calls.edits.length, 13);
+  assert.equal(Object.values(st.items).filter((i) => i?.status === "done").length, 13);
+});
