@@ -30,6 +30,28 @@ public struct FaceManifest: Codable, Equatable, Sendable {
     public var rejected: [Rejected]?
     /// Option B flow morph data (absent → the key-patch engine).
     public var flow: FaceFlowManifest?
+
+    public init(version: Int?, size: [Int]?, faceBox: [Double], mouthBox: [Double], images: [String: String], visemes: [String: String],
+                boxes: [String: Boxes]?, rejected: [Rejected]?, flow: FaceFlowManifest? = nil) {
+        self.version = version; self.size = size; self.faceBox = faceBox; self.mouthBox = mouthBox
+        self.images = images; self.visemes = visemes; self.boxes = boxes; self.rejected = rejected; self.flow = flow
+    }
+
+    enum CodingKeys: String, CodingKey { case version, size, faceBox, mouthBox, images, visemes, boxes, rejected, flow }
+
+    /// A `flow` block this build can't read is dropped (key patches still work), never the whole face.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
+        size = try c.decodeIfPresent([Int].self, forKey: .size)
+        faceBox = try c.decode([Double].self, forKey: .faceBox)
+        mouthBox = try c.decode([Double].self, forKey: .mouthBox)
+        images = try c.decode([String: String].self, forKey: .images)
+        visemes = try c.decodeIfPresent([String: String].self, forKey: .visemes) ?? [:]
+        boxes = try c.decodeIfPresent([String: Boxes].self, forKey: .boxes)
+        rejected = try c.decodeIfPresent([Rejected].self, forKey: .rejected)
+        flow = try? c.decodeIfPresent(FaceFlowManifest.self, forKey: .flow)
+    }
 }
 
 public enum FaceExpression: String, CaseIterable, Sendable {

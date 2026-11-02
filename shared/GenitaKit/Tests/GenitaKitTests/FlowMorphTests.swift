@@ -155,3 +155,11 @@ struct FlowMorphTests {
     }
 }
 
+
+struct FaceManifestFlowDecodingTests {
+    @Test func anUnreadableFlowBlockKeepsTheFace() throws {
+        let json = #"{"faceBox":[0.2,0.2,0.8,0.6],"mouthBox":[0.4,0.5,0.6,0.55],"images":{"neutral":"n"},"visemes":{},"flow":{"roi":"nope"}}"#
+        let m = try JSONDecoder().decode(FaceManifest.self, from: Data(json.utf8))
+        #expect(m.flow == nil && m.images["neutral"] == "n")
+    }
+}
