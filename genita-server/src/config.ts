@@ -5,6 +5,7 @@
  */
 export type Config = {
   metaKey: string;
+  /** "" = server-side TTS off (text-only replies) */
   elevenKey: string;
   host: string;
   port: number;
@@ -37,7 +38,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
   const elevenKey = env.ELEVENLABS_API_KEY ?? "";
   if (!metaKey) throw new Error("MODEL_API_KEY is not set");
-  if (!elevenKey) throw new Error("ELEVENLABS_API_KEY is not set");
+  // ELEVENLABS_API_KEY is optional (11/2: runtime AI is Meta-only, the app speaks on-device):
+  // without it the server streams reply text (reply.delta / reply) and sends no TTS audio.
   return {
     metaKey,
     elevenKey,
