@@ -53,6 +53,7 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/EmailSignInUITests \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
@@ -94,7 +95,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith("call-"):
+                  if name.startswith(("call-", "auth-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens
