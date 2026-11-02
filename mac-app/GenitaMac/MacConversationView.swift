@@ -17,7 +17,7 @@ struct MacConversationView: View {
         ""
         #endif
     }
-    private var displaySharing: Bool { sharing.isSharing || reviewState == "sharing" }
+    private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
     private let ink = Color(white: 17.0 / 255)
@@ -57,6 +57,7 @@ struct MacConversationView: View {
                     Text("화면 공유").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
                         .frame(width: 61, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
                 }
+                WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
             if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
@@ -70,6 +71,10 @@ struct MacConversationView: View {
             if reviewState == "menu" { menuOpen = true }
         }
         .onDisappear { sharing.stop() }
+        // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
+        .onChange(of: call.sessionId) { _, id in
+            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+        }
         .onChange(of: handoff.motion?.id) { _, id in if id != nil {sharing.stop()} }
         .onChange(of: handoff.desktop) { _, value in if !value { sharing.stop() } }
         .overlay(alignment:.bottom) { Button("아이폰으로") { handoff.returnToPhone() }.disabled(!handoff.canReturn).buttonStyle(.borderedProminent).padding(.bottom,20) }
