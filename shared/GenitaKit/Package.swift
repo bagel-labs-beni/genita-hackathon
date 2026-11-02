@@ -9,6 +9,6 @@ let package = Package(
     products: [.library(name: "GenitaKit", targets: ["GenitaKit"])],
     targets: [
         .target(name: "GenitaKit"),
-        .testTarget(name: "GenitaKitTests", dependencies: ["GenitaKit"]),
+        .testTarget(name: "GenitaKitTests", dependencies: ["GenitaKit"], resources: [.copy("Fixtures")]),
     ]
 )

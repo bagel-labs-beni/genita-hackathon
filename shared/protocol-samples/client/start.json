@@ -10,7 +10,7 @@
     "speakingStyle": "short, playful",
     "backstory": "Pastry chef in Seoul.",
     "voice": {
-      "id": "7PbNGDB5sJCFnOZuMPNL"
+      "id": "seamless:0"
     }
   },
   "user": {
@@ -35,12 +35,13 @@
   "mode": "chat",
   "language": "English",
   "lip": {
-    "mode": "peter",
+    "mode": "none",
     "fallback": "none"
   },
   "bargeIn": {
     "minMs": 400,
     "minWords": 2
   },
-  "mic": true
+  "mic": true,
+  "greetAfterMs": 2000
 }

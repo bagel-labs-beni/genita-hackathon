@@ -92,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var micOn = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
+    /// The front camera's preview is mirrored, the frames sent to the server are not: boxes need to know (CAM-H).
+    private(set) var cameraFront = true
     private(set) var cameraDenied = false
     private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
     private(set) var playing = false
@@ -108,18 +110,18 @@ enum CallStop: Equatable {
     private(set) var sessionId: String?
     /// The server and token this call uses (also for /v1/watch and Finds REST).
     var currentEndpoint: CallEndpoint { fixedEndpoint ?? .current() }
-    /// Peter worker details from `lip.changed` (bundle, pasteDy, fps) for the F4-L18 mouth layer.
-    private(set) var peter: ServerEvent.LipChanged.Peter?
     private(set) var emotion: String?
     /// Web lookups this call (More → Finds). The F10 sheet lists them.
     private(set) var findsCount = 0
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
-    var companionName = "Jin"
+    var companionName = ""
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
     /// Unset = everything plays through CallAudio as usual.
+    /// The app saves a name the server changed in the call (`companion.named`).
+    @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
@@ -135,9 +137,10 @@ enum CallStop: Equatable {
     let finds = FindsModel()
 
     @ObservationIgnored let camera = CallCamera()
-    @ObservationIgnored private let audio = CallAudio()
-    @ObservationIgnored private let voice = DeviceVoice()
-    @ObservationIgnored private var socket: CallSocket? { didSet { uplink.socket = socket } }
+    @ObservationIgnored private let audio: any CallAudioPlaying
+    @ObservationIgnored private let voice: any CallVoiceRendering
+    @ObservationIgnored private let makeSocket: () -> any CallConnection
+    @ObservationIgnored private var socket: (any CallConnection)? { didSet { uplink.socket = socket } }
     /// The mic thread's way to the socket.
     @ObservationIgnored private let uplink = Uplink()
     @ObservationIgnored private var start: ClientMessage.Start?
@@ -145,9 +148,11 @@ enum CallStop: Equatable {
     @ObservationIgnored private var lastUserText: String?
     @ObservationIgnored private var seqToUtterance: [UInt32: Int] = [:]
     @ObservationIgnored private var cancelled: Set<Int> = []
+    /// Utterances the server sent as `say` while `ready.tts` is server (voice GPU full or failed): complete them
+    /// after the device voice has rendered them, not when `reply` arrives.
+    @ObservationIgnored private var saidOnDevice: Set<Int> = []
     @ObservationIgnored private var currentUtterance: Int?
     @ObservationIgnored private var lookedUp: Set<Int> = []
-    @ObservationIgnored private var mouth = PeterMouthBuffer()
     @ObservationIgnored private var playingUtterance: Int?
     @ObservationIgnored private var speechEndAt: Date?
     @ObservationIgnored private var userAudioEndAt: Date?
@@ -163,15 +168,47 @@ enum CallStop: Equatable {
     @ObservationIgnored var fixture: FixtureMic?
     /// Debug tap on everything the server sends (session recording for replay tests).
     @ObservationIgnored var onServerMessage: ((CallSocket.Incoming) -> Void)?
+    /// Tests: reply PCM goes here instead of the speaker.
+    @ObservationIgnored var playbackSink: ((Data, Int) -> Void)?
     #endif
 
-    init() {
+    /// L4: the companion's animated Meta face (nil → the still). Fed from the reply events below.
+    private(set) var face: FaceDriver?
+    @ObservationIgnored private var faceKey: String?
+    /// `audio` events waiting for their binary PCM frame (same seq), for the face.
+    @ObservationIgnored private var faceAudio: [UInt32: ServerEvent.Audio] = [:]
+    @ObservationIgnored private var faceOnScreen = false
+    @ObservationIgnored private var faceAnimates = true
+    @ObservationIgnored private var faceReduceMotion = false
+    @ObservationIgnored private var faceLoad: Task<Void, Never>?
+    /// The account the face set belongs to (JWT `sub`); another account never sees it.
+    @ObservationIgnored private var faceOwner: String?
+    /// Utterance ids restart with each session; the face sees `faceIdBase + id` so they only grow.
+    @ObservationIgnored private var faceIdBase = 0
+    @ObservationIgnored private var faceIdMax = -1
+    /// Device voice: ms of speech rendered so far per reply (the next buffer's offset).
+    @ObservationIgnored private var faceDeviceMs: [Int: Int] = [:]
+    /// Events of a later reply held while the face's current reply is still being heard (queued
+    /// interpretations): switching early would close the mouth on audio that is still playing.
+    @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
+    /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
+    private(set) var faceStill: CGImage?
+
+    convenience init() {
+        self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
+    }
+
+    init(audio: any CallAudioPlaying, voice: any CallVoiceRendering, makeSocket: @escaping () -> any CallConnection) {
+        self.audio = audio
+        self.voice = voice
+        self.makeSocket = makeSocket
         audio.onMicFrame = { [uplink] frame in uplink.send(frame) }
         audio.onPlaybackStarted = { [weak self] id in self?.playbackStarted(id) }
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         voice.onPCM = { [weak self] pcm, id in
             guard let self, !self.cancelled.contains(id) else { return }
+            self.feedFaceDevicePCM(pcm, utteranceId: id)
             self.audio.enqueue(pcm: pcm, utteranceId: id)
         }
         voice.onRendered = { [weak self] id in
@@ -179,13 +216,14 @@ enum CallStop: Equatable {
             self.audio.markComplete(utteranceId: id)
         }
         finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.persistFrames = { id, frames in FindFrameStore.save(id: id, frames: frames) }
         finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
     }
 
     @ObservationIgnored private var findsOwner: String?
 
     /// `sub` of a session JWT (the account id); "dev" for the shared dev token; nil when signed out.
-    static func tokenSubject(_ token: String?) -> String? {
+    nonisolated static func tokenSubject(_ token: String?) -> String? {
         guard let token, !token.isEmpty else { return nil }
         let parts = token.split(separator: ".")
         guard parts.count == 3 else { return "dev" }
@@ -205,6 +243,9 @@ enum CallStop: Equatable {
         guard let (_, res) = try? await URLSession.shared.data(for: req) else { return false }
         return (res as? HTTPURLResponse)?.statusCode == 200
     }
+
+    /// REST client for the Finds tab, on the same host and token as the call.
+    var findsAPI: HTTPFindsAPI { HTTPFindsAPI(endpoint: fixedEndpoint ?? .current(), user: Self.installId) }
 
     /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
     static var installId: String {
@@ -234,7 +275,7 @@ enum CallStop: Equatable {
 
     // MARK: lifecycle
 
-    /// Opens the call. Mic stays off until the user turns it on (F4-L22 default).
+    /// Opens the call. The mic starts as the user left it last time (B12; off the very first time).
     func begin(_ start: ClientMessage.Start, endpoint: CallEndpoint? = nil) {
         guard userEnded else { return }
         userEnded = false
@@ -258,7 +299,13 @@ enum CallStop: Equatable {
         #if DEBUG
         installFixtures()
         #endif
+        // B12: mic on again if it was on when the last call ended (asks for permission the usual way)
+        if Self.micWasOn && mode == .chat { toggleMic() }
     }
+
+    /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
+    /// away and back, so the conversation resumes where it was (#118).
+    var historySnapshot: [ClientMessage.HistoryItem] { history }
 
     func end() {
         userEnded = true
@@ -271,6 +318,7 @@ enum CallStop: Equatable {
         micOn = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
+        restFace()
         finds.callEnded()
         phase = .listening; awaitingFirstAudio = false; interruptedHold = false; answerFailed = false
         #if DEBUG
@@ -285,35 +333,48 @@ enum CallStop: Equatable {
         if cameraOn { toggleCamera() }
         if playing || phase == .speaking || phase == .thinking { socket?.send(.bargeIn) }
         flushPlayback()
+        restFace()
         playing = false
     }
 
     // MARK: user actions
 
     func toggleMic() {
-        if micOn { setMic(false); return }
+        if micOn { setMic(false); Self.micWasOn = false; return }
         micDenied = false
         #if DEBUG
-        if fixture != nil { setMic(true); return }
+        if fixture != nil { setMic(true); Self.micWasOn = true; return }
         #endif
         Self.requestMicrophone { [weak self] granted in
             guard let self else { return }
-            if granted { self.setMic(true) } else { self.micDenied = true }
+            if granted { self.setMic(true); Self.micWasOn = true } else { self.micDenied = true }
         }
     }
 
+    /// B12: the mic starts the way the user left it in the last call (their own toggle; a background
+    /// suspend doesn't count). UI tests start with it off.
+    static var micWasOn: Bool {
+        get {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") { return false }
+            #endif
+            return UserDefaults.standard.bool(forKey: "genita.mic.lastOn")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "genita.mic.lastOn") }
+    }
     /// #2 handoff (iPhone): ARKit tracking may hold the rear camera; it lets go before the call's camera starts,
     /// and tracking re-evaluates when the call's camera changes. The call owns camera and mic (one owner).
     @ObservationIgnored var beforeCameraStart: (() -> Void)?
     @ObservationIgnored var onCameraChange: (() -> Void)?
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; onCameraChange?(); return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
         cameraDenied = false
         let go = { [weak self] in
             guard let self, self.camera.available else { return }
             self.beforeCameraStart?()
             self.camera.start()
+            self.cameraFront = self.camera.front
             self.cameraOn = true
             self.onCameraChange?()
         }
@@ -328,7 +389,7 @@ enum CallStop: Equatable {
         }
     }
 
-    func flipCamera() { camera.flip() }
+    func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
 
     /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
     static var interruptedHoldMs: Int {
@@ -380,6 +441,7 @@ enum CallStop: Equatable {
     func interrupt() {
         guard playing || phase == .speaking || phase == .thinking else { return }
         flushPlayback()
+        restFace()   // the mouth rests at once, before the server's utterance.cancelled
         playing = false
         socket?.send(.bargeIn)
     }
@@ -388,6 +450,17 @@ enum CallStop: Equatable {
     func retryAnswer() {
         answerFailed = false
         guard let text = lastUserText else { return }
+        socket?.send(.text(.init(text: text, frames: nil)))
+    }
+
+    /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
+    func lookAgain() {
+        let question = finds.lookAgain() ?? lastUserText
+        guard let text = question else { return }
+        if cameraOn, let frame = camera.snapshotBase64() {
+            finds.latestFrames = [frame]
+            socket?.send(.frames(.init(images: [frame])))
+        }
         socket?.send(.text(.init(text: text, frames: nil)))
     }
 
@@ -439,7 +512,7 @@ enum CallStop: Equatable {
     // MARK: connection
 
     private func connect() {
-        let socket = CallSocket()
+        let socket = makeSocket()
         self.socket = socket
         link = reconnectSince == nil ? .connecting : .reconnecting
         socket.onOpen = { [weak self, weak socket] in
@@ -472,6 +545,7 @@ enum CallStop: Equatable {
         socket = nil
         pingTask?.cancel()
         flushPlayback()
+        restFace()
         playing = false
         awaitingFirstAudio = false
         guard !userEnded else { return }
@@ -520,7 +594,33 @@ enum CallStop: Equatable {
     func handle(_ event: ServerEvent) {
         switch event {
         case let .ready(r):
+            // The new server session numbers utterances and audio sequences from the start again.
+            // Cancel old render/player callbacks before clearing the previous session's tombstones.
+            voice.cancel()
+            audio.resetSession()
+            flushRoutedAudio?()
+            cancelled.removeAll()
+            seqToUtterance.removeAll()
+            saidOnDevice.removeAll()
+            routed.removeAll()
+            lookedUp.removeAll()
+            currentUtterance = nil
+            playingUtterance = nil
+            playing = false
+            awaitingFirstAudio = false
+            speechEndAt = nil
+            userAudioEndAt = nil
+            firstFrame = nil
+            emotion = nil
+            holdTask?.cancel()
+            interpretBoard = InterpretBoard(companionName: companionName)
             link = .live
+            if r.sessionId != sessionId {
+                // A new session counts utterances from the start: ids of the old one mean nothing now.
+                faceIdBase = faceIdMax + 1
+                cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]
+            }
+            start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
             reconnectSince = nil
             answerFailed = false
@@ -554,26 +654,36 @@ enum CallStop: Equatable {
         case let .transcript(t):
             if t.final {
                 lastUserText = t.text
+                finds.latestQuestion = t.text
                 history.append(.init(role: .user, text: t.text))
                 if t.source == .text { speechEndAt = Date() }
             }
         case let .audio(a):
             seqToUtterance[a.seq] = a.utteranceId
             currentUtterance = a.utteranceId
+            if face != nil, !cancelled.contains(a.utteranceId) {
+                if faceAudio.count > 64 { faceAudio.removeAll() }   // frames that never came
+                faceAudio[a.seq] = a
+            }
         case let .say(sentence):
             // Device voice mode: speak it into the call's player (same AEC, flush and playback_done as server audio).
             guard !cancelled.contains(sentence.utteranceId) else { break }
             currentUtterance = sentence.utteranceId
+            saidOnDevice.insert(sentence.utteranceId)
             voice.say(sentence)
         case let .reply(r):
             if !r.interpret, !r.text.isEmpty { history.append(.init(role: .assistant, text: r.text)) }
             if !cancelled.contains(r.utteranceId), !routed.contains(r.utteranceId) {
                 // Device mode: complete once every `say` of the reply is rendered into the player.
-                if tts == .device { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
+                if tts == .device || saidOnDevice.remove(r.utteranceId) != nil { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
-            mouth.cancel(c.utteranceId)
+            face?.cancel(utteranceId: faceId(c.utteranceId))
+            faceAudio = faceAudio.filter { $0.value.utteranceId != c.utteranceId }
+            facePending.removeAll { $0.utterance == c.utteranceId }
+            faceDeviceMs[c.utteranceId] = nil
+            saidOnDevice.remove(c.utteranceId)
             flushPlayback()
             if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
@@ -581,6 +691,7 @@ enum CallStop: Equatable {
             log.info("cancelled utterance=\(c.utteranceId) reason=\(c.reason.rawValue, privacy: .public)")
         case let .speaking(s):
             if s.on { emotion = s.emotion }
+            if !cancelled.contains(s.utteranceId) { var e = s; e.utteranceId = faceId(s.utteranceId); feedFace(s.utteranceId) { $0.handle(speaking: e) } }
         case let .turnMetrics(m):
             log.info("turn.metrics utterance=\(m.utteranceId) server speechEnd→firstAudio=\(m.speechEndToFirstAudioMs ?? -1)ms firstToken=\(m.replyStartToFirstTokenMs ?? -1)ms audio=\(m.audioMs)ms speculative=\(m.speculative ?? "-", privacy: .public)")
         case let .tool(t):
@@ -597,25 +708,42 @@ enum CallStop: Equatable {
             interpretBoard.companionName = companionName
             interpretBoard.apply(event)
         case let .lipChanged(l):
-            // Only matters once the app asks for `peter` (F4-L18); kept so the face can switch layers then.
             lip = l.lip
-            peter = l.peter
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case let .replyDelta(d):
+            // Text shapes the mouth until (or unless) the audio brings word timings.
+            if !cancelled.contains(d.utteranceId), !routed.contains(d.utteranceId) {
+                var e = d; e.utteranceId = faceId(d.utteranceId)
+                feedFace(d.utteranceId) { $0.handle(replyDelta: e) }
+            }
+        case let .audioTiming(t):
+            // Server aligner (#210): word + phoneme times for one clause; they win where they cover.
+            if !cancelled.contains(t.utteranceId), !routed.contains(t.utteranceId) {
+                let id = faceId(t.utteranceId)
+                let words = t.words.map(LipWordTiming.init)
+                let phonemes = t.phonemes.map { LipPhonemeTiming(phoneme: $0.p, startMs: $0.s, endMs: $0.e) }
+                feedFace(t.utteranceId) { $0.handle(timing: id, words: words, phonemes: phonemes) }
+            }
+        case let .companionNamed(n):
+            // F2-L26: "Call yourself Max" — saved on the server; every {name} label follows
+            companionName = n.name
+            start?.persona.name = n.name   // a reconnect's start carries the new name too
+            interpretBoard.companionName = n.name
+            onCompanionNamed?(n.name)
+        case .expression:
+            // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
+            break
+        case .interpretDetected, .asrStatus, .pong, .unknown:
             break
         }
     }
 
     func handle(binary data: Data) {
         guard let header = AudioFrameHeader(frame: data) else { return }
-        if header.kind == GenitaProtocol.frameKindPeter {
-            // seq = utteranceId; payload = frame index + 256 px JPEG crop (F4-L17)
-            if let crop = AudioFrameHeader.peterCrop(of: data) { mouth.add(utteranceId: Int(header.seq), frame: crop.frame, jpeg: crop.jpeg) }
-            return
-        }
         guard header.kind == GenitaProtocol.frameKindTTSPCM else { return }
         let utterance = seqToUtterance.removeValue(forKey: header.seq) ?? currentUtterance ?? -1
+        let timing = faceAudio.removeValue(forKey: header.seq)
         guard !cancelled.contains(utterance) else { return }
         let route = interpretBoard.route(utteranceId: utterance)
         if route != .normal, let routeInterpretAudio {
@@ -623,6 +751,15 @@ enum CallStop: Equatable {
             routeInterpretAudio(AudioFrameHeader.payload(of: data), route, utterance)
             return
         }
+        // The face moves with what plays on this speaker; its clock is the same player's playhead.
+        if let timing, timing.utteranceId == utterance {
+            var e = timing; e.utteranceId = faceId(utterance)
+            let pcm = AudioFrameHeader.payload(of: data)
+            feedFace(utterance) { $0.handle(audio: e, pcm: pcm) }
+        }
+        #if DEBUG
+        if let playbackSink { playbackSink(AudioFrameHeader.payload(of: data), utterance); return }
+        #endif
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
@@ -649,11 +786,6 @@ enum CallStop: Equatable {
         log.info("state \(next.rawValue, privacy: .public)")
     }
 
-    /// F4-L18 hook: the Peter crop to composite now (at `peter.pasteDy`), or nil to keep the silent loop.
-    func mouthFrame() -> Data? {
-        guard let id = playingUtterance, let position = audio.playbackPositionMs(utteranceId: id) else { return nil }
-        return mouth.frame(utteranceId: id, positionMs: position)
-    }
 
     /// Device voice mouth hook: openness 0…1 of the speech playing now (from the rendered buffers), or nil.
     func deviceMouthLevel() -> Float? {
@@ -682,14 +814,164 @@ enum CallStop: Equatable {
     }
 
     private func utterancePlayed(_ utteranceId: Int) {
-        mouth.finish(utteranceId)
         voice.forget(utteranceId)
         if playingUtterance == utteranceId { playingUtterance = nil }
         playing = audio.isPlaying
+        flushFacePending()
         socket?.send(.playbackDone(utteranceId: utteranceId))
         #if DEBUG
         fixture?.utteranceDone()
         #endif
+    }
+
+    // MARK: face (L4)
+
+    /// Shows this face set (nil → the still). The driver reads the speaker's playhead for the mouth.
+    func useFace(_ set: FaceSet?, key: String?, owner: String? = nil, reduceMotion: Bool) {
+        face?.stop()
+        faceKey = key
+        faceOwner = owner
+        faceAudio = [:]
+        facePending = []
+        faceStill = nil
+        guard let set else { face = nil; return }
+        let size = CompanionFace.outputSize(for: set)
+        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
+        driver.playbackClock = { [weak self, weak driver] in
+            guard let self, let driver else { return nil }
+            self.flushFacePending()
+            guard let id = driver.currentUtteranceId else { return nil }
+            return self.audio.playbackPositionMs(utteranceId: id - self.faceIdBase)
+        }
+        face = driver
+        if faceOnScreen && faceAnimates { driver.start() }
+        if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
+    }
+
+    private func renderFaceStill(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
+        Task { [weak self] in
+            let image = await Task.detached(priority: .userInitiated) {
+                FaceRenderer(faceSet: set, outputSize: size, seed: 1, reduceMotion: true).render(at: 0, lip: .rest)
+            }.value
+            guard let self, self.face === driver else { return }
+            self.faceStill = image
+        }
+    }
+
+    /// Barge-in, background, socket loss, hang-up: the mouth rests now and nothing queued for it stays.
+    private func restFace() {
+        face?.cancel()
+        faceAudio = [:]
+        facePending = []
+        faceDeviceMs = [:]
+    }
+
+    /// The id the face driver sees for a server utterance id (grows across sessions).
+    private func faceId(_ utterance: Int) -> Int {
+        let id = faceIdBase + utterance
+        faceIdMax = max(faceIdMax, id)
+        return id
+    }
+
+    /// Device voice (`say`): the rendered PCM moves the mouth like server audio. Its offset in the reply is the
+    /// audio rendered so far; the shapes come from the reply's `reply.delta` text.
+    private func feedFaceDevicePCM(_ pcm: Data, utteranceId: Int) {
+        guard !routed.contains(utteranceId) else { return }
+        // Count every buffer that goes to the player, face or not, so a face that loads mid-reply stays in time.
+        let offset = faceDeviceMs[utteranceId] ?? 0
+        let ms = Int(PCM.durationMs(bytes: pcm.count).rounded())
+        faceDeviceMs[utteranceId] = offset + ms
+        if faceDeviceMs.count > 16 { faceDeviceMs = faceDeviceMs.filter { $0.key >= utteranceId - 4 } }
+        guard face != nil else { return }
+        let event = ServerEvent.Audio(utteranceId: faceId(utteranceId), seq: 0, sentence: 0, offsetMs: offset, durationMs: ms,
+                                      sampleRate: GenitaProtocol.sampleRate, model: "device", words: [], mouth: nil)
+        feedFace(utteranceId) { $0.handle(audio: event, pcm: pcm) }
+    }
+
+    /// The server utterance the face is on now.
+    private var faceUtterance: Int? { face?.currentUtteranceId.map { $0 - faceIdBase } }
+
+    private func feedFace(_ utterance: Int, _ apply: @escaping (FaceDriver) -> Void) {
+        guard let face else { return }
+        if facePending.contains(where: { $0.utterance == utterance }) || stillHearing(before: utterance) {
+            if facePending.count > 512 { facePending.removeAll() }
+            facePending.append((utterance, apply))
+            return
+        }
+        apply(face)
+    }
+
+    /// True while the face's current reply is still audible and `utterance` is a later one whose own audio
+    /// hasn't started yet.
+    private func stillHearing(before utterance: Int) -> Bool {
+        guard let current = faceUtterance, utterance > current,
+              let heard = audio.playbackPositionMs(utteranceId: current), heard >= 0 else { return false }
+        if let next = audio.playbackPositionMs(utteranceId: utterance), next >= 0 { return false }
+        return true
+    }
+
+    /// Hands the earliest held reply to the face once its audio is what plays.
+    private func flushFacePending() {
+        guard let face, let first = facePending.first, !stillHearing(before: first.utterance) else { return }
+        let ready = facePending.filter { $0.utterance == first.utterance }
+        facePending.removeAll { $0.utterance == first.utterance }
+        ready.forEach { $0.apply(face) }
+    }
+
+    /// The call screen appeared: load the companion's face set (if it has one) and animate it while the screen
+    /// is up. `animate: false` (UI review stills) draws one frame and no display link.
+    func showFace(reduceMotion: Bool, animate: Bool = true) {
+        // Another account (or signed out) never sees the face set loaded for the one before.
+        if face != nil, Self.tokenSubject(currentEndpoint.token) != faceOwner { useFace(nil, key: nil, reduceMotion: reduceMotion) }
+        faceOnScreen = true
+        faceAnimates = animate
+        faceReduceMotion = reduceMotion
+        face?.reduceMotion = reduceMotion
+        if animate { face?.start() }
+        guard !CompanionFace.clipLoopFace else { return }
+        faceLoad?.cancel()
+        faceLoad = Task { [weak self] in await self?.loadFace() }
+    }
+
+    /// The call screen went away: no more frames.
+    func hideFace() {
+        faceOnScreen = false
+        faceLoad?.cancel()
+        face?.stop()
+    }
+
+    func setFaceReduceMotion(_ on: Bool) {
+        faceReduceMotion = on
+        face?.reduceMotion = on
+    }
+
+    private func loadFace() async {
+        let owner = Self.tokenSubject(currentEndpoint.token)
+        do {
+            let outcome: CompanionFaceLoader.Outcome
+            #if DEBUG
+            if let dir = ProcessInfo.processInfo.environment["GENITA_FACE_SET_DIR"] {
+                // UI tests: a face set from a folder (manifest.json + images), no server.
+                let key = "dir:" + dir
+                outcome = key == faceKey ? .unchanged : .loaded(key: key, set: try await Task.detached { try FaceSet(directory: URL(fileURLWithPath: dir)) }.value)
+            } else {
+                outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+            }
+            #else
+            outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+            #endif
+            guard !Task.isCancelled else { return }
+            switch outcome {
+            case .unchanged: break
+            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+            case let .loaded(key, set):
+                log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
+                useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+            }
+        } catch {
+            // Offline or the server said no: keep what is on screen (the still, or the face from before).
+            log.error("face set: \(String(describing: error), privacy: .public)")
+        }
     }
 
     #if DEBUG
@@ -700,9 +982,9 @@ enum CallStop: Equatable {
 
 final class Uplink: @unchecked Sendable {
     private let lock = NSLock()
-    private var _socket: CallSocket?
+    private var _socket: (any CallConnection)?
     private var _callFraming = false
-    var socket: CallSocket? {
+    var socket: (any CallConnection)? {
         get { lock.withLock { _socket } }
         set { lock.withLock { _socket = newValue } }
     }
@@ -728,7 +1010,7 @@ final class Uplink: @unchecked Sendable {
 extension ClientMessage.Start {
     /// The start message from what onboarding collected. Persona details beyond the name come from
     /// F2-L14 (personality) later; until login/DB land the app sends them itself (PROTOCOL.md).
-    /// Lip source `none` for now: the silent loop plays as is until the Peter layer (F4-L18) asks for `peter`.
+    /// Lip source `none`: the device animates the companion face.
     static func companion(name: String, userName: String, profile: String, traits: [String], voiceId: String?) -> ClientMessage.Start {
         ClientMessage.Start(
             persona: .init(name: name, kind: .human, traits: traits.isEmpty ? nil : traits, voice: voiceId.map { .init(id: $0) }),

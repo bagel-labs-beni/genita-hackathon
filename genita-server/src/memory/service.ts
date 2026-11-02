@@ -15,22 +15,31 @@ export type MemoryOptions = {
   /** Seen memory (SM-1~3). Off in the hackathon build via createMemory (D40); defaults on for direct use/tests. */
   seenMemory?: boolean;
   isSafe?: (text: string) => Promise<boolean>;
+  /** createMemory's default in-process store: the server swaps it for Postgres when accounts are on (useStore). */
+  ephemeral?: boolean;
   log?: Log;
 };
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
 const tokens = (s: string) => new Set(s.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
 
 export class MemoryService {
-  readonly repository: MemoryRepository;
-  readonly state: CallStateRepository;
+  repository: MemoryRepository;
+  state: CallStateRepository;
+  /** true while memory lives only in this process (lost on restart) */
+  ephemeral: boolean;
   private readonly options: MemoryOptions;
   private locks = new Map<string, Promise<unknown>>();
-  private listeners = new Map<string, Set<() => void>>();
+  private listeners = new Map<string, Set<(revision: number) => void>>();
   private jobs = new Set<Promise<unknown>>();
   private seen = new Map<string, number>();
   readonly now: () => number;
   constructor(options: MemoryOptions) {
     this.options = options; this.repository = options.repository; this.state = options.state; this.now = options.now ?? Date.now;
+    this.ephemeral = options.ephemeral === true;
+  }
+  /** Durable store swap (server start, before any traffic): P0 11/3, memory survives deploys. */
+  useStore(store: MemoryRepository & CallStateRepository): void {
+    this.repository = store; this.state = store; this.ephemeral = false;
   }
   async serial<T>(userId: string, fn: () => Promise<T>): Promise<T> {
     const task = (this.locks.get(userId) ?? Promise.resolve()).catch(() => {}).then(fn);
@@ -44,7 +53,7 @@ export class MemoryService {
     this.jobs.add(job); void job.finally(() => this.jobs.delete(job));
   }
   async drain(): Promise<void> { while (this.jobs.size) await Promise.all(this.jobs); }
-  subscribe(userId: string, fn: () => void): () => void {
+  subscribe(userId: string, fn: (revision: number) => void): () => void {
     const list = this.listeners.get(userId) ?? new Set(); list.add(fn); this.listeners.set(userId, list);
     return () => { list.delete(fn); if (!list.size) this.listeners.delete(userId); };
   }
@@ -89,10 +98,21 @@ export class MemoryService {
       const q = tokens(query);
       const ranked = (await this.repository.list(userId)).map((m) => ({ m, score: [...tokens(m.text)].filter((t) => q.has(t)).length }))
         .filter((r) => r.score > 0).sort((a, b) => b.score - a.score || b.m.updated_at - a.m.updated_at).slice(0, 3).map((r) => r.m);
+      const at = this.now();
       for (const m of ranked) {
-        m.last_used_at = this.now(); await this.repository.put(userId, m);
-        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((this.now() - m.created_at) / 1000)) });
+        m.last_used_at = at;
+        this.log("memory.recalled", { memory_id: m.id, age_s: Math.max(0, Math.floor((at - m.created_at) / 1000)) });
       }
+      // The last_used_at write is bookkeeping, not the answer: off the reply path (with Postgres it is a
+      // transaction per item). A Forget in between wins: put() refuses tombstoned ids.
+      // Only last_used_at changes on the CURRENT row (a newer write, e.g. a new crop ref, must not be undone).
+      if (ranked.length) this.background(() => this.serial(userId, async () => {
+        const current = new Map((await this.repository.list(userId)).map((m) => [m.id, m]));
+        for (const m of ranked) {
+          const row = current.get(m.id);
+          if (row) await this.repository.put(userId, { ...row, last_used_at: Math.max(row.last_used_at ?? 0, at) });
+        }
+      }));
       return ranked;
     });
   }
@@ -100,7 +120,7 @@ export class MemoryService {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
       const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
-      for (const fn of this.listeners.get(userId) ?? []) fn();
+      for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.
       await this.repository.delete(userId, id);

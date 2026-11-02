@@ -1,3 +1,4 @@
+import SafariServices
 import SwiftUI
 
 struct ReferenceWelcomeView: View {
@@ -23,11 +24,13 @@ struct ReferenceWelcomeView: View {
 struct ReferenceSignInView: View {
     @Bindable var model: AppState
     @State private var provider: String?
-    @State private var legal: String?
+    @State private var legalPage: LegalPage?
     /// A02 Apple: the sheet is up / the server is answering.
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
     @State private var signInFailed = false
+    /// A02-M Continue with email (NEW · design check)
+    @State private var emailSheet = false
     var referenceViewport = false
     var nodes: [DesignNode] { DesignLibrary.nodes("signIn") }
     var body: some View {
@@ -45,12 +48,12 @@ struct ReferenceSignInView: View {
                     ForEach(nodes.filter { $0.type == "text" && ($0.fontFamily == "KMU80 TTF" || $0.y == 199) }) { n in
                         DesignText(node: n).designSlot(n, width: size.width, top: top)
                     }
-                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
-                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
-                    let node = nodes.first { $0.y == 734 && $0.type == "text" }!
-                    DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
-                    Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
-                    Button { legal = "Privacy Policy" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 85, height: 24).position(x: size.width / 2 + 54, y: 761 + bottom).accessibilityLabel("Privacy Policy")
+                    // the board's two buttons move up one row (61 pt) so "Continue with email" takes Google's old row; the legal line stays put
+                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 537 + bottom)
+                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
+                    emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
+                    // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
+                    LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
@@ -64,16 +67,18 @@ struct ReferenceSignInView: View {
                     .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
+        .sheet(isPresented: $emailSheet) { emailSheetContent }
+        .onAppear {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"]?.hasPrefix("email") == true { emailSheet = true }
+            #endif
+        }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             Button("Continue in demo") { model.signedIn(); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
         } message: { Text("Account sign-in is not connected yet. You can explore setup locally on this iPhone.") }
-        .onChange(of: legal) { _, doc in
-            // PRD v12 D16: Genita's own pages (live)
-            guard let doc else { return }
-            legal = nil
-            if let url = URL(string: doc == "Terms" ? "https://bagel-labs-beni.github.io/genita-legal/terms/" : "https://bagel-labs-beni.github.io/genita-legal/privacy/") { UIApplication.shared.open(url) }
-        }
+        // D16: Genita's own pages, in an in-app Safari sheet
+        .sheet(item: $legalPage) { page in SafariPage(url: page.url).ignoresSafeArea().accessibilityIdentifier("legalSafari") }
     }
     func providerButton(_ name: String, width: CGFloat) -> some View {
         let label = nodes.first { $0.characters == "Continue with " + name }!
@@ -86,6 +91,32 @@ struct ReferenceSignInView: View {
         }.buttonStyle(.plain).disabled(signingIn).accessibilityLabel("Continue with " + name)
     }
 
+    /// Same white button as Apple / Google; envelope glyph in the logo's slot.
+    var emailButton: some View {
+        Button { emailSheet = true } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
+                HStack(spacing: 11) {
+                    Image(systemName: "envelope").font(.system(size: 18, weight: .medium)).frame(width: 20, height: 20)
+                    Text("Continue with email").font(TypeStyle.body(16, .medium))
+                }.foregroundStyle(.black)
+            }
+        }.buttonStyle(.plain).disabled(signingIn).accessibilityLabel("Continue with email").accessibilityIdentifier("continueWithEmail")
+    }
+
+    @ViewBuilder var emailSheetContent: some View {
+        #if DEBUG
+        // review stage: GENITA_REVIEW_VARIANT=emailCode opens straight on the code step (screenshots without a server)
+        if ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] == "emailCode" {
+            EmailSignInSheet(model: model, step: .code, email: "you@example.com")
+        } else {
+            EmailSignInSheet(model: model)
+        }
+        #else
+        EmailSignInSheet(model: model)
+        #endif
+    }
+
     /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
     func signInWithApple() {
         guard !signingIn else { return }
@@ -95,6 +126,7 @@ struct ReferenceSignInView: View {
             do {
                 let r = try await AppleSignInFlow().signIn()
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+                model.adopt(accountId: r.me.user.id)   // #163: the saved setup's style/companion belong to this account
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02
             } catch {
@@ -104,4 +136,44 @@ struct ReferenceSignInView: View {
             }
         }
     }
+}
+
+/// The two live legal pages (PRD v12 D16).
+enum LegalPage: String, Identifiable {
+    case terms, privacy
+    var id: String { rawValue }
+    var url: URL { URL(string: "https://bagel-labs-beni.github.io/genita-legal/" + (self == .terms ? "terms/" : "privacy/"))! }
+}
+
+/// "By continuing, you agree to our Terms and / acknowledge our Privacy Policy" (A02, Figma 7:40) as two lines of
+/// text with real Buttons. The lines sit 18 pt apart like the board; each link's hit area grows away from the other line
+/// (Terms upward, Privacy Policy downward) so the two never overlap (Codex review P2).
+struct LegalLinks: View {
+    var open: (LegalPage) -> Void
+    private let grey = Color(white: 0.5435), white = Color(white: 0.9652)
+    var body: some View {
+        VStack(spacing: 2) {
+            HStack(alignment: .lastTextBaseline, spacing: 0) {
+                Text("By continuing, you agree to our ").foregroundStyle(grey)
+                link("Terms", .terms, grow: .top)
+                Text(" and").foregroundStyle(grey)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("acknowledge our ").foregroundStyle(grey)
+                link("Privacy Policy", .privacy, grow: .bottom)
+            }
+        }
+        .font(TypeStyle.body(13))
+    }
+    private func link(_ title: String, _ page: LegalPage, grow edge: Edge.Set) -> some View {
+        Button { open(page) } label: {
+            Text(title).foregroundStyle(white).padding(edge, 14).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityLabel(title).accessibilityAddTraits(.isLink).accessibilityIdentifier("legal-" + page.rawValue)
+    }
+}
+
+struct SafariPage: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> SFSafariViewController { SFSafariViewController(url: url) }
+    func updateUIViewController(_ vc: SFSafariViewController, context: Context) {}
 }

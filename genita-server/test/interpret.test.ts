@@ -6,18 +6,15 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent, encodeFrameHeader, CLIENT_FRAME_KIND_CALL, CLIENT_FRAME_KIND_MIC } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 import { containment, detectLanguage, interpretCommand } from "../src/interpret/language.ts";
 import { buildTranslateInstructions } from "../src/interpret/prompt.ts";
 
 const config: Config = {
   metaKey: "x",
-  elevenKey: "y",
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English", "Korean"],
@@ -31,8 +28,6 @@ const config: Config = {
   speculateStableMs: 250,
   // #157: these interpretation tests exercise server-voice frames
   serverTts: true,
-  kling: false,
-  peter: false,
 };
 
 class FakeAsr extends EventEmitter {
@@ -106,6 +101,7 @@ function setup(opts: { speculate?: boolean; sparkDelayMs?: number } = {}) {
   const client = new FakeClient();
   const sparkCalls: SparkRequest[] = [];
   const ttsCalls: string[] = [];
+  const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
   const deps: SessionDeps = {
     config: { ...config, speculate: opts.speculate ?? false },
     openAsr: () => {
@@ -133,9 +129,10 @@ function setup(opts: { speculate?: boolean; sparkDelayMs?: number } = {}) {
         yield { audio: Buffer.alloc(960), alignment: { chars: ["a"], startsSec: [0], endsSec: [0.01] }, model: req.model };
       }
     },
+    log: (event, data) => logs.push({ event, data }),
   };
   const session = new Session("s", client, deps);
-  return { asrs, client, session, sparkCalls, ttsCalls, mic: () => asrs[0], call: () => asrs[1] };
+  return { asrs, client, session, sparkCalls, ttsCalls, logs, mic: () => asrs[0], call: () => asrs[1] };
 }
 
 const persona = { name: "Jin", kind: "human" };
@@ -328,8 +325,8 @@ test("barge_in tap cancels the translation playing and the ones queued", async (
   session.close();
 });
 
-test("speculation: a punctuated partial starts the translation; the matching final reuses it", async () => {
-  const { client, session, mic, sparkCalls } = setup({ speculate: true });
+test("speculation: a punctuated partial starts the translation; the matching final reuses it and logs a reportable interpret turn", async () => {
+  const { client, session, mic, sparkCalls, logs } = setup({ speculate: true });
   await startInterpret(session);
   mic().fire({ type: "speechStart", turnId: 1 });
   mic().fire({ type: "partial", text: "혹시 이 근처에 약국 있어요?" });
@@ -340,6 +337,13 @@ test("speculation: a punctuated partial starts the translation; the matching fin
   await client.waitFor((m) => m.type === "turn.metrics");
   assert.equal(sparkCalls.length, 1);
   assert.equal(client.of("turn.metrics")[0].speculative, "hit");
+  const answered = logs.find((x) => x.event === "turn.answered");
+  assert.deepEqual(answered?.data.mode, "interpret");
+  assert.equal(typeof answered?.data.first_audio_ms, "number");
+  assert.equal(typeof answered?.data.stt_ms, "number");
+  assert.equal(typeof answered?.data.llm_ms, "number");
+  assert.equal(typeof answered?.data.tts_ms, "number");
+  assert.equal(typeof answered?.data.utteranceId, "number");
   session.close();
 });
 

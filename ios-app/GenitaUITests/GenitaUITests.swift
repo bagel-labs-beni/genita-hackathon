@@ -78,9 +78,9 @@ final class GenitaUITests: XCTestCase {
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(app.staticTexts["Your style\nis ready."].waitForExistence(timeout: 5))
         app.terminate()
-        open("voice"); app.buttons["voice1"].tap(); capture("13-목소리-선택완료")
-        app.buttons["Preview voice 2"].tap(); capture("13a-목소리-미리듣기")
-        app.buttons["Preview voice 2"].tap(); app.buttons["voice0"].tap(); capture("13b-목소리-첫번째선택"); app.terminate()
+        // V04 reads the server's voices; with no server in this test the curated four show greyed and the default stays picked
+        // (the server states V04 / V04-P / V04-S / V04-waking are covered in OnboardingUITests against the stub)
+        open("voice"); XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13-목소리-선택완료"); app.terminate()
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
@@ -166,7 +166,7 @@ final class GenitaUITests: XCTestCase {
                 app.buttons["Cancel"].tap()
             }
             if stage == "voice" && variant != "empty" {
-                app.buttons["Preview voice 1"].tap(); capture("13a-목소리-미리듣기")
+                XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10)); capture("13a-목소리-미리듣기")
             }
             if stage == "conversation" {
                 app.buttons["openMenu"].tap(); capture("32-대화메뉴")
@@ -210,7 +210,9 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
         app.buttons["primaryCTA"].tap()
-        app.buttons["voice0"].tap(); app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["primaryCTA"]); waitForExpectations(timeout: 15)   // no server: the default voice is picked
+        app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Quick start")).firstMatch.tap()
         app.buttons["primaryCTA"].tap()
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "Think with me")).firstMatch.tap(); app.buttons["primaryCTA"].tap()
@@ -253,5 +255,32 @@ final class GenitaUITests: XCTestCase {
         app.buttons["back"].tap(); app.buttons["primaryCTA"].tap()
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// #217 · A02 Terms / Privacy Policy open the live pages in an in-app Safari sheet (and close again).
+    func testA02LegalLinksOpenSafari() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        let terms = app.buttons["Terms"], privacy = app.buttons["Privacy Policy"]
+        XCTAssertTrue(terms.waitForExistence(timeout: 10) && privacy.exists)
+        // the two hit areas never overlap (a tap at the bottom of Terms must not open Privacy Policy)
+        XCTAssertLessThanOrEqual(terms.frame.maxY, privacy.frame.minY, "Terms \(terms.frame) / Privacy \(privacy.frame)")
+        for (label, id) in [("Terms", "legal-terms"), ("Privacy Policy", "legal-privacy")] {
+            let link = app.buttons[label]
+            XCTAssertTrue(link.waitForExistence(timeout: 10), label)
+            XCTAssertGreaterThanOrEqual(link.frame.height, 28, "\(label) hit area")
+            link.tap()
+            let safari = app.descendants(matching: .any)["legalSafari"]
+            let done = app.buttons["Done"]
+            XCTAssertTrue(safari.waitForExistence(timeout: 10) || done.waitForExistence(timeout: 5), "\(label) opens the Safari sheet (\(id))")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "call-A02-legal-" + id
+            shot.lifetime = .keepAlways
+            add(shot)
+            if done.exists { done.tap() } else { app.swipeDown() }
+            XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 10), "back on A02 after closing \(label)")
+        }
     }
 }

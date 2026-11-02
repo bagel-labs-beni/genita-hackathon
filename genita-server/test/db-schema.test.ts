@@ -16,21 +16,36 @@ const USER_TABLES = [
   "conversations",
   "finds",
   "memories",
+  "memory_items",
+  "memory_state",
+  "memory_tombstones",
   "messages",
   "usage_daily",
   "user_styles",
   "users",
 ];
 
+/** tables with no user_id: email_codes is keyed by address (the user may not exist yet) */
+const ALL_TABLES = [...USER_TABLES, "email_codes"].sort();
+
 test("F1-L4: migrations go up and down on an empty database", async () => {
   const db = await testDb(false);
   try {
-    assert.deepEqual(await migrateUp(db), ["001_init"]);
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store"]);
     assert.deepEqual(await migrateUp(db), [], "second up is a no-op");
-    assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES);
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES);
+    assert.deepEqual(await migrateDown(db), ["005_memory_store"]);
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES.filter((t) => !t.startsWith("memory_")));
+    assert.deepEqual(await migrateDown(db), ["003_email_login"]);
+    assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES.filter((t) => !t.startsWith("memory_")));
     assert.deepEqual(await migrateDown(db), ["001_init"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), []);
-    assert.deepEqual(await migrateUp(db), ["001_init"], "up again after down");
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store"], "up again after down");
+    // with email accounts present the down step refuses instead of deleting them (and their data)
+    await db.query("INSERT INTO users (provider, provider_sub, email) VALUES ('email', 'a@example.com', 'a@example.com')");
+    assert.deepEqual(await migrateDown(db), ["005_memory_store"], "the memory tables go first");
+    await assert.rejects(migrateDown(db));
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM users WHERE provider = 'email'")).rows[0].n, 1);
   } finally {
     await db.close();
   }
@@ -61,6 +76,9 @@ test("F1-L4: deleting a user leaves 0 rows in every table (cascade)", async () =
       await db.query("INSERT INTO memories (user_id, companion_id, kind, text, image_ref, box_json) VALUES ($1, $2, 'seen', 'a red mug on the desk', $3, '{\"x1\":1}'::jsonb)", [id, comp, `users/${id}/memories/m1.jpg`]);
       await db.query("INSERT INTO finds (user_id, conversation_id, kind, title, sources) VALUES ($1, $2, 'recipe', 'Kimchi fried rice', '[\"https://a\"]'::jsonb)", [id, conv]);
       await db.query("INSERT INTO usage_daily (user_id, day, turns) VALUES ($1, current_date, 3)", [id]);
+      await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [id]);
+      await db.query("INSERT INTO memory_tombstones (user_id, id) VALUES ($1, 'mem_2')", [id]);
+      await db.query("INSERT INTO memory_state (user_id, state_json) VALUES ($1, '{}'::jsonb)", [id]);
     }
 
     const before = await tableCounts(db, u.id);
@@ -75,6 +93,20 @@ test("F1-L4: deleting a user leaves 0 rows in every table (cascade)", async () =
     assert.equal(all.companion_emotions, 1);
     assert.equal(all.companion_prefs, 1);
     assert.equal(all.messages, 2);
+  } finally {
+    await db.close();
+  }
+});
+
+test("005 rollback refuses while memories are stored (a failed multi-step down never erases them)", async () => {
+  const db = await testDb();
+  try {
+    const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "mem" });
+    await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [user.id]);
+    await assert.rejects(migrateDown(db));
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM memory_items")).rows[0].n, 1, "rows kept");
+    await db.query("DELETE FROM memory_items");
+    assert.deepEqual(await migrateDown(db), ["005_memory_store"], "empty tables roll back");
   } finally {
     await db.close();
   }

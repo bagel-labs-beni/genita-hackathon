@@ -33,6 +33,8 @@ export type InstructionInput = {
   cameraAttached?: boolean;
   /** one line about the result card on the user's screen (F10), data only */
   onScreen?: string;
+  /** F2-L26: set only on the turn where the user renamed the companion (the old name) */
+  renamedFrom?: string;
 };
 
 export const EMOTIONS = ["neutral", "happy", "warm", "curious", "teasing", "excited", "surprised", "sad", "whisper"] as const;
@@ -84,7 +86,8 @@ export function buildInstructions(input: InstructionInput): string {
   const { persona: p, user, cameraAttached = false } = input;
   const language = input.language ?? "English";
   const memories = (input.memories ?? []).slice(-MAX_MEMORIES);
-  const who = [`You are ${p.name}, the user's friend on a live video call.`];
+  // F2-L26: 4/5 after a rename without it — one reply teased "Obviously — keep up" instead of saying the name
+  const who = [`You are ${p.name}, the user's friend on a live video call. Asked your name, say "${p.name}" plainly, even right after they named you.`];
   if (p.kind !== "human") who.push(`You are ${p.kind === "animal" ? "a talking animal" : "an animated character"}.`);
   if (p.traits.length) who.push(`Personality: ${p.traits.join(", ")}.`);
   if (p.speakingStyle) who.push(`You talk: ${p.speakingStyle}.`);
@@ -92,7 +95,10 @@ export function buildInstructions(input: InstructionInput): string {
 
   const lines = [
     who.join(" "),
+    ...(input.renamedFrom ? [`The user just renamed you from ${input.renamedFrom} to ${p.name}; take your new name warmly in a few words.`] : []),
     `Reply in ${language}, one or two short spoken sentences, no lists or emojis. Begin with one emotion tag: ${EMOTIONS.map((e) => `<${e}>`).join(" ")}.`,
+    // expression layer (11/3): the server strips these and sends the face one `expression` event per tagged clause
+    "When your face would show it, start that clause with one face tag: [smile] [smileopen] [laugh] [surprised] [concerned]. Most clauses need none.",
     // Spoken style: the reply is read aloud by a speech engine with no prosody controls, so rhythm comes from the text
     "Your words are spoken aloud, so talk like a person on a call: contractions, short sentences that each end with a period, question mark or exclamation mark, and now and then a natural \"Hmm,\" or \"Oh,\" to start. No markdown, lists, emojis, URLs or parentheses; say numbers, times and prices the way you'd say them.",
     "Only if the user hints at self-harm, suicide or danger, gently point them to emergency help; a bad day just needs a friend.",

@@ -24,13 +24,16 @@ public struct GenitaMe: Codable, Equatable, Sendable {
     public var hasCompanion: Bool
     public var prepStatus: PrepStatus
     public var conversation: Conversation?
+    /// the account's companion is the ready-made judge one (PR #178)
+    public var companionDemo: Bool?
 
-    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?) {
+    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?, companionDemo: Bool? = nil) {
         self.user = user
         self.consented = consented
         self.hasCompanion = hasCompanion
         self.prepStatus = prepStatus
         self.conversation = conversation
+        self.companionDemo = companionDemo
     }
 }
 
@@ -48,6 +51,18 @@ public struct GenitaSignInResponse: Decodable, Sendable {
         expiresAt = try c.decode(String.self, forKey: .expiresAt)
         isNew = try c.decode(Bool.self, forKey: .isNew)
         me = try GenitaMe(from: decoder)
+    }
+}
+
+/// `POST /auth/email/start` reply.
+public struct GenitaEmailStart: Decodable, Equatable, Sendable {
+    public var ok: Bool
+    public var expiresInSec: Int
+    public var resendAfterSec: Int
+    public init(ok: Bool, expiresInSec: Int, resendAfterSec: Int) {
+        self.ok = ok
+        self.expiresInSec = expiresInSec
+        self.resendAfterSec = resendAfterSec
     }
 }
 

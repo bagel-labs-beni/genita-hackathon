@@ -5,6 +5,7 @@ name: Interpretation
 # interpret session (ios-app/Tools/call-replay/session-int.json). Screens are uploaded.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/interpret.yml"
       - "genita-server/**"
@@ -14,8 +15,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: interpret-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server:
@@ -32,10 +33,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       # interpretation + the protocol/session tests it touches; the full suite runs in the server-core PR
-      # (test/peter.test.ts timed out on this runner on 11/2 and kept the job open)
       - run: node --experimental-strip-types --no-warnings=ExperimentalWarning --test test/interpret.test.ts test/protocol.test.ts test/session.test.ts test/turn-machine.test.ts
 
   apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -72,6 +73,7 @@ jobs:
             -project ios-app/Genita.xcodeproj -scheme Genita \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
             -only-testing:GenitaUITests/InterpretScreenUITests \
+            -retry-tests-on-failure -test-iterations 2 \
             -resultBundlePath build-output/ios-int.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"

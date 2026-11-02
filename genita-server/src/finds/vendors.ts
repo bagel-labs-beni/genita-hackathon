@@ -6,8 +6,9 @@ import { metaJson } from "../meta/http.ts";
 import { museImageGenerate, samDetect } from "../meta/media.ts";
 import { SPARK_MODEL, outputText, sparkStream, type InputMessage, type SparkRequest, type SparkStreamEvent } from "../meta/spark.ts";
 import type { SamBox } from "../meta/sam.ts";
+import { fetchImage, fetchPageFacts, type PageFacts } from "./fetchPage.ts";
 
-export type OutputItem = { type: string; action?: { type?: string; url?: string; query?: string }; content?: Array<{ type: string; text?: string }> };
+export type OutputItem = { type: string; status?: string; action?: { type?: string; url?: string; query?: string }; content?: Array<{ type: string; text?: string }> };
 export type SparkResult = { text: string; output: OutputItem[] };
 
 export interface FindsVendors {
@@ -15,11 +16,18 @@ export interface FindsVendors {
   spark(req: SparkRequest, signal?: AbortSignal): Promise<SparkResult>;
   sparkStream(req: SparkRequest, signal?: AbortSignal): AsyncIterable<SparkStreamEvent>;
   sam(imageDataUrl: string, prompt: string, signal?: AbortSignal): Promise<SamBox[]>;
+  /** GENITA_SAM_MASKS=1: SAM boxes carry masks + scores; camera boxes go out one per match with a mask */
+  samMasks?: boolean;
   /** illustration bytes (PNG/JPEG) */
   image(prompt: string, signal?: AbortSignal): Promise<Buffer>;
+  /** F7: read an opened product page (one product? price? og:image) — no AI; null = could not read */
+  pageFacts?(url: string, signal?: AbortSignal): Promise<PageFacts | null>;
+  /** F7: the product's own picture bytes (JPEG/PNG/WebP), null = none */
+  productImage?(url: string, signal?: AbortSignal): Promise<Buffer | null>;
 }
 
-export function metaVendors(key: string): FindsVendors {
+/** samMasks: request one_bit masks with every SAM call (GENITA_SAM_MASKS=1). */
+export function metaVendors(key: string, opts: { samMasks?: boolean } = {}): FindsVendors {
   return {
     async spark(req, signal) {
       const d = await metaJson<{ id: string; output?: OutputItem[] }>(
@@ -39,8 +47,11 @@ export function metaVendors(key: string): FindsVendors {
       return { text: outputText(d as Parameters<typeof outputText>[0]), output: d.output ?? [] };
     },
     sparkStream: (req, signal) => sparkStream(key, req, { signal, firstEventTimeoutMs: 8000 }),
-    sam: (img, prompt, signal) => samDetect(key, img, prompt, signal),
+    sam: (img, prompt, signal) => samDetect(key, img, prompt, signal, { masks: opts.samMasks }),
+    samMasks: opts.samMasks === true,
     image: (prompt, signal) => museImageGenerate(key, prompt, "512x512", signal),
+    pageFacts: (url, signal) => fetchPageFacts(url, signal),
+    productImage: (url, signal) => fetchImage(url, signal),
   };
 }
 
@@ -54,8 +65,10 @@ export function webActions(output: OutputItem[]): { searches: number; opened: st
   const opened: string[] = [];
   for (const o of output) {
     if (o.type !== "web_search_call") continue;
-    if (o.action?.type === "open_page") opened.push(o.action.url ?? "");
-    else searches++;
+    if (o.action?.type === "open_page") {
+      // a "failed" open is not an open (11/2 probe: COS page failed, the model still cited it)
+      if (o.status !== "failed" && o.action.url) opened.push(o.action.url);
+    } else searches++;
   }
   return { searches, opened };
 }
