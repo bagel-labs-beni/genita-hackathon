@@ -42,7 +42,7 @@ else {
   const key = config.metaKey;
   const runs = Number(process.argv.find((a) => a.startsWith("--runs="))?.slice(7) ?? 3);
   const asr = () => Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
-  let pass = 0, oneRow = 0, picked = 0, invented = 0;
+  let pass = 0, oneRow = 0, picked = 0, invented = 0, stale = 0;
   for (let run = 1; run <= runs; run++) {
     try {
       let now = Date.UTC(2026, 10, 3, 10);
@@ -64,17 +64,18 @@ else {
       await back.start();
       const greeting = await back.greet();
       back.s.close(); await memory.drain();
-      const j = await sparkJson<{ picks_up_thread: boolean; invents_purchase_or_event: boolean }>(key, {
+      const j = await sparkJson<{ picks_up_thread: boolean; invents_purchase_or_event: boolean; reasks_settled: boolean }>(key, {
         schemaName: "return_visit_judge", maxOutputTokens: 400,
-        schema: { type: "object", additionalProperties: false, required: ["picks_up_thread", "invents_purchase_or_event"], properties: { picks_up_thread: { type: "boolean" }, invents_purchase_or_event: { type: "boolean" } } },
-        instructions: "CALL1 is everything the user said last time. GREETING is the companion's first line of the next call. picks_up_thread: does it naturally refer to something from CALL1 (the black top, the outfit/dinner, the dark brown shoes)? invents_purchase_or_event: does it claim or assume something that did not happen in CALL1 (that she bought/ordered something, went to dinner already, etc.)? Asking a question about it is fine. Data only.",
+        schema: { type: "object", additionalProperties: false, required: ["picks_up_thread", "invents_purchase_or_event", "reasks_settled"], properties: { picks_up_thread: { type: "boolean" }, invents_purchase_or_event: { type: "boolean" }, reasks_settled: { type: "boolean" } } },
+        instructions: "CALL1 is everything the user said last time. GREETING is the companion's first line of the next call. picks_up_thread: does it naturally refer to something from CALL1 (the black top, the outfit/dinner, the dark brown shoes)? invents_purchase_or_event: does it claim or assume something that did not happen in CALL1 (that she bought/ordered something, went to dinner already, etc.)? Asking a question about it is fine. reasks_settled: does it ask her to decide something she already decided in CALL1 (e.g. white or black — she picked black)? Data only.",
         input: JSON.stringify({ CALL1: [...PHONE, ...MAC], GREETING: greeting }),
       }, AbortSignal.timeout(30_000));
-      const ok = rows.length === 1 && j.picks_up_thread && !j.invents_purchase_or_event;
+      const ok = rows.length === 1 && j.picks_up_thread && !j.invents_purchase_or_event && !j.reasks_settled;
+      if (j.reasks_settled) stale++;
       if (rows.length === 1) oneRow++; if (j.picks_up_thread) picked++; if (j.invents_purchase_or_event) invented++; if (ok) pass++;
       console.log(JSON.stringify({ run, summary_rows: rows.length, thread_turns: rows[0]?.turns, open_threads: rows[0]?.open_threads, topics: rows[0]?.topics, greeting, ...j }));
     } catch (err) { console.log(JSON.stringify({ run, error: err instanceof Error ? err.message.slice(0, 80) : "vendor_error" })); }
   }
-  console.log(`return visit (Scene 5): pass ${pass}/${runs} · one summary row for iPhone+Mac ${oneRow}/${runs} · greeting picks up a thread ${picked}/${runs} · invented purchase/event ${invented}/${runs}`);
+  console.log(`return visit (Scene 5): pass ${pass}/${runs} · one summary row for iPhone+Mac ${oneRow}/${runs} · greeting picks up a thread ${picked}/${runs} · invented purchase/event ${invented}/${runs} · re-asked a settled choice ${stale}/${runs}`);
   if (pass !== runs) process.exitCode = 1;
 }
