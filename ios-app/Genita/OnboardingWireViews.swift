@@ -376,6 +376,10 @@ struct SkipImportView: View {
             group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, state: state)
             group("Food", Self.foods, columns: 3, y: 376, top: top, state: state)
             group("In our chats", Self.chats, columns: 2, y: 524, top: top, state: state)
+            if let e = model.flowError {   // the import failed (offline / 5xx): say so, Continue retries
+                Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
+                    .frame(width: 342, alignment: .leading).position(x: 24 + 171, y: 690 + top).accessibilityIdentifier("skipError")
+            }
         }
     }
     private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, state: @escaping (String) -> TasteState) -> some View {
