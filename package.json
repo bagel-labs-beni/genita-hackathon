@@ -1,18 +1,12 @@
 {
-  "name": "genita-web",
+  "name": "genita-handoff-effects",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node server/index.mjs",
-    "build": "node build.mjs",
-    "start": "NODE_ENV=production node server/index.mjs",
-    "test": "node --test tests/*.test.mjs",
     "build:handoff": "node scripts-build-handoff.mjs"
   },
   "dependencies": {
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
     "three": "0.170.0"
   },
   "devDependencies": {
@@ -21,5 +15,5 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "description": "Genita Figma flow prototype with a continuous animated soul orb"
+  "description": "Build script for the Genita phone-to-Mac handoff effect bundle"
 }

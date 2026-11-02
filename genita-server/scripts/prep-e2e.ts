@@ -20,12 +20,13 @@ import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { PREP_EMOTIONS, type PrepEmotion } from "../src/prep/prompts.ts";
 import type { CompanionRecord } from "../src/prep/store.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
-const config = loadConfig();
 const args = process.argv.slice(2);
-const img = args.find((a) => !a.startsWith("--")) ?? join(homedir(), "genita-fixtures/genita-lipsync-test-20261101/out/img/p1.jpg");
+const img = args.find((a) => !a.startsWith("--")) ?? fixturePath("out", "img", "p1.jpg");
+const config = loadConfig();
 const flag = (k: string) => args.find((a) => a.startsWith(`--${k}=`))?.split("=")[1];
 const emotions = (flag("emotions")?.split(",") ?? [...PREP_EMOTIONS]) as PrepEmotion[];
 const skipVideo = args.includes("--skip-video");

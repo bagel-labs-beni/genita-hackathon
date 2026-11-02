@@ -6,7 +6,6 @@ name: Device test builds
 # - Mac: GenitaMac.app signed with Developer ID (hardened runtime), packed in a DMG,
 #   notarized and stapled; artifact "Genita-Mac-dmg".
 # Runs on push to release/** (and ci/testflight), or by hand (workflow_dispatch).
-# Checklist: ./_qa-scripts/genita-release/RELEASE_CHECKLIST.md (local).
 on:
   push:
     branches: [ci/testflight, "release/**"]
