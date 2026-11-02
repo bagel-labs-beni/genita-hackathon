@@ -19,7 +19,7 @@ import { UpstreamError } from "../meta/http.ts";
 
 type Log = (event: string, data: Record<string, unknown>) => void;
 type Options = { now?: () => number; log?: Log; db?: Queryable };
-type Limit = "calls" | "images" | "user_turns";
+type Limit = "calls" | "images" | "user_turns" | "user_uploads";
 type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns"> & { pauseFile?: string | null };
 const USER_DAILY_UPLOADS = 5;
 
@@ -65,6 +65,7 @@ export class OpsLimits {
   private cap(limit: Limit): number {
     return limit === "calls" ? this.config.metaDailyCalls ?? 20_000
       : limit === "images" ? this.config.metaDailyImages ?? 600
+      : limit === "user_uploads" ? USER_DAILY_UPLOADS
       : this.config.userDailyTurns ?? 300;
   }
 
@@ -140,11 +141,16 @@ export class OpsLimits {
          RETURNING uploads`,
         [userId, day, USER_DAILY_UPLOADS],
       );
-      return r.rows.length > 0;
+      if (r.rows.length > 0) return true;
+      this.exhausted("user_uploads", USER_DAILY_UPLOADS, day);
+      return false;
     }
     // Shared-token/loopback mode has no DB; check-and-increment without yielding.
     const used = this.uploads.get(userId) ?? 0;
-    if (used >= USER_DAILY_UPLOADS) return false;
+    if (used >= USER_DAILY_UPLOADS) {
+      this.exhausted("user_uploads", used, day);
+      return false;
+    }
     this.uploads.set(userId, used + 1);
     return true;
   }

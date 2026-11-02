@@ -160,3 +160,36 @@ test("without accounts, the dev-mode upload counter still caps concurrent reques
   now += 1000;
   assert.equal(await ops.reserveUpload("a"), true);
 });
+
+test("upload cap logs user_uploads once per UTC day for DB and memory reservations", async () => {
+  const memoryLogs: Array<{ event: string; data: Record<string, unknown> }> = [];
+  const dbLogs: Array<{ event: string; data: Record<string, unknown> }> = [];
+  let now = Date.parse("2026-11-03T23:59:59Z");
+  const memory = new OpsLimits({}, { now: () => now, log: (event, data) => memoryLogs.push({ event, data }) });
+  for (let n = 0; n < 5; n++) assert.equal(await memory.reserveUpload("memory-user"), true);
+  assert.equal(await memory.reserveUpload("memory-user"), false);
+  assert.equal(await memory.reserveUpload("memory-user"), false);
+
+  const db = await openDb("pglite:memory");
+  try {
+    await db.exec("CREATE TABLE usage_daily (user_id text NOT NULL, day date NOT NULL, uploads integer NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day))");
+    const database = new OpsLimits({}, { db, now: () => now, log: (event, data) => dbLogs.push({ event, data }) });
+    for (let n = 0; n < 5; n++) assert.equal(await database.reserveUpload("db-user"), true);
+    assert.equal(await database.reserveUpload("db-user"), false);
+    assert.equal(await database.reserveUpload("db-user"), false);
+    for (const logs of [memoryLogs, dbLogs]) assert.equal(logs.filter((entry) => entry.event === "limit.reached" && entry.data.limit === "user_uploads").length, 1);
+    assert.deepEqual(dbLogs.find((entry) => entry.event === "limit.reached" && entry.data.limit === "user_uploads")?.data, {
+      limit: "user_uploads", day: "2026-11-03", count: 5,
+    });
+
+    now += 1_000;
+    assert.equal(await memory.reserveUpload("memory-user"), true);
+    for (let n = 0; n < 4; n++) assert.equal(await memory.reserveUpload("memory-user"), true);
+    assert.equal(await memory.reserveUpload("memory-user"), false);
+    for (let n = 0; n < 5; n++) assert.equal(await database.reserveUpload("next-day-user"), true);
+    assert.equal(await database.reserveUpload("next-day-user"), false);
+    for (const logs of [memoryLogs, dbLogs]) assert.equal(logs.filter((entry) => entry.event === "limit.reached" && entry.data.limit === "user_uploads").length, 2);
+  } finally {
+    await db.close();
+  }
+});
