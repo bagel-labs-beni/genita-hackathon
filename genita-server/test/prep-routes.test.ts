@@ -94,11 +94,12 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-naming-"));
   const store = new FileStore(dir);
   let sparkCalls = 0;
+  const logs: string[] = [];
   const d: PrepDeps = {
     metaKey: "",
     store,
     voices: DEFAULT_VOICES,
-    log: () => {},
+    log: (event) => logs.push(event),
     spark: async () => {
       sparkCalls++;
       return { name: "Jin" } as never;
@@ -143,6 +144,8 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   const created = await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[0].id, name: "  Jin " });
   assert.equal(created.status, 201);
   assert.equal(created.json.name, "Jin");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 1, "one naming log on creation");
+  assert.equal(logs.filter((event) => event === "companion.created").length, 1);
 
   // PATCH: empty / whitespace-only / 21+ chars / missing → 400 bad_name
   for (const name of ["", "   ", "x".repeat(21), undefined, 7]) {
@@ -151,11 +154,13 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
     assert.equal(r.json.error, "bad_name");
   }
   assert.equal((await call("PATCH", "/v1/companion", { name: "Max" }, "u3")).status, 404, "no companion");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 1, "failed renames do not log success");
 
   await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } });
   const patched = await call("PATCH", "/v1/companion", { name: "  Max  " });
   assert.equal(patched.status, 200);
   assert.equal(patched.json.name, "Max");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 2, "one additional naming log on app rename");
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.name, "Max");
   assert.equal(after.json.persona.card.name, "Max");

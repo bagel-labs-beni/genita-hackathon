@@ -1169,6 +1169,7 @@ export class Session {
     const from = this.persona!.name;
     this.persona = { ...this.persona!, name };
     this.client.sendJson({ type: "companion.named", name });
+    this.log("companion.named", { sessionId: this.id, userId, by: "voice", chars: [...name].length });
     this.log("companion.renamed", { by: "voice", chars: [...name].length });
     return from;
   }
