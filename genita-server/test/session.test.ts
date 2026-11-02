@@ -24,6 +24,9 @@ const config: Config = {
   maxSessions: 4,
   maxSessionMs: 60_000,
   sparkFirstTokenTimeoutMs: 8000,
+  sparkHedge: 1,
+  speculate: false,
+  speculateStableMs: 250,
 };
 
 class FakeAsr extends EventEmitter {
@@ -247,5 +250,63 @@ test("an empty Spark answer (e.g. a web search that never produced text) is retr
   assert.equal(calls.length, 2);
   assert.ok(calls[0].tools?.length);
   assert.equal(calls[1].tools, undefined);
+  session.close();
+});
+
+function specSetup() {
+  const asr = new FakeAsr();
+  const client = new FakeClient();
+  const calls: { input: string; aborted: () => boolean }[] = [];
+  const session = new Session("spec", client, {
+    config: { ...config, speculate: true, speculateStableMs: 1000 },
+    openAsr: () => asr,
+    async *spark(req, { signal }): AsyncGenerator<SparkStreamEvent> {
+      const input = req.input as Array<{ content: unknown }>;
+      calls.push({ input: String(input.at(-1)!.content), aborted: () => !!signal?.aborted });
+      await sleep(5);
+      if (signal?.aborted) return;
+      yield { type: "text", delta: "<happy> Congrats!" };
+      yield { type: "done", responseId: "r", text: "x", status: "completed" };
+    },
+    async *tts(): AsyncGenerator<TtsChunk> {
+      yield { audio: Buffer.alloc(96), alignment: null, model: "m" };
+    },
+  });
+  return { asr, client, session, calls };
+}
+
+test("speculation: a punctuated partial starts Spark early; a matching final reuses it (hit)", async () => {
+  const { asr, client, session, calls } = specSetup();
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "I got the job." });
+  assert.equal(calls.length, 1, "speculative call started on the partial");
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "I got the job!" });
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(calls.length, 1, "no second call on a hit");
+  assert.equal(client.json.find((m) => m.type === "turn.metrics")!.speculative, "hit");
+  session.close();
+});
+
+test("speculation: a final that differs aborts the guess and asks again (miss)", async () => {
+  const { asr, client, session, calls } = specSetup();
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "partial", text: "I got the." });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "I got the job." });
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].aborted(), "the wrong guess was aborted");
+  assert.equal(calls[1].input, "I got the job.");
+  assert.equal(client.json.find((m) => m.type === "turn.metrics")!.speculative, "miss");
+  session.close();
+});
+
+test("speculation: an unpunctuated partial waits until it has been stable for speculateStableMs", async () => {
+  const { asr, session, calls } = specSetup();
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "partial", text: "so I was thinking" });
+  assert.equal(calls.length, 0);
   session.close();
 });

@@ -14,6 +14,7 @@ import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
+import { hedged } from "../util/hedge.ts";
 import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 
@@ -59,6 +60,14 @@ type Reply = {
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null };
+type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent> };
+
+/** Transcript comparison for speculation: case and punctuation do not matter. */
+export function normTranscript(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, " ").replace(/\s+/g, " ").trim();
+}
+const LOOKS_FINAL = /[.?!。？！…]["'”’)\]]*$/;
 
 const MAX_HISTORY = 16;
 const MAX_FRAMES = 2;
@@ -108,6 +117,8 @@ export class Session {
   private asr: AsrLike | null = null;
   private micOn = true;
   private reply: Reply | null = null;
+  private spec: Speculation | null = null;
+  private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private metrics: TurnMetrics = {};
@@ -254,6 +265,7 @@ export class Session {
     if (this.closed) return;
     this.closed = true;
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
+    this.dropSpeculation();
     if (this.reply) {
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
@@ -272,7 +284,8 @@ export class Session {
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
-        return this.dispatch({ type: "partial", text: e.text });
+        this.dispatch({ type: "partial", text: e.text });
+        return this.considerSpeculation(e.text);
       case "speechEnd":
         this.metrics = { speechEndAt: t };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
@@ -280,7 +293,9 @@ export class Session {
       case "speechComplete":
         this.metrics.completeAt = t;
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
-        return this.dispatch({ type: "speech_complete", text: e.text });
+        this.dispatch({ type: "speech_complete", text: e.text });
+        // not consumed by a reply (backchannel / empty): stop the guess
+        return this.dropSpeculation();
     }
   }
 
@@ -350,15 +365,19 @@ export class Session {
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
   }
 
-  private buildRequest(text: string): { req: SparkRequest; interpret: boolean } {
+  /** Pure apart from consuming pending camera frames. */
+  private buildRequest(text: string): Built {
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
     const interpret = this.mode === "interpret" || hangul;
     if (interpret) {
       const from = hangul ? "Korean" : "English";
       const to = hangul ? "English" : "Korean";
-      if (this.mode === "chat") this.client.sendJson({ type: "interpret.detected", from, to });
-      return { interpret, req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 } };
+      return {
+        interpret,
+        detected: this.mode === "chat" ? { from, to } : null,
+        req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
+      };
     }
     const images = this.takeFrames();
     const content: string | ContentPart[] = images.length
@@ -378,8 +397,48 @@ export class Session {
     });
     return {
       interpret,
+      detected: null,
       req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
     };
+  }
+
+  private sparkSource(req: SparkRequest, signal: AbortSignal): AsyncIterable<SparkStreamEvent> {
+    const opts = { firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs };
+    return hedged(this.deps.config.sparkHedge, (sig) => this.deps.spark(req, { ...opts, signal: sig }), signal, (e) => e.type === "text");
+  }
+
+  // ───────────────────────── speculation ─────────────────────────
+  // Start Spark on a partial transcript that looks final (ends with . ? !)
+  // or has not changed for speculateStableMs, while the user is still
+  // finishing the turn. If speechComplete's text matches (case/punctuation
+  // aside) the reply reuses that stream ("hit"); otherwise it is aborted.
+
+  private considerSpeculation(text: string): void {
+    if (!this.deps.config.speculate || this.turn.phase !== "listening") return;
+    if (this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS) return; // frames are consumed per turn; don't guess
+    if (this.specTimer) clearTimeout(this.specTimer);
+    this.specTimer = null;
+    if (LOOKS_FINAL.test(text.trim())) return this.startSpeculation(text);
+    this.specTimer = setTimeout(() => {
+      this.specTimer = null;
+      if (this.turn.phase === "listening") this.startSpeculation(text);
+    }, this.deps.config.speculateStableMs);
+  }
+
+  private startSpeculation(text: string): void {
+    const norm = normTranscript(text);
+    if (!norm || this.closed || this.spec?.norm === norm) return;
+    this.dropSpeculation();
+    const built = this.buildRequest(text);
+    const abort = new AbortController();
+    this.spec = { norm, abort, built, stream: new Eager(this.sparkSource(built.req, abort.signal)) };
+  }
+
+  private dropSpeculation(): void {
+    if (this.specTimer) clearTimeout(this.specTimer);
+    this.specTimer = null;
+    this.spec?.abort.abort();
+    this.spec = null;
   }
 
   private async runReply(text: string, utteranceId: number): Promise<void> {
@@ -393,7 +452,27 @@ export class Session {
       firstAudioAt?: number;
     };
     this.metrics = {};
-    const { req, interpret } = this.buildRequest(text);
+    let speculative: "hit" | "miss" | "none" = "none";
+    let pre: AsyncIterable<SparkStreamEvent> | null = null;
+    let built: Built | null = null;
+    const spec = this.spec;
+    this.spec = null;
+    if (this.specTimer) clearTimeout(this.specTimer);
+    this.specTimer = null;
+    if (spec) {
+      if (spec.norm === normTranscript(text)) {
+        speculative = "hit";
+        built = spec.built;
+        pre = spec.stream;
+        signal.addEventListener("abort", () => spec.abort.abort(), { once: true });
+      } else {
+        speculative = "miss";
+        spec.abort.abort();
+      }
+    }
+    built ??= this.buildRequest(text);
+    const { req, interpret } = built;
+    if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!interpret) this.remember("user", text);
 
     const splitter = new SentenceSplitter();
@@ -426,8 +505,8 @@ export class Session {
         for (let attempt = 0; attempt < 2; attempt++) {
           let gotText = false;
           let status = "";
-          const r = attempt === 0 ? req : { ...req, tools: undefined };
-          for await (const ev of this.deps.spark(r, { signal, firstEventTimeoutMs: this.deps.config.sparkFirstTokenTimeoutMs })) {
+          const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal)) : this.sparkSource({ ...req, tools: undefined }, signal);
+          for await (const ev of stream) {
             if (signal.aborted) return;
             if (ev.type === "text") {
               if (m.firstTokenAt === undefined) m.firstTokenAt = this.now();
@@ -545,6 +624,7 @@ export class Session {
       firstSentenceToFirstAudioMs: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
       speechEndToFirstAudioMs: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
       audioMs: Math.round(reply.audioMs),
+      speculative,
     };
     this.client.sendJson({ type: "turn.metrics", ...metrics });
     this.log("turn.answered", metrics);

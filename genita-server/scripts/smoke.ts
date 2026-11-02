@@ -244,8 +244,15 @@ for (const r of rows) {
   const w = String(r.reply ?? "").trim().split(/[\s,!?.]/)[0]?.toLowerCase();
   if (w) openers[w] = (openers[w] ?? 0) + 1;
 }
+const spec: Record<string, number> = {};
+for (const r of rows) {
+  const k = String((r.server as Record<string, unknown> | undefined)?.speculative ?? "n/a");
+  spec[k] = (spec[k] ?? 0) + 1;
+}
 const summary = {
   turns: rows.length,
+  config: { sparkHedge: config.sparkHedge, speculate: config.speculate },
+  speculative: spec,
   firstWords: { maxSame: Math.max(0, ...Object.values(openers)), counts: openers },
   endOfSpeechToFirstAudioMs: { p50: median(lat), min: Math.min(...lat), max: Math.max(...lat), all: lat },
   fileEndToFirstAudioMs: { p50: median(rows.map((r) => r.fileEndToFirstAudioMs).filter((x): x is number => typeof x === "number")) },

@@ -20,6 +20,12 @@ export type Config = {
   maxSessions: number;
   maxSessionMs: number;
   sparkFirstTokenTimeoutMs: number;
+  /** concurrent identical Spark requests per turn; first text wins (1 = off) */
+  sparkHedge: number;
+  /** start Spark on a likely-final partial transcript before speechComplete */
+  speculate: boolean;
+  /** an unpunctuated partial counts as likely-final after this long unchanged */
+  speculateStableMs: number;
 };
 
 function num(v: string | undefined, d: number): number {
@@ -48,5 +54,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSessions: num(env.GENITA_MAX_SESSIONS, 16),
     maxSessionMs: num(env.GENITA_MAX_SESSION_MS, 30 * 60_000),
     sparkFirstTokenTimeoutMs: num(env.GENITA_SPARK_TIMEOUT_MS, 8000),
+    sparkHedge: Math.max(1, Math.min(3, num(env.GENITA_SPARK_HEDGE, 2))),
+    speculate: env.GENITA_SPECULATE !== "0",
+    speculateStableMs: num(env.GENITA_SPECULATE_STABLE_MS, 250),
   };
 }
