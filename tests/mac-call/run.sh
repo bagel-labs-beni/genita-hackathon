@@ -24,6 +24,6 @@ SWIFT
 swiftc -swift-version 5 -o "$OUT/run" \
   "$ROOT/shared/GenitaKit/Sources/GenitaKit/Protocol.swift" \
   "$ROOT/shared/GenitaKit/Sources/GenitaKit/FindsProtocol.swift" \
-  "$ROOT/shared/Call/MacCallPlan.swift" \
+  "$ROOT/shared/Call/MacCallPlan.swift" "$ROOT/shared/Call/CallWire.swift" \
   "$ROOT/tests/mac-call/XCTShim.swift" "$OUT/Tests.swift" "$OUT/List.swift" "$OUT/main.swift"
 "$OUT/run"

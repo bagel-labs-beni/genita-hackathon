@@ -23,10 +23,13 @@ import CoreText
                 feed(call, #"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#)
                 feed(call, #"{"type":"state","state":"thinking"}"#)
                 override = ""
-            case "mac-rs-a": call.finds.load(recorded: MacResultFixture.events(results: false), frames: []); call.finds.force(.searching); override = ""
-            case "mac-rs-b": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.full); override = ""
-            case "mac-rs-half": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = ""
-            case "mac-link": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = "link"
+            // MF-1~3 (#121): first search, refine with its Why line, two results (full + half), failure, link opened
+            case "mac-rs-a": MacResultFixture.load(.searching, into: call.finds, state: .searching); override = ""
+            case "mac-rs-a-why": MacResultFixture.load(.refining, into: call.finds, state: .searching); override = ""
+            case "mac-rs-b": MacResultFixture.load(.results, into: call.finds, state: .full); override = ""
+            case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
+            case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
+            case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
             case "a02", "a02-j", "cs01": break
             default: setenv("GENITA_MAC_REVIEW", state, 1)
             }

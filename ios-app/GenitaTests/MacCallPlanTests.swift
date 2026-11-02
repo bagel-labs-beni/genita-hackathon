@@ -51,42 +51,91 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertEqual(absolute.faceURL(base: URL(string: "https://d72kt0jfmscyj.cloudfront.net")!)?.absoluteString, "https://cdn.example.com/s.jpg")
     }
 
-    // MARK: MAC-RS product picks
+    // MARK: MAC-RS product picks (#171 payload: card.products + card.evidence)
 
-    private func card(_ sources: [(String, String, String)], steps: [(String, String?)] = [], why: [String] = [], how: [String] = []) -> FindCard {
-        FindCard(id: "f1", kind: .product, createdAt: "2026-11-03T10:00:00Z", eyebrow: "From what you said", title: "Two for the weekend",
-                 subtitle: "Light jackets, matched to your style.", status: nil, say: nil, hero: nil, camera: nil, items: [],
-                 steps: steps.map { .init(text: $0.0, source: $0.1) }, options: [], why: why, ask: [],
-                 sources: sources.map { .init(title: $0.0, url: $0.1, domain: $0.2) }, how: how, page: nil, saved: false)
+    /// `shared/protocol-samples/server/find.created.product.json` (#171), as the server sends it.
+    private let productSample = #"""
+    {"type":"find.created","findId":"4c2d9b10","card":{"id":"4c2d9b10","kind":"product","createdAt":"2026-11-03T06:10:00.000Z",
+     "eyebrow":"From what you said","title":"Two for the weekend","subtitle":"Light jackets, matched to your style.",
+     "status":"2 links · northline.example.com, fieldandco.example.com","say":"Two options. Simple cuts, like you prefer.",
+     "items":[],"steps":[],"options":[],"why":[],"ask":[],
+     "sources":[{"title":"Cotton chore jacket","url":"https://northline.example.com/products/cotton-chore-jacket-navy","domain":"northline.example.com"},
+                {"title":"Linen overshirt","url":"https://fieldandco.example.com/product/linen-overshirt-123456.html","domain":"fieldandco.example.com"}],
+     "how":["Blue: your style, from your import. Grey: what you said.","Searched the web · northline.example.com, fieldandco.example.com"],
+     "products":[{"id":"p1","name":"Cotton chore jacket","url":"https://northline.example.com/products/cotton-chore-jacket-navy","domain":"northline.example.com",
+                  "store":"Northline","price":"$68","image":{"slot":"product-1","status":"pending"},"taste":"Clean, minimal","situation":"Light for a weekend"},
+                 {"id":"p2","name":"Linen overshirt","url":"https://fieldandco.example.com/product/linen-overshirt-123456.html","domain":"fieldandco.example.com",
+                  "store":"Field & Co.","taste":"Understated color","situation":"Easy to layer"}],
+     "evidence":{"style":"Clean, minimal clothes. Understated colors.","situation":"Mild and dry this weekend, 18°C"}}}
+    """#
+
+    private func sampleCard() throws -> FindCard {
+        guard case let .findCreated(c) = try ServerEvent.decode(productSample) else { throw NSError(domain: "not find.created", code: 1) }
+        return c.card
     }
 
-    func testTwoProductsWithTheirReasonChips() {
-        let c = card([("Cotton chore jacket · $68", "https://northline.co/jackets/cotton-chore-jacket", "northline.co"),
-                      ("Linen overshirt", "https://fieldandco.com/p/linen-overshirt", "fieldandco.com")],
-                     steps: [("Clean, minimal", "northline.co"), ("Understated color", "fieldandco.com"), ("Light for a weekend", "northline.co"), ("Easy to layer", "fieldandco.com")])
-        let picks = ProductPicks.picks(from: c)
+    func testPicksAreTheServerProducts() throws {
+        let picks = ProductPicks.picks(from: try sampleCard())
         XCTAssertEqual(picks.map(\.name), ["Cotton chore jacket", "Linen overshirt"])
-        XCTAssertEqual(picks.map(\.price), ["$68", nil])
-        XCTAssertEqual(picks[0].reasons, ["Clean, minimal", "Light for a weekend"])
-        XCTAssertEqual(picks[1].reasons, ["Understated color", "Easy to layer"])
-        XCTAssertEqual(picks[1].brandLine, "fieldandco.com · Price on site")
-        XCTAssertEqual(picks[0].brandLine, "northline.co · $68")
+        XCTAssertEqual(picks.map(\.brandLine), ["Northline · $68", "Field & Co. · Price on site"])
+        XCTAssertEqual(picks.map(\.taste), ["Clean, minimal", "Understated color"])
+        XCTAssertEqual(picks.map(\.situation), ["Light for a weekend", "Easy to layer"])
+        XCTAssertEqual(picks[0].url.absoluteString, "https://northline.example.com/products/cotton-chore-jacket-navy")
+        XCTAssertEqual(picks[0].image?.slot, "product-1")
+        XCTAssertNil(picks[1].image)
     }
 
-    func testOnlyWebPagesAndAtMostTwo() {
-        let c = card([("A", "javascript:alert(1)", "x"), ("B", "file:///etc/hosts", "y"), ("C", "https://shop.example/c", "shop.example"),
-                      ("D", "http://shop.example/d", "shop.example"), ("E", "https://shop.example/e", "shop.example")])
-        XCTAssertEqual(ProductPicks.picks(from: c).map(\.name), ["C", "D"])
+    func testOnlyWebPagesAndAtMostTwo() throws {
+        var c = try sampleCard()
+        let p = c.products![0]
+        c.products = ["javascript:alert(1)", "file:///etc/hosts", "genita://auth?code=1", "https://shop.example/c", "http://shop.example/d", "https://shop.example/e"].enumerated().map { i, url in
+            FindCard.Product(id: "p\(i)", name: "N\(i)", url: url, domain: "shop.example", store: "", taste: p.taste, situation: p.situation)
+        }
+        let picks = ProductPicks.picks(from: c)
+        XCTAssertEqual(picks.map(\.name), ["N3", "N4"])
+        XCTAssertEqual(picks[0].brandLine, "shop.example · Price on site") // no store name → the domain
         XCTAssertNil(ExternalLink.web("genita://auth?code=1"))
         XCTAssertNil(ExternalLink.web("https://"))
         XCTAssertEqual(ExternalLink.web("https://northline.co/x")?.host, "northline.co")
     }
 
-    func testEvidenceIsTheServerLinesVerbatim() {
-        let why = ["“Clean, minimal clothes. Understated colors.” · for this weekend"]
-        let how = ["From your import and what you said · northline.co · fieldandco.com"]
-        let e = ProductPicks.evidence(from: card([], why: why, how: how))
-        XCTAssertEqual(e.lines, why + how)
+    func testAProductCardWithoutProductsHasNoPicks() throws {
+        var c = try sampleCard()
+        c.products = nil
+        XCTAssertEqual(ProductPicks.picks(from: c), [])
+    }
+
+    func testEvidenceQuotesTheServerStyleAndSituation() throws {
+        let e = ProductPicks.evidence(from: try sampleCard())
+        XCTAssertEqual(e.lines, ["“Clean, minimal clothes. Understated colors.” · Mild and dry this weekend, 18°C",
+                                 "From your import and what you said · northline.example.com · fieldandco.example.com"])
+    }
+
+    func testNoImportMeansNoStyleQuote() throws {
+        var c = try sampleCard()
+        c.evidence = .init(style: "", situation: "Mild and dry this weekend, 18°C")
+        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Mild and dry this weekend, 18°C",
+                                                              "From what you said · northline.example.com · fieldandco.example.com"])
+    }
+
+    func testOlderCardsShowTheirWhyAndHow() throws {
+        var c = try sampleCard()
+        c.evidence = nil
+        c.why = ["Because"]
+        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how)
+    }
+
+    func testSearchingWhyIsTheEarlierProductAnswer() throws {
+        // MF-1: a refine ("match my style") shows what the last answer stood on; a first search has no line yet
+        let earlier = try sampleCard()
+        XCTAssertEqual(ProductPicks.searchingWhy(after: [earlier]), "“Clean, minimal clothes. Understated colors.” · Mild and dry this weekend, 18°C")
+        XCTAssertNil(ProductPicks.searchingWhy(after: []))
+        var noEvidence = earlier
+        noEvidence.evidence = nil
+        XCTAssertNil(ProductPicks.searchingWhy(after: [noEvidence]))
+        var recipe = earlier
+        recipe.kind = .recipe
+        XCTAssertNil(ProductPicks.searchingWhy(after: [recipe]))
     }
 
     // MARK: A02-J on the Mac (#166 POST /auth/judge)

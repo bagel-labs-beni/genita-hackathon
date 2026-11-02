@@ -342,11 +342,11 @@ extension MacHandoff {
         // #118 / #121: the call window's cue and MAC-RS / MAC-LINK, from wire events (no server)
         let call=CallController.shared
         call.companionName="Mina"
-        for (name,results,state,review) in [("C01-mac-thinking",false,SheetState.idle,""),("MAC-RS-a",false,.searching,""),("MAC-RS-b",true,.full,""),("MAC-RS-half",true,.half,""),("MAC-LINK-prompt",true,.half,"link")] {
+        for (name,scene,state,review) in [("C01-mac-thinking",MacResultFixture.Scene.searching,SheetState.idle,""),("MAC-RS-a",.searching,.searching,""),("MAC-RS-a-why",.refining,.searching,""),("MAC-RS-b",.results,.full,""),("MAC-RS-half",.results,.half,""),("MAC-RS-failed",.failed,.searching,""),("MAC-LINK-prompt",.results,.half,"link")] {
             surface = .active;sharingStopped=false
             if let ready=try? ServerEvent.decode(#"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#) {call.handle(ready)}
             if let thinking=try? ServerEvent.decode(#"{"type":"state","state":"thinking"}"#) {call.handle(thinking)}
-            if state == .idle {call.finds.reset()} else {call.finds.load(recorded:MacResultFixture.events(results:results),frames:[]);call.finds.force(state)}
+            if state == .idle {call.finds.reset()} else {MacResultFixture.load(scene,into:call.finds,state:state)}
             let host=NSHostingView(rootView:MacConversationView(reviewOverride:review).frame(width:390,height:844))
             let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
             window.contentView=host;window.orderFront(nil)
