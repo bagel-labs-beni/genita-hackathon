@@ -209,6 +209,7 @@ test("product pipeline: 2 opened product pages → card with price from the page
   ], "page price wins over the model's; no price when the page didn't show one");
   assert.deepEqual(card.evidence, { style: "Clean, minimal clothes. Understated colors.", situation: "Mild and dry this weekend, 18°C" });
   assert.equal(card.say, TWO_SAY, "the model's 42-char line is too long for the one-line pill (#211)");
+  assert.equal(card.pill, TWO_SAY, "the pill line is sent with the card");
   assert.equal(card.how[1], "Searched the web · northline.example.com +1", "one line on the card (#214)");
   assert.deepEqual(events.map((e) => e.type), ["find.started", "find.progress", "find.created", "find.image"]);
   assert.equal((events[0] as { title: string }).title, "Finding 2 for your style…");
