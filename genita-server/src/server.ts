@@ -225,11 +225,16 @@ export async function startServer(
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
 
   http.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
     const reject = (status: number, text: string) => {
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return reject(400, "Bad Request");
+    }
     if (url.pathname === "/v1/watch") {
       // F5 + 11/2 auth: same principal as the call; only the user who owns the call can share into it.
       // Someone else's session id looks exactly like a missing one (404).
