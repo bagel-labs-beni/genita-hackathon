@@ -53,6 +53,8 @@ export class MemoryFindsStore implements FindsStore {
   readonly work = new FindsWork();
   protected rows = new Map<string, StoredFind>();
   protected images = new Map<string, Buffer>();
+  /** ids of cards purged with their owner (account deletion) */
+  protected removedIds = new Set<string>();
   protected now: () => number;
   constructor(now: () => number = Date.now) {
     this.now = now;
@@ -109,6 +111,7 @@ export class MemoryFindsStore implements FindsStore {
     let n = 0;
     for (const [id, r] of this.rows) {
       if (r.owner !== owner) continue;
+      this.removedIds.add(id); // a late image for this card must not come back after the purge
       this.rows.delete(id);
       for (const k of [...this.images.keys()]) if (k.startsWith(id + "/")) this.images.delete(k);
       n++;
@@ -122,8 +125,10 @@ export class MemoryFindsStore implements FindsStore {
     this.images.set(`${id}/${slot}`, bytes);
   }
   protected canWriteImage(id: string): boolean {
+    // An image may arrive before its card row (the pipeline renders while the card is being saved): allow it.
+    // A deleted owner's late image is stopped by the runner (owner known there) and by this check once the row exists.
     const row = this.rows.get(id);
-    return !!row && !this.work.isDeleted(row.owner);
+    return row ? !this.work.isDeleted(row.owner) : !this.removedIds.has(id);
   }
   async getImage(id: string, slot: string) {
     if (!ID_RE.test(id) || !SLOT_RE.test(slot)) return null;
