@@ -128,7 +128,9 @@ struct CallEndpoint {
         finds.saveChanged = { [weak self] id, saved in
             guard let self else { return }
             let api = self.findsAPI
-            Task { try? await api.setSaved(id, saved) }
+            Task { @MainActor in
+                do { try await api.setSaved(id, saved) } catch { self.finds.revertSave(id, to: !saved) }
+            }
         }
     }
 

@@ -26,6 +26,8 @@ struct LiveBox: Identifiable, Equatable {
     private(set) var highlighted: String?
     /// Bumped on every reveal so a new batch re-runs the pop animation.
     private(set) var generation = 0
+    /// Bumped when the camera is flipped or turned off; boxes from before it are stale.
+    private(set) var epoch = 0
     @ObservationIgnored var fadeAfter: Duration = .seconds(4)
     @ObservationIgnored private var fadeTask: Task<Void, Never>?
 
@@ -53,8 +55,9 @@ struct LiveBox: Identifiable, Equatable {
         if highlighted != nil { reveal() }
     }
 
-    func clear() {
+    func clear(stale: Bool = true) {
         fadeTask?.cancel()
+        if stale { epoch += 1 }
         boxes = []; highlighted = nil; visible = false; findId = nil
     }
 

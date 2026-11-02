@@ -106,6 +106,43 @@ import XCTest
         XCTAssertNil(m.removed); XCTAssertEqual(purged, ["a"])
     }
 
+    func testSlowFailedDeleteKeepsFramesAndBringsTheRowBack() async throws {
+        final class Slow: FindsAPI, @unchecked Sendable {
+            func list() async throws -> [FindCard] { [] }
+            func delete(_ id: String) async throws { try await Task.sleep(for: .milliseconds(400)); throw URLError(.badServerResponse) }
+            func restore(_ id: String) async throws {}
+            func setSaved(_ id: String, _ saved: Bool) async throws {}
+        }
+        let m = FindsListModel(api: Slow())
+        m.now = { self.now }; m.calendar = utc; m.undoWindow = .milliseconds(100)
+        var purged: [String] = []
+        m.purge = { purged.append($0) }
+        m.testSeed([card("a")])
+        await m.delete("a")
+        XCTAssertEqual(m.cards.map(\.id), ["a"], "the failed delete restored the row")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(purged.isEmpty, "frames of a card the server still has are never removed")
+    }
+
+    func testUndoWaitsForTheDeleteItUndoes() async {
+        final class Ordered: FindsAPI, @unchecked Sendable {
+            var log: [String] = []
+            func list() async throws -> [FindCard] { [] }
+            func delete(_ id: String) async throws { try await Task.sleep(for: .milliseconds(150)); log.append("delete") }
+            func restore(_ id: String) async throws { log.append("restore") }
+            func setSaved(_ id: String, _ saved: Bool) async throws {}
+        }
+        let api = Ordered()
+        let m = FindsListModel(api: api)
+        m.undoWindow = .seconds(5); m.purge = { _ in }
+        m.testSeed([card("a")])
+        async let deleting: Void = m.delete("a")
+        try? await Task.sleep(for: .milliseconds(30))
+        await m.undoDelete()
+        await deleting
+        XCTAssertEqual(api.log, ["delete", "restore"])
+    }
+
     func testFailedDeleteBringsTheRowBack() async {
         let api = FakeAPI(); api.cards = [card("a")]; api.failDelete = true
         let m = model(api)
@@ -161,6 +198,11 @@ import XCTest
         sheet.dragEnded(translation: 80, velocity: 0)
         XCTAssertEqual(sheet.state, .idle, "swipe down on a reopened card returns to the list, no Undo toast")
         sheet.openSaved(c, frames: [])
+        var pinned = c; pinned.saved = true
+        sheet.openSaved(pinned, frames: [])
+        XCTAssertEqual(sheet.current?.saved, true, "a bookmark set in the list shows in the sheet")
+        sheet.revertSave(c.id, to: false)
+        XCTAssertEqual(sheet.current?.saved, false)
         XCTAssertEqual(sheet.entries.count, 1, "the same card is not added twice")
         sheet.talkAboutThis()
         XCTAssertEqual(sheet.current?.reopened, false); XCTAssertEqual(sheet.state, .half, "the card stays up over the call")

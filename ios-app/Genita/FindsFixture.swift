@@ -116,6 +116,7 @@ extension FindsModel {
 #endif
 
 
+#if DEBUG
 /// Debug builds only: the Finds tab from recorded cards (no server). GENITA_FINDS_TAB = list | empty | detail.
 actor FixtureFindsAPI: FindsAPI {
     private var cards: [FindCard]
@@ -154,3 +155,4 @@ actor FixtureFindsAPI: FindsAPI {
         return (cards, frames)
     }
 }
+#endif

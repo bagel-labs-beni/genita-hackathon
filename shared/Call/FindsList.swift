@@ -129,12 +129,16 @@ struct FindsSection: Identifiable, Equatable {
     @ObservationIgnored var frames: (String) -> [Data] = FindFrameStore.load
     @ObservationIgnored var purge: (String) -> Void = FindFrameStore.remove
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+    @ObservationIgnored private var inFlight: [String: Task<Void, Error>] = [:]
 
     init(api: FindsAPI) { self.api = api }
 
     var isEmpty: Bool { phase == .loaded && cards.isEmpty }
     var sections: [FindsSection] { Self.sections(cards, now: now(), calendar: calendar) }
     var count: Int { cards.count }
+    #if DEBUG
+    func testSeed(_ list: [FindCard]) { cards = list; phase = .loaded }
+    #endif
 
     func load() async {
         if cards.isEmpty { phase = .loading }
@@ -147,23 +151,25 @@ struct FindsSection: Identifiable, Equatable {
         }
     }
 
-    /// Optimistic: the row leaves at once; a failed call brings it back.
+    /// Optimistic: the row leaves at once; a failed call brings it back. The phone's copy of the camera frames goes
+    /// only after the server delete succeeded AND the Undo window closed.
     func delete(_ id: String) async {
         guard let i = cards.firstIndex(where: { $0.id == id }) else { return }
         if let earlier = removed { purge(earlier.id) }
         let card = cards.remove(at: i)
         removed = card
+        let request = Task { [api] in try await api.delete(id) }
+        inFlight[id] = request
         toastTask?.cancel()
         toastTask = Task { [weak self] in
             try? await Task.sleep(for: self?.undoWindow ?? .seconds(5))
             guard let self, !Task.isCancelled, self.removed?.id == id else { return }
             self.removed = nil
-            self.purge(id)
+            if (try? await request.value) != nil { self.purge(id) }
         }
-        do { try await api.delete(id) } catch {
-            guard removed?.id == id else { return }
-            removed = nil
-            toastTask?.cancel()
+        do { try await request.value } catch {
+            inFlight[id] = nil
+            if removed?.id == id { removed = nil; toastTask?.cancel() }
             restoreLocally(card)
         }
     }
@@ -173,6 +179,9 @@ struct FindsSection: Identifiable, Equatable {
         toastTask?.cancel()
         removed = nil
         restoreLocally(card)
+        // restore must not overtake the delete it undoes
+        if let request = inFlight[card.id] { _ = try? await request.value }
+        inFlight[card.id] = nil
         do { try await api.restore(card.id) } catch { cards.removeAll { $0.id == card.id } }
     }
 

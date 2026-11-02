@@ -81,6 +81,7 @@ struct FindEntry: Identifiable, Equatable {
     func apply(_ event: ServerEvent) {
         switch event {
         case let .findStarted(s):
+            boxEpoch[s.findId] = boxes.epoch
             let frames = latestFrames.compactMap { Data(base64Encoded: $0) }
             entries.append(FindEntry(id: s.findId, kind: s.kind, utteranceId: s.utteranceId, searchTitle: s.title, searchDetail: s.detail, frames: frames))
             if state == .idle || state == .dismissed || state == .searching {
@@ -121,6 +122,8 @@ struct FindEntry: Identifiable, Equatable {
                 state = .peek
             }
         case let .observeBoxes(b):
+            // a late batch from before the camera was flipped or turned off is not for this preview
+            if let epoch = boxEpoch[b.findId], epoch != boxes.epoch { break }
             boxes.apply(b)
         case let .findImage(i):
             update(i.findId) { e in
@@ -139,6 +142,10 @@ struct FindEntry: Identifiable, Equatable {
     }
 
     @ObservationIgnored private var pendingItems: [String: [FindItem]] = [:]
+    @ObservationIgnored private var boxEpoch: [String: Int] = [:]
+
+    /// The save request failed: put the bookmark back.
+    func revertSave(_ id: String, to saved: Bool) { update(id) { $0.saved = saved; $0.card?.saved = saved } }
 
     private func update(_ id: String, _ change: (inout FindEntry) -> Void) {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
@@ -251,6 +258,7 @@ struct FindEntry: Identifiable, Equatable {
         risingTask?.cancel(); toastTask?.cancel()
         if let i = entries.firstIndex(where: { $0.id == card.id }) {
             entries[i].reopened = true
+            if let saved = card.saved { entries[i].saved = saved; entries[i].card?.saved = saved }
             if entries[i].frames.isEmpty { entries[i].frames = frames }
             page = i
         } else {
@@ -259,7 +267,7 @@ struct FindEntry: Identifiable, Equatable {
             page = entries.count - 1
         }
         selectedItem = nil; browser = nil; newFind = nil; undoState = nil
-        boxes.clear()
+        boxes.clear(stale: false)
         state = .half
     }
 

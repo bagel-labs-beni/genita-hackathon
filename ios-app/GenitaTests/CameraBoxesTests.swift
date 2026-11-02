@@ -104,4 +104,15 @@ import XCTest
         sheet.callEnded()
         XCTAssertTrue(sheet.boxes.boxes.isEmpty)
     }
+
+    func testBoxesFromBeforeACameraFlipAreDropped() {
+        let sheet = FindsModel()
+        sheet.apply(try! ServerEvent.decode(#"{"type":"find.started","findId":"late-1","utteranceId":1,"kind":"recipe","title":"t","detail":"d"}"#))
+        sheet.boxes.clear()   // camera flipped or turned off
+        sheet.apply(.observeBoxes(event(find: "late-1", [("Egg", egg)])))
+        XCTAssertTrue(sheet.boxes.boxes.isEmpty, "the late batch belongs to the old camera")
+        sheet.apply(try! ServerEvent.decode(#"{"type":"find.started","findId":"new-1","utteranceId":2,"kind":"recipe","title":"t","detail":"d"}"#))
+        sheet.apply(.observeBoxes(event(find: "new-1", [("Egg", egg)])))
+        XCTAssertEqual(sheet.boxes.boxes.count, 1)
+    }
 }
