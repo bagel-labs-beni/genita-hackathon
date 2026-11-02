@@ -618,7 +618,7 @@ enum CallStop: Equatable {
             start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
     }

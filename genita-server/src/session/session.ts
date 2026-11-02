@@ -16,6 +16,7 @@ import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
+import { shiftTiming } from "../lips/visemes.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
 import {
@@ -1051,6 +1052,7 @@ export class Session {
       startJob(i);
       const sentenceOffset = reply.audioMs;
       let sentAudio = false;
+      let firstSeq: number | null = null; // this clause's first audio chunk: `audio.timing` is keyed to it
       let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
       try {
         let first = true;
@@ -1059,6 +1061,14 @@ export class Session {
           if (first) {
             first = false;
             startJob(i + 1); // prefetch next sentence while this one streams
+          }
+          if (chunk.timing) {
+            // forced-aligner timing of the clause, after its audio (it never holds the first frame)
+            if (firstSeq !== null) {
+              const t = shiftTiming(chunk.timing, sentenceOffset);
+              this.client.sendJson({ type: "audio.timing", utteranceId, sentence: i, seq: firstSeq, words: t.words, phonemes: t.phonemes });
+            }
+            continue;
           }
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
@@ -1072,6 +1082,7 @@ export class Session {
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
           }
           const seq = ++this.seq;
+          firstSeq ??= seq;
           const durationMs = pcmDurationMs(chunk.audio.length);
           this.client.sendJson({
             type: "audio",
