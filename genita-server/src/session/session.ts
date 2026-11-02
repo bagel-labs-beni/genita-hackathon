@@ -5,7 +5,7 @@
  */
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
-import type { InputMessage, SparkRequest, SparkStreamEvent, ContentPart } from "../meta/spark.ts";
+import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/elevenlabs.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
@@ -468,6 +468,7 @@ export class Session {
       );
     };
     let ttsFailed = false;
+    let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     for (let i = 0; ; i++) {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
@@ -489,6 +490,7 @@ export class Session {
             startJob(i + 1); // prefetch next sentence while this one streams
           }
           if (!chunk.audio.length && !chunk.alignment) continue;
+          ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
@@ -541,6 +543,8 @@ export class Session {
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
+      model: SPARK_MODEL,
+      ttsModel: ttsModelUsed,
       speechEndToCompleteMs: m.speechEndAt && m.completeAt ? Math.round(m.completeAt - m.speechEndAt) : null,
       replyStartToFirstTokenMs: m.firstTokenAt ? Math.round(m.firstTokenAt - m.replyStartAt) : null,
       replyStartToFirstSentenceMs: m.firstSentenceAt ? Math.round(m.firstSentenceAt - m.replyStartAt) : null,

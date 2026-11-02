@@ -75,9 +75,11 @@ const inbox: { t: number; m: Msg }[] = [];
 let firstAudioAfter: { since: number; at: number | null } | null = null;
 const replyAudio: Buffer[] = [];
 let captureAudio = true;
+let binCount = 0;
 ws.on("message", (data, isBinary) => {
   const t = performance.now();
   if (isBinary) {
+    binCount++;
     if (firstAudioAfter && firstAudioAfter.at === null) firstAudioAfter.at = t;
     if (captureAudio) replyAudio.push((data as Buffer).subarray(8));
     return;
@@ -218,7 +220,16 @@ if (doBarge) {
   queue.push({ pcm: over, voicedStart: overSpan.start, voicedEnd: overSpan.end, onStart: (t) => (speakAt = t) });
   try {
     const cancelled = await waitMsg((m) => m.type === "utterance.cancelled", inbox.indexOf(speaking), 15000);
-    barge = { speechStartToCancelledMs: Math.round(cancelled.t - speakAt), reason: cancelled.m.reason };
+    const asrStart = inbox.slice(inbox.indexOf(speaking)).find((x) => x.m.type === "speech.start");
+    barge = {
+      speechStartToCancelledMs: Math.round(cancelled.t - speakAt),
+      asrSpeechStartToCancelledMs: asrStart ? Math.round(cancelled.t - asrStart.t) : null,
+      reason: cancelled.m.reason,
+      audioFramesAfterCancel: 0,
+    };
+    const binBefore = binCount;
+    await sleep(500);
+    barge.audioFramesAfterCancel = binCount - binBefore;
   } catch {
     const done = inbox.slice(from).some((x) => x.m.type === "reply");
     barge = { cancelled: false, note: done ? "reply finished before the barge-in threshold" : "no cancel seen" };
