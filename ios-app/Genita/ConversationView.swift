@@ -87,6 +87,7 @@ struct ConversationView: View {
                         if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
                         }
+                        }
                         if connecting {
                             let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                             ZStack {
