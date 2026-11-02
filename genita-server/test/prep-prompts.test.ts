@@ -15,22 +15,28 @@ test("silent prompt fits fal's 2,500-char cap for every emotion and kind", () =>
   assert.ok(SILENT_NEGATIVE.length <= KLING_PROMPT_MAX);
 });
 
-test("silent prompt keeps the approved framing and identity rules", () => {
-  const p = silentPrompt("neutral", "human");
-  assert.ok(p.startsWith("[emotion: friendly]"));
-  for (const h of ["REAL HUMAN VIDEO", "SILENT MODE (CRITICAL)", "CAMERA (LOCKED", "BACKGROUND", "EXPRESSION", "EYES", "HEAD & BODY", "REALISM"]) assert.ok(p.includes(h), h);
-  for (const rule of ["ONE mouth only", "Static locked-off tripod camera", "Do NOT redesign, beautify, stylize, or reinterpret the face", "must NOT move the head closer to or farther from the camera"]) assert.ok(p.includes(rule), rule);
+test("listening loops retain identity, silence and framing sections for every companion", () => {
+  for (const kind of ["human", "animal", "character"] as const) {
+    const p = silentPrompt("neutral", kind);
+    assert.ok(p.startsWith("[emotion: attentive ease"));
+    for (const h of ["SILENT MODE (CRITICAL)", "CAMERA (LOCKED, ZERO SCALE CHANGE)", "BACKGROUND", "EXPRESSION", "EYES", "HEAD & BODY", "REALISM"]) assert.ok(p.includes(h), h);
+    for (const rule of ["single anatomical mouth", "head and shoulders keep their pixel size", "depth and apparent head size stay constant"]) assert.ok(p.includes(rule), rule);
+  }
+  assert.match(silentPrompt("neutral", "human"), /REAL HUMAN VIDEO/);
 });
 
 test("emotion line changes per clip; non-human prompts drop the real-person framing", () => {
-  assert.notEqual(silentPrompt("happy"), silentPrompt("neutral"));
+  for (const kind of ["human", "animal", "character"] as const) {
+    assert.equal(new Set(PREP_EMOTIONS.map((emotion) => silentPrompt(emotion, kind))).size, PREP_EMOTIONS.length);
+  }
   assert.match(silentPrompt("happy"), /closed-lip smile/);
   assert.match(silentPrompt("warm"), /tender/);
   assert.doesNotMatch(silentPrompt("neutral", "animal"), /REAL HUMAN|real person/);
+  assert.doesNotMatch(silentPrompt("neutral", "character"), /REAL HUMAN|real person/);
   assert.match(silentPrompt("neutral", "character"), /original art style/);
 });
 
-test("kling input is Dyno's setting: 10 s, silent, start frame only", () => {
+test("kling input keeps the ten-second silent start-frame request shape", () => {
   const i = klingSilentInput("https://x/scene.png", "neutral", "human");
   assert.equal(i.duration, "10");
   assert.equal(i.generate_audio, false);
@@ -39,9 +45,11 @@ test("kling input is Dyno's setting: 10 s, silent, start frame only", () => {
   assert.ok(!("end_image_url" in i));
 });
 
-test("human scene prompt is the T2 prompt (Muse 9.2/10)", () => {
-  assert.match(SCENE_PROMPT.human, /^Keep this exact same person: identical face shape/);
-  assert.match(SCENE_PROMPT.human, /vertical 9:16/);
+test("scene edits preserve likeness, portrait framing and non-human appearance", () => {
+  for (const kind of ["human", "animal", "character"] as const) assert.match(SCENE_PROMPT[kind], /vertical 9:16/);
+  assert.match(SCENE_PROMPT.human, /unaltered likeness/);
+  assert.match(SCENE_PROMPT.animal, /reference animal's species/);
+  assert.match(SCENE_PROMPT.character, /original art style/);
 });
 
 test("import prompt asset matches docs/profile-import/prompt-final.txt", { skip: !existsSync(repo("docs/profile-import/prompt-final.txt")) }, () => {

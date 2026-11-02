@@ -1,29 +1,38 @@
 /**
  * Onboarding prep services: the vendor calls behind the /v1/import and
  * /v1/companion routes. Pure decisions live in the sibling modules; this file
- * only wires them to Spark, SAM, Muse Image, Meta voice and fal CDN uploads.
+ * only wires them to Spark, SAM, Muse Image, Meta voice and optional CDN uploads.
  */
 import { randomUUID } from "node:crypto";
 import { sparkJson } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
-import { falUpload } from "./fal.ts";
+import { falUpload, falSubmit, falWait } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { applyOrder, buildOrderRequest, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
+import { applyOrder, buildOrderRequest, isDeviceVoice, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
+import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
 export type PrepDeps = {
   metaKey: string;
+  /** read only when `kling` is on */
   falKey: string | null;
   voice?: import("../config.ts").VoiceConfig | null;
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** GENITA_KLING=1: fal scene fallback + Kling clips + lips step. Off (default): scene → face set, Meta only */
+  kling?: boolean;
+  /** Muse Image + SAM; tests pass a fake */
+  media?: MediaApi;
 };
+
+export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
+export const mediaOf = (d: PrepDeps): MediaApi => d.media ?? META_MEDIA;
 
 export class PrepError extends Error {
   readonly status: number;
@@ -100,18 +109,18 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
 
 export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number; url: string | null };
 
-/** Muse Image edit, retried once on failure. CDN upload remains for the Kling path (#158). */
+/** Muse Image edit, retried once on failure; optional CDN upload for clips. */
 export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: CompanionKind, signal?: AbortSignal): Promise<SceneResult> {
   const t0 = performance.now();
   let out: Buffer;
   try {
-    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   } catch (err) {
     if (signal?.aborted) throw err;
     d.log("scene.retry", { reason: "muse_image_failed" });
-    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   }
-  const url = d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
+  const url = d.kling && d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
   return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
 }
 
@@ -134,6 +143,8 @@ export async function orderedVoices(d: PrepDeps, userId: string, kind: Companion
 export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer> {
   const v = d.voices.find((x) => x.id === voiceId);
   if (!v) throw new PrepError(404, "unknown_voice");
+  // device voices are previewed by the app with its own synthesizer
+  if (isDeviceVoice(v.id)) throw new PrepError(404, "device_preview", "preview this voice on the device");
   const cached = await d.store.getVoicePreview(v.id, PREVIEW_VERSION);
   if (cached) return cached;
   if (!d.voice) throw new PrepError(503, "voice_unavailable");

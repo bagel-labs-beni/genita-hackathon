@@ -1,70 +1,63 @@
 /**
- * Generation prompts for companion prep (pure, unit-tested).
- *
- * Silent video: the approved prompt targets Kling 3.0, 1080p, 10 s.
- * The original is 4,172 chars, but fal's Kling 3.0
- * endpoint caps `prompt` and `negative_prompt` at 2,500 each (OpenAPI schema,
- * checked 11/2). So the NEGATIVE block goes to `negative_prompt` verbatim and
- * the body below is the same sections and rules with the repetition removed
- * (the CAMERA block alone said "no zoom" nine ways). test/prep-prompts.test.ts
- * checks every section header survives and the length stays under the cap.
+ * Genita companion preparation: image edits and quiet listening loops.
+ * Each loop keeps the supplied appearance and framing stable so emotion clips
+ * can alternate during a call. Prompt fields must fit the provider's limit.
  */
 export type CompanionKind = "human" | "animal" | "character";
 
-/** Face clips the session switches between on `speaking.emotion` (F4-L13). */
+/** Available listening moods, selected by the session's emotion event. */
 export const PREP_EMOTIONS = ["neutral", "happy", "warm"] as const;
 export type PrepEmotion = (typeof PREP_EMOTIONS)[number];
 
-/** Header line per clip. neutral = Dyno's original "[emotion: friendly]". */
+/** Distinct directions for the three listening moods. */
 const EMOTION_LINE: Record<PrepEmotion, string> = {
-  neutral: "[emotion: friendly]",
-  happy: "[emotion: amused and happy, a warm closed-lip smile, smiling eyes, as if quietly laughing at something they just saw]",
-  warm: "[emotion: tender and affectionate, a soft gaze and a faint gentle smile]",
+  neutral: "[emotion: attentive ease, relaxed lips and an approachable gaze]",
+  happy: "[emotion: quiet delight, cheeks lift into a closed-lip smile and the eyes brighten with gentle amusement]",
+  warm: "[emotion: tender reassurance, an affectionate look with a small, unhurried smile]",
 };
 
 const IDENTITY: Record<CompanionKind, string> = {
   human:
-    "REAL HUMAN VIDEO. The uploaded image represents a real person. Animate the existing person only. Do NOT redesign, beautify, stylize, or reinterpret the face. Preserve the original facial identity, facial proportions, skin texture, facial asymmetry, age appearance and facial structure.",
+    "REAL HUMAN VIDEO: Use the photographed individual as the sole identity reference. Retain their age, skin detail, asymmetry and facial measurements. Add life to that face without retouching attractiveness, inventing features or changing its visual style.",
   animal:
-    "REAL ANIMAL VIDEO. The uploaded image shows a real animal. Animate the existing animal only. Do NOT redesign, beautify, stylize, or reinterpret it. Preserve its identity, markings, fur or feather texture, proportions, age appearance and head shape.",
+    "REAL ANIMAL VIDEO: Bring the pictured animal to life while retaining its species, distinctive coat or plumage, age and anatomy. Its markings, muzzle and silhouette must remain recognizable; avoid cosmetic changes or human facial features.",
   character:
-    "ANIMATED CHARACTER VIDEO. The uploaded image shows an illustrated, 3D or stylized character. Animate the existing character only, in its original art style. Do NOT redesign, restyle, beautify, or make it photorealistic. Preserve its design, colors, line work, proportions and face shape.",
+    "ANIMATED CHARACTER VIDEO: Work within the supplied character's original art style. Retain its palette, outlines, construction and silhouette. Animate that design without a style conversion, realistic skin or an upgraded appearance.",
 };
 
-const SUBJECT: Record<CompanionKind, string> = { human: "person", animal: "animal", character: "character" };
+const SUBJECT: Record<CompanionKind, string> = { human: "companion", animal: "animal companion", character: "drawn companion" };
 
 const REALISM: Record<CompanionKind, string> = {
   human:
-    "REALISM: Realistic human motion. Keep the original facial geometry, lighting and image quality. Preserve all facial details and identity. The result should resemble a real webcam or video-call frame where the person is quietly listening, thinking or waiting without speaking, with only subtle micro-expressions, natural blinking and realistic breathing.",
+    "REALISM: Match the photograph's illumination, resolution and facial anatomy. Aim for a believable person attending a video conversation: tiny reactions, ordinary eyelid motion and quiet respiration, with no spoken response.",
   animal:
-    "REALISM: Realistic animal motion. Keep the original geometry, lighting and image quality. Preserve all details and identity. The result should resemble a real video-call frame where the animal quietly listens and waits, with natural blinking, tiny ear or head motion and realistic breathing.",
+    "REALISM: Respect the species' anatomy and the photograph's light and detail. Convey a calm animal noticing the viewer through slight ear adjustments, occasional blinks and breathing; keep its own face rather than humanizing it.",
   character:
-    "REALISM: Motion that fits the original art style. Keep the original geometry, lighting, colors and rendering. Preserve all details and identity. The result should resemble a video-call frame where the character quietly listens and waits, with natural blinking and gentle breathing.",
+    "REALISM: Let the reference artwork determine how motion is drawn or rendered. Keep its contours, shading and colors consistent. Small blinks and a restrained breathing rhythm should suggest a character paying attention.",
 };
 
-/** silent.txt NEGATIVE block, verbatim (385 chars). */
+/** Unwanted motion and anatomy for every quiet loop. */
 export const SILENT_NEGATIVE =
-  "zoom in, zoom out, punch-in, push-in, pull-back, dolly, camera movement, camera drift, scale change, resizing frame, magnify, crop change, reframing, subject growing larger, subject shrinking, head moving toward camera, changing framing, parallax, background motion, mouth opening, lip-sync, speaking, talking, whispering, multiple mouths, extra mouth, face distortion, identity change";
+  "articulating lips, open jaw, whispered words, speech animation, duplicate lip edges, phantom mouths in facial shading, warped features, altered identity, magnification, shrinking subject, wandering viewpoint, lens zoom, dolly travel, shifting crop, rotated view, moving scenery, depth parallax, flickering illumination, forward head travel, backward head travel";
 
 export const KLING_PROMPT_MAX = 2500;
 
 export function silentPrompt(emotion: PrepEmotion, kind: CompanionKind = "human"): string {
   const s = SUBJECT[kind];
-  const S = s.charAt(0).toUpperCase() + s.slice(1);
   return [
     EMOTION_LINE[emotion],
     IDENTITY[kind],
-    `SILENT MODE (CRITICAL): The ${s} does NOT speak. No speech, no speech articulation, no lip-sync, no silent talking, whispering or muttering, no mouth movements that resemble speech. The mouth remains naturally closed from the first frame to the final frame. The ${s} has ONE mouth only. Do NOT generate additional mouths or secondary lip structures. Do NOT reinterpret shadows, beard lines, nose shadows, chin contours, wrinkles or shading as mouth shapes.`,
-    `CAMERA (LOCKED, ZERO SCALE CHANGE): Static locked-off tripod camera. No camera movement, zoom, dolly, push-in, pull-back, pan, tilt, roll, reframing, crop change or re-centering. Focal length, field of view and camera-to-subject distance are fixed. The subject's size in the frame is LOCKED: the head and shoulders occupy exactly the same proportion of the frame in every frame, with identical framing and scale at the first and final frame. Only the face and micro-motions animate; the frame itself is completely immobile.`,
-    "BACKGROUND: Completely static. No background animation, moving objects, parallax or lighting changes. It should feel like a still photograph where only a subtle living presence exists.",
-    `EXPRESSION: The ${s} expresses the emotion above without speaking. Natural, subtle emotional cues only. No exaggerated, influencer-style or cartoon-like facial acting.`,
-    "EYES: Natural blinking, steady gaze, subtle eye movement.",
-    `HEAD & BODY: Very small natural head micro-movements, tiny posture adjustments, subtle breathing, minimal shoulder movement. No swaying, large gestures or dramatic movement. ${S} head micro-movements must NOT move the head closer to or farther from the camera.`,
+    `SILENT MODE (CRITICAL): Show the ${s} listening throughout. Keep the lips resting together for the whole clip; forbid syllable formation, whispered dialogue and lip synchronization. There must be a single anatomical mouth. Beard edges, creases and shadows remain surface detail, never extra lips.`,
+    "CAMERA (LOCKED, ZERO SCALE CHANGE): Freeze the viewpoint as if the camera were bolted in place. Fix lens angle, focal length, crop and subject distance. Never pan, tilt, rotate, zoom or recenter. Match the opening composition at the end: head and shoulders keep their pixel size and position. Animate within this fixed view only.",
+    "BACKGROUND: Hold every surrounding object and light source still. Keep scenery frozen, without drifting textures, parallax or exposure changes; all signs of life belong to the companion.",
+    `EXPRESSION: Communicate the requested mood through restrained facial detail on the ${s}. Prefer a small, believable response over theatrical acting, exaggerated reactions or performative poses.`,
+    "EYES: Maintain comfortable attention toward the viewer, allowing brief blinks and small gaze shifts rather than staring or rolling the eyes.",
+    `HEAD & BODY: Give the ${s} a faint breathing rhythm with minute posture and shoulder adjustments. Avoid rocking, broad gestures and nodding toward the lens. Keep these movements parallel to the image plane so depth and apparent head size stay constant.`,
     REALISM[kind],
   ].join("\n");
 }
 
-/** fal-ai/kling-video/v3/pro/image-to-video input (Dyno: Kling 3.0, 1080p, 10 s, silent). */
+/** A ten-second, audio-free image animation request using only its first frame. */
 export function klingSilentInput(startImageUrl: string, emotion: PrepEmotion, kind: CompanionKind) {
   return {
     start_image_url: startImageUrl,
@@ -75,18 +68,14 @@ export function klingSilentInput(startImageUrl: string, emotion: PrepEmotion, ki
   };
 }
 
-/**
- * Call-scene edit (F2-L21). The human prompt is the exact 11/1 T2 prompt
- * (Muse Image 9.2/10 identity over 9 people). Animal/character keep the same
- * framing rules but ask for the original species / art style.
- */
+/** Portrait scene edits preserve identity while establishing a quiet call setting. */
 export const SCENE_PROMPT: Record<CompanionKind, string> = {
   human:
-    "Keep this exact same person: identical face shape, eyes, nose, mouth, skin texture, age and hair. Recompose as a front-facing phone video call selfie: vertical 9:16, face centred in the upper middle, head and upper chest visible, looking directly into the camera, lips gently closed, relaxed neutral expression, sitting in a softly lit lived-in bedroom. Natural unretouched photo, no beautification, no text.",
+    "Use the reference person's unaltered likeness, including facial asymmetry, complexion, age, hairstyle and individual features. Create a vertical 9:16 portrait resembling a phone call. Face the lens with eyes meeting the viewer; place the face above the image midpoint and include the upper chest. Keep lips at rest and expression calm. Set the person in a softly illuminated, everyday bedroom. Retain photographic texture without skin retouching, cosmetic enhancement or lettering.",
   animal:
-    "Keep this exact same animal: identical markings, fur or feathers, eye colour, face shape and age. Recompose as a front-facing phone video call selfie: vertical 9:16, head centred in the upper middle, head and upper chest visible, looking directly into the camera, mouth gently closed, relaxed, sitting in a softly lit lived-in room. Natural unretouched photo, no text.",
+    "Use the reference animal's species and recognizable appearance: its coat or feathers, eye color, head anatomy, age and unique markings. Arrange a vertical 9:16 call portrait with the animal facing the viewer, head above center and upper torso included. Keep its mouth at rest and posture comfortable in a softly illuminated domestic room. Preserve a photographic finish; add neither lettering nor human facial traits.",
   character:
-    "Keep this exact same character in its exact original art style: identical design, colours, line work, face shape and proportions. Recompose as a front-facing video call frame: vertical 9:16, face centred in the upper middle, head and upper chest visible, looking directly at the viewer, mouth gently closed, relaxed neutral expression, in a softly lit cosy room drawn in the same style. No text.",
+    "Use the supplied character's established design and original art style, preserving outlines, palette, anatomy and proportions. Compose a vertical 9:16 call portrait: face above center, chest included, gaze toward the viewer. Give it a calm expression and resting, closed mouth. Depict a comfortable room with soft illumination using the artwork's own rendering style throughout. Omit captions and decorative lettering.",
 };
 
 export const SCENE_SIZE = "1024x1820";

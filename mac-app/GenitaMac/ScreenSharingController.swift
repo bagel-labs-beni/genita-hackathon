@@ -32,8 +32,8 @@ import CoreMedia
     private let capture = WatchCapture()
     private var reactingTask: Task<Void, Never>?
     private static let noticeKey = "genita.watch.noticeShown"
-    private let queue = DispatchQueue(label: "com.genita.screen-sharing")
-    private let audioQueue = DispatchQueue(label: "com.genita.screen-sharing.audio")
+    private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
+    private let audioQueue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing.audio")
     override init() { super.init(); SCContentSharingPicker.shared.add(self) }
     func requestSharing() {
         if isSharing { stop(); return }

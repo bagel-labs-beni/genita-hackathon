@@ -192,7 +192,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 ```
 
 - `words`: always sent (captions/karaoke). A word can rarely split across two chunks.
-- `mouth`: only when `lip.active` is `atlas`. Visemes: `X` rest, `A` open, `E` wide, `O` round, `U` small round, `M` closed (m/b/p), `F` lip-teeth, `L` tongue, `S` small open. Apply each cue at its time against the audio clock. F4-L20 will swap these for legacy-engine atlas cell ids (`{f, cell}`); the field position stays.
+- `mouth`: only when `lip.active` is `atlas`. Visemes: `X` rest, `A` open, `E` wide, `O` round, `U` small round, `M` closed (m/b/p), `F` lip-teeth, `L` tongue, `S` small open. Apply each cue at its time against the audio clock. F4-L20 will swap these for atlas cell ids (`{f, cell}`); the field position stays.
 
 ## Device voice mode (`start.tts`)
 

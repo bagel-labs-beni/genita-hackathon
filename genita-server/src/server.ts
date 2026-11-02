@@ -103,6 +103,7 @@ export async function startServer(
   if (accounts) accounts.onUserDeleted = (userId) => {
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
+    void prep.runner.forgetUser(userId).catch((err) => log("prep.forget_failed", { message: String(err).slice(0, 200) }));
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
