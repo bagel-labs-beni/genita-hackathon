@@ -50,6 +50,35 @@ struct LiveBox: Identifiable, Equatable {
         maskCache[item.id] = (fill, edge)
         return (fill, edge)
     }
+    // MARK: mask labels (demo S3 option c)
+
+    /// CameraStage space: the menu button (ConversationView: 47 pt at (47.5, 86.5 + top)), padded 6 pt.
+    static func menuRect(top: CGFloat) -> CGRect { CGRect(x: 24 - 6, y: 63 + top - 6, width: 47 + 12, height: 47 + 12) }
+    /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
+    static func pipRect(view: CGSize, top: CGFloat, sheetHalf: Bool) -> CGRect {
+        let midX = sheetHalf ? 68 : view.width - 68
+        return CGRect(x: midX - 48 - 6, y: 184 + top - 64 - 6, width: 96 + 12, height: 128 + 12)
+    }
+
+    /// Where a label pill goes (absolute origin), keeping clear of `obstacles` (menu button, PiP). Tried in order:
+    /// above the box at its left edge (where boxes put it), below it, inside its top, then each of those slid beside
+    /// the obstacle it hits. Never above `topInset`, never off screen. Nothing fits: the box rule (above / below).
+    static func labelOrigin(_ rect: CGRect, label: CGSize, view: CGSize, topInset: CGFloat, obstacles: [CGRect]) -> CGPoint {
+        let ys = [rect.minY - label.height - 4, rect.maxY + 4, rect.minY + 4]
+        var xs = [max(0, rect.minX)]
+        for o in obstacles { xs += [o.maxX + 4, o.minX - label.width - 4] }
+        for y in ys {
+            for x in xs {
+                let r = CGRect(x: x, y: y, width: label.width, height: label.height)
+                guard r.minY >= topInset, r.minX >= 0, r.maxX <= view.width, r.maxY <= view.height else { continue }
+                // beside the box, not floating far from it
+                guard r.maxX >= rect.minX - 8, r.minX <= rect.maxX + 8 else { continue }
+                if !obstacles.contains(where: { $0.intersects(r) }) { return r.origin }
+            }
+        }
+        return CGPoint(x: max(0, rect.minX), y: rect.minY + labelOffsetY(rect, topInset: topInset))
+    }
+
     /// One label pill per label: on its largest match among those actually drawn (a hidden one can't own it).
     /// `drawn` = the boxes on screen with their view rects. Returns the ids that carry a label.
     static func labelOwners(_ drawn: [(item: LiveBox, rect: CGRect)]) -> Set<String> {

@@ -161,4 +161,22 @@ import XCTest
         XCTAssertEqual(b.highlighted, "tomatoes")
         XCTAssertFalse(CameraBoxes.masksEnabled, "masks are off by default (boxes, as today)")
     }
+
+    /// Demo S3 option (c), masks only: a label never sits under the top-left menu button or the self-view PiP;
+    /// it moves below / beside instead. Without obstacles it stays where boxes put it (above, left-aligned).
+    func testMaskLabelsStayClearOfTheMenuButtonAndThePip() {
+        let view = CGSize(width: 390, height: 844), top: CGFloat = 59, label = CGSize(width: 80, height: 28)
+        let menu = CameraBoxes.menuRect(top: top), pip = CameraBoxes.pipRect(view: view, top: top, sheetHalf: false)
+        let open = CGRect(x: 120, y: 400, width: 100, height: 80)
+        XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip]), CGPoint(x: 120, y: 368), "free space: above, as boxes")
+        // the counter capture: a tomato right under the menu button — its label went onto the button
+        let tomato = CGRect(x: 18, y: 150, width: 120, height: 115)
+        let t = CameraBoxes.labelOrigin(tomato, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip])
+        XCTAssertFalse(CGRect(origin: t, size: label).intersects(menu), "not on the menu button")
+        // a pepper under the PiP: the mask may be under it, its label may not
+        let pepper = CGRect(x: 250, y: 170, width: 130, height: 120)
+        let p = CameraBoxes.labelOrigin(pepper, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip])
+        XCTAssertFalse(CGRect(origin: p, size: label).intersects(pip), "not under the PiP")
+        XCTAssertTrue(CGRect(origin: .zero, size: view).contains(CGRect(origin: p, size: label)), "still on screen")
+    }
 }
