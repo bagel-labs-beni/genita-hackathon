@@ -13,7 +13,7 @@
 import Foundation
 
 public struct MotionV2Params: Codable, Equatable, Sendable {
-    public var jawAttackMs = 70.0, jawReleaseMs = 100.0, jawKnee = 0.8
+    public var jawAttackMs = 70.0, jawReleaseMs = 80.0, jawKnee = 0.8
     public var shapeTauMs = 100.0, weakShape = 0.5, shortVowelMs = 80.0
     public var anticipation = 0.3
     public var amp = 0.3, unstressed = 0.7, lip = 0.9
@@ -31,7 +31,41 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var micro = 0.15
     /// v25: how much the chin follows the key flows below the lower lip (applied to the flows at load)
     public var chinScale = 0.5
+    /// 11/3 (Chelsea: "barely moves"): opening gain by stress — stressed vowels open more, unstressed less.
+    public var stressedGain = 1.8, unstressedGain = 0.6
+    public var stressedJawGain = 2.6, unstressedJawGain = 0.8
     public init() {}
+    enum CodingKeys: String, CodingKey { case jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
+    /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try c.decodeIfPresent(Double.self, forKey: .jawAttackMs) { jawAttackMs = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .jawReleaseMs) { jawReleaseMs = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .jawKnee) { jawKnee = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .shapeTauMs) { shapeTauMs = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .weakShape) { weakShape = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .shortVowelMs) { shortVowelMs = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .anticipation) { anticipation = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .amp) { amp = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressed) { unstressed = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .lip) { lip = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .preemphMs) { preemphMs = v }
+        if let v = try c.decodeIfPresent(Int.self, forKey: .closureFrames) { closureFrames = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .springHz) { springHz = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .idle) { idle = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .stressPercentile) { stressPercentile = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedMs) { shortStressedMs = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedLip) { shortStressedLip = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .shortStressedJaw) { shortStressedJaw = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .closePre) { closePre = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .micro) { micro = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .chinScale) { chinScale = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .stressedGain) { stressedGain = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressedGain) { unstressedGain = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .stressedJawGain) { stressedJawGain = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .unstressedJawGain) { unstressedJawGain = v }
+    }
 }
 
 struct MotionV2 {
@@ -127,6 +161,11 @@ struct MotionV2 {
         var J = tanh(jv * p.jawKnee)
         if p.idle > 0, !closed { J = max(0, J + 0.15 * p.idle * sin(2 * .pi * 0.3 * ms / 1000 + 0.7)) }
         var A = p.lip > 0 ? min(1, jv / max(p.amp, 1e-3) * p.lip) : J
+        if curVowel != nil {
+            let g = stressed ? p.stressedGain : p.unstressedGain
+            // the jaw ladder decides which key (how open): stressed vowels climb it further
+            A = min(1, A * g); J = min(0.95, J * (stressed ? p.stressedJawGain : p.unstressedJawGain))
+        }
         if shortStressed { A = max(A, p.shortStressedLip); J = max(J, p.shortStressedJaw) }
         // key targets
         var tgt = [Double](repeating: 0, count: order.count)
