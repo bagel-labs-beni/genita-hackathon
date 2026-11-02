@@ -91,9 +91,23 @@ final class ProximityTests: XCTestCase {
         XCTAssertNotNil(feed(&d, rssi: -40, from: 0, seconds: 1))
         // the call moved, the Mac stopped scanning; the user taps Continue here with the iPhone still on the palm rest
         d.reset()
-        XCTAssertNil(feed(&d, "rotated-token-peripheral", rssi: -40, from: 1, seconds: 30), "no move until the iPhone really leaves")
-        XCTAssertNil(feed(&d, rssi: -65, from: 31.05, seconds: 0.3))
-        XCTAssertNotNil(feed(&d, rssi: -40, from: 31.4, seconds: 1), "taken away and brought back: moves")
+        XCTAssertNil(feed(&d, rssi: -40, from: 1, seconds: 30), "no move until the iPhone really leaves")
+        XCTAssertNil(feed(&d, "someone-else-far", rssi: -80, from: 31.05, seconds: 0.3), "another phone far away doesn't re-arm it")
+        XCTAssertNil(feed(&d, rssi: -40, from: 31.4, seconds: 1), "still lying there: still no move")
+        XCTAssertNil(feed(&d, rssi: -65, from: 32.45, seconds: 0.3))
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 32.8, seconds: 1), "taken away and brought back: moves")
+    }
+
+    func testANewBluetoothIdentityLyingOnTheMacDoesNotMoveButAnApproachingOneDoes() {
+        var d = ProximityDetector()
+        XCTAssertNotNil(feed(&d, "old-address", rssi: -40, from: 0, seconds: 1))
+        // iOS rotated its address while the phone lies on the Mac: the new identity is always close
+        XCTAssertNil(feed(&d, "new-address", rssi: -40, from: 1.05, seconds: 40), "always close, never seen leaving: no move")
+        var e = ProximityDetector()
+        XCTAssertNotNil(feed(&e, "old-address", rssi: -40, from: 0, seconds: 1))
+        // 25 s later (old identity silent) a phone comes from across the room
+        XCTAssertNil(feed(&e, "approaching", rssi: -60, from: 26, seconds: 0.5))
+        XCTAssertNotNil(feed(&e, "approaching", rssi: -40, from: 26.55, seconds: 1), "approached from far: moves")
     }
 
     func testHoldWaitsForTheToken() {

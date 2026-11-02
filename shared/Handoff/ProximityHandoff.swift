@@ -94,8 +94,9 @@ struct ProximityConfig: Equatable {
 /// - The RSSI is smoothed with the median of the last 3 readings (one spike doesn't count).
 /// - "Close" must hold continuously for `holdSeconds` with at least `minSamples` readings; a reading below
 ///   `enterRSSI` or a gap over `maxGapSeconds` restarts the hold.
-/// - After a trigger nothing triggers again until a phone is seen below `exitRSSI` (hysteresis: it really left),
-///   and not for `cooldownSeconds`. This survives `reset()` and scan restarts, so "Continue here" with the
+/// - After a trigger nothing triggers again until *that* phone is seen below `exitRSSI` (hysteresis: it really left),
+///   and not for `cooldownSeconds`. Another phone far away never re-arms it. If that phone's Bluetooth identity goes
+///   silent for `forgetFiredSeconds` (address rotation, or it left range), the first phone then seen *not* close re-arms. This survives `reset()` and scan restarts, so "Continue here" with the
 ///   iPhone still lying next to the Mac never bounces the call back.
 /// - A hold only completes while the peripheral's token is known (`canReport`); until then it keeps counting.
 struct ProximityDetector {
@@ -103,8 +104,9 @@ struct ProximityDetector {
     private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0 }
     private var tracks: [String: Track] = [:]
     private var cooldownUntil = -Double.infinity
-    /// false after a trigger until a phone is seen far (below exitRSSI)
-    private var departed = true
+    /// the peripheral that triggered last, until it is seen leaving
+    private var fired: (key: String, lastAt: Double)?
+    static let forgetFiredSeconds = 20.0
 
     init(config: ProximityConfig = ProximityConfig()) { self.config = config }
 
@@ -121,17 +123,24 @@ struct ProximityDetector {
         t.recent = Array((t.recent + [rssi]).suffix(3))
         let level = Self.median(t.recent)
         var fire = false
+        if let f = fired {
+            if key == f.key {
+                fired?.lastAt = now
+                if level < config.exitRSSI { fired = nil }
+            } else if now - f.lastAt > Self.forgetFiredSeconds, level < config.enterRSSI {
+                fired = nil
+            }
+        }
         if level >= config.enterRSSI {
             if t.closeSince == nil { t.closeSince = now; t.samples = 0 }
             t.samples += 1
-            if departed, canReport, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
+            if fired == nil, canReport, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
                 fire = true
-                departed = false
+                fired = (key, now)
                 cooldownUntil = now + config.cooldownSeconds
             }
         } else {
             t.closeSince = nil; t.samples = 0
-            if level < config.exitRSSI { departed = true }
         }
         tracks[key] = t
         // forget peripherals not heard for a while (tokens rotate, so keys come and go)

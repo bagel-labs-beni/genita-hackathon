@@ -37,18 +37,31 @@ import os
         guard self.handoff == nil else { return }
         self.handoff = handoff
         handoff.server.onMessage = { [weak self] m in self?.receive(m) }
-        // A locked Mac never takes the call.
+        // A locked Mac never takes the call: stop scanning, and (flag on) tell the server, which re-checks the
+        // reporting Mac's presence right before the move. Re-sent after a reconnect (MacHandoff's hello says active).
         let center = DistributedNotificationCenter.default()
         center.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screenLocked = true; self?.stopScan() }
+            MainActor.assumeIsolated { self?.setLocked(true) }
         }
         center.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screenLocked = false }
+            MainActor.assumeIsolated { self?.setLocked(false) }
+        }
+        let hello = handoff.server.onConnect
+        handoff.server.onConnect = { [weak self] in
+            hello?()
+            MainActor.assumeIsolated { if let self, self.screenLocked, self.enabled { self.handoff?.server.setActive(false) } }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
 
     private var enabled: Bool { ProximityHandoffFlag.enabled(remote: GenitaAppConfigStore.shared.config.flag("proximityHandoff", default: false)) }
+
+    private func setLocked(_ locked: Bool) {
+        guard screenLocked != locked else { return }
+        screenLocked = locked
+        if locked { stopScan() }
+        if enabled { handoff?.server.setActive(!locked) }
+    }
 
     private var wanted: Bool {
         guard let handoff else { return false }
