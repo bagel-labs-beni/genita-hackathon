@@ -104,7 +104,7 @@ struct ScanLine: View {
 }
 
 /// r03 `.wave`: four 2 × 12 bars, 900 ms.
-struct TalkWave: View {
+struct FindsTalkWave: View {
     var color: Color = CallInk.ink
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -185,7 +185,7 @@ struct FindsSheet: View {
         let f = finds.current
         return VStack(spacing: 0) {
             HStack(spacing: 12) {
-                TalkWave()
+                FindsTalkWave()
                 VStack(alignment: .leading, spacing: 0) {
                     Text(f?.failed?.reason == .unclear ? "I can’t see it clearly" : f?.searchTitle ?? "Looking").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
                     Text(f?.failed?.message ?? f?.searchDetail ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2)
@@ -303,7 +303,7 @@ struct FindsSheet: View {
         let title = finds.entries.first { $0.id == finds.newFind }?.card?.title ?? ""
         return Button { withAnimation(.drawer) { finds.viewNewFind() } } label: {
             HStack(spacing: 8) {
-                TalkWave(color: CallInk.onInk)
+                FindsTalkWave(color: CallInk.onInk)
                 (Text("New: ") + Text(title).fontWeight(.semibold)).font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Text("View").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
             }.padding(.horizontal, 12).frame(width: 228, height: 44).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
