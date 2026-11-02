@@ -320,6 +320,9 @@ final class GenitaUITests: XCTestCase {
         app.launch()
         let toast = app.descendants(matching: .any)["signInFailed"].firstMatch
         XCTAssertTrue(toast.waitForExistence(timeout: 10))
+        // one element that reads the whole message (VoiceOver, and the query is unambiguous)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "signInFailed").count, 1)
+        XCTAssertTrue(toast.label.contains("Couldn’t reach Apple. Check your connection and try again."), toast.label)
         // headline + subtitle end near canvas y 265 (design) -> the card must start below 250 pt on any phone
         XCTAssertGreaterThanOrEqual(toast.frame.minY, 250, "the card starts under 'Built from your stories, rhythm and boundaries.'")
         XCTAssertLessThanOrEqual(toast.frame.width, 342.5)
