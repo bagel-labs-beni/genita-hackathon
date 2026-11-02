@@ -31,6 +31,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
+| 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 
 ```
 wss://<host>/v1/session
@@ -472,6 +473,25 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 | DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
 
 Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
+
+## App config (`GET /v1/app-config`)
+
+Public (no token: the apps read it before sign-in; the body has no user data). Data only — the apps never run
+downloaded code; they bundle the same defaults (`shared/protocol-samples/http/app-config.json` shape) and ignore unknown keys.
+
+| field | meaning |
+|---|---|
+| `schema` | `1` |
+| `updates.ios` / `updates.mac` | `{minBuild, latestBuild, url}` — iOS: `latestBuild` > installed `CFBundleVersion` shows the "new version" banner linking `url` (TestFlight public link); below `minBuild` the banner can't be dismissed. Mac: below `minBuild` the app asks Sparkle to check now (`url` = appcast) |
+| `flags` | booleans, e.g. `watchReactions`, `textChat`, `judgeAccess`, `interactiveSplash`, `motion` |
+| `tuning` | numbers, e.g. `prepContinueAfterSceneMs`, `prepStallMs`, `firstCallWaitMs`, `updateCheckHours`; `bargeInMs` mirrors the server's `GENITA_BARGE_IN_MIN_MS` (read-only) |
+| `copy` | strings by key (`{name}` placeholders), e.g. `prep.title`, `call.thinking`, `update.title` |
+| `assets` | name → https URL (remote motion assets) |
+
+Caching: `ETag` + `If-None-Match` → `304`; `Cache-Control: public, max-age=60, stale-while-revalidate=600`.
+Server env: `GENITA_APP_CONFIG_FILE` = JSON overrides deep-merged over the defaults (`src/appconfig/appConfig.ts`), re-read when the file
+changes (checked at most every 5 s), sanitized per key (wrong types, non-https URLs, copy over 500 chars are dropped; a broken file keeps
+the last good config). Change a flag or string on AWS = edit that file on the instance, no restart.
 
 ## Handoff (F6-L7): which device has the sound
 

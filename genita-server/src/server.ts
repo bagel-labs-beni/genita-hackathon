@@ -4,6 +4,7 @@
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
+ *   GET  /v1/app-config    → copy, flags, tuning, update nudges for the apps (src/appconfig, public: no user data)
  *
  *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
  *   WS   /v1/presence, /v1/handoff[/claim|/release] → F6-L7 conversation owner (src/handoff/routes.ts)
@@ -40,6 +41,7 @@ import { attachWatchSocket } from "./watch/socket.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
+import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -102,6 +104,7 @@ export async function startServer(
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
+  const appConfig = createAppConfigSource({ file: env.GENITA_APP_CONFIG_FILE || null, bargeInMs: config.bargeInMinMs, log });
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
@@ -140,6 +143,7 @@ export async function startServer(
 
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (isAppConfigRoute(url.pathname)) return handleAppConfig(req, res, appConfig); // public, before any auth
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.
