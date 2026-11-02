@@ -63,7 +63,7 @@ jobs:
 
       - name: Start the interpret replay server
         run: |
-          node ios-app/Tools/call-replay/server.mjs --port 8789 --file ios-app/Tools/call-replay/session-int.json > replay.log 2>&1 &
+          node ios-app/Tools/call-replay/server.mjs --port 8789 --file ios-app/Tools/call-replay/session-int.json --pace 4 > replay.log 2>&1 &
           for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8789/healthz && break; sleep 0.5; done
 
       - name: iOS interpretation states
