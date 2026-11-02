@@ -77,9 +77,9 @@ struct ConversationView: View {
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
                         if connecting {
+                            let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                             ZStack {
                                 connectingSurface
-                                let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                                 DesignText(node: label, text: "Connecting to \(model.companionDisplayName)…").frame(width: lineWidth(for: label), height: label.h)
                             }.frame(width: max(175, lineWidth(for: label) + 40), height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: 142 + top).accessibilityIdentifier("connectingPill")
                         }

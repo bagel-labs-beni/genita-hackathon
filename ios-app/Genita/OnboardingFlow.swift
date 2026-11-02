@@ -23,8 +23,27 @@ extension AppState {
         guard serverWired, onboarding.auth.isSignedIn else { return }
         let state = await onboarding.auth.sessionState()
         var me: GenitaMe?
-        if case .active(let m) = state { me = m }
-        apply(StartRouter.route(state, device: .iphone), me: me)
+        if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
+        let route = StartRouter.route(state, device: .iphone)
+        // a companion on the server but not on this phone (reinstall, new phone): bring its name and card back first
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil { await restoreCompanion() }
+        apply(route, me: me)
+    }
+
+    func restoreCompanion() async {
+        guard let c = try? await onboarding.companion() else { return }
+        setup.companionName = c.name
+        setup.imageId = c.imageId
+        setup.imageType = c.type
+        setup.companionCreated = true
+        if let p = c.session?.persona { setup.serverPersona = p }
+        if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
+        prep = c.prep
+        // the face on this phone: the companion's call scene (the original photo isn't downloadable)
+        if setup.imageData == nil, let url = c.prep?.sceneURL, url.scheme == "https",
+           let (data, res) = try? await URLSession.shared.data(from: url), (res as? HTTPURLResponse)?.statusCode == 200, UIImage(data: data) != nil {
+            setup.imageData = data
+        }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil) {
@@ -148,8 +167,12 @@ extension AppState {
 
     /// V01 "Use this image" → V03 → V02-T / V02-F.
     func checkImage() {
+        // the face is fixed once the companion exists (B7): no second check, no new face
+        if setup.companionCreated == true { go(.voice); return }
         guard let data = setup.imageData else { return }
         imageCheck = nil; imageCheckError = nil
+        imageCheckTask?.cancel()
+        let ticket = UUID(); imageCheckTicket = ticket
         go(.imageCheck)
         guard serverWired else {
             // screen review / UI tests without a server: V02-T as a passed person
@@ -158,14 +181,19 @@ extension AppState {
             return
         }
         checkingImage = true
-        Task {
-            defer { checkingImage = false }
+        imageCheckTask = Task {
+            defer { if imageCheckTicket == ticket { checkingImage = false } }
             do {
                 guard let jpeg = Self.uploadJPEG(data) else { throw GenitaAuthError.badResponse }
                 let r = try await onboarding.checkImage(jpeg: jpeg)
+                // a late answer for an image the user already replaced doesn't count
+                guard imageCheckTicket == ticket, !Task.isCancelled else { return }
                 imageCheck = r
                 if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
-            } catch { imageCheckError = Self.errorLine(error); route(error) }
+            } catch {
+                guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+                imageCheckError = Self.errorLine(error); route(error)
+            }
         }
     }
 
@@ -252,10 +280,15 @@ extension AppState {
     func followPrep() async {
         guard serverWired else { return }
         while !Task.isCancelled {
-            if let p = try? await onboarding.prep() {
+            do {
+                let p = try await onboarding.prep()
                 prep = p
                 if p.isReady { return }
-            }
+            } catch GenitaAuthError.unauthorized {
+                route(GenitaAuthError.unauthorized); return
+            } catch GenitaAuthError.consentRequired {
+                route(GenitaAuthError.consentRequired); return
+            } catch {}
             try? await Task.sleep(for: .seconds(2))
         }
     }

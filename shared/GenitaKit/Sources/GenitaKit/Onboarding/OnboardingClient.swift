@@ -78,6 +78,13 @@ public struct CompanionInfo: Decodable, Equatable, Sendable {
     public var imageId: String?
     public var voiceId: String?
     public var prep: PrepProgress?
+    /// ready-made realtime `start` fields (persona card, imported profile) once the setup answers are saved
+    public var session: Session?
+    public struct Session: Decodable, Equatable, Sendable {
+        public struct User: Decodable, Equatable, Sendable { public var profile: String? }
+        public var persona: ClientMessage.Persona?
+        public var user: User?
+    }
 }
 
 /// PREP-1 "Bringing {name} to life": scene → expressions → mouth (Meta-only face set, 11/2).

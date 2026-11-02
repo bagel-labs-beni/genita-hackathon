@@ -93,6 +93,7 @@ struct ReferenceSignInView: View {
             defer { signingIn = false }
             do {
                 let r = try await AppleSignInFlow().signIn()
+                model.adopt(accountId: r.me.user.id)
                 if r.me.consented { model.signedIn() } else { model.go(.consent) }
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02

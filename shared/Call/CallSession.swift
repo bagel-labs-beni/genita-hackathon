@@ -586,6 +586,7 @@ enum CallStop: Equatable {
         case let .companionNamed(n):
             // F2-L26: "Call yourself Max" — saved on the server; every {name} label follows
             companionName = n.name
+            start?.persona.name = n.name   // a reconnect's start carries the new name too
             interpretBoard.companionName = n.name
             onCompanionNamed?(n.name)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:

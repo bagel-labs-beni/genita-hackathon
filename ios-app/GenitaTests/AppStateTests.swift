@@ -177,6 +177,19 @@ import UIKit
         XCTAssertEqual(a["never"] as? [String], ["Mirror my mood"]); XCTAssertEqual(a["presence"] as? [String], ["Calm", "Warm"])
     }
 
+    func testAnotherAccountOnThisPhoneStartsClean() {
+        let model = AppState(storage: store, imageURL: URL.temporaryDirectory.appending(path: UUID().uuidString))
+        model.adopt(accountId: "a")
+        model.setup.companionName = "Max"; model.setup.styleProfile = "A's taste"; model.setup.companionCreated = true
+        model.setup.imageData = Data([1, 2, 3])
+        model.adopt(accountId: "a")
+        XCTAssertEqual(model.setup.companionName, "Max", "same account keeps its setup")
+        model.adopt(accountId: "b")
+        XCTAssertNil(model.setup.companionName); XCTAssertNil(model.setup.styleProfile); XCTAssertNil(model.setup.imageData)
+        XCTAssertNil(model.setup.companionCreated); XCTAssertEqual(model.setup.accountId, "b")
+        XCTAssertNotEqual(model.callStart.user?.profile, "A's taste")
+    }
+
     func testImportPromptIsTheSharedV3File() {
         XCTAssertTrue(AppState.prompt.hasPrefix("Create an evidence-based personalization profile for Genita"))
         XCTAssertTrue(AppState.prompt.contains("How Genita can help"))

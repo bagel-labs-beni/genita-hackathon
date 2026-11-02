@@ -60,8 +60,10 @@ struct SavedSetup: Codable {
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
     var serverPersona: ClientMessage.Persona?
+    /// The account this setup belongs to (`/me` user id). Another account on this phone starts clean.
+    var accountId: String?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, firstCallPending, serverPersona, accountId }
 
 }
 @MainActor @Observable final class AppState {
@@ -87,6 +89,8 @@ struct SavedSetup: Codable {
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
+    @ObservationIgnored var imageCheckTask: Task<Void, Never>?
+    @ObservationIgnored var imageCheckTicket: UUID?
     @ObservationIgnored var onboarding = OnboardingClient()
     var storage: UserDefaults
     let imageURL: URL
@@ -172,6 +176,17 @@ struct SavedSetup: Codable {
     func signedIn() {
         storage.removeObject(forKey: Self.signedOutKey)
         if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+    }
+    /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
+    /// account, drop it — one account's data never goes out under another's token.
+    func adopt(accountId id: String) {
+        guard setup.accountId != id else { return }
+        if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
+            var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
+            setup = fresh
+            history = []
+        }
+        setup.accountId = id
     }
     /// CS01 agreed: back to the call if that's where the user came from, else on to A03 (name).
     func consentAccepted() {

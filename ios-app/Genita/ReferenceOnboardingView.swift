@@ -243,6 +243,8 @@ import UniformTypeIdentifiers
         DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + fill.h / 2)
     }
     func accept(_ data: Data) {
+        // B7: one companion, the face can't change once it's made
+        guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
         guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
         // a new photo needs a new check (V03); the old result and suggestion don't apply
         model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil
