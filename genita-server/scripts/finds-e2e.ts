@@ -1,5 +1,5 @@
 /**
- * npm run finds:e2e [-- --runs=5 --kind=recipe|outfit|link|all --no-images]
+ * npm run finds:e2e [-- --runs=5 --kind=recipe|outfit|link|all --no-images --record=<dir>]
  *
  * Real keys, real vendors. Starts the server in-process on loopback and acts
  * like the app: start (mic off) → `text` with 2 camera JPEGs → measures, on
@@ -126,6 +126,11 @@ async function once(k: keyof typeof CASES, i: number): Promise<Run> {
   }
   if (k === "link" && created) r.page = created.page;
   console.log(JSON.stringify(r));
+  const rec = arg("record", "");
+  if (rec) {
+    mkdirSync(rec, { recursive: true });
+    writeFileSync(join(rec, `${k}-${i}.json`), JSON.stringify({ question: c.text, firstAudioMs: r.firstAudioMs, events: ev.map((x) => ({ t: Math.round(x.t), ...x.m })) }, null, 1));
+  }
   return r;
 }
 

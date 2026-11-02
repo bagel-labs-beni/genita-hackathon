@@ -399,3 +399,18 @@ test("file store persists cards and images across restarts", async () => {
   await b.removeOwner("alice");
   assert.equal(await new FileFindsStore(dir).getImage("find-0001", "hero"), null);
 });
+
+test("outfit: the card is asked again only when the spoken answer names the other option", async () => {
+  const { disagrees } = await import("../src/finds/pipeline.ts");
+  const j = { pick: 0, options: [{ label: "Beige trench" }, { label: "Denim jacket" }] };
+  assert.equal(disagrees(j, "Go with the trench, it's perfect."), false);
+  assert.equal(disagrees(j, "I'd go with the denim one tonight."), true);
+  assert.equal(disagrees(j, "Both look great!"), false);
+});
+
+test("recipe titles become sentence case", async () => {
+  const { sentenceCase } = await import("../src/finds/pipeline.ts");
+  assert.equal(sentenceCase("Kimchi Fried Rice with Tofu and Egg"), "Kimchi fried rice with tofu and egg");
+  assert.equal(sentenceCase("kimchi fried rice"), "Kimchi fried rice");
+  assert.equal(sentenceCase("Pad Thai"), "Pad thai");
+});
