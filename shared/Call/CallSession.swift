@@ -113,11 +113,13 @@ enum CallStop: Equatable {
     private(set) var findsCount = 0
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
-    var companionName = "Jin"
+    var companionName = ""
     /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
     private(set) var interpretBoard = InterpretBoard()
     /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
     /// Unset = everything plays through CallAudio as usual.
+    /// The app saves a name the server changed in the call (`companion.named`).
+    @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
@@ -231,7 +233,7 @@ enum CallStop: Equatable {
 
     // MARK: lifecycle
 
-    /// Opens the call. Mic stays off until the user turns it on (F4-L22 default).
+    /// Opens the call. The mic starts as the user left it last time (B12; off the very first time).
     func begin(_ start: ClientMessage.Start, endpoint: CallEndpoint? = nil) {
         guard userEnded else { return }
         userEnded = false
@@ -255,6 +257,8 @@ enum CallStop: Equatable {
         #if DEBUG
         installFixtures()
         #endif
+        // B12: mic on again if it was on when the last call ended (asks for permission the usual way)
+        if Self.micWasOn && mode == .chat { toggleMic() }
     }
 
     func end() {
@@ -288,17 +292,28 @@ enum CallStop: Equatable {
     // MARK: user actions
 
     func toggleMic() {
-        if micOn { setMic(false); return }
+        if micOn { setMic(false); Self.micWasOn = false; return }
         micDenied = false
         #if DEBUG
-        if fixture != nil { setMic(true); return }
+        if fixture != nil { setMic(true); Self.micWasOn = true; return }
         #endif
         Self.requestMicrophone { [weak self] granted in
             guard let self else { return }
-            if granted { self.setMic(true) } else { self.micDenied = true }
+            if granted { self.setMic(true); Self.micWasOn = true } else { self.micDenied = true }
         }
     }
 
+    /// B12: the mic starts the way the user left it in the last call (their own toggle; a background
+    /// suspend doesn't count). UI tests start with it off.
+    static var micWasOn: Bool {
+        get {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") { return false }
+            #endif
+            return UserDefaults.standard.bool(forKey: "genita.mic.lastOn")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "genita.mic.lastOn") }
+    }
     /// #2 handoff (iPhone): ARKit tracking may hold the rear camera; it lets go before the call's camera starts,
     /// and tracking re-evaluates when the call's camera changes. The call owns camera and mic (one owner).
     @ObservationIgnored var beforeCameraStart: (() -> Void)?
@@ -518,6 +533,7 @@ enum CallStop: Equatable {
         switch event {
         case let .ready(r):
             link = .live
+            start?.greetAfterMs = nil   // D21: only the very first connect waits; a reconnect doesn't greet again
             sessionId = r.sessionId
             reconnectSince = nil
             answerFailed = false
@@ -596,7 +612,13 @@ enum CallStop: Equatable {
             lip = l.lip
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case let .companionNamed(n):
+            // F2-L26: "Call yourself Max" — saved on the server; every {name} label follows
+            companionName = n.name
+            start?.persona.name = n.name   // a reconnect's start carries the new name too
+            interpretBoard.companionName = n.name
+            onCompanionNamed?(n.name)
+        case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
     }

@@ -19,6 +19,8 @@ export type CancelReason = "barge_in" | "text" | "client";
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
+/** ARPAbet label (GenitaKit LipViseme(phoneme:)), ms on the reply's audio timeline */
+export type PhonemeTiming = { p: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
 // F8 interpretation
@@ -72,6 +74,11 @@ export type StartMessage = {
   tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
+  /**
+   * D21 first call after onboarding (app sends 2000): wait up to this many ms (clamped 0–3000) for the user
+   * to speak or type first; if they do, no greeting; if not, the companion greets. Unset = greet as before.
+   */
+  greetAfterMs?: number;
 };
 
 export type ClientMessage =
@@ -173,6 +180,9 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** server voice, GENITA_VOICE_ALIGN: forced-aligner word + phoneme timing of one clause, after its audio.
+   * seq = the clause's first `audio` seq; ms on the reply's audio timeline (like audio.words). */
+  | { type: "audio.timing"; utteranceId: number; sentence: number; seq: number; words: WordTiming[]; phonemes: PhonemeTiming[] }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -202,7 +212,9 @@ export type ServerEvent =
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
-  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string };
+  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
+  /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
+  | { type: "companion.named"; name: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -235,6 +247,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  "audio.timing": { required: ["utteranceId", "sentence", "seq", "words", "phonemes"], optional: [] },
   say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
@@ -264,6 +277,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.created": { required: ["findId", "card"], optional: [] },
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
+  "companion.named": { required: ["name"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
