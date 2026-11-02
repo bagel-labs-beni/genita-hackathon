@@ -110,6 +110,8 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     public var isFailed: Bool { status == "failed" }
     /// The stage that is being made now (first one that isn't done), nil when all are done.
     public var current: Stage? { Stage.allCases.first { stages[$0] != .done } }
+    /// The first stage that didn't finish (PREP-1e), nil while nothing failed.
+    public var failedStage: Stage? { Stage.allCases.first { stages[$0] == .failed } }
     /// Continue on PREP-1: the call can start once the scene exists (photo face + device voice until the rest lands).
     public var canStartCall: Bool { isReady || isFailed || stages[.scene] == .done }
 
@@ -118,12 +120,17 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     }
 
     private struct Step: Decodable { var status: String? }
+    private struct FaceStep: Decodable { var status: String?; var settled: Int? }
+    /// face.ts FACE_EXPRESSIONS (blink, smile, warm) come before the visemes
+    static let faceExpressionCount = 3
     private struct Progress: Decodable { var done: Int?; var total: Int? }
     private enum Keys: String, CodingKey { case status, progress, steps, lips, face, sceneUrl }
 
     static func stepStatus(_ raw: String?) -> Status? {
         switch raw {
-        case "done", "ready", "ok", "skipped", "off": return .done
+        case "done", "ready", "ok": return .done
+        // `skipped` / `off` = not part of this prep (Meta-only skips the Kling clips and the Peter lips): no signal
+        case "skipped", "off": return nil
         case "running", "processing", "baking", "submitted": return .running
         case "failed", "error": return .failed
         case "pending", "queued", "waiting", "todo": return .pending
@@ -144,6 +151,18 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
         }
         if let lips = try? c.decode(Step.self, forKey: .lips), let s = Self.stepStatus(lips.status) { steps["lips"] = steps["lips"] ?? s }
         if let face = try? c.decode(Step.self, forKey: .face), let s = Self.stepStatus(face.status) { steps["face"] = steps["face"] ?? s }
+        // Meta-only (runner.ts prepView): one `face` step makes the 3 expressions first, then the 10 visemes
+        // (`settled` of `total`), so it drives both the Expressions and the Mouth rows.
+        if steps["expressions"] == nil, steps["mouth"] == nil,
+           let raw = try? c.decode([String: FaceStep?].self, forKey: .steps), let face = raw["face"] ?? nil, let st = Self.stepStatus(face.status) {
+            let exprDone = (face.settled ?? 0) >= Self.faceExpressionCount
+            switch st {
+            case .done: steps["expressions"] = .done; steps["mouth"] = .done
+            case .pending: steps["expressions"] = .pending; steps["mouth"] = .pending
+            case .running: steps["expressions"] = exprDone ? .done : .running; steps["mouth"] = exprDone ? .running : .pending
+            case .failed: steps["expressions"] = exprDone ? .done : .failed; steps["mouth"] = exprDone ? .failed : .pending
+            }
+        }
         let ready = status == "ready"
         func pick(_ keys: [String]) -> Status { ready ? .done : keys.lazy.compactMap { steps[$0] }.first ?? .pending }
         stages = [.scene: pick(["scene"]), .expressions: pick(["expressions", "face", "videos"]), .mouth: pick(["mouth", "visemes", "lips"])]
@@ -213,8 +232,10 @@ public final class OnboardingClient: @unchecked Sendable {
     }
 
     /// N1–N3 (no AI assistant): chips → the same style card, no Spark call.
-    public func importSkip(interests: [String], replies: String?, avoid: [String]) async throws -> ImportedStyle {
+    /// `n3` = the taste picker's `{clothes|food|chats: {like: [...], no: [...]}}` (Figma 269:2).
+    public func importSkip(interests: [String], replies: String?, avoid: [String] = [], n3: [String: [String: [String]]]? = nil) async throws -> ImportedStyle {
         var body: [String: Any] = ["interests": interests, "avoid": avoid]
+        if let n3 { body["n3"] = n3 }
         body["replies"] = replies ?? NSNull()
         return try style(try await auth.send("POST", "/v1/import/skip", json: body))
     }
@@ -229,15 +250,56 @@ public final class OnboardingClient: @unchecked Sendable {
         try await auth.send("POST", "/v1/companion/name/suggest", json: ["imageId": imageId], timeout: 15)
     }
 
-    private struct VoicesReply: Decodable { struct Voice: Decodable { var id: String }; var voices: [Voice]; var suggested: String? }
+    /// One V04 row from `GET /v1/companion/voices` (curated Seamless speakers for the companion's look).
+    public struct CompanionVoice: Decodable, Equatable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        /// "Warm, bright" (the second line of the card)
+        public var blurb: String
+        public var label: String?
+        public init(id: String, name: String, blurb: String, label: String? = nil) { self.id = id; self.name = name; self.blurb = blurb; self.label = label }
+        enum CodingKeys: String, CodingKey { case id, name, blurb, label }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
+            blurb = try c.decodeIfPresent(String.self, forKey: .blurb) ?? ""
+            label = try c.decodeIfPresent(String.self, forKey: .label)
+        }
+    }
+    public struct VoiceList: Decodable, Equatable, Sendable {
+        public var voices: [CompanionVoice]
+        /// the recommended default's id (first row)
+        public var suggested: String?
+        /// false while the voice service is down or cold: the app greys the list and lets the user continue
+        public var available: Bool?
+        public init(voices: [CompanionVoice], suggested: String? = nil, available: Bool? = nil) { self.voices = voices; self.suggested = suggested; self.available = available }
+    }
+
+    /// V04: the voices the server offers for this image's look, recommended default first.
+    public func voices(imageId: String?) async throws -> VoiceList {
+        let q = imageId.map { "imageId=\($0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0)" }
+        return try await auth.send("GET", "/v1/companion/voices", query: q, timeout: 8)
+    }
+
+    /// V04 play: the preview clip (`audio/wav`, streamed from the voice service and cached). `503 voice_unavailable` when it is down.
+    public func voicePreview(id: String) async throws -> Data {
+        try await auth.sendData("GET", "/v1/companion/voices/\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)/preview", timeout: 30)
+    }
+
+    /// V04 Continue: the pick is saved on the companion (not on the phone).
+    @discardableResult
+    public func saveVoice(_ voiceId: String) async throws -> CompanionInfo {
+        try await auth.send("PUT", "/v1/companion/voice", json: ["voiceId": voiceId], timeout: 15)
+    }
 
     /// Creates the one companion and starts prep at once (D28). `voiceId` must be a server catalog voice;
-    /// without one the first catalog voice is used (the call speaks with the device voice, 11/2 Meta-only).
+    /// without one the recommended voice for the image's look is used (calls speak with the server voice, 11/2).
     @discardableResult
     public func createCompanion(imageId: String, voiceId: String? = nil, name: String? = nil) async throws -> CompanionInfo {
         var voice = voiceId
         if voice == nil {
-            let v: VoicesReply = try await auth.send("GET", "/v1/companion/voices", query: "imageId=\(imageId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? imageId)", timeout: 30)
+            let v = try await voices(imageId: imageId)
             voice = v.suggested ?? v.voices.first?.id
         }
         guard let voice else { throw GenitaAuthError.badResponse }
@@ -255,6 +317,19 @@ public final class OnboardingClient: @unchecked Sendable {
     public func companion() async throws -> CompanionInfo { try await auth.send("GET", "/v1/companion") }
 
     public func prep() async throws -> PrepProgress { try await auth.send("GET", "/v1/companion/prep") }
+
+    /// The companion's call scene for PREP-1 and a new phone. Meta-only `sceneUrl` is a server path
+    /// (`/v1/companion/face/neutral`) behind the account token; an absolute https URL is fetched as is.
+    public func sceneImage(_ url: URL) async throws -> Data {
+        if url.host == nil, url.path.hasPrefix("/v1/") { return try await auth.sendData("GET", url.path, timeout: 30) }
+        guard url.scheme == "https" else { throw GenitaAuthError.badResponse }
+        let (data, res) = try await URLSession.shared.data(from: url)
+        guard (res as? HTTPURLResponse)?.statusCode == 200 else { throw GenitaAuthError.badResponse }
+        return data
+    }
+
+    /// PREP-1e Try again: the server redoes only the steps that didn't finish (`202` + the new progress).
+    public func retryPrep() async throws -> PrepProgress { try await auth.send("POST", "/v1/companion/prep/retry", timeout: 30) }
 
     public struct PrefsResult: Decodable, Sendable {
         public struct Session: Decodable, Sendable { public var persona: ClientMessage.Persona? }
