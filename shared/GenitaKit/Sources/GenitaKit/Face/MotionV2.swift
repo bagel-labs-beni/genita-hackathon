@@ -13,18 +13,18 @@
 import Foundation
 
 public struct MotionV2Params: Codable, Equatable, Sendable {
-    public var jawAttackMs = 70.0, jawReleaseMs = 80.0, jawKnee = 0.8
+    public var jawAttackMs = 60.0, jawReleaseMs = 70.0, jawKnee = 1.8
     public var shapeTauMs = 100.0, weakShape = 0.5, shortVowelMs = 80.0
     public var anticipation = 0.3
-    public var amp = 0.3, unstressed = 0.7, lip = 0.9
+    public var amp = 0.3, unstressed = 0.7, lip = 1.3
     public var preemphMs = 40.0
     public var closureFrames = 2
-    public var springHz = 7.5
+    public var springHz = 9.0
     public var idle = 0.2
     public var stressPercentile = 70.0
     public var shortStressedMs = 150.0
     /// v25: short stressed vowel floors (lip aperture, jaw ladder input)
-    public var shortStressedLip = 0.45, shortStressedJaw = 0.30
+    public var shortStressedLip = 0.7, shortStressedJaw = 0.5
     /// v25: the frame before a closure eases its targets (×closePre)
     public var closePre = 0.6
     /// v25: loudness onset micro-movement added to the jaw (×amp)
@@ -32,14 +32,18 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// v25: how much the chin follows the key flows below the lower lip (applied to the flows at load)
     public var chinScale = 0.5
     /// 11/3 (Chelsea: "barely moves"): opening gain by stress — stressed vowels open more, unstressed less.
-    public var stressedGain = 1.8, unstressedGain = 0.6
-    public var stressedJawGain = 2.6, unstressedJawGain = 0.8
+    public var stressedGain = 1.3, unstressedGain = 0.6
+    public var stressedJawGain = 1.3, unstressedJawGain = 0.7
+    /// v28: pre-emphasis cap; jaw target inside a non-closing consonant (syllable beats)
+    public var preemphCap = 2.5, consonantJaw = 0.1
     public init() {}
-    enum CodingKeys: String, CodingKey { case jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
+    enum CodingKeys: String, CodingKey { case preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
+        if let v = try c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .jawAttackMs) { jawAttackMs = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .jawReleaseMs) { jawReleaseMs = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .jawKnee) { jawKnee = v }
@@ -147,10 +151,12 @@ struct MotionV2 {
         shape = zip(shape, target).map { $0 + al * ($1 - $0) }
         // jaw
         var pre = 1.0
-        if let i = curVowel, p.preemphMs > 0 { pre = min(2, 1 / (1 - exp(-max(vow[i].e - vow[i].s, 20) / p.preemphMs))) }
+        if let i = curVowel, p.preemphMs > 0 { pre = min(p.preemphCap, 1 / (1 - exp(-max(vow[i].e - vow[i].s, 20) / p.preemphMs))) }
         let st = stressed ? 1.0 : 0.0
         let amp = p.amp * faceNorm
-        let xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (0.85 + 0.3 * st)
+        var xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (0.85 + 0.3 * st)
+        // inside a consonant (not a closure) the jaw heads back up: the syllable beat
+        if curVowel == nil, ph.contains(where: { $0.s <= ms && ms < $0.e && !Self.vowels.contains($0.p) }) { xj *= p.consonantJaw }
         let aa = 1 - exp(-dt / p.jawAttackMs), ar = 1 - exp(-dt / p.jawReleaseMs)
         jv = closed ? 0 : jv + (xj > jv ? aa : ar) * (xj - jv)
         // loudness onsets: a fast-minus-slow envelope nudges the jaw (running p95 ≈ decaying peak)
