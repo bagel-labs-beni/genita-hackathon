@@ -57,3 +57,18 @@ test("codex round 3: a profile's blink / mouth-key retry keeps its own prompt an
   assert.equal(refs[0].profile, "cat");
   assert.ok(refs[0].keys?.includes("AH2") && !refs[0].keys?.includes("AH"));
 });
+
+test("prep option: GENITA_PREP_TEETH_VISIBLE=1 adds the visible-upper-teeth line to the human AH / AH2 / EH prompts only", async () => {
+  const { TEETH_VISIBLE_LINE } = await import("../src/prep/face.ts");
+  const prev = process.env.GENITA_PREP_TEETH_VISIBLE;
+  try {
+    delete process.env.GENITA_PREP_TEETH_VISIBLE;
+    assert.ok(!faceEditPrompt("AH", "human", false).includes(TEETH_VISIBLE_LINE));
+    process.env.GENITA_PREP_TEETH_VISIBLE = "1";
+    for (const k of ["AH", "AH2", "EH"] as const) assert.ok(faceEditPrompt(k, "human", false).includes(TEETH_VISIBLE_LINE), k);
+    assert.ok(!faceEditPrompt("MID", "human", false).includes(TEETH_VISIBLE_LINE));
+    assert.ok(!faceEditPrompt("AH", "animal", false, { profile: "animal", species: "dog" }).includes(TEETH_VISIBLE_LINE));
+  } finally {
+    if (prev === undefined) delete process.env.GENITA_PREP_TEETH_VISIBLE; else process.env.GENITA_PREP_TEETH_VISIBLE = prev;
+  }
+});

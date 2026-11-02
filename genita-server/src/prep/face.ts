@@ -185,6 +185,14 @@ function region(key: FaceKey, kind: CompanionKind): { part: string; keep: string
   return { part: mouth, keep: "hair, eyes" };
 }
 
+/**
+ * Prep option (11/3, lip rig v45 / app v9.1): re-bake the open human keys with clearly visible upper teeth (the
+ * keys' teeth were a 1-2 px line on wide opens). Off by default until the critic signs off; GENITA_PREP_TEETH_VISIBLE=1.
+ */
+export const TEETH_VISIBLE_LINE = "the upper front teeth clearly visible, about one third of the mouth opening height, with a natural tooth edge";
+const TEETH_VISIBLE_KEYS = new Set<string>(["AH", "AH2", "EH"]);
+export const teethVisibleOn = (): boolean => process.env.GENITA_PREP_TEETH_VISIBLE === "1";
+
 export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolean, ctx: PromptCtx = {}): string {
   // non-human profiles bring whole prompts (tested by the non-human lane); strict adds the hold-still line
   const own = ctx.profile ? profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species) : null;
@@ -196,7 +204,8 @@ export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolea
     (isMouthKey(key) ? MOUTH_PROMPT_BY_KIND[kind]?.[key] : undefined) ??
     (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key as (typeof MOUTH_KEYS)[number]] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
-  const base = `Edit only the ${s}'s ${part}: ${line}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
+  const teeth = kind === "human" && TEETH_VISIBLE_KEYS.has(key) && teethVisibleOn() ? `, ${TEETH_VISIBLE_LINE}` : "";
+  const base = `Edit only the ${s}'s ${part}: ${line}${teeth}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
   // the mouth keys always carry the hold-still line (that is how they were tested), and never smile
   if (isMouthKey(key)) return `${base} Neutral relaxed expression, not smiling. Do not move, resize, rotate or re-crop: the head stays at exactly the same position and size in the frame.${strict ? " Everything above the upper lip stays identical." : ""}`;
   if (!strict) return base;
