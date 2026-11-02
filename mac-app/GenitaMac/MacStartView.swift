@@ -71,6 +71,8 @@ struct MacEmailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var step: Step
     @State private var email: String
+    /// the address the code went to (verify uses this, not whatever the field holds now)
+    @State private var sentTo: String
     @State private var code = ""
     @State private var sending = false
     @State private var message: String?
@@ -83,13 +85,14 @@ struct MacEmailSheet: View {
     init(step: Step = .address, email: String = "", message: String? = nil) {
         _step = State(initialValue: step)
         _email = State(initialValue: email)
+        _sentTo = State(initialValue: email)
         _message = State(initialValue: message)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
-            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(email.trimmingCharacters(in: .whitespaces)).")
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {
@@ -104,7 +107,7 @@ struct MacEmailSheet: View {
                         .accessibilityIdentifier("macEmailCodeField")
                 }
             }
-            .textFieldStyle(.plain).autocorrectionDisabled().focused($focused)
+            .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
             .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
             .padding(.horizontal, 16).frame(height: 50)
             .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
@@ -144,13 +147,15 @@ struct MacEmailSheet: View {
     private var resendLeft: Int { max(0, Int(resendAt.timeIntervalSince(now).rounded(.up))) }
 
     private func sendCode() {
-        guard !sending, GenitaAuthClient.looksLikeEmail(email) else { return }
+        let address = step == .code ? sentTo : email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sending, GenitaAuthClient.looksLikeEmail(address) else { return }
         sending = true
         message = nil
         Task { @MainActor in
             defer { sending = false }
-            let r = await MacCall.shared.startEmailSignIn(email)
+            let r = await MacCall.shared.startEmailSignIn(address)
             if let m = r.message { message = m; return }
+            sentTo = address
             resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
             code = ""
             step = .code
@@ -164,7 +169,7 @@ struct MacEmailSheet: View {
         message = nil
         Task { @MainActor in
             defer { sending = false }
-            if let failure = await MacCall.shared.signInWithEmail(email, code: code) { message = failure; code = "" } else { dismiss() }
+            if let failure = await MacCall.shared.signInWithEmail(sentTo, code: code) { message = failure; code = "" } else { dismiss() }
         }
     }
 }
@@ -183,7 +188,7 @@ struct MacJudgeCodeSheet: View {
             Text("Enter the code from the submission form. No Apple ID needed.")
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             TextField("Access code", text: $code)
-                .textFieldStyle(.plain).autocorrectionDisabled().focused($focused)
+                .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
                 .padding(.horizontal, 16).frame(height: 50)
                 .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))

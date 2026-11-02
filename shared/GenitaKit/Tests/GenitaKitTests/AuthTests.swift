@@ -75,6 +75,8 @@ struct AuthWireTests {
         #expect(m(GenitaAuthError.server(status: 429, code: "rate_limited"), true) == "Wait a minute, then ask for another code.")
         #expect(m(GenitaAuthError.server(status: 503, code: "email_unavailable"), true) == "Email sign-in isn’t available right now.")
         #expect(m(GenitaAuthError.offline, true) == "Couldn’t reach the server. Check your connection.")
+        #expect(m(GenitaAuthError.unauthorized, true) == "Email sign-in isn’t available right now.", "old server: no email route")
+        #expect(m(GenitaAuthError.server(status: 404, code: "not_found"), true) == "Email sign-in isn’t available right now.")
         #expect(m(URLError(.badURL), true) == "Something went wrong. Try again.")
     }
 
