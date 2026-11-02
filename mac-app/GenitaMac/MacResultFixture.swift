@@ -12,6 +12,8 @@ enum MacResultFixture {
     static let failed = #"{"type":"find.failed","findId":"mac-rs-fixture","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
     /// An earlier product answer in the same call — MF-1 shows what a refine ("match my style") stands on.
     static let earlier = card(id: "mac-rs-earlier")
+    /// FindsModel keeps a card only after its own find.started.
+    static let earlierStarted = started.replacingOccurrences(of: "mac-rs-fixture", with: "mac-rs-earlier")
 
     private static func card(id: String) -> String {
         #"""
@@ -35,7 +37,7 @@ enum MacResultFixture {
     static func events(_ scene: Scene) -> [ServerEvent] {
         let wire: [String] = switch scene {
         case .searching: [started]
-        case .refining: [earlier, started]
+        case .refining: [earlierStarted, earlier, started]
         case .results: [started, created]
         case .failed: [started, failed]
         }

@@ -125,10 +125,14 @@ final class MacCallPlanTests: XCTestCase {
         XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how)
     }
 
-    func testSearchingWhyIsTheEarlierProductAnswer() throws {
-        // MF-1: a refine ("match my style") shows what the last answer stood on; a first search has no line yet
+    func testSearchingWhyIsTheEarlierImportLine() throws {
+        // MF-1: the import line the last product answer stood on (not its situation — a new ask may be another thing);
+        // a first search has no line yet
         let earlier = try sampleCard()
-        XCTAssertEqual(ProductPicks.searchingWhy(after: [earlier]), "“Clean, minimal clothes. Understated colors.” · Mild and dry this weekend, 18°C")
+        XCTAssertEqual(ProductPicks.searchingWhy(after: [earlier]), "“Clean, minimal clothes. Understated colors.”")
+        var noImport = earlier
+        noImport.evidence = .init(style: "", situation: "Mild and dry this weekend, 18°C")
+        XCTAssertNil(ProductPicks.searchingWhy(after: [noImport]))
         XCTAssertNil(ProductPicks.searchingWhy(after: []))
         var noEvidence = earlier
         noEvidence.evidence = nil

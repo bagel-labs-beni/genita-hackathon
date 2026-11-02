@@ -112,10 +112,12 @@ enum ProductPicks {
         return ProductEvidence(lines: [first, ([from] + domains).joined(separator: " · ")])
     }
 
-    /// MF-1 "Why" while searching: a refine ("match my style") stands on the last product answer in this call.
+    /// MF-1 "Why" while searching: the import line the last product answer of this call stood on. Only the style —
+    /// it belongs to the account; the situation belonged to that search, and a new ask may be about something else.
     /// A first search has no line — `find.started`/`find.progress` carry no evidence yet (server follow-up).
     static func searchingWhy(after earlier: [FindCard]) -> String? {
-        earlier.last { $0.kind == .product }.flatMap(basis)
+        guard let style = earlier.last(where: { $0.kind == .product })?.evidence?.style.trimmingCharacters(in: .whitespaces), !style.isEmpty else { return nil }
+        return "“\(style)”"
     }
 
     private static func basis(_ card: FindCard) -> String? {
