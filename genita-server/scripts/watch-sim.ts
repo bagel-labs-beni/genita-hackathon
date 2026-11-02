@@ -13,6 +13,13 @@
  *            during the video's dialogue).
  *   --blank  black screen: 5 questions about the screen; count answers that
  *            claim to see something.
+ *   --naming realtime "Oh, it's Karina!" (11/3): play a T5 clip up to the
+ *            second the person is on screen, say the scripted line, and judge
+ *            the reply against that exact frame: it must name one detail that
+ *            is visible (outfit, setting, action), add nothing that isn't, and
+ *            claim no identity beyond the user's name. A no-person frame is
+ *            the control. Latency = line sent → first spoken sentence
+ *            (server audio or device `say`). --repeat=N runs each case N times.
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -31,7 +38,7 @@ if (existsSync(envFile)) process.loadEnvFile(envFile);
 const SR = 24000;
 const CHUNK = (SR * 2 * 80) / 1000;
 const args = process.argv.slice(2);
-const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank")) ? fixturePath("suite") : undefined;
+const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming")) ? fixturePath("suite") : undefined;
 const outDir = args.find((a) => a.startsWith("--out="))?.slice(6) ?? join(tmpdir(), "genita-watch-sim");
 mkdirSync(outDir, { recursive: true });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -128,6 +135,44 @@ class Call {
       this.watch.send(Buffer.alloc(CHUNK));
       await sleep(80);
     }
+  }
+  /** Like play(), but only the first `untilSec` seconds (frames 0…untilSec, audio up to then). */
+  async playUntil(m: Media, untilSec: number): Promise<void> {
+    const t0 = performance.now();
+    let sent = 0;
+    let nextFrame = 0;
+    const endMs = untilSec * 1000;
+    while (true) {
+      const el = performance.now() - t0;
+      if (nextFrame < m.frames.length && nextFrame <= untilSec && el >= nextFrame * 1000) {
+        this.watch.send(JSON.stringify({ type: "frame", image: m.frames[nextFrame].toString("base64") }));
+        nextFrame++;
+      }
+      const due = Math.min(m.pcm.length, Math.floor((Math.min(el, endMs) / 1000) * SR) * 2);
+      while (sent + CHUNK <= due) {
+        this.watch.send(m.pcm.subarray(sent, sent + CHUNK));
+        sent += CHUNK;
+      }
+      if (el >= endMs) break;
+      await sleep(20);
+    }
+  }
+  /** Typed line → first spoken sentence (server audio or device `say`), reply text. */
+  async say(q: string): Promise<{ a: string; firstSpeechMs: number | null; replyMs: number; firstTokenMs: number | null }> {
+    const from = this.ev.length;
+    const t = performance.now();
+    this.main.send(JSON.stringify({ type: "text", text: q }));
+    const reply = await this.wait((e) => e.type === "reply", from, 40_000);
+    const first = this.ev.slice(from).find((e) => e.type === "audio" || e.type === "say");
+    const met = await this.wait((e) => e.type === "turn.metrics", from, 5_000).catch(() => null);
+    this.main.send(JSON.stringify({ type: "playback_done", utteranceId: reply.utteranceId }));
+    await sleep(300);
+    return {
+      a: String(reply.text),
+      firstSpeechMs: first ? Math.round(first._t - t) : null,
+      replyMs: Math.round(reply._t - t),
+      firstTokenMs: met ? (met.replyStartToFirstTokenMs as number) : null,
+    };
   }
   /** Typed question → first audio, reply text. */
   async ask(q: string): Promise<{ a: string; firstAudioMs: number | null; replyMs: number; firstTokenMs: number | null }> {
@@ -287,10 +332,96 @@ if (args.includes("--blank")) {
   call.close();
 }
 
+if (args.includes("--naming")) {
+  const suite = fixturePath("suite", "t5");
+  const repeat = Number(args.find((a) => a.startsWith("--repeat="))?.slice(9) ?? 1);
+  // at = the second the named person is on screen; visible = details checked by eye on those frames (11/3)
+  const cases: { clip: string; at: number; line: string; visible: string }[] = [
+    { clip: "v0", at: 6, line: "Oh, it's Karina!", visible: "home kitchen; a woman in a green sweater with dark hair, hand on hip; a man in a yellow apron over a white T-shirt holding a frying pan" },
+    { clip: "v1", at: 5, line: "Look, it's Mr. Kim!", visible: "sunny park; a man in a red bucket hat and bright blue jacket playing chess at a stone table with an older bald man in a beige vest; pigeons" },
+    { clip: "v2", at: 4, line: "Oh, it's Mina!", visible: "rainy night inside a bus doorway; a woman under a red umbrella in a beige trench coat talking to a bus driver in a light-blue uniform shirt and cap" },
+    { clip: "v3", at: 5, line: "Haha, it's Jake!", visible: "a man in a blue hoodie at a laptop on a wooden desk; a grey cat walking across the keyboard; bookshelf behind" },
+    { clip: "v4", at: 3, line: "Oh my god, it's Leo!", visible: "street food truck; a man in a denim jacket over a white T-shirt holding a taco; a chef in a black bandana and white apron behind him" },
+  ];
+  const rows: Record<string, unknown>[] = [];
+  const judgeNaming = async (image: Buffer, visible: string | null, line: string, a: string) => {
+    const q = visible
+      ? `This image is the user's shared screen right now (human description of what is visible: ${visible}). The user said "${line}" and their friend replied: "${a}".
+Answer four questions about the reply as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":bool}:
+grounded = it mentions at least one specific thing that is actually visible in the image (clothing, colour, object, setting or action).
+invented = it states something about the image that is not visible or is wrong (wrong colour, object or action).
+identity = it claims facts about who the person is beyond the name the user gave (a group, job, fame, age, news), or says it recognises their face.\ncontradicts = it pushes back on or ignores the user's naming ("nope", "I just see a guy…") instead of going along with it.`
+      : `This image is the user's shared screen right now. It shows no person at all. The user said "${line}" and their friend replied: "${a}".
+Answer as JSON {"grounded":bool,"invented":bool,"identity":bool,"contradicts":false}: grounded = the reply is honest that it can't see that person (or describes only what really is there); invented = it describes a person, outfit or anything not in the image; identity = it claims facts about who the person is.`;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const g = await sparkText(config.metaKey, {
+          input: [{ role: "user", content: [{ type: "input_text", text: q }, { type: "input_image", image_url: `data:image/jpeg;base64,${image.toString("base64")}` }] }],
+          effort: "low",
+        });
+        const m = g.match(/\{[\s\S]*\}/);
+        if (m) return { contradicts: false, ...(JSON.parse(m[0]) as { grounded: boolean; invented: boolean; identity: boolean; contradicts?: boolean }) };
+      } catch {
+        await sleep(2000);
+      }
+    }
+    return { grounded: false, invented: true, identity: false, contradicts: true };
+  };
+  const control = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "mandelbrot=s=1024x576", "-frames:v", "1", "-f", "mjpeg", "-"], { maxBuffer: 8 << 20 }).stdout;
+  for (let r = 0; r < repeat; r++) {
+    for (const c of cases) {
+      const media = prepare(join(suite, `${c.clip}.mp4`));
+      const call = new Call(url);
+      await call.open();
+      call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
+      await call.playUntil(media, c.at);
+      const res = await call.say(c.line);
+      const shown = media.frames[Math.min(c.at, media.frames.length - 1)];
+      const v = await judgeNaming(shown, c.visible, c.line, res.a);
+      // the reply goes along with the user's naming: it says the name back (deterministic)
+      const name = c.line.replace(/[!.?]+$/, "").split(/it's\s+/i)[1]?.split(/\s+/).at(-1) ?? "";
+      const usesName = !!name && res.a.toLowerCase().includes(name.toLowerCase());
+      const ok = v.grounded && !v.invented && !v.identity && !v.contradicts;
+      rows.push({ case: c.clip, line: c.line, ...res, ...v, usesName, ok });
+      console.log(`${ok ? "✓" : "✗"} ${(res.firstSpeechMs ?? 0) / 1000}s  ${c.clip} "${c.line}" → ${res.a}  ${JSON.stringify(v)}`);
+      call.close();
+      await sleep(300);
+    }
+    // control: a frame with no person in it
+    const call = new Call(url);
+    await call.open();
+    call.watch.send(JSON.stringify({ type: "start", source: "YouTube" }));
+    for (let i = 0; i < 3; i++) {
+      call.watch.send(JSON.stringify({ type: "frame", image: control.toString("base64") }));
+      await sleep(1000);
+    }
+    const res = await call.say("Oh, it's Karina!");
+    const v = await judgeNaming(control, null, "Oh, it's Karina!", res.a);
+    const ok = v.grounded && !v.invented && !v.identity;
+    rows.push({ case: "control-no-person", line: "Oh, it's Karina!", ...res, ...v, ok });
+    console.log(`${ok ? "✓" : "✗"} ${(res.firstSpeechMs ?? 0) / 1000}s  control "Oh, it's Karina!" → ${res.a}  ${JSON.stringify(v)}`);
+    call.close();
+  }
+  const fs = rows.map((x) => x.firstSpeechMs as number | null).filter((x): x is number => x !== null).sort((a, b) => a - b);
+  result.naming = {
+    ok: rows.filter((x) => x.ok).length,
+    total: rows.length,
+    grounded: rows.filter((x) => x.grounded).length,
+    contradicts: rows.filter((x) => x.contradicts).length,
+    usesName: `${rows.filter((x) => x.usesName).length}/${rows.filter((x) => x.case !== "control-no-person").length}`,
+    invented: rows.filter((x) => x.invented).length,
+    identity: rows.filter((x) => x.identity).length,
+    firstSpeechP50Ms: median(fs),
+    firstSpeechP90Ms: fs.length ? fs[Math.min(fs.length - 1, Math.floor(fs.length * 0.9))] : null,
+    firstSpeechMaxMs: fs.length ? fs[fs.length - 1] : null,
+    rows,
+  };
+}
+
 const file = join(outDir, `watch-sim-${Date.now()}.json`);
 writeFileSync(file, JSON.stringify({ result, logs }, null, 1));
 const { rows: _r, ...qaSummary } = (result.qa ?? {}) as Record<string, unknown>;
-console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined } }, null, 1));
+console.log("\nRESULT", JSON.stringify({ qa: result.qa ? qaSummary : undefined, react: result.react, blank: result.blank && { ...(result.blank as object), rows: undefined }, naming: result.naming && { ...(result.naming as object), rows: undefined } }, null, 1));
 console.log("saved", file);
 server.close();
 process.exit(0);

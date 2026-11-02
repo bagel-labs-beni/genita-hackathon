@@ -17,7 +17,7 @@ import type { SparkRequest, SparkStreamEvent } from "../meta/spark.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import type { WatchServerEvent } from "../protocol.ts";
 import { buildMemoRequest, buildQuestionContext, parseMemoVerdict, type DialogueLine, type MemoEntry, type MemoVerdict, type QuestionContext } from "./memo.ts";
-import { isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
+import { echoNow, isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, SPEAKER_SILENCE_MS } from "./rules.ts";
 
 export interface WatchAsr {
   on(ev: "event", fn: (e: AsrEvent) => void): unknown;
@@ -69,8 +69,15 @@ const MAX_MEMO = 20;
 const LINES_KEEP_MS = 5 * 60_000;
 const MAX_LINES = 60;
 const QUESTION_LINES_MS = 90_000;
-const QUESTION_FRAMES = 4;
+/**
+ * Realtime (11/3): a turn sees the screen as it is now — the newest frame (≤1 s old while a video plays) plus
+ * one from ~2 s before for motion. Older context comes from the memo, which keeps up every few seconds.
+ * Two images instead of four keep the reply's first word near 2 s.
+ */
+const QUESTION_FRAMES = 2;
 const QUESTION_FRAME_SPACING_MS = 2_000;
+/** the running scene memo refreshes this often while the screen changes (was 12 s) */
+export const MEMO_EVERY_MS = 5_000;
 const MEMO_FRAMES = 3;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
@@ -97,6 +104,8 @@ export class WatchController {
   private labelsSeen: { label: string; at: number }[] = [];
   private pendingLabel: string | null = null;
   private dialogueActive = false;
+  /** the video's line in progress (partial transcript), for the echo check */
+  private openLine = "";
   private lastDialogueEndAt: number | null = null;
   private lineSinceMemo = false;
   private lastReactionAt: number | null = null;
@@ -211,6 +220,7 @@ export class WatchController {
     this.asr = null;
     this.frames = []; // never kept past the share
     this.dialogueActive = false;
+    this.openLine = "";
     this.pendingLabel = null;
     this.flushWaiters();
     this.setSpeaker(null);
@@ -253,6 +263,7 @@ export class WatchController {
     switch (e.type) {
       case "speechStart":
         this.dialogueActive = true;
+        this.openLine = "";
         if (this.speakerOffTimer) clearTimeout(this.speakerOffTimer);
         this.speakerOffTimer = null;
         return;
@@ -271,6 +282,7 @@ export class WatchController {
         const text = e.text.trim();
         const label = this.pendingLabel;
         this.pendingLabel = null;
+        this.openLine = "";
         if (text) {
           this.lines.push({ at: now, label, text: text.slice(0, 400) });
           this.lines = this.lines.filter((l) => now - l.at <= LINES_KEEP_MS).slice(-MAX_LINES);
@@ -287,6 +299,7 @@ export class WatchController {
         return;
       }
       case "partial":
+        if (this.dialogueActive) this.openLine = e.text.slice(0, 400);
         return;
     }
   }
@@ -319,7 +332,7 @@ export class WatchController {
     const newFrames = this.frames.some((f) => f.at > this.lastMemoAt);
     const due =
       (this.lineSinceMemo && since >= (this.deps.memoAfterLineMs ?? 4_000)) ||
-      ((newFrames || this.lineSinceMemo) && since >= (this.deps.memoEveryMs ?? 12_000));
+      ((newFrames || this.lineSinceMemo) && since >= (this.deps.memoEveryMs ?? MEMO_EVERY_MS));
     if (due) void this.runMemo();
     this.maybeSpeakBlank();
   }
@@ -434,24 +447,23 @@ export class WatchController {
 
   /**
    * Is this "user turn" really the video's sound in the mic? If the video is
-   * mid-line, wait (≤1.5 s) for that line before deciding.
+   * mid-line, its partial transcript usually decides at once; only a partial
+   * too short to tell waits (≤1.5 s) for that line before deciding.
    */
   async isEcho(userText: string): Promise<boolean> {
     if (!this.sharing) return false;
-    if (this.dialogueActive) {
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, ECHO_WAIT_MS);
-        this.lineWaiters.push(() => {
-          clearTimeout(t);
-          resolve();
-        });
+    const recent = () => this.lines.filter((l) => this.deps.now() - l.at <= ECHO_WINDOW_MS).map((l) => l.text);
+    const early = this.dialogueActive ? echoNow(userText, this.openLine) : "user";
+    if (early === "echo") return true;
+    if (early === "user") return isVideoEcho(userText, recent());
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ECHO_WAIT_MS);
+      this.lineWaiters.push(() => {
+        clearTimeout(t);
+        resolve();
       });
-    }
-    const now = this.deps.now();
-    return isVideoEcho(
-      userText,
-      this.lines.filter((l) => now - l.at <= ECHO_WINDOW_MS).map((l) => l.text),
-    );
+    });
+    return isVideoEcho(userText, recent());
   }
 
   summary(): Record<string, unknown> {
