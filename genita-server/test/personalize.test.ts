@@ -304,3 +304,21 @@ test("reason chips from the profile text (no card on hand): suggestions are not 
   assert.deepEqual(lines.map((l) => l.text), ["Style: Relaxed fits."]);
   assert.deepEqual(reasonChips(lines, baseCard({ kind: "outfit" })).map((r) => r.text), ["Your style: relaxed fits"]);
 });
+
+test("eval fixes 11/3: \"I'd rather …\" is a correction; an ingredient like needs the dish to echo it; the paste's topic matches the parsed item", () => {
+  assert.ok(mightBeCorrection("Honestly I'd rather you just pick one option instead of giving me three."));
+  const taste = [{ text: "Food: noodles of every kind.", label: "explicit" as const }, { text: "Dislikes seafood.", label: "explicit" as const }];
+  const rice = reasonChips(taste, baseCard({ kind: "recipe", title: "Kimchi fried rice", items: [{ id: "i1", name: "Rice", tier: "have", from: "camera" }] }));
+  assert.deepEqual(rice.map((r) => r.text), ["Your taste: no seafood"]);
+  const ramen = reasonChips(taste, baseCard({ kind: "recipe", title: "Spicy noodles", items: [] }));
+  assert.equal(ramen[0].text, "Your taste: noodles of every kind");
+  const card = rawCard({}, ["Reminder frequency"]);
+  const { cards } = toStory({ cards: [], topics: [{ item: "Reminder frequency: unknown whether reminders are welcome.", topic: "Reminders", sub: "Should I ever nudge you first?" }] }, card);
+  assert.deepEqual(cards.at(-1)!.unknowns![0], { item: "Reminder frequency", topic: "Reminders", sub: "Should I ever nudge you first?" });
+});
+
+test("label check is not fooled by everyday words (\"add detail\")", () => {
+  assert.equal(storyTextProblem("So I'll lead with the answer and add detail only when you ask."), null);
+  assert.equal(storyTextProblem("You might have ADD."), "label");
+  assert.equal(storyTextProblem("Classic INFP energy."), "label");
+});

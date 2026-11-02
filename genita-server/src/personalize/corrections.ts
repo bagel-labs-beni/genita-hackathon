@@ -10,7 +10,7 @@ import type { StyleCard } from "../prep/importProfile.ts";
 import { PROFILE_FIELDS, type ProfileField, type ProfileUpdate } from "./merge.ts";
 
 const HINT =
-  /\b(?:actually|anymore|any more|no longer|these days|from now on|i(?:'m| am) (?:not into|over|done with|vegan|vegetarian|pescatarian)|i (?:don'?t|do not|never|can'?t|cannot) (?:really )?(?:like|eat|drink|want|wear|watch|enjoy|stand|do)|i (?:hate|dislike|prefer|love|'d rather|would rather|want you to|need you to|like it when|like when|don'?t want you to)|not (?:a (?:big )?fan|into|for me|my thing)|stop (?:\w+ing)|(?:please )?don'?t (?:\w+ )?(?:ask|call|joke|give|tell|suggest|comment|remind|bring up|mention|talk)|too (?:long|short|many|much|formal|casual|wordy|chatty)|(?:shorter|longer|fewer) (?:answers|replies|questions)|keep it (?:short|brief)|call me)\b/i;
+  /\b(?:actually|anymore|any more|no longer|these days|from now on|i(?:'m| am) (?:not into|over|done with|vegan|vegetarian|pescatarian)|i (?:don'?t|do not|never|can'?t|cannot) (?:really )?(?:like|eat|drink|want|wear|watch|enjoy|stand|do)|i'd rather|i would rather|i (?:hate|dislike|prefer|love|want you to|need you to|like it when|like when|don'?t want you to)|not (?:a (?:big )?fan|into|for me|my thing)|stop (?:\w+ing)|(?:please )?don'?t (?:\w+ )?(?:ask|call|joke|give|tell|suggest|comment|remind|bring up|mention|talk)|too (?:long|short|many|much|formal|casual|wordy|chatty)|(?:shorter|longer|fewer) (?:answers|replies|questions)|keep it (?:short|brief)|call me)\b/i;
 
 /** Lines worth one Spark call. Questions alone ("What should I cook?") are not. */
 export function mightBeCorrection(text: string): boolean {
@@ -66,7 +66,8 @@ export function buildCorrectionRequest(card: StyleCard, userLine: string, lastAs
       "Count: \"actually I don't like cilantro\", \"I prefer shorter answers now\", \"please don't joke when I'm serious\", \"I'm into film photography these days\".",
       "Do not count: questions, hypotheticals, quotes or what someone else likes, a one-time request about the current answer or task (\"make this one shorter\", \"not this jacket\"), small talk, or anything the companion said.",
       FIELD_GUIDE,
-      "For each preference: field; text = one short setting line (max 12 words, e.g. \"Dislikes cilantro.\", \"Short replies, two sentences at most.\"); replaces = exact lines from the current profile that this one makes wrong (copy them word for word, [] if none); chip = 2-5 words for the app's \"Updated: …\" chip (e.g. \"no cilantro\", \"shorter replies\").",
+      "For each preference: field; text = one short setting line in the profile's style, never \"the user\" (max 12 words, e.g. \"Dislikes cilantro.\", \"Short replies, two sentences at most.\", \"No jokes when I'm serious.\"); replaces = exact lines from the current profile that this one makes wrong (copy them word for word, [] if none); chip = 2-5 words for the app's \"Updated: …\" chip (e.g. \"no cilantro\", \"shorter replies\").",
+      "If a current line is only partly wrong (\"Food: Korean home cooking, cilantro in everything.\"), put it in replaces AND add an update that rewrites it without the wrong part (\"Food: Korean home cooking.\") so nothing else is lost.",
       asked
         ? `answered: the companion just asked about "${`${asked.topic} ${asked.sub}`.replace(/"/g, "'").slice(0, 120)}". If the user's line answers it, {field, text = the answer as one setting line, chip = 2-5 words for a "Noted: …" chip}; else {field: "", text: "", chip: ""}. Don't repeat the answer in updates.`
         : 'answered: {field: "", text: "", chip: ""}.',

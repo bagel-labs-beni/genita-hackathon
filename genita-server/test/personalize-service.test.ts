@@ -223,3 +223,15 @@ test("endCall: post-call updates grow the profile; the asked item's answer leave
   assert.equal(await h.p.endCall("u1", [{ role: "user", text: "hi" }], null), 0);
   assert.equal(h.calls.length, 1);
 });
+
+test("a story still being written after the import answered: GET story waits for it, no second Spark call", async (t) => {
+  const h = harness(() => { throw new Error("must not write another story"); });
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  const late = new Promise<{ raw: unknown; ms: number }>((r) => setTimeout(() => r({ raw: STORY_RAW, ms: 9000 }), 150));
+  h.p.trackLate("u1", late);
+  const s = await h.p.story("u1", 2000);
+  assert.equal(s.status, "ready");
+  assert.equal(s.ms, 9000);
+  assert.equal(h.calls.length, 0);
+});

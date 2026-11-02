@@ -108,10 +108,8 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
     const s = await Promise.race([storyJob, grace]);
     if (s && s !== "late") card = d.personalize.withStory(card, s);
-    else if (s === "late") {
-      const pz = d.personalize;
-      void storyJob.then((late) => late && pz.attachLate(userId, late)).catch(() => {});
-    }
+    // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
+    else if (s === "late") d.personalize.trackLate(userId, storyJob);
   }
   await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
