@@ -239,8 +239,14 @@ if (doBarge) {
 }
 
 const lat = rows.map((r) => r.endToFirstAudioMs).filter((x): x is number => typeof x === "number");
+const openers: Record<string, number> = {};
+for (const r of rows) {
+  const w = String(r.reply ?? "").trim().split(/[\s,!?.]/)[0]?.toLowerCase();
+  if (w) openers[w] = (openers[w] ?? 0) + 1;
+}
 const summary = {
   turns: rows.length,
+  firstWords: { maxSame: Math.max(0, ...Object.values(openers)), counts: openers },
   endOfSpeechToFirstAudioMs: { p50: median(lat), min: Math.min(...lat), max: Math.max(...lat), all: lat },
   fileEndToFirstAudioMs: { p50: median(rows.map((r) => r.fileEndToFirstAudioMs).filter((x): x is number => typeof x === "number")) },
   serverSpeechEndToFirstAudioP50: median(rows.map((r) => (r.server as Record<string, number> | undefined)?.speechEndToFirstAudioMs).filter((x): x is number => typeof x === "number")),

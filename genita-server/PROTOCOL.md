@@ -143,8 +143,9 @@ Default: `atlas` for animal/character personas, `none` for humans. Always read `
 | `asr_unavailable` | yes | voice input down; offer text (S08) |
 | `not_started`, `already_started`, `bad_persona`, `bad_message`, `unknown_type`, `frame_too_large` | no | client bug |
 
-## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`)
+## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`, two runs)
 
-- End of speech (last voiced 20 ms of the user's audio) → first TTS audio frame at the client: **p50 2.54 s** (min 1.86, max 3.16) over 20 turns. From the end of the audio file (the 11/1 T3 definition): p50 2.22 s.
-- Barge-in: ASR speechStart → `utterance.cancelled` 400 ms (= the 400 ms min-speech rule), user voice start → cancelled 645 ms; 0 audio frames after cancel.
-- Spark is most of the wait (first token 1.6–2.9 s). Each extra rule in `instructions` adds hidden reasoning even at effort `minimal`, so the prompt is kept short and the opening-word rule is enforced in code.
+- End of speech (last voiced 20 ms of the user's audio) → first TTS audio frame at the client: **p50 2.54 s / 2.69 s** (range 1.77–3.69 s). From the end of the audio file (the 11/1 T3 definition, 1.77 s then): p50 2.22 s / 2.43 s.
+- Barge-in: ASR speechStart → `utterance.cancelled` ≈ 400 ms (= the 400 ms min-speech rule); user voice start → cancelled ≈ 620–645 ms; 0 audio frames after cancel. Lower `bargeIn.minMs` to cut this, at the cost of backchannels cutting in.
+- First words over 20 replies: most repeated = 3 (after the opener guard; before it "Chelsea," opened 14/20).
+- Spark is most of the wait (first token 1.6–2.9 s today vs ~1.1 s for a two-line prompt). Each extra rule in `instructions` adds hidden reasoning even at effort `minimal`, so the prompt is kept short and the opening-word rule is enforced in code.
