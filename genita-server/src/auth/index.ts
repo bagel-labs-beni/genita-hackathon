@@ -47,6 +47,8 @@ export type AccountsCore = {
   authRatePerMin: number;
   log: Log;
   signSession(userId: string, sid: string, device: Device, expiresAt: Date): string;
+  /** Awaited before any row is deleted: erase data kept outside Postgres (memory, Finds). Throwing keeps the account so the user can retry. */
+  beforeUserDeleted?: (userId: string) => Promise<void>;
   onUserDeleted?: (userId: string) => void;
 };
 

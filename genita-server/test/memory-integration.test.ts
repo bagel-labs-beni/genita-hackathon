@@ -115,12 +115,15 @@ test("interpretation has no memory context/tools/extraction, then mode=chat enab
   deps.spark = (req, opts) => { requests.push(req); return original(req, opts); };
   await memory.remember("trusted", "I like kimchi jjigae.", "episode", "old");
   const c = client(); const session = new Session("s", c.sink, deps);
-  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mode: "interpret", mic: false }));
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mode: "interpret", interpret: { other: "ko" }, mic: false }));
+  await new Promise((r) => setTimeout(r, 50)); // the greeting would be dispatched after start resolves
   assert.equal(c.replies().length, 0, "no greeting interrupts interpretation");
-  await session.onClientText(JSON.stringify({ type: "text", text: "안녕하세요" })); await waitFor(() => c.replies().length === 1);
-  assert.equal(requests[0].tools, undefined); assert.doesNotMatch(requests[0].instructions!, /kimchi|Stored memories/);
+  assert.ok(!requests.some((r) => JSON.stringify(r.input).includes("Greet the user")), "the greeting prompt never reaches the translator");
+  // F8 (#104): interpret-mode text becomes a translation (interpret.bubble), not a chat reply
+  await session.onClientText(JSON.stringify({ type: "text", text: "Hello there" })); await waitFor(() => requests.length >= 1);
+  assert.equal(requests[0].tools, undefined); assert.doesNotMatch(requests[0].instructions ?? "", /kimchi|Stored memories/);
   await session.onClientText(JSON.stringify({ type: "mode", mode: "chat" }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "How about kimchi jjigae?" })); await waitFor(() => c.replies().length === 2);
+  await session.onClientText(JSON.stringify({ type: "text", text: "How about kimchi jjigae?" })); await waitFor(() => c.replies().length === 1);
   assert.match(requests.at(-1)!.instructions!, /kimchi jjigae/); assert.ok(requests.at(-1)!.tools?.length);
   session.close(); await memory.drain();
 });

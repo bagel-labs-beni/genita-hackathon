@@ -79,9 +79,12 @@ export async function startServer(
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
+  // memories (and other feature data) live outside Postgres: erased before the account rows, and a
+  // failure keeps the account so DELETE /me can be retried
+  if (accounts) accounts.beforeUserDeleted = async (userId) => {
+    await deps.memory?.forget(userId);
+  };
   if (accounts) accounts.onUserDeleted = (userId) => {
-    // memories live outside Postgres (GENITA_MEMORY_FILE / in-memory): erase them with the account
-    void deps.memory?.forget(userId).catch((err) => log("memory.delete_failed", { message: String(err).slice(0, 200) }));
     for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
   };
