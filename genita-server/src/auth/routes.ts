@@ -109,9 +109,10 @@ export function readState(secret: string, state: string, nowSec = Math.floor(Dat
 
 function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
+    // the LAST entry is the one our own proxy appended; earlier entries are whatever the caller sent
     const xff = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
-    if (first) return first;
+    const last = (Array.isArray(xff) ? xff.join(",") : xff)?.split(",").pop()?.trim();
+    if (last) return last;
   }
   return req.socket.remoteAddress ?? "?";
 }
@@ -240,11 +241,12 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
     if (m === "POST" && p === "/auth/judge") {
       const ip = clientIp(req, core.trustProxy);
       if (!core.judge.enabled) throw new HttpError(404, "not_found");
+      const b = await readJson(req);
+      // no await from here to the verdict: concurrent requests from one IP can't all slip past the limit
       if (core.judge.limited(ip)) {
         log("auth.judge", { ok: false, reason: "rate_limited", ip });
         throw new HttpError(429, "rate_limited");
       }
-      const b = await readJson(req);
       const code = str(b.code, 128).trim();
       const device: Device = b.device === "mac" ? "mac" : "iphone";
       const label = code ? core.judge.check(ip, code) : null;

@@ -11,9 +11,9 @@ import { createAccounts } from "../src/auth/index.ts";
 import { JudgeAccess, parseJudgeCodes } from "../src/auth/judge.ts";
 import { testDb } from "./helpers/db.ts";
 
-async function boot(t: import("node:test").TestContext, codes: string | null = "alpha=correct-horse-1,beta=battery-staple-2") {
+async function boot(t: import("node:test").TestContext, codes: string | null = "alpha=correct-horse-1,beta=battery-staple-2", extraEnv: NodeJS.ProcessEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), "genita-judge-"));
-  const env: NodeJS.ProcessEnv = { GENITA_DATA_DIR: dir, GENITA_JWT_SECRET: "j".repeat(40), GENITA_AUTH_RATE_PER_MIN: "1000", ...(codes ? { GENITA_JUDGE_CODES: codes } : {}) };
+  const env: NodeJS.ProcessEnv = { GENITA_DATA_DIR: dir, GENITA_JWT_SECRET: "j".repeat(40), GENITA_AUTH_RATE_PER_MIN: "1000", ...(codes ? { GENITA_JUDGE_CODES: codes } : {}), ...extraEnv };
   const config = { ...loadConfig({ MODEL_API_KEY: "m" }), port: 0 };
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => events.push({ event, data });
@@ -25,8 +25,8 @@ async function boot(t: import("node:test").TestContext, codes: string | null = "
     await new Promise((r) => setTimeout(r, 50));
     rmSync(dir, { recursive: true, force: true });
   });
-  const judge = async (body: unknown) => {
-    const r = await fetch(`${base}/auth/judge`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const judge = async (body: unknown, headers: Record<string, string> = {}) => {
+    const r = await fetch(`${base}/auth/judge`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
     return { status: r.status, body: (await r.json()) as any };
   };
   const me = async (token: string) => fetch(`${base}/me`, { headers: { authorization: `Bearer ${token}` } }).then(async (r) => ({ status: r.status, body: (await r.json()) as any }));
@@ -71,6 +71,22 @@ test("rate limit: 5 wrong tries per IP, then 429 even for the right code", async
   for (let i = 0; i < 5; i++) assert.equal((await judge({ code: `wrong-${i}` })).status, 401);
   assert.equal((await judge({ code: "wrong-6" })).status, 429);
   assert.equal((await judge({ code: "correct-horse-1" })).status, 429);
+});
+
+test("10 concurrent wrong tries from one IP: at most 5 get checked", async (t) => {
+  const { judge } = await boot(t);
+  const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => judge({ code: `wrong-${i}` })));
+  assert.equal(rs.filter((r) => r.status === 401).length, 5);
+  assert.equal(rs.filter((r) => r.status === 429).length, 5);
+});
+
+test("behind a proxy only the proxy-appended X-Forwarded-For entry counts, a forged first entry doesn't dodge the limit", async (t) => {
+  const { judge } = await boot(t, undefined, { GENITA_TRUST_PROXY: "1" });
+  const st: number[] = [];
+  for (let i = 0; i < 7; i++) st.push((await judge({ code: `wrong-${i}` }, { "x-forwarded-for": `9.9.9.${i}, 203.0.113.7` })).status);
+  assert.deepEqual(st, [401, 401, 401, 401, 401, 429, 429]);
+  // another real client is not blocked by it
+  assert.equal((await judge({ code: "nope" }, { "x-forwarded-for": "203.0.113.8" })).status, 401);
 });
 
 test("no codes configured: the route is off (404)", async (t) => {
