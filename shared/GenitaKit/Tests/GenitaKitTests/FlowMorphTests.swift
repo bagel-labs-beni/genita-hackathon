@@ -267,3 +267,14 @@ struct MotionV2Tests {
         #expect(empty.step(ms: 0, phonemes: [], openness: { _ in 0 }, order: order, resolve: { $0 }) == nil)
     }
 }
+
+struct FlowManifestRobustnessTests {
+    @Test func aMapThisBuildCannotReadKeepsTheFlows() throws {
+        let json = #"{"roi":[0.2,0.4,0.8,0.7],"size":[32,29],"flowSize":[16,15],"keys":["AH"],"files":{"AH":{"key":"a","nk":"b","kn":"c"}},"mask":"m","map":{"motion":{"riseMs":"fast"}}}"#
+        let f = try JSONDecoder().decode(FaceFlowManifest.self, from: Data(json.utf8))
+        #expect(f.map == nil && f.keys == ["AH"])
+        let partial = #"{"riseMs": 90}"#
+        let mo = try JSONDecoder().decode(FlowMap.Motion.self, from: Data(partial.utf8))
+        #expect(mo.riseMs == 90 && mo.textureMin == FlowMap.Motion().textureMin)
+    }
+}
