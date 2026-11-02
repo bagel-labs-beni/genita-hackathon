@@ -161,6 +161,9 @@ struct SavedSetup: Codable {
     }
     func save() { if let data = try? JSONEncoder().encode(setup) { storage.set(data, forKey: Self.storageKey) } }
     func go(_ stage: Stage) {
+        // D01 default follows the import path chosen at I01 (set when the path starts, never when an answer arrives):
+        // skippers (N1–N3) start on Quick start, people who paste an AI profile on Make it feel right.
+        if stage == .skipTopics { setup.depth = .quick } else if stage == .paste { setup.depth = .right }
         // The processing screen is transient: back from the next screen must not replay it.
         if setup.stage == .preparing { if stage != .preferences { history.append(.preferences) } }
         else { history.append(setup.stage) }

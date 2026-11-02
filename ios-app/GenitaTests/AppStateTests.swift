@@ -239,7 +239,12 @@ import UIKit
     func testD01DefaultFollowsTheImportPath() {
         let state = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
         XCTAssertEqual(state.setup.depth, .right)
-        state.finishSkip()   // no server in unit tests → goes straight to I04-S
+        state.go(.skipTopics)   // "I don't use an AI assistant"
         XCTAssertEqual(state.setup.depth, .quick)
+        state.go(.paste)        // back to bringing an AI profile
+        XCTAssertEqual(state.setup.depth, .right)
+        state.go(.skipTopics); state.setup.depth = .deep   // an explicit choice at D01 is never overwritten later
+        state.go(.preferences)
+        XCTAssertEqual(state.setup.depth, .deep)
     }
 }

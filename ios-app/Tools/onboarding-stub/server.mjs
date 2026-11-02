@@ -70,6 +70,8 @@ createServer(async (req, res) => {
   }
   if (req.method === "POST" && p === "/v1/companion/name/suggest") { await sleep(600); return send(200, { name: "Jin", ms: 600, suggested: true }); }
   if (req.method === "GET" && p === "/v1/companion/voices") return send(200, { voices: [{ id: "v1", name: "Mira", blurb: "Warm" }], suggested: "v1", ms: 5 });
+  // UI tests only: forget the companion so a later test starts as a fresh account
+  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; return send(200, { ok: true }); }
   if (req.method === "POST" && p === "/v1/companion") {
     if (companion) return send(409, { error: "companion_exists" });
     companion = { id: "c1", type: "human", name: b.name ?? "Mira", voiceId: b.voiceId, imageId: b.imageId, createdAt: "t" };

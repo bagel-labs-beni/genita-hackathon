@@ -164,6 +164,14 @@ final class OnboardingUITests: XCTestCase {
         capture("I04-S")
     }
 
+    /// The stub keeps one companion for the whole run; forget it so this test starts as a fresh account.
+    private func resetStub() {
+        var req = URLRequest(url: URL(string: "http://127.0.0.1:8790/__reset")!); req.httpMethod = "POST"
+        let done = expectation(description: "stub reset")
+        URLSession.shared.dataTask(with: req) { _, _, _ in done.fulfill() }.resume()
+        wait(for: [done], timeout: 5)
+    }
+
     private func launchToI01(_ app: XCUIApplication) {
         app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
         app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
@@ -190,8 +198,9 @@ final class OnboardingUITests: XCTestCase {
         let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
     }
 
-    /// D01: people who skipped the import (N1–N3) start on Quick start; the stub already has a companion by now (409 is fine).
+    /// D01: people who skipped the import (N1–N3) start on Quick start. Runs last (resets the stub companion first).
     func testZSkipperGetsQuickAtD01() throws {
+        resetStub()
         let app = XCUIApplication()
         launchToI01(app)
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
@@ -202,7 +211,8 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5)); primary.tap()
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S"); primary.tap()
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
-        app.buttons["rightsAck"].tap(); primary.tap()
+        if app.buttons["rightsAck"].exists { app.buttons["rightsAck"].tap() }   // V01 rights line (#197)
+        primary.tap()
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
         XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 5)); app.buttons["voice0"].tap(); primary.tap()
         let name = app.textFields["companionNameInput"]
