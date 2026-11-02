@@ -19,7 +19,7 @@ import SwiftUI
                     }
                     #endif
                 }
-                .preferredColorScheme(model.stage == .signIn ? .dark : .light)
+                .preferredColorScheme(model.stage == .signIn || model.stage == .bringing ? .dark : .light)   // PREP-1 is dark (182:3)
         }
     }
 }

@@ -110,6 +110,9 @@ struct ConversationView: View {
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
+        // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
+        .task(id: connecting) { if !connecting { await model.followPrep(every: 5) } }
         .onAppear {
             if !connecting {
                 call.companionName = model.companionDisplayName

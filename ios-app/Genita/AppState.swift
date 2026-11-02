@@ -93,6 +93,12 @@ struct SavedSetup: Codable {
     var savingPrefs = false
     var setupSummary: SetupSummary?
     var prep: PrepProgress?
+    /// NM01-0 "Use {name}": the server's suggestion, kept after the field is cleared
+    var suggestedCompanionName: String?
+    /// PREP-1e Try again in flight
+    var retryingPrep = false
+    /// PREP-1e: the one line under the buttons when Try again itself failed
+    var prepError: String?
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?

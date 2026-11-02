@@ -243,7 +243,9 @@ extension AppState {
         suggestingName = true
         Task {
             defer { suggestingName = false }
-            if let s = try? await onboarding.suggestName(imageId: imageId), (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
+            guard let s = try? await onboarding.suggestName(imageId: imageId) else { return }
+            if CompanionName.isValid(s.name) { suggestedCompanionName = CompanionName.clean(s.name) }
+            if (setup.companionName ?? "").isEmpty { setup.companionName = s.name }
         }
     }
 
@@ -297,24 +299,43 @@ extension AppState {
         }
     }
 
-    /// PREP-1: poll `GET /v1/companion/prep` every 2 s while the screen is up (scene → expressions → mouth).
-    func followPrep() async {
+    /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
+    /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
+    func followPrep(every seconds: Double = 2) async {
         guard serverWired else { return }
+        if prep?.isReady == true { return }
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
                 prep = p
-                if p.isReady { return }
+                if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
+            } catch GenitaAuthError.server(404, _) {
+                return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(for: .seconds(seconds))
         }
     }
 
-    /// PREP-1 Continue (or everything ready): S07 → S09. Before ready the call starts with the photo face.
+    /// PREP-1e Try again: the server redoes only what didn't finish; the screen polls again (its task is keyed on
+    /// `prep.status`).
+    func retryPrep() {
+        guard serverWired, !retryingPrep else { return }
+        retryingPrep = true; prepError = nil
+        Task {
+            defer { retryingPrep = false }
+            do { prep = try await onboarding.retryPrep() } catch { prepError = Self.errorLine(error); route(error) }
+        }
+    }
+
+    /// S09-PREP: the stage still being made while the call is up ("Getting the mouth ready"), nil when ready/failed.
+    var callPrepIndicator: String? { PrepScreen.callIndicator(prep) }
+
+    /// PREP-1 Start talking / Continue with the photo (or everything ready): S07 → S09. Before ready the call starts
+    /// with the photo face (S09-P); after a failure it stays the photo (S09-PF).
     func startFirstCall() { if stage == .bringing { go(.connecting) } }
 
     // MARK: call start

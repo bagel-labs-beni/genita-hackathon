@@ -39,17 +39,28 @@ function previewWav() {
 
 let companion = null;
 let prepStartedAt = 0;
-// The clock starts at PREP-1's first poll (the UI test spends longer than the prep on the screens before it):
-// scene at 3 s, expressions at 12 s, mouth (ready) at 25 s — room to see Continue light up before the auto-advance.
-const STEPS = [3000, 12000, 25000];
+// POST /__prep {failAt:n}: the face step fails once n of its 13 images are settled (PREP-1e); retry clears it.
+let failAt = null;
+// The real Meta-only shape (genita-server runner.ts prepView): scene, then ONE face step for 3 expressions +
+// 10 visemes (`settled` of 13), Kling clips and Peter lips `skipped`. The clock starts at PREP-1's first poll
+// (the UI test spends longer than the prep on the screens before it): scene done at 3 s, then one face image a
+// second (expressions done at 6 s, mouth done = ready at 16 s).
+const SCENE_MS = 3000, FACE_MS = 1000, FACE_TOTAL = 13;
 const prepView = () => {
   const t = prepStartedAt ? Date.now() - prepStartedAt : 0;
-  const st = (doneAt) => (prepStartedAt && t >= doneAt ? "done" : prepStartedAt && t >= doneAt - 3000 ? "running" : "pending");
-  const ready = prepStartedAt && t >= STEPS[2];
+  const sceneDone = prepStartedAt && t >= SCENE_MS;
+  let settled = sceneDone ? Math.min(FACE_TOTAL, Math.floor((t - SCENE_MS) / FACE_MS)) : 0;
+  const failed = failAt != null && settled >= failAt;
+  if (failed) settled = failAt;
+  const ready = !failed && settled >= FACE_TOTAL;
+  const face = !sceneDone ? null : { status: failed ? "failed" : ready ? "done" : "running", settled, total: FACE_TOTAL, ms: null };
+  const skipped = { status: "skipped", ms: null };
   return {
-    status: ready ? "ready" : "running",
-    progress: { done: STEPS.filter((d) => prepStartedAt && t >= d).length, total: 3 },
-    steps: { scene: { status: prepStartedAt ? st(STEPS[0]) : "running" }, face: { status: st(STEPS[1]) }, mouth: { status: st(STEPS[2]) } },
+    status: failed ? "failed" : ready ? "ready" : "running",
+    progress: { done: (sceneDone ? 1 : 0) + settled, total: 1 + FACE_TOTAL },
+    sceneUrl: null,
+    steps: { scene: { status: sceneDone ? "done" : "running", ms: null }, videos: { neutral: skipped, happy: skipped, warm: skipped }, face },
+    lips: { status: "skipped", detail: null, url: null, ms: null, peter: null },
   };
 };
 const companionView = () => ({ ...companion, prep: prepView(), persona: null, session: null });
@@ -71,7 +82,8 @@ createServer(async (req, res) => {
   const b = await body(req);
   log(req.method, p, Buffer.isBuffer(b) ? `${b.length} bytes` : JSON.stringify(b).slice(0, 120));
   if (p === "/healthz") return send(200, { ok: true });
-  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; voiceDown = false; return send(200, { ok: true }); }
+  if (req.method === "POST" && p === "/__reset") { companion = null; prepStartedAt = 0; failAt = null; voiceDown = false; return send(200, { ok: true }); }
+  if (req.method === "POST" && p === "/__prep") { failAt = Number.isInteger(b.failAt) ? b.failAt : null; return send(200, { failAt }); }
   if (req.method === "POST" && p === "/__voice") { voiceDown = b.down === true; return send(200, { voiceDown }); }
   if (!req.headers.authorization?.startsWith("Bearer ")) return send(401, { error: "unauthorized" });
 
@@ -117,6 +129,16 @@ createServer(async (req, res) => {
     if (!companion) return send(404, { error: "no_companion" });
     if (!prepStartedAt) prepStartedAt = Date.now();
     return send(200, prepView());
+  }
+  if (req.method === "POST" && p === "/v1/companion/prep/retry") {
+    if (!companion) return send(404, { error: "no_companion" });
+    const v = prepView();
+    if (v.status === "ready") return send(200, v);
+    // the runner redoes only what didn't finish: carry on from the images already settled
+    const settled = v.steps.face?.settled ?? 0;
+    failAt = null;
+    prepStartedAt = Date.now() - (SCENE_MS + settled * FACE_MS);
+    return send(202, prepView());
   }
   if (req.method === "POST" && p === "/v1/companion/prefs") {
     await sleep(800);
