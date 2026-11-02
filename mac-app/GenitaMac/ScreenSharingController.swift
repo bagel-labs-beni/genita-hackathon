@@ -23,7 +23,10 @@ import CoreMedia
         #else
         nil
         #endif
-    }()
+    }() {
+        // a reconnect gives the call a new session id: a running share moves to it (or starts, if it began before ready)
+        didSet { if isSharing, watchConfig != oldValue { uplink?.stop(); uplink = nil; connectUplink(source: sourceName) } }
+    }
     private var stream: SCStream?
     private var uplink: WatchUplink?
     private let capture = WatchCapture()

@@ -7,7 +7,6 @@ struct ConsentView: View {
     @Bindable var model: AppState
     @State private var sending = false
     @State private var failed = false
-    @State private var legal: String?
 
     private let rows: [(String, String)] = [
         ("What you say and type", "To answer you. Voice is turned into text first."),
@@ -31,8 +30,9 @@ struct ConsentView: View {
                 }
             }.padding(.top, 32)
             HStack(spacing: 16) {
-                Button("Terms") { legal = "Terms" }
-                Button("Privacy Policy") { legal = "Privacy Policy" }
+                // PRD v12 D16: Genita's own pages
+                Link("Terms", destination: URL(string: "https://thebeni.ai/genita/terms")!)
+                Link("Privacy Policy", destination: URL(string: "https://thebeni.ai/genita/privacy")!)
             }.font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
             Spacer(minLength: 24)
             Button { agree() } label: {
@@ -50,16 +50,20 @@ struct ConsentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CallInk.sheet.ignoresSafeArea())
         .alert("Couldn’t save that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
-        .alert(legal ?? "", isPresented: Binding(get: { legal != nil }, set: { if !$0 { legal = nil } })) { Button("OK") { legal = nil } }
     }
 
     private func agree() {
+        guard !sending else { return }
         sending = true
         Task { @MainActor in
             defer { sending = false }
             do {
                 try await GenitaAuthClient().consent()
+                guard model.stage == .consent else { return } // left this screen meanwhile
                 model.consentAccepted()
+            } catch GenitaAuthError.unauthorized {
+                // the session expired here: the token is gone, sign in again (A02)
+                model.signedOut()
             } catch {
                 failed = true
             }
@@ -67,9 +71,12 @@ struct ConsentView: View {
     }
 
     private func notNow() {
+        guard !sending else { return }
+        sending = true
         Task { @MainActor in
+            defer { sending = false }
             await GenitaAuthClient().logout()
-            model.returnTo(.signIn)
+            model.signedOut()
         }
     }
 }
