@@ -88,6 +88,8 @@ export type SessionDeps = {
    * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
    */
   priorTurns?: (revision: number) => HistoryItem[] | null;
+  /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
+  priorThread?: (revision: number) => { threadId: string; covered: number } | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -452,6 +454,8 @@ export class Session {
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
           this.history = seed.slice(-MAX_HISTORY);
+          // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
+          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
@@ -895,6 +899,11 @@ export class Session {
     this.frames = null;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     return f.images;
+  }
+
+  /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
+  threadInfo(): { threadId: string; covered: number } | null {
+    return this.memoryCall ? { threadId: this.memoryCall.threadId, covered: this.memoryCall.covered } : null;
   }
 
   /** This call's turns (copy) — for the account's next device after a handoff. */

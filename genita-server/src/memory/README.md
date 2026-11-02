@@ -48,7 +48,29 @@ before calling the vendor, and no keys/raw vendor errors are returned or logged 
 this module. A forged `companion_face`, `scene_image`, `room` or `user_face` field is
 rejected by the photo route.
 
+## Session memory (11/3, `GENITA_SESSION_MEMORY=0` turns it off)
+
+- At call close, and every 12 more completed turns in a long call, Muse Spark writes one compact
+  summary of the **thread**: topics, the user's mood, open threads, the companion's promises, what the
+  user asked for (`summaries.ts`). It runs in the background, never on the reply path. Every line
+  goes through `safeMemoryText` (health, religion, politics, sex, income/debt/finances, locations,
+  other people, identifiers). Turns are summarized and dropped, never stored.
+- The newest three summaries of *other* threads go into the next call's instructions as notes. The
+  greeting may pick up one open thread or promise. Loading them is capped at 800 ms, so a slow
+  store means no notes, not a slow call start.
+- A handoff (iPhone ↔ Mac) is one thread, not two calls. `server.ts` hands over the thread id and
+  pair count together with the turns (`priorThread`), both devices upsert the same
+  `call_summaries` row, and the copy covering more turns wins. The summarizer gets the thread's
+  previous notes, so the Mac's summary merges the iPhone's.
+- Any Forget (one item or all) drops every summary, and a summary started before a Forget is never
+  stored (revision check). Account delete removes them (Forget + cascade). The newest 10 are kept per user.
+
 ## Persistence / Postgres adapter
+
+With accounts on (`DATABASE_URL`), the server swaps the in-process store for `PgMemoryRepository`
+(migrations `005_memory_store`, `006_call_summaries`), so memory survives deploys. The boot log
+`memory.store {kind}` says which store is live. Without accounts, the JSON or in-memory adapters below apply.
+
 
 `MemoryRepository` is exactly `put(userId,memory):Promise<boolean>`,
 `list(userId):Promise<Memory[]>`, `delete(userId,id?):Promise<void>`.

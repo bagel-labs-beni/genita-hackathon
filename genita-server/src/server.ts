@@ -283,33 +283,42 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; revision: number | null; at: number; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: { threadId: string; covered: number } | null; revision: number | null; at: number; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
   }
+  // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
+  const handedThread = new Map<string, { threadId: string; covered: number } | null>();
   function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
+    let thread: { threadId: string; covered: number } | null = null;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       const t = session?.historyForgetRevision === revision ? session.historySnapshot() : null;
-      if (t?.length && (!best || t.length >= best.length)) best = t;
+      if (t?.length && (!best || t.length >= best.length)) { best = t; thread = session!.threadInfo(); }
     }
-    if (best) return best;
+    if (best) { handedThread.set(self, thread); return best; }
     const c = lastTurns.get(userId);
-    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) return c.turns;
+    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) { handedThread.set(self, c.thread); return c.turns; }
     dropLastTurns(userId);
     return null;
   }
+  function priorThread(self: string): { threadId: string; covered: number } | null {
+    const t = handedThread.get(self) ?? null;
+    handedThread.delete(self);
+    return t;
+  }
   async function cacheTurns(userId: string, session: Session): Promise<void> {
     const turns = session.historySnapshot();
+    const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, revision, at: Date.now(), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, at: Date.now(), unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -335,7 +344,7 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision) });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -373,6 +382,7 @@ export async function startServer(
       gated?.call.close();
       sessions.delete(id);
       sessionUsers.delete(id);
+      handedThread.delete(id);
       touches.delete(id);
       void cacheTurns(who.userId, session)
         .catch(() => log("history.unavailable", { session: id }))
