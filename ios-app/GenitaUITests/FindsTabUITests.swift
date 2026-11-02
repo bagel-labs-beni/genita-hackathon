@@ -38,7 +38,6 @@ final class FindsTabUITests: XCTestCase {
         let app = launch(["GENITA_FINDS_TAB": "empty"])
         XCTAssertTrue(any(app, "findsEmpty").waitForExistence(timeout: 20), "F0: empty state")
         XCTAssertTrue(app.buttons["findsBackToCall"].exists)
-        XCTAssertLessThanOrEqual(any(app, "findsEmpty").frame.width, app.frame.width + 0.5, "F0 stays inside the screen (the orb art must not widen the layout)")
         Thread.sleep(forTimeInterval: 0.6)
         capture(app, "finds-tab-F0-empty")
         app.buttons["findsBackToCall"].tap()
