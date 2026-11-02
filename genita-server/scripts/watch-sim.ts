@@ -474,8 +474,11 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     // over dialogue = a video line was open at any point while the reaction plays (est. 0.5 s + 0.35 s per word)
     let overDialogue = false;
     if (react) {
-      const from = react.t as number;
-      const to = from + 500 + 350 * String(react.line).split(/\s+/).length;
+      // the reaction's real playback: its first audio/say event → the last one + its length (Codex P2)
+      const spoken = call.ev.filter((e) => (e.type === "audio" || e.type === "say") && e.utteranceId === react.utteranceId);
+      const lenMs = (e: Ev) => (typeof e.durationMs === "number" ? e.durationMs : 500 + 350 * String(e.text ?? "").split(/\s+/).length);
+      const from = spoken.length ? (spoken[0]._t as number) : (react.t as number);
+      const to = spoken.length ? (spoken.at(-1)!._t as number) + lenMs(spoken.at(-1)!) : from + 500 + 350 * String(react.line).split(/\s+/).length;
       let open = false;
       for (const l of mine.filter((x) => x.event === "watch.dialogue")) {
         const t = l.t as number;

@@ -103,6 +103,7 @@ const ECHO_WAIT_MS = 1_500;
 const ECHO_SETTLE_MS = 350;
 const BLANK_LINE = "<neutral> Hmm, I can't see that one. It's protected and shows up black to me. Wanna put on a YouTube clip?";
 /** memo: a black video picture inside a visible page (Netflix in a browser): the same honest line, once per share */
+const PROTECTED_HOLD_MS = 15_000;
 const PROTECTED_LINE = "<neutral> I can't see that video, it's protected and shows up black to me. Wanna put on a YouTube clip?";
 const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 /** Transcribe errors with "Ingress audio slower than real-time" when audio stops (11/2): pad silence */
@@ -135,6 +136,7 @@ export class WatchController {
   private salientAt: number | null = null;
   private protectedSpoken = false;
   private protectedPending = false;
+  private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
   private held: { v: MemoVerdict; at: number } | null = null;
   /** memos running now: up to MEMO_CONCURRENCY, started ≥ MEMO_STAGGER_MS apart, so a moment waits ≤ ~1.5 s for one */
@@ -201,6 +203,8 @@ export class WatchController {
 
   private start(source: string | null): void {
     if (this.sharing) {
+      // another window or display: an older "protected" verdict was about the old one
+      if (source !== null && source !== this.source) this.protectedPending = false;
       this.source = source ?? this.source;
       return this.emitState();
     }
@@ -385,9 +389,14 @@ export class WatchController {
   /** DRM: a black video inside a page that captures fine (Netflix in a browser). Said once per share, when quiet. */
   private speakProtected(): void {
     if (this.protectedSpoken) return;
-    // said in the next pause if someone is talking now (tick retries), never dropped
+    // said in the next pause (nobody talking, the video's line done) — tick retries; a newer clear picture, another
+    // source or 15 s cancel it (Codex P2)
+    const now = this.deps.now();
+    if (!this.protectedPending) this.protectedSince = now;
     this.protectedPending = true;
-    if (!this.host.conversationQuiet()) return;
+    if (now - this.protectedSince > PROTECTED_HOLD_MS) { this.protectedPending = false; return; }
+    const videoTalking = this.dialogueActive || (this.lastDialogueEndAt !== null && now - this.lastDialogueEndAt < 700);
+    if (!this.host.conversationQuiet() || videoTalking) return;
     if (this.host.react(PROTECTED_LINE) !== null) {
       this.protectedSpoken = true;
       this.protectedPending = false;
@@ -468,6 +477,7 @@ export class WatchController {
       this.speakProtected();
       return v;
     }
+    this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
     if (v.moment !== "none" && !early) this.tryReact(v, contentAt);
     return v;
   }

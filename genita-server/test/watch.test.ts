@@ -849,3 +849,48 @@ test("Codex P2: the protected-video line waits for a pause instead of being lost
   assert.equal(reacted.length, 1);
   assert.match(reacted[0], /protected/);
 });
+
+test("Codex P2: a held protected line never speaks over the video's dialogue, and a clear picture or another source cancels it", async () => {
+  const prot = '{"protectedVideo":true,"moment":"none","reaction":"","memo":"Video area is black.","speakers":[]}';
+  const clear = '{"protectedVideo":false,"moment":"none","reaction":"","memo":"A YouTube video plays.","speakers":[]}';
+  const quiet = { quiet: false };
+  const a = controller([prot], quiet);
+  a.c.onMessage({ type: "start", source: "Safari" });
+  a.at(3_000);
+  a.c.onMessage({ type: "frame", image: frame });
+  await a.c.runMemo();
+  a.asr.fire({ type: "speechStart", turnId: 0 });
+  quiet.quiet = true;
+  a.at(4_000);
+  a.c.tick();
+  assert.deepEqual(a.reacted, [], "not over the video's line");
+  a.asr.fire({ type: "speechComplete", turnId: 0, text: "Hello there." });
+  a.at(5_000);
+  a.c.tick();
+  assert.equal(a.reacted.length, 1, "said in the pause");
+
+  const q2 = { quiet: false };
+  const b = controller([prot, clear], q2);
+  b.c.onMessage({ type: "start", source: "Safari" });
+  b.at(3_000);
+  b.c.onMessage({ type: "frame", image: frame });
+  await b.c.runMemo();
+  b.at(4_000);
+  b.c.onMessage({ type: "frame", image: frame + "yt" });
+  await b.c.runMemo(); // now a clear picture
+  q2.quiet = true;
+  b.c.tick();
+  assert.deepEqual(b.reacted, [], "a clear picture cancels the old verdict");
+
+  const q3 = { quiet: false };
+  const d = controller([prot], q3);
+  d.c.onMessage({ type: "start", source: "Safari" });
+  d.at(3_000);
+  d.c.onMessage({ type: "frame", image: frame });
+  await d.c.runMemo();
+  d.c.onMessage({ type: "start", source: "YouTube" }); // re-picked another window
+  q3.quiet = true;
+  d.at(4_000);
+  d.c.tick();
+  assert.deepEqual(d.reacted, [], "another source cancels it");
+});
