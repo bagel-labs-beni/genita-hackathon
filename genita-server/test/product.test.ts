@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { classifyTurn, isProductAsk } from "../src/finds/intent.ts";
-import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, httpsOf, shortName, type ProductCtx } from "../src/finds/product.ts";
+import { completedOpens, groundStyle, isProductPage, matchOpened, runProduct, tasteLines, urlKey, urlShape, cityOf, cleanPrice, hardList, hedgedSearch, httpsOf, shortName, type ProductCtx } from "../src/finds/product.ts";
 import { allowedUrl, formatPrice, isImageBytes, isPrivateAddress, readPageFacts, type PageFacts } from "../src/finds/fetchPage.ts";
 import { webActions, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
 import { likesFromStyle } from "../src/finds/setup.ts";
@@ -180,6 +180,7 @@ function ctxFor(v: FindsVendors, extra: Partial<ProductCtx> = {}): { ctx: Produc
     images: true,
     putImage: async (slot) => (stored.push(slot), `/v1/finds/find-p1/images/${slot}`),
     likes: ["Clean, minimal clothes. Understated colors."],
+    hedge: 1,
     ...extra,
   };
   return { ctx, events, stored };
@@ -298,4 +299,34 @@ test("product pipeline: a URL the search didn't open counts only if our own read
 test("product names stay short at a word boundary", () => {
   assert.equal(shortName("Cotton chore jacket"), "Cotton chore jacket");
   assert.equal(shortName("Anna-Kaci Active Men's Lightweight Zip-Up Windbreaker Jacket with High Collar and Elastic Cuffs"), "Anna-Kaci Active Men's Lightweight Zip-Up…");
+});
+
+test("hedged search: the first call that lists 2 opened pages wins; the slow one is aborted; all-bad → the best", async () => {
+  const good = (tag: string) => ({ text: JSON.stringify({ items: [{ url: P1 }, { url: P2 }], tag }), output: [OPEN(P1), OPEN(P2)] });
+  const one = { text: JSON.stringify({ items: [{ url: P1 }] }), output: [OPEN(P1)] };
+  let aborted = 0;
+  const mk = (plan: Array<{ ms: number; r: { text: string; output: OutputItem[] } | null }>): FindsVendors => {
+    let i = 0;
+    return {
+      async spark(_req, signal) {
+        const p = plan[i++];
+        return new Promise((resolve, reject) => {
+          let settled = false;
+          const t = setTimeout(() => ((settled = true), p.r ? resolve(p.r) : reject(new Error("vendor down"))), p.ms);
+          signal?.addEventListener("abort", () => { if (!settled) (clearTimeout(t), aborted++, reject(new Error("aborted"))); }, { once: true });
+        });
+      },
+      async *sparkStream() {},
+      async sam() { return []; },
+      async image() { return Buffer.alloc(0); },
+    };
+  };
+  const t0 = performance.now();
+  const r = await hedgedSearch(mk([{ ms: 400, r: good("slow") }, { ms: 20, r: good("fast") }]), "p", 2, new AbortController().signal);
+  assert.match(r!.text, /fast/);
+  assert.ok(performance.now() - t0 < 300, "did not wait for the slow call");
+  assert.equal(aborted, 1, "the slow call was aborted");
+  const best = await hedgedSearch(mk([{ ms: 10, r: one }, { ms: 30, r: null }]), "p", 2, new AbortController().signal);
+  assert.equal(best, one, "a vendor failure in one call: the other's partial result is used");
+  assert.equal(await hedgedSearch(mk([{ ms: 5, r: null }]), "p", 1, new AbortController().signal), null);
 });

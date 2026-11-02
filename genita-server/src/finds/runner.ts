@@ -23,6 +23,8 @@ export type FindsDeps = {
   likes?: (userId: string) => Promise<string[] | undefined>;
   /** F7: where to shop ("US" default, GENITA_SHOP_REGION) */
   shopRegion?: string;
+  /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 2; 1 = off) */
+  productHedge?: number;
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
@@ -122,7 +124,7 @@ export class FindsRunner {
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
       run = async (c) => {
-        const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion });
+        const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
       };
