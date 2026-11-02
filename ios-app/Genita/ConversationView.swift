@@ -80,8 +80,8 @@ struct ConversationView: View {
                             ZStack {
                                 connectingSurface
                                 let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
-                                DesignText(node: label, text: "Connecting…").frame(width: label.w, height: label.h)
-                            }.frame(width: 175, height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: 142 + top).accessibilityIdentifier("connectingPill")
+                                DesignText(node: label, text: "Connecting to \(model.companionDisplayName)…").frame(width: lineWidth(for: label), height: label.h)
+                            }.frame(width: max(175, lineWidth(for: label) + 40), height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: 142 + top).accessibilityIdentifier("connectingPill")
                         }
                         if moreOpen {
                             CallInk.dim.frame(width: full.size.width, height: full.size.height).onTapGesture { withAnimation(.easeOut(duration: 0.22)) { moreOpen = false } }
@@ -112,7 +112,10 @@ struct ConversationView: View {
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         .onAppear {
             if !connecting {
+                call.companionName = model.companionDisplayName
+                call.onCompanionNamed = { [model] name in model.setup.companionName = name }
                 call.begin(model.callStart)
+                model.setup.firstCallPending = false
                 #if DEBUG
                 call.installFindsFixture()
                 #endif
@@ -123,6 +126,11 @@ struct ConversationView: View {
         .onChange(of: handoff.desktop) { _, onMac in if onMac { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
+    }
+    /// S07 pill grows for a long {name} (NM01 allows 20 characters); "Connecting to Jin…" keeps the board's 175 pt.
+    private func lineWidth(for label: DesignNode) -> CGFloat {
+        let line = "Connecting to \(model.companionDisplayName)…"
+        return max(label.w, ceil((line as NSString).size(withAttributes: [.font: label.font]).width) + 2)
     }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
 

@@ -112,4 +112,73 @@ import UIKit
         model.answer("challenge", "4"); model.setup.depth = .quick; model.setup.depth = .deep
         XCTAssertEqual(model.setup.answers["challenge"], "4")
     }
+
+    // MARK: L2 server wiring (PRD v12 B1, D21, F1-L7)
+
+    func testCallStartUsesTheSavedNameNeverJin() {
+        let model = AppState(storage: store)
+        model.setup.companionName = "Max"
+        XCTAssertEqual(model.callStart.persona.name, "Max")
+        model.setup.serverPersona = .init(name: "Mira", kind: .human, traits: ["warm"], speakingStyle: "short")
+        XCTAssertEqual(model.callStart.persona.name, "Max", "the NM01 / renamed name wins over the card's name")
+        XCTAssertEqual(model.callStart.persona.speakingStyle, "short")
+        model.setup.companionName = nil
+        XCTAssertNotEqual(model.callStart.persona.name, "Jin")
+        model.setup.styleProfile = "How the user wants to be treated:"; model.setup.response = "raw paste"
+        XCTAssertEqual(model.callStart.user?.profile, "How the user wants to be treated:", "the imported style, not the raw paste")
+    }
+
+    func testFirstCallAfterOnboardingWaitsTwoSecondsOnce() {
+        let model = AppState(storage: store)
+        model.go(.connecting); model.complete()
+        XCTAssertEqual(model.callStart.greetAfterMs, 2000)
+        model.setup.firstCallPending = false
+        XCTAssertNil(model.callStart.greetAfterMs)
+        model.complete()
+        XCTAssertNil(model.callStart.greetAfterMs, "only the first call after onboarding waits")
+    }
+
+    func testNameStepSitsBetweenVoiceAndDepthAndPrepAfterSummary() {
+        let model = AppState(storage: store)
+        model.setup.stage = .companionName; model.back()
+        XCTAssertEqual(model.stage, .voice)
+        model.setup.stage = .depth; model.back()
+        XCTAssertEqual(model.stage, .companionName)
+        model.setup.stage = .bringing; model.back()
+        XCTAssertEqual(model.stage, .summary)
+        model.setup.stage = .skipTopics; model.back()
+        XCTAssertEqual(model.stage, .prompt)
+    }
+
+    func testStartRoutesFromMe() {
+        let model = AppState(storage: store)
+        model.apply(.consent); XCTAssertEqual(model.stage, .consent)
+        model.apply(.name); XCTAssertEqual(model.stage, .name)
+        model.apply(.importPrompt); XCTAssertEqual(model.stage, .prompt)
+        model.go(.voice)
+        model.apply(.importPrompt); XCTAssertEqual(model.stage, .voice, "no companion yet: resume where this phone left off")
+        model.apply(.connecting); XCTAssertEqual(model.stage, .voice, "mid-onboarding on this phone: finish it")
+        let returning = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        returning.apply(.connecting)
+        XCTAssertEqual(returning.stage, .conversation, "a companion exists: straight to the call (F12)")
+        XCTAssertTrue(returning.setup.hasOnboarded)
+        XCTAssertNil(returning.callStart.greetAfterMs, "a returning account does not wait")
+        returning.apply(.signIn); XCTAssertEqual(returning.stage, .signIn)
+        returning.apply(.offline); XCTAssertEqual(returning.stage, .signIn, "offline keeps the screen")
+    }
+
+    func testSurveyAnswersMapToTheServerKeys() {
+        let model = AppState(storage: store)
+        model.setup.depth = .deep
+        model.setup.answers = ["help": "Be there", "relationship": "Quiet operator", "challenge": "4", "tempo": "0", "initiative": "2"]
+        model.setup.presence = ["Warm", "Calm"]; model.setup.boundaries = ["Mirror my mood"]
+        let a = model.prefsAnswers
+        XCTAssertEqual(a["challenge"] as? Int, 5); XCTAssertEqual(a["pace"] as? Int, 1); XCTAssertEqual(a["reachOut"] as? Int, 3)
+        XCTAssertEqual(a["never"] as? [String], ["Mirror my mood"]); XCTAssertEqual(a["presence"] as? [String], ["Calm", "Warm"])
+    }
+
+    func testImportPromptIsTheSharedV3File() {
+        XCTAssertTrue(AppState.prompt.hasPrefix("Create an evidence-based personalization profile for Genita"))
+        XCTAssertTrue(AppState.prompt.contains("How Genita can help"))
+    }
 }
