@@ -107,6 +107,8 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     public var isFailed: Bool { status == "failed" }
     /// The stage that is being made now (first one that isn't done), nil when all are done.
     public var current: Stage? { Stage.allCases.first { stages[$0] != .done } }
+    /// The first stage that didn't finish (PREP-1e), nil while nothing failed.
+    public var failedStage: Stage? { Stage.allCases.first { stages[$0] == .failed } }
     /// Continue on PREP-1: the call can start once the scene exists (photo face + device voice until the rest lands).
     public var canStartCall: Bool { isReady || isFailed || stages[.scene] == .done }
 
@@ -115,12 +117,17 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     }
 
     private struct Step: Decodable { var status: String? }
+    private struct FaceStep: Decodable { var status: String?; var settled: Int? }
+    /// face.ts FACE_EXPRESSIONS (blink, smile, warm) come before the visemes
+    static let faceExpressionCount = 3
     private struct Progress: Decodable { var done: Int?; var total: Int? }
     private enum Keys: String, CodingKey { case status, progress, steps, lips, face, sceneUrl }
 
     static func stepStatus(_ raw: String?) -> Status? {
         switch raw {
-        case "done", "ready", "ok", "skipped", "off": return .done
+        case "done", "ready", "ok": return .done
+        // `skipped` / `off` = not part of this prep (Meta-only skips the Kling clips and the Peter lips): no signal
+        case "skipped", "off": return nil
         case "running", "processing", "baking", "submitted": return .running
         case "failed", "error": return .failed
         case "pending", "queued", "waiting", "todo": return .pending
@@ -141,6 +148,18 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
         }
         if let lips = try? c.decode(Step.self, forKey: .lips), let s = Self.stepStatus(lips.status) { steps["lips"] = steps["lips"] ?? s }
         if let face = try? c.decode(Step.self, forKey: .face), let s = Self.stepStatus(face.status) { steps["face"] = steps["face"] ?? s }
+        // Meta-only (runner.ts prepView): one `face` step makes the 3 expressions first, then the 10 visemes
+        // (`settled` of `total`), so it drives both the Expressions and the Mouth rows.
+        if steps["expressions"] == nil, steps["mouth"] == nil,
+           let raw = try? c.decode([String: FaceStep?].self, forKey: .steps), let face = raw["face"] ?? nil, let st = Self.stepStatus(face.status) {
+            let exprDone = (face.settled ?? 0) >= Self.faceExpressionCount
+            switch st {
+            case .done: steps["expressions"] = .done; steps["mouth"] = .done
+            case .pending: steps["expressions"] = .pending; steps["mouth"] = .pending
+            case .running: steps["expressions"] = exprDone ? .done : .running; steps["mouth"] = exprDone ? .running : .pending
+            case .failed: steps["expressions"] = exprDone ? .done : .failed; steps["mouth"] = exprDone ? .failed : .pending
+            }
+        }
         let ready = status == "ready"
         func pick(_ keys: [String]) -> Status { ready ? .done : keys.lazy.compactMap { steps[$0] }.first ?? .pending }
         stages = [.scene: pick(["scene"]), .expressions: pick(["expressions", "face", "videos"]), .mouth: pick(["mouth", "visemes", "lips"])]
@@ -280,6 +299,9 @@ public final class OnboardingClient: @unchecked Sendable {
     public func companion() async throws -> CompanionInfo { try await auth.send("GET", "/v1/companion") }
 
     public func prep() async throws -> PrepProgress { try await auth.send("GET", "/v1/companion/prep") }
+
+    /// PREP-1e Try again: the server redoes only the steps that didn't finish (`202` + the new progress).
+    public func retryPrep() async throws -> PrepProgress { try await auth.send("POST", "/v1/companion/prep/retry", timeout: 30) }
 
     public struct PrefsResult: Decodable, Sendable {
         public struct Session: Decodable, Sendable { public var persona: ClientMessage.Persona? }
