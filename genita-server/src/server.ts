@@ -3,13 +3,18 @@
  *   GET  /healthz          → {ok:true}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *
- * Threat line: callers are the Genita iOS/macOS apps. Auth is a shared
- * bearer token (GENITA_SESSION_TOKEN) until the login ticket lands; with no
- * token configured the server refuses to bind anywhere but loopback.
+ *   /auth/*, /me[/*]       → accounts (src/auth/routes.ts), when DATABASE_URL is set
+ *
+ * Threat line: callers are the Genita iOS/macOS apps. Auth is the user's
+ * session JWT (F1-L5, `Authorization: Bearer` or `?token=`); the shared
+ * GENITA_SESSION_TOKEN stays as a dev fallback (user = x-genita-user). With
+ * neither accounts nor a shared token the server binds to loopback only.
+ * Users who have not given AI-data consent get 403 on prep routes and a 4403
+ * close on the WS, so nothing reaches a third-party model before consent.
  * Limits: maxSessions concurrent, 2 MB per message, maxSessionMs per
- * session, 120 s idle. Nothing is stored; vendor keys never leave the server.
+ * session, 120 s idle. Vendor keys never leave the server.
  */
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Config } from "./config.ts";
@@ -19,6 +24,8 @@ import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
 import { createPrep } from "./prep/index.ts";
+import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
+import { looksLikeJwt } from "./auth/jwt.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -40,35 +47,78 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
   };
 }
 
-function tokenOk(req: IncomingMessage, url: URL, expected: string | null): boolean {
-  if (!expected) return true;
-  const header = req.headers.authorization?.replace(/^Bearer\s+/i, "") ?? "";
-  const got = header || url.searchParams.get("token") || "";
+const bearer = (req: IncomingMessage, url: URL) => req.headers.authorization?.replace(/^Bearer\s+/i, "") || url.searchParams.get("token") || "";
+
+function sameToken(got: string, expected: string): boolean {
   const a = Buffer.from(got);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function startServer(config: Config, log: LogFn = () => {}, deps = defaultDeps(config, log)): Promise<Server> {
-  if (!config.sessionToken && !["127.0.0.1", "::1", "localhost"].includes(config.host)) {
-    throw new Error("GENITA_SESSION_TOKEN is required when HOST is not loopback");
+const json = (res: ServerResponse, status: number, body: unknown) => {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+};
+
+export async function startServer(
+  config: Config,
+  log: LogFn = () => {},
+  deps = defaultDeps(config, log),
+  env: NodeJS.ProcessEnv = process.env,
+  injected?: AccountsService | null, // tests
+): Promise<Server> {
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  const accounts = injected !== undefined ? injected : await createAccounts(env, log, { loopback }); // null without DATABASE_URL
+  if (!config.sessionToken && !accounts && !loopback) {
+    throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
   const sessions = new Map<string, Session>();
-  const prep = createPrep(config, log); // onboarding prep routes (src/prep/routes.ts)
-  const http = createServer((req, res) => {
+  const sessionUsers = new Map<string, string>(); // ws session id → users.id
+  const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
+  if (accounts) accounts.onUserDeleted = (userId) => {
+    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+    for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
+  };
+
+  /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
+  async function principal(req: IncomingMessage, url: URL): Promise<Principal | null> {
+    const token = bearer(req, url);
+    if (accounts && looksLikeJwt(token)) return accounts.verifyToken(token).catch(() => null);
+    const devOk = config.sessionToken ? sameToken(token, config.sessionToken) : loopback;
+    if (!devOk) return null;
+    const h = req.headers["x-genita-user"];
+    const name = (Array.isArray(h) ? h[0] : h) ?? "demo";
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) return null;
+    let userId = name;
+    if (accounts) {
+      userId = devUsers.get(name) ?? (await accounts.accounts.devUserId(name));
+      devUsers.set(name, userId);
+    }
+    return { userId, sid: null, device: "dev", consented: true, kind: "dev" };
+  }
+
+  async function route(req: IncomingMessage, res: ServerResponse) {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
+    if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
     if (prep.routes.handles(req)) {
-      if (!tokenOk(req, new URL(req.url ?? "/", "http://localhost"), config.sessionToken)) {
-        res.writeHead(401, { "content-type": "application/json" });
-        return res.end(JSON.stringify({ error: "unauthorized" }));
-      }
-      return void prep.routes.handle(req, res);
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      // F1-L8: nothing goes to a third-party AI before consent (the import prompt is static text)
+      if (!who.consented && url.pathname !== "/v1/import/prompt") return json(res, 403, { error: "consent_required" });
+      return prep.routes.handle(req, res, who.userId);
     }
-    if (req.url === "/healthz") {
-      res.writeHead(200, { "content-type": "application/json" });
-      return res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "not_found" }));
+    if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size });
+    json(res, 404, { error: "not_found" });
+  }
+
+  const http = createServer((req, res) => {
+    route(req, res).catch((err) => {
+      log("http.error", { path: req.url?.split("?")[0], message: String(err).slice(0, 200) });
+      if (!res.headersSent) json(res, 500, { error: "server_error" });
+      else res.end();
+    });
   });
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
 
@@ -79,12 +129,20 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
       socket.destroy();
     };
     if (url.pathname !== "/v1/session") return reject(404, "Not Found");
-    if (!tokenOk(req, url, config.sessionToken)) return reject(401, "Unauthorized");
     if (sessions.size >= config.maxSessions) return reject(503, "Busy");
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws));
+    principal(req, url).then(
+      (who) =>
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          // F1-L5: close codes the app can act on (4401 → sign in again, 4403 → consent screen)
+          if (!who) return ws.close(4401, "unauthorized");
+          if (!who.consented) return ws.close(4403, "consent_required");
+          attach(ws, who);
+        }),
+      () => reject(500, "Internal Server Error"),
+    );
   });
 
-  function attach(ws: WebSocket) {
+  function attach(ws: WebSocket, who: Principal) {
     const id = randomUUID();
     const sink: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
@@ -93,7 +151,8 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
     };
     const session = new Session(id, sink, deps);
     sessions.set(id, session);
-    log("session.open", { session: id, sessions: sessions.size });
+    sessionUsers.set(id, who.userId);
+    log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
     const life = setTimeout(() => session.close(4001, "max_duration"), config.maxSessionMs);
     ws.on("message", (data, isBinary) => {
@@ -108,10 +167,12 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
       clearTimeout(life);
       session.close();
       sessions.delete(id);
+      sessionUsers.delete(id);
       log("session.close", { session: id, sessions: sessions.size });
     });
     ws.on("error", () => ws.terminate());
   }
 
+  http.on("close", () => void accounts?.close().catch(() => {}));
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }

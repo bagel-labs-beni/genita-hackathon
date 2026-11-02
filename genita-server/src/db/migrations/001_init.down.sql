@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS usage_daily;
+DROP TABLE IF EXISTS finds;
+DROP TABLE IF EXISTS memories;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS conversations;
+DROP TABLE IF EXISTS companion_prefs;
+DROP TABLE IF EXISTS companion_emotions;
+DROP TABLE IF EXISTS clip_jobs;
+DROP TABLE IF EXISTS companions;
+DROP TABLE IF EXISTS companion_images;
+DROP TABLE IF EXISTS user_styles;
+DROP TABLE IF EXISTS auth_codes;
+DROP TABLE IF EXISTS auth_sessions;
+DROP TABLE IF EXISTS consents;
+DROP TABLE IF EXISTS users;
