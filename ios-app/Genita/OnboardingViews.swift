@@ -27,44 +27,83 @@ struct RootView: View {
         }.tint(Color("Ink"))
     }
 }
-/// V04 · device voices (11/2 Meta-only: calls speak with the device's own voices, no ElevenLabs).
-/// Four en-US voices, best quality first (Premium → Enhanced → default), previewed with AVSpeechSynthesizer.
-@MainActor @Observable final class VoicePlayer: NSObject, AVSpeechSynthesizerDelegate {
-    var playing: Int?
-    private let synthesizer = AVSpeechSynthesizer()
-    override init() { super.init(); synthesizer.delegate = self }
+/// V04 · the companion voices the server offers (11/2: SeamlessM4T v2 on our GPU, D3). The list, the preview
+/// clips and the pick all go through genita-server; the phone's own voices are only the silent offline fallback
+/// for calls (`deviceFallbackKey`) and never show here.
+@MainActor @Observable final class VoicePlayer: NSObject, AVAudioPlayerDelegate {
+    var voices: [OnboardingClient.CompanionVoice] = []
+    /// the voice service answers; false greys the list ("Voice preview is waking up") and Continue takes the default
+    var available = false
+    var loading = true
+    /// the voice whose preview is playing / being fetched
+    var playing: String?
+    var fetching: String?
+    private var audio: AVAudioPlayer?
+    private var cache: [String: Data] = [:]
+    private var task: Task<Void, Never>?
 
-    static let choices: [AVSpeechSynthesisVoice] = {
-        let all = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "en-US" }
-        let ranked = all.sorted { a, b in
-            let q = { (v: AVSpeechSynthesisVoice) in v.quality == .premium ? 0 : v.quality == .enhanced ? 1 : 2 }
-            return q(a) != q(b) ? q(a) < q(b) : a.name < b.name
+    /// Where a call's device speech reads the silent fallback voice (shared/Call device TTS, lane L4).
+    static let deviceFallbackKey = "genita.voice.device"
+
+    /// The best installed en-US voice, never shown, only for a call the server can't voice.
+    static var deviceFallbackID: String? {
+        let ranked = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "en-US" && !$0.voiceTraits.contains(.isNoveltyVoice) }
+            .sorted { ($0.quality.rawValue, $0.name) > ($1.quality.rawValue, $1.name) }
+        return (ranked.first ?? AVSpeechSynthesisVoice(language: "en-US"))?.identifier
+    }
+
+    /// What V04 shows when the server can't be reached at all: the same curated four per look (greyed).
+    static func fallback(kind: String?) -> [OnboardingClient.CompanionVoice] {
+        func v(_ id: String, _ name: String, _ blurb: String) -> OnboardingClient.CompanionVoice { .init(id: id, name: name, blurb: blurb) }
+        switch kind {
+        case "animal": return [v("16", "Pip", "Cheery, light"), v("22", "Mochi", "Soft, gentle"), v("34", "Juno", "Lively, bright"), v("80", "Rue", "Mellow, easy")]
+        case "character": return [v("68", "Nova", "Bright, clear"), v("64", "Ivy", "Sparkly, light"), v("44", "Wren", "Dreamy, soft"), v("0", "Coco", "Playful, quick")]
+        default: return [v("72", "Tara", "Warm, bright"), v("120", "Leah", "Soft, steady"), v("36", "Leo", "Calm, low"), v("24", "Dan", "Easygoing")]
         }
-        var seen = Set<String>(), out: [AVSpeechSynthesisVoice] = []
-        for v in ranked where !(v.voiceTraits.contains(.isNoveltyVoice)) && seen.insert(v.name).inserted { out.append(v) }
-        if out.isEmpty, let v = AVSpeechSynthesisVoice(language: "en-US") { out = [v] }
-        return Array(out.prefix(4))
-    }()
-
-    static func voice(_ index: Int) -> AVSpeechSynthesisVoice? { choices.isEmpty ? nil : choices[index % choices.count] }
-    static func name(_ index: Int) -> String { voice(index)?.name ?? "Voice \(index + 1)" }
-    static func detail(_ index: Int) -> String {
-        guard let v = voice(index) else { return "On this iPhone" }
-        let quality = v.quality == .premium ? "Premium" : v.quality == .enhanced ? "Enhanced" : "Standard"
-        let gender = v.gender == .female ? "Female" : v.gender == .male ? "Male" : nil
-        return [gender, quality].compactMap { $0 }.joined(separator: ", ")
     }
-    /// Where the call's device speech reads the pick (shared/Call device TTS, lane L4).
-    static let selectedKey = "genita.voice.device"
 
-    func preview(_ index: Int) {
-        if playing == index { stop(); return }
-        synthesizer.stopSpeaking(at: .immediate)
-        let sample = AVSpeechUtterance(string: "Hi, I’m here. We can take our time, think things through, and find what feels right for you.")
-        sample.voice = Self.voice(index) ?? AVSpeechSynthesisVoice(language: "en-US")
-        playing = index
-        synthesizer.speak(sample)
+    func load(client: OnboardingClient, imageId: String?, kind: String?) async {
+        loading = true
+        defer { loading = false }
+        do {
+            let r = try await client.voices(imageId: imageId)
+            guard !r.voices.isEmpty else { throw GenitaAuthError.badResponse }
+            voices = Array(r.voices.prefix(4))
+            available = r.available ?? true
+        } catch {
+            voices = Self.fallback(kind: kind)
+            available = false
+        }
     }
-    func stop() { synthesizer.stopSpeaking(at: .immediate); playing = nil }
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { Task { @MainActor in self.playing = nil } }
+
+    /// Play (or stop) one clip. A 503 / offline turns the list grey instead of showing an error.
+    func preview(_ voice: OnboardingClient.CompanionVoice, client: OnboardingClient) {
+        if playing == voice.id || fetching == voice.id { stop(); return }
+        stop()
+        fetching = voice.id
+        task = Task {
+            do {
+                let data: Data
+                if let hit = cache[voice.id] { data = hit } else { data = try await client.voicePreview(id: voice.id); cache[voice.id] = data }
+                guard !Task.isCancelled, fetching == voice.id else { return }
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                try? AVAudioSession.sharedInstance().setActive(true)
+                let p = try AVAudioPlayer(data: data)
+                p.delegate = self
+                audio = p
+                fetching = nil
+                playing = voice.id
+                p.play()
+                // the delegate can miss on a device with no audio route (CI); the clip's own length ends "Playing" too
+                let id = voice.id, seconds = p.duration + 0.3
+                Task { try? await Task.sleep(for: .seconds(seconds)); if playing == id { playing = nil } }
+            } catch {
+                if Task.isCancelled { return }
+                fetching = nil
+                available = false
+            }
+        }
+    }
+    func stop() { task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in self.playing = nil } }
 }

@@ -22,7 +22,7 @@ struct SettingsView: View {
         return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
     }
     private var voiceName: String {
-        model.setup.deviceVoice.flatMap { AVSpeechSynthesisVoice(identifier: $0)?.name } ?? "Not selected"
+        model.setup.voiceName ?? "Default"
     }
     var body: some View {
         NavigationStack {
