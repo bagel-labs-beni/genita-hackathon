@@ -80,12 +80,22 @@ jobs:
           OUT="$RUNNER_TEMP/face"; FACE=../../Tests/GenitaKitTests/Fixtures/face-animal
           mkdir -p "$OUT"
           TEXT="Oh wow, you are home. Want to go for a walk? I found the best stick in the whole park today."
+          # Only a missing voice is skipped; a render or encode failure fails the job.
           if say -o "$OUT/sample.aiff" "$TEXT"; then
             .build/release/FaceRender --face "$FACE" --audio "$OUT/sample.aiff" --text "$TEXT" --out "$OUT/animal-text-loudness.mp4" --frames-dir "$OUT/frames" --frames-prefix animal
+            test -s "$OUT/animal-text-loudness.mp4"
           else
-            echo "::warning::say could not write audio on this runner"
+            echo "::warning::say could not write audio on this runner (no voice); text + loudness sample skipped"
           fi
-          .build/release/FaceRender --face "$FACE" --say "$TEXT" --out "$OUT/animal-word-timings.mp4" || echo "::warning::AVSpeechSynthesizer unavailable on this runner"
+          rc=0
+          .build/release/FaceRender --face "$FACE" --say "$TEXT" --out "$OUT/animal-word-timings.mp4" || rc=$?
+          if [ "$rc" = 3 ]; then
+            echo "::warning::AVSpeechSynthesizer has no voice on this runner; word-timings sample skipped"
+          elif [ "$rc" != 0 ]; then
+            exit "$rc"
+          else
+            test -s "$OUT/animal-word-timings.mp4"
+          fi
           ls "$OUT"/*.mp4
       - name: Upload face sample
         if: always()

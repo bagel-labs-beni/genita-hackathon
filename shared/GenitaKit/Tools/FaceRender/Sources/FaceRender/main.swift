@@ -7,6 +7,7 @@
 //
 // --say synthesises with AVSpeechSynthesizer and uses its word markers as timings (when the
 // voice reports them). Without timings the mouth comes from --text + loudness.
+// Exit 3 = speech synthesis unavailable on this machine (--say only).
 // Prints: frames, render fps (wall), A/V offset (lag in ms that best lines up the rendered
 // mouth with the audio loudness; positive = mouth late).
 
@@ -142,13 +143,16 @@ func synthesize(_ text: String) -> (Data, [LipWordTiming]) {
     while !done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
     if markers.isEmpty { markers = collector.markers }
+    if r.out.isEmpty {
+        FileHandle.standardError.write(Data("speech synthesis produced no audio on this machine\n".utf8))
+        exit(3)   // 3 = synthesis unavailable (CI skips); anything else is a real failure
+    }
     let words = markers.filter { $0.mark == .word }
     print("synth: \(markers.count) markers (\(words.count) word, \(markers.filter { $0.mark == .phoneme }.count) phoneme), \(r.inputFrames) frames at \(r.inputRate) Hz")
     guard !words.isEmpty, r.inputRate > 0 else { return (r.out, []) }
-    // byteSampleOffset: sample frames of the synthesiser's own output; if the numbers run past
-    // the audio they are bytes, so scale by the bytes per frame.
-    let maxOffset = Double(words.map(\.byteSampleOffset).max()!)
-    let perFrame = maxOffset > Double(r.inputFrames) * 1.05 ? r.inputBytesPerFrame : 1.0
+    // byteSampleOffset is a byte offset into the synthesiser's own output format
+    // (Float32 mono here: 4 bytes a frame), so divide by its bytes per frame.
+    let perFrame = max(1, r.inputBytesPerFrame)
     let ns = text as NSString
     let audioMs = Int(Double(r.out.count / 2) / outRate * 1000)
     var out: [LipWordTiming] = []
@@ -158,7 +162,7 @@ func synthesize(_ text: String) -> (Data, [LipWordTiming]) {
         guard m.textRange.location != NSNotFound, m.textRange.location + m.textRange.length <= ns.length else { continue }
         out.append(LipWordTiming(text: ns.substring(with: m.textRange), startMs: s, endMs: max(s + 40, next - 10)))
     }
-    print("synth: \(words.count) word markers (offset unit: \(perFrame == 1 ? "frames" : "bytes")), audio \(audioMs) ms")
+    print("synth: \(words.count) word markers (\(Int(perFrame)) bytes a frame), audio \(audioMs) ms")
     return (r.out, out)
 }
 
@@ -299,7 +303,9 @@ func renderFrame(_ i: Int) {
         // Reference: the same frame with the mouth at rest.
         var refOut: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &refOut)
-        renderer.ciContext.render(FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: true).image(at: 0, lip: .rest), to: refOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
+        let ref = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: true)
+        if let e = o.emotion { ref.setEmotion(e, at: 0) }
+        renderer.ciContext.render(ref.image(at: 1, lip: .rest), to: refOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
         restMouth = mouthArea(refOut!)
     }
     let area = mouthArea(pb)
