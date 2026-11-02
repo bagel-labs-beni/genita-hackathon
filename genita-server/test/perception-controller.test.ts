@@ -250,3 +250,24 @@ test("inactive (interpreting / watching): no new call for a waiting frame, no tr
   await h.settle();
   assert.equal(h.calls.length, 1, "frames while inactive are ignored");
 });
+
+test("back in chat: a frame that waited through interpretation is never read late (Codex P2, round 2)", async () => {
+  let active = true;
+  const h = harness({ active: () => active });
+  const got: string[] = [];
+  h.c.onTrigger((t) => got.push(t.kind));
+  h.c.frame(JPEG); // neutral read in flight
+  await h.settle();
+  h.set({ now: 2500, next: () => read({ expression: "laugh", intensity: 0.9 }) });
+  h.c.frame(JPEG); // a laugh frame waits
+  active = false;
+  await h.release(); // the in-flight read lands while interpreting
+  active = true; // back to chat within 3 s
+  h.set({ now: 4000, next: () => read() });
+  h.c.frame(JPEG);
+  await h.release();
+  await new Promise((r) => setTimeout(r, 1100));
+  await h.release();
+  assert.deepEqual(got, [], "the old laugh frame is gone");
+  assert.equal(h.calls.length, 2);
+});

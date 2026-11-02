@@ -123,7 +123,10 @@ export class PerceptionController implements PerceptionSource {
       }
       if (this.closed || abort.signal.aborted) return;
       // a read that lands after a switch to interpretation / watch together says nothing to anyone
-      if (!this.isActive()) return;
+      if (!this.isActive()) {
+        this.pending = null; // nor does a face that waited through it (Codex P2, round 2)
+        return;
+      }
       const sample = parseSample(text);
       ok = !!sample;
       if (sample) {

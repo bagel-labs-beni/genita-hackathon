@@ -63,8 +63,9 @@ const ema = (prev: number | undefined, x: number) => (prev === undefined ? x : p
 const within = (at: number, ref: number | null, ms: number) => ref !== null && at >= ref && at - ref <= ms;
 
 export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): { tracker: Tracker; triggers: PerceptionTrigger[] } {
-  if (s.confidence < MIN_CONFIDENCE) return { tracker: t, triggers: [] };
   const prevAt = t.kept.at(-1)?.at ?? null;
+  // low confidence, or a read about a face older than the last kept one: says nothing about now
+  if (s.confidence < MIN_CONFIDENCE || (prevAt !== null && at < prevAt)) return { tracker: t, triggers: [] };
   // a gap (camera off, no face, failed reads): earlier samples and runs say nothing about now
   const fresh = prevAt === null || at - prevAt > STALE_MS;
   const base: Tracker = fresh ? { ...t, kept: [], state: null, tired: NO_RUN, away: NO_RUN, low: NO_RUN } : t;

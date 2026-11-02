@@ -228,3 +228,9 @@ test("hints are short, kind, about the moment, never about looks; tired is a sof
     assert.doesNotMatch(h, /hair|skin|weight|age|old|young|pretty|ugly|sick/i, k);
   }
 });
+
+test("observe ignores a sample older than the last kept one (state never goes back in time)", () => {
+  const r = run([[4000, S()], [2500, S({ expression: "laugh", intensity: 0.9 })]]);
+  assert.deepEqual(r.kinds, []);
+  assert.equal(stateOf(r.tracker, 4000)!.at, 4000);
+});
