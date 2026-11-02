@@ -123,6 +123,8 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** longest a ready reply waits for the user to stop talking before its first sound (ASR lost a speechEnd) */
+const HOLD_MAX_MS = 3000;
 /** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
 const WARM_AGAIN_MS = 45_000;
 const DEVICE_MS_PER_CHAR = 70;
@@ -218,6 +220,8 @@ export class Session {
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private lastWarmAt = -Infinity;
+  /** replies whose first sound waits for the user to stop talking */
+  private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
@@ -717,6 +721,7 @@ export class Session {
     const r = reduceTurn(this.turn, e, this.bargeCfg);
     this.turn = r.state;
     for (const fx of r.effects) this.run(fx);
+    if (!this.turn.userSpeaking && this.quietWaiters.length) for (const w of this.quietWaiters.splice(0)) w();
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
       const p = this.pendingAnnounce;
       this.pendingAnnounce = null;
@@ -750,6 +755,26 @@ export class Session {
         void this.runReply(fx.text, fx.utteranceId, fx.self);
         return;
     }
+  }
+
+  /**
+   * A reply's first sound never starts while the user is talking (they went on after a pause the ASR
+   * took for the end of the turn): it waits until they stop — a backchannel — or the barge-in cancels
+   * it. Resolves at once when the user is quiet; never waits longer than HOLD_MAX_MS.
+   */
+  private untilUserQuiet(signal: AbortSignal): Promise<void> | null {
+    if (!this.turn.userSpeaking || signal.aborted) return null;
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        this.quietWaiters = this.quietWaiters.filter((w) => w !== done);
+        resolve();
+      };
+      const timer = setTimeout(done, HOLD_MAX_MS);
+      signal.addEventListener("abort", done, { once: true });
+      this.quietWaiters.push(done);
+    });
   }
 
   private cancelReply(utteranceId: number, reason: CancelReason): void {
@@ -1079,6 +1104,8 @@ export class Session {
       if (signal.aborted || !sentences[i]) break;
       const s = sentences[i];
       if (device || reply.fellBack) {
+        if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
+        if (signal.aborted) break;
         sayOnDevice(i, s);
         continue;
       }
@@ -1110,6 +1137,8 @@ export class Session {
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
