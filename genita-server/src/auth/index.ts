@@ -48,6 +48,8 @@ export type AccountsCore = {
   log: Log;
   signSession(userId: string, sid: string, device: Device, expiresAt: Date): string;
   onUserDeleted?: (userId: string) => void;
+  /** Drops baked Peter avatar caches on the GPU box (best effort; the S3 copy is deleted by DELETE /me itself). */
+  forgetAvatars?: (companionIds: string[]) => Promise<void>;
 };
 
 export type AccountsService = AccountsCore & {
@@ -88,6 +90,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     trustProxy: env.GENITA_TRUST_PROXY === "1",
     authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 30,
     log,
+    forgetAvatars: peterForgetter(env, log),
     signSession: (userId, sid, device, expiresAt) =>
       signHs256({ iss: SESSION_ISSUER, sub: userId, sid, dev: device, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt.getTime() / 1000) }, jwtSecret),
   };
@@ -107,4 +110,30 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     },
     close: () => db.close(),
   });
+}
+
+/**
+ * DELETE {GENITA_PETER_PREPARE_URL}/avatars/<id> (deploy/aws/peter/prep_api.py): local cache + tombstone so a
+ * running bake never republishes. Throws when the GPU box can't confirm, so DELETE /me keeps the rows and the
+ * user can retry (same rule as blob storage). Unset URL (Peter not deployed) = nothing to forget.
+ */
+function peterForgetter(env: NodeJS.ProcessEnv, log: Log): AccountsCore["forgetAvatars"] {
+  const url = (env.GENITA_PETER_PREPARE_URL || "").replace(/\/+$/, "");
+  const token = env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || "";
+  if (!url) return undefined;
+  return async (ids) => {
+    for (const id of ids) {
+      let status = 0;
+      try {
+        const r = await fetch(`${url}/avatars/${encodeURIComponent(id)}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
+        status = r.status;
+      } catch (e) {
+        log("account.avatar_forget_failed", { message: String(e).slice(0, 120) });
+      }
+      if (status !== 200 && status !== 404) {
+        if (status) log("account.avatar_forget_failed", { status });
+        throw new Error("avatar_forget_failed");
+      }
+    }
+  };
 }
