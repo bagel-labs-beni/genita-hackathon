@@ -2,15 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { startServer } from "../src/server.ts";
-import type { Config } from "../src/config.ts";
+import { loadConfig, type Config } from "../src/config.ts";
 
-const config: Config = {
-  metaKey: "x", elevenKey: null, serverTts: false, kling: false, peter: false,
-  host: "127.0.0.1", port: 0, sessionToken: "events-test-token", ttsModel: "m", ttsFallbackModel: "f",
-  defaultVoiceId: "voice", webSearch: false, asrLanguages: ["English"], bargeInMinMs: 400,
-  bargeInMinWords: 2, maxSessions: 4, maxSessionMs: 60_000, sparkFirstTokenTimeoutMs: 8000,
-  sparkHedge: 1, speculate: false, speculateStableMs: 250,
-};
+const config: Config = { ...loadConfig({ MODEL_API_KEY: "x" }), host: "127.0.0.1", port: 0, sessionToken: "events-test-token" };
 
 test("POST /v1/events authenticates, uses each event's closed prop schema, drops unknown names, and rate limits", async (t) => {
   const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
