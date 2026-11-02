@@ -4,6 +4,7 @@
 {"t":"2026-11-03T00:01:00.000Z","event":"onboarding.ready","companionId":"c1"}
 {"t":"2026-11-03T00:01:20.000Z","event":"call.greeted","companionId":"c1"}
 {"t":"2026-11-03T00:01:22.000Z","event":"turn.answered","first_audio_ms":1200}
+{"t":"2026-11-03T00:01:22.500Z","event":"turn.answered","mode":"interpret","first_audio_ms":900}
 {"t":"2026-11-03T00:01:23.000Z","event":"tts.fallback_device"}
 {"t":"2026-11-03T00:01:24.000Z","event":"voice.capacity_fallback"}
 {"t":"2026-11-03T00:01:25.000Z","event":"auth.signed_in"}

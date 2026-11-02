@@ -19,8 +19,8 @@ export function parseLogLines(text: string): LogRecord[] {
   return output;
 }
 
-function timestamp(record: LogRecord): number | null {
-  const raw = record.t ?? record.at;
+function timestamp(record: LogRecord, preferAt = false): number | null {
+  const raw = preferAt ? record.at ?? record.t : record.t ?? record.at;
   if (typeof raw === "number" && Number.isFinite(raw)) return raw;
   if (typeof raw === "string") { const parsed = Date.parse(raw); return Number.isFinite(parsed) ? parsed : null; }
   return null;
@@ -39,17 +39,21 @@ export function buildReport(records: LogRecord[]) {
   const companionForUser = new Map<string, string>();
   const companionForImage = new Map<string, string>();
   for (const record of records) {
+    // Only server lines with no `source` field establish a user/image → companion join.
+    // App events may have arbitrary app-side identifiers and must never affect that mapping.
+    if (record.source !== undefined || !["companion.created", "voice.selected", "scene.done", "face.done", "onboarding.ready", "prep.completed", "call.greeted"].includes(record.event)) continue;
     if (typeof record.companionId !== "string") continue;
     if (typeof record.userId === "string") companionForUser.set(record.userId, record.companionId);
     if (record.event === "companion.created" && typeof record.imageId === "string") companionForImage.set(record.imageId, record.companionId);
   }
   const byCompanion = new Map<string, Map<string, number>>();
   for (const record of records) {
+    if (record.source === "app") continue;
     const id = typeof record.companionId === "string" ? record.companionId
       : typeof record.companion === "string" ? record.companion
         : typeof record.imageId === "string" ? companionForImage.get(record.imageId) ?? null
           : typeof record.userId === "string" ? companionForUser.get(record.userId) ?? null : null;
-    const at = timestamp(record);
+    const at = timestamp(record, record.event === "face.uploaded");
     if (!id || at === null || !["face.uploaded", "scene.done", "face.done", "onboarding.ready", "prep.completed", "call.greeted"].includes(record.event)) continue;
     const events = byCompanion.get(id) ?? new Map<string, number>();
     if (!events.has(record.event)) events.set(record.event, at);
@@ -64,14 +68,23 @@ export function buildReport(records: LogRecord[]) {
     return { companionId, uploadToSceneS: elapsedSeconds(uploaded, scene), sceneToFaceS: elapsedSeconds(scene, face), faceToReadyS: elapsedSeconds(face, ready), readyToGreetedS: elapsedSeconds(ready, greeted), uploadToMovingFaceMs: uploaded === undefined || face === undefined ? null : face - uploaded };
   });
   const moving = companions.flatMap((x) => x.uploadToMovingFaceMs === null ? [] : [x.uploadToMovingFaceMs]);
-  const firstAudio = records.flatMap((x) => x.event === "turn.answered" && typeof x.first_audio_ms === "number" && Number.isFinite(x.first_audio_ms) ? [x.first_audio_ms] : []);
+  const firstAudio = (mode: "chat" | "interpret") => records.flatMap((x) =>
+    x.source !== "app" && x.event === "turn.answered" && (mode === "interpret" ? x.mode === "interpret" : x.mode !== "interpret") && typeof x.first_audio_ms === "number" && Number.isFinite(x.first_audio_ms)
+      ? [x.first_audio_ms]
+      : [],
+  );
   const funnel = FUNNEL.map((event) => ({ event, count: records.filter((x) => x.event === event && (event !== "face.checked" || x.passed === true)).length }));
   const uploadToMovingFaceP = percentile(moving);
   return {
     companions,
     prep: { uploadToMovingFaceMs: uploadToMovingFaceP },
     gates: { uploadToMovingFaceP50Ms: uploadToMovingFaceP.p50, uploadToMovingFace: uploadToMovingFaceP.p50 !== null && uploadToMovingFaceP.p50 <= 120_000 ? "PASS" : "FAIL" },
-    turns: { firstAudioMs: percentile(firstAudio), ttsFallbackDevice: records.filter((x) => x.event === "tts.fallback_device").length, voiceCapacityFallback: records.filter((x) => x.event === "voice.capacity_fallback").length },
+    turns: {
+      chatFirstAudioMs: percentile(firstAudio("chat")),
+      interpretFirstAudioMs: percentile(firstAudio("interpret")),
+      ttsFallbackDevice: records.filter((x) => x.event === "tts.fallback_device").length,
+      voiceCapacityFallback: records.filter((x) => x.event === "voice.capacity_fallback").length,
+    },
     funnel,
   };
 }
@@ -83,7 +96,8 @@ export function renderReport(report: ReturnType<typeof buildReport>): string {
   const lines = ["Companions"];
   for (const c of report.companions) lines.push(`${c.companionId}: upload → scene ${step(c.uploadToSceneS)} | scene → face ${step(c.sceneToFaceS)} | face → ready ${step(c.faceToReadyS)} | ready → greeted ${step(c.readyToGreetedS)}`);
   lines.push(`upload → moving face p50 ≤ 120 s: ${report.gates.uploadToMovingFace} (${seconds(report.gates.uploadToMovingFaceP50Ms)})`);
-  lines.push(`turn first_audio_ms p50/p90: ${report.turns.firstAudioMs.p50 ?? "n/a"} / ${report.turns.firstAudioMs.p90 ?? "n/a"}`);
+  lines.push(`turn chat first_audio_ms p50/p90: ${report.turns.chatFirstAudioMs.p50 ?? "n/a"} / ${report.turns.chatFirstAudioMs.p90 ?? "n/a"}`);
+  lines.push(`turn interpret first_audio_ms p50/p90: ${report.turns.interpretFirstAudioMs.p50 ?? "n/a"} / ${report.turns.interpretFirstAudioMs.p90 ?? "n/a"}`);
   lines.push(`tts.fallback_device: ${report.turns.ttsFallbackDevice}`);
   lines.push(`voice.capacity_fallback: ${report.turns.voiceCapacityFallback}`);
   lines.push("Core funnel");

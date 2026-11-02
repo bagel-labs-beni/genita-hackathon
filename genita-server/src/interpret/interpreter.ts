@@ -565,6 +565,14 @@ export class Interpreter {
       speculative: job.speculative,
     };
     this.host.send({ type: "turn.metrics", ...metrics });
+    this.host.log("turn.answered", {
+      mode: "interpret",
+      stt_ms: metrics.stt_ms,
+      llm_ms: metrics.llm_ms,
+      tts_ms: metrics.tts_ms,
+      first_audio_ms: metrics.first_audio_ms,
+      utteranceId,
+    });
     if (job.bubble) this.host.log("interpret.relayed", { ms: metrics.speechEndToFirstAudioMs, speaker: job.bubble.speaker, from: job.bubble.original.lang, to: job.bubble.translation?.lang, speculative: job.speculative });
     // speaking off once this utterance should have finished playing
     if (job.playStart !== null) {

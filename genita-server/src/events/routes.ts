@@ -20,12 +20,43 @@ export const APP_EVENT_NAMES = new Set([
 ]);
 
 const MAX_EVENTS = 20;
-const MAX_PROPS = 8;
-const MAX_STRING = 80;
 const BODY_LIMIT = 32 * 1024;
 const RATE_LIMIT = 120;
 const WINDOW_MS = 60_000;
 const RESERVED = new Set(["event", "source", "userId"]);
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+type PropRule =
+  | { type: "enum"; values: readonly string[] }
+  | { type: "int" }
+  | { type: "bool" }
+  | { type: "id" };
+
+/** App telemetry must never carry arbitrary text (or a disguised identifier). */
+const APP_PROP_SCHEMA: Record<string, Record<string, PropRule>> = {
+  "import.prompt_copied": {},
+  "import.submitted": { chars: { type: "int" } },
+  "import.cancelled": {},
+  "import.skipped": {},
+  "face.confirmed": { companionId: { type: "id" } },
+  "voice.previewed": { voiceId: { type: "id" } },
+  "setup.depth_selected": { depth: { type: "enum", values: ["quick", "full"] } },
+  "setup.answered": { step: { type: "int" } },
+  "setup.abandoned": { step: { type: "int" } },
+  "setup.summary_viewed": {},
+  "setup.summary_cancelled": {},
+  "camera.toggled": { on: { type: "bool" }, facing: { type: "enum", values: ["front", "back"] } },
+  "screen.share_started": {},
+  "screen.share_stopped": { seconds: { type: "int" } },
+  "screen.asked": {},
+  "observe.boxes_shown": { count: { type: "int" } },
+  "find.opened": { findId: { type: "id" } },
+  "product.links_opened": { findId: { type: "id" }, index: { type: "int" } },
+  "handoff.preparing": { to: { type: "enum", values: ["iphone", "mac"] } },
+  "handoff.committed": { to: { type: "enum", values: ["iphone", "mac"] }, ms: { type: "int" } },
+  "handoff.failed": { reason: { type: "enum", values: ["timeout", "denied", "offline", "other"] } },
+  "app.reopened": { gapHours: { type: "int" } },
+};
 
 type Rate = { startedAt: number; count: number };
 export type EventsRoute = { handles(pathname: string): boolean; handle(req: IncomingMessage, res: ServerResponse, userId: string): Promise<void> };
@@ -46,14 +77,17 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("bad_json"); }
 }
 
-function flatProps(value: unknown): Record<string, string | number | boolean> {
+function flatProps(event: string, value: unknown): Record<string, string | number | boolean> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const schema = APP_PROP_SCHEMA[event] ?? {};
   const out: Record<string, string | number | boolean> = {};
-  for (const [key, item] of Object.entries(value).slice(0, MAX_PROPS)) {
+  for (const [key, rule] of Object.entries(schema)) {
     if (RESERVED.has(key)) continue;
-    if (typeof item === "string" && item.length <= MAX_STRING) out[key] = item;
-    else if (typeof item === "number" && Number.isFinite(item)) out[key] = item;
-    else if (typeof item === "boolean") out[key] = item;
+    const item = (value as Record<string, unknown>)[key];
+    if (rule.type === "bool" && typeof item === "boolean") out[key] = item;
+    else if (rule.type === "id" && typeof item === "string" && ID.test(item)) out[key] = item;
+    else if (rule.type === "enum" && typeof item === "string" && rule.values.includes(item)) out[key] = item;
+    else if (rule.type === "int" && typeof item === "number" && Number.isInteger(item)) out[key] = Math.min(10_000_000, Math.max(0, item));
   }
   return out;
 }
@@ -81,7 +115,7 @@ export function createEventsRoute(log: (event: string, data: Record<string, unkn
       let unknown = 0;
       for (const item of events as Array<{ name: string; props?: unknown }>) {
         if (!APP_EVENT_NAMES.has(item.name)) { unknown++; continue; }
-        log(item.name, { source: "app", userId, ...flatProps(item.props) });
+        log(item.name, { source: "app", userId, ...flatProps(item.name, item.props) });
       }
       if (unknown) log("events.unknown", { source: "app", userId, count: unknown });
       return send(res, 204);

@@ -12,7 +12,7 @@ const config: Config = {
   sparkHedge: 1, speculate: false, speculateStableMs: 250,
 };
 
-test("POST /v1/events authenticates, filters properties, drops unknown names, and rate limits", async (t) => {
+test("POST /v1/events authenticates, uses each event's closed prop schema, drops unknown names, and rate limits", async (t) => {
   const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
   const server = await startServer(config, (event, data) => logs.push({ event, data }));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -23,8 +23,14 @@ test("POST /v1/events authenticates, filters properties, drops unknown names, an
     body: JSON.stringify(body),
   });
 
-  assert.equal((await post({ events: [{ name: "setup.summary_viewed", props: { screen: "summary", ignored: { text: "never log" }, tooLong: "x".repeat(81), n: 3, ok: true } }] })).status, 204);
-  assert.deepEqual(logs.find((x) => x.event === "setup.summary_viewed")?.data, { source: "app", userId: "demo", screen: "summary", n: 3, ok: true });
+  assert.equal((await post({ events: [
+    { name: "setup.answered", props: { step: 3, email: "chelsea@example.com", depth: "wrong", companionId: "has spaces" } },
+    { name: "camera.toggled", props: { on: true, facing: "front", extra: "free text" } },
+    { name: "face.confirmed", props: { companionId: "companion_1", note: "private note" } },
+  ] })).status, 204);
+  assert.deepEqual(logs.find((x) => x.event === "setup.answered")?.data, { source: "app", userId: "demo", step: 3 });
+  assert.deepEqual(logs.find((x) => x.event === "camera.toggled")?.data, { source: "app", userId: "demo", on: true, facing: "front" });
+  assert.deepEqual(logs.find((x) => x.event === "face.confirmed")?.data, { source: "app", userId: "demo", companionId: "companion_1" });
   assert.equal((await post({ events: [{ name: "not.allowed", props: { body: "never logged" } }] })).status, 204);
   // server-owned events cannot be forged by an app
   assert.equal((await post({ events: [{ name: "turn.answered", props: { first_audio_ms: 1 } }, { name: "call.greeted" }] })).status, 204);
@@ -34,6 +40,6 @@ test("POST /v1/events authenticates, filters properties, drops unknown names, an
   assert.equal((await post({ events: [{ name: "app.reopened" }] }, "")).status, 401);
 
   for (let i = 0; i < 5; i++) assert.equal((await post({ events: Array.from({ length: 20 }, () => ({ name: "app.reopened" })) })).status, 204);
-  assert.equal((await post({ events: Array.from({ length: 16 }, () => ({ name: "app.reopened" })) })).status, 204);
+  assert.equal((await post({ events: Array.from({ length: 14 }, () => ({ name: "app.reopened" })) })).status, 204);
   assert.equal((await post({ events: [{ name: "app.reopened" }] })).status, 429);
 });

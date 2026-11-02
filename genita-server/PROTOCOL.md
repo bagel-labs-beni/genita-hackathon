@@ -156,8 +156,9 @@ require six hours), and revisit openers are limited to one per UTC day.
 
 The app may batch its client-only funnel transitions on the same authenticated,
 consented principal as the other `/v1/*` routes. The server discards unknown names
-and non-flat properties, then writes one JSON log line per accepted event. It never
-logs a client event body or free-text value.
+and every property outside that event's closed schema, then writes one JSON log line
+per accepted event. It never logs a client event body or free-text value. Allowed
+properties are fixed enums, bounded integers, booleans, and safe IDs only.
 
 | method | path | result |
 | --- | --- | --- |
