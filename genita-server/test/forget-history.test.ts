@@ -128,7 +128,8 @@ for (const all of [false, true]) {
 
 test("client handoff history is ignored after persisted Forget, including after a service restart", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "genita-forget-history-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  // retries: the memory repository may still be flushing when this runs (ENOTEMPTY flake, also on main)
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const file = join(dir, "memories.json");
   const repo = new JsonMemoryRepository(file);
   const old = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
