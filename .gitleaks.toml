@@ -1,0 +1,13 @@
+title = "Genita secret-scanning policy"
+
+[extend]
+useDefault = true
+
+# 2026-11-02 false-positive decision (lead review, see docs/genita/PUBLIC_RELEASE_CHECK.md):
+# shared/protocol-samples/http/signin.json is a wire-format fixture compared by
+# genita-server/test/auth.test.ts, AuthTests.swift and ProtocolSamplesTests.swift.
+# Its `token` is a dummy JWT (claims: iss only, no sub/exp, 4-char placeholder signature).
+# Only this one file is excluded. Never add secret values here.
+[[allowlists]]
+description = "dummy JWT in protocol sample fixture (not a credential)"
+paths = ['''^shared/protocol-samples/http/signin\.json$''']
