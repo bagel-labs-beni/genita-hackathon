@@ -1160,7 +1160,7 @@ export class Session {
     let onlyOpener: string | null = null;
     const pushSentences = (list: string[], keepOpener = false) => {
       for (let raw of list) {
-        // Eager TTS can cut "One sec," before "looking that up." arrives.
+        // Eager TTS can cut "One sec," or "Hmm," before the body arrives.
         if (!narrationDecided && pendingNarration && isToolNarrationLead(parseTaggedSentence(pendingNarration).displayText)) {
           raw = pendingNarration + " " + raw;
           pendingNarration = null;
@@ -1227,11 +1227,14 @@ export class Session {
                 gotText ||= !!ev.delta.trim();
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
-                if (!narrationDecided) {
+                if (!interpret) {
                   usedTool = true;
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());
                   if (pendingNarration && isToolNarration(parseTaggedSentence(pendingNarration).displayText)) dropNarration();
+                  // MemoryCall can produce another announcement in its next
+                  // model round. A decision only covers the text before this tool.
+                  narrationDecided = false;
                 }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
