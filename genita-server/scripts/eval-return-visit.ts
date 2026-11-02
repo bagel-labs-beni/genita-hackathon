@@ -48,7 +48,7 @@ else {
       let now = Date.UTC(2026, 10, 3, 10);
       const repo = new InMemoryMemoryRepository();
       const memory = new MemoryService({ repository: repo, state: repo, extract: metaExtractor(key), summarize: metaSummarizer(key), keys: metaKeyMaker(key), now: () => now });
-      const base: SessionDeps = { config, memory, userId: "peter", openAsr: () => asr() as never, spark: (req, opts) => sparkStream(key, req, opts), async *tts() {} };
+      const base: SessionDeps = { config, memory, userId: "demo-b", openAsr: () => asr() as never, spark: (req, opts) => sparkStream(key, req, opts), async *tts() {} };
       // call 1: iPhone, then the Mac picks up the same conversation (the iPhone call is suspended, still open)
       const phone = open(base, `phone-${run}`);
       await phone.start(); await phone.greet();
@@ -58,7 +58,7 @@ else {
       for (const l of MAC) await mac.say(l);
       mac.s.close(); await memory.drain();
       phone.s.close(); await memory.drain();
-      const rows = await memory.summaries("peter");
+      const rows = await memory.summaries("demo-b");
       now += 5 * 3_600_000; // "later"
       const back = open(base, `back-${run}`);
       await back.start();
