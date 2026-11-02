@@ -42,7 +42,8 @@ struct ConversationView: View {
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
-                            .genitaFaceReveal(veiled: connecting) // S07 veiled → S09 the veil lifts (motion lane)
+                            // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
+                            .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)

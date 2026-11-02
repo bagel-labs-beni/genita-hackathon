@@ -122,10 +122,12 @@ public struct SweepBand: View {
 /// Reduce Motion: only a dark veil lifting in 0.2 s (no blur, no scale).
 struct FaceRevealModifier: ViewModifier {
     var veiled: Bool
+    /// false: drawn as fully shown at once (offscreen captures like the handoff snapshot never get `onAppear`)
+    var enabled = true
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
-        let open = !veiled && shown
+        let open = !enabled || (!veiled && shown)
         let calm = reduceMotion || GenitaMotion.reviewStill
         content
             .blur(radius: open || calm ? 0 : 18, opaque: true)
@@ -217,7 +219,8 @@ public extension View {
         modifier(LightSweepModifier(active: active, angle: angle, intensity: intensity))
     }
     /// Veiled while `veiled`; lifts on the appear curve when it turns false (and on first appear when already false).
-    func genitaFaceReveal(veiled: Bool) -> some View { modifier(FaceRevealModifier(veiled: veiled)) }
+    /// `enabled: false` draws the face fully shown with no effect (offscreen captures).
+    func genitaFaceReveal(veiled: Bool, enabled: Bool = true) -> some View { modifier(FaceRevealModifier(veiled: veiled, enabled: enabled)) }
     /// S09 status line text: push from below on change of `value`.
     /// The container must animate on the same value: `.animation(.spring(duration: 0.3, bounce: 0), value: value)`.
     func genitaStatusLine<V: Hashable>(_ value: V) -> some View { modifier(StatusLineModifier(value: value)) }
