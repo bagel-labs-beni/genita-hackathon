@@ -19,7 +19,7 @@ import SwiftUI
         // D44: the I01/I02 subtitles name no assistant and still fit their two source lines
         for (stage, id) in [("prompt", "526:17751"), ("paste", "526:17821")] {
             let sub = DesignLibrary.nodes(stage).first { $0.figmaId == id }!
-            let text = (sub.characters ?? "").lowercased()
+            let text = (sub.characters ?? "").replacingOccurrences(of: "\n", with: " ").lowercased()
             XCTAssertTrue(text.contains("ai assistant") && !text.contains("chatgpt") && !text.contains("claude"), stage)
             let fit = sub.attributed().boundingRect(with: CGSize(width: sub.w, height: 1000), options: [.usesLineFragmentOrigin], context: nil)
             XCTAssertLessThanOrEqual(fit.height, sub.h + 1, "\(stage) subtitle must stay on two lines")
