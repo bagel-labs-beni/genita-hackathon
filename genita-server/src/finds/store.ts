@@ -12,12 +12,14 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, renameSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { FindCard } from "../protocol.ts";
+import { FindsWork } from "./work.ts";
 
 export const UNDO_MS = 24 * 3600_000;
 
 export type StoredFind = { card: FindCard; owner: string; updatedAt: number; deletedAt?: number };
 
 export interface FindsStore {
+  readonly work: FindsWork;
   put(owner: string, card: FindCard): Promise<void>;
   list(owner: string): Promise<FindCard[]>;
   get(owner: string, id: string): Promise<FindCard | null>;
@@ -48,6 +50,7 @@ function sortForTab(rows: StoredFind[]): FindCard[] {
 }
 
 export class MemoryFindsStore implements FindsStore {
+  readonly work = new FindsWork();
   protected rows = new Map<string, StoredFind>();
   protected images = new Map<string, Buffer>();
   protected now: () => number;
@@ -65,6 +68,7 @@ export class MemoryFindsStore implements FindsStore {
   }
   protected changed(): void {}
   async put(owner: string, card: FindCard) {
+    if (this.work.isDeleted(owner)) return;
     const prev = this.rows.get(card.id);
     if (prev && prev.owner !== owner) return;
     this.rows.set(card.id, { card: { ...card, saved: prev?.card.saved ?? card.saved }, owner, updatedAt: this.now(), deletedAt: prev?.deletedAt });
@@ -114,7 +118,12 @@ export class MemoryFindsStore implements FindsStore {
   }
   async putImage(id: string, slot: string, bytes: Buffer) {
     if (!ID_RE.test(id) || !SLOT_RE.test(slot)) throw new Error("bad image key");
+    if (!this.canWriteImage(id)) return;
     this.images.set(`${id}/${slot}`, bytes);
+  }
+  protected canWriteImage(id: string): boolean {
+    const row = this.rows.get(id);
+    return !!row && !this.work.isDeleted(row.owner);
   }
   async getImage(id: string, slot: string) {
     if (!ID_RE.test(id) || !SLOT_RE.test(slot)) return null;
@@ -148,6 +157,8 @@ export class FileFindsStore extends MemoryFindsStore {
   }
   override async putImage(id: string, slot: string, bytes: Buffer) {
     await super.putImage(id, slot, bytes);
+    // The owner may have been tombstoned/purged across the await above.
+    if (!this.canWriteImage(id)) return;
     mkdirSync(join(this.dir, "images", id), { recursive: true });
     writeFileSync(join(this.dir, "images", id, slot), bytes);
     this.images.delete(`${id}/${slot}`); // disk is the copy; keep memory small
