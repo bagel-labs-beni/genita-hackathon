@@ -58,11 +58,11 @@ test("runner stops at the attempt cap and marks the companion failed (S09-PF)", 
     const store = new FileStore(dir);
     await store.putCompanion(companion());
     const logs: string[] = [];
-    const d: PrepDeps = { metaKey: "k", elevenKey: "e", ttsModel: "m", falKey: null, store, voices: [], log: (e) => logs.push(e) };
+    const d: PrepDeps = { metaKey: "k", elevenKey: "e", ttsModel: "m", falKey: "fal-test", store, voices: [], log: (e) => logs.push(e) };
     const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
     let failed = false;
     runner.events.on("prep.failed", () => (failed = true));
-    await runner.run("u1"); // no FAL_KEY → every attempt throws
+    await runner.run("u1"); // the source image is not in the store → every attempt throws
     const c = (await store.getCompanion("u1"))!;
     assert.equal(c.prep.status, "failed");
     assert.equal(c.prep.attempts, MAX_PREP_ATTEMPTS);
@@ -117,4 +117,26 @@ test("ModalPeterBaker: POST /prepare once, persists the call id, polls to done; 
   assert.ok(seen.every((s) => s.startsWith("GET /prepare/fc-1")));
   await assert.rejects(() => b.bake({ ...input, videos: {} }), /no neutral clip/);
   assert.deepEqual(await b.bake({ ...input, kind: "animal" }), { status: "todo", reason: "not_human" });
+});
+
+test("Meta-only runtime: no FAL_KEY → the companion is ready at once with scene, clips and lips off (no failure)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-only-"));
+  try {
+    const store = new FileStore(dir);
+    await store.putCompanion(companion());
+    const d: PrepDeps = { metaKey: "k", elevenKey: "", ttsModel: "m", falKey: null, store, voices: [], log: () => {} };
+    const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+    let ready = false;
+    runner.events.on("prep.ready", () => (ready = true));
+    await runner.run("u1");
+    const c = (await store.getCompanion("u1"))!;
+    assert.equal(c.prep.status, "ready");
+    assert.ok(ready);
+    assert.equal(c.prep.steps.scene.status, "todo");
+    assert.equal(c.prep.steps.lips.status, "todo");
+    assert.ok(Object.values(c.prep.steps.videos).every((v) => v.status === "todo"));
+    assert.equal(prepView(c).status, "ready");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
