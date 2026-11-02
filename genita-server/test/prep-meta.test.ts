@@ -281,3 +281,25 @@ test("runner.cancel stops a face step without marking it failed", async (t) => {
   assert.ok(calls.edits.length < 14);
   assert.notEqual((await store.getCompanion("u1"))?.prep.status, "failed");
 });
+
+test("runner.forgetUser (account deleted): cancels, waits for the run, removes every face image of the user", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-forget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  await store.putCompanion(companion());
+  const { media } = fakeMedia({ keyOf, delayMs: 10 });
+  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  // a run that already finished (the blob/row delete window) and one still going
+  await runner.run("u1");
+  assert.ok(await store.getAsset("u1", "c1", "A"));
+  await store.patchCompanion("u1", (x) => ({ ...x, prep: newPrepState() }));
+  const p = runner.run("u1");
+  await new Promise((r) => setTimeout(r, 15));
+  await runner.forgetUser("u1");
+  assert.equal(runner.isRunning("u1"), false);
+  await p;
+  for (const k of ["neutral", ...FACE_KEYS]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} removed`);
+});

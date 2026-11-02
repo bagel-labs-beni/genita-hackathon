@@ -100,8 +100,8 @@ export interface PrepStore {
    */
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
   getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
-  /** drops every image of a companion (prep found the companion deleted mid-run) */
-  deleteAssets(userId: string, companionId: string): Promise<void>;
+  /** drops every image of a companion, or of every companion of the user when companionId is omitted */
+  deleteAssets(userId: string, companionId?: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -204,8 +204,8 @@ export class FileStore implements PrepStore {
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
     return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
   }
-  async deleteAssets(userId: string, companionId: string) {
-    await rm(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}`), { recursive: true, force: true });
+  async deleteAssets(userId: string, companionId?: string) {
+    await rm(join(this.dir, companionId ? `assets/${safe(userId)}/${safe(companionId)}` : `assets/${safe(userId)}`), { recursive: true, force: true });
   }
   async getAsset(userId: string, companionId: string, name: string) {
     try {

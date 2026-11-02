@@ -146,6 +146,18 @@ export class PrepRunner {
     return !!ac;
   }
 
+  /**
+   * Account deleted: stop the user's prep, wait until it has stopped writing,
+   * then remove every face image the user still has. Safe to call after the
+   * rows are gone (server.ts accounts.onUserDeleted), which also covers a run
+   * that finished between DELETE /me's blob delete and its row delete.
+   */
+  async forgetUser(userId: string): Promise<void> {
+    this.cancel(userId);
+    await this.running.get(userId)?.catch(() => {});
+    await this.d.store.deleteAssets(userId);
+  }
+
   async resumeAll(): Promise<number> {
     const list = await this.d.store.listCompanions();
     let n = 0;

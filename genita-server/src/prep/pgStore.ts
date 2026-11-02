@@ -179,8 +179,8 @@ export class PgPrepStore implements PrepStore {
     return this.blobs.get(assetKey(userId, companionId, name));
   }
 
-  async deleteAssets(userId: string, companionId: string) {
-    await this.blobs.deletePrefix(`users/${userId}/companions/${companionId}/`);
+  async deleteAssets(userId: string, companionId?: string) {
+    await this.blobs.deletePrefix(companionId ? `users/${userId}/companions/${companionId}/` : `users/${userId}/companions/`);
   }
 }
 
