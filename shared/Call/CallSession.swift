@@ -329,13 +329,20 @@ enum CallStop: Equatable {
         }
     }
 
+    /// #2 handoff (iPhone): ARKit tracking may hold the rear camera; it lets go before the call's camera starts,
+    /// and tracking re-evaluates when the call's camera changes. The call owns camera and mic (one owner).
+    @ObservationIgnored var beforeCameraStart: (() -> Void)?
+    @ObservationIgnored var onCameraChange: (() -> Void)?
+
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; return }
+        if cameraOn { camera.stop(); cameraOn = false; onCameraChange?(); return }
         cameraDenied = false
         let go = { [weak self] in
             guard let self, self.camera.available else { return }
+            self.beforeCameraStart?()
             self.camera.start()
             self.cameraOn = true
+            self.onCameraChange?()
         }
         #if DEBUG
         if camera.fixture != nil { go(); return }
@@ -413,6 +420,8 @@ enum CallStop: Equatable {
     }
 
     func dismissMicBlocked() { micDenied = false }
+    /// E01/E02 sheet closed (Mac).
+    func dismissDenied() { micDenied = false; cameraDenied = false }
 
     private func setMic(_ on: Bool) {
         if on {

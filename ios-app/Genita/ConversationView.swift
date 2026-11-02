@@ -5,11 +5,16 @@ struct ConversationView: View {
     var connecting = false
     var handoffEnabled = true
     @ObservedObject private var handoff = PhoneHandoff.shared
+    /// Dyno's E01/E02 permission sheets (#2): shown for the call's own denials, and for the review hook.
+    @ObservedObject private var media = PhoneHandoff.shared.media
+    private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
     @State private var loopURL: URL?
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The waiting sheet for R1 and R1-E (#2, Dyno). A running effect covers the change of owner until it ends.
+    private var waitingCopy: HandoffCopy? { handoffEnabled && !connecting && handoff.motion == nil ? HandoffCopy.phone(handoff.surface) : nil }
     var body: some View {
         GeometryReader { safe in
             GeometryReader { full in
@@ -32,11 +37,13 @@ struct ConversationView: View {
                             .opacity(sheet == .full ? 0 : 1)
                             .contentShape(Rectangle()).onTapGesture { faceTapped() }.accessibilityAction(named: "Interrupt") { call.interrupt() }
                             .animation(.drawer, value: sheet)
+                        if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
                             CallGlassControl(icon: "glass-menu-icon", size: 47)
                         }.buttonStyle(.plain).disabled(connecting).position(x: 47.5, y: 86.5 + top)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
+                        if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
                                 InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
@@ -77,12 +84,24 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        }
                         if connecting {
                             ZStack {
                                 connectingSurface
                                 let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
                                 DesignText(node: label, text: "Connecting…").frame(width: label.w, height: label.h)
                             }.frame(width: 175, height: 36).shadow(color: .black.opacity(0.15), radius: 4, y: 4).position(x: full.size.width / 2 + 0.5, y: 142 + top).accessibilityIdentifier("connectingPill")
+                        }
+                        if let waitingCopy {
+                            VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }
+                                .frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
+                        }
+                        if let denied, waitingCopy == nil {
+                            handoffScrim.opacity(0.5).frame(width: full.size.width, height: full.size.height).onTapGesture { dismissDenied() }
+                            VStack(spacing: 0) {
+                                Spacer(minLength: 0)
+                                MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { dismissDenied() })
+                            }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
                         }
                         if moreOpen {
                             CallInk.dim.frame(width: full.size.width, height: full.size.height).onTapGesture { withAnimation(.easeOut(duration: 0.22)) { moreOpen = false } }
@@ -102,19 +121,22 @@ struct ConversationView: View {
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
                         menuRow("Setting", icon: "reference-menu-settings", y: 165, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
+                        if waitingCopy == nil && handoffEnabled {
+                            moveToMacRow(y: 212, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")
+                        }
                         Button { withAnimation { model.menuOpen = false } } label: { Color.clear.contentShape(Rectangle()) }
                             .frame(width: full.size.width - panelWidth, height: full.size.height).position(x: panelWidth + (full.size.width - panelWidth) / 2, y: full.size.height / 2).buttonStyle(.plain).accessibilityLabel("Close menu")
                     }
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
-        }.opacity(handoffEnabled && (handoff.desktop || handoff.motionVisible) ? 0 : 1)
+        }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
         .onAppear { if !connecting { showFace() } }
         .onDisappear { if !connecting { call.hideFace() } }
         .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
-        .onChange(of: handoff.desktop) { _, onMac in if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
+        .onChange(of: handoff.surface) { _, surface in let onMac = surface != .active; if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         .onAppear {
@@ -127,13 +149,14 @@ struct ConversationView: View {
         }
         .onDisappear { if !connecting { call.end() } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
-        .onChange(of: handoff.desktop) { _, onMac in if onMac { call.suspend() } }
+        // #2: the conversation moved to the Mac (R1 waiting sheet): this iPhone stops listening and showing
+        .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
     /// Not while the conversation is on the Mac (this screen is hidden then).
     private func showFace() {
-        guard !(handoffEnabled && handoff.desktop) else { return }
+        guard !(handoffEnabled && handoff.surface != .active) else { return }
         call.showFace(reduceMotion: reduceMotion || CallMotion.reviewStill, animate: !CallMotion.reviewStill)
     }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
@@ -164,15 +187,7 @@ struct ConversationView: View {
         }
     }
 
-    /// Self view: the live front camera when on, the design's placeholder when off.
-    @ViewBuilder var selfView: some View {
-        if call.cameraOn {
-            SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink).clipShape(RoundedRectangle(cornerRadius: 16))
-                .accessibilityElement().accessibilityLabel("Your camera")
-        } else {
-            Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).accessibilityElement().accessibilityLabel("Your camera is off")
-        }
-    }
+    func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
         call.dismissMicBlocked()
         if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
@@ -194,6 +209,32 @@ struct ConversationView: View {
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(title)
     }
+    /// Same row as the design's menu rows. The Figma menu has no Move to Mac row yet, so it borrows Chat's text style.
+    func moveToMacRow(y: CGFloat, width: CGFloat, top: CGFloat, action: @escaping () -> Void) -> some View {
+        let label = DesignLibrary.nodes("menu").first { $0.characters == "Chat" }!
+        return Button(action: action) {
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                Image(systemName: "laptopcomputer").symbolRenderingMode(.monochrome).font(.system(size: 16)).foregroundStyle(Color(white: 17.0 / 255)).frame(width: 24, height: 21).position(x: 20, y: 22)
+                DesignText(node: label, text: "Move to Mac").frame(width: 140, height: label.h).position(x: label.x - 24 + 70, y: 22)
+            }.frame(width: width - 48, height: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel("Move to Mac")
+    }
+    /// Self view: the call's front camera when on (one owner: CallController), Dyno's flip button, the placeholder when off.
+    @ViewBuilder var selfView: some View {
+        if call.cameraOn {
+            ZStack(alignment: .bottomLeading) {
+                SelfCameraView(session: call.cameraSession).frame(width: 113, height: 211).background(CallInk.ink)
+                if call.canFlipCamera {
+                    Button { call.flipCamera() } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 15)).foregroundStyle(.white).frame(width: 44, height: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Flip camera").accessibilityIdentifier("flipCamera")
+                }
+            }.frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .contain).accessibilityLabel("Your camera")
+        } else {
+            Image(resource: "selfPreview").resizable().frame(width: 113, height: 211).accessibilityElement().accessibilityLabel("Your camera is off")
+        }
+    }
     var companionImage: Image {
         if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
         return Image(resource: "companion")
@@ -207,6 +248,7 @@ private struct PreviewControlStyle: ButtonStyle {
 struct CallGlassControl: View {
     let icon: String
     var size: CGFloat
+    var slashed = false
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *) {
@@ -219,6 +261,7 @@ struct CallGlassControl: View {
             if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                 Image(uiImage: image).resizable().frame(width: image.size.width / 4, height: image.size.height / 4)
             }
+            if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
     }
 }

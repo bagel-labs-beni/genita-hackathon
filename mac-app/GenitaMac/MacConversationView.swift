@@ -2,10 +2,12 @@ import SwiftUI
 
 struct MacConversationView: View {
     @ObservedObject private var handoff = MacHandoff.shared
+    @ObservedObject private var sharing = MacHandoff.shared.sharing
+    @ObservedObject private var media = MacHandoff.shared.media
     @State private var model = AppState()
-    @StateObject private var sharing = ScreenSharingController()
     /// F8-L4 · ⋮ → Interpret a call (INT-M0~M2)
     @State private var interpret = MacInterpretController()
+    /// The live call owns camera and mic on the Mac too (one owner; #2's LocalCallMedia only keeps the permission UI).
     private let call = CallController.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var menuOpen = false
@@ -18,6 +20,8 @@ struct MacConversationView: View {
         ""
         #endif
     }
+    /// R2 and R2-E. A running effect covers the change of owner until it ends.
+    private var waitingCopy: HandoffCopy? { handoff.motion == nil ? HandoffCopy.mac(handoff.surface, sharingStopped: handoff.sharingStopped) : nil }
     private var displaySharing: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(reviewState) }
     private var permissionVisible: Bool { sharing.permissionRequired }
     private let blue = Color(red: 0, green: 162.0 / 255, blue: 1)
@@ -31,25 +35,28 @@ struct MacConversationView: View {
                 if let face = call.face {
                     FaceFrameView(driver: face).frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                 }
+                if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: 86.5).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
-                } else {
-                resourceImage("selfPreview").resizable().frame(width: 113, height: 211).position(x: 87.5, y: 700.5).accessibilityLabel("Your camera is off")
-                VStack(spacing: 13) {
-                    excluded("glass-camera-icon", "Camera unavailable in demo")
-                    excluded("glass-mic-icon", "Microphone unavailable in demo")
-                    if MacInterpretController.enabled {
-                        Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                            .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
-                    } else {
-                        excluded("glass-more-icon", "More unavailable in demo")
-                    }
-                }.position(x: 334, y: 724)
+                } else if waitingCopy == nil {
+                    selfView.position(x: 87.5, y: 700.5)
+                    VStack(spacing: 13) {
+                        Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
+                            .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
+                        Button { call.toggleMic() } label: { MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn) }.buttonStyle(MacUnchangedControlStyle())
+                            .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
+                        if MacInterpretController.enabled {
+                            Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                        } else {
+                            excluded("glass-more-icon", "More unavailable in demo")
+                        }
+                    }.position(x: 334, y: 724)
                 }
-                if handoff.desktop && handoff.motion == nil {
+                if waitingCopy == nil && handoff.motion == nil {
                 Button { sharing.requestSharing() } label: {
                     if displaySharing || permissionVisible {
                         Circle().fill(Color(red: 231.0 / 255, green: 32.0 / 255, blue: 12.0 / 255)).frame(width: 47, height: 47)
@@ -58,24 +65,32 @@ struct MacConversationView: View {
                 }.buttonStyle(.plain).position(x: 342.5, y: 86.5).onHover { hoverShare = $0 }
                     .accessibilityLabel(displaySharing ? "Stop screen sharing" : "Share screen").accessibilityIdentifier("macShareScreen")
                 }
-                if handoff.desktop && !permissionVisible && (hoverShare || reviewState == "hint") {
-                    Text("화면 공유").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
-                        .frame(width: 61, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
+                if waitingCopy == nil && !permissionVisible && (hoverShare || reviewState == "hint") {
+                    Text("Share screen").font(.custom("PretendardVariable-SemiBold", size: 12)).foregroundStyle(.white)
+                        .frame(width: 76, height: 25).background(ink, in: RoundedRectangle(cornerRadius: 4)).position(x: 342.5, y: 43.5)
+                }
+                if let waitingCopy {
+                    VStack(spacing: 0) { Spacer(minLength: 0); HandoffWaitingSheet(copy: waitingCopy) { handoff.continueHere() } }.frame(width: 390, height: 844)
+                }
+                if let denied = callDenied, waitingCopy == nil {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        MediaPermissionSheet(kind: denied, openSettings: { media.openSystemSettings(for: denied) }, dismiss: { call.dismissDenied() })
+                    }.frame(width: 390, height: 844)
                 }
                 WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
             if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
-            MacDemoSystemBar().allowsHitTesting(false).accessibilityHidden(true)
+            MacDemoSystemBar(onDark: waitingCopy != nil).allowsHitTesting(false).accessibilityHidden(true)
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
-                .accessibilityLabel("아일랜드를 드래그해서 창 이동")
+                .accessibilityLabel("Drag to move the window")
         }.frame(width: 390, height: 844).clipped().ignoresSafeArea()
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }
         }
-        .onDisappear { sharing.stop() }
         .onAppear { call.showFace(reduceMotion: reduceMotion) }
         .onDisappear { call.hideFace() }
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on) }
@@ -83,9 +98,6 @@ struct MacConversationView: View {
         .onChange(of: call.sessionId) { _, id in
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
         }
-        .onChange(of: handoff.motion?.id) { _, id in if id != nil {sharing.stop()} }
-        .onChange(of: handoff.desktop) { _, value in if !value { sharing.stop() } }
-        .overlay(alignment:.bottom) { Button("아이폰으로") { handoff.returnToPhone() }.disabled(!handoff.canReturn).buttonStyle(.borderedProminent).padding(.bottom,20) }
         .sheet(isPresented: $settingsOpen) { SettingsView(model: model) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
@@ -110,6 +122,15 @@ struct MacConversationView: View {
     }
     private var companionImage: Image {
         if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
+    }
+    /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
+    private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
+    @ViewBuilder private var selfView: some View {
+        if call.cameraOn {
+            SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
+        } else {
+            resourceImage("selfPreview").resizable().frame(width: 113, height: 211).accessibilityLabel("Your camera is off")
+        }
     }
     private func excluded(_ icon: String, _ label: String) -> some View {
         Button {} label: { MacGlassControl(icon: icon, size: 46) }.buttonStyle(MacUnchangedControlStyle()).disabled(true).accessibilityLabel(label)
@@ -140,6 +161,7 @@ struct MacConversationView: View {
 private struct MacUnchangedControlStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label } }
 
 private struct MacDemoSystemBar: View {
+    var onDark = false
     var body: some View {
         ZStack {
             HStack(spacing: 154) {
@@ -150,11 +172,15 @@ private struct MacDemoSystemBar: View {
                     resourceImage("mac-status-cellular").resizable().frame(width: 19.2, height: 12.226)
                     resourceImage("mac-status-wifi").resizable().frame(width: 17.142, height: 12.328)
                     resourceImage("mac-status-battery").resizable().frame(width: 27.328, height: 13)
-                }.frame(maxWidth: .infinity).frame(height: 22).padding(.trailing, 1).padding(.top, 1)
+                }.colorInvert(onDark).frame(maxWidth: .infinity).frame(height: 22).padding(.trailing, 1).padding(.top, 1)
             }.padding(.horizontal, 24).offset(y: 1)
             RoundedRectangle(cornerRadius: 18).fill(.black).frame(width: 124, height: 36).offset(y: 0.5)
-        }.foregroundStyle(.black).frame(width: 390, height: 57).position(x: 195, y: 29.5)
+        }.foregroundStyle(onDark ? Color(white: 253.0 / 255) : .black).frame(width: 390, height: 57).position(x: 195, y: 29.5)
     }
+}
+
+private extension View {
+    @ViewBuilder func colorInvert(_ on: Bool) -> some View { if on { colorInvert() } else { self } }
 }
 
 /// Restrict native window dragging to the black island; other controls retain
@@ -168,7 +194,7 @@ private final class IslandDragView:NSView {
     override var mouseDownCanMoveWindow:Bool {false}
     override func resetCursorRects(){addCursorRect(bounds,cursor:.openHand)}
     override func mouseDown(with event:NSEvent){
-        guard MacHandoff.shared.desktop,MacHandoff.shared.motion == nil else{return}
+        guard MacHandoff.shared.companionVisible,MacHandoff.shared.motion == nil else{return}
         NSCursor.closedHand.push();defer{NSCursor.pop()}
         window?.performDrag(with:event)
     }

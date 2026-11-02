@@ -1,0 +1,99 @@
+name: Apple build
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/apple-build.yml"
+      - "ios-app/**"
+      - "mac-app/**"
+      - "shared/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apple-build.yml"
+      - "ios-app/**"
+      - "mac-app/**"
+      - "shared/**"
+  workflow_dispatch:
+
+concurrency:
+  group: apple-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      # The apps use no Git LFS files, so LFS objects are not downloaded.
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = [d for runtime, group in json.load(sys.stdin)["devices"].items() if "iOS-26" in runtime for d in group if d["name"].startswith("iPhone")]
+          pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
+          print((pro or devices)[-1]["udid"])')"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$ID"
+
+      - name: iOS simulator build and tests
+        run: |
+          xcodebuild test \
+            -project ios-app/Genita.xcodeproj -scheme Genita \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -only-testing:GenitaTests \
+            -only-testing:GenitaUITests/HandoffScreensUITests \
+            -only-testing:GenitaUITests/GenitaUITests/testReviewCorrections \
+            -resultBundlePath build-output/ios.xcresult \
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Export iOS screenshots
+        if: always()
+        run: |
+          if [ -d build-output/ios.xcresult ]; then
+            mkdir -p build-output/raw build-output/screens
+            xcrun xcresulttool export attachments --path build-output/ios.xcresult --output-path build-output/raw
+            python3 - <<'PY'
+          import json, pathlib, shutil
+          raw = pathlib.Path("build-output/raw"); screens = pathlib.Path("build-output/screens")
+          for test in json.loads((raw / "manifest.json").read_text()):
+              for item in test["attachments"]:
+                  name = item["suggestedHumanReadableName"].split("_")[0]
+                  if name.startswith(("R1", "E0", "menu-", "pairing-", "conversation-")):
+                      shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
+          PY
+            ls build-output/screens
+          fi
+
+      - name: Mac build
+        working-directory: ios-app
+        run: |
+          xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | tail -n 60
+          exit "${PIPESTATUS[0]}"
+
+      - name: Capture Mac waiting screens
+        continue-on-error: true
+        run: |
+          GENITA_MAC_REVIEW_OUT="$PWD/build-output/screens" ios-app/build/Debug/GenitaMac.app/Contents/MacOS/GenitaMac &
+          APP=$!
+          for _ in $(seq 1 30); do kill -0 "$APP" 2>/dev/null || break; sleep 2; done
+          kill "$APP" 2>/dev/null || true
+          ls build-output/screens
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff-screens
+          path: build-output/screens
+          if-no-files-found: warn
