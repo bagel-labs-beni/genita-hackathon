@@ -68,6 +68,18 @@ struct AuthWireTests {
         #expect(AuthCallback.parse(URL(string: "https://auth?code=abc")!) == nil)
     }
 
+    @Test func emailMessages() {
+        let m = { EmailSignInCopy.message(for: $0, sendingCode: $1) }
+        #expect(m(GenitaAuthError.unauthorized, false) == "That code didn’t work. Check it and try again.")
+        #expect(m(GenitaAuthError.server(status: 429, code: "too_many_attempts"), false) == "Too many tries. Send a new code.")
+        #expect(m(GenitaAuthError.server(status: 429, code: "rate_limited"), true) == "Wait a minute, then ask for another code.")
+        #expect(m(GenitaAuthError.server(status: 503, code: "email_unavailable"), true) == "Email sign-in isn’t available right now.")
+        #expect(m(GenitaAuthError.offline, true) == "Couldn’t reach the server. Check your connection.")
+        #expect(m(GenitaAuthError.unauthorized, true) == "Email sign-in isn’t available right now.", "old server: no email route")
+        #expect(m(GenitaAuthError.server(status: 404, code: "not_found"), true) == "Email sign-in isn’t available right now.")
+        #expect(m(URLError(.badURL), true) == "Something went wrong. Try again.")
+    }
+
     @Test func macStartURL() {
         let c = GenitaAuthClient(baseURL: URL(string: "https://genita-api.thebeni.ai")!, store: InMemoryTokenStore())
         #expect(c.macStartURL(challenge: "x").absoluteString == "https://genita-api.thebeni.ai/auth/apple/start?challenge=x&device=mac")
@@ -118,6 +130,45 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
         #expect(body["nonce"] as? String == "raw" && body["authorizationCode"] as? String == "code" && body["device"] as? String == "iphone")
         #expect((body["fullName"] as? [String: String]) == ["givenName": "Chelsea"])
+    }
+
+    @Test func emailStartSendsTheTrimmedAddressAndStoresNothing() async throws {
+        StubProtocol.handler = { _ in (200, Data(#"{"ok":true,"expiresInSec":600,"resendAfterSec":60}"#.utf8)) }
+        let r = try await client.startEmailSignIn(email: "  Judge@Example.com ")
+        #expect(r == GenitaEmailStart(ok: true, expiresInSec: 600, resendAfterSec: 60))
+        let req = try #require(StubProtocol.seen.last)
+        #expect(req.url?.path == "/auth/email/start" && req.httpMethod == "POST")
+        #expect(req.value(forHTTPHeaderField: "authorization") == nil)
+        let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
+        #expect(body["email"] as? String == "Judge@Example.com")
+        #expect(store.load() == nil)
+    }
+
+    @Test func emailVerifyStoresTheSessionLikeApple() async throws {
+        StubProtocol.handler = { _ in (200, try! sample("signin.json")) }
+        let r = try await client.signInWithEmailCode(email: "judge@example.com", code: " 123456 ", device: .mac)
+        #expect(store.load() == r.token)
+        let req = try #require(StubProtocol.seen.last)
+        #expect(req.url?.path == "/auth/email/verify")
+        let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
+        #expect(body["code"] as? String == "123456" && body["device"] as? String == "mac" && body["email"] as? String == "judge@example.com")
+    }
+
+    @Test func emailErrorsAreTyped() async {
+        StubProtocol.handler = { _ in (401, Data(#"{"error":"auth_failed","reason":"code_invalid"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.unauthorized) { try await client.signInWithEmailCode(email: "a@b.co", code: "000000") }
+        StubProtocol.handler = { _ in (429, Data(#"{"error":"too_many_attempts"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "too_many_attempts")) { try await client.signInWithEmailCode(email: "a@b.co", code: "000000") }
+        StubProtocol.handler = { _ in (429, Data(#"{"error":"rate_limited","retryAfterSec":42}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.startEmailSignIn(email: "a@b.co") }
+        #expect(store.load() == nil)
+    }
+
+    @Test func emailShapeCheck() {
+        #expect(GenitaAuthClient.looksLikeEmail(" judge@example.com "))
+        #expect(!GenitaAuthClient.looksLikeEmail("judge@example"))
+        #expect(!GenitaAuthClient.looksLikeEmail("judge example.com"))
+        #expect(!GenitaAuthClient.looksLikeEmail(""))
     }
 
     @Test func unauthorizedClearsTheTokenAndRoutesToSignIn() async {

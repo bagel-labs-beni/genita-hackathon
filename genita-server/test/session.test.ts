@@ -527,7 +527,12 @@ const asksGreeting = (reqs: SparkRequest[]) => reqs.filter((r) => JSON.stringify
 
 test("rename: 'Call yourself Max' renames for the rest of the call, persists via the dep, and emits companion.named", async () => {
   const saved: Array<[string, string]> = [];
-  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async (u, n) => void saved.push([u, n]) } });
+  const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
+  const { client, session, sparkCalls } = setup({ deps: {
+    userId: "u1",
+    renameCompanion: async (u, n) => void saved.push([u, n]),
+    log: (event, data) => logs.push({ event, data }),
+  } });
   await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human" } }));
   await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
   const named = await client.waitFor((m) => m.type === "companion.named");
@@ -546,6 +551,9 @@ test("rename: 'Call yourself Max' renames for the rest of the call, persists via
   assert.match(sparkCalls[1].instructions!, /^You are Max,/);
   assert.doesNotMatch(sparkCalls[1].instructions!, /renamed you/, "the acknowledgement line is for the rename turn only");
   assert.equal(client.json.filter((m) => m.type === "companion.named").length, 1);
+  assert.deepEqual(logs.filter((m) => m.event === "companion.named"), [
+    { event: "companion.named", data: { session: "s1", sessionId: "s1", userId: "u1", by: "voice", chars: 3 } },
+  ], "one funnel log per successful voice rename, with no raw name");
   session.close();
 });
 

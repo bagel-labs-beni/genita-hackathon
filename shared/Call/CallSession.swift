@@ -577,6 +577,7 @@ enum CallStop: Equatable {
         case let .transcript(t):
             if t.final {
                 lastUserText = t.text
+                finds.latestQuestion = t.text
                 history.append(.init(role: .user, text: t.text))
                 if t.source == .text { speechEndAt = Date() }
             }

@@ -491,12 +491,14 @@ export class Session {
       this.dropSpeculation();
       this.mode = "interpret";
       this.client.sendJson({ type: "mode.changed", mode, by });
+      this.log("mode.changed", { mode, by });
       this.enterInterpret(opts);
       return;
     }
     this.leaveInterpret();
     this.mode = "chat";
     this.client.sendJson({ type: "mode.changed", mode, by });
+    this.log("mode.changed", { mode, by });
   }
 
   private enterInterpret(opts: InterpretOptionsWire): void {
@@ -778,7 +780,7 @@ export class Session {
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
-    this.log("turn.cancelled", { utteranceId, reason });
+    this.log("utterance.cancelled", { utteranceId, reason });
   }
 
   // ───────────────────────── reply pipeline ─────────────────────────
@@ -954,6 +956,14 @@ export class Session {
       firstAudioAt?: number;
     };
     this.metrics = {};
+    let firstAudioLogged = false;
+    const noteFirstAudio = () => {
+      if (firstAudioLogged || reply.firstAudioAt === null) return;
+      firstAudioLogged = true;
+      const ms = Math.round(reply.firstAudioAt - m.replyStartAt);
+      this.log("tts.first_audio", { sessionId: this.id, userId: this.deps.userId, utteranceId, ms });
+      if (greeting) this.log("call.greeted", { sessionId: this.id, userId: this.deps.userId, utteranceId, ms });
+    };
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
@@ -1093,6 +1103,7 @@ export class Session {
         reply.firstAudioAt = this.now();
         m.firstAudioAt = reply.firstAudioAt;
         this.dispatch({ type: "first_audio", utteranceId });
+        noteFirstAudio();
       }
       if (s.emotion !== sentEmotion) {
         sentEmotion = s.emotion;
@@ -1141,6 +1152,7 @@ export class Session {
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
+            noteFirstAudio();
           }
           if (s.emotion !== sentEmotion) {
             sentEmotion = s.emotion;
@@ -1178,6 +1190,7 @@ export class Session {
           if (this.deps.config.voice) {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
+            this.log("tts.fallback_device", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
             if (!sentAudio) sayOnDevice(i, s);
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
@@ -1223,6 +1236,10 @@ export class Session {
       replyStartToFirstSentenceMs: m.firstSentenceAt ? Math.round(m.firstSentenceAt - m.replyStartAt) : null,
       firstSentenceToFirstAudioMs: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
       speechEndToFirstAudioMs: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
+      stt_ms: m.speechEndAt && m.completeAt ? Math.round(m.completeAt - m.speechEndAt) : null,
+      llm_ms: m.firstTokenAt ? Math.round(m.firstTokenAt - m.replyStartAt) : null,
+      tts_ms: m.firstSentenceAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.firstSentenceAt) : null,
+      first_audio_ms: m.speechEndAt && m.firstAudioAt ? Math.round(m.firstAudioAt - m.speechEndAt) : null,
       audioMs: Math.round(reply.audioMs),
       speculative,
     };
@@ -1257,6 +1274,7 @@ export class Session {
     const from = this.persona!.name;
     this.persona = { ...this.persona!, name };
     this.client.sendJson({ type: "companion.named", name });
+    this.log("companion.named", { sessionId: this.id, userId, by: "voice", chars: [...name].length });
     this.log("companion.renamed", { by: "voice", chars: [...name].length });
     return from;
   }
