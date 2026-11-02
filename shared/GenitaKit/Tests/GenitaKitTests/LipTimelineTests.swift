@@ -97,6 +97,21 @@ struct LipTimelineTests {
         #expect(t.sample(atMs: 600).openness > 0.5)
     }
 
+    /// Timings only for the first chunk (the voice service could not align the rest): the
+    /// voiced audio after the last timed word still gets shapes from the remaining text.
+    @Test func audioPastTheLastTimedWordFallsBackToTheRemainingText() {
+        let t = LipTimeline()
+        t.appendPCM(lipTestPCM(amplitude: 0.4, ms: 3000), offsetMs: 0)
+        t.appendText("hello there my old friend ")
+        t.appendWords([LipWordTiming(text: "hello", startMs: 0, endMs: 500), LipWordTiming(text: "there", startMs: 500, endMs: 1000)])
+        t.finishAudio()
+        var shaped = 0
+        for ms in stride(from: 1200, to: 2900, by: 100) where (t.sample(atMs: Double(ms)).weights[.rest] ?? 0) < 0.5 { shaped += 1 }
+        #expect(shaped >= 12)
+        // the timed part still follows its timings
+        #expect((t.sample(atMs: 250).weights[.rest] ?? 0) < 0.5)
+    }
+
     @Test func silenceMeansRestAndClosed() {
         let t = LipTimeline()
         var pcm = lipTestPCM(amplitude: 0.4, ms: 400)
