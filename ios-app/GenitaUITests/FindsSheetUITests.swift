@@ -50,7 +50,8 @@ final class FindsSheetUITests: XCTestCase {
             case 9, 10: XCTAssertTrue(app.buttons["findPeek"].exists, "peek row")
             case 11: XCTAssertTrue(app.buttons["findNew"].exists, "new find banner")
             case 14: XCTAssertTrue(app.descendants(matching: .any)["linkFailed"].exists, "couldn't open")
-            case 8: XCTAssertTrue(app.buttons["browserDone"].exists && app.buttons["browserOpenExternal"].exists || app.links["browserOpenExternal"].exists, "F10-8 Done + Open in Safari")
+            case 8: XCTAssertTrue(app.descendants(matching: .any)["browserDone"].exists, "F10-8 Done")
+                XCTAssertTrue(app.descendants(matching: .any)["browserOpenExternal"].exists, "F10-8 Open in Safari")
             case 20:
                 XCTAssertTrue(app.buttons["findLookAgain"].exists, "IC-4 Look again")
                 XCTAssertFalse(sheet(app).exists && sheet(app).isHittable, "IC-4 has no sheet")
