@@ -54,3 +54,12 @@ test("totals sums hits and averages length over replies, skipping quiet", () => 
   assert.equal(t.questions, 1);
   assert.equal(t.meanWords, (a.words + b.words) / 2);
 });
+
+test("#341 opener eval: primary topic = first profile topic named; pass = ≥4 distinct, never twice in a row", async () => {
+  const { primaryTopic, scoreSeries } = await import("../evals/convo/openers.ts");
+  assert.equal(primaryTopic("Tell me you're not eating ramen again. Also aespa."), "ramen");
+  assert.equal(primaryTopic("Bet the aespa comeback has you screaming. Ramen later?"), "kpop");
+  assert.equal(primaryTopic("Hey you."), null);
+  assert.deepEqual(scoreSeries(["ramen", "ramen", "kpop", "fashion", "cooking"]), { distinct: 4, repeatsInARow: 1, pass: false });
+  assert.deepEqual(scoreSeries(["ramen", "kpop", "fashion", "cooking", "ramen"]), { distinct: 4, repeatsInARow: 0, pass: true });
+});

@@ -29,6 +29,8 @@ export type EvalCtx = {
   scenario: Scenario;
   history: { role: "user" | "assistant"; text: string }[]; // raw assistant text incl. tags
   turn: { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
+  /** --openers: consecutive calls of one user; the adapter may keep per-series state (what the server persists) */
+  series?: { id: string; index: number };
 };
 export type EvalAdapter = {
   request(ctx: EvalCtx): SparkRequest | null; // null = the engine chose to stay quiet
@@ -199,6 +201,21 @@ async function main() {
   const key = process.env.MODEL_API_KEY;
   if (!key) throw new Error("missing_model_key");
   const { adapter, kind } = await loadAdapter(root);
+  if (process.argv.includes("--openers")) {
+    const { runOpenerSeries, seriesMd } = await import("./openers.ts");
+    console.error(`adapter: ${kind} (${root}) opener series n=${n}`);
+    const results = await runOpenerSeries(adapter, (req) => withRetry(() => sparkText(key, req, AbortSignal.timeout(45_000))), n);
+    const md = seriesMd(label, results);
+    const now = new Date();
+    const p2 = (x: number) => String(x).padStart(2, "0");
+    const out = arg("out") ?? join(homedir(), "genita-fixtures/genita-convo-eval", `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-${p2(now.getHours())}${p2(now.getMinutes())}-${label}-openers`);
+    await mkdir(out, { recursive: true });
+    await writeFile(join(out, "openers.json"), JSON.stringify({ label, root, n, results }, null, 2));
+    await writeFile(join(out, "openers.md"), md);
+    console.log(md.split("\n## run")[0]);
+    console.log(`report: ${out}`);
+    return;
+  }
   console.error(`adapter: ${kind} (${root}) scenarios: ${only?.join(",") ?? "all"} n=${n}`);
   const chosen = scenarios.filter((s) => !only || only.includes(s.id));
   const jobs = chosen.flatMap((s) => Array.from({ length: n }, (_, i) => ({ s, i })));
