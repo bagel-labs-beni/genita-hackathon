@@ -2,7 +2,6 @@
  * F2-L9 (#24): prep job runner (the clip_jobs queue).
  *
  *   scene (Muse Image) → 3 silent clips in parallel (Kling 3.0, 10 s)
- *   → lips (human: Peter avatar cache on Modal, records bundle_id; animal/character: mouth atlas TODO)
  *
  * Every step's state is written to the store before and after it runs, and
  * each fal request id is saved the moment it is submitted. On boot,
@@ -19,7 +18,6 @@ import { EventEmitter } from "node:events";
 import { falSubmit, falWait } from "./fal.ts";
 import { klingSilentInput, PREP_EMOTIONS, type PrepEmotion } from "./prompts.ts";
 import { makeScene, type PrepDeps } from "./pipeline.ts";
-import { lipBakerFor, type LipBaker } from "./lips.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
 
 export const KLING_MODEL = "fal-ai/kling-video/v3/pro/image-to-video";
@@ -32,7 +30,7 @@ export function newPrepState(): PrepState {
   return {
     status: "running",
     attempts: 0,
-    steps: { scene: s(), videos: { neutral: s(), happy: s(), warm: s() }, lips: s() },
+    steps: { scene: s(), videos: { neutral: s(), happy: s(), warm: s() }, lips: { status: "todo", attempts: 0 } },
     startedAt: now,
     updatedAt: now,
   };
@@ -66,8 +64,6 @@ export function prepView(c: CompanionRecord) {
       detail: p.steps.lips.error ?? null,
       url: p.steps.lips.url ?? null,
       ms: p.steps.lips.ms ?? null,
-      /** Peter: send `avatar_id` in the worker HELLO; READY.bundle_id should equal bundleId */
-      peter: p.steps.lips.bundleId ? { avatarId: p.steps.lips.avatarId ?? null, bundleId: p.steps.lips.bundleId, nBase: p.steps.lips.nBase ?? null } : null,
     },
     steps: {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
@@ -82,13 +78,7 @@ export class PrepRunner {
   readonly events = new EventEmitter();
   private running = new Map<string, Promise<void>>();
   private d: PrepDeps;
-  private peter: LipBaker;
-  private atlas: LipBaker;
-  constructor(d: PrepDeps, bakers: { peter: LipBaker; atlas: LipBaker }) {
-    this.d = d;
-    this.peter = bakers.peter;
-    this.atlas = bakers.atlas;
-  }
+  constructor(d: PrepDeps) { this.d = d; }
 
   isRunning(userId: string) {
     return this.running.has(userId);
@@ -186,7 +176,7 @@ export class PrepRunner {
         return { ...x, prep: { ...x.prep, steps } };
       });
 
-    // 11/2 Meta-only runtime: no FAL_KEY = no scene picture, Kling clips or lip bake. The companion is
+    // 11/2 Meta-only runtime: no FAL_KEY = no scene picture or Kling clips. The companion is
     // ready right away and the call shows the chosen photo (S09-P); nothing fails, nothing is required.
     if (!d.falKey) {
       const off: Partial<Step> = { status: "todo", error: "off: FAL_KEY not set (Meta-only runtime)" };
@@ -200,6 +190,8 @@ export class PrepRunner {
       return;
     }
     const falKey = d.falKey;
+
+    await setStep("lips", { status: "todo", error: undefined, callId: undefined });
 
     // 1. scene
     if (c.prep.steps.scene.status !== "done" || !c.prep.steps.scene.url) {
@@ -244,29 +236,6 @@ export class PrepRunner {
     const results = await Promise.allSettled(PREP_EMOTIONS.map(clip));
     const failed = results.filter((r) => r.status === "rejected");
     if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
-
-    // 3. lips: Peter avatar cache (human) / mouth atlas (TODO); a failure does not block the call
-    if (c.prep.steps.lips.status !== "done" && c.prep.steps.lips.status !== "todo") {
-      const baker = lipBakerFor(c.type, this.peter, this.atlas);
-      const prev = c.prep.steps.lips;
-      const resumeId = prev.status === "running" ? prev.callId : undefined;
-      await setStep("lips", { status: "running", attempts: prev.attempts + (resumeId ? 0 : 1), source: baker.name });
-      const t1 = performance.now();
-      try {
-        const r = await baker.bake(
-          { companionId: c.id, kind: c.type, sceneUrl, videos: emotionVideos(c.prep), voiceId: c.voiceId },
-          { resumeId, onSubmitted: (callId) => setStep("lips", { callId }) },
-        );
-        if (r.status === "todo") await setStep("lips", { status: "todo", error: r.reason, callId: undefined });
-        else if (r.kind === "peter") {
-          await setStep("lips", { status: "done", avatarId: r.avatarId, bundleId: r.bundleId, nBase: r.nBase, ms: r.ms, error: undefined, callId: undefined });
-          d.log("peter_cache.done", { companion: c.id, bundle_id: r.bundleId, n_base: r.nBase, ms: r.ms, remote_s: r.remoteSeconds });
-        } else await setStep("lips", { status: "done", url: r.atlasUrl, ms: r.ms, error: undefined, callId: undefined });
-      } catch (err) {
-        await setStep("lips", { status: "failed", error: String(err).slice(0, 300), ms: Math.round(performance.now() - t1), callId: undefined });
-        d.log("peter_cache.failed", { companion: c.id, reason: String(err).slice(0, 200) });
-      }
-    }
 
     await save((x) => ({ ...x, prep: { ...x.prep, status: "ready", readyAt: new Date().toISOString() } }));
     await chain;

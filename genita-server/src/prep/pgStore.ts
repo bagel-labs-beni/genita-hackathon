@@ -161,10 +161,10 @@ export class PgPrepStore implements PrepStore {
   }
 
   getVoicePreview(voiceId: string, version: string) {
-    return this.blobs.get(`cache/voices/${voiceId}-${version}.mp3`).catch(() => null);
+    return this.blobs.get(`cache/voices/${voiceId}-${version}.wav`).catch(() => null);
   }
 
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.blobs.put(`cache/voices/${voiceId}-${version}.mp3`, mp3, "audio/mpeg");
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.blobs.put(`cache/voices/${voiceId}-${version}.wav`, audio, "audio/wav");
   }
 }

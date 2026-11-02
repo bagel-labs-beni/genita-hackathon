@@ -1,12 +1,12 @@
 /**
  * Onboarding prep services: the vendor calls behind the /v1/import and
  * /v1/companion routes. Pure decisions live in the sibling modules; this file
- * only wires them to Spark, SAM, Muse Image, fal and ElevenLabs.
+ * only wires them to Spark, SAM, Muse Image, Meta voice and fal CDN uploads.
  */
 import { randomUUID } from "node:crypto";
 import { sparkJson } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
-import { falUpload, falSubmit, falWait } from "./fal.ts";
+import { falUpload } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
@@ -19,8 +19,7 @@ export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 export type PrepDeps = {
   metaKey: string;
   falKey: string | null;
-  elevenKey: string;
-  ttsModel: string;
+  voice?: import("../config.ts").VoiceConfig | null;
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
@@ -99,34 +98,26 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
 
 // ---------- F2-L21: call scene ----------
 
-export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image" | "gpt-image-2"; ms: number; url: string | null };
+export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number; url: string | null };
 
-/**
- * Muse Image edit; on failure one gpt-image-2 edit via fal (scene only).
- * Returns the bytes and, when fal is configured, a fal CDN URL for Kling.
- */
+/** Muse Image edit, retried once on failure. CDN upload remains for the Kling path (#158). */
 export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: CompanionKind, signal?: AbortSignal): Promise<SceneResult> {
   const t0 = performance.now();
+  let out: Buffer;
   try {
-    const out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
-    const url = d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
-    return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
+    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   } catch (err) {
-    if (signal?.aborted || !d.falKey) throw err;
-    d.log("scene.fallback", { reason: String(err).slice(0, 200) });
-    const src = await falUpload(d.falKey, image, mime, "source", signal);
-    const req = await falSubmit(d.falKey, "fal-ai/gpt-image-2/edit", { prompt: SCENE_PROMPT[kind], image_urls: [src], image_size: { width: 1024, height: 1820 }, quality: "high" }, signal);
-    const r = await falWait<{ images: Array<{ url: string }> }>(d.falKey, req, { signal, pollMs: 3000, timeoutMs: 5 * 60_000 });
-    const url = r.images?.[0]?.url;
-    if (!url) throw new Error("gpt-image-2: no image");
-    const res = await fetch(url, { signal });
-    return { bytes: Buffer.from(await res.arrayBuffer()), mime: res.headers.get("content-type") ?? "image/png", source: "gpt-image-2", ms: since(t0), url };
+    if (signal?.aborted) throw err;
+    d.log("scene.retry", { reason: "muse_image_failed" });
+    out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   }
+  const url = d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
+  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
 }
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "v1";
+export const PREVIEW_VERSION = "meta-v1";
 
 export async function orderedVoices(d: PrepDeps, userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: boolean; ms: number }> {
   const t0 = performance.now();
@@ -145,9 +136,10 @@ export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer
   if (!v) throw new PrepError(404, "unknown_voice");
   const cached = await d.store.getVoicePreview(v.id, PREVIEW_VERSION);
   if (cached) return cached;
-  const mp3 = await renderPreview(d.elevenKey, v.id, previewLine(v), d.ttsModel).catch(() => renderPreview(d.elevenKey, v.id, previewLine(v), "eleven_multilingual_v2"));
-  await d.store.putVoicePreview(v.id, PREVIEW_VERSION, mp3);
-  return mp3;
+  if (!d.voice) throw new PrepError(503, "voice_unavailable");
+  const wav = await renderPreview(d.voice, v.id, previewLine(v));
+  await d.store.putVoicePreview(v.id, PREVIEW_VERSION, wav);
+  return wav;
 }
 
 // ---------- F2-L14: prefs → persona ----------

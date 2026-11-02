@@ -1,14 +1,7 @@
-/**
- * F2-L8 (#27): four voices for V04 + Spark's suggested order.
- *
- * The demo voice (Zuko, the one Peter's demo bundle was recorded with) plus
- * three from the team ElevenLabs library, picked 11/2 for an English demo
- * spread: warm female, casual male, soft female. Override with
- * GENITA_VOICES="id:Name:Blurb,…". The card name becomes the companion's name.
- *
- * Previews are our own ~8 s line in each voice (V04 shows 00:08), rendered
- * once and cached; the vendor preview_url clips say other names.
- */
+/** V04 speaker choices for the Meta SeamlessM4T v2 voice service. */
+import { createSeamless, resolveSpeaker, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import { PCM_SAMPLE_RATE } from "../tts/types.ts";
+import type { VoiceConfig } from "../config.ts";
 import type { SparkRequest } from "../meta/spark.ts";
 import type { CompanionKind } from "./prompts.ts";
 import type { StyleCard } from "./importProfile.ts";
@@ -16,10 +9,10 @@ import type { StyleCard } from "./importProfile.ts";
 export type VoiceOption = { id: string; name: string; blurb: string; tags: string };
 
 export const DEFAULT_VOICES: VoiceOption[] = [
-  { id: "7PbNGDB5sJCFnOZuMPNL", name: "Jin", blurb: "Calm, confident", tags: "male, young, american, confident (demo voice)" },
-  { id: "jqcCZkN6Knx8BJ5TBdYR", name: "Mira", blurb: "Warm, steady", tags: "female, young, american, warm, conversational" },
-  { id: "ZoiZ8fuDWInAcwPXaVeq", name: "Theo", blurb: "Easy, playful", tags: "male, young, american, casual, conversational" },
-  { id: "WAhoMTNdLdMoq1j3wf3I", name: "Nova", blurb: "Soft, gentle", tags: "female, young, american, soft, smooth" },
+  { id: "0", name: "Jin", blurb: "Calm, confident", tags: "calm, confident" },
+  { id: "1", name: "Mira", blurb: "Warm, steady", tags: "warm, conversational" },
+  { id: "2", name: "Theo", blurb: "Easy, playful", tags: "casual, conversational" },
+  { id: "3", name: "Nova", blurb: "Soft, gentle", tags: "soft, smooth" },
 ];
 
 export function voicesFromEnv(v: string | undefined): VoiceOption[] {
@@ -67,14 +60,17 @@ export function applyOrder(voices: VoiceOption[], order: unknown): VoiceOption[]
   return out;
 }
 
-/** One non-streaming mp3 from ElevenLabs (preview cache). */
-export async function renderPreview(apiKey: string, voiceId: string, text: string, model: string, signal?: AbortSignal): Promise<Buffer> {
-  const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`, {
-    method: "POST",
-    headers: { "xi-api-key": apiKey, "content-type": "application/json" },
-    body: JSON.stringify({ text, model_id: model, voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
-    signal,
-  });
-  if (!r.ok) throw new Error(`elevenlabs ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`);
-  return Buffer.from(await r.arrayBuffer());
+/** Render a WAV from the same Meta voice path used in calls. */
+export async function renderPreview(config: VoiceConfig, voiceId: string, text: string, signal?: AbortSignal): Promise<Buffer> {
+  const client = createSeamless(config);
+  const chunks: Buffer[] = [];
+  for await (const chunk of client.speak({ voiceId: `seamless:${resolveSpeaker(voiceId, "human", config)}`, text, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US" })) chunks.push(chunk.audio);
+  const pcm = Buffer.concat(chunks);
+  if (!pcm.length) throw new Error("voice preview is empty");
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(PCM_SAMPLE_RATE, 24); header.writeUInt32LE(PCM_SAMPLE_RATE * 2, 28);
+  header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write("data", 36); header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }

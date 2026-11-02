@@ -30,17 +30,17 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 |---|---|---|
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
 | `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, previewUrl}], suggested}`, already in Spark's recommended order |
-| `GET /v1/companion/voices/{id}/preview` | | `audio/mpeg`, ~8 s |
+| `GET /v1/companion/voices/{id}/preview` | | `audio/wav` from the Meta voice service, cached; `503 voice_unavailable` without it (use device speech) |
 | `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists` |
 | `GET /v1/companion` | | companion + `prep` + `persona` + `session` (fields for the realtime `start` message) |
 
 ## Prep progress (F2-L9, F2-L22)
 
-`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, emotionVideos:{neutral, happy, warm}, lips:{status, peter:{avatarId, bundleId, nBase}|null}}`.
+`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, emotionVideos:{neutral, happy, warm}, lips:{status, detail, url, ms}}`.
 
-- A human companion takes about 7 min to clips (three 10 s Kling clips in parallel), then the Peter cache bake. Until `ready`, call with the photo (S09-P). On `failed`, the photo keeps breathing (S09-PF) and `POST /v1/companion/prep/retry` starts again.
+- With the temporary Kling path enabled (pending #158), prep creates a Muse Image scene and three 10 s silent clips in parallel. Muse Image is retried once on failure; no other image model is called. Lip baking is removed and its stored step is `todo`. Until `ready`, call with the photo (S09-P). On `failed`, the photo keeps breathing (S09-PF) and `POST /v1/companion/prep/retry` starts again.
+- Without clip generation configured, prep is ready immediately with the photo; only `MODEL_API_KEY` is required.
 - `emotionVideos` are 1080×1920 mp4 URLs keyed by the session's `speaking.emotion`.
-- `lips.peter.avatarId` goes in the Peter worker HELLO (`{"type":"HELLO", token, avatar_id}`). The worker's READY `bundle_id` equals `lips.peter.bundleId`.
 
 ## Setup answers → persona (F2-L14, screens D01, P1–P7, SUM)
 

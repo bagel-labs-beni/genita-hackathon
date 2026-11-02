@@ -1,8 +1,8 @@
 /**
  * Generation prompts for companion prep (pure, unit-tested).
  *
- * Silent video: Dyno's approved prompt is peter-engine/generation-prompts/
- * silent.txt (Kling 3.0, 1080p, 10 s). It is 4,172 chars, but fal's Kling 3.0
+ * Silent video: the approved prompt targets Kling 3.0, 1080p, 10 s.
+ * The original is 4,172 chars, but fal's Kling 3.0
  * endpoint caps `prompt` and `negative_prompt` at 2,500 each (OpenAPI schema,
  * checked 11/2). So the NEGATIVE block goes to `negative_prompt` verbatim and
  * the body below is the same sections and rules with the repetition removed

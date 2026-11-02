@@ -16,7 +16,6 @@ import { loadConfig } from "../src/config.ts";
 import { FileStore } from "../src/prep/store.ts";
 import { PrepRunner, prepView, newPrepState } from "../src/prep/runner.ts";
 import { checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "../src/prep/pipeline.ts";
-import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { PREP_EMOTIONS, type PrepEmotion } from "../src/prep/prompts.ts";
 import type { CompanionRecord } from "../src/prep/store.ts";
@@ -34,8 +33,7 @@ const dataDir = process.env.GENITA_DATA_DIR ?? mkdtempSync(join(tmpdir(), "genit
 const events: string[] = [];
 const d: PrepDeps = {
   metaKey: config.metaKey,
-  elevenKey: config.elevenKey ?? "",
-  ttsModel: config.ttsModel,
+  voice: config.voice,
   falKey: process.env.FAL_KEY || null,
   store: new FileStore(dataDir),
   voices: DEFAULT_VOICES,
@@ -73,7 +71,7 @@ else for (const e of PREP_EMOTIONS) if (!emotions.includes(e)) prep.steps.videos
 const companion: CompanionRecord = { id: "e2e" + Date.now(), userId: user, imageId: rec.id, type: rec.check.type, voiceId: voice.id, name: voice.name, createdAt: new Date().toISOString(), prep };
 await d.store.putCompanion(companion);
 
-const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+const runner = new PrepRunner(d);
 let lastProgress = "";
 runner.events.on("prep.progress", (p) => {
   const s = `${p.done}/${p.total}`;

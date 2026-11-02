@@ -108,8 +108,6 @@ enum CallStop: Equatable {
     private(set) var sessionId: String?
     /// The server and token this call uses (also for /v1/watch and Finds REST).
     var currentEndpoint: CallEndpoint { fixedEndpoint ?? .current() }
-    /// Peter worker details from `lip.changed` (bundle, pasteDy, fps) for the F4-L18 mouth layer.
-    private(set) var peter: ServerEvent.LipChanged.Peter?
     private(set) var emotion: String?
     /// Web lookups this call (More → Finds). The F10 sheet lists them.
     private(set) var findsCount = 0
@@ -147,7 +145,6 @@ enum CallStop: Equatable {
     @ObservationIgnored private var cancelled: Set<Int> = []
     @ObservationIgnored private var currentUtterance: Int?
     @ObservationIgnored private var lookedUp: Set<Int> = []
-    @ObservationIgnored private var mouth = PeterMouthBuffer()
     @ObservationIgnored private var playingUtterance: Int?
     @ObservationIgnored private var speechEndAt: Date?
     @ObservationIgnored private var userAudioEndAt: Date?
@@ -564,7 +561,6 @@ enum CallStop: Equatable {
             }
         case let .utteranceCancelled(c):
             cancelled.insert(c.utteranceId)
-            mouth.cancel(c.utteranceId)
             flushPlayback()
             if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
@@ -588,9 +584,7 @@ enum CallStop: Equatable {
             interpretBoard.companionName = companionName
             interpretBoard.apply(event)
         case let .lipChanged(l):
-            // Only matters once the app asks for `peter` (F4-L18); kept so the face can switch layers then.
             lip = l.lip
-            peter = l.peter
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
@@ -600,11 +594,6 @@ enum CallStop: Equatable {
 
     func handle(binary data: Data) {
         guard let header = AudioFrameHeader(frame: data) else { return }
-        if header.kind == GenitaProtocol.frameKindPeter {
-            // seq = utteranceId; payload = frame index + 256 px JPEG crop (F4-L17)
-            if let crop = AudioFrameHeader.peterCrop(of: data) { mouth.add(utteranceId: Int(header.seq), frame: crop.frame, jpeg: crop.jpeg) }
-            return
-        }
         guard header.kind == GenitaProtocol.frameKindTTSPCM else { return }
         let utterance = seqToUtterance.removeValue(forKey: header.seq) ?? currentUtterance ?? -1
         guard !cancelled.contains(utterance) else { return }
@@ -640,11 +629,6 @@ enum CallStop: Equatable {
         log.info("state \(next.rawValue, privacy: .public)")
     }
 
-    /// F4-L18 hook: the Peter crop to composite now (at `peter.pasteDy`), or nil to keep the silent loop.
-    func mouthFrame() -> Data? {
-        guard let id = playingUtterance, let position = audio.playbackPositionMs(utteranceId: id) else { return nil }
-        return mouth.frame(utteranceId: id, positionMs: position)
-    }
 
     /// Device voice mouth hook: openness 0…1 of the speech playing now (from the rendered buffers), or nil.
     func deviceMouthLevel() -> Float? {
@@ -673,7 +657,6 @@ enum CallStop: Equatable {
     }
 
     private func utterancePlayed(_ utteranceId: Int) {
-        mouth.finish(utteranceId)
         voice.forget(utteranceId)
         if playingUtterance == utteranceId { playingUtterance = nil }
         playing = audio.isPlaying
@@ -719,7 +702,7 @@ final class Uplink: @unchecked Sendable {
 extension ClientMessage.Start {
     /// The start message from what onboarding collected. Persona details beyond the name come from
     /// F2-L14 (personality) later; until login/DB land the app sends them itself (PROTOCOL.md).
-    /// Lip source `none` for now: the silent loop plays as is until the Peter layer (F4-L18) asks for `peter`.
+    /// Lip source `none`: the device animates the companion face.
     static func companion(name: String, userName: String, profile: String, traits: [String], voiceId: String?) -> ClientMessage.Start {
         ClientMessage.Start(
             persona: .init(name: name, kind: .human, traits: traits.isEmpty ? nil : traits, voice: voiceId.map { .init(id: $0) }),

@@ -27,9 +27,9 @@ export type Step = {
   fal?: FalRequest;
   url?: string;
   source?: string;
-  /** lips: remote bake job id (Modal FunctionCall), saved before polling */
+  /** Legacy remote bake job id retained for stored-record compatibility */
   callId?: string;
-  /** lips (human): Peter avatar cache on the Modal Volume; the worker's READY.bundle_id must match */
+  /** Legacy bake metadata retained for stored-record compatibility; unused by runtime */
   avatarId?: string;
   bundleId?: string;
   nBase?: number;
@@ -42,7 +42,7 @@ export type PrepState = {
   steps: {
     scene: Step;
     videos: Record<PrepEmotion, Step>;
-    /** human: Peter avatar cache (F2-L22) · animal/character: mouth atlas (F2-L23) */
+    /** Legacy lip prep state retained for stored-record compatibility */
     lips: Step;
   };
   startedAt: string;
@@ -86,7 +86,7 @@ export interface PrepStore {
   patchCompanion(userId: string, fn: (c: CompanionRecord) => CompanionRecord): Promise<CompanionRecord | null>;
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
+  putVoicePreview(voiceId: string, version: string, audio: Buffer): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -178,12 +178,12 @@ export class FileStore implements PrepStore {
   }
   async getVoicePreview(voiceId: string, version: string) {
     try {
-      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.mp3`));
+      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.wav`));
     } catch {
       return null;
     }
   }
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.write(`voices/${safe(voiceId)}-${safe(version)}.mp3`, mp3);
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.write(`voices/${safe(voiceId)}-${safe(version)}.wav`, audio);
   }
 }

@@ -6,7 +6,7 @@
  *   GET  /v1/import                         F3-L2  {status, style} (after "Continue in the background")
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
  *   GET  /v1/companion/voices?imageId=      F2-L8  four voices, Spark order
- *   GET  /v1/companion/voices/:id/preview   F2-L8  mp3 (cached)
+ *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached; device speech if voice service is unset)
  *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
  *   GET  /v1/companion                      companion + prep + persona
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, emotionVideos}
@@ -60,17 +60,6 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-/**
- * Session `lip` for the realtime start message (Meta-only runtime, D34): Peter for humans only when
- * GENITA_PETER=1; the mouth atlas only on the Kling pipeline (GENITA_KLING=1); otherwise "none" (the app
- * animates the face itself). Same rule as lane L4's #158.
- */
-function sessionLip(c: CompanionRecord, env: NodeJS.ProcessEnv = process.env) {
-  if (c.type === "human" && env.GENITA_PETER === "1") return { mode: "peter", fallback: "none", ...(c.prep.steps.lips.avatarId ? { avatarId: c.prep.steps.lips.avatarId } : {}) };
-  if (c.type !== "human" && env.GENITA_KLING === "1") return "atlas";
-  return "none";
-}
-
 export function companionView(c: CompanionRecord, style: StyleCard | null) {
   return {
     id: c.id,
@@ -84,7 +73,7 @@ export function companionView(c: CompanionRecord, style: StyleCard | null) {
     persona: c.persona ?? null,
     /** ready-made fields for the realtime `start` message (PROTOCOL.md) */
     session: c.persona
-      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: sessionLip(c), peter: prepView(c).lips.peter }
+      ? { persona: c.persona.card, user: { profile: style ? styleProfileText(style) : undefined }, voiceId: c.voiceId, lip: c.type !== "human" && c.prep.steps.lips.url ? "atlas" : "none" }
       : null,
   };
 }
@@ -165,9 +154,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     const pv = p.match(/^\/v1\/companion\/voices\/([A-Za-z0-9_-]{1,64})\/preview$/);
     if (m === "GET" && pv) {
-      const mp3 = await voicePreview(d, pv[1]);
-      res.writeHead(200, { "content-type": "audio/mpeg", "content-length": mp3.length, "cache-control": "public, max-age=86400" });
-      return void res.end(mp3);
+      const wav = await voicePreview(d, pv[1]);
+      res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length, "cache-control": "public, max-age=86400" });
+      return void res.end(wav);
     }
 
     if (m === "POST" && p === "/v1/companion") {

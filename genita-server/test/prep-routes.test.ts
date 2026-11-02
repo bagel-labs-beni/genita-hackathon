@@ -8,7 +8,6 @@ import type { AddressInfo } from "node:net";
 import { FileStore, type ImageRecord } from "../src/prep/store.ts";
 import { createPrepRoutes } from "../src/prep/routes.ts";
 import { PrepRunner } from "../src/prep/runner.ts";
-import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
 import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
@@ -17,8 +16,8 @@ import type { PrepDeps } from "../src/prep/pipeline.ts";
 test("prep routes: prompt, validation, one companion per user, prefs → persona", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-routes-"));
   const store = new FileStore(dir);
-  const d: PrepDeps = { metaKey: "", elevenKey: "", ttsModel: "m", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "", falKey: null, store, voices: DEFAULT_VOICES, log: () => {} };
+  const runner = new PrepRunner(d);
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
@@ -76,7 +75,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   assert.equal(prefs.json.summary.never, "Nothing off-limits yet.");
   assert.deepEqual(Object.keys(prefs.json.summary), ["why", "energy", "initiative", "never"]);
   assert.equal(prefs.json.session.voiceId, DEFAULT_VOICES[1].id);
-  // Meta-only (D34): no Peter suggested unless GENITA_PETER=1
+  // Meta-only (D34): no remote lip worker is suggested
   assert.equal(prefs.json.session.lip, "none");
   // persona survives a later prep write
   const after = await call("GET", "/v1/companion");
