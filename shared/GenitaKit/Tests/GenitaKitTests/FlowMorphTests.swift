@@ -382,7 +382,7 @@ struct StillBackgroundAndPerioralTests {
         let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"philtrumPx":1.2,"mbpChinPx":"x","lpfMs":150}"#.utf8))
         #expect(pr.philtrumPx == 1.2 && pr.mbpChinPx == 0 && pr.lpfMs == 150 && !pr.isOff)
         #expect(FlowMap.Perioral().isOff)
-        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"skinShare":2}"#.utf8))
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"skinShare":2}"#.utf8))   // clamped
         #expect(rig.skinShare == 1)
     }
 

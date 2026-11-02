@@ -209,7 +209,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var chinLpHz = 2.0, chinGain = 0.3
         /// critic bgperi (11/3): the skin around the lips (outside the lip ellipse) also takes this share
         /// of its motion from the slow amounts (× skinGain), so it moves continuously; 0 = off
-        public var skinShare = 0.0, skinGain = 1.0
+        public var skinShare = 0.4, skinGain = 1.0   // v9.2 (bgperi: median .42 = reference)
         /// ramp start below the mouth box bottom and its length (× still height)
         public var chinRamp = [0.035, 0.03]
         /// texture blend: w_k = a_k/Σa × clip((Σa − blendFloor[0]) / blendFloor[1])
@@ -313,6 +313,13 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var eeSpread = 0.0
         /// cheeks bulge outward on O / U (px at full rounding)
         public var roundBulgePx = 0.0
+        /// the skin just outside each corner is pulled outward on EE (px at full spread; it drags the
+        /// lower cheek along, v51 / critic: mouth width barely changed on spread vowels)
+        public var spreadPx = 0.0
+        /// v55: the same corner fields pull inward on O / U (px at full rounding)
+        public var roundInPx = 0.0
+        /// v55: the jaw contour under the mouth drops with the slow opening (px at full opening)
+        public var jawDropPx = 0.0
         /// chin moves up on a closure (px at full MBP)
         public var mbpChinPx = 0.0
         /// critic bgperi (11/3): the cheek / perioral drive is low-passed (1st order, ms) so the skin moves
@@ -320,7 +327,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// carries on between syllables
         public var lpfMs = 0.0, microPx = 0.0
         public init() {}
-        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, mbpChinPx, lpfMs, microPx }
+        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, spreadPx, roundInPx, jawDropPx, mbpChinPx, lpfMs, microPx }
         public init(from decoder: Decoder) throws {
             self.init()
             guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
@@ -330,11 +337,22 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .philtrumPx) { philtrumPx = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .eeSpread) { eeSpread = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .roundBulgePx) { roundBulgePx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .spreadPx) { spreadPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .roundInPx) { roundInPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .jawDropPx) { jawDropPx = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .mbpChinPx) { mbpChinPx = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lpfMs) { lpfMs = max(0, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .microPx) { microPx = v }
         }
-        var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && mbpChinPx == 0 && microPx == 0 }
+        /// App v9.2 values for people on the lip rig when prep sends no perioral block (bgperi 11/3:
+        /// perioral median .42 vs reference .42, moving frames 75 %, cheek 1.04, background .03).
+        public static let release: Perioral = {
+            var p = Perioral()
+            p.follow = 0.2; p.philtrumPx = 1.6; p.spreadPx = 6; p.roundInPx = 3; p.jawDropPx = 2; p.roundBulgePx = 1.2
+            p.mbpChinPx = 1.3; p.lpfMs = 150; p.microPx = 0.4
+            return p
+        }()
+        var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 }
     }
     public var perioral: Perioral? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
@@ -571,7 +589,7 @@ final class FlowMorph: @unchecked Sendable {
             let g = aliveP?.cheekGain ?? 1
             c.spread *= g; c.cheek *= g; c.naso *= g
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width),
-                                expressions: expressions, perioral: data.map.perioral)
+                                expressions: expressions, perioral: data.map.perioral ?? (data.map.rig != nil && data.kind == "human" ? .release : nil))
         } else { cheekRig = nil }
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
         nkF = data.nk; knF = data.kn
@@ -1263,7 +1281,7 @@ final class FlowMorph: @unchecked Sendable {
                 periA = (periA.open + a * (peri.open - periA.open), periA.ee + a * (peri.ee - periA.ee),
                          periA.round + a * (peri.round - periA.round), periA.mbp + a * (peri.mbp - periA.mbp))
             }
-            if pr.lpfMs > 0 { dCheek = periD!; periUse = periA }
+            if pr.lpfMs > 0 { periUse = periA }
             // loudness envelope: fast attack, 400 ms release, so the skin keeps living between syllables
             let o = Double(max(0, min(1, lip.openness)))
             periLoud = o > periLoud ? periLoud + (1 - exp(-dt / 0.04)) * (o - periLoud) : periLoud * exp(-dt / 0.4)
@@ -1524,7 +1542,7 @@ final class CheekRig: @unchecked Sendable {
     /// Perioral skin (map.perioral): ring around the lips (with its left/right split), the lower ring,
     /// philtrum and chin weights, working res.
     let perioral: FlowMap.Perioral?
-    private var wRing: [Float] = [], wSideL: [Float] = [], wLower: [Float] = [], wPhil: [Float] = [], wChin: [Float] = []
+    private var wRing: [Float] = [], wSideL: [Float] = [], wLower: [Float] = [], wPhil: [Float] = [], wChin: [Float] = [], wSpread: [[Float]] = [], wJaw: [Float] = []
     /// Expression layer fields per tag (dx, dy in still px per unit weight, working res), when enabled.
     private(set) var exprFields: [String: [Float]] = [:]
 
@@ -1592,6 +1610,8 @@ final class CheekRig: @unchecked Sendable {
             let mw = Double(mouth.width), mh = Double(mouth.height), mx = Double(mouth.midX), my = Double(mouth.midY)
             let n = width * height
             var ring = [Float](repeating: 0, count: n), side = ring, lower = ring, phil = ring, chin = ring
+            var spr = [ring, ring], jaw = ring
+            let W = Double(neutralStill.width), Hs = Double(neutralStill.height)
             for j in 0..<height {
                 let Y = Double(region.minY) + (Double(j) + 0.5) / s
                 for i in 0..<width {
@@ -1612,10 +1632,17 @@ final class CheekRig: @unchecked Sendable {
                     phil[k] = Float(gx * up * below * (1 - inNose * 0.5))
                     let gc = exp(-(pow((X - mx) / (0.5 * mw), 2) + pow((Y - (Double(mouth.maxY) + 0.05 * fh)) / (0.06 * fh), 2)) / 2)
                     chin[k] = Float(gc * free)
+                    for (si, (cx, cy, _)) in corners.enumerated() {
+                        // v55: centred on the corner, σ = half the mouth width (× .9 vertically)
+                        let sg = max(1, mw / 2)
+                        spr[si][k] = Float(exp(-(pow((X - cx) / sg, 2) + pow((Y - cy) / (0.9 * sg), 2)) / 2) * free)
+                    }
+                    let jy = Double(mouth.maxY) + 55.0 / 960 * Hs
+                    jaw[k] = Float(exp(-(pow((X - mx) / (0.2 * W), 2) + pow((Y - jy) / (0.045 * Hs), 2)) / 2) * (1 - inNose))
                 }
             }
-            wRing = ring; wSideL = side; wLower = lower; wPhil = phil; wChin = chin
-            for k in 0..<n { total[k] += ring[k] + phil[k] + chin[k] }
+            wRing = ring; wSideL = side; wLower = lower; wPhil = phil; wChin = chin; wSpread = spr; wJaw = jaw
+            for k in 0..<n { total[k] += ring[k] + phil[k] + chin[k] + spr[0][k] + spr[1][k] + jaw[k] }
         }
         // Output coverage: the morph's mask plus wherever the warp reaches (the rest stays the base).
         let m = FlowMorph.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height),
@@ -1715,6 +1742,8 @@ final class CheekRig: @unchecked Sendable {
         let philPx = (pr?.philtrumPx ?? 0) * peri.open / stillToOut
         let chinPx = (pr?.mbpChinPx ?? 0) * peri.mbp / stillToOut
         let follow = pr?.follow ?? 0
+        let sprPx = ((pr?.spreadPx ?? 0) * peri.ee - (pr?.roundInPx ?? 0) * peri.round) / stillToOut
+        let jawPx = (pr?.jawDropPx ?? 0) * peri.open / stillToOut
         let mx = micro.0 / stillToOut, my = micro.1 / stillToOut
         var out = [UInt8](repeating: 0, count: width * height * 4)
         for j in 0..<height {
@@ -1733,6 +1762,11 @@ final class CheekRig: @unchecked Sendable {
                         - Double(wPhil[k]) * philPx - Double(wChin[k]) * chinPx
                     let lw = r + Double(wPhil[k]) * 0.5
                     vx += lw * mx; vy += lw * my
+                    if sprPx != 0 {
+                        let a = Double(wSpread[0][k]), b = Double(wSpread[1][k])
+                        vx += sprPx * (b - a)
+                    }
+                    vy += Double(wJaw[k]) * jawPx
                 }
                 for (f, w) in active { vx += Double(f[k * 2] * w); vy += Double(f[k * 2 + 1] * w) }
                 var c: (Float, Float, Float)
