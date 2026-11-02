@@ -119,7 +119,7 @@ const SHAPE: Record<Viseme, [string, string]> = {
   L: ["mouth a little open with the tongue tip raised behind the upper front teeth, as in the middle of saying 'l' in 'hello'", "mouth a little open with the tongue tip raised at the front, as if saying 'l'"],
   WQ: ["lips rounded and pushed forward into a small tight circle, as in the middle of saying 'w' in 'we'", "mouth pursed small and rounded, as if saying 'w'"],
   O: ["lips rounded into an open oval, as in the middle of saying 'oh'", "mouth open in a rounded oval, as if saying 'oh'"],
-  EI: ["lips gently spread with the teeth slightly apart, the upper teeth visible, the lower teeth barely visible, a dark mouth interior, as in the middle of saying 'ee' in 'see', not smiling", "mouth slightly open and stretched wide sideways, as if saying 'ee'"],
+  EI: ["lips gently spread with the teeth slightly apart, the upper teeth clearly visible and bright, the lower teeth barely visible, a dark mouth interior, as in the middle of saying 'ee' in 'see', not smiling", "mouth slightly open and stretched wide sideways, as if saying 'ee'"],
   A: ["mouth open wide, as in the middle of saying 'ah' in 'father'", "mouth open wide, as if mid-word saying 'ah'"],
   U: ["lips softly rounded and a little open, as in the middle of saying 'oo' in 'food'", "mouth a little open and softly rounded, as if saying 'oo'"],
   CDG: ["teeth nearly together and lips slightly parted and relaxed, as in the middle of saying 's' or 'k'", "mouth barely open with the teeth nearly together, as if saying 's'"],
@@ -140,7 +140,7 @@ const MOUTH: Record<MouthKey, [string, string]> = {
     "caught mid-sound with the mouth moderately open, the jaw lowered, relaxed, natural",
   ],
   EH: [
-    "the person is talking on a video call, caught mid-word saying 'eh' as in 'bed', lips parted, the upper teeth visible, the lower teeth barely visible, a dark mouth interior, mouth corners relaxed and not stretched",
+    "the person is talking on a video call, caught mid-word saying 'eh' as in 'bed', lips parted, the upper teeth clearly visible and bright, the lower teeth barely visible, a dark mouth interior, mouth corners relaxed and not stretched",
     "caught mid-sound saying 'eh', the mouth a little open, the corners relaxed",
   ],
   OH: [
