@@ -56,6 +56,11 @@ async function contract(store: PrepStore, userId: string) {
   const list = await store.listCompanions();
   assert.deepEqual(list.map((x) => x.id), ["comp_a1"]);
 
+  // face set images (GET /v1/companion/face/:key)
+  assert.equal(await store.getAsset(userId, "comp_a1", "A"), null);
+  await store.putAsset(userId, "comp_a1", "A", Buffer.from([0xff, 0xd8, 0xff, 1]));
+  assert.deepEqual([...(await store.getAsset(userId, "comp_a1", "A"))!], [0xff, 0xd8, 0xff, 1]);
+
   assert.equal(await store.getVoicePreview("v1", "p1"), null);
   await store.putVoicePreview("v1", "p1", Buffer.from("mp3"));
   assert.equal((await store.getVoicePreview("v1", "p1"))?.toString(), "mp3");
@@ -104,6 +109,8 @@ test("PrepStore contract: PgPrepStore (Postgres + blobs), emotions table follows
     await contract(store, user.id);
     const em = await db.query("SELECT emotion, video_url FROM companion_emotions");
     assert.deepEqual(em.rows, [{ emotion: "happy", video_url: "https://cdn/h.mp4" }]);
+    // face images live under users/<id>/, the prefix DELETE /me removes
+    assert.equal(existsSync(join(dir, "users", user.id, "companions", "comp_a1", "face", "A")), true);
     const job = await db.query("SELECT status, attempts FROM clip_jobs");
     assert.deepEqual(job.rows, [{ status: "running", attempts: 0 }]);
     await demoContract(store, user.id);

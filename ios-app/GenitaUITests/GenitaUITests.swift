@@ -55,7 +55,9 @@ final class GenitaUITests: XCTestCase {
         let app = XCUIApplication()
         func open(_ stage: String) {
             app.launchArguments = ["--uitesting"]
-            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage]
+            // Not the deployed server: with no session token it closes 4401 and the app routes to A02 sign-in (#155),
+            // so the conversation stage would never show its rail. A closed local port just keeps reconnecting.
+            app.launchEnvironment = ["GENITA_REVIEW_STAGE": stage, "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session"]
             app.launch()
         }
         func capture(_ name: String) {
@@ -82,6 +84,8 @@ final class GenitaUITests: XCTestCase {
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
+        XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 15), "camera toggle on the call rail")
+        XCTAssertTrue(app.buttons["cameraToggle"].isEnabled)
         XCTAssertTrue(app.buttons["micToggle"].isEnabled)
         app.buttons["more"].tap(); XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)); capture("31a-더보기")
         app.descendants(matching: .any)["closeMore"].tap()
@@ -251,7 +255,8 @@ final class GenitaUITests: XCTestCase {
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
     }
 
-    /// A02-J (D41): Judge access link → code sheet; an unreachable server shows the offline line, the sheet stays open.
+    /// A02-J (D41): Judge access link → the stock iOS alert with a code field; an unreachable server shows a
+    /// second stock alert, "Try Again" brings the code alert back with the code kept, Cancel returns to A02.
     func testJudgeAccessSheet() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting"]
@@ -261,16 +266,28 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(link.waitForExistence(timeout: 5))
         let a = XCTAttachment(screenshot: app.screenshot()); a.name = "A02-judge-link"; a.lifetime = .keepAlways; add(a)
         link.tap()
-        let field = app.textFields["judgeCodeField"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["judgeCodeContinue"].isEnabled, "empty code can't be sent")
-        field.typeText("not-a-real-code")
-        let server = app.textFields["judgeServerField"]
+        let alert = app.alerts["Judge access"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "A02-J is a system alert")
+        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple ID needed."].exists)
+        let field = alert.textFields.element(boundBy: 0)
+        XCTAssertTrue(field.exists)
+        field.tap(); field.typeText("not-a-real-code")
+        let a2 = XCTAttachment(screenshot: app.screenshot()); a2.name = "A02-J-alert"; a2.lifetime = .keepAlways; add(a2)
+        // DEBUG builds: second field points the app at a server; port 1 = nothing listening → offline
+        let server = alert.textFields.element(boundBy: 1)
+        XCTAssertTrue(server.exists, "debug server field")
         server.tap(); server.typeText("http://127.0.0.1:1")
-        app.buttons["judgeCodeContinue"].tap()
-        XCTAssertTrue(app.staticTexts["judgeCodeError"].waitForExistence(timeout: 10))
-        let b = XCTAttachment(screenshot: app.screenshot()); b.name = "A02-J-sheet-error"; b.lifetime = .keepAlways; add(b)
-        app.buttons["judgeCodeCancel"].tap()
+        alert.buttons["Continue"].tap()
+        // offline ("Can’t Reach the Server"), or "Judge Access Unavailable" if the simulator blocks plain http
+        let tryAgain = app.alerts.buttons["Try Again"]
+        XCTAssertTrue(tryAgain.waitForExistence(timeout: 10), "failure is a second system alert")
+        XCTAssertFalse(app.alerts["Judge access"].exists)
+        let b = XCTAttachment(screenshot: app.screenshot()); b.name = "A02-J-error"; b.lifetime = .keepAlways; add(b)
+        tryAgain.tap()
+        XCTAssertTrue(alert.waitForExistence(timeout: 5), "Try Again reopens the code alert")
+        XCTAssertEqual(alert.textFields.element(boundBy: 0).value as? String, "not-a-real-code", "the code is kept")
+        alert.buttons["Cancel"].tap()
         XCTAssertTrue(link.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 }

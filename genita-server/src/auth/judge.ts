@@ -71,3 +71,67 @@ export class JudgeAccess {
     return null;
   }
 }
+
+/** The code label of a Judge access demo account (users row provider "dev", sub `judge:<label>`), else null. */
+export function judgeLabelOf(user: { provider: string; providerSub: string }): string | null {
+  return user.provider === "dev" && user.providerSub.startsWith("judge:") ? user.providerSub.slice("judge:".length) || null : null;
+}
+
+/** What a call needs from a per-account turn cap: `peek` before a Spark call that isn't a user turn
+ * (greeting, speculation), `take` once per real user turn. */
+export type TurnGate = { peek(): boolean; take(): boolean };
+
+export const JUDGE_DAILY_TURNS_DEFAULT = 200;
+
+/**
+ * D41 per-code daily turn cap: at most `cap` user turns per UTC day per Judge access code label.
+ * In memory on the single server host (a restart resets today's counts: worst case one extra day's
+ * allowance per code). `cap <= 0` = no cap. GENITA_JUDGE_DAILY_TURNS, default 200.
+ * Kept separate from (and compatible with) the D46 ops limits: those cap every account; this one only
+ * the judge demo accounts, and both are checked at the same "user turn accepted" point in the session.
+ */
+export class JudgeDailyTurns {
+  readonly cap: number;
+  private readonly now: () => number;
+  private day = "";
+  private readonly counts = new Map<string, number>();
+  constructor(cap: number = JUDGE_DAILY_TURNS_DEFAULT, now: () => number = Date.now) {
+    this.cap = cap;
+    this.now = now;
+  }
+
+  static fromEnv(raw: string | undefined, now?: () => number): JudgeDailyTurns {
+    const n = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+    return new JudgeDailyTurns(Number.isFinite(n) ? Math.floor(n) : JUDGE_DAILY_TURNS_DEFAULT, now);
+  }
+
+  private roll(): void {
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    if (day !== this.day) {
+      this.day = day;
+      this.counts.clear();
+    }
+  }
+
+  /** Turns used today by this code label. */
+  used(label: string): number {
+    this.roll();
+    return this.counts.get(label) ?? 0;
+  }
+
+  /** True while this label still has a turn left today (does not spend one). */
+  peek(label: string): boolean {
+    return this.cap <= 0 || this.used(label) < this.cap;
+  }
+
+  /** Spends one turn; false (nothing spent) when today's cap is reached. */
+  take(label: string): boolean {
+    if (!this.peek(label)) return false;
+    this.counts.set(label, this.used(label) + 1);
+    return true;
+  }
+
+  gate(label: string): TurnGate {
+    return { peek: () => this.peek(label), take: () => this.take(label) };
+  }
+}

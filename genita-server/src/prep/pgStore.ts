@@ -10,10 +10,13 @@
 import { iso, json, type Db, type Queryable } from "../db/index.ts";
 import type { BlobStore } from "../storage/blob.ts";
 import type { StyleCard } from "./importProfile.ts";
+import { sniffImage } from "./classify.ts";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 const imageKey = (userId: string, id: string) => `users/${userId}/images/${id}`;
+/** face set images; under users/<id>/ so DELETE /me removes them */
+const assetKey = (userId: string, companionId: string, name: string) => `users/${userId}/companions/${companionId}/face/${name}`;
 
 export class PgPrepStore implements PrepStore {
   readonly db: Db;
@@ -205,4 +208,18 @@ export class PgPrepStore implements PrepStore {
     await this.db.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [imageId, userId]);
     await this.blobs.deletePrefix(imageKey(userId, imageId));
   }
+
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.blobs.put(assetKey(userId, companionId, name), bytes, sniffMime(bytes));
+  }
+
+  getAsset(userId: string, companionId: string, name: string) {
+    return this.blobs.get(assetKey(userId, companionId, name));
+  }
+
+  async deleteAssets(userId: string, companionId?: string) {
+    await this.blobs.deletePrefix(companionId ? `users/${userId}/companions/${companionId}/` : `users/${userId}/companions/`);
+  }
 }
+
+const sniffMime = (b: Buffer) => sniffImage(b) ?? "application/octet-stream";

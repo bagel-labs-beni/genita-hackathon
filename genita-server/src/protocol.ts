@@ -13,6 +13,8 @@ export const FRAME_KIND_TTS_PCM = 1;
 export const FRAME_KIND_PETER = 2;
 
 export type LipMode = "peter" | "atlas" | "none";
+/** Who speaks the reply: the server (ElevenLabs PCM frames) or the device (`say` text, on-device TTS). */
+export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
 export type CancelReason = "barge_in" | "text" | "client";
@@ -68,6 +70,8 @@ export type StartMessage = {
   lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
+  /** default: "device" unless the server runs server TTS (GENITA_SERVER_TTS=1) */
+  tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
 };
@@ -146,6 +150,8 @@ export type ServerEvent =
       lip: LipPlan;
       voiceId: string;
       bargeIn: { minMs: number; minWords: number };
+      /** the voice mode actually used for this call */
+      tts: TtsMode;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -169,6 +175,8 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
+  | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
   | { type: "utterance.cancelled"; utteranceId: number; reason: CancelReason }
   | {
@@ -207,7 +215,9 @@ export type ErrorCode =
   | "bad_persona"
   | "bad_message"
   | "unknown_type"
-  | "frame_too_large";
+  | "frame_too_large"
+  /** D41: this account's turns for today are used up (Judge access codes); the call stays open */
+  | "daily_limit";
 
 export type ServerEventType = ServerEvent["type"];
 
@@ -217,7 +227,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
@@ -229,6 +239,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
   "turn.metrics": {
@@ -263,6 +274,45 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
 export function checkServerEvent(o: Record<string, unknown>): string[] {
   const spec = SERVER_EVENT_FIELDS[o.type as ServerEventType];
   if (!spec) return [`unknown type ${String(o.type)}`];
+  const problems: string[] = [];
+  for (const k of spec.required) if (!(k in o)) problems.push(`${o.type}: missing ${k}`);
+  for (const k of Object.keys(o)) if (k !== "type" && !spec.required.includes(k) && !spec.optional.includes(k)) problems.push(`${o.type}: extra ${k}`);
+  return problems;
+}
+
+// ───────────────────────── watch socket (F5, /v1/watch) ─────────────────────────
+// A second socket per call, opened by the Mac while it shares its screen.
+// See PROTOCOL.md "Watch together". Binary app → server = system audio PCM
+// s16le mono 24 kHz (the shared screen's sound, never the mic).
+
+export type WatchClientMessage =
+  | { type: "start"; source?: string }
+  | { type: "frame"; image: string; blank?: boolean }
+  | { type: "stop" }
+  | { type: "ping"; t?: unknown };
+
+export type WatchServerEvent =
+  | { type: "ready"; protocol: number; sessionId: string }
+  | { type: "state"; sharing: boolean; blank: boolean; source: string | null }
+  | { type: "reaction"; utteranceId: number; moment: "funny" | "surprising" | "sweet" }
+  | { type: "speaker"; on: boolean; label?: string; name?: string }
+  | { type: "error"; code: "unknown_type" | "bad_message" | "frame_too_large" | "asr_unavailable" | "not_started"; message: string }
+  | { type: "pong"; t: unknown };
+
+export type WatchServerEventType = WatchServerEvent["type"];
+
+export const WATCH_EVENT_FIELDS: Record<WatchServerEventType, { required: string[]; optional: string[] }> = {
+  ready: { required: ["protocol", "sessionId"], optional: [] },
+  state: { required: ["sharing", "blank", "source"], optional: [] },
+  reaction: { required: ["utteranceId", "moment"], optional: [] },
+  speaker: { required: ["on"], optional: ["label", "name"] },
+  error: { required: ["code", "message"], optional: [] },
+  pong: { required: ["t"], optional: [] },
+};
+
+export function checkWatchEvent(o: Record<string, unknown>): string[] {
+  const spec = WATCH_EVENT_FIELDS[o.type as WatchServerEventType];
+  if (!spec) return [`unknown watch type ${String(o.type)}`];
   const problems: string[] = [];
   for (const k of spec.required) if (!(k in o)) problems.push(`${o.type}: missing ${k}`);
   for (const k of Object.keys(o)) if (k !== "type" && !spec.required.includes(k) && !spec.optional.includes(k)) problems.push(`${o.type}: extra ${k}`);

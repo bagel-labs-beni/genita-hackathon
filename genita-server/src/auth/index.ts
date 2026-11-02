@@ -9,6 +9,7 @@
  *   GENITA_JWT_SECRET     HS256 secret for session tokens (≥32 chars). Unset on loopback = random per boot.
  *   GENITA_PUBLIC_URL     https://genita-api.thebeni.ai — Apple web callback base (Mac login)
  *   GENITA_JUDGE_CODES    label=code,… Judge access (auth/judge.ts)
+ *   GENITA_JUDGE_DAILY_TURNS  user turns per UTC day per judge code (default 200, 0 = no cap)
  *   GENITA_TRUST_PROXY    "1" = rate-limit by X-Forwarded-For (behind a proxy/load balancer)
  *   APPLE_*               see auth/apple.ts · GENITA_S3_* see storage/blob.ts
  */
@@ -23,7 +24,7 @@ import { DEMO_TEMPLATE_SUB, seedDemoCompanion } from "../prep/demo.ts";
 import { AppleAuth, appleConfigFromEnv } from "./apple.ts";
 import { Accounts, DEVICES, type Device } from "./accounts.ts";
 import { JwtError, looksLikeJwt, signHs256, verifyHs256 } from "./jwt.ts";
-import { JudgeAccess } from "./judge.ts";
+import { JudgeAccess, JudgeDailyTurns, judgeLabelOf } from "./judge.ts";
 import { createAccountRoutes, type AccountRoutes } from "./routes.ts";
 
 export const SESSION_ISSUER = "genita";
@@ -35,6 +36,8 @@ export type Principal = {
   device: Device;
   consented: boolean;
   kind: "user" | "dev";
+  /** D41: the Judge access code label when this is a judge demo account */
+  judge?: string;
 };
 
 type Log = (event: string, data: Record<string, unknown>) => void;
@@ -52,6 +55,8 @@ export type AccountsCore = {
   judge: JudgeAccess;
   /** D41: give a judge account with no companion the ready-made demo one (src/prep/demo.ts). Never throws. */
   seedDemo?: (userId: string) => Promise<void>;
+  /** D41 per-code daily turn cap (GENITA_JUDGE_DAILY_TURNS) */
+  judgeTurns: JudgeDailyTurns;
   log: Log;
   signSession(userId: string, sid: string, device: Device, expiresAt: Date): string;
   /** Awaited before any row is deleted: erase data kept outside Postgres (memory, Finds). Throwing keeps the account so the user can retry. */
@@ -100,6 +105,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     trustProxy: env.GENITA_TRUST_PROXY === "1",
     authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 30,
     judge: new JudgeAccess(env.GENITA_JUDGE_CODES),
+    judgeTurns: JudgeDailyTurns.fromEnv(env.GENITA_JUDGE_DAILY_TURNS),
     log,
     forgetAvatars: peterForgetter(env, log),
     seedDemo: async (userId) => {
@@ -122,7 +128,8 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
       if (typeof c.sub !== "string" || typeof c.sid !== "string") throw new JwtError("bad_claims");
       const s = await accounts.sessionUser(c.sid, c.sub);
       if (!s) throw new JwtError("session_revoked");
-      return { userId: s.user.id, sid: c.sid, device: DEVICES.includes(s.device) ? s.device : "dev", consented: !!s.user.aiConsentAt, kind: "user" };
+      const judge = judgeLabelOf(s.user);
+      return { userId: s.user.id, sid: c.sid, device: DEVICES.includes(s.device) ? s.device : "dev", consented: !!s.user.aiConsentAt, kind: "user", ...(judge ? { judge } : {}) };
     },
     close: () => db.close(),
   });

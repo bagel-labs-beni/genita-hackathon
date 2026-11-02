@@ -1,9 +1,11 @@
 /**
  * One realtime conversation: app socket ↔ Muse Transcribe ↔ Muse Spark ↔
- * ElevenLabs. Turn-taking decisions live in turnMachine.ts (pure); this
+ * the app's on-device voice (`say`, device mode) or ElevenLabs (server mode,
+ * GENITA_SERVER_TTS=1). Turn-taking decisions live in turnMachine.ts (pure); this
  * class only executes their effects and moves bytes. Protocol: PROTOCOL.md.
  */
 import type { Config } from "../config.ts";
+import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/elevenlabs.ts";
@@ -11,7 +13,9 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/elevenlabs.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { isMostlyHangul } from "../text/language.ts";
+import { isMostlyHangul, speechLang } from "../text/language.ts";
+import { resolveSpeaker, seamlessLang } from "../tts/seamless.ts";
+import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
@@ -27,6 +31,7 @@ import {
   type ErrorCode,
   type CancelReason,
   type InterpretOptionsWire,
+  type TtsMode,
 } from "../protocol.ts";
 import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
@@ -35,6 +40,7 @@ import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/i
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { WatchController, type WatchSink } from "../watch/watch.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
 
@@ -68,12 +74,17 @@ export interface PeterLike {
 
 export type SessionDeps = {
   config: Config;
-  openAsr: (languages: string[]) => AsrLike;
+  /** mode: the Mac's shared-screen sound uses DIARIZATION (watch together) */
+  openAsr: (languages: string[], mode?: "ENDPOINTING" | "DIARIZATION") => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
+  voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  /** D41 per-account daily turn cap (judge demo accounts only); unset = no cap. */
+  turnGate?: TurnGate;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -97,10 +108,15 @@ type Reply = {
   doneTimer: NodeJS.Timeout | null;
   /** this reply's audio is going to Peter */
   peter: boolean;
+  /** device mode: characters sent in `say` (drives the speaking estimate) */
+  chars: number;
+  /** server mode: the voice failed mid-reply and the rest went to the app as `say` */
+  fellBack: boolean;
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[] };
+/** lang = the language the reply is written in (interpretation: the target) */
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; confirm: () => void };
 
 /** Transcript comparison for speculation: case and punctuation do not matter. */
@@ -114,6 +130,24 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+const DEVICE_MS_PER_CHAR = 70;
+const DEVICE_SLACK_MS = 1500;
+const DEVICE_MAX_MS = 60_000;
+
+/**
+ * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
+ * A word cut mid-way is said again.
+ */
+export function unspokenRest(spoken: string, voicedChars: string): string {
+  const complete = voicedChars.trimStart().split(/\s+/).filter(Boolean).length - (/\s$/.test(voicedChars) ? 0 : 1);
+  return spoken.trim().split(/\s+/).slice(Math.max(0, complete)).join(" ");
+}
+
+/** Device mode: how long the app should take to speak `chars` characters, if it never sends playback_done. */
+export function deviceSpeechEstimateMs(chars: number): number {
+  return Math.min(DEVICE_MAX_MS, chars * DEVICE_MS_PER_CHAR + DEVICE_SLACK_MS);
+}
+
 /** spoken after "Can you interpret for me?" */
 const INTERPRET_ON_LINE = "Sure, I'll pass on what I hear.";
 
@@ -166,6 +200,7 @@ export class Session {
   private language = "English";
   private voiceId: string;
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
+  private tts: TtsMode = "device";
   /** start.lip.avatarId: the companion's baked Peter cache (GET /v1/companion/prep → lips.peter.avatarId) */
   private peterAvatarId: string | undefined;
   private history: HistoryItem[] = [];
@@ -180,6 +215,7 @@ export class Session {
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
   private peter: PeterLike | null = null;
+  private watch: WatchController | null = null;
   private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
@@ -206,6 +242,19 @@ export class Session {
         now: this.now,
       });
     }
+  }
+
+  /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
+  get hasStarted(): boolean {
+    return this.started && !this.closed;
+  }
+
+  /**
+   * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
+   * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
+   */
+  stopForHandoff(): void {
+    if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
 
   // ───────────────────────── client input ─────────────────────────
@@ -242,7 +291,7 @@ export class Session {
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
-        if (this.interp) return this.interp.typed(text);
+        if (this.interp) return this.admitInterpret(() => this.interp?.typed(text));
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -320,10 +369,17 @@ export class Session {
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
     this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
+    const voice = this.deps.config.voice;
+    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
+    if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
     this.peterAvatarId = typeof lip.avatarId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(lip.avatarId) ? lip.avatarId : undefined;
     this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
+    // Server TTS runs only when the server has it on; then the app may still ask for device speech.
+    this.tts = this.deps.config.serverTts && msg.tts !== "device" ? "server" : "device";
+    // Device speech: no server audio to sync, so no mouth cues and no Peter; the device makes its own.
+    if (this.tts === "device") this.lip = { requested: this.lip.requested, active: "none", reason: "device_tts" };
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
@@ -363,10 +419,12 @@ export class Session {
       lip: this.lip,
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
+      tts: this.tts,
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.lip.reason === "peter_connecting") void this.connectPeter();
+    if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: "The call just connected. Greet the user." });
   }
 
@@ -395,7 +453,8 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate,
+      // capped (judge) accounts don't guess on partials: a guess calls Spark before the turn is admitted
+      speculate: this.deps.config.speculate && !this.deps.turnGate,
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
@@ -423,7 +482,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.interp.final("call", e.text);
+      else if (e.type === "speechComplete") this.admitInterpret(() => this.interp?.final("call", e.text));
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -447,6 +506,7 @@ export class Session {
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
+      say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
       timing: (alignment, offsetMs) => chunkTiming(this.lip.active, alignment, offsetMs),
       lipBegin: (uid) => {
         if (this.lip.active !== "peter" || !this.peter?.isReady) return false;
@@ -524,6 +584,7 @@ export class Session {
     this.memoryCall?.close();
     // account deleted: Finds stop now and never write again (the delete runs right after)
     this.finds?.close({ purge: reason === "account_deleted" });
+    this.watch?.close();
     this.client.close(code, reason);
   }
 
@@ -546,16 +607,21 @@ export class Session {
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
         this.metrics.completeAt = t;
-        this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
+        // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
+        // exactly one final transcript goes out either way
         if (interpretCommand(e.text) === "start") {
+          this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
           // INT-0 by voice: "Can you interpret for me?"
           this.switchMode("interpret", "model");
           (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
           return;
         }
-        this.dispatch({ type: "speech_complete", text: e.text });
-        // not consumed by a reply (backchannel / empty): stop the guess
-        return this.dropSpeculation();
+        if (this.watch?.isSharing && e.text.trim()) {
+          // in order: a slow echo check must not let a later utterance go first (Codex 11/2)
+          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {});
+          return;
+        }
+        return this.completeTurn(e.turnId, e.text);
     }
   }
 
@@ -575,8 +641,60 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        return interp.final("mic", e.text);
+        return this.admitInterpret(() => interp.final("mic", e.text));
     }
+  }
+
+  private completeTurn(turnId: number, text: string): void {
+    this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
+    this.dispatch({ type: "speech_complete", text });
+    // not consumed by a reply (backchannel / empty): stop the guess
+    this.dropSpeculation();
+  }
+
+  /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
+  private echoChain: Promise<void> = Promise.resolve();
+
+  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+    const echo = (await this.watch?.isEcho(text)) ?? false;
+    // re-check after the wait: the call may have closed or switched to interpretation meanwhile
+    if (this.closed || this.mode === "interpret") return;
+    if (!echo) return this.completeTurn(turnId, text);
+    this.log("watch.echo_dropped", { text: text.slice(0, 120) });
+    this.dispatch({ type: "speech_complete", text: "" });
+    this.dropSpeculation();
+  }
+
+  // ───────────────────────── watch together (F5) ─────────────────────────
+
+  /** The Mac opened /v1/watch for this call. Null until `start`. */
+  attachWatch(sink: WatchSink): WatchController | null {
+    if (!this.started || this.closed) return null;
+    this.watch ??= new WatchController(
+      {
+        companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
+        conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        react: (script) => {
+          // interpretation owns the voice: no watch reactions over it
+          if (this.mode === "interpret") return null;
+          const before = this.turn.utteranceId;
+          this.dispatch({ type: "self_speak", text: script, origin: "watch" });
+          return this.turn.utteranceId !== before ? this.turn.utteranceId : null;
+        },
+      },
+      {
+        now: this.now,
+        openAsr: (mode) => this.deps.openAsr(this.deps.config.asrLanguages, mode),
+        spark: this.deps.spark,
+        // Chelsea 11/2 21:10: watch YouTube together and chat — first reactions ON (GENITA_WATCH_REACTIONS=0 turns
+        // them off); the speaker chip stays cut (D40), on only with GENITA_WATCH_SPEAKER=1
+        reactions: process.env.GENITA_WATCH_REACTIONS !== "0",
+        speakerChip: process.env.GENITA_WATCH_SPEAKER === "1",
+        log: (event, data) => this.log(event, data),
+      },
+    );
+    this.watch.attach(sink);
+    return this.watch;
   }
 
   private dispatch(e: TurnEvent): void {
@@ -588,7 +706,7 @@ export class Session {
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
       const p = this.pendingAnnounce;
       this.pendingAnnounce = null;
-      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "announce", text: p.text });
+      if (this.now() - p.at < ANNOUNCE_WAIT_MS) this.dispatch({ type: "self_speak", text: p.text, origin: "card" });
     }
   }
 
@@ -596,7 +714,7 @@ export class Session {
   private announce(text: string): void {
     // interpretation owns the voice: a card that lands mid-interpretation stays on the sheet, unspoken
     if (this.closed || this.mode === "interpret") return;
-    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "announce", text });
+    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "self_speak", text, origin: "card" });
     if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
@@ -615,7 +733,7 @@ export class Session {
       case "cancel_reply":
         return this.cancelReply(fx.utteranceId, fx.reason);
       case "start_reply":
-        void this.runReply(fx.text, fx.utteranceId, fx.announce === true);
+        void this.runReply(fx.text, fx.utteranceId, fx.self);
         return;
     }
   }
@@ -674,11 +792,14 @@ export class Session {
       return {
         interpret,
         detected: this.mode === "chat" ? { from, to } : null,
+        lang: to,
         req: { instructions: buildInterpretInstructions({ persona, from, to }), input: text, maxOutputTokens: 400 },
         images: [],
       };
     }
-    const images = this.takeFrames();
+    const camera = this.takeFrames();
+    const watch = this.watch?.questionContext() ?? null;
+    const images = [...camera, ...(watch?.images ?? [])];
     const content: string | ContentPart[] = images.length
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
@@ -692,14 +813,21 @@ export class Session {
       memories: this.memories,
       mode: "chat",
       language: this.language,
-      cameraAttached: images.length > 0,
+      cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
     });
     return {
       interpret,
       detected: null,
-      images,
-      req: { instructions, input, maxOutputTokens: 800, tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined },
+      // Finds get the camera frames only, never the shared screen
+      images: camera,
+      lang: this.language,
+      req: {
+        instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
+        input,
+        maxOutputTokens: 800,
+        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+      },
     };
   }
 
@@ -730,6 +858,7 @@ export class Session {
   }
 
   private startSpeculation(text: string): void {
+    if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -748,16 +877,23 @@ export class Session {
     this.spec = null;
   }
 
-  /** A line the companion says on its own (a card landed); see turnMachine "announce". */
-  private announceRequest(text: string): Built {
-    return { interpret: false, detected: null, images: [], req: { input: text } };
-  }
-
-  private async runReply(text: string, utteranceId: number, announce = false): Promise<void> {
-    const greeting = this.greeting;
-    this.greeting = null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
+  /**
+   * self: the companion speaks on its own (one path, 11/2) — "card" = a Finds card's line (F10),
+   * "watch" = a watch-together reaction (F5-L14). Spoken as is: no Spark, no user turn, no memory write.
+   */
+  private async runReply(text: string, utteranceId: number, self?: "card" | "watch"): Promise<void> {
+    const greeting = self ? null : this.greeting;
+    if (!self) this.greeting = null;
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false, chars: 0, fellBack: false };
+    const device = this.tts === "device";
     this.reply = reply;
+    // D41 daily cap: a real user turn spends one; the greeting only runs while one is left. Over the cap:
+    // no Spark call, a daily_limit error, and the call stays open.
+    if (!self && this.deps.turnGate && !(greeting ? this.deps.turnGate.peek() : this.deps.turnGate.take())) {
+      this.dropSpeculation();
+      this.dailyLimit();
+      return this.finishReply(reply);
+    }
     const signal = reply.abort.signal;
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
       replyStartAt: number;
@@ -769,17 +905,10 @@ export class Session {
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
     let built: Built | null = null;
-    const spec = announce ? null : this.spec;
-    if (!announce) this.spec = null;
-    if (!announce && this.specTimer) clearTimeout(this.specTimer);
-    if (!announce) this.specTimer = null;
-    if (announce) {
-      built = this.announceRequest(text);
-      pre = (async function* () {
-        yield { type: "text" as const, delta: `<warm> ${text}` };
-        yield { type: "done" as const, responseId: null, text, status: "completed" };
-      })();
-    }
+    const spec = self ? null : this.spec;
+    if (!self) this.spec = null;
+    if (!self && this.specTimer) clearTimeout(this.specTimer);
+    if (!self) this.specTimer = null;
     if (spec) {
       if (spec.norm === normTranscript(text)) {
         speculative = "hit";
@@ -792,32 +921,39 @@ export class Session {
         spec.abort.abort();
       }
     }
+    if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
     built ??= this.buildRequest(text);
-    const { req, interpret } = built;
+    const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
-    if (!greeting && !announce) this.memoryCall?.userMessage();
-    if (!interpret && !greeting && !announce) this.remember("user", text);
+    if (!greeting && !self) this.memoryCall?.userMessage();
+    if (!interpret && !greeting && !self) this.remember("user", text);
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !announce && !greeting && this.finds) {
+    if (!interpret && !self && !greeting && this.finds) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said });
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
     }
 
-    const splitter = new SentenceSplitter();
+    // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
+    const splitter = new SentenceSplitter(!device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {});
     const sentences: { tts: string; display: string; emotion: string | null }[] = [];
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
     let sparkError: unknown = null;
+    let droppedOpener = false;
     const pushSentences = (list: string[]) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
         if (p.emotion) emotion = p.emotion;
         let tts = p.ttsText;
-        if (!sentences.length && !interpret) tts = avoidRepeatedOpener(tts, this.recentReplies);
-        if (!tts) continue;
+        if (!sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        if (!tts) {
+          droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
+          continue;
+        }
+        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         if (m.firstSentenceAt === undefined) m.firstSentenceAt = this.now();
         sentences.push({ tts, display, emotion });
@@ -830,6 +966,13 @@ export class Session {
     // Producer: Spark stream → sentences
     const producer = (async () => {
       try {
+        if (self) {
+          m.firstTokenAt = this.now();
+          // a card line has no tag of its own: say it warmly; watch reactions carry theirs ("<laugh> ha")
+          pushSentences(splitter.push(self === "card" ? `<warm> ${text}` : text));
+          pushSentences(splitter.flush());
+          return;
+        }
         // An answer with no text (seen once on 11/2 after a web search) gets
         // one retry without tools rather than silence.
         for (let attempt = 0; attempt < 2; attempt++) {
@@ -871,23 +1014,47 @@ export class Session {
           model: this.deps.config.ttsModel,
           fallbackModel: this.deps.config.ttsFallbackModel,
           signal,
+          lang: speechLang(s.display || s.tts, lang),
         }),
       );
     };
     let ttsFailed = false;
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
+    // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
+    // Device mode always; server mode when the voice service failed for this reply.
+    const sayOnDevice = (i: number, s: { display: string; emotion: string | null }, record = true) => {
+      if (record) reply.spoken.push(s.display);
+      if (!s.display) return;
+      if (reply.firstAudioAt === null) {
+        reply.firstAudioAt = this.now();
+        m.firstAudioAt = reply.firstAudioAt;
+        this.dispatch({ type: "first_audio", utteranceId });
+      }
+      if (s.emotion !== sentEmotion) {
+        sentEmotion = s.emotion;
+        this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
+      }
+      this.client.sendJson({ type: "say", utteranceId, sentence: i, text: s.display, emotion: s.emotion ?? "neutral", lang: speechLang(s.display, lang) });
+      reply.chars += s.display.length;
+    };
     for (let i = 0; ; i++) {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
       const s = sentences[i];
+      if (device || reply.fellBack) {
+        sayOnDevice(i, s);
+        continue;
+      }
       if (ttsFailed) {
         reply.spoken.push(s.display);
         continue;
       }
       startJob(i);
       const sentenceOffset = reply.audioMs;
+      let sentAudio = false;
+      let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
       try {
         let first = true;
         for await (const chunk of jobs[i]) {
@@ -924,6 +1091,8 @@ export class Session {
             model: chunk.model,
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
+          sentAudio = true;
+          if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
             if (reply.peter) this.peter?.audio24k(utteranceId, chunk.audio);
@@ -934,12 +1103,26 @@ export class Session {
       } catch (err) {
         if (signal.aborted) break;
         ttsFailed = true;
-        reply.spoken.push(s.display);
         if (!(err instanceof Error && err.message === "tts_off")) {
           // tts_off = no server voice configured (the app speaks on-device): text-only is the normal path
           this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
+          if (this.deps.config.voice) {
+            // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
+            reply.fellBack = true;
+            if (!sentAudio) sayOnDevice(i, s);
+            else {
+              // the voice died mid-sentence: the device says the words that were not voiced yet
+              // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
+              reply.spoken.push(s.display);
+              const spoken = spokenText(s.display, seamlessLang(speechLang(s.display, lang), s.display));
+              const rest = sentChars.trim() ? unspokenRest(spoken, sentChars) : s.display;
+              if (rest) sayOnDevice(i, { display: rest, emotion: s.emotion }, false);
+            }
+            continue;
+          }
         }
+        reply.spoken.push(s.display);
       }
     }
     await producer;
@@ -950,10 +1133,19 @@ export class Session {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
+    if (device) {
+      ttsModelUsed = "device";
+      reply.audioMs = reply.firstAudioAt === null ? 0 : deviceSpeechEstimateMs(reply.chars);
+    } else if (reply.fellBack) {
+      ttsModelUsed = ttsModelUsed ? `${ttsModelUsed}+device` : "device";
+      reply.audioMs += reply.chars ? deviceSpeechEstimateMs(reply.chars) : 0;
+    }
     const full = reply.spoken.join(" ").trim();
     resolveSaid(full || null);
-    if (full && !interpret) { this.remember("assistant", full); this.memoryCall?.assistantMessage(full); }
-    if (full && !interpret && !greeting) this.memoryCall?.completedTurn(text, full);
+    // self speech (card line, watch reaction) stays in the chat history but is never a memory source:
+    // its script would otherwise be extracted as something the user said
+    if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
+    if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
@@ -972,8 +1164,9 @@ export class Session {
 
     // The app is still playing what we sent faster than real time; stay in
     // "speaking" (so barge-in still works) until playback should be over or
-    // the app says playback_done.
-    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + PLAYBACK_SLACK_MS;
+    // the app says playback_done. Device mode: audioMs is already the estimate
+    // (70 ms/char + 1.5 s, ≤ 60 s) counted from the first `say`.
+    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
   }
@@ -984,6 +1177,17 @@ export class Session {
     this.reply = null;
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
+  }
+
+  /** An interpreted line is a user turn too (it calls Spark): spend one or refuse it. */
+  private admitInterpret(run: () => void): void {
+    if (this.deps.turnGate && !this.deps.turnGate.take()) return this.dailyLimit();
+    run();
+  }
+
+  private dailyLimit(): void {
+    this.log("turn.daily_limit", {});
+    this.error("daily_limit", "Today's turns for this access code are used up. The limit resets at 00:00 UTC.", false);
   }
 
   private error(code: ErrorCode, message: string, retryable: boolean): void {

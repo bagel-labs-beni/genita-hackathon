@@ -16,9 +16,11 @@ import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
 import type { CompanionKind, PrepEmotion } from "./prompts.ts";
+import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-export type StepStatus = "pending" | "running" | "done" | "failed" | "todo";
+/** `skipped` = not part of this pipeline (Kling clips and lips when GENITA_KLING is off) */
+export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
@@ -33,6 +35,8 @@ export type Step = {
   avatarId?: string;
   bundleId?: string;
   nBase?: number;
+  /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
+  face?: FaceState;
 };
 
 export type PrepState = {
@@ -44,6 +48,8 @@ export type PrepState = {
     videos: Record<PrepEmotion, Step>;
     /** human: Peter avatar cache (F2-L22) · animal/character: mouth atlas (F2-L23) */
     lips: Step;
+    /** Meta-only face set (expressions + visemes); absent on the Kling pipeline */
+    face?: Step;
   };
   startedAt: string;
   readyAt?: string;
@@ -98,6 +104,15 @@ export interface PrepStore {
   replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean>;
   /** drops one of the user's photos (row + bytes); cleans up a demo seed that failed half-way */
   deleteImage(userId: string, imageId: string): Promise<void>;
+  /**
+   * Companion images (scene = `neutral`, face set keys), served by GET /v1/companion/face/:key.
+   * Kept under the user (blob key users/<userId>/companions/<companionId>/face/<name>), so
+   * DELETE /me removes them with the user's other files.
+   */
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer): Promise<void>;
+  getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
+  /** drops every image of a companion, or of every companion of the user when companionId is omitted */
+  deleteAssets(userId: string, companionId?: string): Promise<void>;
 }
 
 const safe = (id: string) => {
@@ -203,6 +218,7 @@ export class FileStore implements PrepStore {
     const c = await this.getCompanion(key);
     if (!c) return false;
     await rm(join(this.dir, `companions/${key}.json`), { force: true });
+    await this.deleteAssets(key, c.id);
     return true;
   }
   replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean> {
@@ -213,6 +229,7 @@ export class FileStore implements PrepStore {
         const cur = await this.getCompanion(key);
         if (!cur || cur.id !== demoId || !cur.demo) return false;
         await this.putCompanion(rec);
+        await this.deleteAssets(key, demoId);
         return true;
       });
     this.locks.set(key, next);
@@ -223,5 +240,19 @@ export class FileStore implements PrepStore {
     if (!rec || rec.userId !== userId) return;
     await rm(join(this.dir, `images/${safe(imageId)}.json`), { force: true });
     await rm(join(this.dir, `images/${safe(imageId)}.bin`), { force: true });
+  }
+  putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
+    return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);
+  }
+  async deleteAssets(userId: string, companionId?: string) {
+    await rm(join(this.dir, companionId ? `assets/${safe(userId)}/${safe(companionId)}` : `assets/${safe(userId)}`), { recursive: true, force: true });
+  }
+  async getAsset(userId: string, companionId: string, name: string) {
+    try {
+      return await readFile(join(this.dir, `assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
   }
 }
