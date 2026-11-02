@@ -42,5 +42,6 @@
     "minMs": 400,
     "minWords": 2
   },
-  "mic": true
+  "mic": true,
+  "greetAfterMs": 2000
 }

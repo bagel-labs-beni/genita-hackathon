@@ -55,7 +55,7 @@ export function previewLine(v: VoiceOption): string {
 
 export function buildOrderRequest(voices: VoiceOption[], kind: CompanionKind | null, style: StyleCard | null): Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> } {
   const talk = style
-    ? [...style.sections.communication, ...style.sections.support, ...style.sections.approach].map((f) => f.text).slice(0, 8).join("; ")
+    ? [...style.sections.communication, ...(style.sections.response ?? []), ...style.sections.support, ...style.sections.approach].map((f) => f.text).slice(0, 8).join("; ")
     : "unknown";
   return {
     instructions:

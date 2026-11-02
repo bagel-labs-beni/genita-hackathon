@@ -72,6 +72,11 @@ export type StartMessage = {
   tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
+  /**
+   * D21 first call after onboarding (app sends 2000): wait up to this many ms (clamped 0–3000) for the user
+   * to speak or type first; if they do, no greeting; if not, the companion greets. Unset = greet as before.
+   */
+  greetAfterMs?: number;
 };
 
 export type ClientMessage =
@@ -207,7 +212,9 @@ export type ServerEvent =
   | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
-  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string };
+  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
+  /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
+  | { type: "companion.named"; name: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -269,6 +276,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.created": { required: ["findId", "card"], optional: [] },
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
+  "companion.named": { required: ["name"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
