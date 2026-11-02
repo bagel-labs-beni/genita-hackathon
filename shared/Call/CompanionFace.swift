@@ -89,7 +89,7 @@ struct CompanionFaceLoader: Sendable {
         var flowNames: Set<String> = []
         if let flow = manifest.flow {
             for (k, f) in flow.files where Self.safeName(k) {
-                for (role, ref) in [("key", f.key as String?), ("nk", f.nk), ("kn", f.kn)] {
+                for (role, ref) in [("key", f.key as String?), ("nk", f.nk), ("kn", f.kn), ("lip", f.lip)] {
                     guard let ref else { continue }   // 2D snap faces have no flows
                     refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)")
                 }
