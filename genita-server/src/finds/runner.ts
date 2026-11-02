@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn } from "./intent.ts";
+import { classifyTurn, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, guessLabel, runProduct } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -28,7 +28,7 @@ export type FindsDeps = {
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
-export const ACK: Partial<Record<FindKind, string>> = { product: "On it." };
+export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Let me take a look." };
 
 /** A product ask with no thing named ("match my style", "send me the links") refines the last search (D25). */
 const REFINE_WINDOW_MS = 15 * 60_000;
@@ -87,7 +87,10 @@ export class FindsRunner {
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(t: TurnInput): TurnStarted | null {
     if (this.closed) return null;
-    const afterProduct = !!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS;
+    const afterProduct =
+      (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
+      // a call continued on the other device: the search was asked on the first one (#199)
+      (t.recent ?? []).some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
     const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct);
     if (!intent) return null;
     const findId = randomUUID();
@@ -110,6 +113,11 @@ export class FindsRunner {
       now: this.hooks.now,
       log: this.hooks.log,
       images: this.deps.images,
+      speak: (text) => {
+        const card = this.cards.get(findId);
+        if (card) void this.persist(card);
+        if (!this.closed) this.hooks.announce(text);
+      },
       putImage: async (slot, bytes) => {
         if (this.purged) throw new Error("account deleted");
         await this.deps.store.putImage(findId, slot, bytes);
@@ -120,7 +128,13 @@ export class FindsRunner {
     if (intent.kind === "product") {
       const now = this.hooks.now();
       const named = guessLabel(t.text, "") !== "";
-      const prev = this.lastProduct && now - this.lastProduct.at < REFINE_WINDOW_MS && !named ? this.lastProduct : null;
+      let prev = this.lastProduct && now - this.lastProduct.at < REFINE_WINDOW_MS && !named ? this.lastProduct : null;
+      // #199: a call continued on the other device has no search of its own yet — the item comes from the
+      // conversation's recent turns ("can we look for a jacket…" said on the iPhone)
+      if (!prev && !named) {
+        const said = [...(t.recent ?? [])].reverse().find((l) => /^User: /.test(l) && guessLabel(l, "") !== "");
+        if (said) prev = { label: guessLabel(said, "Things"), question: said.replace(/^User: /, ""), at: now };
+      }
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
       run = async (c) => {
@@ -131,7 +145,7 @@ export class FindsRunner {
     } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "outfit" ? runOutfit : runLink;
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
-        this.hooks.emit({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
+        this.onEvent({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
         this.hooks.log("find.error", { findId, message: String(err).slice(0, 200) });
       }
       return { card: null, timings: {} } as PipelineResult;
@@ -142,6 +156,7 @@ export class FindsRunner {
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       if (r.card) void this.persist(r.card);
     });
+    if (ACK[intent.kind]) this.acked.add(findId);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
 
@@ -169,8 +184,11 @@ export class FindsRunner {
         void this.persist(card);
       }
     }
+    if (e.type === "find.failed" && e.reason !== "stopped" && !this.closed && this.acked.has(e.findId)) this.hooks.announce(e.message);
     if (!this.closed) this.hooks.emit(e);
   }
+  /** finds whose turn got only the short line (ACK): their failure is said out loud */
+  private readonly acked = new Set<string>();
 
   private async persist(card: FindCard): Promise<void> {
     if (!this.owner || this.purged) return;
