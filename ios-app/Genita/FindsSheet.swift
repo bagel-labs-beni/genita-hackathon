@@ -390,7 +390,8 @@ struct FindCardPage: View {
                 if !card.how.isEmpty { howSection.id("how") }
                 Color.clear.frame(height: full ? 96 : 24)
             }
-            .padding(.horizontal, 38).padding(.top, full ? 72 : 40)
+            // PF-1b (Figma 179:68): the product card starts 14 pt higher so "How I found this" clears the CTA (#214)
+            .padding(.horizontal, 38).padding(.top, full ? (card.kind == .product ? 58 : 72) : 40)
         }
         .onChange(of: finds.scrollTarget, initial: true) { _, target in
             guard let target, finds.current?.id == entry.id else { return }
@@ -712,8 +713,11 @@ struct FindCardPage: View {
             Text("How I found this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
             ForEach(card.how, id: \.self) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: Self.howIcon(line)).font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute).frame(width: 16)
-                    Text(line).font(TypeStyle.body(14)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)
+                    // PF-1b has no icons here: the lines use the full column (Figma 179:68)
+                    if card.kind != .product {
+                        Image(systemName: Self.howIcon(line)).font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute).frame(width: 16)
+                    }
+                    Text(line).font(TypeStyle.body(14)).foregroundStyle(card.kind == .product && line.hasPrefix("Searched") ? CallInk.mute : CallInk.ink).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }.padding(.top, 8).accessibilityElement(children: .combine).accessibilityIdentifier("findHow")

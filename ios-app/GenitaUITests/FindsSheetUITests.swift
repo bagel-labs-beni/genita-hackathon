@@ -50,17 +50,23 @@ final class FindsSheetUITests: XCTestCase {
             case 14: XCTAssertTrue(app.descendants(matching: .any)["linkFailed"].exists, "couldn't open")
             case 21:
                 XCTAssertTrue(app.buttons["findStop"].exists, "PF-1a Stop")
+                assertPill(app, "On it…")
                 assertOneLine(app, "PF-1a searching at 390")
             case 22:
                 assertDarkBand(app, "PF-1b full sheet")
+                assertPill(app, "Found two for you.")
+                assertHowClearsCTA(app, "findCTA")
                 XCTAssertTrue(app.descendants(matching: .any)["productView"].exists, "PF-1b product view")
                 XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'productLink-'")).count, 2, "two View buttons")
                 XCTAssertTrue(app.buttons["findCTA"].exists, "Save to Finds")
             case 23:
                 XCTAssertTrue(app.buttons["openFinds"].exists, "PF-1c Open Finds")
+                assertPill(app, "Saved. They’re in Finds.")
+                assertHowClearsCTA(app, "openFinds")
                 XCTAssertFalse(app.buttons["findCTA"].exists)
             case 24:
                 XCTAssertTrue(app.buttons["findRetry"].exists, "PF-1d Retry")
+                assertPill(app, "Nothing I’d pick for you.")
                 assertOneLine(app, "PF-1d failed at 390")
             case 16: XCTAssertTrue(app.descendants(matching: .any)["findOffline"].exists, "offline note")
             case 18:
@@ -95,6 +101,22 @@ final class FindsSheetUITests: XCTestCase {
             add(shot)
             app.terminate()
         }
+    }
+
+    /// #214: the PF-1 status pill is on screen with the Figma line, on one line.
+    private func assertPill(_ app: XCUIApplication, _ text: String) {
+        let pill = app.descendants(matching: .any)["callCue"]
+        XCTAssertTrue(pill.waitForExistence(timeout: 5), "pill shows \(text)")
+        XCTAssertTrue(pill.label.contains(text), "pill says \(text), got \(pill.label)")
+        XCTAssertLessThan(pill.frame.height, 44, "pill is one line (\(pill.frame))")
+    }
+
+    /// #214: "How I found this" ends above the bottom button at rest (no line under the CTA).
+    private func assertHowClearsCTA(_ app: XCUIApplication, _ cta: String) {
+        let how = app.descendants(matching: .any)["findHow"]
+        let button = app.buttons[cta]
+        XCTAssertTrue(how.exists && button.exists, "how + \(cta)")
+        XCTAssertLessThanOrEqual(how.frame.maxY, button.frame.minY, "How I found this \(how.frame) clears \(cta) \(button.frame)")
     }
 
     /// One text line of Pretendard 16 is ~22 pt tall; two lines would be ~44.

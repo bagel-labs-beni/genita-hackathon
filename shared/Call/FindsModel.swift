@@ -245,6 +245,16 @@ struct FindEntry: Identifiable, Equatable {
         state = .idle
     }
 
+    /// PF-1 status pill (Figma 179:4/68/494/921): what the sheet is doing, one line (server strings ≤ 28 chars).
+    /// nil = the ordinary call cue. Product searches only.
+    var pillText: String? {
+        guard let f = current, f.kind == .product, state != .idle, state != .dismissed else { return nil }
+        if f.failed != nil { return "Nothing I’d pick for you." }
+        if state == .searching || f.card == nil { return "On it…" }
+        if f.saved { return "Saved. They’re in Finds." }
+        return f.card?.say
+    }
+
     /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.
     func retry() {
         guard canAsk, let f = current, f.canRetry, let text = f.question else { return }

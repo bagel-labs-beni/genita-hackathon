@@ -251,4 +251,24 @@ import XCTest
         XCTAssertEqual(Array(opts.dropFirst()), ["Couldn’t find a good…", "Couldn’t find a…", "Couldn’t find…", "Couldn’t…"])
         for o in opts { XCTAssertTrue(o.replacingOccurrences(of: "…", with: "").split(separator: " ").allSatisfy { "Couldn’t find a good match".split(separator: " ").contains($0) }, "no cut word: \(o)") }
     }
+
+    /// #214: the PF-1 status pill follows the sheet — On it… → the card's line → Saved → Nothing I'd pick; not for recipes.
+    func testProductPillFollowsTheSheet() async throws {
+        let id = "4c2d9b10-7e3a-4f61-9a25-0d8e7f6a5b43"
+        let m = FindsModel()
+        m.saveRemote = { _, _ in true }
+        m.apply(productStarted(id))
+        XCTAssertEqual(m.pillText, "On it…")
+        m.apply(try productCreated()); m.force(.half)
+        XCTAssertEqual(m.pillText, "Found two for you.")
+        XCTAssertLessThanOrEqual(m.pillText?.count ?? 99, 28, "one line on both devices (#211)")
+        m.toggleSave()
+        XCTAssertEqual(m.pillText, "Saved. They’re in Finds.")
+        let f = FindsModel()
+        f.apply(productStarted("a")); f.apply(try ServerEvent.decode(noMatch))
+        XCTAssertEqual(f.pillText, "Nothing I’d pick for you.")
+        let r = FindsModel()
+        r.apply(started("r")); r.force(.half)
+        XCTAssertNil(r.pillText, "recipe and other cards keep the ordinary call cue")
+    }
 }
