@@ -286,10 +286,6 @@ export class Session {
     return this.started && !this.closed;
   }
 
-  /**
-   * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
-   * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
-   */
   private pickVoice(id: string | undefined, kind: PersonaCard["kind"]): void {
     this.voiceId = id ?? this.deps.config.defaultVoiceId;
     const voice = this.deps.config.voice;
@@ -311,6 +307,10 @@ export class Session {
     }
   }
 
+  /**
+   * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
+   * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
+   */
   stopForHandoff(): void {
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
   }
