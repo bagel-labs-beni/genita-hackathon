@@ -134,8 +134,9 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);
       if (!a) continue;
-      o.signal?.throwIfAborted();
-      await o.put(a, await readFile(join(out, file)));
+      const bytes = await readFile(join(out, file));
+      o.signal?.throwIfAborted(); // after the read: a cancel during it must not start an upload
+      await o.put(a, bytes);
     }
     const ms = Math.round(performance.now() - t0);
     const flow: FaceFlow = { ...raw, files, mask: rename(raw.mask), neutralRoi: rename(raw.neutralRoi), ms };
