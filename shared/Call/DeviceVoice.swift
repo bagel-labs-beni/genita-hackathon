@@ -49,7 +49,7 @@ import os
         levels.removeAll()
         watchdog?.cancel()
         watchdog = nil
-        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+        synthesizer.stopSpeaking(at: .immediate)
     }
 
     /// Mouth openness at `positionMs` into the utterance's audio, or nil when nothing is known.
@@ -72,7 +72,7 @@ import os
         utterance.prefersAssistiveTechnologySettings = false
         let gen = generation
         let render = SpeechRender(sampleRate: Double(GenitaProtocol.sampleRate), stepMs: Self.levelStepMs)
-        armWatchdog(gen, ms: 4000) // the first buffer can wait on loading the voice
+        armWatchdog(gen, ms: 6000) // the first buffer can wait on loading the voice
         synthesizer.write(utterance) { [weak self] buffer in
             // Called off the main thread; convert right away (the buffer may be reused after we return).
             guard let pcm = buffer as? AVAudioPCMBuffer else { return }
@@ -92,13 +92,17 @@ import os
         if ended { sentenceDone(s) }
     }
 
-    /// `write` ends with an empty buffer. If it never comes, 1.5 s without a buffer (4 s before the first) ends it.
-    private func armWatchdog(_ gen: Int, ms: Int = 1500) {
+    /// `write` ends with an empty buffer. If it never comes, 3 s without a buffer (6 s before the first) stops that render and skips the sentence.
+    private func armWatchdog(_ gen: Int, ms: Int = 3000) {
         watchdog?.cancel()
         watchdog = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(ms))
             guard !Task.isCancelled, let self, gen == self.generation, let s = self.current else { return }
-            self.log.info("no end buffer for utterance=\(s.utteranceId) sentence=\(s.sentence); ending it")
+            // Give up on this sentence: stop the stuck render (so the next sentence isn't queued behind it) and
+            // drop any late buffers from it; the reply still completes so the call doesn't hang on "speaking".
+            self.log.error("render stalled for utterance=\(s.utteranceId) sentence=\(s.sentence); skipping it")
+            self.generation += 1
+            self.synthesizer.stopSpeaking(at: .immediate)
             self.sentenceDone(s)
         }
     }
