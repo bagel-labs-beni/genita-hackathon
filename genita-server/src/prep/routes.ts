@@ -142,8 +142,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         bytes = Buffer.from(String(b.image ?? "").replace(/^data:[^,]*,/, ""), "base64");
         rights ||= b.rightsAck === true;
       } else bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
-      d.log("face.uploaded", { bytes: bytes.length });
       const rec = await checkImage(d, user, bytes, rights);
+      d.log("face.uploaded", { imageId: rec.id, userId: user, bytes: bytes.length });
       return send(res, 200, {
         imageId: rec.id,
         passed: rec.check.passed,
@@ -204,7 +204,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         prep: newPrepState({ kling: d.kling }),
       };
       await d.store.putCompanion(c);
-      d.log("voice.selected", { voice_id: voice.id });
+      d.log("voice.selected", { companionId: c.id, userId: user, voice_id: voice.id });
+      d.log("companion.named", { companionId: c.id, userId: user });
+      d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
       void runner.run(user);
       return send(res, 201, companionView(c, await d.store.getStyle(user), d));
     }

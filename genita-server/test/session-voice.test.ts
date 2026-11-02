@@ -187,6 +187,20 @@ test("voice service down from the start: every sentence becomes say, first_audio
   session.close();
 });
 
+test("greeting logs call.greeted and tts.first_audio exactly once", async () => {
+  const { client, session } = setup();
+  const logs: Array<{ event: string; data: Record<string, unknown> }> = [];
+  (session as unknown as { deps: { log: (event: string, data: Record<string, unknown>) => void } }).deps.log = (event, data) => logs.push({ event, data });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  (session as unknown as { greeting: unknown }).greeting = { item: null };
+  await session.onClientText(JSON.stringify({ type: "text", text: "The call just connected. Greet the user." }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(logs.filter((x) => x.event === "tts.first_audio").length, 1);
+  assert.equal(logs.filter((x) => x.event === "call.greeted").length, 1);
+  assert.equal(logs.find((x) => x.event === "call.greeted")?.data.sessionId, "v1");
+  session.close();
+});
+
 test("voice service: barge-in stops the stream; no audio frame after utterance.cancelled", async () => {
   const { client, session, calls } = setup({ chunkDelayMs: 40, sparkText: "<happy> Oh wow, that is a long story. Tell me everything. Start from the top." });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));

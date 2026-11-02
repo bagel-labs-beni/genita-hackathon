@@ -35,6 +35,7 @@ import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
 import { ownerKey } from "./finds/store.ts";
 import { attachWatchSocket } from "./watch/socket.ts";
+import { createEventsRoute } from "./events/routes.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -100,6 +101,7 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  const events = createEventsRoute(log);
   const devUsers = new Map<string, string>(); // x-genita-user → users.id (dev fallback)
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
@@ -134,6 +136,12 @@ export async function startServer(
 
   async function route(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (events.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return events.handle(req, res, who.userId);
+    }
     if (deps.memory && isMemoryRoute(url.pathname)) {
       // F7/F9 memory REST: same principal as everything else (JWT or dev token), consent first.
       // Before accounts: accounts claims every /me/* path, and DELETE /me/memories/:id is memory's.

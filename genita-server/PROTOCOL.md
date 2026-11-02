@@ -25,6 +25,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_SERVER_TTS=1`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_SERVER_TTS=1` (there, an omitted `start.tts` means `server`). |
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
+| 11/3 | Funnel telemetry: authenticated `POST /v1/events` accepts up to 20 allowlisted, flat app event properties and returns `204`; server logs `call.greeted`, `tts.first_audio`, `tts.fallback_device`, prep readiness, cancellation and mode events. `turn.metrics` adds nullable `stt_ms`, `llm_ms`, `tts_ms`, and `first_audio_ms`. Additive. |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 
 ```
@@ -150,6 +151,17 @@ deletion/storage errors return `503`; retries can complete the deletion.
 `GENITA_MEMORY_FILE=./.memory/memories.json` enables atomic local JSON persistence;
 unset means in-memory only. `REVISIT_GAP_HOURS` defaults to `6` (seen crops always
 require six hours), and revisit openers are limited to one per UTC day.
+
+## App funnel events REST
+
+The app may batch its client-only funnel transitions on the same authenticated,
+consented principal as the other `/v1/*` routes. The server discards unknown names
+and non-flat properties, then writes one JSON log line per accepted event. It never
+logs a client event body or free-text value.
+
+| method | path | result |
+| --- | --- | --- |
+| POST | `/v1/events` | `{events:[{name,at?,props?}]}`; max 20 events, 120 events/user/minute; `204` accepted, malformed bodies/over-20 `400`, over rate `429` |
 
 The trusted vision adapter supplies only a <=480px SAM crop plus a safe one-line
 summary to `src/memory/`; original camera frames are never persisted. Its pixel
