@@ -6,18 +6,15 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent, encodeFrameHeader, CLIENT_FRAME_KIND_CALL, CLIENT_FRAME_KIND_MIC } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 import { containment, detectLanguage, interpretCommand } from "../src/interpret/language.ts";
 import { buildTranslateInstructions } from "../src/interpret/prompt.ts";
 
 const config: Config = {
   metaKey: "x",
-  elevenKey: "y",
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English", "Korean"],
@@ -29,6 +26,8 @@ const config: Config = {
   sparkHedge: 1,
   speculate: false,
   speculateStableMs: 250,
+  // #157: these interpretation tests exercise server-voice frames
+  serverTts: true,
 };
 
 class FakeAsr extends EventEmitter {

@@ -5,14 +5,18 @@
  */
 export type Config = {
   metaKey: string;
-  /** "" = server-side TTS off (text-only replies) */
-  elevenKey: string;
+  /**
+   * Server voice on our GPU (D3, Meta open model SeamlessM4T v2 on Modal): set by GENITA_VOICE_URL +
+   * GENITA_VOICE_TOKEN. Optional: without it the server runs device mode (the app speaks), so a
+   * judge can run the public repo with only a Meta key.
+   */
+  voice?: VoiceConfig | null;
+  /** Whether the Meta voice service is configured; otherwise the app speaks. */
+  serverTts: boolean;
   host: string;
   port: number;
   /** shared bearer token apps must present; unset = loopback-only dev mode */
   sessionToken: string | null;
-  ttsModel: string;
-  ttsFallbackModel: string;
   defaultVoiceId: string;
   webSearch: boolean;
   asrLanguages: string[];
@@ -29,26 +33,66 @@ export type Config = {
   speculateStableMs: number;
 };
 
+export type VoiceConfig = {
+  url: string;
+  token: string;
+  /** Seamless speaker per companion kind (0..199), picked by the 11/2 UTMOS sweep */
+  speakers: { human: number; animal: number; character: number };
+  /** speaking rate (1 = model default) */
+  speed: number;
+  /** give up on a sentence if its first audio takes longer than this (then the app speaks it) */
+  timeoutMs: number;
+  /** "seamless" (default) or "mms" (Meta MMS-TTS backup on the same service, no timing) */
+  model: "seamless" | "mms";
+};
+
+/** "human:12,animal:7,character:33" → per-kind Seamless speaker ids */
+export function parseSpeakers(v: string | undefined, d: VoiceConfig["speakers"]): VoiceConfig["speakers"] {
+  const out = { ...d };
+  for (const part of (v ?? "").split(",")) {
+    const [k, n] = part.split(":").map((x) => x.trim());
+    const id = Number(n);
+    if ((k === "human" || k === "animal" || k === "character") && Number.isInteger(id) && id >= 0 && id < 200) out[k] = id;
+  }
+  return out;
+}
+
 function num(v: string | undefined, d: number): number {
   const n = Number(v);
   return v !== undefined && v !== "" && Number.isFinite(n) ? n : d;
 }
 
+const DEFAULT_SPEAKERS: VoiceConfig["speakers"] = { human: 0, animal: 0, character: 0 };
+
+/**
+ * Only MODEL_API_KEY is required (11/2: everything at call time is Meta or on
+ * the device). Prep uses Meta scene and face generation.
+ */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
-  const elevenKey = env.ELEVENLABS_API_KEY ?? "";
   if (!metaKey) throw new Error("MODEL_API_KEY is not set");
-  // ELEVENLABS_API_KEY is optional (11/2: runtime AI is Meta-only, the app speaks on-device):
-  // without it the server streams reply text (reply.delta / reply) and sends no TTS audio.
+  const voiceUrl = (env.GENITA_VOICE_URL ?? "").replace(/\/+$/, "");
+  const voice: VoiceConfig | null =
+    voiceUrl && env.GENITA_VOICE_TOKEN
+      ? {
+          url: voiceUrl,
+          token: env.GENITA_VOICE_TOKEN,
+          speakers: parseSpeakers(env.GENITA_VOICE_SPEAKERS, DEFAULT_SPEAKERS),
+          speed: Math.min(1.3, Math.max(0.8, num(env.GENITA_VOICE_SPEED, 1))),
+          timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
+          model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
+        }
+      : null;
+  if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
+  const serverTts = !!voice;
   return {
     metaKey,
-    elevenKey,
+    serverTts,
+    voice,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,
-    ttsModel: env.GENITA_TTS_MODEL ?? "eleven_v4_turbo",
-    ttsFallbackModel: env.GENITA_TTS_FALLBACK_MODEL ?? "eleven_v3",
-    defaultVoiceId: env.GENITA_DEFAULT_VOICE_ID ?? "7PbNGDB5sJCFnOZuMPNL",
+    defaultVoiceId: env.GENITA_DEFAULT_VOICE_ID ?? "seamless:0",
     webSearch: env.GENITA_WEB_SEARCH !== "0",
     asrLanguages: (env.GENITA_ASR_LANGUAGES ?? "English,Korean").split(",").map((s) => s.trim()).filter(Boolean),
     bargeInMinMs: num(env.GENITA_BARGE_IN_MIN_MS, 400),

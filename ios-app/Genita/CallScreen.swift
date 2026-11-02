@@ -33,7 +33,7 @@ enum CallMotion {
 // MARK: - Face
 
 /// Where the moving mouth comes from. Only `.none` exists today: the silent loop plays as is.
-/// F4-L18 adds `.peter` (MuseTalk frames composited over the loop) and F4-L19/20 `.atlas`; each draws in
+/// Atlas mouth playback draws in
 /// `LipLayer`, above the base video and below the controls.
 enum LipSource: Equatable { case none }
 
@@ -92,6 +92,8 @@ final class LoopingVideoView: UIView {
 struct CallCueView: View {
     let cue: CallCue
     let name: String
+    /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
+    var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     var body: some View {
@@ -117,7 +119,8 @@ struct CallCueView: View {
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
     private var content: Content? {
-        switch cue {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+        return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
         case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
@@ -281,7 +284,14 @@ extension AppState {
         return mine == demo ? loop : nil
     }
 
+    /// The server's persona card (setup answers, F4) when there is one, always with the NM01 name; the imported
+    /// style's profile text (never the raw paste once the import ran); 2 s wait on the first call (D21).
     var callStart: ClientMessage.Start {
-        .companion(name: "Jin", userName: setup.name, profile: setup.response, traits: setup.presence.sorted(), voiceId: nil)
+        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? setup.response,
+                                                  traits: setup.presence.sorted(), voiceId: nil)
+        if var persona = setup.serverPersona { persona.name = companionDisplayName; start.persona = persona }
+        if let kind = setup.imageType.flatMap(ClientMessage.Persona.Kind.init(rawValue:)) { start.persona.kind = kind }
+        start.greetAfterMs = setup.firstCallPending == true ? 2000 : nil
+        return start
     }
 }

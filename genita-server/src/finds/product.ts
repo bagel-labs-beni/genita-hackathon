@@ -27,6 +27,23 @@ import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
 
 export const PRODUCT_COUNT = 2;
+/** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
+export const SEARCH_TITLE = "Finding 2 for your style…";
+/** The answer pill (card.say) is one line on both devices: ≤ 28 characters (#211). */
+export const PILL_MAX = 28;
+export const TWO_SAY = "Found two for you.";
+export const ONE_SAY = "Found one that fits.";
+
+/** The searching line's item label: whole words only, at most 16 characters ("Simple crewneck sweater" → "Simple crewneck"). */
+export function shortLabel(label: string, max = 16): string {
+  const words = label.trim().split(/\s+/);
+  let out = words[0] ?? "";
+  for (const w of words.slice(1)) {
+    if ((out + " " + w).length > max) break;
+    out += " " + w;
+  }
+  return out;
+}
 const SEARCH_TIMEOUT_MS = 35_000;
 const PAGE_TIMEOUT_MS = 4500;
 
@@ -143,6 +160,12 @@ export function writeUpPrompt(searchPrompt: string, opened: string[]): string {
   ].join("\n\n");
 }
 
+/** "Searched the web · a.com, b.com" on one line of the card (≤ 44 chars), else "… · a.com +1" (#214). */
+export function searchedLine(domains: string[]): string {
+  const all = `Searched the web · ${domains.join(", ")}`;
+  return all.length <= 44 || domains.length < 2 ? all : `Searched the web · ${domains[0]} +${domains.length - 1}`;
+}
+
 /** Card names stay short (r03 column is ~150 pt): cut at a word under 48 characters. */
 export function shortName(s: string): string {
   if (s.length <= 48) return s;
@@ -224,7 +247,7 @@ export function productPrompt(o: { question: string; recent: string[]; taste: st
 2. Open each candidate's own product page with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. Open ${PRODUCT_COUNT + 1} candidates so ${PRODUCT_COUNT} survive.
 3. Only if they named a day or a trip ("this weekend", "next week"), search once for the forecast${o.city ? ` in ${o.city}` : ""}.
 Be quick: at most 2 product searches, then open the pages.`,
-    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "one short spoken line under 10 words with the shared taste reason and no product names, e.g. Two options. Simple cuts, like you prefer."}`,
+    `Reply with only JSON: {"label": "what they want in 1-3 words, e.g. Light jacket", "title": "under 5 words, e.g. Two for the weekend", "subtitle": "under 8 words, e.g. Light jackets, matched to your style.", "style_line": "copy, word for word, the ONE taste line above these picks follow ('' if none)", "situation_line": "one short line about their situation from what they said, plus the weather if you looked, e.g. Mild and dry this weekend, 18°C", "items": [{"name": "short product name, under 6 words, e.g. Cotton chore jacket", "url": "the exact product page URL you opened", "store": "shop or brand", "price": "price as shown on that page, '' if you did not see it", "image": "the product photo URL from that page, '' if none", "taste": "2-3 word reason from the taste line, e.g. Clean, minimal", "situation": "2-4 word reason from the situation, e.g. Light for a weekend"}], "say": "a spoken line of at most 28 characters with the shared taste reason and no product names, e.g. Two, both simple cuts."}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -249,7 +272,53 @@ export type ProductCtx = PipelineCtx & {
   /** the previous product search in this call, when this turn refines it */
   previous?: string;
   region?: string;
+  /** identical search calls raced (GENITA_PRODUCT_HEDGE, default 2): first with 2 opened pages wins */
+  hedge?: number;
 };
+
+type SearchResult = Awaited<ReturnType<FindsVendors["spark"]>>;
+
+/** opened pages the answer actually lists (how good a search result is) */
+function provenCount(r: SearchResult): number {
+  const j = lastJsonObject<ProductJson>(r.text);
+  const opened = completedOpens(r.output);
+  const items = Array.isArray(j?.items) ? (j!.items as ItemJson[]) : [];
+  return items.filter((i) => matchOpened(str(i?.url, 600), opened)).length;
+}
+
+/**
+ * Spark's search time varies a lot (10–35 s for the same kind of ask, one timeout in 10 on 11/2), so n
+ * identical calls race: the first that lists ${PRODUCT_COUNT} opened pages wins and the rest are aborted;
+ * if none does, the best one (most opened pages listed, then most opens) is used.
+ */
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal): Promise<SearchResult | null> {
+  const runs = Array.from({ length: Math.max(1, Math.min(3, n)) }, () => new AbortController());
+  const stopAll = () => runs.forEach((a) => a.abort());
+  signal.addEventListener("abort", stopAll, { once: true });
+  const done: SearchResult[] = [];
+  try {
+    return await new Promise<SearchResult | null>((resolve) => {
+      let left = runs.length;
+      const finish = () => {
+        if (--left > 0) return;
+        done.sort((a, b) => provenCount(b) - provenCount(a) || completedOpens(b.output).length - completedOpens(a.output).length);
+        resolve(done[0] ?? null);
+      };
+      for (const a of runs) {
+        withTimeout(vendors.spark({ input: userMessage(prompt), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, AbortSignal.any([a.signal, signal])), SEARCH_TIMEOUT_MS, signal).then((r) => {
+          if (r) {
+            done.push(r);
+            if (provenCount(r) >= PRODUCT_COUNT) return resolve(r);
+          }
+          finish();
+        });
+      }
+    });
+  } finally {
+    stopAll();
+    signal.removeEventListener("abort", stopAll);
+  }
+}
 
 export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { label?: string }> {
   const t0 = ctx.now();
@@ -258,17 +327,16 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const vendors: FindsVendors = ctx.vendors;
   const at = new Date();
   const label0 = guessLabel(ctx.question, ctx.previous ? guessLabel(ctx.previous, "Things") : "Things");
-  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: `Looking for ${PRODUCT_COUNT} that match your style…`, detail: `${label0} · searching shops` });
-
   const taste = tasteLines(ctx.likes, ctx.profile, ctx.memories);
+  // #199: the sheets show the import line the search follows from the first moment (the top Likes line until
+  // the search picks one)
+  const startStyle = taste[0] ?? "";
+  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label0)} · searching shops`, ...(startStyle ? { evidence: { style: startStyle, situation: "" } } : {}) });
+
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today });
 
-  const res = await withTimeout(
-    vendors.spark({ input: userMessage(prompt), tools: [{ type: "web_search" }], effort: "minimal", maxOutputTokens: 3000 }, ctx.signal),
-    SEARCH_TIMEOUT_MS,
-    ctx.signal,
-  );
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal);
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
@@ -308,15 +376,18 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
   }
-  if (cands.length) ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${label} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops` });
+  const styleLine = groundStyle(str(j?.style_line, 200), taste);
+  const situationLine = str(j?.situation_line, 120);
+  if (cands.length) {
+    const style = styleLine || startStyle;
+    ctx.emit({ type: "find.progress", findId: ctx.findId, detail: `${shortLabel(label)} · checking ${Math.min(cands.length, PRODUCT_COUNT + 1)} shops`, ...(style ? { evidence: { style, situation: situationLine } } : {}) });
+  }
 
   // read each page (in parallel, capped): one product? price? picture?
   const facts = await Promise.all(cands.map((p) => (vendors.pageFacts ? withTimeout(vendors.pageFacts(p.url, ctx.signal), PAGE_TIMEOUT_MS, ctx.signal) : Promise.resolve(null))));
   timings.pagesMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
 
-  const styleLine = groundStyle(str(j?.style_line, 200), taste);
-  const situationLine = str(j?.situation_line, 120);
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
   cands.forEach((p, i) => {
@@ -330,6 +401,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     if (!p.inTrace) serverOpened++;
     if (!isProductPage(p.url, f)) {
       dropped.notProduct++;
+      ctx.log("product.not_product", { findId: ctx.findId, url: p.url.slice(0, 200), page: f?.kind ?? "unread" });
       return;
     }
     const domain = domainOf(p.url);
@@ -359,7 +431,9 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const domains = [...new Set(products.map((p) => p.domain))];
   const one = products.length < PRODUCT_COUNT;
-  const say = one ? `I could only open one page that fits. Here it is.` : str(j?.say, 80) || "Two options that fit your style.";
+  // the status pill shows this line on one line (iPhone and Mac, ≤ 28 chars, #211); a longer model line is replaced
+  const modelSay = str(j?.say, 80);
+  const say = one ? ONE_SAY : modelSay && modelSay.length <= PILL_MAX ? modelSay : TWO_SAY;
   const card: FindCard = {
     id: ctx.findId,
     kind: "product",
@@ -369,6 +443,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     subtitle: str(j?.subtitle, 60) || `${label}, matched to your style.`,
     status: one ? `1 link · ${domains[0]}` : `${products.length} links · ${domains.join(", ")}`,
     say,
+    pill: say, // already ≤ PILL_MAX
     items: [],
     steps: [],
     options: [],
@@ -377,7 +452,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     sources: products.map((p) => ({ title: p.name, url: p.url, domain: p.domain })),
     how: [
       styleLine ? "Blue: your style, from your import. Grey: what you said." : "Grey: what you said. I don’t know your style yet.",
-      `Searched the web · ${domains.join(", ")}`,
+      searchedLine(domains),
       ...(one ? ["Only one product page opened, so there’s one here."] : []),
     ],
     products: products.map(({ _image, ...p }) => p),

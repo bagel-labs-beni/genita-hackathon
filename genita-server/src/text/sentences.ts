@@ -17,15 +17,28 @@ const LATIN_END = new Set([".", "!", "?", "…"]);
 const WIDE_END = new Set(["。", "！", "？"]);
 const CLOSERS = new Set(['"', "'", "”", "’", ")", "]", "」", "』"]);
 
-export type SplitterOptions = { firstClauseMaxChars?: number };
+export type SplitterOptions = {
+  firstClauseMaxChars?: number;
+  /**
+   * Server voice (Seamless): cut the FIRST piece at its first comma/semicolon/dash, however short
+   * ("Oh wow," / "Hmm,"), so the first sound starts while Spark is still writing the sentence.
+   */
+  eagerFirstClause?: boolean;
+  /** Later pieces longer than this are cut at their last comma (rhythm; 0 = never). */
+  clauseMaxChars?: number;
+};
 
 export class SentenceSplitter {
   private buf = "";
   private emitted = 0;
   private readonly firstClauseMaxChars: number;
+  private readonly eagerFirstClause: boolean;
+  private readonly clauseMaxChars: number;
 
   constructor(opts: SplitterOptions = {}) {
     this.firstClauseMaxChars = opts.firstClauseMaxChars ?? 90;
+    this.eagerFirstClause = opts.eagerFirstClause ?? false;
+    this.clauseMaxChars = opts.clauseMaxChars ?? 0;
   }
 
   push(delta: string): string[] {
@@ -55,6 +68,11 @@ export class SentenceSplitter {
   /** Index just past the end of the first complete sentence in buf, or -1. */
   private findCut(): number {
     const b = this.buf;
+    if (this.emitted === 0 && this.eagerFirstClause) {
+      // first clause break, skipping a leading <emotion> tag; needs at least one letter before it
+      const m = /^(\s*<[^<>]{1,24}>)?[^,;:，—.!?…。！？]*?\p{L}[^,;:，—.!?…。！？]*?[,;:，—](?=\s)/u.exec(b);
+      if (m) return m[0].length;
+    }
     for (let i = 0; i < b.length; i++) {
       const c = b[i];
       if (WIDE_END.has(c)) {
@@ -76,6 +94,11 @@ export class SentenceSplitter {
           continue;
         }
         return j;
+      }
+    }
+    if (this.emitted > 0 && this.clauseMaxChars > 0 && b.length > this.clauseMaxChars) {
+      for (let i = this.clauseMaxChars; i >= 40; i--) {
+        if ((b[i] === "," || b[i] === ";" || b[i] === "，") && i + 1 < b.length && /\s/.test(b[i + 1])) return i + 1;
       }
     }
     if (this.emitted === 0 && b.length > this.firstClauseMaxChars) {

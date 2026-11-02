@@ -200,8 +200,14 @@ struct FindsSheet: View {
             HStack(spacing: 12) {
                 FindsTalkWave()
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(f?.failureLines?.title ?? f?.searchTitle ?? "Looking").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                    Text(f?.failureLines?.body ?? f?.searchDetail ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2)
+                    // one line each next to Stop at 390 pt (Chelsea 11/3): never wraps, never cuts a word
+                    OneLineText(text: f?.failureLines?.title ?? f?.searchTitle ?? "Looking", font: TypeStyle.body(16, .medium), color: CallInk.ink)
+                        .accessibilityIdentifier("findSearchTitle")
+                    let detail = f?.failureLines?.body ?? f?.searchDetail ?? ""
+                    if !detail.isEmpty {
+                        OneLineText(text: detail, font: TypeStyle.body(14), color: CallInk.mute, alternates: OneLineText.afterDot(detail))
+                            .accessibilityIdentifier("findSearchDetail")
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button(f?.failed == nil ? "Stop" : f?.canRetry == true ? "Retry" : "Close") {
                     withAnimation(.drawer) { f?.failed == nil ? finds.stop() : f?.canRetry == true ? finds.retry() : finds.close() }
@@ -395,7 +401,8 @@ struct FindCardPage: View {
                 if !card.how.isEmpty { howSection.id("how") }
                 Color.clear.frame(height: full ? 96 : 24)
             }
-            .padding(.horizontal, 38).padding(.top, full ? 72 : 40)
+            // PF-1b (Figma 179:68): the product card starts 14 pt higher so "How I found this" clears the CTA (#214)
+            .padding(.horizontal, 38).padding(.top, full ? (card.kind == .product ? 58 : 72) : 40)
         }
         .onChange(of: finds.scrollTarget, initial: true) { _, target in
             guard let target, finds.current?.id == entry.id else { return }
@@ -716,8 +723,11 @@ struct FindCardPage: View {
             Text("How I found this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
             ForEach(card.how, id: \.self) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: Self.howIcon(line)).font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute).frame(width: 16)
-                    Text(line).font(TypeStyle.body(14)).foregroundStyle(CallInk.ink).fixedSize(horizontal: false, vertical: true)
+                    // PF-1b has no icons here: the lines use the full column (Figma 179:68)
+                    if card.kind != .product {
+                        Image(systemName: Self.howIcon(line)).font(.system(size: 13, weight: .medium)).foregroundStyle(CallInk.mute).frame(width: 16)
+                    }
+                    Text(line).font(TypeStyle.body(14)).foregroundStyle(card.kind == .product && line.hasPrefix("Searched") ? CallInk.mute : CallInk.ink).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }.padding(.top, 8).accessibilityElement(children: .combine).accessibilityIdentifier("findHow")
@@ -912,5 +922,42 @@ struct FindUnclearCard: View {
         .padding(16).frame(width: 342, alignment: .leading)
         .background(Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.84), in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain).accessibilityIdentifier("findUnclear")
+    }
+}
+
+/// A status line that stays on one line: the whole text when it fits, else the given alternates, else the text
+/// shortened by whole words with "…" — never a cut word, never a smaller font. VoiceOver reads the whole text.
+struct OneLineText: View {
+    let text: String
+    let font: Font
+    let color: Color
+    var alternates: [String] = []
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(Self.options(text, alternates), id: \.self) { option in
+                Text(option).font(font).foregroundStyle(color).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .accessibilityElement(children: .ignore).accessibilityLabel(text)
+    }
+
+    /// "Light jacket · checking 2 shops" → ["Checking 2 shops"]
+    static func afterDot(_ text: String) -> [String] {
+        guard let r = text.range(of: " · ") else { return [] }
+        let tail = String(text[r.upperBound...])
+        return tail.isEmpty ? [] : [tail.prefix(1).uppercased() + tail.dropFirst()]
+    }
+
+    static func options(_ text: String, _ alternates: [String]) -> [String] {
+        var out = [text] + alternates
+        var words = text.split(separator: " ").map(String.init)
+        while words.count > 1 {
+            words.removeLast()
+            let head = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " ,;:·–-…."))
+            if !head.isEmpty { out.append(head + "…") }
+        }
+        var seen = Set<String>()
+        return out.filter { seen.insert($0).inserted }
     }
 }

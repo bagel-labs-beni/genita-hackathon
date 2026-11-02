@@ -91,9 +91,9 @@ struct FindEntry: Identifiable, Equatable {
 
     /// Wired by CallController.
     @ObservationIgnored var send: (ClientMessage) -> Void = { _ in }
-    /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     /// The user's latest final words; copied onto the next find.started.
     @ObservationIgnored var latestQuestion: String?
+    /// Wired by CallController: POST /v1/finds/:id/save. false = keep the old state.
     @ObservationIgnored var saveRemote: (String, Bool) async -> Bool = { _, _ in true }
     /// A card was made: keep the camera frames it came from on this phone (the server never stores them).
     @ObservationIgnored var persistFrames: (String, [Data]) -> Void = { _, _ in }
@@ -125,6 +125,7 @@ struct FindEntry: Identifiable, Equatable {
                 card.items = i.items
                 if let s = i.subtitle { card.subtitle = s }
                 if let s = i.status { card.status = s }
+                if let p = i.pill { card.pill = p } // later item updates without a pill keep it
                 e.card = card
             }
             pendingItems[i.findId] = i.items
@@ -256,6 +257,19 @@ struct FindEntry: Identifiable, Equatable {
         guard let f = current, f.isUnclear else { return nil }
         state = .idle
         return f.question
+    }
+
+    /// PF-1 status pill (Figma 179:4/68/494/921): what the sheet is doing, one line (server strings ≤ 28 chars).
+    /// nil = the ordinary call cue. Product searches only.
+    /// Fridge (recipe) cards use the server's short `pill` ("Egg, tofu +2"); the full sentence is only spoken.
+    var pillText: String? {
+        guard let f = current, f.kind == .product || f.kind == .recipe, state != .idle, state != .dismissed else { return nil }
+        if f.failed != nil { return f.kind == .product ? "Nothing I’d pick for you." : f.failureLines?.title }
+        if state == .searching || f.card == nil { return f.kind == .product ? "On it…" : "Let me take a look…" }
+        if f.saved { return "Saved. They’re in Finds." }
+        if let pill = f.card?.pill, !pill.isEmpty { return pill }
+        if let say = f.card?.say, say.count <= 28 { return say }
+        return nil
     }
 
     /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.

@@ -169,7 +169,7 @@ final class CameraGuideUITests: XCTestCase {
 
     /// The card says what the camera did not show and to move the camera; it is not a sheet and guesses nothing.
     func testNoSeeCardOverCamera() throws {
-        let app = launch(["GENITA_CALL_AUTOCAMERA": "1", "GENITA_FINDS_STATE": "25"])
+        let app = launch(["GENITA_CALL_AUTOCAMERA": "1", "GENITA_FINDS_STATE": "26"])
         XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 25), "camera is the stage")
         let card = any(app, "noSeeCard")
         XCTAssertTrue(card.waitForExistence(timeout: 15), "FT-NOSEE card")
