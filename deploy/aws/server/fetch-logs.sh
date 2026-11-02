@@ -23,6 +23,7 @@ EOF
 valid_since() {
   # Keep this deliberately narrow: its value is interpolated into the remote
   # journalctl command after validation.
+  case "$1" in *$'\n'*|*$'\r'*) return 1;; esac # grep matches line by line: no multi-line values
   printf '%s\n' "$1" | LC_ALL=C grep -Eq \
     '^([0-9]+ (minutes|hours|days) ago|[0-9]{4}-[0-9]{2}-[0-9]{2}([ T][0-9]{2}:[0-9]{2}(:[0-9]{2})?(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?)?)$'
 }
@@ -37,6 +38,7 @@ run_selftest() {
   valid_since '2 hours ago'
   valid_since '15 minutes ago'
   valid_since '2026-11-03T12:30:00Z'
+  if valid_since $'2 hours ago\n; id'; then echo 'multi-line value accepted' >&2; return 1; fi
   if valid_since '2 hours ago; id'; then
     echo 'validator accepted unsafe input' >&2
     return 1
