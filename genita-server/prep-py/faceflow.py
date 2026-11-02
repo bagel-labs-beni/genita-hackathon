@@ -164,6 +164,10 @@ def lip_hull_mask(img, mouth_px, dilate_px):
     cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if cs:
         cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    else:
+        # no redder-than-skin lips (grey / desaturated photo): the mouth box ellipse, so the key's opening still shows
+        bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
+        cv2.ellipse(hull, ((bx1 + bx2) // 2, (by1 + by2) // 2), (max(1, (bx2 - bx1) // 2), max(1, (by2 - by1) // 2)), 0, 0, 360, 1, -1)
     d = max(1, int(dilate_px)); dl = max(1, d // 2)
     up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
     lo = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dl + 1, 2 * dl + 1)))
