@@ -11,7 +11,7 @@ import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffIma
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { applyOrder, buildOrderRequest, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
+import { previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
@@ -119,17 +119,29 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 export const PREVIEW_VERSION = "meta-v1";
 
-export async function orderedVoices(d: PrepDeps, userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: boolean; ms: number }> {
+/**
+ * V04's list: the curated voices for this look, recommended default first (no model call).
+ * `available` = the voice service answers /healthz (cached 15 s); when false the app greys the
+ * list ("Voice preview is waking up") and lets the user continue with the default.
+ */
+export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
   const t0 = performance.now();
-  const style = await d.store.getStyle(userId);
-  try {
-    const r = await sparkJson<{ order: string[] }>(d.metaKey, buildOrderRequest(d.voices, kind, style));
-    return { voices: applyOrder(d.voices, r.order), suggested: true, ms: since(t0) };
-  } catch (err) {
-    d.log("voice.order_failed", { reason: String(err).slice(0, 200) });
-    return { voices: d.voices, suggested: false, ms: since(t0) };
-  }
+  const voices = voicesForKind(d.voices, kind);
+  return { voices, suggested: voices[0]?.id ?? null, available: await voiceAvailable(d), ms: since(t0) };
 }
+
+let probe: { url: string; at: number; ok: boolean } | null = null;
+export async function voiceAvailable(d: PrepDeps, now = Date.now()): Promise<boolean> {
+  if (!d.voice) return false;
+  if (probe && probe.url === d.voice.url && now - probe.at < 15_000) return probe.ok;
+  let ok = false;
+  try {
+    ok = (await fetch(`${d.voice.url}/healthz`, { signal: AbortSignal.timeout(1500) })).ok;
+  } catch { /* down or cold */ }
+  probe = { url: d.voice.url, at: now, ok };
+  return ok;
+}
+export const resetVoiceProbe = () => { probe = null; };
 
 export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer> {
   const v = d.voices.find((x) => x.id === voiceId);

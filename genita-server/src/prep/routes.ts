@@ -5,7 +5,7 @@
  *   POST /v1/import {text, background?}     F3-L2  paste → style card (I03 → I04); background:true → 202
  *   GET  /v1/import                         F3-L2  {status, style} (after "Continue in the background")
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
- *   GET  /v1/companion/voices?imageId=      F2-L8  four voices, Spark order
+ *   GET  /v1/companion/voices?imageId=      F2-L8  4–6 curated voices for the look, recommended first; available = voice service up
  *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached; device speech if voice service is unset)
  *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
  *   GET  /v1/companion                      companion + prep + persona
@@ -146,8 +146,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const kind = img && img.rec.userId === user ? img.rec.check.type : null;
       const r = await orderedVoices(d, user, kind);
       return send(res, 200, {
-        voices: r.voices.map((v) => ({ id: v.id, name: v.name, blurb: v.blurb, previewUrl: `/v1/companion/voices/${v.id}/preview` })),
+        voices: r.voices.map((v) => ({ id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb}`, previewUrl: `/v1/companion/voices/${v.id}/preview` })),
         suggested: r.suggested,
+        available: r.available,
         ms: r.ms,
       });
     }
