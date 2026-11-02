@@ -55,7 +55,8 @@ struct FindEntry: Identifiable, Equatable {
 }
 
 @MainActor @Observable final class FindsModel {
-    private(set) var entries: [FindEntry] = []
+    // DEBUG fixtures (FindsFixture state 25) set the pill/say on the shown card, so the setter is not private
+    var entries: [FindEntry] = []
     var state: SheetState = .idle
     /// Index into `entries` of the card on screen.
     var page = 0
