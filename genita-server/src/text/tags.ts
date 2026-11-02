@@ -15,7 +15,10 @@ const AUDIO_RE = /\[[^\[\]\n]{1,30}\]/g;
 export const EXPRESSIONS = ["smile", "smileopen", "laugh", "surprised", "concerned"] as const;
 export type Expression = (typeof EXPRESSIONS)[number];
 
-export type TaggedSentence = { emotion: string | null; ttsText: string; displayText: string; expression: Expression | null };
+/** `expression`: Spark's clause tag; "neutral" = it said so explicitly (then nothing is inferred). */
+export type TaggedSentence = { emotion: string | null; ttsText: string; displayText: string; expression: Expression | "neutral" | null };
+// a tag cut off by the end of the stream ("Hello. [smi" then an upstream error) is never spoken or shown
+const DANGLING_RE = /\[[A-Za-z\s]{0,30}$|<\s*[A-Za-z_-]{0,24}$/;
 
 const tidy = (s: string) => s.replace(/\s{2,}/g, " ").replace(/\s+([,.!?…])/g, "$1").trim();
 
@@ -23,6 +26,7 @@ export function parseTaggedSentence(raw: string): TaggedSentence {
   let emotion: string | null = null;
   let tagged: string | null = null;
   const noEmotion = raw
+    .replace(DANGLING_RE, " ")
     .replace(EMOTION_RE, (_m, name: string) => {
       if (!emotion) emotion = name.toLowerCase();
       return " ";
@@ -32,7 +36,7 @@ export function parseTaggedSentence(raw: string): TaggedSentence {
       return " ";
     });
   const ttsText = tidy(noEmotion);
-  const expression = tagged && tagged !== "neutral" ? (tagged as Expression) : null;
+  const expression = tagged as Expression | "neutral" | null;
   return { emotion, ttsText, displayText: tidy(ttsText.replace(AUDIO_RE, " ")), expression };
 }
 
@@ -46,6 +50,7 @@ const CONCERN_RE = /\b(?:oh no|sorry|ugh|oof|that sucks|rough|tough|long day|tir
  * Order: Spark's inline [tag] > laughing / concerned words > the reply's <emotion>, only on the clause where it appears.
  */
 export function clauseExpression(s: TaggedSentence, emotion: string | null, emotionStartsHere: boolean): { tag: Expression; intensity: number } | null {
+  if (s.expression === "neutral") return null;
   const tag: Expression | null =
     s.expression ??
     (LAUGH_RE.test(s.ttsText) ? "laugh" : CONCERN_RE.test(s.displayText) ? "concerned" : emotionStartsHere && emotion ? EMOTION_FACE[emotion] ?? null : null);

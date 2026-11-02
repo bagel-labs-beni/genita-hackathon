@@ -406,3 +406,29 @@ test("expression: GENITA_EXPRESSION=0 (voice.expressions false) sends none; the 
   assert.deepEqual(calls, ["Ha,", "nice one."]);
   session.close();
 });
+
+test("expression: a clause voiced in several service requests keeps the whole clause's word span (Codex P2)", async () => {
+  const client = new FakeClient();
+  const session = new Session("v1", client, {
+    config: { ...config, serverTts: true, voice },
+    openAsr: () => new FakeAsr(),
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<neutral> [smile] That is a very long thought." };
+      yield { type: "done", responseId: "r1", text: "", status: "completed" };
+    },
+    async *tts(): AsyncGenerator<TtsChunk> {
+      // two pieces of one clause, each followed by its own aligner timing (ms from the clause's audio start)
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+      yield { audio: Buffer.alloc(0), alignment: null, model: "seamless-m4t-v2", timing: { words: [{ w: "That", s: 10, e: 60 }], phonemes: [] } };
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+      yield { audio: Buffer.alloc(0), alignment: null, model: "seamless-m4t-v2", timing: { words: [{ w: "thought.", s: 110, e: 180 }], phonemes: [] } };
+    },
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "go" }));
+  await client.waitFor((m) => m.type === "reply");
+  const ex = client.of("expression");
+  assert.equal(ex.length, 1);
+  assert.deepEqual([ex[0].tag, ex[0].startMs, ex[0].endMs], ["smile", 10, 180]);
+  session.close();
+});

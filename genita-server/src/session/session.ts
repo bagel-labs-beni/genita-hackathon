@@ -1291,7 +1291,7 @@ export class Session {
       let sentAudio = false;
       let firstSeq: number | null = null; // this clause's first audio chunk: `audio.timing` is keyed to it
       let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
-      let clauseWords: { s: number; e: number } | null = null; // aligner span of this clause (reply timeline)
+      let clauseWords = null as { s: number; e: number } | null; // aligner span of this clause (reply timeline)
       try {
         let first = true;
         for await (const chunk of jobs[i]) {
@@ -1305,7 +1305,8 @@ export class Session {
             if (firstSeq !== null) {
               const t = shiftTiming(chunk.timing, sentenceOffset);
               this.client.sendJson({ type: "audio.timing", utteranceId, sentence: i, seq: firstSeq, words: t.words, phonemes: t.phonemes });
-              if (t.words.length) clauseWords = { s: t.words[0].s, e: t.words[t.words.length - 1].e };
+              // a long clause can be several service requests (several timings): keep the whole clause's span
+              if (t.words.length) clauseWords = { s: Math.min(clauseWords?.s ?? Infinity, t.words[0].s), e: Math.max(clauseWords?.e ?? -Infinity, t.words[t.words.length - 1].e) };
             }
             continue;
           }

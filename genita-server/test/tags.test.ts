@@ -26,13 +26,17 @@ test("expression tags: [smile]/[laugh]/... are never spoken or shown; the first 
   });
   assert.equal(parseTaggedSentence("[Laugh] No way, [surprised] really?").expression, "laugh");
   assert.equal(parseTaggedSentence("[laugh] No way, [surprised] really?").ttsText, "No way, really?");
-  assert.equal(parseTaggedSentence("[neutral] Okay.").expression, null);
+  assert.equal(parseTaggedSentence("[neutral] Okay.").expression, "neutral");
   assert.equal(parseTaggedSentence("[neutral] Okay.").ttsText, "Okay.");
   // a delivery tag stays a delivery tag (TTS), it is not an expression tag
   assert.equal(parseTaggedSentence("[laughs] Fine.").expression, null);
   assert.equal(parseTaggedSentence("[laughs] Fine.").ttsText, "[laughs] Fine.");
   // a tag alone has nothing to say or show
   assert.equal(parseTaggedSentence("[smile]").displayText, "");
+  // a tag cut off by the end of the stream is dropped, not spoken (Codex P2)
+  assert.equal(parseTaggedSentence("Hello. [smi").ttsText, "Hello.");
+  assert.equal(parseTaggedSentence("[smi").displayText, "");
+  assert.equal(parseTaggedSentence("Okay <hap").ttsText, "Okay");
 });
 
 test("clauseExpression: inline tag > laugh/concern words > the reply's emotion on its first clause; neutral sends nothing", () => {
@@ -51,4 +55,6 @@ test("clauseExpression: inline tag > laugh/concern words > the reply's emotion o
   assert.equal(c("And then we cook.", "warm", false), null);
   assert.equal(c("Tell me more.", "curious", true), null);
   assert.equal(c("Okay.", "neutral", true), null);
+  // an explicit [neutral] wins over the emotion and the words (Codex P3)
+  assert.equal(c("[neutral] Haha okay.", "happy", true), null);
 });
