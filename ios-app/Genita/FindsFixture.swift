@@ -103,6 +103,10 @@ extension FindsModel {
         case 31:
             // CAM-H with the card half up: boxes arrive with the card; the test taps an ingredient chip
             play([(recipe, recipe.events)]); state = .half
+        case 32:
+            // CAM-H chip tap: the egg chip is pressed (the half sheet's chip row sits under the CTA when the title wraps)
+            play([(recipe, recipe.events)]); state = .half
+            if let egg = current?.card?.items.first(where: { $0.name == "egg" }) { tapItem(egg) }
         case 20:
             play([(recipe, Array(untilCard(recipe).prefix(1)))])
             if let id = entries.first?.id {

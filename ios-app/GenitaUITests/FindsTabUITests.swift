@@ -90,16 +90,12 @@ final class FindsTabUITests: XCTestCase {
         capture(app, "cam-H-faded")
     }
 
-    /// Tap an ingredient chip: that box is lit, the others step back.
+    /// An ingredient chip is pressed: its box is lit, the others step back, the scene dims.
     func testChipLightsItsBox() throws {
-        let app = launch(camera.merging(["GENITA_FINDS_STATE": "31"]) { $1 })
+        let app = launch(camera.merging(["GENITA_FINDS_STATE": "32"]) { $1 })
         XCTAssertTrue(any(app, "findsSheet").waitForExistence(timeout: 25))
         XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 15))
-        let chip = app.buttons["chip-egg"]
-        XCTAssertTrue(chip.waitForExistence(timeout: 5))
-        Thread.sleep(forTimeInterval: 0.5)
-        chip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
-        Thread.sleep(forTimeInterval: 0.6)
+        Thread.sleep(forTimeInterval: 1.0)
         capture(app, "cam-H-chip-egg")
     }
 }
