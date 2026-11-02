@@ -18,6 +18,7 @@ import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { PeterClient } from "./lips/peter.ts";
+import { createPrep } from "./prep/index.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -33,7 +34,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     // one Peter connection per call = one Modal container = one GPU
     openPeter:
       process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
-        ? () => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN! })
+        ? (o) => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN!, avatarId: o?.avatarId })
         : undefined,
     log,
   };
@@ -53,7 +54,15 @@ export function startServer(config: Config, log: LogFn = () => {}, deps = defaul
     throw new Error("GENITA_SESSION_TOKEN is required when HOST is not loopback");
   }
   const sessions = new Map<string, Session>();
+  const prep = createPrep(config, log); // onboarding prep routes (src/prep/routes.ts)
   const http = createServer((req, res) => {
+    if (prep.routes.handles(req)) {
+      if (!tokenOk(req, new URL(req.url ?? "/", "http://localhost"), config.sessionToken)) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: "unauthorized" }));
+      }
+      return void prep.routes.handle(req, res);
+    }
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify({ ok: true, sessions: sessions.size }));

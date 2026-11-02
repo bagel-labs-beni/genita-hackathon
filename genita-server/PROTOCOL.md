@@ -144,6 +144,8 @@ persona, profile, memories and recent history itself; the server stores nothing.
 
 Default: `atlas` for animal/character personas, `none` for humans. Always read `ready.lip.active`.
 
+`start.lip.avatarId` (optional, `peter` only): the companion's baked Peter cache, from `GET /v1/companion/prep` → `lips.peter.avatarId` (PREP_API.md). The server passes it in the worker HELLO, and `lip.changed.peter.bundleId` then equals `lips.peter.bundleId`. If it is omitted, the worker uses its demo avatar.
+
 ## Turn-taking and barge-in
 
 - The server ends the user's turn on ASR endpointing (`speechComplete`), then thinks and speaks.

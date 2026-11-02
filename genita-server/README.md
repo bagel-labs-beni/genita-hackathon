@@ -1,6 +1,7 @@
 # genita-server
 
 Realtime conversation core: Muse Voice Transcribe → Muse Spark 1.3 → ElevenLabs, over one WebSocket per call. Protocol: [PROTOCOL.md](PROTOCOL.md). Ticket F0-L3 (#3).
+Onboarding prep (import, image check, clips, voices, persona, Peter cache): [PREP_API.md](PREP_API.md). Uploads should be ≤1024 px JPEG.
 
 ```sh
 cd genita-server && npm ci
