@@ -236,3 +236,39 @@ test("voice service fails mid-sentence: the unspoken words of that sentence go t
   assert.deepEqual(client.of("say").map((s) => s.text), ["get noodles tonight.", "Okay?"]);
   session.close();
 });
+
+function midFail(text: string, voiced: string | null) {
+  const client = new FakeClient();
+  const session = new Session("v3", client, {
+    config: { ...config, serverTts: true, voice },
+    openAsr: () => new FakeAsr(),
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts(): AsyncGenerator<TtsChunk> {
+      const a = voiced === null ? null : { chars: [...voiced], startsSec: [...voiced].map(() => 0), endsSec: [...voiced].map(() => 0) };
+      yield { audio: Buffer.alloc(4800), alignment: a, model: "seamless-m4t-v2" };
+      throw new Error("voice network: reset");
+    },
+  });
+  return { client, session };
+}
+
+test("mid-sentence failure counts voiced words in the spoken form ('$123' = 4 words), so nothing is lost", async () => {
+  const { client, session } = midFail("<neutral> Pay $123 now and leave.", "Pay one hundred twenty-three dollars ");
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "x" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(client.of("say").map((s) => s.text), ["now and leave."]);
+  session.close();
+});
+
+test("mid-sentence failure without timing (MMS backup) says the whole sentence again rather than drop it", async () => {
+  const { client, session } = midFail("<neutral> We should get noodles tonight.", null);
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "x" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(client.of("say").map((s) => s.text), ["We should get noodles tonight."]);
+  session.close();
+});

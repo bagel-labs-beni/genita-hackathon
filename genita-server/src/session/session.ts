@@ -13,7 +13,8 @@ import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, typ
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { resolveSpeaker } from "../tts/seamless.ts";
+import { resolveSpeaker, seamlessLang } from "../tts/seamless.ts";
+import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
@@ -103,13 +104,12 @@ const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
 
 /**
- * Words of `display` not yet voiced, given the voiced characters (spoken form, so counts are approximate:
- * a word cut mid-way is said again). Empty when no timing came back (then nothing is repeated).
+ * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
+ * A word cut mid-way is said again.
  */
-export function unspokenRest(display: string, voicedChars: string): string {
-  if (!voicedChars.trim()) return "";
+export function unspokenRest(spoken: string, voicedChars: string): string {
   const complete = voicedChars.trimStart().split(/\s+/).filter(Boolean).length - (/\s$/.test(voicedChars) ? 0 : 1);
-  return display.trim().split(/\s+/).slice(Math.max(0, complete)).join(" ");
+  return spoken.trim().split(/\s+/).slice(Math.max(0, complete)).join(" ");
 }
 
 /** Device mode: how long the app should take to speak `chars` characters, if it never sends playback_done. */
@@ -741,8 +741,10 @@ export class Session {
             if (!sentAudio) sayOnDevice(i, s);
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
+              // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
               reply.spoken.push(s.display);
-              const rest = unspokenRest(s.display, sentChars);
+              const spoken = spokenText(s.display, seamlessLang(speechLang(s.display, lang), s.display));
+              const rest = sentChars.trim() ? unspokenRest(spoken, sentChars) : s.display;
               if (rest) sayOnDevice(i, { display: rest, emotion: s.emotion }, false);
             }
             continue;
