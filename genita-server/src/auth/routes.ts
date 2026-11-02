@@ -9,7 +9,7 @@
  *   GET    /me                    {user, consented, hasCompanion, prepStatus, conversation}
  *   PATCH  /me                    {displayName}                                                   blank → 400
  *   POST   /me/consent            {kind?: "ai_data", version?}
- *   DELETE /me                    Apple revoke → blobs users/<id>/ → rows (cascade)
+ *   DELETE /me                    Apple revoke → blobs users/<id>/ + avatars/<companion>/ → Peter cache → rows (cascade)
  *
  * Threat line: callers are the Genita iOS/macOS apps, plus Apple's form_post
  * through the user's browser on /auth/apple/callback. Auth: Apple identity
@@ -278,12 +278,16 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       if (link && appleStatus !== 200) log("account.apple_revoke_failed", { status: appleStatus });
       // blobs first: if storage is down, keep the rows so the user can retry
       let blobsDeleted: number;
+      const companionIds = await accounts.companionIds(who.userId);
       try {
         blobsDeleted = await blobs.deletePrefix(`users/${who.userId}/`);
+        // Peter avatar caches (face frames + latents) are keyed by companion id, outside users/<id>/
+        for (const cid of companionIds) blobsDeleted += await blobs.deletePrefix(`avatars/${cid}/`);
       } catch (e) {
         log("account.delete_failed", { stage: "blobs", message: String(e).slice(0, 120) });
         throw new HttpError(502, "delete_failed", "Couldn't delete your files. Try again.");
       }
+      await core.forgetAvatars?.(companionIds);
       await accounts.deleteUser(who.userId);
       core.onUserDeleted?.(who.userId);
       log("account.deleted", { blobs: blobsDeleted, apple_revoked: appleStatus === 200 });

@@ -48,6 +48,8 @@ export type AccountsCore = {
   log: Log;
   signSession(userId: string, sid: string, device: Device, expiresAt: Date): string;
   onUserDeleted?: (userId: string) => void;
+  /** Drops baked Peter avatar caches on the GPU box (best effort; the S3 copy is deleted by DELETE /me itself). */
+  forgetAvatars?: (companionIds: string[]) => Promise<void>;
 };
 
 export type AccountsService = AccountsCore & {
@@ -88,6 +90,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     trustProxy: env.GENITA_TRUST_PROXY === "1",
     authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 30,
     log,
+    forgetAvatars: peterForgetter(env, log),
     signSession: (userId, sid, device, expiresAt) =>
       signHs256({ iss: SESSION_ISSUER, sub: userId, sid, dev: device, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt.getTime() / 1000) }, jwtSecret),
   };
@@ -107,4 +110,21 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     },
     close: () => db.close(),
   });
+}
+
+/** DELETE {GENITA_PETER_PREPARE_URL}/avatars/<id> (deploy/aws/peter/prep_api.py): local cache + tombstone so a running bake never republishes. */
+function peterForgetter(env: NodeJS.ProcessEnv, log: Log): AccountsCore["forgetAvatars"] {
+  const url = (env.GENITA_PETER_PREPARE_URL || "").replace(/\/+$/, "");
+  const token = env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || "";
+  if (!url) return undefined;
+  return async (ids) => {
+    for (const id of ids) {
+      try {
+        const r = await fetch(`${url}/avatars/${encodeURIComponent(id)}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+        if (!r.ok && r.status !== 404) log("account.avatar_forget_failed", { status: r.status });
+      } catch (e) {
+        log("account.avatar_forget_failed", { message: String(e).slice(0, 120) });
+      }
+    }
+  };
 }

@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import { startServer, defaultDeps } from "../src/server.ts";
@@ -40,11 +41,19 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
   const realFetch = globalThis.fetch;
   globalThis.fetch = apple.fetch;
   const dir = mkdtempSync(join(tmpdir(), "genita-auth-"));
+  const peterDeletes: string[] = []; // stand-in for deploy/aws/peter/prep_api.py
+  const peterApi = createHttpServer((req, res) => {
+    if (req.method === "DELETE" && req.headers.authorization === "Bearer worker-token") peterDeletes.push(req.url ?? "");
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  await new Promise<void>((r) => peterApi.listen(0, "127.0.0.1", r));
   const env: NodeJS.ProcessEnv = {
     GENITA_DATA_DIR: dir,
     GENITA_JWT_SECRET: "j".repeat(40),
     GENITA_PUBLIC_URL: "https://genita-api.example",
     GENITA_AUTH_RATE_PER_MIN: "1000",
+    GENITA_PETER_PREPARE_URL: `http://127.0.0.1:${(peterApi.address() as AddressInfo).port}`,
+    GENITA_PETER_TOKEN: "worker-token",
     ...apple.env,
   };
   const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED, ...over };
@@ -56,6 +65,8 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
   t.after(async () => {
     globalThis.fetch = realFetch;
     await new Promise((r) => server.close(r));
+    peterApi.closeAllConnections();
+    await new Promise((r) => peterApi.close(r));
     await new Promise((r) => setTimeout(r, 50));
     rmSync(dir, { recursive: true, force: true });
   });
@@ -86,7 +97,7 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
       ws.on("close", (code) => resolve({ code, opened }));
       ws.on("error", () => {});
     });
-  return { apple, env, call, wsClose, events, dir, accounts, base };
+  return { apple, env, call, wsClose, events, dir, accounts, base, peterDeletes };
 }
 
 test("Apple identity tokens: forged, expired, other audience, bad nonce, alg confusion → rejected", async () => {
@@ -124,7 +135,7 @@ test("Apple identity tokens: forged, expired, other audience, bad nonce, alg con
 });
 
 test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, logout, delete", async (t) => {
-  const { apple, call, wsClose, events, dir, accounts } = await boot(t);
+  const { apple, call, wsClose, events, dir, accounts, peterDeletes } = await boot(t);
 
   // ── unauthenticated ──
   assert.equal((await call("GET", "/me")).status, 401);
@@ -245,9 +256,12 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   assert.equal((await call("GET", "/v1/companion", { token: SHARED, user: "demo" })).json.error, "no_companion");
   assert.equal((await call("GET", "/me", { token: SHARED, user: "demo" })).json.user.provider, "dev");
 
-  // ── F1-L8 delete account ──
+  // ── F1-L8 delete account (incl. the Peter avatar cache keyed by companion id) ──
+  await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
   const del = await call("DELETE", "/me", { token });
-  assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 1 });
+  assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 2 });
+  assert.equal((await accounts.blobs.list("avatars/comp1/")).length, 0, "avatar cache gone from blob storage");
+  assert.deepEqual(peterDeletes, ["/avatars/comp1"], "GPU box told to drop its local cache");
   const revoke = apple.requests.find((r) => r.url.endsWith("/auth/revoke"))!;
   // the latest login's refresh token is kept (here the Mac web one) and revoked with its own client_id
   assert.equal(revoke.form.get("token"), "rt-ai.thebeni.genita.web");
