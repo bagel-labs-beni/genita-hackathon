@@ -24,6 +24,8 @@ import type { Config } from "./config.ts";
 import { Session, type ClientSink, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
+import { META_BASE, metaHeaders } from "./meta/http.ts";
+import { installKeepAlive, warmUp } from "./util/keepalive.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { PeterClient } from "./lips/peter.ts";
@@ -66,6 +68,11 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : elevenKey ? (req) => streamSpeech({ ...req, apiKey: elevenKey }) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
+    prewarm: () => {
+      warmUp(META_BASE + "/models", config.sparkHedge, metaHeaders(config.metaKey, false));
+      if (config.voice) warmUp(config.voice.url + "/healthz", 1);
+    },
     // GENITA_PETER=1 only. One Peter connection per call = one container = one GPU
     openPeter:
       config.peter && peterUrl && peterToken ? (o) => new PeterClient({ url: peterUrl, token: peterToken, avatarId: o?.avatarId }) : undefined,
@@ -95,6 +102,7 @@ export async function startServer(
   injected?: AccountsService | null, // tests
 ): Promise<Server> {
   const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  if (config.httpKeepAliveMs) log("http.keepalive", { ms: config.httpKeepAliveMs, on: await installKeepAlive(config.httpKeepAliveMs) });
   const accounts = injected !== undefined ? injected : await createAccounts(env, log, { loopback }); // null without DATABASE_URL
   if (!config.sessionToken && !accounts && !loopback) {
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");

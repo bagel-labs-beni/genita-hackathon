@@ -78,6 +78,8 @@ export type SessionDeps = {
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
+  /** open the vendor HTTPS connections ahead of the first answer (keepalive.ts warmUp); fire and forget */
+  prewarm?: () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
   voicePrefetch?: (speaker: number) => void;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
@@ -128,6 +130,8 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
+const WARM_AGAIN_MS = 45_000;
 const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
@@ -218,6 +222,7 @@ export class Session {
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
+  private lastWarmAt = -Infinity;
   private metrics: TurnMetrics = {};
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
@@ -383,6 +388,7 @@ export class Session {
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
     this.micOn = msg.mic !== false;
     this.started = true;
+    this.warm();
     if (this.deps.memory && this.deps.userId) {
       this.memoryCall = new MemoryCall(this.deps.memory, this.deps.userId, this.id, () => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
@@ -587,8 +593,16 @@ export class Session {
 
   // ───────────────────────── ASR → turn machine ─────────────────────────
 
+  /** Open the vendor connections now unless they were opened (or used for a turn) recently. */
+  private warm(): void {
+    if (!this.deps.prewarm || this.now() - this.lastWarmAt < WARM_AGAIN_MS) return;
+    this.lastWarmAt = this.now();
+    this.deps.prewarm();
+  }
+
   private onAsr(e: AsrEvent): void {
     const t = this.now();
+    if (e.type === "speechStart") this.warm();
     if (this.interp) return this.onInterpretAsr(e);
     switch (e.type) {
       case "speechStart":
