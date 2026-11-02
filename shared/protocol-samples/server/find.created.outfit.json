@@ -1,0 +1,53 @@
+{
+  "type": "find.created",
+  "findId": "0d8f8e2a-7c1b-4b6e-8f3a-2a9c5d1e4b77",
+  "card": {
+    "id": "0d8f8e2a-7c1b-4b6e-8f3a-2a9c5d1e4b77",
+    "kind": "outfit",
+    "createdAt": "2026-11-02T10:20:00.000Z",
+    "eyebrow": "From your camera",
+    "title": "Wear the navy one.",
+    "subtitle": "For dinner at 7, which you mentioned",
+    "status": "Navy coat",
+    "camera": {
+      "frame": 1,
+      "at": "2026-11-02T10:20:00.000Z",
+      "w": 480,
+      "h": 854,
+      "label": "Your camera · 7:20 PM"
+    },
+    "items": [],
+    "steps": [],
+    "options": [
+      {
+        "label": "Navy coat",
+        "frame": 1,
+        "picked": true,
+        "box": {
+          "x1": 0.4,
+          "y1": 0.3,
+          "x2": 0.95,
+          "y2": 0.8
+        }
+      },
+      {
+        "label": "Camel blazer",
+        "frame": 0,
+        "picked": false
+      }
+    ],
+    "why": [
+      "The navy coat reads like dinner, not a meeting.",
+      "The camel blazer looks like a weekday office."
+    ],
+    "ask": [
+      "What shoes?",
+      "Warm enough?"
+    ],
+    "sources": [],
+    "how": [
+      "From 2 frames on your camera, 7:20 PM.",
+      "No web search for this one."
+    ]
+  }
+}
