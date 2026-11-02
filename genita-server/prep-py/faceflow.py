@@ -96,6 +96,7 @@ def lip_map(kind):
 # Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs Peter): same transform on every key and the neutral
 # ROI, so it never flickers. Lifts grey teeth inside the lip hull, pulls the lips toward the photo's pink.
 COLORFIX = {'human': (1.15, 0.88, 1.0)}
+LOWER_V = 0.85   # low-saturation lower-teeth / tongue film in the lower half of the opening
 
 
 def colorfix(img, mouth_px, spec):
@@ -121,9 +122,17 @@ def colorfix(img, mouth_px, spec):
     tight[max(0, by1 + pad):by2 + pad, max(0, bx1 + 2 * pad):bx2 - 2 * pad] = 1
     k = max(3, int(0.03 * mw) | 1)
     inner = cv2.erode(hull, np.ones((k, k), np.uint8)) * (1 - cv2.dilate(lb, np.ones((3, 3), np.uint8))) * tight
-    teeth = cv2.GaussianBlur(((S_ < 0.30) & (V_ > 105)).astype(np.float32) * inner, (0, 0), 0.8)
+    grey = ((S_ < 0.30) & (V_ > 105)).astype(np.float32) * inner
+    # upper half of the mouth opening = upper teeth: lift; lower half (lower teeth / tongue film): darken (critic 11/3)
+    rows = np.where(inner.any(1))[0]
+    upper = np.zeros_like(grey)
+    if len(rows):
+        mid = int((rows.min() + rows.max()) / 2)
+        upper[:mid + 1] = 1
+    teeth = cv2.GaussianBlur(grey * upper, (0, 0), 0.8)
+    lower = cv2.GaussianBlur(grey * (1 - upper), (0, 0), 0.8)
     lips = cv2.GaussianBlur(lips, (0, 0), 1.5)
-    hsv[..., 2] = np.clip(V_ * (1 + (tg - 1) * teeth) * (1 + (lv - 1) * lips), 0, 255)
+    hsv[..., 2] = np.clip(V_ * (1 + (tg - 1) * teeth) * (1 - (1 - LOWER_V) * lower) * (1 + (lv - 1) * lips), 0, 255)
     hsv[..., 1] = np.clip(S_ * (1 - 0.5 * teeth) * (1 + (ls - 1) * lips) * 255, 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)
 
