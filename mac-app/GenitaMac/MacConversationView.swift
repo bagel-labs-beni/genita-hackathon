@@ -43,8 +43,12 @@ struct MacConversationView: View {
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
                         Button { call.toggleMic() } label: { MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn) }.buttonStyle(MacUnchangedControlStyle())
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
-                        Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                            .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                        if MacInterpretController.enabled {
+                            Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
+                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                        } else {
+                            excluded("glass-more-icon", "More unavailable in demo")
+                        }
                     }.position(x: 334, y: 724)
                 }
                 if waitingCopy == nil && handoff.motion == nil {
@@ -72,7 +76,7 @@ struct MacConversationView: View {
                 WatchOverlays(sharing: sharing, review: reviewState)
             }.frame(width: 390, height: 844).offset(x: menuOpen ? 299 : 0)
             if menuOpen { menu }
-            if interpret.stage == .picking { interpretSheet }
+            if MacInterpretController.enabled && interpret.stage == .picking { interpretSheet }
             if permissionVisible { permissionPanel }
             MacDemoSystemBar(onDark: waitingCopy != nil).allowsHitTesting(false).accessibilityHidden(true)
             IslandDragHandle().frame(width:124,height:36).position(x:195,y:30)
@@ -81,6 +85,10 @@ struct MacConversationView: View {
         .onAppear {
             if reviewState == "permission" { sharing.permissionRequired = true }
             if reviewState == "menu" { menuOpen = true }
+            // {name} comes from the account's companion (named on the iPhone, NM01), never a hard-coded "Jin"
+            if model.onboarding.auth.isSignedIn {
+                Task { if let c = try? await model.onboarding.companion() { model.setup.companionName = c.name; call.companionName = c.name } }
+            }
         }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
@@ -100,7 +108,7 @@ struct MacConversationView: View {
                 .onTapGesture { withAnimation(.easeOut(duration: 0.22)) { interpret.cancel() } }
                 .accessibilityLabel("Close").accessibilityAddTraits(.isButton)
             MacInterpretCallSheet(app: $interpret.app, warning: interpret.headphones ? nil : "No headphones on: the other person would hear my whispers too.") {
-                interpret.start(.companion(name: "Jin", userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
+                interpret.start(.companion(name: model.companionDisplayName, userName: model.setup.name, profile: model.setup.response, traits: model.setup.presence.sorted(), voiceId: nil))
             }
             .frame(width: 390)
             .transition(.move(edge: .bottom))
