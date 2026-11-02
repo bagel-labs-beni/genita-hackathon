@@ -209,6 +209,10 @@ print("mouth timing: \(timeline.hasTimings ? "word timings (\(words.count) words
 let size = CGSize(width: o.width, height: o.height)
 let renderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed)
 if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
+// The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
+// timeline), so the alive base's motion does not count as mouth movement.
+let metricRenderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: true)
+if let e = o.emotion { metricRenderer.setEmotion(e, at: 0.3) }
 
 let fps = 25
 let audioMs = Double(pcm.count / 2) / outRate * 1000
@@ -308,7 +312,10 @@ func renderFrame(_ i: Int) {
         renderer.ciContext.render(ref.image(at: 1, lip: .rest), to: refOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
         restMouth = mouthArea(refOut!)
     }
-    let area = mouthArea(pb)
+    var metricOut: CVPixelBuffer?
+    CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &metricOut)
+    renderer.ciContext.render(metricRenderer.image(at: t, lip: lip), to: metricOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
+    let area = mouthArea(metricOut!)
     var d = 0.0
     for k in 0..<min(area.count, restMouth!.count) { d += Double(abs(area[k] - restMouth![k])) }
     mouthMotion.append(d / Double(max(1, area.count)))
