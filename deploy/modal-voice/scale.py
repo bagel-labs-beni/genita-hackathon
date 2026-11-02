@@ -5,7 +5,7 @@
     python scale.py status
 
 A redeploy (`modal deploy voice_app.py`) resets this to the decorator value (min_containers=0), so run
-`warm` again after deploying. Run with the Modal venv: ./genita-hackathon/.venv-modal/bin/python scale.py warm
+`warm` again after deploying. Use your Modal-enabled Python environment: python scale.py warm
 """
 import os, sys
 
