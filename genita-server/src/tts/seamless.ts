@@ -17,6 +17,7 @@ import { UpstreamError } from "../meta/http.ts";
 import type { VoiceConfig } from "../config.ts";
 import type { TtsChunk, TtsRequest } from "./elevenlabs.ts";
 import { pauseAfterMs, spokenText } from "../voice/normalize.ts";
+import { parseClauseTiming, shiftTiming } from "../lips/visemes.ts";
 
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
@@ -95,7 +96,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         r = await doFetch(`${cfg.url}/v1/tts`, {
           method: "POST",
           headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
-          body: JSON.stringify({ text, lang, speaker, speed: cfg.speed, tail_ms: tailMs, model: cfg.model }),
+          body: JSON.stringify({ text, lang, speaker, speed: cfg.speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}) }),
           signal: ctl.signal,
         });
       } catch (err) {
@@ -107,7 +108,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let buf = "";
       let done = false;
       const parse = (line: string): TtsChunk | null => {
-        let j: { audio_base64?: string; alignment?: { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] } | null; done?: boolean };
+        let j: { audio_base64?: string; alignment?: { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] } | null; done?: boolean; timing?: unknown };
         try {
           j = JSON.parse(line);
         } catch {
@@ -116,6 +117,11 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         if (j.done) {
           done = true;
           return null;
+        }
+        if ("timing" in j) {
+          // word + phoneme timing for the audio above; a malformed one is dropped (the app falls back)
+          const timing = cfg.align ? parseClauseTiming(j.timing) : null;
+          return timing ? { audio: Buffer.alloc(0), alignment: null, model: modelName, timing } : null;
         }
         const audio = Buffer.from(j.audio_base64 ?? "", "base64");
         const a = j.alignment;
@@ -180,9 +186,10 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
         for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, req.signal)) {
-          const shifted = offsetSec && c.alignment
+          let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;
+          if (offsetSec && shifted.timing) shifted = { ...shifted, timing: shiftTiming(shifted.timing, offsetSec * 1000) };
           pieceSec += c.audio.length / 2 / 24000;
           got.push(shifted);
           yield shifted;

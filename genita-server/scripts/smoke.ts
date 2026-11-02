@@ -340,8 +340,16 @@ const pct = (xs: number[], p: number) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] : NaN;
 };
+// word + phoneme timing (GENITA_VOICE_ALIGN): how many clauses got `audio.timing`, and how long after the clause's
+// first audio event it arrived (it must never hold the audio itself)
+const clauseAt = new Map<string, number>();
+for (const x of inbox) if (x.m.type === "audio") clauseAt.set(`${x.m.utteranceId}:${x.m.sentence}`, clauseAt.get(`${x.m.utteranceId}:${x.m.sentence}`) ?? x.t);
+const timed = inbox.filter((x) => x.m.type === "audio.timing");
+const timingLag = timed.map((x) => x.t - (clauseAt.get(`${x.m.utteranceId}:${x.m.sentence}`) ?? x.t));
+if (timed.length) writeFileSync(".smoke/timing.json", JSON.stringify(timed.map((x) => x.m), null, 1));
 const summary = {
   turns: rows.length,
+  timing: { clauses: clauseAt.size, timed: timed.length, afterClauseAudioMs: timed.length ? { p50: median(timingLag), p90: pct(timingLag, 90) } : null },
   tts: ttsArg,
   firstOutput: ttsArg === "device" ? "first say event" : "first TTS audio frame",
   config: { sparkHedge: config.sparkHedge, speculate: config.speculate },

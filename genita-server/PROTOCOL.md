@@ -27,6 +27,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
+| 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
 
 ```
 wss://<host>/v1/session
@@ -173,6 +174,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `speaking` | `on`, `utteranceId`, `emotion?` | `on:true` with the emotion when a sentence's audio (device mode: its `say`) starts and the emotion changed (switch the face, F4-L13); `on:false` when done or cancelled |
 | `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
 | `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
+| `audio.timing` | `utteranceId`, `sentence`, `seq`, `words`, `phonemes` | server voice with `GENITA_VOICE_ALIGN=1`: forced-aligner timing of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
@@ -254,6 +256,26 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
   timeline (0 = first sample of the reply), from the model's own per-character durations (unit model ×
   vocoder), so they line up with the samples. Ask for `lip:"atlas"` to also get letter-level `mouth` cues
   (any companion kind). The `audio` event always arrives before its binary frame, so timing is never late.
+- **Forced-aligner timing (`audio.timing`, `GENITA_VOICE_ALIGN=1`)**: after a clause's audio, the voice service
+  runs Meta's MMS forced aligner (torchaudio `MMS_FA`, same GPU) on the audio it just made and the text it spoke,
+  and the server sends one `audio.timing` for that clause:
+
+  ```json
+  { "type": "audio.timing", "utteranceId": 4, "sentence": 0, "seq": 41,
+    "words": [{ "w": "Oh", "s": 40, "e": 190 }, { "w": "wow,", "s": 190, "e": 520 }],
+    "phonemes": [{ "p": "AO", "s": 40, "e": 190 }, { "p": "W", "s": 190, "e": 260 }, { "p": "OW", "s": 260, "e": 520 }] }
+  ```
+  - `seq` = the clause's first `audio` seq (the timing covers that clause's frames); `s`/`e` are ms on the reply's
+    timeline, the same clock as `audio.words`, so they can be used as they arrive.
+  - `words[].w` = the spoken form of the word (what the voice said, e.g. "five" for "5"). `phonemes[].p` = ARPAbet
+    (`M`, `AA`, `OW`, `TH`, …; GenitaKit `LipViseme(phoneme:)` maps it). English letters are grouped by spelling
+    rules; Korean is split into jamo. Short gaps (< 120 ms) are held by the previous phoneme, so a phoneme lasts
+    until the next one starts; a real pause stays a gap (mouth at rest).
+  - It never holds audio: the aligner starts after the clause's first audio line is out and the event follows the
+    clause's frames (measured lag below). Prefer it over `audio.words` for the mouth when it is there.
+  - Fallback: if the aligner fails, is late (> 250 ms after the clause's last audio) or is not confident, no
+    `audio.timing` comes for that clause; keep using `audio.words` / text + loudness for it. Nothing comes for a
+    cancelled utterance.
 - Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
   everything else in English (`eng`). Same speaker as the companion.
 - Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →

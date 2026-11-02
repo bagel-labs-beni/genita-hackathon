@@ -103,6 +103,15 @@ public struct WordTiming: Codable, Equatable, Sendable {
     public var e: Int
 }
 
+/// One phoneme of server voice timing: `p` is an ARPAbet label (LipViseme(phoneme:)), `s`/`e` ms on the
+/// reply's audio timeline (same clock as `WordTiming`).
+public struct PhonemeTiming: Codable, Equatable, Sendable {
+    public var p: String
+    public var s: Int
+    public var e: Int
+    public init(p: String, s: Int, e: Int) { self.p = p; self.s = s; self.e = e }
+}
+
 // MARK: - Server → app
 
 public enum ServerEvent: Equatable, Sendable {
@@ -118,6 +127,7 @@ public enum ServerEvent: Equatable, Sendable {
     case replyDelta(ReplyDelta)
     case speaking(Speaking)
     case audio(Audio)
+    case audioTiming(AudioTiming)
     case say(Say)
     case reply(Reply)
     case utteranceCancelled(UtteranceCancelled)
@@ -247,6 +257,15 @@ public enum ServerEvent: Equatable, Sendable {
         public var words: [WordTiming]
         public var mouth: [MouthCue]?
     }
+    /// Server voice: forced-aligner word + phoneme timing of one clause (sentence), sent after that clause's
+    /// audio. `seq` = the clause's first `audio` seq. Times are absolute on the reply timeline, like `Audio.words`.
+    public struct AudioTiming: Codable, Equatable, Sendable {
+        public var utteranceId: Int
+        public var sentence: Int
+        public var seq: UInt32
+        public var words: [WordTiming]
+        public var phonemes: [PhonemeTiming]
+    }
     /// Device mode: one sentence for the app to speak, in order. `text` is plain (no tags);
     /// `lang` is a BCP-47 hint (en-US, ko-KR, …) for the voice.
     public struct Say: Codable, Equatable, Sendable {
@@ -322,6 +341,7 @@ extension ServerEvent: Codable {
         case "reply.delta": self = .replyDelta(try .init(from: decoder))
         case "speaking": self = .speaking(try .init(from: decoder))
         case "audio": self = .audio(try .init(from: decoder))
+        case "audio.timing": self = .audioTiming(try .init(from: decoder))
         case "say": self = .say(try .init(from: decoder))
         case "reply": self = .reply(try .init(from: decoder))
         case "utterance.cancelled": self = .utteranceCancelled(try .init(from: decoder))
@@ -356,6 +376,7 @@ extension ServerEvent: Codable {
         case .replyDelta: "reply.delta"
         case .speaking: "speaking"
         case .audio: "audio"
+        case .audioTiming: "audio.timing"
         case .say: "say"
         case .reply: "reply"
         case .utteranceCancelled: "utterance.cancelled"
@@ -389,6 +410,7 @@ extension ServerEvent: Codable {
         case let .replyDelta(p): try p.encode(to: encoder)
         case let .speaking(p): try p.encode(to: encoder)
         case let .audio(p): try p.encode(to: encoder)
+        case let .audioTiming(p): try p.encode(to: encoder)
         case let .say(p): try p.encode(to: encoder)
         case let .reply(p): try p.encode(to: encoder)
         case let .utteranceCancelled(p): try p.encode(to: encoder)

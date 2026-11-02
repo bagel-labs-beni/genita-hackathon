@@ -50,6 +50,16 @@ struct ProtocolSamplesTests {
         #expect(encoded["tts"] as? String == "device")
     }
 
+    /// Server voice timing (MMS forced aligner): words + ARPAbet phonemes, ms on the reply timeline.
+    @Test func testAudioTimingSample() throws {
+        let data = Dictionary(uniqueKeysWithValues: try samples("server")).first { $0.key == "audio.timing.json" }!.value
+        guard case let .audioTiming(t) = try JSONDecoder().decode(ServerEvent.self, from: data) else { Issue.record("audio.timing"); return }
+        #expect(t.utteranceId == 4 && t.sentence == 0 && t.seq == 41)
+        #expect(t.words.first == WordTiming(w: "Oh", s: 40, e: 190))
+        #expect(t.phonemes.map(\.p) == ["AO", "W", "OW"])
+        #expect(t.phonemes.last == PhonemeTiming(p: "OW", s: 260, e: 520))
+    }
+
     @Test func testUnknownServerTypeDoesNotThrow() throws {
         let e = try JSONDecoder().decode(ServerEvent.self, from: Data(#"{"type":"future.event","boxes":[]}"#.utf8))
         #expect(e == .unknown(type: "future.event"))

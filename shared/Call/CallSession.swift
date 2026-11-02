@@ -602,7 +602,7 @@ enum CallStop: Equatable {
             peter = l.peter
         case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
             finds.apply(event)
-        case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
+        case .interpretDetected, .replyDelta, .asrStatus, .pong, .audioTiming, .unknown:
             break
         }
     }
