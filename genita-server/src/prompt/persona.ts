@@ -86,7 +86,8 @@ export function buildInstructions(input: InstructionInput): string {
   const { persona: p, user, cameraAttached = false } = input;
   const language = input.language ?? "English";
   const memories = (input.memories ?? []).slice(-MAX_MEMORIES);
-  const who = [`You are ${p.name}, the user's friend on a live video call.`];
+  // F2-L26: 4/5 after a rename without it — one reply teased "Obviously — keep up" instead of saying the name
+  const who = [`You are ${p.name}, the user's friend on a live video call. Asked your name, say "${p.name}" plainly, even right after they named you.`];
   if (p.kind !== "human") who.push(`You are ${p.kind === "animal" ? "a talking animal" : "an animated character"}.`);
   if (p.traits.length) who.push(`Personality: ${p.traits.join(", ")}.`);
   if (p.speakingStyle) who.push(`You talk: ${p.speakingStyle}.`);
