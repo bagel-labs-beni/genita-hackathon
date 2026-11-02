@@ -22,7 +22,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Config } from "./config.ts";
-import { Session, type ClientSink, type SessionDeps } from "./session/session.ts";
+import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { createSeamless } from "./tts/seamless.ts";
@@ -236,6 +236,21 @@ export async function startServer(
     );
   });
 
+  // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
+  // one process — same as the audio gate). Never another account's.
+  const lastTurns = new Map<string, { turns: HistoryItem[]; at: number }>();
+  function priorTurns(userId: string, self: string): HistoryItem[] | null {
+    let best: HistoryItem[] | null = null;
+    for (const [sid, u] of sessionUsers) {
+      if (u !== userId || sid === self) continue;
+      const t = sessions.get(sid)?.historySnapshot();
+      if (t?.length && (!best || t.length >= best.length)) best = t;
+    }
+    if (best) return best;
+    const c = lastTurns.get(userId);
+    return c && Date.now() - c.at < 10 * 60_000 ? c.turns : null;
+  }
+
   function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>) {
     const id = randomUUID();
     const raw: ClientSink = {
@@ -250,7 +265,7 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename });
+    const session = new Session(id, sink, { ...deps, userId: who.userId, renameCompanion: rename, priorTurns: () => priorTurns(who.userId, id) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -286,6 +301,8 @@ export async function startServer(
       clearTimeout(life);
       session.close();
       gated?.call.close();
+      const turns = session.historySnapshot();
+      if (turns.length) lastTurns.set(who.userId, { turns, at: Date.now() });
       sessions.delete(id);
       sessionUsers.delete(id);
       touches.delete(id);
