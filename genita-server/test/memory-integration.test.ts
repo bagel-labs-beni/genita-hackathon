@@ -198,3 +198,27 @@ test("reply path: a memory store stuck behind the per-user lock never holds the 
   assert.ok(Date.now() - t0 < 1500, `answered in ${Date.now() - t0}ms while the lock was held`);
   release(); await held; session.close(); await memory.drain();
 });
+
+test("call start + recall tool: a memory lock held by a stalled write never holds ready, the greeting or a tool answer", { timeout: 20_000 }, async () => {
+  const { deps, memory } = setup();
+  let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const held = memory.serial("trusted", () => gate); // stalled before the call starts
+  let toolTurn = false;
+  deps.spark = async function* (req): AsyncGenerator<SparkStreamEvent> {
+    const input = JSON.stringify(req.input);
+    if (input.includes("function_call_output")) yield { type: "text", delta: "Hmm, can't check right now." };
+    else if (input.includes("What did I buy")) { toolTurn = true; yield { type: "function_call", name: "recall", call_id: "c1", arguments: '{"query":"buy"}' }; }
+    else yield { type: "text", delta: "Hey there." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const c = client(); const session = new Session("stalled", c.sink, deps);
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" }, mic: false }));
+  await waitFor(() => c.events.some((e) => e.type === "ready") && c.replies().length === 1);
+  assert.ok(Date.now() - t0 < 2500, `ready + greeting in ${Date.now() - t0}ms with the lock held`);
+  const t1 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "text", text: "What did I buy?" }));
+  await waitFor(() => c.replies().length === 2);
+  assert.ok(toolTurn); assert.ok(Date.now() - t1 < 2500, `tool answer in ${Date.now() - t1}ms`);
+  release(); await held; session.close(); await memory.drain();
+});
