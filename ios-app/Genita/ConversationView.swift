@@ -1,15 +1,5 @@
 import SwiftUI
 
-/// Figma PF-1b / r03 full: over the dark band the status bar is white. The window goes dark only while the sheet
-/// is full; the call's own views keep the light scheme (their colors are explicit anyway).
-struct StatusBarOnInk: ViewModifier {
-    let on: Bool
-    @Environment(\.colorScheme) private var scheme
-    func body(content: Content) -> some View {
-        content.environment(\.colorScheme, on ? .light : scheme).preferredColorScheme(on ? .dark : nil)
-    }
-}
-
 struct ConversationView: View {
     @Bindable var model: AppState
     var connecting = false
@@ -164,7 +154,6 @@ struct ConversationView: View {
                     }
                 }.frame(width: full.size.width, height: full.size.height).clipped()
             }.ignoresSafeArea()
-            .modifier(StatusBarOnInk(on: !connecting && call.finds.state == .full))
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
