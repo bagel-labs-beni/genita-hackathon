@@ -336,7 +336,19 @@ jobs:
           SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
           echo "DMG app: $SV ($V)"
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
-          hdiutil detach "$MNT" >/dev/null
+          # #347: a notarized DMG must also start. Sparkle needs the Frameworks rpath, then a 10 s launch smoke.
+          BIN="$MNT/GenitaMac.app/Contents/MacOS/GenitaMac"
+          otool -l "$BIN" | grep -A2 LC_RPATH | grep -q "@executable_path/../Frameworks" || { echo "::error::GenitaMac has no @executable_path/../Frameworks rpath (Sparkle won't load)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          "$BIN" > "$RUNNER_TEMP/launch.log" 2>&1 &
+          APP=$!
+          sleep 10
+          if kill -0 "$APP" 2>/dev/null; then
+            kill "$APP" 2>/dev/null || true
+            echo "launch smoke: GenitaMac still running after 10 s"
+          else
+            echo "::error::GenitaMac exited within 10 s of launch"; tail -n 40 "$RUNNER_TEMP/launch.log"; hdiutil detach "$MNT" >/dev/null; exit 1
+          fi
+          hdiutil detach "$MNT" >/dev/null || { sleep 2; hdiutil detach -force "$MNT" >/dev/null; }
           shasum -a 256 "$DMG"
           {
             echo "### Genita Mac DMG"
