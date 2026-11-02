@@ -1,10 +1,12 @@
 /**
- * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge] [--url=wss://…/v1/session]
+ * npm run smoke [-- file1.mp3 file2.wav ...] [--turns=6] [--no-barge] [--url=wss://…/v1/session] [--tts=device|server]
  *
  * Real keys, real vendors. Starts the server in-process on loopback, then acts
  * like the app: streams mic PCM (24 kHz s16le) in real time, 80 ms frames,
  * with silence between utterances, and measures on the client side:
- *   end of speech (last voiced frame sent) → first TTS audio frame received.
+ *   end of speech (last voiced frame sent) → first `say` received (device mode, default;
+ *   only MODEL_API_KEY needed) or first TTS audio frame (--tts=server, sets GENITA_SERVER_TTS=1
+ *   and needs ELEVENLABS_API_KEY).
  * Then a barge-in check: speak over the companion's reply and time
  * speech start → utterance.cancelled.
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
@@ -24,6 +26,9 @@ const SR = 24000;
 const FRAME = (SR * 2 * 80) / 1000; // 80 ms = 3840 bytes
 const QA = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101");
 const args = process.argv.slice(2);
+const ttsArg = args.find((a) => a.startsWith("--tts="))?.slice(6) ?? "device";
+if (ttsArg !== "device" && ttsArg !== "server") throw new Error("--tts must be device or server");
+if (ttsArg === "server") process.env.GENITA_SERVER_TTS = "1";
 const doBarge = !args.includes("--no-barge");
 const lipArg = args.find((a) => a.startsWith("--lip="))?.slice(6) ?? "atlas";
 type PeterStat = { firstAudio?: number; firstCrop?: number; lastCrop?: number; crops: number; gaps: number[]; jpegs: Map<number, Buffer> };
@@ -84,6 +89,8 @@ let firstAudioAfter: { since: number; at: number | null } | null = null;
 const replyAudio: Buffer[] = [];
 let captureAudio = true;
 let binCount = 0;
+let sayCount = 0;
+const says: string[] = [];
 ws.on("message", (data, isBinary) => {
   const t = performance.now();
   if (isBinary) {
@@ -106,6 +113,12 @@ ws.on("message", (data, isBinary) => {
   }
   const m = JSON.parse(data.toString());
   if (m.type === "audio") lastAudioUtt = m.utteranceId;
+  if (m.type === "say") {
+    // device mode: the first say is the moment the app can start speaking
+    sayCount++;
+    if (firstAudioAfter && firstAudioAfter.at === null) firstAudioAfter.at = t;
+    if (captureAudio) says.push(`[${m.lang} ${m.emotion}] ${m.text}`);
+  }
   inbox.push({ t, m });
 });
 const waitMsg = async (pred: (m: Msg) => boolean, from: number, ms = 20000): Promise<{ t: number; m: Msg }> => {
@@ -165,6 +178,7 @@ ws.send(
     persona: { name: "Genita", kind: "character", traits: ["warm", "witty", "curious"], speakingStyle: "short and playful" },
     user: { name: "Chelsea" },
     lip: lipArg === "peter" ? { mode: "peter", fallback: "none" } : lipArg,
+    tts: ttsArg,
   }),
 );
 const ready = await waitMsg((m) => m.type === "ready", 0);
@@ -173,7 +187,8 @@ if (lipArg === "peter") {
   const changed = await waitMsg((m) => m.type === "lip.changed", 0, 240000);
   console.log(`peter: lip.changed after ${Math.round(changed.t - t0)} ms`, JSON.stringify(changed.m));
 }
-console.log("ready:", JSON.stringify({ lip: ready.m.lip, audio: ready.m.audio, voiceId: ready.m.voiceId }));
+console.log("ready:", JSON.stringify({ tts: ready.m.tts, lip: ready.m.lip, audio: ready.m.audio, voiceId: ready.m.voiceId }));
+if (ready.m.tts !== ttsArg) throw new Error(`asked for tts=${ttsArg}, server chose ${String(ready.m.tts)}`);
 await sleep(1200);
 
 const rows: Record<string, unknown>[] = [];
@@ -225,7 +240,8 @@ for (const [i, file] of files.entries()) {
     hdr.writeUInt16LE(16, 34);
     hdr.write("data", 36);
     hdr.writeUInt32LE(pcmOut.length, 40);
-    writeFileSync(".smoke/turn1-reply.wav", Buffer.concat([hdr, pcmOut]));
+    if (ttsArg === "server") writeFileSync(".smoke/turn1-reply.wav", Buffer.concat([hdr, pcmOut]));
+    else writeFileSync(".smoke/turn1-says.txt", says.join("\n") + "\n");
   }
   // let the companion "finish speaking" before the next turn
   await waitMsg((m) => m.type === "state" && m.state === "listening", inbox.indexOf(reply), 30000).catch(() => {});
@@ -253,10 +269,13 @@ if (doBarge) {
       asrSpeechStartToCancelledMs: asrStart ? Math.round(cancelled.t - asrStart.t) : null,
       reason: cancelled.m.reason,
       audioFramesAfterCancel: 0,
+      saysAfterCancel: 0,
     };
     const binBefore = binCount;
+    const saysBefore = sayCount;
     await sleep(500);
     barge.audioFramesAfterCancel = binCount - binBefore;
+    barge.saysAfterCancel = sayCount - saysBefore;
   } catch {
     const done = inbox.slice(from).some((x) => x.m.type === "reply");
     barge = { cancelled: false, note: done ? "reply finished before the barge-in threshold" : "no cancel seen" };
@@ -311,17 +330,23 @@ for (const r of rows) {
   const k = String((r.server as Record<string, unknown> | undefined)?.speculative ?? "n/a");
   spec[k] = (spec[k] ?? 0) + 1;
 }
+const pct = (xs: number[], p: number) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length ? s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] : NaN;
+};
 const summary = {
   turns: rows.length,
+  tts: ttsArg,
+  firstOutput: ttsArg === "device" ? "first say event" : "first TTS audio frame",
   config: { sparkHedge: config.sparkHedge, speculate: config.speculate },
   speculative: spec,
   firstWords: { maxSame: Math.max(0, ...Object.values(openers)), counts: openers },
-  endOfSpeechToFirstAudioMs: { p50: median(lat), min: Math.min(...lat), max: Math.max(...lat), all: lat },
+  endOfSpeechToFirstAudioMs: { n: lat.length, p50: median(lat), p90: pct(lat, 90), min: Math.min(...lat), max: Math.max(...lat), all: lat },
   fileEndToFirstAudioMs: { p50: median(rows.map((r) => r.fileEndToFirstAudioMs).filter((x): x is number => typeof x === "number")) },
   serverSpeechEndToFirstAudioP50: median(rows.map((r) => (r.server as Record<string, number> | undefined)?.speechEndToFirstAudioMs).filter((x): x is number => typeof x === "number")),
   barge,
   peter,
-  savedReplyAudio: ".smoke/turn1-reply.wav",
+  savedReplyAudio: ttsArg === "server" ? ".smoke/turn1-reply.wav" : ".smoke/turn1-says.txt",
 };
 console.log("\nSUMMARY " + JSON.stringify(summary, null, 1));
 writeFileSync(".smoke/last.json", JSON.stringify({ rows, summary }, null, 1));
