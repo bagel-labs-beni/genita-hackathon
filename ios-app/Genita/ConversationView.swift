@@ -40,7 +40,7 @@ struct ConversationView: View {
                         }
                         if !connecting && !interpreting {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
-                                .position(x: full.size.width / 2, y: 142 + top).animation(.easeOut(duration: 0.18), value: call.cue)
+                                .position(x: full.size.width / 2, y: 142 + top)
                         }
                         if connecting {
                             ZStack {

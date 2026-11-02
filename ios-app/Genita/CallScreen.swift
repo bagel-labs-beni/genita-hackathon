@@ -17,6 +17,19 @@ enum CallInk {
     static let dim = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255).opacity(0.46)
 }
 
+/// Reduce Motion stops the wave and spinner (board: `animation:none`). Debug UI tests set
+/// GENITA_REVIEW_STILL=1 for the same, plus a still face, so XCUITest sees an idle app and can catch
+/// short states like S09-X.
+enum CallMotion {
+    static var reviewStill: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["GENITA_REVIEW_STILL"] == "1"
+        #else
+        false
+        #endif
+    }
+}
+
 // MARK: - Face
 
 /// Where the moving mouth comes from. Only `.none` exists today: the silent loop plays as is.
@@ -32,7 +45,7 @@ struct CompanionFaceView: View {
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
-            if let loop { LoopingVideo(url: loop).allowsHitTesting(false) }
+            if let loop, !CallMotion.reviewStill { LoopingVideo(url: loop).allowsHitTesting(false) }
             LipLayer(source: lip).allowsHitTesting(false)
         }
     }
@@ -98,7 +111,7 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
-            .transition(.opacity)
+            // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
 
@@ -127,18 +140,20 @@ private struct CueAlert: View {
 
 private struct CueSpinner: View {
     @State private var turn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
             .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.onInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
             .frame(width: 16, height: 16)
-            .onAppear { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } }
+            .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
     }
 }
 
 /// Four bars, 2 × 12 pt, moving while the companion's voice plays.
 private struct CueWave: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(paused: reduceMotion || CallMotion.reviewStill)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 2) {
                 ForEach(0..<4, id: \.self) { i in

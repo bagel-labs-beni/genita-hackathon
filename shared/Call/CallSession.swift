@@ -37,17 +37,46 @@ enum CallCue: Equatable {
     }
 }
 
-/// Where the session server is. Launch environment first (simulator runs), then the app's defaults.
-/// F0-I1 will add the deployed URL; the token becomes the user's JWT in F1-L5.
+/// Where the session server is and who is calling. Read again on every (re)connect, so a sign-in during
+/// the call is picked up. F0-I1 adds the deployed URL.
+///
+/// Token (F1-L5): the signed-in user's session JWT first, then the shared dev token for local runs
+/// (launch env `GENITA_SESSION_TOKEN`, or defaults `genita.session.token`).
 struct CallEndpoint {
     var url: URL
     var token: String?
 
+    /// The user's session JWT. Defaults to the keychain item GenitaKit's `KeychainTokenStore` writes (#103);
+    /// once GenitaKit Auth is on this branch, set it to `{ GenitaAuthClient().token }`.
+    nonisolated(unsafe) static var userToken: () -> String? = { KeychainSessionToken.load() }
+
     static func current(environment: [String: String] = ProcessInfo.processInfo.environment, defaults: UserDefaults = .standard) -> CallEndpoint {
         let raw = environment["GENITA_SERVER_URL"] ?? defaults.string(forKey: "genita.server.url") ?? "ws://127.0.0.1:8787/v1/session"
-        let token = environment["GENITA_SESSION_TOKEN"] ?? defaults.string(forKey: "genita.session.token")
+        let token = userToken() ?? environment["GENITA_SESSION_TOKEN"] ?? defaults.string(forKey: "genita.session.token")
         return CallEndpoint(url: URL(string: raw) ?? URL(string: "ws://127.0.0.1:8787/v1/session")!, token: token)
     }
+}
+
+/// Reads the session token saved by GenitaKit's KeychainTokenStore (service ai.thebeni.genita.session,
+/// account session). Read-only: sign-in owns writing and clearing it.
+enum KeychainSessionToken {
+    static func load() -> String? {
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "ai.thebeni.genita.session",
+                                kSecAttrAccount as String: "session", kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        #if os(iOS)
+        q[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+/// Why the call stopped trying (server close codes, PROTOCOL.md).
+enum CallStop: Equatable {
+    case signIn      // 4401: no, bad, expired or revoked token, or the account was deleted → A02
+    case consent     // 4403: signed in, no AI-data consent yet → CS01
+    case timeLimit   // 4001: max call length
 }
 
 /// F4-L10 + F4-U-S09 · One live call: WebSocket session, mic uplink, reply playback, camera frames,
@@ -67,6 +96,9 @@ struct CallEndpoint {
     private(set) var interruptedHold = false
     private(set) var answerFailed = false
     private(set) var lip: LipPlan?
+    /// Set when the server ended the call for a reason reconnecting can't fix. The app routes on it
+    /// (F1-L7 StartRouter: signIn → A02, consent → CS01).
+    private(set) var stopped: CallStop?
     /// Peter worker details from `lip.changed` (bundle, pasteDy, fps) for the F4-L18 mouth layer.
     private(set) var peter: ServerEvent.LipChanged.Peter?
     private(set) var emotion: String?
@@ -112,7 +144,7 @@ struct CallEndpoint {
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
-    @ObservationIgnored private var endpoint = CallEndpoint.current()
+    @ObservationIgnored private var fixedEndpoint: CallEndpoint?
     @ObservationIgnored let log = Logger(subsystem: "ai.thebeni.genita", category: "call")
     #if DEBUG
     @ObservationIgnored var fixture: FixtureMic?
@@ -130,10 +162,11 @@ struct CallEndpoint {
     // MARK: lifecycle
 
     /// Opens the call. Mic stays off until the user turns it on (F4-L22 default).
-    func begin(_ start: ClientMessage.Start, endpoint: CallEndpoint = .current()) {
+    func begin(_ start: ClientMessage.Start, endpoint: CallEndpoint? = nil) {
         guard userEnded else { return }
         userEnded = false
-        self.endpoint = endpoint
+        stopped = nil
+        fixedEndpoint = endpoint
         var s = start
         s.mic = false
         self.start = s
@@ -207,6 +240,14 @@ struct CallEndpoint {
     }
 
     func flipCamera() { camera.flip() }
+
+    /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
+    static var interruptedHoldMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_INTERRUPT_HOLD_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 1200
+    }
 
     /// ⋮ Interpret a conversation (INT-0), or Mac INT-M0 with `.init(source: .call, app: "FaceTime")`.
     func setInterpreting(_ on: Bool, options: InterpretOptions? = nil) {
@@ -331,6 +372,7 @@ struct CallEndpoint {
             guard let self, let socket, self.socket === socket else { return }
             self.lost(closure)
         }
+        let endpoint = fixedEndpoint ?? .current()
         socket.connect(url: endpoint.url, token: endpoint.token)
     }
 
@@ -342,6 +384,14 @@ struct CallEndpoint {
         playing = false
         awaitingFirstAudio = false
         guard !userEnded else { return }
+        if case let .server(code, _) = closure, let stop: CallStop = code == 4401 ? .signIn : code == 4403 ? .consent : code == 4001 ? .timeLimit : nil {
+            // Reconnecting can't fix these; hand them to the router.
+            stopped = stop
+            link = .idle
+            reconnectSince = nil
+            if micOn { setMic(false) }
+            return
+        }
         // S09-R: keep trying. After 10 s the text fallback (S08-O, F4-L21) takes over once it exists.
         if reconnectSince == nil { reconnectSince = Date() }
         link = .reconnecting
@@ -482,7 +532,7 @@ struct CallEndpoint {
             awaitingFirstAudio = false
             holdTask?.cancel()
             holdTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(1200))
+                try? await Task.sleep(for: .milliseconds(Self.interruptedHoldMs))
                 guard !Task.isCancelled else { return }
                 self?.interruptedHold = false
             }

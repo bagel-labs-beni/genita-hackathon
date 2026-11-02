@@ -64,6 +64,12 @@ final class CallSocket: NSObject, URLSessionWebSocketDelegate, @unchecked Sendab
                 DispatchQueue.main.async { MainActor.assumeIsolated { self.onMessage?(incoming) } } // FIFO: binary audio before its `reply`
                 self.receive(task)
             case let .failure(error):
+                // A close frame can surface here before didCloseWith; keep its code (4401/4403 route the app).
+                if task.closeCode != .invalid {
+                    let reason = task.closeReason.map { String(decoding: $0, as: UTF8.self) } ?? ""
+                    self.finish(task.closeCode == .normalClosure ? .normal : .server(code: task.closeCode.rawValue, reason: reason))
+                    return
+                }
                 let status = (task.response as? HTTPURLResponse)?.statusCode
                 self.finish(.failed(status.map { "HTTP \($0)" } ?? error.localizedDescription))
             }
