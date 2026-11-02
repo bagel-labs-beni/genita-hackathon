@@ -89,6 +89,7 @@ export class FindsRunner {
       log: this.hooks.log,
       images: this.deps.images,
       putImage: async (slot, bytes) => {
+        if (this.purged) throw new Error("account deleted");
         await this.deps.store.putImage(findId, slot, bytes);
         return `${this.deps.imageBase}/${findId}/images/${slot}`;
       },
@@ -136,7 +137,7 @@ export class FindsRunner {
   }
 
   private async persist(card: FindCard): Promise<void> {
-    if (!this.owner) return;
+    if (!this.owner || this.purged) return;
     try {
       await this.deps.store.put(this.owner, card);
     } catch (err) {
@@ -182,10 +183,13 @@ export class FindsRunner {
     return parts.join("; ").slice(0, 900);
   }
 
-  close(): void {
+  close(opts: { purge?: boolean } = {}): void {
     // a call ending keeps cards (they finish their pictures and stay in
-    // Finds) and stops pipelines that have not made a card yet
+    // Finds) and stops pipelines that have not made a card yet.
+    // purge (account deleted): stop everything and never write again.
     this.closed = true;
-    for (const [id, r] of this.running) if (!this.cards.has(id)) r.abort.abort();
+    if (opts.purge) this.purged = true;
+    for (const [id, r] of this.running) if (opts.purge || !this.cards.has(id)) r.abort.abort();
   }
+  private purged = false;
 }

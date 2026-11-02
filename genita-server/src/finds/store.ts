@@ -89,6 +89,7 @@ export class MemoryFindsStore implements FindsStore {
   async restore(owner: string, id: string) {
     const r = this.rows.get(id);
     if (!r || r.owner !== owner || !r.deletedAt) return false;
+    if (this.now() - r.deletedAt > UNDO_MS) return false; // the 24 h Undo window is over
     delete r.deletedAt;
     this.changed();
     return true;

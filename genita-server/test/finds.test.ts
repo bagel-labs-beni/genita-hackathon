@@ -439,3 +439,17 @@ test("recipe pipeline: a stalled first-look stream gets one plain retry; a secon
   const f = bad.events.find((e) => e.type === "find.failed") as Extract<ServerEvent, { type: "find.failed" }>;
   assert.equal(f.reason, "error");
 });
+
+test("store: Undo works inside 24 h only, even when /restore is called directly", async () => {
+  const { MemoryFindsStore, UNDO_MS } = await import("../src/finds/store.ts");
+  let t = 1_000_000;
+  const store = new MemoryFindsStore(() => t);
+  const card = { id: "card-0001", kind: "recipe", createdAt: "x", eyebrow: "", title: "T", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] } as any;
+  await store.put("o", card);
+  assert.equal(await store.remove("o", "card-0001"), true);
+  t += UNDO_MS - 1;
+  assert.equal(await store.restore("o", "card-0001"), true, "inside the window");
+  assert.equal(await store.remove("o", "card-0001"), true);
+  t += UNDO_MS + 1;
+  assert.equal(await store.restore("o", "card-0001"), false, "window over");
+});
