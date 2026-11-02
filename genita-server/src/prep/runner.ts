@@ -167,8 +167,6 @@ export class PrepRunner {
   /** One pass over the steps; finished steps are skipped, so a rerun only does what is left. */
   private async once(start: CompanionRecord): Promise<void> {
     const d = this.d;
-    if (!d.falKey) throw new Error("FAL_KEY is not set");
-    const falKey = d.falKey;
     const t0 = performance.now();
     let c = start;
     // serialize all store writes for this companion through one mutable record
@@ -187,6 +185,21 @@ export class PrepRunner {
         else steps.videos[path] = { ...steps.videos[path], ...patch };
         return { ...x, prep: { ...x.prep, steps } };
       });
+
+    // 11/2 Meta-only runtime: no FAL_KEY = no scene picture, Kling clips or lip bake. The companion is
+    // ready right away and the call shows the chosen photo (S09-P); nothing fails, nothing is required.
+    if (!d.falKey) {
+      const off: Partial<Step> = { status: "todo", error: "off: FAL_KEY not set (Meta-only runtime)" };
+      await setStep("scene", off);
+      for (const e of PREP_EMOTIONS) await setStep(e, off);
+      await setStep("lips", off);
+      await save((x) => ({ ...x, prep: { ...x.prep, status: "ready", readyAt: new Date().toISOString() } }));
+      await chain;
+      d.log("prep.meta_only", { companion: c.id });
+      this.events.emit("prep.ready", { userId: c.userId, companionId: c.id, emotion_videos: {} });
+      return;
+    }
+    const falKey = d.falKey;
 
     // 1. scene
     if (c.prep.steps.scene.status !== "done" || !c.prep.steps.scene.url) {
