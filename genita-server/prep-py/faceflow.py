@@ -55,10 +55,12 @@ BASE_MAP = {
     'lipMask': True,
     # cheeks / nasolabial follow the mouth corners: corner displacement d = -GN(corner); V = sum over sides of
     # w_cheek * (spread * d[t - delayFrames] + (0, -lift * (EH + EI amounts))) - w_corner * pull * d; out(p) = frame(p - V(p))
-    'cheek': {'spread': 0.4, 'pull': 1.0, 'cheek': 0.85, 'naso': 0.28, 'lift': 2.0, 'delayFrames': 1,
+    'cheek': {'spread': 0.8, 'pull': 0.0, 'cheek': 1.3, 'naso': 0.4, 'lift': 3.0, 'delayFrames': 1, 'cornerRef': 3.36,
               'roundNoInward': ['O', 'OH', 'U', 'WQ']},
     'consonantOverride': {'U': 0.55, 'WQ': 0.55},
-    'brow': {'px': 2.5}, 'nod': {'px': 4.0}, 'stress': {'topShare': 0.3, 'minGapMs': 450, 'leadMs': 80},
+    'brow': {'px': 2.5}, 'nod': {'px': 5.0, 'width': 2.0}, 'stress': {'topShare': 0.3, 'minGapMs': 450, 'leadMs': 80},
+    # whole-face life (v41): head drift / roll multipliers on the alive base, stress nods
+    'alive': {'headX': 3.0, 'headRoll': 1.5, 'nodPx': 5.0, 'nodWidth': 2.0, 'browPx': 2.5},
 }
 PROFILE = {
     'human': {},
@@ -120,6 +122,11 @@ def lip_map(kind):
         if 'nasoW' not in ch and 'naso' in ch: ch['nasoW'] = ch['naso']
         if 'cheek' not in ch and 'cheekW' in ch: ch['cheek'] = ch['cheekW']
         if 'naso' not in ch and 'nasoW' in ch: ch['naso'] = ch['nasoW']
+    if kind == 'human':
+        # lip rig (v41, critic 8.5, blind ~5:5): cross-blended lips + slow chin channel + opaque teeth layer from the top key
+        m['rig'] = {'chinLpHz': 2.0, 'chinGain': 0.3, 'chinRamp': [0.035, 0.03], 'blendFloor': [0.04, 0.16],
+                    'teethTop': {'hyst': 0.05, 'min': 0.08, 'alpha': [0.06, 0.12], 'fade': [0.1, 0.3], 'cavity': [52, 28, 30]},
+                    'lipFlowPx': 1.2, 'lipFlowSigma': 0.012, 'lipTex': 0.15}
     m['profile'] = kind
     return m
 
@@ -299,6 +306,27 @@ def interior_tone(img, mouth_px, spec, scale, neutral=None):
     # tongue shadow: the lower third of the opening x .7, changed pixels only
     low3 = cv2.GaussianBlur(inn * chg * np.clip((r - 0.62) / 0.15, 0, 1), (0, 0), fe)[..., None]
     return out * (1 - 0.3 * low3)
+
+
+def interior_mask(img, mouth_px, scale):
+    """Mouth interior of a key (lip rig teeth layer, v41): lip hull minus the lips, 1 px grown, 1 px feather (0..1)."""
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hull = np.zeros_like(keep)
+    if cs:
+        cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
+    inn = cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))
+    inn = cv2.dilate(inn, k3).astype(np.float32)
+    return cv2.GaussianBlur(inn, (0, 0), max(1.0, scale))
 
 
 def colorfix(img, mouth_px, spec):
@@ -619,6 +647,10 @@ def main():
             lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
             cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
             ent['lip'] = f'{name}.lip.png'
+            if name != 'MBP':   # lip rig teeth layer (v41): where this key's teeth / cavity may show, same size as the lip mask
+                im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0)
+                cv2.imwrite(os.path.join(a.out, f'{name}.interior.png'), np.clip(im_ * 255 + 0.5, 0, 255).astype(np.uint8))
+                ent['interior'] = f'{name}.interior.png'
         gKr = cv2.cvtColor(cv2.resize(crop, (rw, rh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         for tag, (src, dst) in (('nk', (gNr, gKr)), ('kn', (gKr, gNr))):
             if not use_flow:

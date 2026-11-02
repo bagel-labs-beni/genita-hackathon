@@ -93,7 +93,7 @@ export type FaceFlow = {
   flowSize: [number, number];
   keys: string[];
   /** nk/kn absent when the profile does not morph (character2d snaps between drawings) */
-  files: Record<string, { key: string; nk?: string; kn?: string; lip?: string }>;
+  files: Record<string, { key: string; nk?: string; kn?: string; lip?: string; interior?: string }>;
   mask: string;
   neutralRoi: string;
   lockY: number;
@@ -493,7 +493,7 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) =>
     ? {
         ...s.flow,
         files: Object.fromEntries(
-          Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}), ...(f.lip ? { lip: flowUrl(f.lip) } : {}) }]),
+          Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}), ...(f.lip ? { lip: flowUrl(f.lip) } : {}), ...(f.interior ? { interior: flowUrl(f.interior) } : {}) }]),
         ),
         mask: flowUrl(s.flow.mask),
         neutralRoi: flowUrl(s.flow.neutralRoi),
