@@ -27,7 +27,7 @@ struct RootView: View {
         }.tint(Color("Ink"))
     }
 }
-/// V04 · device voices (11/2 Meta-only: calls speak with the device's own voices, no ElevenLabs).
+/// V04 · device voices (11/2 Meta-only: calls speak with the device's own voices or the Meta voice server).
 /// Four en-US voices, best quality first (Premium → Enhanced → default), previewed with AVSpeechSynthesizer.
 @MainActor @Observable final class VoicePlayer: NSObject, AVSpeechSynthesizerDelegate {
     var playing: Int?
