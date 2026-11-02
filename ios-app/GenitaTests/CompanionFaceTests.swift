@@ -146,7 +146,7 @@ import XCTest
         setenv("GENITA_FACE_SET_DIR", Self.fixtureDir.path, 1)
         defer { unsetenv("GENITA_FACE_SET_DIR") }
         let call = CallController()
-        call.prepareFace()
+        call.prepareFace(reduceMotion: true)
         for _ in 0..<200 where call.face == nil { try await Task.sleep(for: .milliseconds(20)) }
         let face = try XCTUnwrap(call.face, "prepared before the screen is up")
         try await Task.sleep(for: .milliseconds(200))

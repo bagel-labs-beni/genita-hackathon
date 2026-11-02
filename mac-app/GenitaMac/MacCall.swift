@@ -94,7 +94,7 @@ import Foundation
         call.companionName = plan.name
         loadFace(plan, token: token, generation: gen)
         // same presence: the animated face set is ready before the conversation moves here (no still on arrival)
-        call.prepareFace()
+        call.prepareFace(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         if wantsCall { startCall() }
     }
 
