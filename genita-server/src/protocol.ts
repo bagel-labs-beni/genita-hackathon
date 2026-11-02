@@ -23,6 +23,29 @@ export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
+// F8 interpretation
+export type InterpretSource = "face" | "call";
+/** how the original reached Genita: mic by language, mic while held, the Mac call's sound, typed */
+export type BubbleVia = "voice" | "hold" | "call" | "text";
+export type BubbleStatus = "hearing" | "translating" | "speaking" | "done" | "unknown" | "skipped" | "cancelled";
+export type BubbleReason = "language_unclear" | "no_other_language" | "same_language" | "echo" | "empty";
+export type InterpretOptionsWire = { source?: InterpretSource; other?: string; app?: string };
+export type InterpretBubbleEvent = {
+  type: "interpret.bubble";
+  bubbleId: number;
+  speaker: "them" | "me" | "unknown";
+  via: BubbleVia;
+  status: BubbleStatus;
+  original: { lang: string | null; text: string };
+  translation?: { lang: string; text: string };
+  utteranceId?: number;
+  reason?: BubbleReason;
+};
+
+/** Client binary frames, only when interpret.source is "call": "GA" | kind | 0 | 0 u32, then PCM */
+export const CLIENT_FRAME_KIND_MIC = 3;
+export const CLIENT_FRAME_KIND_CALL = 4;
+
 // ───────────────────────── app → server ─────────────────────────
 
 export type PersonaWire = {
@@ -37,7 +60,8 @@ export type PersonaWire = {
 export type StartMessage = {
   type: "start";
   persona: PersonaWire;
-  user?: { name?: string; profile?: string };
+  /** id: stable owner key for Finds until login (F1-L5); timeZone: IANA, for "7:12 PM" in cards */
+  user?: { name?: string; profile?: string; id?: string; timeZone?: string };
   memories?: string[];
   history?: { role: "user" | "assistant"; text: string }[];
   mode?: Mode;
@@ -48,19 +72,71 @@ export type StartMessage = {
   mic?: boolean;
   /** default: "device" unless the server runs server TTS (GENITA_SERVER_TTS=1) */
   tts?: TtsMode;
+  /** F8: only read when mode is "interpret" */
+  interpret?: InterpretOptionsWire;
 };
 
 export type ClientMessage =
   | StartMessage
   | { type: "audio_start" }
   | { type: "audio_stop" }
-  | { type: "text"; text: string; frames?: string[] }
+  | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
-  | { type: "mode"; mode: Mode }
+  | { type: "mode"; mode: Mode; interpret?: InterpretOptionsWire }
+  | { type: "hold"; on: boolean }
   | { type: "ping"; t?: unknown }
-  | { type: "stop" };
+  | { type: "stop" }
+  | { type: "find.confirm"; findId: string; itemId: string; yes: boolean }
+  | { type: "find.stop"; findId: string };
+
+// ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
+
+export type FindKind = "recipe" | "outfit" | "link";
+/** checking → have (Spark YES + SAM box) | maybe (Spark YES, no box: "맞아?") | buy (recipe only) */
+export type FindTier = "checking" | "have" | "maybe" | "buy";
+/** 0..1 of the camera frame the box was found on */
+export type NormBox = { x1: number; y1: number; x2: number; y2: number };
+export type FindItem = {
+  id: string;
+  name: string;
+  tier: FindTier;
+  from: "camera" | "recipe" | "both";
+  count?: number;
+  optional?: boolean;
+  /** SAM box for the item's name (only on "have") */
+  box?: NormBox;
+  /** SAM box for how it looks ("red jar") — a hint on "maybe", never proof */
+  hint?: NormBox;
+  /** the user answered "맞아?" */
+  confirmed?: "yes" | "no";
+};
+export type FindImage = { slot: string; status: "pending" | "ready" | "failed"; url?: string };
+export type FindCard = {
+  id: string;
+  kind: FindKind;
+  createdAt: string;
+  eyebrow: string;
+  title: string;
+  subtitle: string;
+  /** short line for the collapsed sheet, e.g. "Need rice" */
+  status?: string;
+  /** what the companion says when the card lands */
+  say?: string;
+  hero?: FindImage;
+  /** which camera frame boxes are drawn on (the app keeps the frame; the server never stores it) */
+  camera?: { frame: number; at: string; w: number; h: number; label: string };
+  items: FindItem[];
+  steps: { text: string; source?: string; image?: FindImage }[];
+  options: { label: string; frame: number; picked: boolean; box?: NormBox }[];
+  why: string[];
+  ask: string[];
+  sources: { title: string; url: string; domain: string }[];
+  how: string[];
+  page?: { url: string; opened: boolean };
+  saved?: boolean;
+};
 
 // ───────────────────────── server → app ─────────────────────────
 
@@ -82,6 +158,8 @@ export type ServerEvent =
   | { type: "speech.end"; turnId: number }
   | { type: "transcript"; text: string; final: boolean; turnId?: number; source?: "voice" | "text" }
   | { type: "interpret.detected"; from: string; to: string }
+  | { type: "interpret.pair"; user: string; other: string | null; source: InterpretSource; by: "auto" | "client"; app?: string }
+  | InterpretBubbleEvent
   | { type: "tool"; utteranceId: number; name: string; status: string }
   | { type: "reply.delta"; utteranceId: number; text: string }
   | { type: "speaking"; on: boolean; utteranceId: number; emotion?: string }
@@ -118,7 +196,15 @@ export type ServerEvent =
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
   | { type: "lip.changed"; lip: LipPlan; peter?: { bundleId: string; pasteDy: number; fps: number } }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
-  | { type: "pong"; t: unknown };
+  | { type: "pong"; t: unknown }
+  | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
+  | { type: "find.progress"; findId: string; detail: string }
+  /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
+  | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string }
+  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
+  | { type: "find.created"; findId: string; card: FindCard }
+  | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
+  | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -145,6 +231,8 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "speech.end": { required: ["turnId"], optional: [] },
   transcript: { required: ["text", "final"], optional: ["turnId", "source"] },
   "interpret.detected": { required: ["from", "to"], optional: [] },
+  "interpret.pair": { required: ["user", "other", "source", "by"], optional: ["app"] },
+  "interpret.bubble": { required: ["bubbleId", "speaker", "via", "status", "original"], optional: ["translation", "utteranceId", "reason"] },
   tool: { required: ["utteranceId", "name", "status"], optional: [] },
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
@@ -171,6 +259,13 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "lip.changed": { required: ["lip"], optional: ["peter"] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
+  "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },
+  "find.progress": { required: ["findId", "detail"], optional: [] },
+  "find.items": { required: ["findId", "items", "checking"], optional: ["subtitle", "status"] },
+  "observe.boxes": { required: ["findId", "frame", "w", "h", "items"], optional: [] },
+  "find.created": { required: ["findId", "card"], optional: [] },
+  "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
+  "find.failed": { required: ["findId", "reason", "message"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */

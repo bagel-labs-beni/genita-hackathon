@@ -93,7 +93,7 @@ enum CallStop: Equatable {
     private(set) var micDenied = false
     private(set) var cameraOn = false
     private(set) var cameraDenied = false
-    private(set) var mode: ConversationMode = .chat
+    private(set) var mode: ConversationMode = .chat { didSet { finds.interpreting = mode == .interpret } }
     private(set) var playing = false
     private(set) var awaitingFirstAudio = false
     private(set) var interruptedHold = false
@@ -112,6 +112,13 @@ enum CallStop: Equatable {
     /// Client-side latency per answered turn: ASR end of speech → reply audio playing.
     private(set) var latencies: [Int] = []
     var companionName = "Jin"
+    /// F8 interpretation screens (INT-1~6, INT-M1/M2), from interpret.* events.
+    private(set) var interpretBoard = InterpretBoard()
+    /// Mac call interpretation: plays utterances whose route is whisper/speaker (InterpretAudioOutput).
+    /// Unset = everything plays through CallAudio as usual.
+    @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
+    @ObservationIgnored var flushRoutedAudio: (() -> Void)?
+    @ObservationIgnored private var routed: Set<Int> = []
 
     var cue: CallCue {
         CallCue.derive(link: link, phase: phase, playing: playing, awaitingFirstAudio: awaitingFirstAudio, micOn: micOn,
@@ -119,6 +126,9 @@ enum CallStop: Equatable {
     }
     var canFlipCamera: Bool { cameraOn && camera.canFlip }
     var cameraSession: AVCaptureSession { camera.session }
+
+    /// F10-U-SHEET: result cards of this call and the sheet's state.
+    let finds = FindsModel()
 
     @ObservationIgnored let camera = CallCamera()
     @ObservationIgnored private let audio = CallAudio()
@@ -164,6 +174,52 @@ enum CallStop: Equatable {
             guard let self, !self.cancelled.contains(id) else { return }
             self.audio.markComplete(utteranceId: id)
         }
+        finds.send = { [weak self] message in self?.socket?.send(message) }
+        finds.saveRemote = { [weak self] id, saved in await self?.saveFind(id, saved) ?? false }
+    }
+
+    @ObservationIgnored private var findsOwner: String?
+
+    /// `sub` of a session JWT (the account id); "dev" for the shared dev token; nil when signed out.
+    static func tokenSubject(_ token: String?) -> String? {
+        guard let token, !token.isEmpty else { return nil }
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return "dev" }
+        var b64 = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let data = Data(base64Encoded: b64), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["sub"] as? String
+    }
+
+    /// POST /v1/finds/:id/save (bookmark), so it survives a restart and shows on the other device.
+    func saveFind(_ id: String, _ saved: Bool) async -> Bool {
+        guard let url = findsURL("/v1/finds/\(id)/save") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["saved": saved])
+        guard let (_, res) = try? await URLSession.shared.data(for: req) else { return false }
+        return (res as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// Stable per install until login (F1-L5): the owner of this user's saved Finds on the server.
+    static var installId: String {
+        let key = "genita.install.id"
+        if let id = UserDefaults.standard.string(forKey: key) { return id }
+        let id = UUID().uuidString
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }
+
+    /// A server-relative Finds URL ("/v1/finds/<id>/images/hero") on the session's host, with the token.
+    func findsURL(_ path: String) -> URL? {
+        let endpoint = fixedEndpoint ?? .current()
+        guard var c = URLComponents(url: endpoint.url, resolvingAgainstBaseURL: false) else { return nil }
+        c.scheme = c.scheme == "wss" ? "https" : "http"
+        let parts = path.split(separator: "?", maxSplits: 1)
+        c.path = String(parts[0])
+        c.queryItems = endpoint.token.map { [URLQueryItem(name: "token", value: $0)] }
+        return c.url
     }
 
     /// Stop the companion's sound now: server audio and device speech alike (barge-in, cancel, background).
@@ -180,11 +236,19 @@ enum CallStop: Equatable {
         userEnded = false
         stopped = nil
         fixedEndpoint = endpoint
+        // Finds kept in memory belong to whoever was signed in: another account (or a sign-out) starts empty
+        let owner = Self.tokenSubject((endpoint ?? .current()).token)
+        if owner != findsOwner { finds.reset(); findsOwner = owner }
         var s = start
         s.mic = false
+        var user = s.user ?? .init()
+        user.id = user.id ?? Self.installId
+        user.timeZone = user.timeZone ?? TimeZone.current.identifier
+        s.user = user
         self.start = s
         history = s.history ?? []
         mode = s.mode ?? .chat
+        uplink.callFraming = mode == .interpret && s.interpret?.source == .call
         audio.start()
         connect()
         #if DEBUG
@@ -202,6 +266,8 @@ enum CallStop: Equatable {
         camera.stop()
         micOn = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
+        routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
+        finds.callEnded()
         phase = .listening; awaitingFirstAudio = false; interruptedHold = false; answerFailed = false
         #if DEBUG
         fixture?.stop()
@@ -261,12 +327,42 @@ enum CallStop: Equatable {
         return 1200
     }
 
-    func setInterpreting(_ on: Bool) {
+    /// ⋮ Interpret a conversation (INT-0), or Mac INT-M0 with `.init(source: .call, app: "FaceTime")`.
+    func setInterpreting(_ on: Bool, options: InterpretOptions? = nil) {
         let next: ConversationMode = on ? .interpret : .chat
-        guard next != mode else { return }
+        let opts = on ? options : nil
+        let changed = next != mode || opts != start?.interpret
         mode = next
         start?.mode = next
-        socket?.send(.mode(next))
+        start?.interpret = opts
+        uplink.callFraming = opts?.source == .call
+        if changed {
+            if let opts { socket?.send(.modeInterpret(opts)) } else { socket?.send(.mode(next)) }
+        }
+        if on {
+            interpretBoard.active = true
+            interpretBoard.companionName = companionName
+            // the rail (and its mic button) is hidden while interpreting; interpretation needs the mic
+            if !micOn { toggleMic() }
+        } else {
+            if interpretBoard.holding { socket?.send(.hold(on: false)) }
+            interpretBoard = InterpretBoard(companionName: companionName)
+        }
+    }
+
+    /// Hold to talk (INT-4) / Hold to reply (INT-M2).
+    func setHold(_ on: Bool) {
+        guard interpretBoard.holding != on else { return }
+        interpretBoard.holding = on
+        if on && !micOn { toggleMic() }
+        socket?.send(.hold(on: on))
+    }
+
+    /// Mac call interpretation: where the call app's sound goes (ScreenCaptureKit chunks, PCM s16le 24 kHz).
+    /// Callable from the capture queue.
+    var callSoundSink: @Sendable (Data) -> Void {
+        let uplink = uplink
+        return { uplink.sendCall($0) }
     }
 
     /// Tap on the face while the companion talks: stop now, the server cancels the reply.
@@ -418,6 +514,7 @@ enum CallStop: Equatable {
             lip = r.lip
             tts = r.tts ?? .server
             mode = r.mode
+            interpretBoard.apply(event)
             phase = .listening
             keepAlive()
             log.info("ready session=\(r.sessionId, privacy: .public) lip=\(r.lip.active.rawValue, privacy: .public) tts=\(self.tts.rawValue, privacy: .public)")
@@ -425,15 +522,19 @@ enum CallStop: Equatable {
             setPhase(s.state)
         case .speechStart:
             answerFailed = false
+            finds.userStartedTalking()
             if cameraOn, let frame = camera.snapshotBase64() {
                 firstFrame = frame
+                finds.latestFrames = [frame]
                 socket?.send(.frames(.init(images: [frame])))
             }
         case .speechEnd:
             speechEndAt = Date()
             if cameraOn, let frame = camera.snapshotBase64() {
                 // Two frames, ~start and ~end of the question, replace the single one sent at speech start.
-                socket?.send(.frames(.init(images: [firstFrame, frame].compactMap { $0 })))
+                let images = [firstFrame, frame].compactMap { $0 }
+                finds.latestFrames = images
+                socket?.send(.frames(.init(images: images)))
             }
             firstFrame = nil
         case let .transcript(t):
@@ -452,7 +553,7 @@ enum CallStop: Equatable {
             voice.say(sentence)
         case let .reply(r):
             if !r.interpret, !r.text.isEmpty { history.append(.init(role: .assistant, text: r.text)) }
-            if !cancelled.contains(r.utteranceId) {
+            if !cancelled.contains(r.utteranceId), !routed.contains(r.utteranceId) {
                 // Device mode: complete once every `say` of the reply is rendered into the player.
                 if tts == .device { voice.replyArrived(r.utteranceId) } else { audio.markComplete(utteranceId: r.utteranceId) }
             }
@@ -460,6 +561,7 @@ enum CallStop: Equatable {
             cancelled.insert(c.utteranceId)
             mouth.cancel(c.utteranceId)
             flushPlayback()
+            if routed.contains(c.utteranceId) { flushRoutedAudio?() }
             playing = false
             awaitingFirstAudio = false
             log.info("cancelled utterance=\(c.utteranceId) reason=\(c.reason.rawValue, privacy: .public)")
@@ -474,10 +576,18 @@ enum CallStop: Equatable {
             if e.code == "spark_unavailable" { answerFailed = true }
         case let .modeChanged(m):
             mode = m.mode
+            if m.mode == .chat { start?.interpret = nil; uplink.callFraming = false }
+            interpretBoard.companionName = companionName
+            interpretBoard.apply(event)
+        case .interpretPair, .interpretBubble:
+            interpretBoard.companionName = companionName
+            interpretBoard.apply(event)
         case let .lipChanged(l):
             // Only matters once the app asks for `peter` (F4-L18); kept so the face can switch layers then.
             lip = l.lip
             peter = l.peter
+        case .findStarted, .findProgress, .findItems, .observeBoxes, .findCreated, .findImage, .findFailed:
+            finds.apply(event)
         case .interpretDetected, .replyDelta, .asrStatus, .pong, .unknown:
             break
         }
@@ -493,6 +603,12 @@ enum CallStop: Equatable {
         guard header.kind == GenitaProtocol.frameKindTTSPCM else { return }
         let utterance = seqToUtterance.removeValue(forKey: header.seq) ?? currentUtterance ?? -1
         guard !cancelled.contains(utterance) else { return }
+        let route = interpretBoard.route(utteranceId: utterance)
+        if route != .normal, let routeInterpretAudio {
+            routed.insert(utterance)
+            routeInterpretAudio(AudioFrameHeader.payload(of: data), route, utterance)
+            return
+        }
         audio.enqueue(pcm: AudioFrameHeader.payload(of: data), utteranceId: utterance)
     }
 
@@ -571,11 +687,28 @@ enum CallStop: Equatable {
 final class Uplink: @unchecked Sendable {
     private let lock = NSLock()
     private var _socket: CallSocket?
+    private var _callFraming = false
     var socket: CallSocket? {
         get { lock.withLock { _socket } }
         set { lock.withLock { _socket = newValue } }
     }
-    func send(_ frame: Data) { socket?.send(audio: frame) }
+    /// Mac call interpretation (F8): every uplink frame carries a "GA" header, kind 3 mic / kind 4 call sound.
+    var callFraming: Bool {
+        get { lock.withLock { _callFraming } }
+        set { lock.withLock { _callFraming = newValue } }
+    }
+    func send(_ frame: Data) {
+        socket?.send(audio: callFraming ? Self.framed(GenitaProtocol.clientFrameKindMic, frame) : frame)
+    }
+    func sendCall(_ pcm: Data) {
+        guard callFraming else { return }
+        socket?.send(audio: Self.framed(GenitaProtocol.clientFrameKindCall, pcm))
+    }
+    static func framed(_ kind: UInt8, _ pcm: Data) -> Data {
+        var out = AudioFrameHeader(kind: kind, seq: 0).encoded()
+        out.append(pcm)
+        return out
+    }
 }
 
 extension ClientMessage.Start {

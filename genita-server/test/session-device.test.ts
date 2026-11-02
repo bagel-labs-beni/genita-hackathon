@@ -266,10 +266,12 @@ test("say.lang: Hangul text → ko-KR; else the reply language (interpretation: 
   en.session.close();
   // interpret mode, English turn → Korean target → ko-KR
   const ko = setup({ sparkText: "<neutral> 시청은 저쪽이에요." });
-  await ko.session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", mic: false }));
+  // F8 interpreter (#114): my English needs the other language set to be relayed
+  await ko.session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", interpret: { other: "Korean" }, mic: false }));
   await ko.session.onClientText(JSON.stringify({ type: "text", text: "City Hall is that way." }));
   await ko.client.waitFor((m) => m.type === "reply");
   assert.equal(ko.client.of("say")[0].lang, "ko-KR");
+  assert.equal(ko.client.bin.length, 0, "device mode: interpretation sends say text, no audio frames");
   ko.session.close();
 });
 

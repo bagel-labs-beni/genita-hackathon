@@ -17,7 +17,11 @@
     "eval:import": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/import/run.ts",
     "peter:bake": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/peter-bake.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/db-migrate.ts",
-    "accounts:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/accounts-e2e.ts"
+    "accounts:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/accounts-e2e.ts",
+    "smoke:interpret": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke-interpret.ts",
+    "eval:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-memory.ts",
+    "check:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-memory.ts",
+    "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",
