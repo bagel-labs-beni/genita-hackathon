@@ -291,7 +291,7 @@ export class Session {
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
-        if (this.interp) return this.admitInterpret(() => this.interp?.typed(text));
+        if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
@@ -482,7 +482,7 @@ export class Session {
       if (this.callAsr !== asr || !this.interp) return;
       if (e.type === "partial") this.interp.partial("call", e.text);
       else if (e.type === "speechEnd") this.interp.speechEnd("call");
-      else if (e.type === "speechComplete") this.admitInterpret(() => this.interp?.final("call", e.text));
+      else if (e.type === "speechComplete") this.interp.final("call", e.text);
     });
     asr.on("status", (s) => {
       if (s === "closed" && this.callAsr === asr) this.callAsr = null;
@@ -503,7 +503,15 @@ export class Session {
         return this.turn.utteranceId;
       },
       // no memory context or recall/remember tools in translation (useMemory = false)
-      translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
+      // D41 daily cap: each translation is a user turn. Charged here, after the interpreter dropped echoes and
+      // empty lines; a refusal fails this line like a Spark error (bubble closed as unknown), with daily_limit first.
+      translate: (req, signal) => {
+        if (this.deps.turnGate && !this.deps.turnGate.take()) {
+          this.dailyLimit();
+          return (async function* (): AsyncGenerator<SparkStreamEvent> { throw new Error("daily_limit"); })();
+        }
+        return this.sparkSource(req, signal, undefined, false);
+      },
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: this.deps.config.ttsModel, fallbackModel: this.deps.config.ttsFallbackModel, signal }),
       say: this.tts === "device" ? (utteranceId, sentence, text, lang) => this.client.sendJson({ type: "say", utteranceId, sentence, text, emotion: "neutral", lang }) : undefined,
@@ -641,7 +649,7 @@ export class Session {
       case "speechComplete":
         this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
         if (interpretCommand(e.text) === "stop") return this.switchMode("chat", "model");
-        return this.admitInterpret(() => interp.final("mic", e.text));
+        return interp.final("mic", e.text);
     }
   }
 
@@ -892,7 +900,9 @@ export class Session {
     if (!self && this.deps.turnGate && !(greeting ? this.deps.turnGate.peek() : this.deps.turnGate.take())) {
       this.dropSpeculation();
       this.dailyLimit();
-      return this.finishReply(reply);
+      // after the reducer's own effects (state thinking) went out, so the last state is listening
+      queueMicrotask(() => this.finishReply(reply));
+      return;
     }
     const signal = reply.abort.signal;
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
@@ -1177,12 +1187,6 @@ export class Session {
     this.reply = null;
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
-  }
-
-  /** An interpreted line is a user turn too (it calls Spark): spend one or refuse it. */
-  private admitInterpret(run: () => void): void {
-    if (this.deps.turnGate && !this.deps.turnGate.take()) return this.dailyLimit();
-    run();
   }
 
   private dailyLimit(): void {

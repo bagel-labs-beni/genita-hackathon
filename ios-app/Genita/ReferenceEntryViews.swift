@@ -51,7 +51,7 @@ struct ReferenceSignInView: View {
                     let node = nodes.first { $0.y == 734 && $0.type == "text" }!
                     DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
                     // D41: a small text link under the provider buttons; no new design
-                    Button { judgeAlert = true } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
+                    Button { if !signingIn { judgeAlert = true } } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
                         .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
                     Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
                     Button { legal = "Privacy Policy" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 85, height: 24).position(x: size.width / 2 + 54, y: 761 + bottom).accessibilityLabel("Privacy Policy")
@@ -68,7 +68,7 @@ struct ReferenceSignInView: View {
                     .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
-        .judgeAccessAlert(isPresented: $judgeAlert, model: model)
+        .judgeAccessAlert(isPresented: $judgeAlert, busy: $signingIn, model: model)
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             Button("Continue in demo") { model.signedIn(); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
