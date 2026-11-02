@@ -18,13 +18,13 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { loadConfig } from "../src/config.ts";
 import { startServer } from "../src/server.ts";
+import { fixturePath } from "./fixtures.ts";
 
 const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/meta.env");
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const SR = 24000;
 const FRAME = (SR * 2 * 80) / 1000; // 80 ms = 3840 bytes
-const QA = join(homedir(), "genita-fixtures/genita-lipsync-test-20261101");
 const args = process.argv.slice(2);
 const ttsArg = args.find((a) => a.startsWith("--tts="))?.slice(6) ?? "device";
 if (ttsArg !== "device" && ttsArg !== "server") throw new Error("--tts must be device or server");
@@ -40,6 +40,7 @@ let lastAudioUtt = 0;
 const turnsArg = Number(args.find((a) => a.startsWith("--turns="))?.slice(8) ?? 6);
 let files = args.filter((a) => !a.startsWith("--"));
 if (!files.length) {
+  const QA = fixturePath();
   files = [join(QA, "out/en.mp3"), ...Array.from({ length: 19 }, (_, i) => join(QA, `suite/t3/u${i}.mp3`))].filter((f) => existsSync(f)).slice(0, turnsArg);
 }
 if (!files.length) {

@@ -15,14 +15,6 @@ xcuserdata/
 **/Screenshots/
 **/iOS-Screen-Review*/
 
-# Offline Peter render outputs and Python caches
-peter-engine/output/
+# Python caches
 **/__pycache__/
 *.pyc
-
-peter-engine/runtime/models/
-peter-engine/runtime/workspace/
-peter-engine/.venv/
-peter-engine/vendor/old/content_system/data/
-peter-engine/vendor/old/content_system/backend/data/
-peter-engine/vendor/old/content_system/output/
