@@ -46,7 +46,7 @@
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
-		<string>Ink</string>
+		<string>LaunchDark</string>
 	</dict>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>

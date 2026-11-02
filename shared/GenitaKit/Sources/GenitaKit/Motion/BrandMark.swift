@@ -72,7 +72,6 @@ public struct GenitaStageTick: View {
     public var ink: Color
     public var paper: Color
     public var size: CGFloat
-    @State private var spin = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(_ status: Status, ink: Color = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255), paper: Color = .white, size: CGFloat = 24) {
@@ -88,12 +87,15 @@ public struct GenitaStageTick: View {
             Circle().fill(status == .done ? ink : ink.opacity(0.08))
                 .scaleEffect(status == .done ? 1 : 0.92)
             if status == .running {
-                Circle().trim(from: 0, to: 0.28)
-                    .stroke(ink, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .padding(2)
-                    .onAppear { if !still { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true } } }
-                    .transition(.opacity)
+                // time-driven spin: restarts cleanly on every re-entry, stops for Reduce Motion / UI tests
+                TimelineView(.animation(minimumInterval: 1 / 60, paused: still)) { ctx in
+                    let turn = still ? 0 : ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.9) / 0.9
+                    Circle().trim(from: 0, to: 0.28)
+                        .stroke(ink, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(turn * 360))
+                }
+                .padding(2)
+                .transition(.opacity)
             }
             CheckShape()
                 .trim(from: 0, to: status == .done ? 1 : 0)
@@ -104,7 +106,7 @@ public struct GenitaStageTick: View {
             }
         }
         .frame(width: size, height: size)
-        .animation(still ? GenitaMotion.fade : GenitaMotion.bouncy, value: status)
+        .animation(still ? GenitaMotion.fade : GenitaMotion.ui, value: status)
         .accessibilityHidden(true)
     }
 }

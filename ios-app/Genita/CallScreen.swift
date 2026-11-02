@@ -99,7 +99,7 @@ struct CallCueView: View {
             HStack(spacing: 8) {
                 content.icon
                 Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
-                    .genitaThinkingShimmer(cue == .thinking).contentTransition(.opacity)
+                    .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
@@ -112,7 +112,7 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
-            .animation(CallMotion.reviewStill ? nil : GenitaMotion.snappy, value: content.text)
+            .animation(CallMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0), value: content.text)
             // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }

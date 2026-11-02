@@ -1,228 +1,219 @@
 import SwiftUI
-#if os(iOS)
-import CoreMotion
-import UIKit
-#endif
 
-/// Launch splash, variant B "Orbit" (Chelsea's pick, 11/2): on a dark field the brandmark's eye outline draws
-/// itself and the orbit line sweeps through; a light rises from behind the mark until it stands as a
-/// silhouette with a rim glow around its edges (light haptic at the peak); then the light floods out and
-/// carries into the first screen (A02's bright backdrop). ≤ 1.6 s, tap/click skips. Tilt (iPhone), finger or
-/// pointer shifts where the light sits, so the rim moves around the mark. Reduce Motion: the finished frame,
-/// still, 0.5 s, then a fade. UI tests skip it unless `--splash-demo`.
-/// Times live in `Timing`; colours in the initialiser — match design/publish/motion when it changes.
+/// Launch splash B+ "Orbit Backlight" (Chelsea's pick, motion page `launch`): on #070707 the mark's outline draws
+/// itself, a blue dot circles the orbit once, a light rises from behind until the mark is a black silhouette
+/// with a lit rim (eclipse), soft haptic at the peak (0.86 s) as the light breathes 1 → 1.12 → 1, the wordmark
+/// rises, then the mark steps back and the same light moves behind A02's head — A02 (rendered underneath the
+/// whole time) takes over that light. ≤ 1.6 s; a tap jumps to the end and hands over in 0.38 s. Tilt / pointer
+/// moves the light (the rim on that side brightens) and leans the mark ±10°. Reduce Motion: the lit mark fades
+/// in (0.2 s) and at 0.7 s crossfades to A02 (0.4 s), haptic kept. UI tests skip it unless `--splash-demo`.
 public struct GenitaSplash: View {
-    public struct Timing: Sendable {
-        public var eyeDraw = 0.55
-        public var orbitAt = 0.28
-        public var orbit = 0.45
-        public var lightAt = 0.32
-        /// the light peaks here (haptic)
-        public var lightPeak = 0.85
-        public var fillAt = 0.5
-        public var fill = 0.32
-        /// auto wake (exit start); exit lasts `exit` → first screen at wakeAt + exit ≤ 1.6 s
-        public var wakeAt = 1.2
-        public var exit = 0.38
-        public static let standard = Timing()
-    }
-
-    var timing: Timing
-    var field: Color
-    var ink: Color
-    var light: Color
     var onFinished: () -> Void
 
     @State private var start: Date?
-    @State private var exiting = false
-    @State private var gone = false
-    @State private var lean = CGSize.zero // −1…1 each axis
+    @State private var skipAt: Double?
+    @State private var finished = false
+    @State private var lean = CGSize.zero
+    @State private var leanSource = GenitaLeanSource()
+    @State private var hapticDone = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    #if os(iOS)
-    @State private var motion = CMMotionManager()
-    #endif
-    /// built once per splash (not per frame)
-    private let timeline: KeyframeTimeline<Frame>
+    private let timeline = Self.makeTimeline()
 
-    public init(timing: Timing = .standard,
-                field: Color = Color(red: 10 / 255, green: 10 / 255, blue: 11 / 255),
-                ink: Color = Color(red: 14 / 255, green: 14 / 255, blue: 15 / 255),
-                light: Color = Color(red: 1, green: 0.972, blue: 0.93),
-                onFinished: @escaping () -> Void) {
-        self.timing = timing
-        self.field = field
-        self.ink = ink
-        self.light = light
-        self.onFinished = onFinished
-        self.timeline = Self.makeTimeline(timing)
-    }
+    public init(onFinished: @escaping () -> Void) { self.onFinished = onFinished }
+
+    // MARK: timing (motion page B+ table)
+    static let handoffAt = 1.08
+    static let handoff = 0.47      // → first screen at 1.55 s (≤ 1.6 s with frame jitter)
+    static let skipHandoff = 0.38
+    static let peak = 0.86
 
     struct Frame {
-        var eye = 0.0     // outline trim of the eye/G
-        var orbit = 0.0   // trim of the orbit line
-        var stroke = 1.0  // outline opacity
-        var fill = 0.0    // silhouette fill
-        var light = 0.0   // backlight strength (0…1, peaks at lightPeak)
-        var rise = 1.0    // backlight position: 1 = below the mark, 0 = centred behind it
-        static let finished = Frame(eye: 1, orbit: 1, stroke: 0, fill: 1, light: 0.8, rise: 0)
+        var outline = 0.0   // 0–0.56 outline trim
+        var orbit = 0.0     // 0.08–0.78 dot position on the orbit
+        var light = 0.0     // 0.34–0.86 light up from below
+        var fill = 0.0      // 0.48–0.86 body fill + rim
+        var breathe = 1.0   // 0.86–1.31: 1 → 1.12 → 1
+        var word = 0.0      // 0.78–1.08 wordmark
+        static let finished = Frame(outline: 1, orbit: 1, light: 1, fill: 1, breathe: 1, word: 1)
     }
 
-    private static func makeTimeline(_ t: Timing) -> KeyframeTimeline<Frame> {
+    private static func makeTimeline() -> KeyframeTimeline<Frame> {
         KeyframeTimeline(initialValue: Frame()) {
-            KeyframeTrack(\.eye) { CubicKeyframe(1, duration: t.eyeDraw) }
+            KeyframeTrack(\.outline) { CubicKeyframe(1, duration: 0.56) }
             KeyframeTrack(\.orbit) {
-                LinearKeyframe(0, duration: t.orbitAt)
-                CubicKeyframe(1, duration: t.orbit)
-            }
-            KeyframeTrack(\.stroke) {
-                LinearKeyframe(1, duration: t.fillAt + t.fill * 0.6)
-                CubicKeyframe(0, duration: 0.22)
-            }
-            KeyframeTrack(\.fill) {
-                LinearKeyframe(0, duration: t.fillAt)
-                CubicKeyframe(1, duration: t.fill)
+                LinearKeyframe(0, duration: 0.08)
+                LinearKeyframe(1, duration: 0.70)
             }
             KeyframeTrack(\.light) {
-                LinearKeyframe(0, duration: t.lightAt)
-                CubicKeyframe(1, duration: t.lightPeak - t.lightAt)
-                SpringKeyframe(0.8, duration: 0.35, spring: .smooth)
+                LinearKeyframe(0, duration: 0.34)
+                CubicKeyframe(1, duration: 0.52)
             }
-            KeyframeTrack(\.rise) {
-                LinearKeyframe(1, duration: t.lightAt)
-                SpringKeyframe(0, duration: t.lightPeak - t.lightAt + 0.1, spring: .bouncy(duration: 0.6, extraBounce: 0.05))
+            KeyframeTrack(\.fill) {
+                LinearKeyframe(0, duration: 0.48)
+                CubicKeyframe(1, duration: 0.38)
+            }
+            KeyframeTrack(\.breathe) {
+                LinearKeyframe(1, duration: Self.peak)
+                CubicKeyframe(1.12, duration: 0.2)
+                CubicKeyframe(1, duration: 0.25)
+            }
+            KeyframeTrack(\.word) {
+                LinearKeyframe(0, duration: 0.78)
+                CubicKeyframe(1, duration: 0.30)
             }
         }
     }
 
     public var body: some View {
-        GeometryReader { g in
-            let markWidth = min(g.size.width * 0.42, 220)
-            ZStack {
-                field
-                if reduceMotion {
-                    stage(.finished, width: markWidth)
-                } else {
-                    // seekable keyframes: the same timeline renders live, or frozen at GENITA_SPLASH_AT (review shots)
-                    TimelineView(.animation(paused: start == nil || Self.frozenAt != nil || exiting)) { ctx in
-                        let t = Self.frozenAt ?? start.map { ctx.date.timeIntervalSince($0) } ?? 0
-                        stage(timeline.value(time: t), width: markWidth)
-                    }
+        GeometryReader { safe in
+            let top = safe.safeAreaInsets.top - 44 // same origin as A02 (390 × 844 board)
+            GeometryReader { full in
+                TimelineView(.animation(paused: start == nil || Self.frozenAt != nil || finished)) { ctx in
+                    let t = Self.frozenAt ?? start.map { ctx.date.timeIntervalSince($0) } ?? 0
+                    scene(t: t, size: full.size, top: top)
+                        .onChange(of: t >= endTime) { _, done in if done { finish() } }
                 }
-                // the light floods out and carries into the first screen
-                light.opacity(exiting ? 1 : 0)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { v in follow(v.location, in: full.size) }
+                    .onEnded { v in if hypot(v.translation.width, v.translation.height) < 12 { skip() } else { follow(nil, in: full.size) } })
+                #if os(macOS)
+                .onContinuousHover { phase in
+                    if case let .active(p) = phase { follow(p, in: full.size) } else { follow(nil, in: full.size) }
+                }
+                #endif
             }
-            .frame(width: g.size.width, height: g.size.height)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { v in follow(v.location, in: g.size) }
-                .onEnded { v in
-                    // a tap (little movement) wakes the app; a drag just moves the light
-                    if hypot(v.translation.width, v.translation.height) < 12 { wake() } else { follow(nil, in: g.size) }
-                })
-            #if os(macOS)
-            .onContinuousHover { phase in
-                if case let .active(p) = phase { follow(p, in: g.size) } else { follow(nil, in: g.size) }
-            }
-            #endif
+            .ignoresSafeArea()
         }
-        .ignoresSafeArea()
-        .opacity(gone ? 0 : 1)
         .accessibilityElement()
         .accessibilityLabel("Genita")
         .accessibilityHint("Tap to start")
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { wake() }
+        .accessibilityAction { skip() }
         .accessibilityIdentifier("splash")
         .task { await run() }
-        .onDisappear { stopTilt() }
+        .onDisappear { leanSource.stop() }
     }
 
-    /// DEBUG review shots: `GENITA_SPLASH_AT=0.4` renders that instant, still, and never auto-wakes (tap still does).
-    static var frozenAt: Double? {
-        #if DEBUG
-        ProcessInfo.processInfo.environment["GENITA_SPLASH_AT"].flatMap(Double.init)
-        #else
-        nil
-        #endif
+    // MARK: drawing
+
+    private var endTime: Double {
+        if reduceMotion { return 1.1 }
+        return (skipAt ?? Self.handoffAt) + (skipAt == nil ? Self.handoff : Self.skipHandoff)
     }
 
-    @ViewBuilder private func stage(_ f: Frame, width: CGFloat) -> some View {
-        let height = width * BrandMarkShape.size.height / BrandMarkShape.size.width
-        // where the light sits: rises from below, then follows the tilt / finger
-        let lightOffset = CGSize(width: lean.width * width * 0.22, height: f.rise * width * 0.9 + lean.height * width * 0.16)
+    @ViewBuilder private func scene(t: Double, size: CGSize, top: CGFloat) -> some View {
+        let calm = reduceMotion
+        let hStart = skipAt ?? Self.handoffAt
+        let hDur = skipAt == nil ? Self.handoff : Self.skipHandoff
+        // hand-off progress on the "move across the screen" curve (0.77, 0, 0.175, 1)
+        let h = calm ? 0 : Self.inOut(max(0, min(1, (t - hStart) / hDur)))
+        let f: Frame = calm || skipAt != nil ? .finished : timeline.value(time: min(t, Self.handoffAt + 0.3))
+        let dx = (size.width - 390) / 2
+        let markW: CGFloat = 160
+        let markH = markW * BrandMarkShape.size.height / BrandMarkShape.size.width
+        let markC = CGPoint(x: size.width / 2, y: 360 + top)
+        // light: splash pose (≈ 308 × 198 at 207,360, rising 42 pt) → A02 pose (440 at 200,342)
+        let lightC = CGPoint(x: lerp(207 + dx, 200 + dx, h) + lean.width * 22, y: lerp(360 + top + 42 * (1 - f.light), 342 + top, h) + lean.height * 14)
+        let lightS = CGSize(width: lerp(0.7, 1, h) * f.breathe, height: lerp(0.45, 1, h) * f.breathe)
+        // Reduce Motion: fade in 0.2 s, crossfade to A02 at 0.7 s over 0.4 s
+        let calmAlpha = calm ? min(1, t / 0.2) * (1 - max(0, min(1, (t - 0.7) / 0.4))) : 1
+        let fieldAlpha = calm ? calmAlpha : 1 - Self.inOut(max(0, min(1, (t - hStart) / (hDur * 0.9))))
+        let markAlpha = calm ? calmAlpha : 1 - max(0, min(1, (t - hStart) / 0.3))
+
         ZStack {
-            // backlight: a warm bloom behind the mark
-            RadialGradient(colors: [light.opacity(0.95), light.opacity(0.35), light.opacity(0)], center: .center, startRadius: 0, endRadius: width * 0.75)
-                .frame(width: width * 1.8, height: width * 1.8)
-                .scaleEffect(0.6 + 0.4 * f.light)
-                .opacity(f.light)
-                .offset(lightOffset)
-                .blur(radius: 6)
-            // rim: the mark's own shape, lit and blurred, peeking out around its edges (opposite the light)
-            BrandMarkShape().fill(light)
-                .frame(width: width, height: height)
-                .scaleEffect(1.035)
-                .blur(radius: 5)
-                .opacity(f.light * f.fill)
-                .offset(x: -lightOffset.width * 0.03, y: -lightOffset.height * 0.03)
-            ZStack {
-                BrandMarkShape().fill(ink).opacity(f.fill)
-                BrandMarkShape(part: .eye).trim(from: 0, to: f.eye)
-                    .stroke(light.opacity(0.92), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                    .opacity(f.stroke)
-                BrandMarkShape(part: .orbit).trim(from: 0, to: f.orbit)
-                    .stroke(light, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                    .opacity(f.stroke)
-            }
-            .frame(width: width, height: height)
-            .offset(x: lean.width * 4, y: lean.height * 4)
-            .rotation3DEffect(.degrees(Double(lean.width) * 6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-            .rotation3DEffect(.degrees(Double(-lean.height) * 6), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+            GenitaLight.field.opacity(fieldAlpha)
+            GenitaBacklight(intensity: (calm ? 1 : f.light) * (calm ? calmAlpha : 1) * (1 - max(0, min(1, (h - 0.35) / 0.45))) /* A02 owns the same light behind the head from here */, time: t)
+                .frame(width: 440, height: 440)
+                .scaleEffect(x: lightS.width, y: lightS.height)
+                .position(lightC)
+            mark(f, t: t, width: markW, height: markH)
+                .scaleEffect(1 - 0.06 * max(0, min(1, (t - hStart) / 0.3)))
+                .rotation3DEffect(.degrees(Double(lean.width) * 10), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                .rotation3DEffect(.degrees(Double(-lean.height) * 10), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                .position(markC)
+                .opacity(markAlpha)
+            wordmark(f: f, h: h, size: size, top: top, markBottom: markC.y + markH / 2)
+                .opacity(calm ? calmAlpha : 1 - max(0, (h - 0.7) / 0.3))
         }
-        .scaleEffect(exiting ? 1.12 : 1)
+        .frame(width: size.width, height: size.height)
     }
 
-    // MARK: timing
+    @ViewBuilder private func mark(_ f: Frame, t: Double, width: CGFloat, height: CGFloat) -> some View {
+        // the rim is brighter on the side the light comes from
+        let away = CGSize(width: -lean.width * 1.4, height: 1.6 - lean.height * 0.8)
+        ZStack {
+            // bloom behind: the mark blurred 12 and 4.5, lit
+            BrandMarkShape().fill(GenitaLight.glint).blur(radius: 12).opacity(0.55 * f.light)
+            BrandMarkShape().fill(GenitaLight.glint).blur(radius: 4.5).opacity(0.75 * f.light)
+            // body
+            BrandMarkShape().fill(GenitaLight.body).opacity(f.fill)
+            // rim band (the outline turns into a lit edge)
+            ZStack {
+                BrandMarkShape().fill(GenitaLight.glint)
+                BrandMarkShape().fill(.black).offset(away).blendMode(.destinationOut)
+            }
+            .compositingGroup()
+            .opacity(f.fill * min(1, f.light * 1.2))
+            // outline drawing in
+            BrandMarkShape().trim(from: 0, to: f.outline)
+                .stroke(GenitaLight.glint, style: StrokeStyle(lineWidth: 0.9, lineCap: .round, lineJoin: .round))
+                .opacity(1 - f.fill * 0.85)
+            // the blue dot circling the orbit once
+            if f.orbit > 0, f.orbit < 1 {
+                let head = f.orbit
+                Ellipse().trim(from: max(0, head - 0.08), to: head)
+                    .stroke(GenitaLight.accent, style: StrokeStyle(lineWidth: 2.4, lineCap: .round))
+                    .frame(width: width * 1.18, height: height * 0.62)
+                    .shadow(color: GenitaLight.accent.opacity(0.8), radius: 4)
+                    .opacity(sin(head * .pi) * 1.2)
+            }
+        }
+        .frame(width: width, height: height)
+    }
+
+    @ViewBuilder private func wordmark(f: Frame, h: Double, size: CGSize, top: CGFloat, markBottom: CGFloat) -> some View {
+        if let logo = genitaBundleImage("logo") {
+            // under the mark, then up to A02's top-left logo slot (66.571, 78.823) at its size
+            let from = CGPoint(x: size.width / 2, y: markBottom + 34 + 8 * (1 - f.word))
+            let to = CGPoint(x: 66.571, y: 78.823 + top)
+            logo.resizable()
+                .frame(width: lerp(88, 63.142, h), height: lerp(31.55, 22.626, h))
+                .position(x: lerp(from.x, to.x, h), y: lerp(from.y, to.y, h))
+                .opacity(f.word)
+        }
+    }
+
+    // MARK: control
 
     @MainActor private func run() async {
-        if reduceMotion {
-            try? await Task.sleep(for: .milliseconds(500))
-            wake()
-            return
-        }
         start = Date()
         if Self.frozenAt != nil { return } // review shot: hold the frame until tapped
-        startTilt()
-        #if os(iOS)
-        let haptic = UIImpactFeedbackGenerator(style: .soft)
-        haptic.prepare()
-        try? await Task.sleep(for: .milliseconds(Int(timing.lightPeak * 1000)))
-        if !exiting { haptic.impactOccurred(intensity: 0.8) } // the light peaks
-        try? await Task.sleep(for: .milliseconds(Int((timing.wakeAt - timing.lightPeak) * 1000)))
-        #else
-        try? await Task.sleep(for: .milliseconds(Int(timing.wakeAt * 1000)))
-        #endif
-        wake()
-    }
-
-    @MainActor private func wake() {
-        guard !exiting, !gone else { return }
-        stopTilt()
-        if reduceMotion {
-            withAnimation(.easeOut(duration: 0.25)) { gone = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { onFinished() }
-            return
+        if !reduceMotion {
+            leanSource.start { l in withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = l } }
         }
-        // flood with light (first half), then let the first screen through (second half)
-        withAnimation(.easeIn(duration: timing.exit * 0.45)) { exiting = true }
-        withAnimation(.easeOut(duration: timing.exit * 0.55).delay(timing.exit * 0.45)) { gone = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + timing.exit) { onFinished() }
+        try? await Task.sleep(for: .milliseconds(Int((reduceMotion ? 0.2 : Self.peak) * 1000)))
+        if skipAt == nil, !hapticDone { hapticDone = true; GenitaHaptic.impact(soft: true, intensity: 0.6) } // the light peaks
     }
 
-    // MARK: lean (tilt, finger, pointer)
+    @MainActor private func skip() {
+        guard !finished, skipAt == nil, let start, !reduceMotion else { if reduceMotion { finish() }; return }
+        let now = Date().timeIntervalSince(start)
+        guard now < Self.handoffAt else { return } // already handing over
+        skipAt = Self.frozenAt ?? now
+        if Self.frozenAt != nil { self.start = Date().addingTimeInterval(-(Self.frozenAt ?? 0)); Self.unfreeze = true }
+    }
+
+    @MainActor private func finish() {
+        guard !finished else { return }
+        finished = true
+        leanSource.stop()
+        Self.handedOff = true
+        onFinished()
+    }
 
     private func follow(_ point: CGPoint?, in size: CGSize) {
-        guard !reduceMotion, !exiting else { return }
+        guard !reduceMotion, !finished else { return }
         let target: CGSize = point.map {
             CGSize(width: max(-1, min(1, ($0.x - size.width / 2) / (size.width / 2))),
                    height: max(-1, min(1, ($0.y - size.height / 2) / (size.height / 2))))
@@ -230,24 +221,23 @@ public struct GenitaSplash: View {
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.8)) { lean = target }
     }
 
-    private func startTilt() {
-        #if os(iOS)
-        guard motion.isDeviceMotionAvailable, !GenitaMotion.reviewStill else { return }
-        motion.deviceMotionUpdateInterval = 1 / 60
-        motion.startDeviceMotionUpdates(to: .main) { data, _ in
-            guard let a = data?.attitude else { return }
-            let x = max(-1, min(1, a.roll / 0.35)), y = max(-1, min(1, (a.pitch - 0.6) / 0.35))
-            MainActor.assumeIsolated { // delivered on the main queue
-                guard !exiting else { return }
-                withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = CGSize(width: x, height: y) }
-            }
-        }
-        #endif
-    }
+    // MARK: helpers
 
-    private func stopTilt() {
-        #if os(iOS)
-        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+    private func lerp(_ a: CGFloat, _ b: CGFloat, _ p: Double) -> CGFloat { a + (b - a) * CGFloat(p) }
+    /// cubic-bezier(0.77, 0, 0.175, 1) approximated by a symmetric quart in-out
+    static func inOut(_ x: Double) -> Double { x < 0.5 ? 8 * pow(x, 4) : 1 - pow(-2 * x + 2, 4) / 2 }
+
+    /// The splash has handed its light to the first screen this launch (A02 then rises its own light in 0.5 s).
+    nonisolated(unsafe) public static var handedOff = GenitaSplash.shouldShowAtLaunch
+    nonisolated(unsafe) static var unfreeze = false
+
+    /// DEBUG review shots: `GENITA_SPLASH_AT=0.4` renders that instant, still, and never auto-wakes (a tap still does).
+    static var frozenAt: Double? {
+        #if DEBUG
+        if unfreeze { return nil }
+        return ProcessInfo.processInfo.environment["GENITA_SPLASH_AT"].flatMap(Double.init)
+        #else
+        return nil
         #endif
     }
 
@@ -281,7 +271,7 @@ struct SplashOverlayModifier: ViewModifier {
         // UI test reads how long the splash held the first screen (≤ 1600 ms)
         .overlay(alignment: .topLeading) {
             if let elapsedMs {
-                Color.clear.frame(width: 1, height: 1).accessibilityElement().accessibilityLabel("\(elapsedMs)").accessibilityIdentifier("splashElapsedMs")
+                Text(String(elapsedMs)).font(.system(size: 2)).opacity(0.02).allowsHitTesting(false).accessibilityIdentifier("splashElapsedMs")
             }
         }
         #endif
@@ -290,6 +280,6 @@ struct SplashOverlayModifier: ViewModifier {
 
 public extension View {
     /// Launch splash over this (root) view, once per launch / window. The view underneath renders at once,
-    /// so waking reveals a ready first screen.
+    /// so the hand-off reveals a ready first screen.
     func genitaSplash(_ enabled: Bool = true) -> some View { modifier(SplashOverlayModifier(enabled: enabled)) }
 }

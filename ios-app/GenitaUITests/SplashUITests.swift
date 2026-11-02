@@ -21,7 +21,7 @@ final class SplashUITests: XCTestCase {
     }
 
     func testSplashFrames() throws {
-        for t in ["0.15", "0.45", "0.75", "0.9", "1.15"] {
+        for t in ["0.2", "0.6", "0.86", "1.2", "1.4"] {
             let app = launch(at: t)
             XCTAssertTrue(app.descendants(matching: .any)["splash"].waitForExistence(timeout: 10), "splash at \(t)")
             shot(app, "call-splash-\(t)")
@@ -35,7 +35,7 @@ final class SplashUITests: XCTestCase {
         XCTAssertTrue(elapsed.waitForExistence(timeout: 10))
         let ms = Int(elapsed.label) ?? .max
         print("splash held the first screen for \(ms) ms")
-        XCTAssertLessThanOrEqual(ms, 1700, "splash must wake into the first screen within ~1.6 s")
+        XCTAssertLessThanOrEqual(ms, 1600, "splash must hand over to the first screen within 1.6 s")
         XCTAssertFalse(app.descendants(matching: .any)["splash"].exists)
         shot(app, "call-splash-first-screen")
     }

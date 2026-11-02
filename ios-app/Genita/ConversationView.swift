@@ -70,7 +70,7 @@ struct ConversationView: View {
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.genitaToast)
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
                         }
                         if !connecting && !interpreting {
                             CallCueView(cue: call.cue, name: call.companionName, retry: call.retryAnswer, openSettings: openAppSettings)
