@@ -13,6 +13,8 @@ export const FRAME_KIND_TTS_PCM = 1;
 export const FRAME_KIND_PETER = 2;
 
 export type LipMode = "peter" | "atlas" | "none";
+/** Who speaks the reply: the server (ElevenLabs PCM frames) or the device (`say` text, on-device TTS). */
+export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
 export type CancelReason = "barge_in" | "text" | "client";
@@ -68,6 +70,8 @@ export type StartMessage = {
   lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
+  /** default: "device" unless the server runs server TTS (GENITA_SERVER_TTS=1) */
+  tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
 };
@@ -146,6 +150,8 @@ export type ServerEvent =
       lip: LipPlan;
       voiceId: string;
       bargeIn: { minMs: number; minWords: number };
+      /** the voice mode actually used for this call */
+      tts: TtsMode;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -169,6 +175,8 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
+  | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
   | { type: "utterance.cancelled"; utteranceId: number; reason: CancelReason }
   | {
@@ -217,7 +225,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
@@ -229,6 +237,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
   "turn.metrics": {

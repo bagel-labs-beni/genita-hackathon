@@ -1,0 +1,9 @@
+{
+  "type": "start",
+  "persona": {
+    "name": "Pip",
+    "kind": "animal"
+  },
+  "language": "English",
+  "tts": "device"
+}

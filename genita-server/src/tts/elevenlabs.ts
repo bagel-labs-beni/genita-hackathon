@@ -25,6 +25,8 @@ export type TtsRequest = {
   fallbackModel?: string;
   signal?: AbortSignal;
   baseUrl?: string;
+  /** BCP-47 hint for the sentence (server voice picks eng/kor from it; ElevenLabs ignores it) */
+  lang?: string;
 };
 
 async function open(req: TtsRequest, model: string): Promise<Response> {
