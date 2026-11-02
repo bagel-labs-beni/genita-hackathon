@@ -31,11 +31,14 @@ var soundPlayers=[AVAudioPlayer]()
             player = try engine.makePlayer(with: CHHapticPattern(events: events, parameterCurves: [curve]))
             try player?.start(atTime: engine.currentTime + min(2, max(0, delay)))
         }
-        func scheduleNameDrop(delay:Double,duration:Double) throws {
-            for (name,offset) in [("NameDropHintingPrimaryDevice",0.0),("NameDropConnectedPrimaryDevice",duration*0.86)] {
-                guard let file=Bundle.main.url(forResource:name,withExtension:"caf") else{throw NSError(domain:"GenitaAudio",code:1,userInfo:[NSLocalizedDescriptionKey:"NameDrop 효과음 파일 없음"])}
-                let sound=try AVAudioPlayer(contentsOf:file);sound.volume=0.35;sound.prepareToPlay()
-                sound.play(atTime:sound.deviceCurrentTime+max(0,delay)+offset);soundPlayers.append(sound)
-            }
+        func scheduleSounds(delay:Double,duration:Double) throws {
+            for (name,offset) in [("GenitaHandoffApproach",0.0),("GenitaHandoffConnected",duration*0.86)] { try playSound(name,after:max(0,delay)+offset) }
+        }
+        /// The one sound of a button move, which has no position effect.
+        func playConnected() { cancel();try? playSound("GenitaHandoffConnected",after:0) }
+        private func playSound(_ name:String,after delay:Double) throws {
+            guard let file=Bundle.main.url(forResource:name,withExtension:"caf") else{throw NSError(domain:"GenitaAudio",code:1,userInfo:[NSLocalizedDescriptionKey:"Missing handoff sound \(name)"])}
+            let sound=try AVAudioPlayer(contentsOf:file);sound.volume=0.35;sound.prepareToPlay()
+            sound.play(atTime:sound.deviceCurrentTime+delay);soundPlayers.append(sound)
         }
 }

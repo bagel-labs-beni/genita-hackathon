@@ -16,5 +16,5 @@ No Figma screenshots are used as complete app screens. Layouts, inputs, text and
 
 ## Handoff prototype additions
 
-- `NameDropHintingPrimaryDevice.caf`, `NameDropConnectedPrimaryDevice.caf`: copied from the working handoff lab. Original source: https://github.com/rob-paprocki/iOS-System-Sounds/tree/main/Current/Haptics/Generic . Apple system sound assets; inclusion here is for the requested local prototype and does not establish redistribution rights.
+- `GenitaHandoffApproach.caf`, `GenitaHandoffConnected.caf`: original Genita sounds, synthesized by code for this project. They contain no recorded or third-party audio.
 - `shared/Handoff/EffectSource`: existing Duo blur shader / sampler and Genita payload compositor from the handoff lab. Upstream MIT license retained alongside the sources. `handoff-effect.js` is the locally bundled build, including Three.js (MIT).

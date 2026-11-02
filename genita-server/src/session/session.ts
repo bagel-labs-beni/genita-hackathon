@@ -248,6 +248,19 @@ export class Session {
     }
   }
 
+  /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
+  get hasStarted(): boolean {
+    return this.started && !this.closed;
+  }
+
+  /**
+   * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
+   * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
+   */
+  stopForHandoff(): void {
+    if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
+  }
+
   // ───────────────────────── client input ─────────────────────────
 
   async onClientText(raw: string): Promise<void> {
