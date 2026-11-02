@@ -239,3 +239,68 @@ test("client: text that grows past the service limit after normalisation is sent
   assert.deepEqual(bodies.map((b) => b.tail_ms).slice(0, -1).every((t) => t === 0), true);
   assert.equal(bodies.at(-1)!.tail_ms, 220);
 });
+
+// ---------- word + phoneme timing (MMS forced aligner on the voice GPU) ----------
+const TIMING = { words: [{ w: "Hi", s: 40, e: 180 }], phonemes: [{ p: "HH", s: 40, e: 90 }, { p: "IH", s: 90, e: 180 }] };
+
+test("config: GENITA_VOICE_ALIGN=1 turns timing on; off by default", () => {
+  const base = { MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" };
+  assert.equal(loadConfig(base).voice?.align, false);
+  assert.equal(loadConfig({ ...base, GENITA_VOICE_ALIGN: "1" }).voice?.align, true);
+});
+
+test("client (align on): asks for align, the timing line becomes a timing-only chunk after the audio", async () => {
+  let body: Record<string, unknown> = {};
+  const v = createSeamless({ ...cfg, align: true }, {
+    fetch: (async (_u: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return ndjson([{ audio_base64: pcm(2400), alignment: null }, { timing: TIMING }, { done: true, align_ms: 14 }]);
+    }) as typeof fetch,
+  });
+  const chunks = [];
+  for await (const c of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) chunks.push(c);
+  assert.equal(body.align, true);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].timing, undefined);
+  assert.equal(chunks[1].audio.length, 0);
+  assert.equal(chunks[1].alignment, null);
+  assert.deepEqual(chunks[1].timing, TIMING);
+});
+
+test("client (align off): no align field in the request (old body, byte for byte)", async () => {
+  let body: Record<string, unknown> = {};
+  const v = createSeamless(cfg, { fetch: (async (_u: string, init: RequestInit) => ((body = JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) void _;
+  assert.equal("align" in body, false);
+});
+
+test("client: a malformed timing line is dropped (the app falls back), the audio still plays", async () => {
+  const bad = [
+    { timing: { words: "x", phonemes: [] } },
+    { timing: { words: [{ w: "Hi", s: "a", e: 3 }], phonemes: [] } },
+    { timing: { words: [], phonemes: [{ p: 7, s: 0, e: 3 }] } },
+    { timing: { words: [{ w: "Hi", s: 50, e: 40 }], phonemes: [] } },
+    { timing: null },
+  ];
+  for (const line of bad) {
+    const v = createSeamless({ ...cfg, align: true }, { fetch: (async () => ndjson([{ audio_base64: pcm(10) }, line, { done: true }])) as typeof fetch });
+    const chunks = [];
+    for await (const c of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) chunks.push(c);
+    assert.equal(chunks.length, 1, JSON.stringify(line));
+    assert.equal(chunks[0].timing, undefined);
+  }
+});
+
+test("client: timing of a later piece is shifted onto the sentence's timeline", async () => {
+  let n = 0;
+  const v = createSeamless({ ...cfg, align: true }, {
+    fetch: (async () => (n++, ndjson([{ audio_base64: pcm(24000) }, { timing: TIMING }, { done: true }]))) as typeof fetch,
+  });
+  const text = "Prices: 1234567, 2345678, 3456789, 4567890, 5678901, 6789012, 7890123 and 8901234 dollars.";
+  const timings = [];
+  for await (const c of v.speak({ voiceId: "seamless:3", text, emotion: null, model: "x" })) if (c.timing) timings.push(c.timing);
+  assert.ok(n >= 2);
+  assert.deepEqual(timings[0], TIMING);
+  assert.equal(timings[1].words[0].s, 1040, "second piece starts after the first piece's 1 s of audio");
+  assert.equal(timings[1].phonemes[1].e, 1180);
+});

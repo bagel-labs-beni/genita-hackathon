@@ -215,15 +215,56 @@ public final class OnboardingClient: @unchecked Sendable {
         try await auth.send("POST", "/v1/companion/name/suggest", json: ["imageId": imageId], timeout: 15)
     }
 
-    private struct VoicesReply: Decodable { struct Voice: Decodable { var id: String }; var voices: [Voice]; var suggested: String? }
+    /// One V04 row from `GET /v1/companion/voices` (curated Seamless speakers for the companion's look).
+    public struct CompanionVoice: Decodable, Equatable, Sendable, Identifiable {
+        public var id: String
+        public var name: String
+        /// "Warm, bright" (the second line of the card)
+        public var blurb: String
+        public var label: String?
+        public init(id: String, name: String, blurb: String, label: String? = nil) { self.id = id; self.name = name; self.blurb = blurb; self.label = label }
+        enum CodingKeys: String, CodingKey { case id, name, blurb, label }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
+            blurb = try c.decodeIfPresent(String.self, forKey: .blurb) ?? ""
+            label = try c.decodeIfPresent(String.self, forKey: .label)
+        }
+    }
+    public struct VoiceList: Decodable, Equatable, Sendable {
+        public var voices: [CompanionVoice]
+        /// the recommended default's id (first row)
+        public var suggested: String?
+        /// false while the voice service is down or cold: the app greys the list and lets the user continue
+        public var available: Bool?
+        public init(voices: [CompanionVoice], suggested: String? = nil, available: Bool? = nil) { self.voices = voices; self.suggested = suggested; self.available = available }
+    }
+
+    /// V04: the voices the server offers for this image's look, recommended default first.
+    public func voices(imageId: String?) async throws -> VoiceList {
+        let q = imageId.map { "imageId=\($0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? $0)" }
+        return try await auth.send("GET", "/v1/companion/voices", query: q, timeout: 8)
+    }
+
+    /// V04 play: the preview clip (`audio/wav`, streamed from the voice service and cached). `503 voice_unavailable` when it is down.
+    public func voicePreview(id: String) async throws -> Data {
+        try await auth.sendData("GET", "/v1/companion/voices/\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)/preview", timeout: 30)
+    }
+
+    /// V04 Continue: the pick is saved on the companion (not on the phone).
+    @discardableResult
+    public func saveVoice(_ voiceId: String) async throws -> CompanionInfo {
+        try await auth.send("PUT", "/v1/companion/voice", json: ["voiceId": voiceId], timeout: 15)
+    }
 
     /// Creates the one companion and starts prep at once (D28). `voiceId` must be a server catalog voice;
-    /// without one the first catalog voice is used (the call speaks with the device voice, 11/2 Meta-only).
+    /// without one the recommended voice for the image's look is used (calls speak with the server voice, 11/2).
     @discardableResult
     public func createCompanion(imageId: String, voiceId: String? = nil, name: String? = nil) async throws -> CompanionInfo {
         var voice = voiceId
         if voice == nil {
-            let v: VoicesReply = try await auth.send("GET", "/v1/companion/voices", query: "imageId=\(imageId.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? imageId)", timeout: 30)
+            let v = try await voices(imageId: imageId)
             voice = v.suggested ?? v.voices.first?.id
         }
         guard let voice else { throw GenitaAuthError.badResponse }

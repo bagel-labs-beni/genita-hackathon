@@ -50,7 +50,10 @@ struct SavedSetup: Codable {
     var stylePartial: Bool?
     /// The companion exists on the server (prep started at "Use this image", D28)
     var companionCreated: Bool?
-    /// The device voice picked on V04 (AVSpeechSynthesisVoice identifier; calls speak on the device, 11/2 Meta-only)
+    /// The companion voice picked on V04 (server speaker id, saved on the companion with PUT /v1/companion/voice)
+    var voiceId: String?
+    var voiceName: String?
+    /// The silent offline fallback for calls the server can't voice (an installed en-US voice; never shown in V04)
     var deviceVoice: String?
     /// N1–N3 answers
     var skipInterests: [String]?
@@ -67,7 +70,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 @MainActor @Observable final class AppState {
@@ -85,6 +88,9 @@ struct SavedSetup: Codable {
     var creatingCompanion = false
     var suggestingName = false
     var savingName = false
+    var savingVoice = false
+    /// V04's PUT did not reach the server; NM01 tries once more before the name goes up
+    var voiceUnsaved = false
     var nameError: String?
     var savingPrefs = false
     var setupSummary: SetupSummary?

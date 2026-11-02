@@ -37,13 +37,14 @@ The Xcode project includes the **GenitaMac** macOS target (macOS 15+, native gla
 
 ### Who has the conversation
 
-`shared/Handoff/ConversationOwnership.swift` is the one place that decides. Each device stores an owner and an increasing epoch. A claim with a newer epoch wins, so a device that comes back with an old epoch adopts the newer owner and moves to its waiting screen. Losing the link, or the app going to the background or being locked, never changes the owner. Today claims travel over the local link; a server replaces that by implementing `OwnershipTransport`.
+`shared/Handoff/ConversationOwnership.swift` is the one place that decides. Each device stores an owner and an increasing epoch. A claim with a newer epoch wins, so a device that comes back with an old epoch adopts the newer owner and moves to its waiting screen. Losing the link, or the app going to the background or being locked, never changes the owner. Claims travel over both the server (`ServerOwnershipLink`) and the local link (`OwnershipFanout`).
 
 ### Moving
 
 - **First pairing:** Menu → **Move to Mac** asks for the six-digit code shown in Genita on the Mac, once. The Mac then gives this iPhone a token and it reconnects by itself. MultipeerConnectivity uses an encrypted local session, but it does not authenticate the peer, so this is a local prototype, not a security boundary. The token is kept in UserDefaults. Settings → **Mac pairing** can register the screen or forget the Mac.
 - **Any iPhone:** Menu → **Move to Mac** moves the conversation with a simple transition and needs no LiDAR. iPhone models without LiDAR or with an unknown display size use only this button. If the Mac doesn't answer within 5 seconds the conversation stays here and an alert says so.
-- **LiDAR iPhones, optional:** after registering the screen once (the Mac shows a teal surface; point the rear camera at the whole display), bringing the phone next to a display edge starts the same move with the 3.2-second Duo effect. Leave the edge before starting another one.
+- **Every iPhone with A12 or later, optional:** after registering the screen once (Settings → Mac pairing → **Set up touch to move**: the Mac shows the MAC-REG picture full screen, the iPhone's rear camera finds it with ARKit image tracking — P03, then the P04 toast), bringing the phone next to a display edge starts the same move with the 3.2-second Duo effect. LiDAR only improves precision (measured depth corrects the picture's distance and size); a Mac build that still shows the teal surface keeps the original LiDAR-only registration. Leave the edge before starting another one.
+- **Server (F6-L7):** when genita-server is reachable (`GENITA_SERVER_URL` / `genita.server.url`, the same setting as the call client, plus the session token), each app keeps a `/v1/presence` socket. The server then decides the owner (`conversations.active_device`, `epoch`), relays Move to Mac / Move to iPhone without any pairing, and tells each device whether the other is online (R1-E / R2-E). Claims also still go over the local link; both devices apply the same rule, so whichever arrives first doesn't matter. UI tests stay offline unless launched with `--handoff-server`.
 
 ### After the move
 
