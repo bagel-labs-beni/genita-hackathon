@@ -91,6 +91,11 @@ async function setup(t: TestContext) {
         return requests.findLast((req) => inputOf(req).includes(text))!;
       },
       claim: () => claim(device, user),
+      async ping() {
+        const before = events.filter((event) => event.type === "pong").length;
+        ws.send(JSON.stringify({ type: "ping" }));
+        await until(() => events.filter((event) => event.type === "pong").length > before);
+      },
       async close() {
         const sessionId = events.find((event) => event.type === "ready")!.sessionId;
         const closed = once(ws, "close"); ws.close(); await closed;
@@ -148,6 +153,27 @@ test("#349: closing an idle inherited snapshot never promotes it over later conv
   const next = await open();
   assert.match(inputOf(await next.say("What was our decision?")), /cobalt teapot/);
 });
+
+for (const reconnectMinutes of [9, 10]) {
+  test(`#349 review P2: same-progress retention lasts until 10 minutes after close (reconnect at ${reconnectMinutes})`, { timeout: 5000 }, async (t) => {
+    const start = Date.now();
+    // Advance cache age without replacing the real timers used by local socket I/O.
+    t.mock.timers.enable({ apis: ["Date"], now: start });
+    const { open } = await setup(t);
+    const phone = await open(); await phone.say(OLD); await phone.close();
+    const mac = await open("mac");
+    for (let minute = 1; minute <= 11; minute++) {
+      t.mock.timers.setTime(start + minute * 60_000);
+      await mac.ping(); // Keep the inherited conversation alive without advancing its history.
+    }
+    await mac.close();
+    t.mock.timers.setTime(start + (11 + reconnectMinutes) * 60_000);
+    const next = await open();
+    const input = inputOf(await next.say("What were we talking about?"));
+    if (reconnectMinutes < 10) assert.match(input, /pottery/);
+    else assert.doesNotMatch(input, /pottery/);
+  });
+}
 
 test("#349: competing live and cached history never crosses account boundaries", async (t) => {
   const { open } = await setup(t);

@@ -342,7 +342,8 @@ export async function startServer(
     const save = () => {
       const cached = lastTurns.get(userId);
       // Compare when saving (inside the Forget lock), not before an asynchronous state read.
-      if (cached?.revision === revision && !newer(p, cached.progress)) return;
+      // An unchanged inherited snapshot still refreshes retention when its call ends.
+      if (cached?.revision === revision && newer(cached.progress, p)) return;
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
       lastTurns.set(userId, { turns, thread, revision, progress: p, at: Date.now(), unsubscribe });
