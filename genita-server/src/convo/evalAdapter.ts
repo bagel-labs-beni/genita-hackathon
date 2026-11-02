@@ -13,7 +13,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, type GuardClass } from "./guard.ts";
 import { openerBlock } from "./opener.ts";
-import { INITIATIVE_INPUT, initiativeBlock, type InitiativeSource } from "./initiative.ts";
+import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
 type Turn = { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
@@ -52,7 +52,7 @@ export const adapter = {
       // the governor's budget is unit-tested; here every scripted cue is one allowed initiative
       const source: InitiativeSource = t.kind === "perception" && t.trigger ? (t.trigger as PerceptionTriggerKind) : "silence";
       const instructions = buildInstructions({ ...base, initiative: initiativeBlock(source, threads(s)) });
-      return { instructions, input: [...msgs(ctx.history), { role: "user", content: INITIATIVE_INPUT }], maxOutputTokens: 800, effort: "minimal" };
+      return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }
     const instructions = buildInstructions(base) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };

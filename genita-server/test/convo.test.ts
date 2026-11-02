@@ -136,7 +136,10 @@ test("prompt v1: honesty, real-life friends, no sexual content, crisis-only-on-r
   assert.match(s, /You already know them/);
   assert.match(s, /<user_profile>\nLikes: ramen/);
   assert.match(s, /How to open this call: X/);
-  assert.ok(s.trim().split("\n\n").at(-1)!.startsWith("How you talk:"), "the voice block is read last");
+  const blocks = s.trim().split("\n\n");
+  assert.ok(blocks.at(-1)!.startsWith("How to open this call"), "this turn's job is read last");
+  assert.ok(blocks.at(-2)!.startsWith("How you talk:"), "then the voice block");
+  assert.ok(buildInstructions({ persona: mina, mode: "chat", style: "v1" }).trim().split("\n\n").at(-1)!.startsWith("How you talk:"), "no turn block: the voice block is last");
   assert.doesNotMatch(s, /"Hmm," or "Oh,"/, "no filler openers are asked for (baseline: every 3rd reply opened with Oh/Hmm)");
   assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /You already know them/, "no profile, no claim");
 });
@@ -337,4 +340,12 @@ test("session (Codex P2): a call that started interpreting gets initiative once 
 test("guard: the personalization ask turn (#194 GK-1) may ask its one question", () => {
   assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok", askTurn: true }), null);
   assert.equal(guardSentence("What kind of music do you like for focus?", { camera: false, userText: "ok" }), "intake");
+});
+
+test("initiative input names the camera cue (Spark answered the bare silence line instead, eval 11/3 2/3)", async () => {
+  const { initiativeInput } = await import("../src/convo/initiative.ts");
+  assert.match(initiativeInput("looks_tired"), /looked tired/);
+  assert.equal(initiativeInput("silence"), INITIATIVE_INPUT);
+  assert.equal(guardSentence("I'm here. Take your time.", none), "counselor");
+  assert.equal(guardSentence("I'm still here.", none), "counselor");
 });

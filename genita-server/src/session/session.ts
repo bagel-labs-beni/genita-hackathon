@@ -47,7 +47,7 @@ import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
 import { openerBlock } from "../convo/opener.ts";
-import { InitiativeGovernor, INITIATIVE_INPUT, initiativeBlock, type InitiativeSource } from "../convo/initiative.ts";
+import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -225,7 +225,7 @@ export class Session {
   private initiativeTimer: NodeJS.Timeout | null = null;
   private initiativeBusy = false;
   /** the pending initiative turn (its input is INITIATIVE_INPUT; never a user line or a memory source) */
-  private cueTurn: { source: InitiativeSource; block: string } | null = null;
+  private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
@@ -837,12 +837,12 @@ export class Session {
   private dispatch(e: TurnEvent): void {
     if (this.closed) return;
     if (e.type === "speech_start" || e.type === "text") this.pendingAnnounce = null;
-    if (this.initiative && (e.type === "speech_start" || e.type === "partial" || e.type === "speech_complete" || (e.type === "text" && e.text !== INITIATIVE_INPUT && e.text !== GREET_PROMPT))) this.initiative.userSpoke(this.now());
+    if (this.initiative && (e.type === "speech_start" || e.type === "partial" || e.type === "speech_complete" || (e.type === "text" && e.text !== this.cueTurn?.input && e.text !== GREET_PROMPT))) this.initiative.userSpoke(this.now());
     const r = reduceTurn(this.turn, e, this.bargeCfg);
     const reply = r.effects.find((fx) => fx.type === "start_reply");
     // The reducer is pure: admit only actual user replies before committing thinking or running effects.
     // Preserve any barge-in cancellation, but never start a reply or emit thinking on a cap rejection.
-    if (reply?.type === "start_reply" && !reply.self && !this.greeting && !(this.cueTurn && reply.text === INITIATIVE_INPUT) && !this.admitTurn()) {
+    if (reply?.type === "start_reply" && !reply.self && !this.greeting && !(this.cueTurn && reply.text === this.cueTurn.input) && !this.admitTurn()) {
       this.dropSpeculation();
       this.metrics = {};
       this.turn = { ...r.state, phase: "listening" };
@@ -1002,9 +1002,10 @@ export class Session {
       const again = gov.decide(this.now(), this.initiativeIdle());
       if (!again.fire) return;
       gov.markFired(this.now());
-      this.cueTurn = { source: again.source, block: initiativeBlock(again.source, threads) };
+      const input = initiativeInput(again.source);
+      this.cueTurn = { source: again.source, block: initiativeBlock(again.source, threads), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
-      this.dispatch({ type: "text", text: INITIATIVE_INPUT });
+      this.dispatch({ type: "text", text: input });
     } finally {
       this.initiativeBusy = false;
     }
@@ -1187,7 +1188,7 @@ export class Session {
     const greeting = self ? null : this.greeting;
     if (!self) this.greeting = null;
     // an initiative turn (src/convo/initiative.ts): Spark speaks first; its cue is never a user line
-    const cue = !self && !greeting && this.cueTurn && text === INITIATIVE_INPUT ? this.cueTurn : null;
+    const cue = !self && !greeting && this.cueTurn && text === this.cueTurn.input ? this.cueTurn : null;
     if (cue) this.cueTurn = null;
     const synthetic = !!greeting || !!cue;
     // the vendors are about to be used: their sockets stay open for the keep-alive from here

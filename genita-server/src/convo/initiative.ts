@@ -112,3 +112,12 @@ export function initiativeBlock(source: InitiativeSource, threads: string[]): st
 
 /** The input line Spark answers on an initiative turn (never stored as something the user said). */
 export const INITIATIVE_INPUT = "(The user hasn't said anything for a few seconds.)";
+const CUE_INPUT: Partial<Record<InitiativeSource, string>> = {
+  looks_tired: "(On camera, the user has looked tired for a little while and hasn't said anything.)",
+  looked_away: "(The user has looked away from the screen for a bit.)",
+  engagement_drop: "(The user seems less into this topic.)",
+};
+/** the cue line for this source (a camera cue says what was noticed; Spark answered the bare silence line instead, 2/3) */
+export function initiativeInput(source: InitiativeSource): string {
+  return CUE_INPUT[source] ?? INITIATIVE_INPUT;
+}
