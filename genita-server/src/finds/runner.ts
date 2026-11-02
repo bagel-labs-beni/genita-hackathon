@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn } from "./intent.ts";
+import { classifyTurn, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, guessLabel, runProduct } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -87,7 +87,10 @@ export class FindsRunner {
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(t: TurnInput): TurnStarted | null {
     if (this.closed) return null;
-    const afterProduct = !!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS;
+    const afterProduct =
+      (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
+      // a call continued on the other device: the search was asked on the first one (#199)
+      (t.recent ?? []).some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
     const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct);
     if (!intent) return null;
     const findId = randomUUID();
@@ -125,7 +128,13 @@ export class FindsRunner {
     if (intent.kind === "product") {
       const now = this.hooks.now();
       const named = guessLabel(t.text, "") !== "";
-      const prev = this.lastProduct && now - this.lastProduct.at < REFINE_WINDOW_MS && !named ? this.lastProduct : null;
+      let prev = this.lastProduct && now - this.lastProduct.at < REFINE_WINDOW_MS && !named ? this.lastProduct : null;
+      // #199: a call continued on the other device has no search of its own yet — the item comes from the
+      // conversation's recent turns ("can we look for a jacket…" said on the iPhone)
+      if (!prev && !named) {
+        const said = [...(t.recent ?? [])].reverse().find((l) => /^User: /.test(l) && guessLabel(l, "") !== "");
+        if (said) prev = { label: guessLabel(said, "Things"), question: said.replace(/^User: /, ""), at: now };
+      }
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
       run = async (c) => {
