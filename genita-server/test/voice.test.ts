@@ -198,3 +198,46 @@ test("speaker: seamless:<n> or <n> picks that speaker; anything else → the kin
   assert.equal(resolveSpeaker(undefined, "character", cfg), 9);
   assert.equal(resolveSpeaker("seamless:250", "human", cfg), 3);
 });
+
+test("client: a body that stalls after the headers still times out (idle timeout per chunk)", async () => {
+  const v = createSeamless({ ...cfg, timeoutMs: 60 }, {
+    fetch: (async (_u: string, init: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(JSON.stringify({ audio_base64: pcm(10), alignment: null }) + "\n"));
+          init.signal?.addEventListener("abort", () => c.error(new Error("aborted")));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch,
+  });
+  const t0 = Date.now();
+  await assert.rejects(async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there.", emotion: null, model: "x" })) void _;
+  }, /voice/);
+  assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0} ms`);
+  assert.equal(v.isDown(), true);
+});
+
+test("client: a 400 (bad input) fails that sentence but does not take the voice down for everyone", async () => {
+  let n = 0;
+  const v = createSeamless(cfg, { fetch: (async () => (n++, new Response('{"error":"bad_request"}', { status: 400 }))) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  await assert.rejects(run, /voice 400/);
+  assert.equal(v.isDown(), false);
+  await assert.rejects(run, /voice 400/);
+  assert.equal(n, 2);
+});
+
+test("client: text that grows past the service limit after normalisation is sent in pieces, pause only on the last", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const v = createSeamless(cfg, { fetch: (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  const text = "Prices: 1234567, 2345678, 3456789, 4567890, 5678901, 6789012, 7890123 and 8901234 dollars.";
+  for await (const _ of v.speak({ voiceId: "seamless:3", text, emotion: null, model: "x" })) void _;
+  assert.ok(bodies.length >= 2, `pieces: ${bodies.length}`);
+  assert.ok(bodies.every((b) => String(b.text).length <= 380));
+  assert.deepEqual(bodies.map((b) => b.tail_ms).slice(0, -1).every((t) => t === 0), true);
+  assert.equal(bodies.at(-1)!.tail_ms, 220);
+});

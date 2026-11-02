@@ -22,7 +22,7 @@ Deploy: VOICE_GPU=L4 modal deploy voice_app.py   (needs Modal secret `genita-voi
 Scale: python scale.py warm|cold   (min_containers 1 / 0)
 Bench: VOICE_GPU=H100 modal run voice_app.py::bench   (ephemeral app, stops when done)
 """
-import os, time, json, base64, asyncio, threading
+import os, time, json, math, base64, asyncio, threading
 
 import modal
 
@@ -51,42 +51,56 @@ usage = modal.Dict.from_name("genita-voice-usage", create_if_missing=True)
 
 
 class Usage:
-    """Per-container counter, flushed to a shared modal.Dict every 20 s (keeps the Dict off the hot path)."""
+    """Daily request counter shared by all containers. Each container owns one key `<day>|<container>` and
+    only ever writes its own count there, so no update is lost; the day's total is the sum over the keys.
+    Read at start (a new container sees today's usage before serving) and every 20 s after."""
 
     def __init__(self):
+        import uuid
+        self.cid = os.environ.get("MODAL_TASK_ID") or uuid.uuid4().hex[:12]
         self.lock = threading.Lock()
-        self.pending = 0
-        self.day = time.strftime("%Y-%m-%d", time.gmtime())
-        self.total = 0
+        self.day = self._today()
+        self.mine = 0  # this container's requests today
+        self.others = 0  # other containers' requests today, as of the last sync
         self.alerted = False
+        self._sync()
         threading.Thread(target=self._loop, daemon=True).start()
+
+    @staticmethod
+    def _today():
+        return time.strftime("%Y-%m-%d", time.gmtime())
 
     def hit(self) -> bool:
         with self.lock:
-            day = time.strftime("%Y-%m-%d", time.gmtime())
+            day = self._today()
             if day != self.day:
-                self.day, self.total, self.alerted = day, 0, False
-            if self.total + self.pending >= DAILY_CAP:
+                self.day, self.mine, self.others, self.alerted = day, 0, 0, False
+            if self.mine + self.others >= DAILY_CAP:
                 return False
-            self.pending += 1
+            self.mine += 1
             return True
+
+    def _sync(self):
+        try:
+            with self.lock:
+                day, mine = self.day, self.mine
+            if mine:
+                usage[f"{day}|{self.cid}"] = mine
+            others = sum(v for k, v in usage.items() if k.startswith(day + "|") and k != f"{day}|{self.cid}")
+            with self.lock:
+                if day == self.day:
+                    self.others = others
+                total = self.mine + self.others
+                if total >= 0.8 * DAILY_CAP and not self.alerted:
+                    self.alerted = True
+                    print(f"ALERT genita-voice: {total}/{DAILY_CAP} requests today ({day} UTC)", flush=True)
+        except Exception as e:  # never let accounting break synthesis
+            print("usage sync failed:", str(e)[:120], flush=True)
 
     def _loop(self):
         while True:
             time.sleep(20)
-            try:
-                with self.lock:
-                    n, self.pending, day = self.pending, 0, self.day
-                total = (usage.get(day) or 0) + n
-                if n:
-                    usage[day] = total
-                with self.lock:
-                    self.total = total
-                    if total >= 0.8 * DAILY_CAP and not self.alerted:
-                        self.alerted = True
-                        print(f"ALERT genita-voice: {total}/{DAILY_CAP} requests today ({day} UTC)", flush=True)
-            except Exception as e:  # never let accounting break synthesis
-                print("usage flush failed:", str(e)[:120], flush=True)
+            self._sync()
 
 
 class Engine:
@@ -116,12 +130,13 @@ class Engine:
         if self._speed != 1.0:
             # durations are exp(out)-1 frames; slower/faster speech = scale them
             out = torch.log1p(torch.expm1(out.float()).clamp(min=0) / self._speed).to(out.dtype)
-        self._cap["char_dur"] = torch.clamp(torch.round(torch.expm1(out.float())).long(), min=1)
+        # exactly the model's own rounding, in the model's dtype (fp16), so timings match the samples
+        self._cap["char_dur"] = torch.clamp(torch.round(torch.expm1(out)).long(), min=1)
         return out
 
     def _unit_dur_hook(self, _m, _inp, out):
         torch = self.torch
-        self._cap["unit_dur"] = torch.clamp(torch.round(torch.expm1(out.float())).long(), min=1)
+        self._cap["unit_dur"] = torch.clamp(torch.round(torch.expm1(out)).long(), min=1)
         return out
 
     def synth(self, text: str, lang: str, speaker: int, speed: float = 1.0):
@@ -251,7 +266,7 @@ class MmsEngine:
                 self._uroman = uroman.Uroman()
             text = self._uroman.romanize_string(text)
         with self.lock, self.torch.inference_mode():
-            model.speaking_rate = float(speed)
+            model.speaking_rate = max(0.7, min(1.4, float(speed)))
             w = model(**tk(text, return_tensors="pt").to("cuda")).waveform[0].float().cpu().numpy()
         out = resample_poly(w / max(1e-6, float(np.abs(w).max())) * 0.95, 3, 2).astype(np.float32)
         if tail_ms > 0:
@@ -297,6 +312,7 @@ class Voice:
         try:
             self.mms = MmsEngine()
             self.mms.render("warm up", "eng")
+            self.mms.render("준비", "kor")  # loads uroman for Korean
         except Exception as e:  # backup only; Seamless still serves
             self.mms = None
             print("mms backup unavailable:", str(e)[:160])
@@ -334,8 +350,13 @@ class Voice:
             speaker = body.get("speaker", 0)
             if not text or len(text) > MAX_CHARS or lang not in LANGS or not isinstance(speaker, int) or not 0 <= speaker < 200:
                 return JSONResponse({"error": "bad_request"}, status_code=400)
-            speed = float(body.get("speed", 1.0) or 1.0)
-            tail = int(body.get("tail_ms", 0) or 0)
+            try:
+                speed = float(body.get("speed", 1.0) or 1.0)
+                tail = int(body.get("tail_ms", 0) or 0)
+            except (TypeError, ValueError):
+                return JSONResponse({"error": "bad_request"}, status_code=400)
+            if not math.isfinite(speed) or not 0.7 <= speed <= 1.4 or not 0 <= tail <= 1500:
+                return JSONResponse({"error": "bad_request"}, status_code=400)
             model = body.get("model", "seamless")
             if model not in ("seamless", "mms") or (model == "mms" and mms is None):
                 return JSONResponse({"error": "bad_model"}, status_code=400)

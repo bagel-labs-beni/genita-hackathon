@@ -211,3 +211,28 @@ test("voice service: when the opener guard drops a whole first clause ('Oh,'), t
   assert.equal(reply.text, "Perfect cozy night! Want a comedy?");
   session.close();
 });
+
+test("voice service fails mid-sentence: the unspoken words of that sentence go to say", async () => {
+  const asr = new FakeAsr();
+  const client = new FakeClient();
+  const session = new Session("v2", client, {
+    config: { ...config, serverTts: true, voice },
+    openAsr: () => asr,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<happy> We should totally get noodles tonight. Okay?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts(req): AsyncGenerator<TtsChunk> {
+      if (req.text.startsWith("Okay")) throw new Error("voice 503");
+      const said = "We should totally ";
+      yield { audio: Buffer.alloc(4800), alignment: { chars: [...said], startsSec: [...said].map((_, k) => k * 0.02), endsSec: [...said].map((_, k) => k * 0.02 + 0.02) }, model: "seamless-m4t-v2" };
+      throw new Error("voice network: reset");
+    },
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "dinner?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "We should totally get noodles tonight. Okay?");
+  assert.deepEqual(client.of("say").map((s) => s.text), ["get noodles tonight.", "Okay?"]);
+  session.close();
+});

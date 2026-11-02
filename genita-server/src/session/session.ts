@@ -102,6 +102,16 @@ const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
 
+/**
+ * Words of `display` not yet voiced, given the voiced characters (spoken form, so counts are approximate:
+ * a word cut mid-way is said again). Empty when no timing came back (then nothing is repeated).
+ */
+export function unspokenRest(display: string, voicedChars: string): string {
+  if (!voicedChars.trim()) return "";
+  const complete = voicedChars.trimStart().split(/\s+/).filter(Boolean).length - (/\s$/.test(voicedChars) ? 0 : 1);
+  return display.trim().split(/\s+/).slice(Math.max(0, complete)).join(" ");
+}
+
 /** Device mode: how long the app should take to speak `chars` characters, if it never sends playback_done. */
 export function deviceSpeechEstimateMs(chars: number): number {
   return Math.min(DEVICE_MAX_MS, chars * DEVICE_MS_PER_CHAR + DEVICE_SLACK_MS);
@@ -641,8 +651,8 @@ export class Session {
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
     // Device mode always; server mode when the voice service failed for this reply.
-    const sayOnDevice = (i: number, s: { display: string; emotion: string | null }) => {
-      reply.spoken.push(s.display);
+    const sayOnDevice = (i: number, s: { display: string; emotion: string | null }, record = true) => {
+      if (record) reply.spoken.push(s.display);
       if (!s.display) return;
       if (reply.firstAudioAt === null) {
         reply.firstAudioAt = this.now();
@@ -672,6 +682,7 @@ export class Session {
       startJob(i);
       const sentenceOffset = reply.audioMs;
       let sentAudio = false;
+      let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
       try {
         let first = true;
         for await (const chunk of jobs[i]) {
@@ -709,6 +720,7 @@ export class Session {
             ...chunkTiming(this.lip.active, chunk.alignment, sentenceOffset),
           });
           sentAudio = true;
+          if (chunk.alignment) sentChars += chunk.alignment.chars.join("");
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
             if (reply.peter) this.peter?.audio24k(utteranceId, chunk.audio);
@@ -727,7 +739,12 @@ export class Session {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
             if (!sentAudio) sayOnDevice(i, s);
-            else reply.spoken.push(s.display);
+            else {
+              // the voice died mid-sentence: the device says the words that were not voiced yet
+              reply.spoken.push(s.display);
+              const rest = unspokenRest(s.display, sentChars);
+              if (rest) sayOnDevice(i, { display: rest, emotion: s.emotion }, false);
+            }
             continue;
           }
         }

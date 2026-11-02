@@ -24,6 +24,25 @@ const CACHE_MAX_CHARS = 14;
 const CACHE_MAX = 400;
 const DOWN_MS = 30_000;
 
+/** The service takes ≤ 400 chars; cut longer spoken text at a clause or word boundary (≤ 380 each). */
+export function splitForService(text: string, max = 380): string[] {
+  const out: string[] = [];
+  let rest = text.trim();
+  while (rest.length > max) {
+    let cut = -1;
+    for (const re of [/[.!?;:,](?=\s)/g, /\s/g]) {
+      for (const m of rest.slice(0, max).matchAll(re)) cut = m.index! + (m[0].trim() ? 1 : 0);
+      if (cut > max / 3) break;
+      cut = -1;
+    }
+    if (cut <= 0) cut = max;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
 export type SeamlessRequest = Omit<TtsRequest, "apiKey"> & { lang?: string };
 
 /** BCP-47 / Spark language → Seamless lang code (the two the app uses). */
@@ -62,7 +81,12 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
 
   async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, signal?: AbortSignal): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
+    // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
+    let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
+    const progress = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
+    };
     const onAbort = () => ctl.abort(signal?.reason);
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
@@ -79,7 +103,6 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         throw new UpstreamError("voice", null, err instanceof Error ? err.message : "fetch failed");
       }
       if (!r.ok || !r.body) throw new UpstreamError("voice", r.status, (await r.text().catch(() => "")).slice(0, 200));
-      clearTimeout(timer); // first byte arrived; the rest is one short stream
       const dec = new TextDecoder();
       let buf = "";
       let done = false;
@@ -100,16 +123,22 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         if (!audio.length && !alignment) return null;
         return { audio: audio.length % 2 ? audio.subarray(0, audio.length - 1) : audio, alignment, model: modelName };
       };
-      for await (const c of r.body as unknown as AsyncIterable<Uint8Array>) {
-        buf += dec.decode(c, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          const chunk = parse(line);
-          if (chunk) yield chunk;
+      try {
+        for await (const c of r.body as unknown as AsyncIterable<Uint8Array>) {
+          progress();
+          buf += dec.decode(c, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            const chunk = parse(line);
+            if (chunk) yield chunk;
+          }
         }
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new UpstreamError("voice", null, err instanceof Error ? err.message : "stream failed");
       }
       if (buf.trim()) {
         const chunk = parse(buf.trim());
@@ -143,13 +172,28 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     }
     if (now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
     const got: TtsChunk[] = [];
+    // normalisation can grow a sentence past the service's 400-char cap: send it in pieces, pause only after
+    // the last, and shift each piece's timing onto the sentence's own timeline
+    const pieces = splitForService(text);
     try {
-      for await (const c of request(text, lang, spk, tail, req.signal)) {
-        got.push(c);
-        yield c;
+      let offsetSec = 0;
+      for (const [n, piece] of pieces.entries()) {
+        let pieceSec = 0;
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, req.signal)) {
+          const shifted = offsetSec && c.alignment
+            ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
+            : c;
+          pieceSec += c.audio.length / 2 / 24000;
+          got.push(shifted);
+          yield shifted;
+        }
+        offsetSec += pieceSec;
       }
     } catch (err) {
-      if (!req.signal?.aborted) {
+      // bad input (4xx other than 429) is this sentence's problem, not an outage: don't stop the voice for everyone
+      const status = err instanceof UpstreamError ? err.status : null;
+      const outage = status === null || status >= 500 || status === 429 || status === 401 || status === 403;
+      if (!req.signal?.aborted && outage) {
         downUntil = now() + DOWN_MS;
         opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs: DOWN_MS });
       }
