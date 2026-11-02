@@ -44,7 +44,7 @@ public struct InterpretBoard: Equatable, Sendable {
     /// the newest bubble could not be passed on (INT-6)
     public var unclear: Bool { bubbles.last?.status == .unknown && bubbles.last?.reason == "language_unclear" }
 
-    public init(companionName: String = "Jin") {
+    public init(companionName: String = "") {
         self.companionName = companionName
     }
 

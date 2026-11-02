@@ -1,6 +1,6 @@
 /**
  * Muse Image (generations / edits), SAM 3.1 boxes and /v1/files uploads.
- * Request shapes follow the 11/1 test suite (_qa-scripts/genita-lipsync-test-20261101).
+ * Request helpers for Genita image generation, segmentation and file uploads.
  */
 import { metaForm, metaJson } from "./http.ts";
 import { parseSamBoxes, type SamBox } from "./sam.ts";
