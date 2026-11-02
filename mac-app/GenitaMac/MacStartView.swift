@@ -117,7 +117,7 @@ struct MacConsentView: View {
         ("What you say and type", "To answer you. Voice is turned into text first."),
         ("The image you choose", "To make their face, voice and video."),
         ("Camera and screen, only while on", "Nothing is seen until you turn it on. Video isn’t kept."),
-        ("Never used to train AI models", "Delete your account any time in Settings."),
+        // PRD v12 9.2 / D16: no "Never used to train AI models" line (hackathon-credit inputs may be used by Meta)
     ]
 
     var body: some View {

@@ -95,9 +95,12 @@ import Foundation
         let flow = WebSignIn(anchor: anchor)
         signIn = flow
         account = .signingIn
+        let gen = generation
         Task {
             do {
                 try await flow.signIn(client: auth, device: .mac)
+                // signed out while the browser sheet was open: drop the session GenitaKit just stored
+                guard gen == generation else { auth.store.clear(); return }
                 await refresh()
             } catch GenitaAuthError.cancelled {
                 account = .signedOut
@@ -110,11 +113,14 @@ import Foundation
 
     /// A02-J · Judge access: a code from the submission form instead of an Apple ID. nil = signed in.
     func signInWithJudgeCode(_ code: String) async -> String? {
+        let gen = generation
         guard let req = JudgeAccess.request(code: code, base: auth.baseURL) else { return JudgeAccess.message(status: 401) }
         guard let (data, response) = try? await URLSession.shared.data(for: req) else { return JudgeAccess.message(status: nil) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if let message = JudgeAccess.message(status: status) { return message }
         guard let signedIn = try? JSONDecoder().decode(GenitaSignInResponse.self, from: data) else { return JudgeAccess.message(status: 500) }
+        // a sign-out (or another sign-in) happened while this was on its way: don't bring this session back
+        guard gen == generation else { return nil }
         generation += 1
         auth.store.save(signedIn.token)
         await refresh()
@@ -123,7 +129,16 @@ import Foundation
 
     /// CS01 · Agree and continue → POST /me/consent → on to the call (or MAC-2).
     func consent() async -> Bool {
-        do { try await auth.consent(); await refresh(); return true } catch { return false }
+        let gen = generation
+        do {
+            try await auth.consent()
+            if gen == generation { await refresh() }
+            return true
+        } catch GenitaAuthError.unauthorized {
+            // the session expired or was revoked (GenitaKit already cleared it): back to A02
+            if gen == generation { generation += 1; account = .signedOut; face = nil; history = [] }
+            return true
+        } catch { return false }
     }
 
     func signOut() {
