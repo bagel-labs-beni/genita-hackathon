@@ -267,7 +267,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     return c;
   };
 
-  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "recipe", title: "Looking at your fridge", detail: "Checking what's there · recipes" });
+  ctx.emit({ type: "find.started", findId: ctx.findId, utteranceId: ctx.utteranceId, kind: "recipe", title: "Looking at your ingredients", detail: "Checking what's there · recipes" });
 
   // t0: the recipe search and the first look start together
   const recipeP = ctx.vendors
@@ -364,7 +364,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
       id: ctx.findId,
       kind: "recipe",
       createdAt: at.toISOString(),
-      eyebrow: "From your fridge",
+      eyebrow: "From your camera",
       title: sentenceCase(dish),
       subtitle: sum.subtitle,
       status: sum.status,

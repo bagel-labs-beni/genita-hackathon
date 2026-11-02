@@ -275,6 +275,9 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.equal(last.status, "You have it all");
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
+  // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge
+  assert.equal(card.eyebrow, "From your camera");
+  assert.equal((events.find((e) => e.type === "find.started") as Extract<ServerEvent, { type: "find.started" }>).title, "Looking at your ingredients");
   assert.equal(card.sources[0].domain, "maangchi.com");
   assert.equal(card.steps.length, 3);
   assert.equal(card.steps[0].source, "maangchi.com");
