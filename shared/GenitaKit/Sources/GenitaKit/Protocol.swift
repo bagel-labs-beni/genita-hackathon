@@ -11,7 +11,8 @@ public enum GenitaProtocol {
     /// Binary server frame header: "GA" | kind u8 | reserved u8 | seq u32 LE.
     public static let frameHeaderBytes = 8
     public static let frameKindTTSPCM: UInt8 = 1
-    public static let frameKindPeter: UInt8 = 2 // reserved (F4-L17)
+    /// Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG.
+    public static let frameKindPeter: UInt8 = 2
 }
 
 public struct AudioFrameHeader: Equatable, Sendable {
@@ -40,6 +41,15 @@ public struct AudioFrameHeader: Equatable, Sendable {
     public static func payload(of frame: Data) -> Data {
         frame.dropFirst(GenitaProtocol.frameHeaderBytes)
     }
+
+    /// For kind 2 (Peter): `seq` is the utteranceId; returns the frame index and JPEG.
+    /// Frame k lines up with the utterance's audio at k × 40 ms (25 fps).
+    public static func peterCrop(of frame: Data) -> (frame: UInt32, jpeg: Data)? {
+        let p = [UInt8](frame.dropFirst(GenitaProtocol.frameHeaderBytes).prefix(4))
+        guard p.count == 4 else { return nil }
+        let index = UInt32(p[0]) | UInt32(p[1]) << 8 | UInt32(p[2]) << 16 | UInt32(p[3]) << 24
+        return (index, Data(frame.dropFirst(GenitaProtocol.frameHeaderBytes + 4)))
+    }
 }
 
 // MARK: - Shared value types
@@ -53,7 +63,16 @@ public enum Viseme: String, Codable, Sendable { case X, A, E, O, U, M, F, L, S }
 public struct LipPlan: Codable, Equatable, Sendable {
     public var requested: LipMode
     public var active: LipMode
+    /// peter_connecting | peter_unavailable | peter_not_deployed | null (wire sends null, not absent)
     public var reason: String?
+
+    private enum K: String, CodingKey { case requested, active, reason }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: K.self)
+        try c.encode(requested, forKey: .requested)
+        try c.encode(active, forKey: .active)
+        try c.encode(reason, forKey: .reason)
+    }
 }
 
 public struct MouthCue: Codable, Equatable, Sendable {
@@ -85,6 +104,7 @@ public enum ServerEvent: Equatable, Sendable {
     case turnMetrics(TurnMetrics)
     case asrStatus(AsrStatus)
     case modeChanged(ModeChanged)
+    case lipChanged(LipChanged)
     case error(ServerError)
     case pong(Pong)
     /// A type this build does not know yet. Ignore it; never fail the socket.
@@ -178,6 +198,15 @@ public enum ServerEvent: Equatable, Sendable {
         public var mode: ConversationMode
         public var by: String
     }
+    public struct LipChanged: Codable, Equatable, Sendable {
+        public struct Peter: Codable, Equatable, Sendable {
+            public var bundleId: String
+            public var pasteDy: Int
+            public var fps: Int
+        }
+        public var lip: LipPlan
+        public var peter: Peter?
+    }
     public struct ServerError: Codable, Equatable, Sendable {
         public var code: String
         public var message: String
@@ -207,6 +236,7 @@ extension ServerEvent: Codable {
         case "turn.metrics": self = .turnMetrics(try .init(from: decoder))
         case "asr.status": self = .asrStatus(try .init(from: decoder))
         case "mode.changed": self = .modeChanged(try .init(from: decoder))
+        case "lip.changed": self = .lipChanged(try .init(from: decoder))
         case "error": self = .error(try .init(from: decoder))
         case "pong": self = .pong(try .init(from: decoder))
         default: self = .unknown(type: type)
@@ -230,6 +260,7 @@ extension ServerEvent: Codable {
         case .turnMetrics: "turn.metrics"
         case .asrStatus: "asr.status"
         case .modeChanged: "mode.changed"
+        case .lipChanged: "lip.changed"
         case .error: "error"
         case .pong: "pong"
         case let .unknown(type): type
@@ -252,6 +283,7 @@ extension ServerEvent: Codable {
         case let .turnMetrics(p): try p.encode(to: encoder)
         case let .asrStatus(p): try p.encode(to: encoder)
         case let .modeChanged(p): try p.encode(to: encoder)
+        case let .lipChanged(p): try p.encode(to: encoder)
         case let .error(p): try p.encode(to: encoder)
         case let .pong(p): try p.encode(to: encoder)
         case .unknown: break

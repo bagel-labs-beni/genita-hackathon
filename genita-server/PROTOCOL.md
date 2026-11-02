@@ -18,6 +18,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 |---|---|
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
+| 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 
 ```
 wss://<host>/v1/session
@@ -42,9 +43,15 @@ Binary header (server → app):
 | bytes | field |
 |---|---|
 | 0–1 | ASCII `GA` |
-| 2 | kind: `1` = TTS PCM (`2` reserved for Peter mouth frames, F4-L17) |
+| 2 | kind: `1` = TTS PCM, `2` = Peter mouth crop |
 | 3 | reserved (0) |
-| 4–7 | `seq`, uint32 little-endian — matches the `audio` JSON event sent just before it |
+| 4–7 | uint32 LE: kind 1 → `seq` of the `audio` JSON event sent just before it; kind 2 → `utteranceId` |
+
+Kind 2 payload (Peter): `frame` uint32 LE, then a 256 px face-crop JPEG. Frame `k` belongs to
+the utterance's audio at `k × 40 ms` (25 fps). Crops arrive ~0.6–0.9 s after that utterance's
+first audio (A10G, T9) and keep coming a little after its last audio frame; composite them over
+the base video with `lip.changed.peter.pasteDy` (F4-L18). Crops for a cancelled utterance are
+never sent.
 
 Every binary audio frame is preceded by its `audio` JSON event with the same
 `seq` (WebSocket keeps order). Audio arrives faster than real time; the app
@@ -111,6 +118,7 @@ persona, profile, memories and recent history itself; the server stores nothing.
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock) |
 | `asr.status` | `status: connected \| reconnecting` | speech recognition reconnecting (show a mic hint) |
 | `mode.changed` | `mode`, `by` | |
+| `lip.changed` | `lip {requested, active, reason}`, `peter? {bundleId, pasteDy, fps}` | Peter worker became ready (`active: "peter"`) or is unavailable (`reason: "peter_unavailable"`, back on the fallback) |
 | `error` | `code`, `message`, `retryable` | see below |
 | `pong` | `t` | |
 
@@ -130,7 +138,7 @@ persona, profile, memories and recent history itself; the server stores nothing.
 
 | mode | who | what the server sends |
 |---|---|---|
-| `peter` | humans | MuseTalk mouth frames from the Peter worker (F4-L16/L17). **Not deployed yet** → `ready.lip` = `{requested:"peter", active:<fallback>, reason:"peter_not_deployed"}` |
+| `peter` | humans | MuseTalk mouth crops (binary kind 2) from the Peter GPU worker. The worker cold-starts (~34 s), so `ready.lip` = `{requested:"peter", active:<fallback>, reason:"peter_connecting"}` and `lip.changed` follows with `active:"peter"` (or `reason:"peter_unavailable"`). Server without a worker configured: `reason:"peter_not_deployed"`. |
 | `atlas` | animals, characters | `mouth` cues in each `audio` event; device composites its mouth atlas |
 | `none` | anyone | audio + `words` only; app plays its speaking clip |
 
@@ -154,7 +162,7 @@ Default: `atlas` for animal/character personas, `none` for humans. Always read `
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
 decided in those tickets and will be added here as additive changes.
 
-`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`mouth {f, cell}` (F4-L20 atlas cells) ·
 `camera`, `frame`, `observe.boxes` (F5) · `find.*` (Finds) · `claim`, `ownership {owner, epoch}` (handoff) ·
 `interpret.*` beyond `interpret.detected` (F8) · `prep.progress` (F2-L3).
 
@@ -167,9 +175,17 @@ decided in those tickets and will be added here as additive changes.
 | `asr_unavailable` | yes | voice input down; offer text (S08) |
 | `not_started`, `already_started`, `bad_persona`, `bad_message`, `unknown_type`, `frame_too_large` | no | client bug |
 
-## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`, two runs)
+## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`)
 
-- End of speech (last voiced 20 ms of the user's audio) → first TTS audio frame at the client: **p50 2.54 s / 2.69 s** (range 1.77–3.69 s). From the end of the audio file (the 11/1 T3 definition, 1.77 s then): p50 2.22 s / 2.43 s.
-- Barge-in: ASR speechStart → `utterance.cancelled` ≈ 400 ms (= the 400 ms min-speech rule); user voice start → cancelled ≈ 620–645 ms; 0 audio frames after cancel. Lower `bargeIn.minMs` to cut this, at the cost of backchannels cutting in.
-- First words over 20 replies: most repeated = 3 (after the opener guard; before it "Chelsea," opened 14/20).
-- Spark is most of the wait (first token 1.6–2.9 s today vs ~1.1 s for a two-line prompt). Each extra rule in `instructions` adds hidden reasoning even at effort `minimal`, so the prompt is kept short and the opening-word rule is enforced in code.
+End of voice = last voiced 20 ms of the user's audio; "file end" = end of the audio file (the 11/1 T3 definition, 1.77 s then).
+
+| setup | voice end → first audio p50 | file end → first audio p50 | range |
+|---|---|---|---|
+| baseline (lean prompt, no speculation, 1 Spark request) | 2.54 s / 2.69 s (2 runs) | 2.22 s / 2.43 s | 1.77–3.69 s |
+| + speculation only | 2.19 s | 1.95 s | 1.54–3.34 s |
+| + speculation + 2 hedged Spark requests (**default**) | **2.08 s** | **1.81 s** | 1.48–2.61 s |
+
+- Speculation: a partial transcript ending in `. ? !` (or unchanged 250 ms) starts Spark while ASR is still closing the turn; 17–18 of 20 finals matched (hits).
+- Hedging: 2 identical Spark requests, first text wins, the other is aborted. Mostly trims the tail (max 3.3 → 2.6 s); costs up to 2× Spark input tokens. `GENITA_SPARK_HEDGE=1` turns it off.
+- Barge-in: ASR speechStart → `utterance.cancelled` ≈ 400 ms (= the 400 ms min-speech rule); user voice start → cancelled ≈ 620 ms; 0 audio frames after cancel.
+- First words over 20 replies: most repeated = 3 (opener guard on).

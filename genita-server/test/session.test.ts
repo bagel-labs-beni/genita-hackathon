@@ -310,3 +310,101 @@ test("speculation: an unpunctuated partial waits until it has been stable for sp
   assert.equal(calls.length, 0);
   session.close();
 });
+
+class FakePeter extends EventEmitter {
+  isReady = false;
+  calls: string[] = [];
+  audioBytes = 0;
+  private readonly fail: boolean;
+  constructor(fail = false) {
+    super();
+    this.fail = fail;
+  }
+  async connect() {
+    await sleep(5);
+    if (this.fail) throw new Error("busy");
+    this.isReady = true;
+    return { bundleId: "b1", pasteDy: -3, fps: 25 };
+  }
+  begin(id: number) {
+    this.calls.push(`begin ${id}`);
+  }
+  audio24k(_id: number, pcm: Buffer) {
+    this.audioBytes += pcm.length;
+  }
+  end(id: number) {
+    this.calls.push(`end ${id}`);
+  }
+  cancel(id: number) {
+    this.calls.push(`cancel ${id}`);
+  }
+  close() {
+    this.calls.push("close");
+  }
+}
+
+function peterSetup(fail = false, ttsChunks = 2, ttsDelayMs = 1) {
+  const asr = new FakeAsr();
+  const client = new FakeClient();
+  const peter = new FakePeter(fail);
+  const session = new Session("peter", client, {
+    config,
+    openAsr: () => asr,
+    openPeter: () => peter,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<warm> Hi there. How are you today? Tell me." };
+      yield { type: "done", responseId: "r", text: "x", status: "completed" };
+    },
+    async *tts(req): AsyncGenerator<TtsChunk> {
+      for (let i = 0; i < ttsChunks; i++) {
+        await sleep(ttsDelayMs);
+        if (req.signal?.aborted) return;
+        yield { audio: Buffer.alloc(960), alignment: null, model: "m" };
+      }
+    },
+  });
+  return { asr, client, peter, session };
+}
+
+test("peter: starts on the fallback, switches with lip.changed when the worker is READY, streams TTS audio and relays crops", async () => {
+  const { client, peter, session } = peterSetup();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: { mode: "peter", fallback: "none" }, mic: false }));
+  assert.deepEqual(client.json.find((m) => m.type === "ready")!.lip, { requested: "peter", active: "none", reason: "peter_connecting" });
+  const changed = await client.waitFor((m) => m.type === "lip.changed");
+  assert.deepEqual(changed, { type: "lip.changed", lip: { requested: "peter", active: "peter", reason: null }, peter: { bundleId: "b1", pasteDy: -3, fps: 25 } });
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(peter.calls, ["begin 1", "end 1"]);
+  assert.equal(peter.audioBytes, 960 * 6, "every TTS chunk went to Peter");
+  const before = client.bin.length;
+  peter.emit("crop", { requestId: 1, frame: 3, jpeg: Buffer.from([0xff, 0xd8]) });
+  const f = client.bin[before];
+  assert.equal(f.readUInt8(2), 2);
+  assert.equal(f.readUInt32LE(4), 1, "header seq = utteranceId");
+  assert.equal(f.readUInt32LE(8), 3, "frame index");
+  assert.deepEqual([...f.subarray(12)], [0xff, 0xd8]);
+  session.close();
+  assert.equal(peter.calls.at(-1), "close");
+});
+
+test("peter: barge-in cancels the worker utterance and drops its late crops", async () => {
+  const { asr, client, peter, session } = peterSetup(false, 50, 5);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: "peter" }));
+  await client.waitFor((m) => m.type === "lip.changed");
+  asr.fire({ type: "speechComplete", turnId: 0, text: "tell me a story" });
+  await client.waitFor((m) => m.type === "state" && m.state === "speaking");
+  await session.onClientText(JSON.stringify({ type: "barge_in" }));
+  assert.deepEqual(peter.calls, ["begin 1", "cancel 1"]);
+  const before = client.bin.length;
+  peter.emit("crop", { requestId: 1, frame: 9, jpeg: Buffer.from([1]) });
+  assert.equal(client.bin.length, before, "late crop of a cancelled utterance is dropped");
+  session.close();
+});
+
+test("peter: a worker that fails to connect leaves the fallback with reason peter_unavailable", async () => {
+  const { client, session } = peterSetup(true);
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter", kind: "human" }, lip: { mode: "peter", fallback: "none" }, mic: false }));
+  const changed = await client.waitFor((m) => m.type === "lip.changed");
+  assert.deepEqual(changed.lip, { requested: "peter", active: "none", reason: "peter_unavailable" });
+  session.close();
+});

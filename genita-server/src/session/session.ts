@@ -15,7 +15,7 @@ import { isMostlyHangul } from "../text/language.ts";
 import { chunkTiming, planLips, type LipMode, type LipPlan } from "../lips/source.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
-import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
+import { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM, FRAME_KIND_PETER, encodeFrameHeader, type ServerEvent, type ErrorCode, type CancelReason } from "../protocol.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -36,13 +36,26 @@ export interface AsrLike {
   readonly isOpen: boolean;
 }
 
+export interface PeterLike {
+  on(ev: "crop", fn: (c: { requestId: number; frame: number; jpeg: Buffer }) => void): unknown;
+  on(ev: "closed", fn: (code: number) => void): unknown;
+  connect(): Promise<{ bundleId: string; pasteDy: number; fps: number }>;
+  readonly isReady: boolean;
+  begin(requestId: number, startFrame?: number): void;
+  audio24k(requestId: number, pcm24k: Buffer): void;
+  end(requestId: number): void;
+  cancel(requestId: number): void;
+  close(): void;
+}
+
 export type SessionDeps = {
   config: Config;
   openAsr: (languages: string[]) => AsrLike;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   tts: (req: Omit<TtsRequest, "apiKey">) => AsyncIterable<TtsChunk>;
   now?: () => number;
-  peterUrl?: string | null;
+  /** Peter worker connection factory; unset = Peter not deployed */
+  openPeter?: () => PeterLike;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
 
@@ -57,6 +70,8 @@ type Reply = {
   firstAudioAt: number | null;
   audioMs: number;
   doneTimer: NodeJS.Timeout | null;
+  /** this reply's audio is going to Peter */
+  peter: boolean;
 };
 
 type TurnMetrics = { speechEndAt?: number; completeAt?: number };
@@ -118,6 +133,8 @@ export class Session {
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
+  private peter: PeterLike | null = null;
+  private peterCancelled = new Set<number>();
   private specTimer: NodeJS.Timeout | null = null;
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
@@ -219,7 +236,7 @@ export class Session {
     this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "peter" || v === "atlas" || v === "none" ? v : d);
-    this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), this.deps.peterUrl ?? null);
+    this.lip = planLips(asLip(lip.mode, persona.kind === "human" ? "none" : "atlas"), asLip(lip.fallback, "none"), !!this.deps.openPeter);
     const b = (msg.bargeIn && typeof msg.bargeIn === "object" ? msg.bargeIn : {}) as Record<string, unknown>;
     if (typeof b.minMs === "number" && b.minMs >= 0 && b.minMs <= 3000) this.bargeCfg.bargeInMinMs = b.minMs;
     if (typeof b.minWords === "number" && b.minWords >= 1 && b.minWords <= 10) this.bargeCfg.bargeInMinWords = b.minWords;
@@ -243,6 +260,36 @@ export class Session {
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    if (this.lip.reason === "peter_connecting") void this.connectPeter();
+  }
+
+  private async connectPeter(): Promise<void> {
+    const fallback = this.lip.active;
+    const peter = this.deps.openPeter!();
+    this.peter = peter;
+    peter.on("crop", (c) => {
+      if (this.closed || this.peterCancelled.has(c.requestId)) return;
+      const frame = Buffer.alloc(4);
+      frame.writeUInt32LE(c.frame >>> 0, 0);
+      this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_PETER, c.requestId), frame, c.jpeg]));
+    });
+    peter.on("closed", () => {
+      if (this.closed || this.lip.active !== "peter") return;
+      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
+      this.client.sendJson({ type: "lip.changed", lip: this.lip });
+    });
+    try {
+      const r = await peter.connect();
+      if (this.closed) return peter.close();
+      this.lip = { requested: "peter", active: "peter", reason: null };
+      this.client.sendJson({ type: "lip.changed", lip: this.lip, peter: { bundleId: r.bundleId, pasteDy: r.pasteDy, fps: r.fps } });
+    } catch (err) {
+      this.peter = null;
+      if (this.closed) return;
+      this.lip = { requested: "peter", active: fallback, reason: "peter_unavailable" };
+      this.client.sendJson({ type: "lip.changed", lip: this.lip });
+      this.log("peter.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
+    }
   }
 
   private async ensureAsr(): Promise<void> {
@@ -271,6 +318,7 @@ export class Session {
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
     this.asr?.end();
+    this.peter?.close();
     this.client.close(code, reason);
   }
 
@@ -332,6 +380,10 @@ export class Session {
     r.abort.abort();
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
+    if (r.peter) {
+      this.peterCancelled.add(utteranceId);
+      this.peter?.cancel(utteranceId);
+    }
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
@@ -442,7 +494,7 @@ export class Session {
   }
 
   private async runReply(text: string, utteranceId: number): Promise<void> {
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, peter: false };
     this.reply = reply;
     const signal = reply.abort.signal;
     const m = { ...this.metrics, replyStartAt: this.now() } as TurnMetrics & {
@@ -569,6 +621,10 @@ export class Session {
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
+            if (this.lip.active === "peter" && this.peter?.isReady) {
+              reply.peter = true;
+              this.peter.begin(utteranceId);
+            }
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
@@ -592,6 +648,7 @@ export class Session {
           });
           if (chunk.audio.length) {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
+            if (reply.peter) this.peter?.audio24k(utteranceId, chunk.audio);
           }
           reply.audioMs += durationMs;
         }
@@ -606,6 +663,7 @@ export class Session {
     }
     await producer;
     if (signal.aborted || this.reply !== reply) return;
+    if (reply.peter) this.peter?.end(utteranceId);
 
     if (sparkError) {
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);

@@ -17,6 +17,7 @@ import { Session, type ClientSink, type SessionDeps } from "./session/session.ts
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { streamSpeech } from "./tts/elevenlabs.ts";
+import { PeterClient } from "./lips/peter.ts";
 
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const IDLE_MS = 120_000;
@@ -29,7 +30,11 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     openAsr: (languages) => new TranscribeStream({ key: config.metaKey, languages }),
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: (req) => streamSpeech({ ...req, apiKey: config.elevenKey }),
-    peterUrl: process.env.GENITA_PETER_URL || null,
+    // one Peter connection per call = one Modal container = one GPU
+    openPeter:
+      process.env.GENITA_PETER_URL && process.env.GENITA_PETER_TOKEN
+        ? () => new PeterClient({ url: process.env.GENITA_PETER_URL!, token: process.env.GENITA_PETER_TOKEN! })
+        : undefined,
     log,
   };
 }

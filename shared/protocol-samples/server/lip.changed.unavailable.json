@@ -1,0 +1,8 @@
+{
+  "type": "lip.changed",
+  "lip": {
+    "requested": "peter",
+    "active": "none",
+    "reason": "peter_unavailable"
+  }
+}

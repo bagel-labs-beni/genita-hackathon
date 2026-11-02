@@ -9,7 +9,8 @@ export const PROTOCOL_VERSION = 1;
 /** Binary server frame: "GA" | kind u8 | reserved u8 | seq u32 LE | payload */
 export const FRAME_HEADER_BYTES = 8;
 export const FRAME_KIND_TTS_PCM = 1;
-export const FRAME_KIND_PETER = 2; // reserved: Peter mouth frames (F4-L17)
+/** Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG (F4-L17) */
+export const FRAME_KIND_PETER = 2;
 
 export type LipMode = "peter" | "atlas" | "none";
 export type Mode = "chat" | "interpret";
@@ -107,6 +108,7 @@ export type ServerEvent =
     }
   | { type: "asr.status"; status: "connected" | "reconnecting" }
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
+  | { type: "lip.changed"; lip: LipPlan; peter?: { bundleId: string; pasteDy: number; fps: number } }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown };
 
@@ -157,6 +159,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
+  "lip.changed": { required: ["lip"], optional: ["peter"] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
 };
