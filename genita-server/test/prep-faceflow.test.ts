@@ -268,3 +268,31 @@ test("faceflow.py end to end (non-human port): toy derives AH2 from AH; small-mu
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("faceflow.py 2D (codex P2): white teeth on light skin survive pasteDrawnOnly (filled mouth kept, only outside skin dropped)", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, cy = 0.515 * H, cx = W / 2;
+  const skin: [number, number, number] = [235, 240, 250];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - cy) < 1.2 && Math.abs(x - cx) < 14 ? [60, 40, 40] : skin));
+  const wd = pngOf(W, H, (x, y) => {
+    const r = ((x - cx) / 28) ** 2 + ((y - cy - 4) / 18) ** 2;
+    if (r < 0.8 && y < cy) return [250, 250, 250];           // white upper teeth, close to the skin colour
+    if (r < 0.8) return [70, 30, 40];                         // cavity
+    if (r < 1) return [40, 25, 25];                           // outline
+    return skin;
+  });
+  const dir = mkdtempSync(join(tmpdir(), "ff-2d-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "wd.png"), wd);
+    const out = join(dir, "out");
+    execFileSync(py, [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", `WD=${join(dir, "wd.png")}`, "--face", "0.2,0.25,0.8,0.62",
+      "--mouth", "0.44,0.505,0.56,0.525", "--kind", "character2d", "--out", out]);
+    const flow = JSON.parse(readFileSync(join(out, "flow.json"), "utf8"));
+    // white teeth are ~250 in every channel; the skin they would be wiped to has a 235 channel
+    const white = Number(execFileSync(py, ["-c", `import cv2; im = cv2.imread(${JSON.stringify(join(out, "WD.jpg"))}); print(int((im.min(2) >= 244).sum()))`]).toString());
+    assert.ok(flow.keys.includes("WD"));
+    assert.ok(white > 120, `teeth stay white (${white} white px; ~88 when the teeth are wiped to skin)`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

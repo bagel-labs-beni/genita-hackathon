@@ -744,7 +744,9 @@ def main():
             ak = cv2.warpAffine(al, A, (W, H), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
             if prep.get('pasteDrawnOnly', True):            # paste only the drawing; the skin comes from the plate (no light halo)
                 dk_ = np.abs(ak - N0).max(2)
-                pk = pk * cv2.GaussianBlur(cv2.dilate((dk_ > 45).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(np.float32), (0, 0), 1.0)[..., None]
+                inside = cv2.warpAffine(reg_.astype(np.float32), A, (W, H), flags=cv2.INTER_LINEAR) > 0.5      # filled mouth (teeth, tongue)
+                draw = ((dk_ > 45) | inside).astype(np.uint8)    # codex P2: white teeth on light skin stay; only the outside skin is dropped
+                pk = pk * cv2.GaussianBlur(cv2.dilate(draw, np.ones((3, 3), np.uint8)).astype(np.float32), (0, 0), 1.0)[..., None]
             ALN[name] = N0 * (1 - pk) + ak * pk
             diag[name]['fit'] = {'w_x': round(bw_ / mw, 2), 'scale': round(sc, 2)}
         big, dil, fe, thr = DIFF_MASK['character2d']
