@@ -7,6 +7,7 @@ struct MacConversationView: View {
     /// F8-L4 · ⋮ → Interpret a call (INT-M0~M2)
     @State private var interpret = MacInterpretController()
     private let call = CallController.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var menuOpen = false
     @State private var settingsOpen = false
     @State private var hoverShare = false
@@ -26,6 +27,10 @@ struct MacConversationView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
+                if let face = call.face {
+                    FaceFrameView(driver: face).frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
                     .buttonStyle(.plain).position(x: 47.5, y: 86.5).accessibilityIdentifier("macOpenMenu")
                 if interpret.isLive {
@@ -71,6 +76,9 @@ struct MacConversationView: View {
             if reviewState == "menu" { menuOpen = true }
         }
         .onDisappear { sharing.stop() }
+        .onAppear { call.showFace(reduceMotion: reduceMotion) }
+        .onDisappear { call.hideFace() }
+        .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on) }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }

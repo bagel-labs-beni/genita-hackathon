@@ -9,6 +9,7 @@ struct ConversationView: View {
     @State private var moreOpen = false
     @State private var loopURL: URL?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         GeometryReader { safe in
             GeometryReader { full in
@@ -25,7 +26,7 @@ struct ConversationView: View {
                     ZStack(alignment: .topLeading) {
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: call.face).frame(width: full.size.width, height: full.size.height).clipped()
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full ? 0 : 1)
@@ -63,7 +64,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
@@ -108,6 +109,11 @@ struct ConversationView: View {
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && (handoff.desktop || handoff.motionVisible) ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
+        // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
+        .onAppear { if !connecting { showFace() } }
+        .onDisappear { if !connecting { call.hideFace() } }
+        .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
+        .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         .onAppear {
@@ -124,6 +130,7 @@ struct ConversationView: View {
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
+    private func showFace() { call.showFace(reduceMotion: reduceMotion || CallMotion.reviewStill, animate: !CallMotion.reviewStill) }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
 
     /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
