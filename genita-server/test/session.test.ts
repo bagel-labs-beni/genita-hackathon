@@ -8,9 +8,13 @@ import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/elevenlabs.ts";
 
+// these tests cover server TTS mode (GENITA_SERVER_TTS=1); device mode: session-device.test.ts
 const config: Config = {
   metaKey: "x",
   elevenKey: "y",
+  serverTts: true,
+  kling: false,
+  peter: false,
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
