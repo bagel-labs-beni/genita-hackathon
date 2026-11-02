@@ -29,7 +29,7 @@ public struct GenitaSplash: View {
 
     // MARK: timing (motion page A′ table)
     static let handoffAt = 1.9
-    static let handoff = 0.78     // → A02 at 2.68 s (a timer also ends it there)
+    static let handoff = 0.70     // → A02 at 2.60 s: a timer also ends it there, leaving room for a busy main thread under the 2.7 s budget
     static let skipHandoff = 0.38
     static let hapticAt = 1.9
 
@@ -83,7 +83,7 @@ public struct GenitaSplash: View {
         GeometryReader { safe in
             let top = safe.safeAreaInsets.top - 44 // same origin as A02 (390 × 844 board)
             GeometryReader { full in
-                TimelineView(.animation(paused: start == nil || Self.frozenAt != nil || finished)) { ctx in
+                TimelineView(.animation(minimumInterval: Self.frameInterval, paused: start == nil || Self.frozenAt != nil || finished)) { ctx in
                     let t = Self.frozenAt ?? start.map { ctx.date.timeIntervalSince($0) } ?? 0
                     scene(t: t, size: full.size, top: top)
                         .onChange(of: t >= endTime, initial: true) { _, done in if done { finish() } }
@@ -270,6 +270,15 @@ public struct GenitaSplash: View {
     private func clamp(_ x: Double) -> Double { max(0, min(1, x)) }
     private func lerp(_ a: CGFloat, _ b: CGFloat, _ p: Double) -> CGFloat { a + (b - a) * CGFloat(p) }
     static func sineInOut(_ x: Double) -> Double { -(cos(.pi * x) - 1) / 2 }
+    /// Full frame rate on devices; the CI simulator renders in software, so it draws at 20 fps there to keep
+    /// the main thread (and the hand-off deadline) on time.
+    static var frameInterval: Double? {
+        #if targetEnvironment(simulator)
+        1.0 / 20
+        #else
+        nil
+        #endif
+    }
     static func smooth(_ x: Double) -> Double { x * x * (3 - 2 * x) }
 
     nonisolated(unsafe) static var unfreeze = false
