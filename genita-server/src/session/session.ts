@@ -17,6 +17,7 @@ import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
+import { shiftTiming } from "../lips/visemes.ts";
 import { Eager } from "../util/eager.ts";
 import { hedged } from "../util/hedge.ts";
 import {
@@ -74,6 +75,11 @@ export type SessionDeps = {
   ops?: OpsLimits;
   /** null: shared-token dev identity has no persisted user row. */
   turnUserId?: string | null;
+  /**
+   * Handoff: this account's turns from its other live call, or from a call that ended in the last few minutes
+   * (server.ts). With server memory on, `start.history` is otherwise ignored, so the Mac lost the iPhone's turns.
+   */
+  priorTurns?: () => HistoryItem[] | null;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -85,7 +91,7 @@ export type SessionDeps = {
 };
 
 type Mode = "chat" | "interpret";
-type HistoryItem = { role: "user" | "assistant"; text: string };
+export type HistoryItem = { role: "user" | "assistant"; text: string };
 type Frames = { images: string[]; at: number };
 
 type Reply = {
@@ -187,6 +193,8 @@ export class Session {
   private greeting: { item: Memory | null } | null = null;
   /** D21: start.greetAfterMs window; the user speaking or typing inside it cancels the greeting */
   private greetTimer: NodeJS.Timeout | null = null;
+  /** this call continues the account's other call (handoff): no greeting */
+  private continued = false;
   private mode: Mode = "chat";
   private language = "English";
   private voiceId: string;
@@ -392,6 +400,22 @@ export class Session {
       catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; }
     }
     if (this.closed) return;
+    // Handoff (D24 scene 5, #199): with server memory on, start.history is ignored (stale snapshots must not restore
+    // forgotten memories), so a call continuing on the other device started with no turns ("Things · searching
+    // shops"). Seed this call's turns from the account's other/just-ended call (server-side, trusted); a start
+    // marked `handoff: true` with no server-side turns falls back to its own history (context only, never stored as memory).
+    if (this.memoryCall && startMode === "chat" && !this.history.length) {
+      const server = this.deps.priorTurns?.() ?? null;
+      const claimed = msg.handoff === true ? parseHistory(msg.history) : [];
+      const seed = server?.length ? server : claimed;
+      if (seed.length) {
+        this.history = seed.slice(-MAX_HISTORY);
+        this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
+        this.greeting = null; // continuing a conversation: no fresh hello on the new device
+        this.continued = true;
+        this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
+      }
+    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
     if (this.micOn) {
@@ -416,6 +440,7 @@ export class Session {
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
+    if (this.continued) return; // handoff: the conversation goes on, no greeting of either kind
     if (greetAfterMs === null) {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
       return;
@@ -761,6 +786,11 @@ export class Session {
     return f.images;
   }
 
+  /** This call's turns (copy) — for the account's next device after a handoff. */
+  historySnapshot(): HistoryItem[] {
+    return this.history.map((h) => ({ ...h }));
+  }
+
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
@@ -1046,6 +1076,7 @@ export class Session {
       startJob(i);
       const sentenceOffset = reply.audioMs;
       let sentAudio = false;
+      let firstSeq: number | null = null; // this clause's first audio chunk: `audio.timing` is keyed to it
       let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
       try {
         let first = true;
@@ -1054,6 +1085,14 @@ export class Session {
           if (first) {
             first = false;
             startJob(i + 1); // prefetch next sentence while this one streams
+          }
+          if (chunk.timing) {
+            // forced-aligner timing of the clause, after its audio (it never holds the first frame)
+            if (firstSeq !== null) {
+              const t = shiftTiming(chunk.timing, sentenceOffset);
+              this.client.sendJson({ type: "audio.timing", utteranceId, sentence: i, seq: firstSeq, words: t.words, phonemes: t.phonemes });
+            }
+            continue;
           }
           if (!chunk.audio.length && !chunk.alignment) continue;
           ttsModelUsed = chunk.model;
@@ -1067,6 +1106,7 @@ export class Session {
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });
           }
           const seq = ++this.seq;
+          firstSeq ??= seq;
           const durationMs = pcmDurationMs(chunk.audio.length);
           this.client.sendJson({
             type: "audio",
@@ -1206,4 +1246,16 @@ export class Session {
   private log(event: string, data: Record<string, unknown>): void {
     this.deps.log?.(event, { session: this.id, ...data });
   }
+}
+
+/** `start.history` from the app: role + text only, capped. */
+function parseHistory(v: unknown): HistoryItem[] {
+  if (!Array.isArray(v)) return [];
+  const out: HistoryItem[] = [];
+  for (const h of v.slice(-MAX_HISTORY)) {
+    const item = h as Record<string, unknown>;
+    const text = typeof item?.text === "string" ? item.text.replace(/\s+/g, " ").trim().slice(0, 1000) : "";
+    if (text && (item.role === "user" || item.role === "assistant")) out.push({ role: item.role, text });
+  }
+  return out;
 }
