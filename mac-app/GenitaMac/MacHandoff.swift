@@ -26,7 +26,16 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// An arriving window shows only the effect; a departing one stays visible until its first frame.
     var conversationHidden:Bool { guard let motion else{return false};return motion.outgoing ? motionVisible : true }
     /// Only when a request can actually reach an iPhone that is in front (local link, or the server says active).
-    var canMoveToPhone:Bool { ownership.isOwner && (linkReachable || server.peerActive) && motion == nil }
+    var canMoveToPhone:Bool {
+        #if DEBUG
+        if let review=reviewCanMove {return review}
+        #endif
+        return ownership.isOwner && (linkReachable || server.peerActive) && motion == nil
+    }
+    #if DEBUG
+    /// CI review only: pins "an iPhone is in front" so MC-M and MAC-4 render their enabled state.
+    var reviewCanMove:Bool?
+    #endif
     private var linkReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
     private var returnOrigin:NSPoint?
     @Published var profile: Data?
@@ -301,23 +310,75 @@ struct MacHandoffSurface: View {
         }
     }
 }
+/// The Mac's home window: MAC-2 (no companion yet), MAC-3 (conversation on the iPhone), MAC-4 (conversation here).
+/// Figma rp1wR9pxV0IsgyjvOcwo92 87:2 / 88:2 / 89:2: 420 wide, 32 pt padding, serif 28 title, one status row, 50 pt button.
+enum MacHomeKind { case noCompanion, onPhone, here }
 struct MacHandoffControls:View {
     @ObservedObject private var handoff=MacHandoff.shared
+    @ObservedObject private var call=MacCall.shared
+    var forced:MacHomeKind?=nil
+    private var kind:MacHomeKind {
+        if let forced {return forced}
+        if case .noCompanion=call.account {return .noCompanion}
+        return handoff.ownership.isOwner && handoff.ownership.state.epoch>0 ? .here : .onPhone
+    }
+    var body:some View { MacHomeView(kind:kind,name:call.companionName ?? "Your companion",handoff:handoff) }
+}
+struct MacHomeView:View {
+    let kind:MacHomeKind
+    let name:String
+    @ObservedObject var handoff:MacHandoff
+    private static let blue=Color(red:0,green:162.0/255,blue:1)
+    private var paired:Bool { handoff.link.connected }
+    private var spacedCode:String { let c=handoff.link.code;return c.count==6 ? String(c.prefix(3))+" "+String(c.suffix(3)) : c }
     var body:some View {
-        VStack(spacing:16) {
-            Text("Genita").font(.largeTitle)
-            MacAccountRow()
-            Text("First time? Enter this code on your iPhone.").foregroundStyle(.secondary)
-            Text(handoff.link.code).font(.system(size:40,weight:.medium,design:.monospaced)).textSelection(.enabled)
-            Text(handoff.link.status)
-            Text(handoff.status).font(.callout).multilineTextAlignment(.center)
-            HStack {
-                Button("Show screen"){handoff.showRegistration()}.disabled(!handoff.link.connected)
-                Button("Continue on this Mac"){handoff.continueHere()}.disabled(handoff.ownership.isOwner && handoff.ownership.state.epoch>0)
-                Button("Move to iPhone"){handoff.moveToPhone()}.disabled(!handoff.canMoveToPhone)
+        VStack(alignment:.leading,spacing:12) {
+            Text(title).font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height:34,alignment:.leading)
+                .fixedSize(horizontal:true,vertical:false).accessibilityAddTraits(.isHeader)
+            switch kind {
+            case .noCompanion:
+                Text("Your companion is made on iPhone: face, voice and setup. Open Genita there. They’ll show up here when you’re done.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3.5).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+                HStack(spacing:8) {
+                    Circle().strokeBorder(Color(white:227.0/255),lineWidth:2).frame(width:16,height:16)
+                    Text("Checking for your companion").font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.mute)
+                }.frame(height:22)
+                button("Get Genita for iPhone",filled:false,id:"macGetGenita") { if let url=URL(string:"https://testflight.apple.com/join/Ybqh482p") {NSWorkspace.shared.open(url)} }
+            case .onPhone:
+                statusRow("Conversation on your iPhone",live:true)
+                button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
+                Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
+                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
+                Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)
+                    .frame(maxWidth:.infinity).padding(.vertical,16).background(Color(white:241.0/255),in:RoundedRectangle(cornerRadius:12))
+                    .accessibilityLabel("Pairing code "+spacedCode).accessibilityIdentifier("macPairingCode")
+            case .here:
+                statusRow(paired ? "Paired with your iPhone" : handoff.server.connected ? "Signed in. Moves go through your account." : "No iPhone paired yet",live:paired || handoff.server.connected)
+                HStack(spacing:8) {
+                    button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() }.disabled(!handoff.canMoveToPhone).opacity(handoff.canMoveToPhone ? 1 : 0.4)
+                    button("Show screen",filled:false,height:44,id:"macShowScreen") { handoff.showRegistration() }.disabled(!paired).opacity(paired ? 1 : 0.4)
+                }
+                Text("Show screen lets your iPhone learn where this screen is, so touching its edge moves the conversation.")
+                    .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
             }
-            Text(handoff.server.connected ? "Signed in: moves go through your account, no code needed." : "Screen sharing is available while the conversation is on this Mac.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-        }.padding(28).frame(width:420)
+        }
+        .padding(.horizontal,32).padding(.top,32).padding(.bottom,28).frame(width:420,alignment:.topLeading)
+        .background(MacSheetInk.sheet)
+    }
+    private var title:String {
+        switch kind { case .noCompanion: "Set up on your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac." }
+    }
+    private func statusRow(_ text:String,live:Bool)->some View {
+        HStack(spacing:8) {
+            Circle().fill(live ? Self.blue : Color(white:227.0/255)).frame(width:8,height:8)
+            Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.mute)
+        }.frame(height:22).accessibilityElement(children:.combine)
+    }
+    private func button(_ label:String,filled:Bool,height:CGFloat=50,id:String,action:@escaping()->Void)->some View {
+        Button(action:action) {
+            Text(label).font(MacSheetInk.sans(16,.medium)).foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
+                .frame(maxWidth:.infinity).frame(height:height).background(filled ? MacSheetInk.ink : Color.white,in:RoundedRectangle(cornerRadius:12))
+        }.buttonStyle(.plain).accessibilityIdentifier(id)
     }
 }
 
@@ -354,6 +415,34 @@ extension MacHandoff {
             if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
                 host.cacheDisplay(in:host.bounds,to:rep)
                 try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+            }
+            window.orderOut(nil)
+        }
+        // MAC-2 / MAC-3 / MAC-4 home windows (420 wide, height follows the content) and MC-M (the menu over the call)
+        call.companionName="Mina"
+        do {
+            reviewCanMove=true
+            for (name,kind) in [("MAC-2",MacHomeKind.noCompanion),("MAC-3",.onPhone),("MAC-4",.here)] {
+                let host=NSHostingView(rootView:MacHomeView(kind:kind,name:"Mina",handoff:self))
+                let size=host.fittingSize
+                host.frame=NSRect(origin:.zero,size:size)
+                let window=NSWindow(contentRect:NSRect(origin:.zero,size:size),styleMask:.borderless,backing:.buffered,defer:false)
+                window.contentView=host;window.orderFront(nil)
+                try? await Task.sleep(for:.seconds(1))
+                if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                    host.cacheDisplay(in:host.bounds,to:rep)
+                    try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent(name+".png"))
+                }
+                window.orderOut(nil)
+            }
+            surface = .active;sharingStopped=false
+            let host=NSHostingView(rootView:MacConversationView(reviewOverride:"menu").frame(width:390,height:844))
+            let window=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            window.contentView=host;window.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=host.bitmapImageRepForCachingDisplay(in:host.bounds) {
+                host.cacheDisplay(in:host.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-M.png"))
             }
             window.orderOut(nil)
         }
