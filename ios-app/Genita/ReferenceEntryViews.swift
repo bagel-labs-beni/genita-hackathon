@@ -103,7 +103,13 @@ struct ReferenceSignInView: View {
 
     /// Same white button as Apple / Google; envelope glyph in the logo's slot.
     var emailButton: some View {
-        Button { emailSheet = true } label: {
+        Button {
+            #if DEBUG
+            // Appetize preview: no real e-mail sign-in (it would sign in to the live service), the local demo instead
+            if BrowserPreview.isActive { provider = "Email"; return }
+            #endif
+            emailSheet = true
+        } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
                 HStack(spacing: 11) {

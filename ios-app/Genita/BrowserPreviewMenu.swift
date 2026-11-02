@@ -116,6 +116,7 @@ struct BrowserPreviewMenu: View {
             model.history = []
             switch entry.target {
             case let .onboarding(stage):
+                BrowserPreview.configureCall() // a call after onboarding is the plain recorded call, not the last jump's
                 if stage == .welcome { model.resetLocalProfile(); model.setup.stage = .welcome }
                 else { model.applyReviewFixture(stage: stage, variant: "") }
             case let .call(session, findsState, findsTab, camera, settings):

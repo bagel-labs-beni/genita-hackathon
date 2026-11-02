@@ -261,11 +261,14 @@ struct ConversationView: View {
     #if DEBUG
     /// Screenshots of the Finds tab without a server: GENITA_FINDS_TAB = list | empty | detail (recorded cards).
     func installFindsTabFixture() {
-        guard let mode = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"] else { return }
+        let configured = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"]
+        // Appetize preview: Finds always reads the recorded cards (the demo has no account), the tab opens by itself only when asked
+        guard let mode = configured ?? (BrowserPreview.isActive ? "list" : nil) else { return }
         let recorded = FixtureFindsAPI.recorded()
         findsList.api = FixtureFindsAPI(cards: mode == "empty" ? [] : recorded.cards)
         findsList.frames = { recorded.frames[$0] ?? [] }
         findsList.purge = { _ in }
+        guard configured != nil else { return }
         Task { @MainActor in
             for _ in 0..<80 where call.link != .live { try? await Task.sleep(for: .milliseconds(100)) }
             try? await Task.sleep(for: .milliseconds(300))

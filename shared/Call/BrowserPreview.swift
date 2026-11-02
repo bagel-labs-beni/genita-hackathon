@@ -16,17 +16,18 @@ enum BrowserPreview {
     /// Environment the stubs read, set once at launch (never overwrites a value given on the command line).
     static func prepare() {
         guard isActive else { return }
-        for (key, value) in ["GENITA_FIXTURE_SCRIPT": "none", "GENITA_CALL_AUTOMIC": "1", "GENITA_PREVIEW_SESSION": "r1"] { setenv(key, value, 0) }
+        for (key, value) in ["GENITA_FIXTURE_SCRIPT": "none", "GENITA_CALL_AUTOMIC": "1", "GENITA_PREVIEW_SESSION": "r1", "GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-0"] { setenv(key, value, 0) }
     }
 
-    /// Menu choices: set (or clear) the stub variables the next call screen reads.
+    /// Menu choices: set (or clear) the stub variables the next call screen reads. The fixture camera is always there
+    /// (a camera button in the call never reaches the real camera or its permission); `camera` only turns it on by itself.
     static func configureCall(session: String = "r1", findsState: Int? = nil, findsTab: String? = nil, camera: Bool = false) {
         guard isActive else { return }
         func put(_ key: String, _ value: String?) { if let value { setenv(key, value, 1) } else { unsetenv(key) } }
         put("GENITA_PREVIEW_SESSION", session)
         put("GENITA_FINDS_STATE", findsState.map(String.init))
         put("GENITA_FINDS_TAB", findsTab)
-        put("GENITA_FIXTURE_CAMERA", camera ? "bundle:finds-frame-fridge-0" : nil)
+        put("GENITA_FIXTURE_CAMERA", "bundle:finds-frame-fridge-0")
         put("GENITA_CALL_AUTOCAMERA", camera ? "1" : nil)
     }
 }
