@@ -19,6 +19,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | v1 published. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
+| 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 
 ```
 wss://<host>/v1/session
@@ -97,8 +98,49 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 }
 ```
 
-Only `persona.name` is required. Until login/DB land (F1, F4-L12) the app sends
-persona, profile, memories and recent history itself; the server stores nothing.
+Only `persona.name` is required. Without the memory dependency the app still sends
+persona, profile, memories and recent history itself. With server memory enabled,
+`start.memories` and `start.history` are ignored so stale app snapshots cannot
+restore forgotten memories. The server uses its authenticated user identity and
+retains new conversation history only for this call. New calls receive an ordinary
+greeting, or one qualifying past episode (seen crops first after six hours).
+Greetings use the existing `reply.delta`/audio/`reply` pipeline and opener guard;
+there is no synthetic user `transcript` event.
+
+## Memory, privacy and Us-photo REST (F7/F9/F5-L17)
+
+All routes require the same bearer token as the session. Before F1/JWT integration,
+one token means **one local user**, not multiple accounts. The server's injected
+`resolveUser(req)` must verify JWTs to support multiple users; caller-supplied
+`userId`, `start.user.id` and `X-User-ID` never select an account.
+
+| method | path | result |
+|---|---|---|
+| GET | `/v1/memories` | `{memories:[{id,text,kind,created_at,updated_at,last_used_at,follow_up,source_session_id,image_ref?}]}`; timestamps are epoch milliseconds |
+| DELETE | `/v1/memories/:id` | `204`, idempotent Forget; `/me/memories/:id` is an alias |
+| DELETE | `/v1/memories` | `204`, Forget all; optional `?id=mem_…` deletes just that item |
+| GET / PATCH | `/v1/memory-settings` | `{rememberSeen:boolean,photosOfUs:boolean}`; PATCH accepts either/both boolean fields; switching off prevents new items |
+| POST | `/v1/us-photos` | `{scene_id,companion_id,scene_description,scene_ended:true,card_closed:true}` → `{status:"ready",mime,image_base64}` or a non-ready status |
+
+Us-photo inputs contain no image bytes/URLs. `resolveCompanionFace(userId,id)` must
+resolve the user's approved **companion** reference from prep/storage; until it is
+wired the route returns `503 companion_storage_unavailable`. Unknown companions
+return `404`. The edit sends that reference and scene text only, one image at a time.
+It reserves at most three attempts per UTC day, deduplicates scene IDs, and discards
+face-check failures. Finds should save only a `ready` result after the card closes.
+
+Memory/setting responses have `Cache-Control: no-store`. JSON body limit is 2.1 MB.
+Forget invalidates pending extraction and active replies, removes crop bytes and
+keeps a content-hash tombstone so a stale upsert cannot restore the item. Crop
+deletion/storage errors return `503`; retries can complete the deletion.
+`GENITA_MEMORY_FILE=./.memory/memories.json` enables atomic local JSON persistence;
+unset means in-memory only. `REVISIT_GAP_HOURS` defaults to `6` (seen crops always
+require six hours), and revisit openers are limited to one per UTC day.
+
+The trusted vision adapter supplies only a <=480px SAM crop plus a safe one-line
+summary to `src/memory/`; original camera frames are never persisted. Its pixel
+safety check must exclude faces/people, documents, money and addresses. Integration
+contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md).
 
 ## Server → app events
 

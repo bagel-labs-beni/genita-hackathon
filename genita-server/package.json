@@ -12,7 +12,9 @@
     "test": "node --experimental-strip-types --no-warnings=ExperimentalWarning --test 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "smoke": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke.ts",
-    "check:meta": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-meta.ts"
+    "check:meta": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-meta.ts",
+    "eval:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-memory.ts",
+    "check:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-memory.ts"
   },
   "dependencies": {
     "ws": "^8.22.1"
