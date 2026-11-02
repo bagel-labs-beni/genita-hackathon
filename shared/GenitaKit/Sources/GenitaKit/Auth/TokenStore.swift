@@ -20,16 +20,32 @@ public final class InMemoryTokenStore: GenitaTokenStore, @unchecked Sendable {
     public func clear(ifMatching token: String) { lock.withLock { if self.token == token { self.token = nil } } }
 }
 
+private enum KeychainItemLocks {
+    private static let registryLock = NSLock()
+    private static var locks: [String: NSLock] = [:]
+
+    static func lock(service: String, account: String) -> NSLock {
+        let key = "\(service)\u{0}\(account)"
+        return registryLock.withLock {
+            if let lock = locks[key] { return lock }
+            let lock = NSLock()
+            locks[key] = lock
+            return lock
+        }
+    }
+}
+
 /// Generic-password item, readable after first unlock, never synced or backed up to another device.
 public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
     public static let defaultService = "ai.thebeni.genita.session"
     private let service: String
     private let account: String
-    private let lock = NSLock()
+    let itemLock: NSLock
 
     public init(service: String = KeychainTokenStore.defaultService, account: String = "session") {
         self.service = service
         self.account = account
+        self.itemLock = KeychainItemLocks.lock(service: service, account: account)
     }
 
     private var query: [String: Any] {
@@ -61,8 +77,8 @@ public final class KeychainTokenStore: GenitaTokenStore, @unchecked Sendable {
 
     private func clearUnlocked() { SecItemDelete(query as CFDictionary) }
 
-    public func load() -> String? { lock.withLock { loadUnlocked() } }
-    public func save(_ token: String) { lock.withLock { saveUnlocked(token) } }
-    public func clear() { lock.withLock { clearUnlocked() } }
-    public func clear(ifMatching token: String) { lock.withLock { if loadUnlocked() == token { clearUnlocked() } } }
+    public func load() -> String? { itemLock.withLock { loadUnlocked() } }
+    public func save(_ token: String) { itemLock.withLock { saveUnlocked(token) } }
+    public func clear() { itemLock.withLock { clearUnlocked() } }
+    public func clear(ifMatching token: String) { itemLock.withLock { if loadUnlocked() == token { clearUnlocked() } } }
 }

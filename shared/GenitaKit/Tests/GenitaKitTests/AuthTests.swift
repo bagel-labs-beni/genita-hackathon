@@ -46,6 +46,15 @@ struct StartRouterTests {
 }
 
 struct AuthWireTests {
+    @Test func keychainTokenStoresSharingAnItemUseTheSameLock() {
+        let first = KeychainTokenStore(service: "test.session", account: "shared")
+        let second = KeychainTokenStore(service: "test.session", account: "shared")
+        let other = KeychainTokenStore(service: "test.session", account: "other")
+
+        #expect(first.itemLock === second.itemLock)
+        #expect(first.itemLock !== other.itemLock)
+    }
+
     @Test func samplesDecode() throws {
         let m = try JSONDecoder().decode(GenitaMe.self, from: sample("me.json"))
         #expect(m.prepStatus == .running && m.conversation?.activeDevice == "iphone" && m.conversation?.epoch == 3)
