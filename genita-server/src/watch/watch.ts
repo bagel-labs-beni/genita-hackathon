@@ -77,7 +77,7 @@ const QUESTION_LINES_MS = 90_000;
 const QUESTION_FRAMES = 2;
 const QUESTION_FRAME_SPACING_MS = 2_000;
 /** the running scene memo refreshes this often while the screen changes (was 12 s) */
-export const MEMO_EVERY_MS = 5_000;
+const MEMO_EVERY_MS = 5_000;
 const MEMO_FRAMES = 3;
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
@@ -450,8 +450,8 @@ export class WatchController {
 
   /**
    * Is this "user turn" really the video's sound in the mic? If the video is
-   * mid-line, its partial transcript usually decides within one update
-   * (≤ 350 ms); only a partial too short to tell waits (≤ 1.5 s) for the line.
+   * mid-line, its partial transcript decides within 350 ms; only a partial
+   * too short to tell waits (≤ 1.5 s) for the line.
    */
   async isEcho(userText: string): Promise<boolean> {
     if (!this.sharing) return false;
@@ -472,13 +472,13 @@ export class WatchController {
     return isVideoEcho(userText, recent());
   }
 
-  /** Resolves true on the video's next partial or finished line, false after `ms`. */
-  private nextSound(ms: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const t = setTimeout(() => resolve(false), ms);
+  /** Resolves on the video's next partial or finished line, or after `ms`. */
+  private nextSound(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, ms);
       this.lineWaiters.push(() => {
         clearTimeout(t);
-        resolve(true);
+        resolve();
       });
     });
   }
