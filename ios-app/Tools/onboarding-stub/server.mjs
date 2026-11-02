@@ -25,14 +25,17 @@ const style = (source) => ({
 
 let companion = null;
 let prepStartedAt = 0;
+// The clock starts at PREP-1's first poll (the UI test spends longer than the prep on the screens before it):
+// scene at 3 s, expressions at 12 s, mouth (ready) at 25 s — room to see Continue light up before the auto-advance.
+const STEPS = [3000, 12000, 25000];
 const prepView = () => {
-  const t = Date.now() - prepStartedAt;
-  const st = (doneAt) => (t >= doneAt ? "done" : t >= doneAt - 3000 ? "running" : "pending");
-  const ready = t >= 9000;
+  const t = prepStartedAt ? Date.now() - prepStartedAt : 0;
+  const st = (doneAt) => (prepStartedAt && t >= doneAt ? "done" : prepStartedAt && t >= doneAt - 3000 ? "running" : "pending");
+  const ready = prepStartedAt && t >= STEPS[2];
   return {
     status: ready ? "ready" : "running",
-    progress: { done: [3000, 6000, 9000].filter((d) => t >= d).length, total: 3 },
-    steps: { scene: { status: st(3000) }, face: { status: st(6000) }, mouth: { status: st(9000) } },
+    progress: { done: STEPS.filter((d) => prepStartedAt && t >= d).length, total: 3 },
+    steps: { scene: { status: prepStartedAt ? st(STEPS[0]) : "running" }, face: { status: st(STEPS[1]) }, mouth: { status: st(STEPS[2]) } },
   };
 };
 const companionView = () => ({ ...companion, prep: prepView(), persona: null, session: null });
@@ -70,7 +73,6 @@ createServer(async (req, res) => {
   if (req.method === "POST" && p === "/v1/companion") {
     if (companion) return send(409, { error: "companion_exists" });
     companion = { id: "c1", type: "human", name: b.name ?? "Mira", voiceId: b.voiceId, imageId: b.imageId, createdAt: "t" };
-    prepStartedAt = Date.now();
     return send(201, companionView());
   }
   if (req.method === "PATCH" && p === "/v1/companion") {
@@ -81,7 +83,11 @@ createServer(async (req, res) => {
     return send(200, companionView());
   }
   if (req.method === "GET" && p === "/v1/companion") return companion ? send(200, companionView()) : send(404, { error: "no_companion" });
-  if (req.method === "GET" && p === "/v1/companion/prep") return companion ? send(200, prepView()) : send(404, { error: "no_companion" });
+  if (req.method === "GET" && p === "/v1/companion/prep") {
+    if (!companion) return send(404, { error: "no_companion" });
+    if (!prepStartedAt) prepStartedAt = Date.now();
+    return send(200, prepView());
+  }
   if (req.method === "POST" && p === "/v1/companion/prefs") {
     await sleep(800);
     return send(200, {
