@@ -39,11 +39,17 @@ export class PgPrepStore implements PrepStore {
   async putImage(rec: ImageRecord, bytes: Buffer) {
     const key = imageKey(rec.userId, rec.id);
     await this.blobs.put(key, bytes, rec.mime);
-    await this.db.query(
-      `INSERT INTO companion_images (id, user_id, mime, bytes, blob_key, check_json, head_box, rights_ack, ms_json, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10)`,
-      [rec.id, rec.userId, rec.mime, rec.bytes, key, json(rec.check), json(rec.headBox), rec.rightsAck, json(rec.ms), rec.createdAt],
-    );
+    try {
+      await this.db.query(
+        `INSERT INTO companion_images (id, user_id, mime, bytes, blob_key, check_json, head_box, rights_ack, ms_json, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10)`,
+        [rec.id, rec.userId, rec.mime, rec.bytes, key, json(rec.check), json(rec.headBox), rec.rightsAck, json(rec.ms), rec.createdAt],
+      );
+    } catch (err) {
+      // e.g. the account was deleted while the upload waited on the AI check (FK fails): no orphan photo
+      await this.blobs.deletePrefix(key).catch(() => {});
+      throw err;
+    }
   }
 
   async getImage(id: string) {

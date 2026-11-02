@@ -15,6 +15,8 @@ export function fakeApple() {
   const jwk = { ...(rsa.publicKey.export({ format: "jwk" }) as object), kid: KID, alg: "RS256", use: "sig" };
   const requests: { url: string; form: URLSearchParams }[] = [];
   let revokeStatus = 200;
+  /** authorization code → the Apple sub whose id_token /auth/token returns (unknown codes get a junk id_token) */
+  const codes = new Map<string, string>();
 
   const idToken = (claims: Record<string, unknown>, o: { key?: KeyObject; alg?: string; kid?: string } = {}) => {
     const head = b64url(JSON.stringify({ alg: o.alg ?? "RS256", kid: o.kid ?? KID }));
@@ -40,7 +42,8 @@ export function fakeApple() {
     if (url.endsWith("/auth/keys")) return Response.json({ keys: [jwk] });
     if (url.endsWith("/auth/token")) {
       if (!secretOk(form) || form.get("code") === "bad") return Response.json({ error: "invalid_grant" }, { status: 400 });
-      return Response.json({ id_token: "x.y.z", refresh_token: `rt-${form.get("client_id")}` });
+      const sub = codes.get(form.get("code") ?? "");
+      return Response.json({ id_token: sub ? idToken({ sub, aud: form.get("client_id") }) : "x.y.z", refresh_token: `rt-${form.get("client_id")}` });
     }
     if (url.endsWith("/auth/revoke")) return new Response(null, { status: secretOk(form) ? revokeStatus : 400 });
     return new Response("nope", { status: 404 });
@@ -53,6 +56,7 @@ export function fakeApple() {
     fetch: fetchImpl,
     requests,
     setRevokeStatus: (s: number) => (revokeStatus = s),
+    codeFor: (code: string, sub: string) => void codes.set(code, sub),
     env: { APPLE_TEAM_ID: "TEAM123", APPLE_KEY_ID: "KEY123", APPLE_PRIVATE_KEY: (ec.privateKey.export({ format: "pem", type: "pkcs8" }) as string).replace(/\n/g, "\\n") },
   };
 }
