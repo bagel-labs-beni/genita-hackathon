@@ -79,6 +79,8 @@ public final class FaceDriver: ObservableObject {
         if let id = currentUtteranceId { newestUtteranceId = max(newestUtteranceId ?? id, id + 1) }
         timeline.reset()
         currentUtteranceId = nil
+        let r = renderer
+        queue.async { r.resetMouth() }
     }
 
     public func setEmotion(_ emotion: String?) {

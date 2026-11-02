@@ -56,6 +56,8 @@ public final class FaceRenderer: @unchecked Sendable {
         let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
         return max(m.lookaheadMs ?? 0, hold)
     }
+    /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame.
+    public func resetMouth() { lock.lock(); flowMorph?.reset(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
@@ -144,6 +146,9 @@ public final class FaceRenderer: @unchecked Sendable {
     /// Eyelid closure 0…1 at `t` (0 with Reduce Motion or without a blink still).
     public func blinkAmount(at t: Double) -> Double {
         guard !reduceMotion, faceSet.hasBlink, t >= 0 else { return 0 }
+        // Animals blink by moving the lid with a flow (\"lidFlow\", not in the app yet); a snapped
+        // blink still reads as a fur smudge on them (review 11/3), so they don't blink for now.
+        if faceSet.flow?.map.blink?.mode == "lidFlow" { return 0 }
         lock.lock(); defer { lock.unlock() }
         while (blinkStarts.last ?? -Double.infinity) < t {
             let gap = Self.blinkGap.lowerBound + rng.nextUnit() * (Self.blinkGap.upperBound - Self.blinkGap.lowerBound)
