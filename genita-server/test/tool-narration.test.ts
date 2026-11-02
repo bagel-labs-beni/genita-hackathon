@@ -89,11 +89,12 @@ function voiceConfig(voice: "server" | "device"): Config {
     voice: { url: "http://voice.invalid", token: "fake", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless" } };
 }
 
-async function recallTurn(voice: "server" | "device", announcements: string[][]) {
+async function recallTurn(voice: "server" | "device", announcements: string[][], followupTexts = ["You told me you love tofu."]) {
   const repo = new InMemoryMemoryRepository();
   const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
   const spoken: string[] = [];
   const answer = "You told me you love tofu.";
+  let followups = 0;
   const result = await turn({
     config: voiceConfig(voice),
     memory, userId: "fake",
@@ -105,7 +106,10 @@ async function recallTurn(voice: "server" | "device", announcements: string[][])
           await tick();
         }
         yield { type: "function_call", name: "recall", call_id: `recall-${round}`, arguments: '{"query":"favorite food"}' };
-      } else yield { type: "text", delta: answer };
+      } else {
+        const text = followupTexts[Math.min(followups++, followupTexts.length - 1)];
+        if (text) yield { type: "text", delta: text };
+      }
       yield { type: "done", responseId: `round-${round}`, text: "", status: "completed" };
     },
     async *tts(req) {
@@ -115,10 +119,37 @@ async function recallTurn(voice: "server" | "device", announcements: string[][])
   });
   await memory.drain();
   assert.equal(result.events.filter((e) => e.type === "tool" && e.name === "recall" && e.status === "completed").length, announcements.length);
-  return { ...result, spoken, answer };
+  return { ...result, spoken, answer, followups };
 }
 
 for (const voice of ["server", "device"] as const) {
+  for (const followup of ["", "<curious> Hmm."]) test(`P2: interjection-only tool turn retries an empty answer (${voice}, ${JSON.stringify(followup)})`, async () => {
+    const { events, logs, spoken, answer, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], [followup, "You told me you love tofu."]);
+    const expected = ["Hmm.", followup ? "Hmm." : "", answer].filter(Boolean).join(" ");
+    assert.equal(followups, 2);
+    assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+    assert.deepEqual(events.filter((e) => e.type === "reply").map((e) => e.text), [expected]);
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), expected);
+    assert.equal(events.some((e) => e.type === "error"), false);
+    if (voice === "server") assert.equal(spoken.join(" "), expected);
+    else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), expected);
+  });
+
+  test(`P2: interjection-only tool turn reports failure after its retry (${voice})`, async () => {
+    const { events, logs, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], ["", "Hmm."]);
+    assert.equal(followups, 2);
+    assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
+    assert.equal(events.some((e) => e.type === "reply"), false);
+    assert.equal(events.filter((e) => e.type === "error" && e.code === "spark_unavailable").length, 1);
+  });
+
+  test(`substantive content before an empty tool follow-up needs no retry (${voice})`, async () => {
+    const { events, logs, followups } = await recallTurn(voice, [["Hmm. I remember you love tofu. "]], [""]);
+    assert.equal(followups, 1);
+    assert.equal(logs.some((log) => log.event === "spark.empty_retry"), false);
+    assert.equal(events.find((e) => e.type === "reply")?.text, "Hmm. I remember you love tofu.");
+  });
+
   const cases = [
     ["P2: judge the second tool-call round", [["I'll search my memory for that. "], ["Let me check my memory. "]]],
     ["P2: judge past a streamed interjection", [["<curious> Hmm, ", "I'll search my memory for that. "]]],

@@ -1151,6 +1151,9 @@ export class Session {
     let narrationDecided = interpret || !!self;
     let pendingNarration: string | null = null;
     let usedTool = false;
+    // Interjections can already be spoken while a tool runs. They do not
+    // satisfy the answer, including on the retry of the tool's continuation.
+    const hasAnswer = () => sentences.some(({ display }) => !usedTool || (!isStandaloneInterjection(display) && !isToolNarrationLead(display)));
     const dropNarration = () => {
       pendingNarration = null;
       narrationDecided = true;
@@ -1258,7 +1261,7 @@ export class Session {
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!sentences.length && onlyOpener) pushSentences([onlyOpener], true);
-          if (sentences.length) { sparkError = attemptError; break; }
+          if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
@@ -1268,7 +1271,6 @@ export class Session {
           droppedOpener = false;
           narrationDecided = interpret || !!self;
           pendingNarration = null;
-          usedTool = false;
           m.firstTokenAt = undefined;
         }
       } catch (err) {
@@ -1429,7 +1431,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim()) {
+    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
