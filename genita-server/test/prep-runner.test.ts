@@ -75,7 +75,8 @@ test("resumeAll picks up only companions still running", async () => {
   try {
     const store = new FileStore(dir);
     await store.putCompanion(companion());
-    await store.putCompanion({ ...companion(), id: "c2", userId: "u2", prep: { ...newPrepState(), status: "ready" } });
+    const done = newPrepState();
+    await store.putCompanion({ ...companion(), id: "c2", userId: "u2", prep: { ...done, status: "ready", steps: { ...done.steps, scene: { status: "done", attempts: 1 }, face: { status: "done", attempts: 1 } } } });
     const d: PrepDeps = { metaKey: "k", store, voices: [], log: () => {} };
     const runner = new PrepRunner(d);
     assert.equal(await runner.resumeAll(), 1);
@@ -105,6 +106,39 @@ test("Meta-only runtime: scene + face set, clips and lips skipped, ready (no fai
     assert.equal(c.prep.steps.lips.status, "skipped");
     assert.ok(Object.values(c.prep.steps.videos).every((v) => v.status === "skipped"));
     assert.equal(prepView(c).status, "ready");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy ready record without a face set: resumeAll migrates it, reuses the scene and serves it from our URL", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "prep-legacy-"));
+  try {
+    const store = new FileStore(dir);
+    await store.putImage({ ...imageRec(), id: "img1" }, fakePng(800, 1000, "upload"));
+    const base = newPrepState();
+    const legacy: CompanionRecord = {
+      ...companion(),
+      prep: { ...base, status: "ready", steps: { ...base.steps, scene: { status: "done", attempts: 1, url: "https://cdn.example.invalid/old-scene.png" }, face: undefined as never } },
+    };
+    delete (legacy.prep.steps as { face?: unknown }).face;
+    await store.putCompanion(legacy);
+    await store.putAsset("u1", legacy.id, "neutral", fakePng(1000, 2000, "scene"));
+    let scenePrompts = 0;
+    const { media } = fakeMedia({ keyOf: (p) => (p === SCENE_PROMPT.human ? (scenePrompts++, "scene") : FACE_KEYS.find((k) => faceEditPrompt(k, "human", false) === p) ?? "x") });
+    const logs: string[] = [];
+    const runner = new PrepRunner({ metaKey: "k", store, voices: [], log: (e) => logs.push(e), media });
+    let ready = false;
+    runner.events.on("prep.ready", () => (ready = true));
+    assert.equal(await runner.resumeAll(), 1);
+    for (let i = 0; i < 200 && !ready; i++) await new Promise((r) => setTimeout(r, 10));
+    const c = (await store.getCompanion("u1"))!;
+    assert.ok(ready);
+    assert.equal(c.prep.status, "ready");
+    assert.equal(c.prep.steps.face?.status, "done");
+    assert.equal(scenePrompts, 0, "the existing scene is reused");
+    assert.equal(c.prep.steps.scene.url, "/v1/companion/face/neutral");
+    assert.ok(logs.includes("prep.migrated"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

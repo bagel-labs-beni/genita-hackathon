@@ -22,7 +22,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
-import { newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { FACE_KEYS, type FaceKey } from "./face.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
@@ -232,7 +232,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "POST" && p === "/v1/companion/prep/retry") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
-      if (c.prep.status === "ready") return send(res, 200, prepView(c));
+      if (c.prep.status === "ready" && !needsFaceSet(c)) return send(res, 200, prepView(c));
       return send(res, 202, prepView(await runner.retry(user)));
     }
 

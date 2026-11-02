@@ -13,6 +13,11 @@ export const MAX_PREP_ATTEMPTS = 3;
 
 const skippedStep = (): Step => ({ status: "skipped", attempts: 0 });
 
+/** A `ready` record from the old clip pipeline that never got the Meta face set. */
+export function needsFaceSet(c: CompanionRecord): boolean {
+  return c.prep.status === "ready" && c.prep.steps.face?.status !== "done";
+}
+
 export function newPrepState(): PrepState {
   const now = new Date().toISOString();
   const s = (): Step => ({ status: "pending", attempts: 0 });
@@ -121,13 +126,20 @@ export class PrepRunner {
   async resumeAll(): Promise<number> {
     const list = await this.d.store.listCompanions();
     let n = 0;
+    let migrated = 0;
     for (const c of list) {
       if (c.prep.status === "running") {
         n++;
         void this.run(c.userId);
+      } else if (needsFaceSet(c)) {
+        // finished on the old clip pipeline: no face set yet, so make one (scene is reused)
+        migrated++;
+        void this.retry(c.userId).catch((err) => this.d.log("prep.migrate_failed", { companion: c.id, message: String(err).slice(0, 200) }));
       }
     }
     if (n) this.d.log("prep.resumed", { companions: n });
+    if (migrated) this.d.log("prep.migrated", { companions: migrated });
+    n += migrated;
     return n;
   }
 
@@ -214,6 +226,8 @@ export class PrepRunner {
     // 1. scene
     let c = cur();
     let scene = c.prep.steps.scene.status === "done" ? await d.store.getAsset(c.userId, c.id, "neutral") : null;
+    // a reused scene from the old pipeline may still point at an external CDN: serve our own copy
+    if (scene && c.prep.steps.scene.url !== faceUrl("neutral")) await setStep("scene", { url: faceUrl("neutral") });
     if (!scene) {
       const img = await d.store.getImage(c.imageId);
       if (!img) throw new Error("source image missing");
