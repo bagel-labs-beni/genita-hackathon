@@ -6,6 +6,7 @@
 # The yellow box at the island is ImageRenderer's placeholder for the AppKit drag handle.
 set -eu
 OUT="${1:?out dir}"
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"  # the harness runs from its own folder
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT" "$WORK/bin"
