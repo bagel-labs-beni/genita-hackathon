@@ -58,8 +58,9 @@ async function once(k: keyof typeof CASES, i: number): Promise<Run> {
   let pendingImages = -1;
   let checksDone = false;
   let card = false;
+  let lineSeen = false;
   const maybeDone = () => {
-    if ((k === "recipe" ? checksDone && card : card) && pendingImages <= 0) finished();
+    if ((k === "recipe" ? checksDone && card && lineSeen : card) && pendingImages <= 0) finished();
   };
   ws.on("message", (data, bin) => {
     const t = performance.now() - t0;
@@ -77,13 +78,17 @@ async function once(k: keyof typeof CASES, i: number): Promise<Run> {
     }
     if (m.type === "find.image") pendingImages--;
     if (m.type === "find.items" && m.checking === false) checksDone = true;
+    if (m.type === "reply" && /^I can see|^I can't say/.test(String(m.text))) lineSeen = true;
     if (m.type === "find.failed") finished();
     maybeDone();
   });
   ws.send(JSON.stringify({ type: "start", persona: { name: "Mina", traits: ["warm", "playful"] }, user: { name: "Chelsea", id: "e2e-user", timeZone: "Asia/Seoul" }, memories: c.memories, mic: false, lip: "none" }));
   await new Promise((r) => setTimeout(r, 400));
   t0 = performance.now();
-  ws.send(JSON.stringify({ type: "text", text: c.text, frames: c.frames.length ? c.frames : undefined }));
+  // fridge: rotate the three test frames in pairs so the 10 runs are not one photo
+  const PAIRS = [["ff_0.2.jpg", "ff_1.4.jpg"], ["ff_1.4.jpg", "ff_2.6.jpg"], ["ff_0.2.jpg", "ff_2.6.jpg"]];
+  const frames = k === "recipe" ? PAIRS[i % 3].map(jpeg) : c.frames;
+  ws.send(JSON.stringify({ type: "text", text: c.text, frames: frames.length ? frames : undefined }));
   await Promise.race([done, new Promise((r) => setTimeout(r, 90_000))]);
   ws.close();
   const at = (type: string, pred: (m: Record<string, unknown>) => boolean = () => true) => {
@@ -109,6 +114,23 @@ async function once(k: keyof typeof CASES, i: number): Promise<Run> {
     subtitle: created?.subtitle,
     say: created?.say,
   };
+  if (k === "recipe") {
+    // #122 / D23 order: short line → boxes → the line naming checked items
+    const lineReply = ev.find((x) => x.m.type === "reply" && /^I can see|^I can't say/.test(String(x.m.text)));
+    const lineUtt = lineReply?.m.utteranceId;
+    r.ackMs = at("reply.delta");
+    r.ackText = ev.find((x) => x.m.type === "reply")?.m.text;
+    r.firstBoxesMs = at("observe.boxes");
+    r.lineStartMs = lineUtt === undefined ? null : at("reply.delta", (m) => m.utteranceId === lineUtt);
+    r.line = lineReply?.m.text ?? null;
+    r.boxesBeforeLine = r.firstBoxesMs !== null && r.lineStartMs !== null && (r.firstBoxesMs as number) < (r.lineStartMs as number);
+    const named = String(r.line ?? "").match(/^I can see (.+?)\. /)?.[1]?.split(/, and |, | and /).map((x) => x.trim()) ?? [];
+    r.lineNamed = named;
+    r.lineInvented = named.filter((n) => !TRUTH.some((t) => sameIngredient(t, n)));
+    // every named item had its box sent before the line began
+    const boxedBefore = new Set(ev.filter((x) => x.m.type === "observe.boxes" && x.t <= ((r.lineStartMs as number) ?? 0)).flatMap((x) => (x.m.items as { label: string }[]).map((b) => b.label.toLowerCase())));
+    r.namedWithoutBox = named.filter((n) => !boxedBefore.has(n.toLowerCase()));
+  }
   if (k === "recipe" && lastItems) {
     const tier = (t: string) => lastItems.filter((x) => x.tier === t).map((x) => x.name);
     r.have = tier("have");
@@ -149,6 +171,13 @@ for (const k of kinds) {
     sum.runsWithInventedHave = rs.filter((r) => (r.haveInvented as string[] | undefined)?.length).length;
     sum.missedTotal = rs.reduce((a, r) => a + ((r.missedFromHaveOrMaybe as string[] | undefined)?.length ?? 0), 0);
     sum.p50_boxesOnHave = p50(rs.map((r) => r.boxesOnHave as number));
+    sum.p50_ackMs = p50(rs.map((r) => r.ackMs as number | null));
+    sum.p50_firstBoxesMs = p50(rs.map((r) => r.firstBoxesMs as number | null));
+    sum.p50_lineStartMs = p50(rs.map((r) => r.lineStartMs as number | null));
+    sum.boxesBeforeLine = rs.filter((r) => r.boxesBeforeLine).length;
+    sum.runsWithInventedInLine = rs.filter((r) => (r.lineInvented as string[]).length).length;
+    sum.namedWithoutBox = rs.reduce((a, r) => a + (r.namedWithoutBox as string[]).length, 0);
+    sum.cardUnder10s = rs.filter((r) => typeof r.cardMs === "number" && (r.cardMs as number) <= 10_000).length;
   }
   console.log("SUMMARY " + JSON.stringify(sum));
 }

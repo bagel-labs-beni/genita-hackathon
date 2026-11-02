@@ -22,6 +22,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F4-L17 Peter bridge: new event `lip.changed`; binary kind `2` = Peter mouth crop (layout below); `ready.lip.reason` can be `peter_connecting`. Additive — but an app that asked for `peter` should now read `lip.changed` instead of assuming `ready.lip` is final. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/3 | Fridge order (#122, D23): a camera cooking turn's reply is now the short line "Let me take a look." (not a full answer from the raw photo); `observe.boxes` follow; then one server-initiated reply names only `have` items ("I can see eggs and tofu. You could make …, if you have kimchi."), also stored as `card.say`. A failed card for such a turn (or a product search) is spoken as its own reply. Same message types; additive. |
 | 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 
@@ -291,6 +292,16 @@ how[], page?{url, opened}, saved?`. Image `url`s are server-relative
 
 When the card lands the companion says `card.say` as its own short reply — only
 into silence, after the current reply, and not if the user starts talking first.
+
+**Fridge order (D23, #122).** A camera cooking turn is answered in three steps:
+① the turn's reply is "Let me take a look." at once (a full answer from the raw
+photo named things that were not there, 7/10 on 11/1); ② `observe.boxes` as each
+item is confirmed; ③ once the checks are in (at most 3 s after the card), one
+reply names only `have` items (Spark YES + SAM box, or a confirmed "맞아?") and the
+dish, qualifying any dish ingredient that is not `have` ("…, if you have kimchi").
+That line is also `card.say`. Real vendors, 10 runs on the test fridge photos:
+names outside the photo 0/10, boxes before the line 10/10, short line p50 8 ms
+after the question (server), first boxes p50 4.0 s, line p50 6.1 s, card p50 4.7 s.
 
 **Product search (F7 PF-1 / MAC-RS, D2 D24 D25).** A shopping ask needs no camera
 ("can we look for a jacket for this weekend?", "find a couple that match my style,

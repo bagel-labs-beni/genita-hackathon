@@ -26,7 +26,7 @@ export type FindsDeps = {
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
-export const ACK: Partial<Record<FindKind, string>> = { product: "On it." };
+export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Let me take a look." };
 
 /** A product ask with no thing named ("match my style", "send me the links") refines the last search (D25). */
 const REFINE_WINDOW_MS = 15 * 60_000;
@@ -107,6 +107,11 @@ export class FindsRunner {
       now: this.hooks.now,
       log: this.hooks.log,
       images: this.deps.images,
+      speak: (text) => {
+        const card = this.cards.get(findId);
+        if (card) void this.persist(card);
+        if (!this.closed) this.hooks.announce(text);
+      },
       putImage: async (slot, bytes) => {
         if (this.purged) throw new Error("account deleted");
         await this.deps.store.putImage(findId, slot, bytes);
@@ -128,7 +133,7 @@ export class FindsRunner {
     } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "outfit" ? runOutfit : runLink;
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
-        this.hooks.emit({ type: "find.failed", findId, reason: "error", message: "Something went wrong while I was looking." });
+        this.onEvent({ type: "find.failed", findId, reason: "error", message: "Something went wrong while I was looking." });
         this.hooks.log("find.error", { findId, message: String(err).slice(0, 200) });
       }
       return { card: null, timings: {} } as PipelineResult;
@@ -139,6 +144,7 @@ export class FindsRunner {
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       if (r.card) void this.persist(r.card);
     });
+    if (ACK[intent.kind]) this.acked.add(findId);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
 
@@ -166,8 +172,11 @@ export class FindsRunner {
         void this.persist(card);
       }
     }
+    if (e.type === "find.failed" && e.reason !== "stopped" && !this.closed && this.acked.has(e.findId)) this.hooks.announce(e.message);
     if (!this.closed) this.hooks.emit(e);
   }
+  /** finds whose turn got only the short line (ACK): their failure is said out loud */
+  private readonly acked = new Set<string>();
 
   private async persist(card: FindCard): Promise<void> {
     if (!this.owner || this.purged) return;

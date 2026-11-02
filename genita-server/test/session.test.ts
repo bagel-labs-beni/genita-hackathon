@@ -443,20 +443,19 @@ test("peter: start.lip.avatarId reaches the worker connection; bad ids are dropp
   bad.session.close();
 });
 
-test("finds: a camera cooking question is answered in voice first, the card lands after, then the companion says its line", async () => {
-  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<curious> Ooh, eggs and kimchi. Let me look." });
+test("finds: fridge (D23, #122) — short line at once, boxes, then only checked items are named, then the dish", async () => {
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<curious> Ooh, I see eggs, kimchi, milk and leftover chicken!" });
   const store = new (await import("../src/finds/store.ts")).MemoryFindsStore();
   const vendors = {
     async spark(req: SparkRequest) {
       const p = JSON.stringify(req.input);
       if (p.includes("clearly visible")) return { text: "YES", output: [] };
-      // the recipe search is slower than the spoken answer: gate it on the first audio frame instead of a
-      // 30 ms sleep (flaked 2/6 on a loaded machine)
-      await client.waitFor((m) => m.type === "audio", 3000);
+      await sleep(5);
       return { text: '{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry it."],"sources":[],"ask":["Spicy?","Noodles?"],"say":"Found one, you are one pan away."}', output: [] };
     },
     async *sparkStream() {
-      yield { type: "text" as const, delta: "eggs | 6 | carton\nkimchi | - | red jar\n" };
+      // the first look also "sees" chicken — Spark YES, but SAM finds no box: never named
+      yield { type: "text" as const, delta: "eggs | 6 | carton\nkimchi | - | red jar\nchicken | - | container\n" };
       yield { type: "done" as const, responseId: null, text: "", status: "completed" };
     },
     async sam(_i: string, p: string) {
@@ -470,16 +469,23 @@ test("finds: a camera cooking question is answered in voice first, the card land
   session.close();
   // start.user.id is client-claimed: the card belongs to the authenticated account (deps.userId) instead
   await s2.onClientText(JSON.stringify({ type: "start", persona, user: { id: "someone-else" }, mic: false }));
+  const before = sparkCalls.length;
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
+  // ① the short line, not a full answer from the raw photo (which named milk and chicken)
+  const ack = await client.waitFor((m) => m.type === "reply", 3000);
+  assert.equal(ack.text, "Let me take a look.");
+  assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
-  const firstAudioIdx = client.json.findIndex((m) => m.type === "audio");
-  assert.ok(firstAudioIdx >= 0 && firstAudioIdx < client.json.indexOf(created), "voice before card");
+  // ③ only checked items, after their boxes ②
+  const line = "I can see eggs. You could make kimchi fried rice, if you have kimchi.";
+  const said = await client.waitFor((m) => m.type === "reply" && m.text === line, 5000);
+  const boxes = client.json.findIndex((m) => m.type === "observe.boxes");
+  const lineStart = client.json.findIndex((m) => m.type === "reply.delta" && m.utteranceId === said.utteranceId);
+  assert.ok(boxes >= 0 && boxes < lineStart, "boxes are up before the line starts");
+  assert.ok(!ttsCalls.some((t) => /chicken|milk|see [^.]*kimchi/i.test(t)), `named only checked items: ${ttsCalls.join(" | ")}`);
   const done = await client.waitFor((m) => m.type === "find.items" && m.checking === false, 3000);
   const tiers = (done.items as { name: string; tier: string }[]).map((i) => `${i.name}:${i.tier}`);
-  assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe"]);
-  // the card's line is spoken once the first reply is over
-  await client.waitFor((m) => m.type === "reply" && m.text === "Found one, you are one pan away.", 3000);
-  assert.ok(ttsCalls.includes("Found one, you are one pan away."));
+  assert.deepEqual(tiers, ["eggs:have", "kimchi:maybe", "chicken:maybe"]);
   // "맞아?" yes → have, persisted for the owner
   const kimchi = (done.items as { id: string; name: string }[]).find((i) => i.name === "kimchi")!;
   await s2.onClientText(JSON.stringify({ type: "find.confirm", findId: created.findId, itemId: kimchi.id, yes: true }));
