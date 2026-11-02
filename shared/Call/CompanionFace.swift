@@ -89,9 +89,13 @@ struct CompanionFaceLoader: Sendable {
         var flowNames: Set<String> = []
         if let flow = manifest.flow {
             for (k, f) in flow.files where Self.safeName(k) {
-                for (role, ref) in [("key", f.key), ("nk", f.nk), ("kn", f.kn)] { refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)") }
+                for (role, ref) in [("key", f.key as String?), ("nk", f.nk), ("kn", f.kn)] {
+                    guard let ref else { continue }   // 2D snap faces have no flows
+                    refs["flow\(k)\(role)"] = ref; flowNames.insert("flow\(k)\(role)")
+                }
             }
             refs["flowmask"] = flow.mask; flowNames.insert("flowmask")
+            if let n = flow.neutralRoi { refs["flowneutral"] = n; flowNames.insert("flowneutral") }
         }
         guard let neutralRef = refs["neutral"] else { throw LoadError.missingNeutral }
         let dir = cacheRoot.appending(path: key, directoryHint: .isDirectory)
