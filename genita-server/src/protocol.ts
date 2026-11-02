@@ -89,6 +89,8 @@ export type ClientMessage =
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
+  /** PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception; send only when `ready.perception` is true */
+  | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
   | { type: "mode"; mode: Mode; interpret?: InterpretOptionsWire }
@@ -185,6 +187,8 @@ export type ServerEvent =
       bargeIn: { minMs: number; minWords: number };
       /** the voice mode actually used for this call */
       tts: TtsMode;
+      /** PERC-1: present (true) only when the server reads face crops; the app sends `perception.frame` then */
+      perception?: boolean;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -272,7 +276,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: ["perception"] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },

@@ -161,6 +161,8 @@ public enum ServerEvent: Equatable, Sendable {
         public var bargeIn: BargeIn
         /// Voice mode used for this call. Optional: servers before 11/2 (metaface) do not send it (= server).
         public var tts: TtsMode?
+        /// PERC-1: true only when the server reads face crops (GENITA_PERCEPTION); send `perceptionFrame` then.
+        public var perception: Bool?
     }
     public struct StateChange: Codable, Equatable, Sendable { public var state: Phase }
     public struct Turn: Codable, Equatable, Sendable { public var turnId: Int }
@@ -467,6 +469,8 @@ public enum ClientMessage: Equatable, Sendable {
     case findConfirm(FindConfirm)
     /// Stop button while a card is still being looked for.
     case findStop(findId: String)
+    /// PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception — only when `ready.perception == true`.
+    case perceptionFrame(image: String)
 
     public struct Persona: Codable, Equatable, Sendable {
         public enum Kind: String, Codable, Sendable { case human, animal, character }
@@ -567,7 +571,7 @@ public enum ClientMessage: Equatable, Sendable {
 }
 
 extension ClientMessage: Codable {
-    private enum K: String, CodingKey { case type, utteranceId, mode, t, interpret, on, findId }
+    private enum K: String, CodingKey { case type, utteranceId, mode, t, interpret, on, findId, image }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -588,6 +592,7 @@ extension ClientMessage: Codable {
         case "stop": self = .stop
         case "find.confirm": self = .findConfirm(try .init(from: decoder))
         case "find.stop": self = .findStop(findId: try c.decode(String.self, forKey: .findId))
+        case "perception.frame": self = .perceptionFrame(image: try c.decode(String.self, forKey: .image))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message \(type)")
         }
     }
@@ -609,6 +614,7 @@ extension ClientMessage: Codable {
         case .stop: try c.encode("stop", forKey: .type)
         case let .findConfirm(p): try p.encode(to: encoder); try c.encode("find.confirm", forKey: .type)
         case let .findStop(id): try c.encode("find.stop", forKey: .type); try c.encode(id, forKey: .findId)
+        case let .perceptionFrame(image): try c.encode("perception.frame", forKey: .type); try c.encode(image, forKey: .image)
         }
     }
 }

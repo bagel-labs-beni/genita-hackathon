@@ -43,6 +43,8 @@ import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
+import { PerceptionController } from "../perception/controller.ts";
+import type { PerceptionSource } from "../perception/types.ts";
 import { detectRename } from "./rename.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -251,6 +253,12 @@ export class Session {
   private finds: FindsRunner | null = null;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
+  /** PERC-1 (#319): the conversation engine's seam (contextLine / pendingHint / onTrigger); null with GENITA_PERCEPTION off */
+  perception: PerceptionSource | null = null;
+  private perceptionCtl: PerceptionController | null = null;
+  /** for perception timing: when the companion's last reply ended / the user last stopped speaking */
+  private lastReplyEndAt: number | null = null;
+  private lastUserSpeechAt: number | null = null;
 
   constructor(id: string, client: ClientSink, deps: SessionDeps) {
     this.id = id;
@@ -259,6 +267,20 @@ export class Session {
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    if (deps.config.perception) {
+      this.perceptionCtl = new PerceptionController({
+        spark: deps.spark,
+        now: this.now,
+        convo: () => ({
+          companionSpeaking: this.turn.phase === "speaking",
+          lastReplyEndAt: this.lastReplyEndAt,
+          userSpeaking: this.turn.userSpeaking,
+          lastUserSpeechAt: this.lastUserSpeechAt,
+        }),
+        log: (event, data) => this.log(event, data),
+      });
+      this.perception = this.perceptionCtl;
+    }
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
         emit: (e) => !this.closed && this.client.sendJson(e),
@@ -340,6 +362,10 @@ export class Session {
         return;
       case "frames":
         this.setFrames(msg.images);
+        return;
+      case "perception.frame":
+        // PERC-1: background face read; never in interpretation or while watching together (nobody reacts there)
+        if (this.mode === "chat" && !this.watch?.isSharing) this.perceptionCtl?.frame(msg.image);
         return;
       case "stop":
         return this.close(1000, "stopped");
@@ -490,6 +516,7 @@ export class Session {
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
       tts: this.tts,
+      ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
@@ -671,6 +698,7 @@ export class Session {
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
     this.interp?.stop();
+    this.perceptionCtl?.close();
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
@@ -816,7 +844,10 @@ export class Session {
       this.client.sendJson({ type: "state", state: "listening" });
       return;
     }
+    const before = this.turn;
     this.turn = r.state;
+    if (before.phase === "speaking" && r.state.phase !== "speaking") this.lastReplyEndAt = this.now();
+    if (before.userSpeaking && !r.state.userSpeaking) this.lastUserSpeechAt = this.now();
     for (const fx of r.effects) this.run(fx);
     if (!this.turn.userSpeaking && this.quietWaiters.length) for (const w of this.quietWaiters.splice(0)) w();
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
