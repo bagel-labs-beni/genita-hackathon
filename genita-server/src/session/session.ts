@@ -559,7 +559,11 @@ export class Session {
           (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
           return;
         }
-        if (this.watch?.isSharing && e.text.trim()) return void this.completeUnlessEcho(e.turnId, e.text);
+        if (this.watch?.isSharing && e.text.trim()) {
+          // in order: a slow echo check must not let a later utterance go first (Codex 11/2)
+          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {});
+          return;
+        }
         return this.completeTurn(e.turnId, e.text);
     }
   }
@@ -592,9 +596,12 @@ export class Session {
   }
 
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
+  private echoChain: Promise<void> = Promise.resolve();
+
   private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
     const echo = (await this.watch?.isEcho(text)) ?? false;
-    if (this.closed) return;
+    // re-check after the wait: the call may have closed or switched to interpretation meanwhile
+    if (this.closed || this.mode === "interpret") return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
     this.dispatch({ type: "speech_complete", text: "" });
@@ -1007,8 +1014,10 @@ export class Session {
     }
     const full = reply.spoken.join(" ").trim();
     resolveSaid(full || null);
-    if (full && !interpret) { this.remember("assistant", full); this.memoryCall?.assistantMessage(full); }
-    if (full && !interpret && !greeting) this.memoryCall?.completedTurn(text, full);
+    // self speech (card line, watch reaction) stays in the chat history but is never a memory source:
+    // its script would otherwise be extracted as something the user said
+    if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
+    if (full && !interpret && !greeting && !self) this.memoryCall?.completedTurn(text, full);
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,
