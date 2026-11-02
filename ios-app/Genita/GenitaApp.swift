@@ -2,6 +2,8 @@ import SwiftUI
 
 @main struct GenitaApp: App {
     @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
+    @State private var appConfig = GenitaAppConfigStore.shared
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var handoff = PhoneHandoff.shared
     /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
     /// PF-1b / r03 full: a full Finds sheet leaves a dark band under the status bar, so it turns light too.
@@ -27,6 +29,10 @@ import SwiftUI
                     #endif
                 }
                 .preferredColorScheme(darkStatusBar ? .dark : .light)
+                // server-driven config (GET /v1/app-config): launch + every foreground; bundled defaults offline
+                .overlay(alignment: .top) { UpdateBanner(config: appConfig.config) }
+                .task { await appConfig.refreshUnlessTesting(force: true) }
+                .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await appConfig.refreshUnlessTesting() } } }
         }
     }
 }
