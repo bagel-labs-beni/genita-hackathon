@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isToolNarration } from "../src/text/toolNarration.ts";
+import { SentenceSplitter } from "../src/text/sentences.ts";
 import { loadConfig, type Config } from "../src/config.ts";
 import { InMemoryMemoryRepository } from "../src/memory/repository.ts";
 import { MemoryService } from "../src/memory/service.ts";
@@ -29,6 +30,11 @@ const positives = [
   "One sec; looking that up.",
   "One sec: looking that up.",
   "One sec — looking that up.",
+  ...["，", "、", "；", "："].flatMap((separator) => [
+    `One sec${separator} looking that up.`,
+    `Hmm${separator} I'll search my memory for that.`,
+    `잠시만요${separator} 검색해 볼게요.`,
+  ]),
   "잠시만요; 검색해 볼게요.",
   "잠시만요: 검색해 볼게요.",
   "잠시만요 — 검색해 볼게요.",
@@ -58,10 +64,23 @@ const negatives = [
   "Hmm, I remember you love tofu.",
   "Well, I'll check the oven.",
   "One sec; the tofu is burning.",
+  ...["，", "、", "；", "："].flatMap((separator) => [
+    `One sec${separator} the tofu is burning.`,
+    `Let me check my memory${separator} tofu works.`,
+  ]),
   "",
 ];
 for (const sentence of positives) test(`tool narration: ${sentence}`, () => assert.equal(isToolNarration(sentence), true));
 for (const sentence of negatives) test(`real content: ${sentence}`, () => assert.equal(isToolNarration(sentence), false));
+
+for (const separator of [",", ";", ":", "—", "，", "、", "；", "："]) {
+  test(`splitter and announcement check agree on ${separator}`, () => {
+    const splitter = new SentenceSplitter({ eagerFirstClause: true });
+    const lead = `One sec${separator}`;
+    assert.deepEqual(splitter.push(`${lead} looking`), [lead]);
+    assert.equal(isToolNarration(`${lead} looking that up.`), true);
+  });
+}
 
 // Exercise MemoryCall's actual function-call rounds and Session's eager server
 // voice splitter, as well as the device voice's whole-sentence path.
@@ -103,7 +122,7 @@ for (const voice of ["server", "device"] as const) {
   const cases = [
     ["P2: judge the second tool-call round", [["I'll search my memory for that. "], ["Let me check my memory. "]]],
     ["P2: judge past a streamed interjection", [["<curious> Hmm, ", "I'll search my memory for that. "]]],
-    ...[";", ":", "—"].map((separator) => [`P2: wait separator ${separator}`, [[`One sec${separator} looking that up. `]]] as const),
+    ...[";", ":", "—", "，", "、", "；", "："].map((separator) => [`P2: wait separator ${separator}`, [[`One sec${separator} looking that up. `]]] as const),
   ] as const;
   for (const [name, announcements] of cases) test(`${name} (${voice})`, async () => {
     const { events, spoken, answer } = await recallTurn(voice, announcements.map((pieces) => [...pieces]));
@@ -113,12 +132,33 @@ for (const voice of ["server", "device"] as const) {
     else assert.deepEqual(events.filter((e) => e.type === "say").map((e) => e.text), [answer]);
   });
 
+  for (const pieces of [
+    ["Hmm. I'll search my memory for that. "],
+    ["<curious> Hmm. ", "I'll search my memory for that. "],
+  ]) test(`P2: keep a standalone interjection and judge the next sentence (${voice}, ${pieces.length} chunks)`, async () => {
+    const { events, spoken, answer } = await recallTurn(voice, [pieces]);
+    const expected = `Hmm. ${answer}`;
+    assert.equal(events.find((e) => e.type === "reply")?.text, expected);
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), expected);
+    if (voice === "server") assert.deepEqual(spoken, ["Hmm.", answer]);
+    else assert.deepEqual(events.filter((e) => e.type === "say").map((e) => e.text), ["Hmm.", answer]);
+  });
+
   test(`substantive content after an interjection survives a recall (${voice})`, async () => {
     const { events, answer } = await recallTurn(voice, [["<warm> Hmm, ", "I remember you love tofu. "]]);
     assert.equal(events.find((e) => e.type === "reply")?.text, `Hmm, I remember you love tofu. ${answer}`);
   });
 
-  for (const text of ["Hmm,", "Hmm, I'll search my memory for that.", "One sec; looking that up.", "One sec; the tofu is burning."]) {
+  for (const separator of ["，", "、", "；", "："]) test(`real content after ${separator} survives a recall (${voice})`, async () => {
+    const { events, spoken, answer } = await recallTurn(voice, [[`One sec${separator} `, "the tofu is burning. "]]);
+    const expected = `One sec${separator} the tofu is burning. ${answer}`;
+    assert.equal(events.find((e) => e.type === "reply")?.text, expected);
+    assert.equal(events.filter((e) => e.type === "reply.delta").map((e) => e.text).join(""), expected);
+    if (voice === "server") assert.equal(spoken.join(" "), expected);
+    else assert.equal(events.filter((e) => e.type === "say").map((e) => e.text).join(" "), expected);
+  });
+
+  for (const text of ["Hmm,", "Hmm.", "Hmm. I'll search my memory for that.", "Hmm. I remember you love tofu.", "Hmm, I'll search my memory for that.", "One sec; looking that up.", "One sec; the tofu is burning.", "One sec， looking that up.", "One sec， the tofu is burning."]) {
     test(`no-tool reply preserves ${JSON.stringify(text)} (${voice})`, async () => {
       const { events } = await turn({
         config: voiceConfig(voice),

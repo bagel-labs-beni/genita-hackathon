@@ -13,7 +13,7 @@ import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
 import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { isToolNarration, isToolNarrationLead } from "../text/toolNarration.ts";
+import { isToolNarration, isToolNarrationLead, isStandaloneInterjection } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
 import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
@@ -1176,7 +1176,7 @@ export class Session {
           } else if (isToolNarrationLead(p.displayText)) {
             pendingNarration = raw;
             continue;
-          } else narrationDecided = true;
+          } else if (!isStandaloneInterjection(p.displayText)) narrationDecided = true;
         }
         // Delivery/emotion tags alone cannot be displayed or spoken. Do not
         // enqueue a blank sentence (or call TTS with just "[laughs]").
