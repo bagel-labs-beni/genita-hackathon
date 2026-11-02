@@ -242,7 +242,7 @@ struct MacProductCard: View {
         VStack(alignment: .leading, spacing: 0) {
             picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 8))
             Text(pick.name).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 14)
-            Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).padding(.top, 6)
+            Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(pick.reasons.prefix(2).enumerated()), id: \.offset) { i, reason in
                     Text(reason).font(MacSheetInk.sans(12, .medium)).lineLimit(1)
