@@ -6,7 +6,7 @@ import type { Config } from "../src/config.ts";
 import { checkServerEvent, checkWatchEvent, type WatchServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkRequest, SparkStreamEvent } from "../src/meta/spark.ts";
-import type { TtsChunk } from "../src/tts/elevenlabs.ts";
+import type { TtsChunk } from "../src/tts/types.ts";
 import { initialTurnState, reduceTurn } from "../src/session/turnMachine.ts";
 import { isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, type ReactGate } from "../src/watch/rules.ts";
 import { buildMemoRequest, buildQuestionContext, parseMemoVerdict } from "../src/watch/memo.ts";
@@ -325,12 +325,9 @@ test("turn machine: a watch reaction (self_speak) starts a scripted reply only w
 
 const config: Config = {
   metaKey: "x",
-  elevenKey: "y",
   host: "127.0.0.1",
   port: 0,
   sessionToken: null,
-  ttsModel: "eleven_v4_turbo",
-  ttsFallbackModel: "eleven_v3",
   defaultVoiceId: "voice",
   webSearch: false,
   asrLanguages: ["English"],
@@ -341,7 +338,8 @@ const config: Config = {
   sparkFirstTokenTimeoutMs: 8000,
   sparkHedge: 1,
   speculate: false,
-  speculateStableMs: 250,
+  speculateStableMs: 250,  // #157: these session tests exercise server-voice frames
+  serverTts: true,
 };
 
 class Client implements ClientSink {

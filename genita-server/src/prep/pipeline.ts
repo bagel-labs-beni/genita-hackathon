@@ -1,30 +1,37 @@
 /**
  * Onboarding prep services: the vendor calls behind the /v1/import and
  * /v1/companion routes. Pure decisions live in the sibling modules; this file
- * only wires them to Spark, SAM, Muse Image, fal and ElevenLabs.
+ * only wires them to Spark, SAM, Muse Image, Meta voice.
  */
 import { randomUUID } from "node:crypto";
-import { sparkJson } from "../meta/spark.ts";
+import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
-import { falUpload, falSubmit, falWait } from "./fal.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
 import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { applyOrder, buildOrderRequest, previewLine, renderPreview, type VoiceOption } from "./voices.ts";
+import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
+import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
 export type PrepDeps = {
   metaKey: string;
-  falKey: string | null;
-  elevenKey: string;
-  ttsModel: string;
+  voice?: import("../config.ts").VoiceConfig | null;
   store: PrepStore;
   voices: VoiceOption[];
   log: PrepLog;
+  /** tests: replaces the structured Spark call used by name suggest (F2-L26); unset = Muse Spark */
+  spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
+  /** Muse Image + SAM; tests pass a fake */
+  media?: MediaApi;
+  /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
+  python?: string | null;
 };
+
+export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
+export const mediaOf = (d: PrepDeps): MediaApi => d.media ?? META_MEDIA;
 
 export class PrepError extends Error {
   readonly status: number;
@@ -43,7 +50,7 @@ const since = (t0: number) => Math.round(performance.now() - t0);
 
 // ---------- F2-L20: image check ----------
 
-export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean): Promise<ImageRecord> {
+export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean, createdAt = new Date().toISOString()): Promise<ImageRecord> {
   if (!bytes.length) throw new PrepError(400, "empty_image");
   if (bytes.length > MAX_IMAGE_BYTES) throw new PrepError(413, "image_too_large", "image must be under 8 MB; downscale on device (1280 px is plenty)");
   const mime = sniffImage(bytes);
@@ -74,7 +81,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     rightsAck,
-    createdAt: new Date().toISOString(),
+    // This is captured after the upload body is read, before any model check.
+    createdAt,
     ms: { check: checkMs, sam: head?.ms ?? null },
   };
   await d.store.putImage(rec, bytes);
@@ -99,55 +107,61 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
 
 // ---------- F2-L21: call scene ----------
 
-export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image" | "gpt-image-2"; ms: number; url: string | null };
+export type SceneResult = { bytes: Buffer; mime: string; source: "muse-image"; ms: number };
 
-/**
- * Muse Image edit; on failure one gpt-image-2 edit via fal (scene only).
- * Returns the bytes and, when fal is configured, a fal CDN URL for Kling.
- */
+/** Muse Image edit, retried once on failure. */
 export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: CompanionKind, signal?: AbortSignal): Promise<SceneResult> {
   const t0 = performance.now();
+  let out: Buffer;
   try {
-    const out = await museImageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
-    const url = d.falKey ? await falUpload(d.falKey, out, "image/png", "scene.png", signal) : null;
-    return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0), url };
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   } catch (err) {
-    if (signal?.aborted || !d.falKey) throw err;
-    d.log("scene.fallback", { reason: String(err).slice(0, 200) });
-    const src = await falUpload(d.falKey, image, mime, "source", signal);
-    const req = await falSubmit(d.falKey, "fal-ai/gpt-image-2/edit", { prompt: SCENE_PROMPT[kind], image_urls: [src], image_size: { width: 1024, height: 1820 }, quality: "high" }, signal);
-    const r = await falWait<{ images: Array<{ url: string }> }>(d.falKey, req, { signal, pollMs: 3000, timeoutMs: 5 * 60_000 });
-    const url = r.images?.[0]?.url;
-    if (!url) throw new Error("gpt-image-2: no image");
-    const res = await fetch(url, { signal });
-    return { bytes: Buffer.from(await res.arrayBuffer()), mime: res.headers.get("content-type") ?? "image/png", source: "gpt-image-2", ms: since(t0), url };
+    if (signal?.aborted) throw err;
+    d.log("scene.retry", { reason: "muse_image_failed" });
+    out = await mediaOf(d).imageEdit(d.metaKey, image, SCENE_PROMPT[kind], { size: SCENE_SIZE, mime, signal });
   }
+  return { bytes: out, mime: "image/png", source: "muse-image", ms: since(t0) };
 }
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "v1";
+export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
 
-export async function orderedVoices(d: PrepDeps, userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: boolean; ms: number }> {
+/**
+ * V04's list: the curated voices for this look, recommended default first (no model call).
+ * `available` = the voice service answers /healthz (cached 15 s); when false the app greys the
+ * list ("Voice preview is waking up") and lets the user continue with the default.
+ */
+export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
   const t0 = performance.now();
-  const style = await d.store.getStyle(userId);
-  try {
-    const r = await sparkJson<{ order: string[] }>(d.metaKey, buildOrderRequest(d.voices, kind, style));
-    return { voices: applyOrder(d.voices, r.order), suggested: true, ms: since(t0) };
-  } catch (err) {
-    d.log("voice.order_failed", { reason: String(err).slice(0, 200) });
-    return { voices: d.voices, suggested: false, ms: since(t0) };
-  }
+  const voices = voicesForKind(d.voices, kind);
+  return { voices, suggested: voices[0]?.id ?? null, available: await voiceAvailable(d), ms: since(t0) };
 }
+
+let probe: { url: string; at: number; ok: boolean } | null = null;
+export async function voiceAvailable(d: PrepDeps, now = Date.now()): Promise<boolean> {
+  if (!d.voice) return false;
+  if (probe && probe.url === d.voice.url && now - probe.at < 15_000) return probe.ok;
+  let ok = false;
+  try {
+    ok = (await fetch(`${d.voice.url}/healthz`, { signal: AbortSignal.timeout(1500) })).ok;
+  } catch { /* down or cold */ }
+  probe = { url: d.voice.url, at: now, ok };
+  return ok;
+}
+export const resetVoiceProbe = () => { probe = null; };
 
 export async function voicePreview(d: PrepDeps, voiceId: string): Promise<Buffer> {
   const v = d.voices.find((x) => x.id === voiceId);
   if (!v) throw new PrepError(404, "unknown_voice");
+  // device voices are previewed by the app with its own synthesizer
+  if (isDeviceVoice(v.id)) throw new PrepError(404, "device_preview", "preview this voice on the device");
   const cached = await d.store.getVoicePreview(v.id, PREVIEW_VERSION);
   if (cached) return cached;
-  const mp3 = await renderPreview(d.elevenKey, v.id, previewLine(v), d.ttsModel).catch(() => renderPreview(d.elevenKey, v.id, previewLine(v), "eleven_multilingual_v2"));
-  await d.store.putVoicePreview(v.id, PREVIEW_VERSION, mp3);
-  return mp3;
+  if (!d.voice) throw new PrepError(503, "voice_unavailable");
+  const wav = await renderPreview(d.voice, v.id, previewLine(v));
+  await d.store.putVoicePreview(v.id, PREVIEW_VERSION, wav);
+  return wav;
 }
 
 // ---------- F2-L14: prefs → persona ----------
@@ -166,7 +180,9 @@ export async function savePrefs(d: PrepDeps, companion: CompanionRecord, depth: 
   }
   const persona = toPersona(raw, input);
   const prefs = { depth: v.depth, answers: v.answers, updatedAt: new Date().toISOString() };
-  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona }))) ?? { ...companion, prefs, persona };
+  // a rename (PATCH / by voice) may land while Spark writes the card: the stored name wins; a V04 voice pick
+  // saved meanwhile also wins over the card's voice
+  const next = (await d.store.patchCompanion(companion.userId, (x) => ({ ...x, prefs, persona: { ...persona, card: { ...persona.card, name: x.name, ...(x.voiceId === companion.voiceId ? {} : { voice: { id: x.voiceId } }) } } }))) ?? { ...companion, prefs, persona };
   d.log("setup.persona_written", { depth: v.depth, ms: since(t0), spark: !!raw });
   return next;
 }

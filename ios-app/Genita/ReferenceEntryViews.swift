@@ -28,6 +28,8 @@ struct ReferenceSignInView: View {
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
     @State private var signInFailed = false
+    /// A02-M Continue with email (NEW · design check)
+    @State private var emailSheet = false
     var referenceViewport = false
     var nodes: [DesignNode] { DesignLibrary.nodes("signIn") }
     var body: some View {
@@ -44,8 +46,10 @@ struct ReferenceSignInView: View {
                     ForEach(nodes.filter { $0.type == "text" && ($0.fontFamily == "KMU80 TTF" || $0.y == 199) }) { n in
                         DesignText(node: n).designSlot(n, width: size.width, top: top)
                     }
-                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
-                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
+                    // the board's two buttons move up one row (61 pt) so "Continue with email" takes Google's old row; the legal line stays put
+                    providerButton("Apple", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 537 + bottom)
+                    providerButton("Google", width: size.width).frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 598 + bottom)
+                    emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     let node = nodes.first { $0.y == 734 && $0.type == "text" }!
                     DesignText(node: node).frame(width: node.w, height: node.h).position(x: size.width / 2, y: 751 + bottom)
                     Button { legal = "Terms" } label: { Color.clear.contentShape(Rectangle()) }.frame(width: 44, height: 24).position(x: size.width / 2 + 85, y: 743 + bottom).accessibilityLabel("Terms")
@@ -62,6 +66,12 @@ struct ReferenceSignInView: View {
                     .background(Color.black.opacity(0.84), in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 16).padding(.top, 72)
                     .transition(.opacity).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
+        }
+        .sheet(isPresented: $emailSheet) { emailSheetContent }
+        .onAppear {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"]?.hasPrefix("email") == true { emailSheet = true }
+            #endif
         }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             Button("Continue in demo") { model.signedIn(); provider = nil }
@@ -85,6 +95,32 @@ struct ReferenceSignInView: View {
         }.buttonStyle(.plain).disabled(signingIn).accessibilityLabel("Continue with " + name)
     }
 
+    /// Same white button as Apple / Google; envelope glyph in the logo's slot.
+    var emailButton: some View {
+        Button { emailSheet = true } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
+                HStack(spacing: 11) {
+                    Image(systemName: "envelope").font(.system(size: 18, weight: .medium)).frame(width: 20, height: 20)
+                    Text("Continue with email").font(TypeStyle.body(16, .medium))
+                }.foregroundStyle(.black)
+            }
+        }.buttonStyle(.plain).disabled(signingIn).accessibilityLabel("Continue with email").accessibilityIdentifier("continueWithEmail")
+    }
+
+    @ViewBuilder var emailSheetContent: some View {
+        #if DEBUG
+        // review stage: GENITA_REVIEW_VARIANT=emailCode opens straight on the code step (screenshots without a server)
+        if ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] == "emailCode" {
+            EmailSignInSheet(model: model, step: .code, email: "you@example.com")
+        } else {
+            EmailSignInSheet(model: model)
+        }
+        #else
+        EmailSignInSheet(model: model)
+        #endif
+    }
+
     /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
     func signInWithApple() {
         guard !signingIn else { return }
@@ -94,6 +130,7 @@ struct ReferenceSignInView: View {
             do {
                 let r = try await AppleSignInFlow().signIn()
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+                model.adopt(accountId: r.me.user.id)   // #163: the saved setup's style/companion belong to this account
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02
             } catch {

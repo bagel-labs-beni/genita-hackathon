@@ -7,6 +7,13 @@ import UniformTypeIdentifiers
     var referenceViewport = false
     @State private var keyboardTop = CGFloat.greatestFiniteMagnitude
     @State private var copied = false
+    /// I01 "Open ChatGPT / Open Claude": the prompt was copied and the AI app was opened; coming back lands on I02
+    @State private var openedAI = false
+    @State private var leftApp = false
+    @State private var copiedToast = false
+    @State private var pasteHighlight = false
+    @Environment(\.scenePhase) private var scenePhase
+    @AccessibilityFocusState private var pasteFocused: Bool
     @State private var progress = 0.0
     @State private var importing = false
     @State private var pickingPhoto = false
@@ -28,11 +35,12 @@ import UniformTypeIdentifiers
     var enabled: Bool {
         switch stage {
         case .name: model.validName
-        case .paste: model.validResponse
+        case .paste: model.validResponse && !model.importing
         case .image: model.setup.imageData != nil
-        case .voice: model.setup.voice != nil && player.playing == nil
+        case .voice: !player.loading && model.setup.voice != nil && player.playing == nil && player.fetching == nil && !model.savingVoice
         case .help, .relationship: model.setup.answers[stage.rawValue] != nil
         case .presence: !model.setup.presence.isEmpty
+        case .summary: !model.savingPrefs
         default: true
         }
     }
@@ -52,7 +60,7 @@ import UniformTypeIdentifiers
                         .scrollDisabled(stage == .prompt)
                     if stage != .paste || keyboardTop == .greatestFiniteMagnitude { primary(width: viewport.width).frame(width: viewport.width - 77, height: 50).position(x: (viewport.width - 1) / 2, y: footerY + 25) }
                     if stage == .preparing {
-                        Button { model.returnTo(.paste) } label: {
+                        Button { model.cancelImport() } label: {
                             let label = texts.first { $0.characters == "Cancel processing" }!
                             ZStack(alignment: .topLeading) {
                                 Color.clear
@@ -75,10 +83,19 @@ import UniformTypeIdentifiers
         .onAppear { if stage == .name && !referenceViewport { nameFocused = true }; if referenceViewport { progress = 0.62 } }
         .onDisappear { player.stop() }
         .task(id: stage) {
+            if stage == .voice && !referenceViewport { await loadVoices() }
             guard stage == .preparing && !referenceViewport else { return }
             #if DEBUG
             if ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"] == "preparing" { progress = 0.62; return }
             #endif
+            if model.serverWired {
+                // I03: Spark takes 4–8 s; the bar eases toward 90 % and the answer (AppState.startImport) moves on
+                while !Task.isCancelled && model.stage == .preparing {
+                    do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
+                    progress = min(0.9, progress + (0.92 - progress) * 0.03)
+                }
+                return
+            }
             for step in 1...20 {
                 do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
                 progress = Double(step) / 20
@@ -101,7 +118,7 @@ import UniformTypeIdentifiers
                 DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round").designSlot(orb, width: width, top: bodyTop)
             }
             ZStack {
-                DesignText(node: title)
+                DesignText(node: title, text: stage == .image ? "Bring an image" : nil)
                 if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
                     Button {
                         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }
@@ -116,7 +133,14 @@ import UniformTypeIdentifiers
             }
             switch stage {
             case .name: nameInput(width: width, top: bodyTop)
-            case .prompt, .paste, .preferences: profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
+            case .prompt, .paste, .preferences:
+                profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
+                    .onChange(of: scenePhase) { _, phase in
+                        // I01 → AI app → back: open I02 with the paste button ready (only after the app really left)
+                        guard stage == .prompt, openedAI else { return }
+                        if phase == .background { leftApp = true }
+                        else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+                    }
             case .preparing: processing(width: width, top: bodyTop)
             case .image: imageContent(width: width, top: bodyTop)
             case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
@@ -149,13 +173,14 @@ import UniformTypeIdentifiers
     }
     func advance() {
         switch stage {
-        case .name: model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.go(.prompt)
+        case .name: model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.saveDisplayName(); model.go(.prompt)
         case .prompt: model.go(.paste)
-        case .paste: UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); model.go(.preparing)
+        case .paste: UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); model.go(.preparing); model.startImport()
+        // "Continue in the background": the import keeps running and fills I04 when it lands
         case .preparing, .preferences: model.go(.image)
-        case .image: model.go(.voice)
-        case .voice: player.stop(); model.go(.depth)
-        case .summary: model.go(.connecting)
+        case .image: model.checkImage()
+        case .voice: player.stop(); model.saveVoiceAndContinue()
+        case .summary: model.saveSetupAndPrepare()
         default: model.nextPreference()
         }
     }
@@ -167,7 +192,8 @@ import UniformTypeIdentifiers
     @ViewBuilder func profileContent(width: CGFloat, top: CGFloat, contentBottom: CGFloat) -> some View {
         let card: DesignNode = {
             var node = nodes.first { $0.name == (stage == .prompt ? "Your prompt" : stage == .paste ? "Your AI’s response" : "Your preferences") && $0.type != "text" }!
-            if stage == .prompt { node.h = min(node.h, max(100, contentBottom - node.y - top)) }
+            // I01: room under the card for Open ChatGPT / Open Claude and the N1–N3 link (PRD v12 B-defaults, D33)
+            if stage == .prompt { node.h = min(node.h, max(100, contentBottom - 96 - node.y - top)) }
             return node
         }()
         DesignShape(node: card).designSlot(card, width: width, top: top)
@@ -183,11 +209,60 @@ import UniformTypeIdentifiers
             Button { UIPasteboard.general.string = AppState.prompt; copied = true } label: {
                 Group { if copied { Image(systemName: "checkmark").foregroundStyle(Color("Ink")) } else { Image(resource: "copy").resizable().frame(width: 19.4526, height: 20.4) } }.frame(width: 44, height: 44)
             }.buttonStyle(.plain).position(x: width - 65.8737, y: 296.4 + top).accessibilityLabel(copied ? "Prompt copied" : "Copy prompt").accessibilityIdentifier("copyPrompt")
+            let cardBottom = card.y + card.h + top
+            HStack(spacing: 8) {
+                appButton("Open ChatGPT", app: "chatgpt://", web: "https://chatgpt.com/")
+                appButton("Open Claude", app: "claude://", web: "https://claude.ai/new")
+            }.frame(width: width - 48).position(x: width / 2, y: cardBottom + 32)
+            if copiedToast {
+                Text("Prompt copied").font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk).padding(.horizontal, 14).frame(height: 30)
+                    .background(CallInk.ink.opacity(0.84), in: Capsule()).transition(.opacity)
+                    .position(x: width / 2, y: cardBottom + 32 - 38).accessibilityIdentifier("promptCopiedToast")
+            }
+            Button { model.go(.skipTopics) } label: {
+                Text("I don’t use an AI assistant").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
+            }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
         } else {
             let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))
-            ReferenceEditor(text: $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...")
+            ReferenceEditor(text: stage == .preferences ? .constant(model.styleText) : $model.setup.response, node: body, editable: stage == .paste, placeholder: "Paste the profile your AI wrote for you...")
                 .frame(width: body.w + width - 390, height: editorHeight).position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + editorHeight / 2).accessibilityIdentifier(stage == .paste ? "responseInput" : "profileResult")
+            if stage == .paste {
+                // I02 one tap: paste the reply straight from the clipboard (system paste button, no permission prompt)
+                PasteButton(payloadType: String.self) { strings in
+                    if let text = strings.first { Task { @MainActor in model.setup.response = text; model.importError = nil; pasteHighlight = false } }
+                }.buttonBorderShape(.capsule).labelStyle(.titleAndIcon).tint(CallInk.ink).controlSize(.small)
+                    .overlay { if pasteHighlight { Capsule().strokeBorder(Color(red: 0, green: 0.635, blue: 1), lineWidth: 2).padding(-4).allowsHitTesting(false) } }
+                    .accessibilityFocused($pasteFocused)
+                    .position(x: width - 88, y: card.y + top + 22).accessibilityIdentifier("pasteReply")
+                    .onAppear {
+                        // back from ChatGPT / Claude: the paste button is the one thing to do (no permission prompt, system paste control)
+                        guard model.pasteFocusRequested else { return }
+                        model.pasteFocusRequested = false; pasteHighlight = true
+                        Task { @MainActor in try? await Task.sleep(for: .milliseconds(300)); pasteFocused = true }
+                    }
+                if let e = model.importError {
+                    // I02-E: one line, the text stays
+                    Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
+                        .frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: card.y + card.h + top + 18)
+                        .accessibilityIdentifier("importError")
+                }
+            }
         }
+    }
+    /// I01: opens the AI app, or its website when the app isn't installed.
+    func appButton(_ title: String, app: String, web: String) -> some View {
+        Button {
+            guard let a = URL(string: app), let w = URL(string: web) else { return }
+            // one tap: copy the prompt, say so, open the AI app (or its site); coming back opens I02
+            UIPasteboard.general.string = AppState.prompt
+            copied = true; openedAI = true; leftApp = false
+            withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
+            Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
+            UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
+        } label: {
+            Text(title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 40)
+                .background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityIdentifier(title == "Open ChatGPT" ? "openChatGPT" : "openClaude")
     }
     @ViewBuilder func processing(width: CGFloat, top: CGFloat) -> some View {
         ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
@@ -201,8 +276,12 @@ import UniformTypeIdentifiers
         DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + fill.h / 2)
     }
     func accept(_ data: Data) {
-        guard let image = UIImage(data: data), let thumb = image.preparingThumbnail(of: CGSize(width: 1200, height: 1200)), let jpeg = thumb.jpegData(compressionQuality: 0.88) else { imageError = "Please select a supported image."; return }
-        model.setup.imageData = jpeg
+        // B7: one companion, the face can't change once it's made
+        guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
+        guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
+        // a new photo needs a new check (V03); the old result and suggestion don't apply
+        model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil
+        if model.setup.companionCreated != true { model.setup.companionName = nil }
     }
     @ViewBuilder func imageContent(width: CGFloat, top: CGFloat) -> some View {
         ForEach(texts.filter { $0.id != title.id && $0.y < 200 }) { n in DesignText(node: n).designSlot(n, width: width, top: top) }
@@ -255,32 +334,77 @@ import UniformTypeIdentifiers
             }.designSlot(n, width: width, top: top, stretch: stretch)
         }
     }
+    /// V04 (Figma F2 "voice model" frames): four server voices, a black ring on the picked one, a black round
+    /// play button that turns into pause while the clip plays. Greyed with "Voice preview is waking up" when
+    /// the voice service is down; the first voice (the recommended default) stays picked so Continue works.
     @ViewBuilder func voiceContent(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        let waking = !player.loading && !player.available
+        HStack(spacing: 8) {
+            Text(waking ? "Voice preview is waking up" : "Tap play to hear each one.")
+                .font(.custom("PretendardVariable-Regular", fixedSize: 14)).foregroundStyle(Color(white: 0.45))
+                .accessibilityIdentifier(waking ? "voiceWaking" : "voiceHint")
+            if waking { ProgressView().controlSize(.small).tint(Color(white: 0.45)).accessibilityIdentifier("voiceWakingSpinner") }
+        }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 187 + top + 9)
         ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
-            let playing = player.playing == i
-            let selected = model.setup.voice == i && !playing
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(selected ? Color("Selection") : .white)
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(playing ? Color("AccentColor") : selected ? .clear : Color(white: 227.0 / 255), lineWidth: 1))
-                ForEach(cardTexts(n)) { label in
-                    let selectedColor = label.characters == "Warm, steady" ? UIColor(red: 84.0 / 255, green: 193.0 / 255, blue: 1, alpha: 1) : UIColor(red: 0, green: 162.0 / 255, blue: 1, alpha: 1)
-                    DesignText(node: label, color: selected ? selectedColor : nil)
-                        .frame(width: label.w, height: label.h).position(x: label.x - n.x + label.w / 2 + (label.characters == "00:08" ? width - 390 : 0), y: label.y - n.y + label.h / 2)
-                }
-                HStack(spacing: 0) {
-                    Button { player.stop(); model.setup.voice = i } label: { Color.clear.contentShape(Rectangle()) }.accessibilityLabel("Select voice \(i + 1)").accessibilityIdentifier("voice\(i)")
-                    Button { model.setup.voice = i; player.preview(i) } label: {
-                        ZStack {
-                            Image(resource: playing ? "voice-playing" : selected ? "voice-selected-play" : "reference-play").resizable().frame(width: 32, height: 32)
-                            if playing { HStack(spacing: 2) { Rectangle().frame(width: 3, height: 11); Rectangle().frame(width: 3, height: 11) }.foregroundStyle(.white) }
-                        }.frame(width: 44, height: 44)
-                    }.accessibilityLabel("Preview voice \(i + 1)").padding(.trailing, 62)
-                }
-            }.buttonStyle(.plain).designSlot(n, width: width, top: top, stretch: stretch)
+            if i < voiceList.count {
+                voiceCard(voiceList[i], index: i, waking: waking || (player.loading && !referenceViewport) || model.savingVoice).designSlot(n, width: width, top: top, stretch: stretch)
+            }
+        }
+    }
+    /// until the server answers (and in the reference snapshot) the curated four per look are drawn greyed
+    var voiceList: [OnboardingClient.CompanionVoice] { player.voices.isEmpty ? VoicePlayer.fallback(kind: model.setup.imageType) : player.voices }
+    func voiceCard(_ v: OnboardingClient.CompanionVoice, index i: Int, waking: Bool) -> some View {
+        let playing = player.playing == v.id
+        let picked = model.setup.voice == i
+        let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
+        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
+        return ZStack {
+            RoundedRectangle(cornerRadius: 12).fill(.white)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
+            Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
+                .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(v.name).font(.custom("PretendardVariable-SemiBold", fixedSize: 18)).foregroundStyle(Color("Ink"))
+                Text(detail).font(.custom("PretendardVariable-Medium", fixedSize: 12)).foregroundStyle(detailColor)
+            }.padding(.leading, 21).padding(.top, 13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
+            Button { selectVoice(i); player.preview(v, client: model.onboarding) } label: {
+                ZStack {
+                    Circle().fill(Color("Ink")).frame(width: 32, height: 32)
+                    if playing { HStack(spacing: 4) { RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11); RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11) }.foregroundStyle(.white) }
+                    else if player.fetching == v.id { ProgressView().controlSize(.small).tint(.white) }
+                    else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
+                }.frame(width: 44, height: 44)
+            }.disabled(waking).accessibilityLabel(playing ? "Stop \(v.name)" : "Play \(v.name)").accessibilityIdentifier("play\(i)")
+                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
+        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+    }
+    func selectVoice(_ i: Int) {
+        guard i < player.voices.count else { return }   // greyed placeholders are never picked
+        model.setup.voice = i
+        model.setup.voiceId = player.voices[i].id
+        model.setup.voiceName = player.voices[i].name
+    }
+    /// Opens V04: the server's list, then the earlier pick (or the default while the voice service wakes).
+    func loadVoices() async {
+        await player.load(client: model.onboarding, imageId: model.setup.imageId, kind: model.setup.imageType)
+        if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { selectVoice(i) }
+        else if !player.available { selectVoice(0) }
+        else { model.setup.voice = nil }
+        // voice service cold: ask again every 4 s for up to 60 s, then the normal list replaces the greyed one
+        var waited = 0
+        while !player.available && waited < 60 && !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            waited += 4
+            await player.refresh(client: model.onboarding, imageId: model.setup.imageId)
         }
     }
     @ViewBuilder func presence(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
-        let labels = texts.filter { $0.y >= 579 && $0.y < 720 }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
+        // The reference frame has "Calm" twice; the fourth chip is "Warm" (PRD v12 F4, B10)
+        let labels: [DesignNode] = {
+            var l = texts.filter { $0.y >= 579 && $0.y < 720 }.sorted { $0.y == $1.y ? $0.x < $1.x : $0.y < $1.y }
+            if let i = l.indices.last(where: { l[$0].characters == "Calm" }), l.filter({ $0.characters == "Calm" }).count > 1 { l[i].characters = "Warm" }
+            return l
+        }()
         ForEach(labels) { label in
             let value = label.characters ?? ""
             let key = "\(label.x)-\(label.y)"

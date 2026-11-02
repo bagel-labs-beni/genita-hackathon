@@ -9,7 +9,7 @@ import ImageIO
 ///   GENITA_FIXTURE_SCRIPT = "/a.pcm@mic+3;/b.pcm@play+1.5;/c.pcm@done+3"
 ///     mic+N  N s after the mic turns on · play+N  N s after the next reply starts playing (barge-in)
 ///     done+N N s after the next reply finished playing
-///   GENITA_FIXTURE_CAMERA = /photo.jpg   stands in for the camera
+///   GENITA_FIXTURE_CAMERA = /photo.jpg | bundle:<name>   stands in for the camera
 ///   GENITA_CALL_AUTOMIC = 1 / GENITA_CALL_AUTOCAMERA = 1   turn them on when the session is ready
 @MainActor final class FixtureMic {
     enum Trigger: String { case mic, play, done }
@@ -108,8 +108,10 @@ extension Logger { static let fixture = Logger(subsystem: "ai.thebeni.genita", c
 
 extension CallController {
     func installFixtures(environment env: [String: String] = ProcessInfo.processInfo.environment) {
-        if let path = env["GENITA_FIXTURE_CAMERA"], let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) {
-            camera.fixture = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        if let path = env["GENITA_FIXTURE_CAMERA"] {
+            // "bundle:<name>" = a bundled .jpg (UI tests); anything else is a file path
+            let url = path.hasPrefix("bundle:") ? Bundle.main.url(forResource: String(path.dropFirst(7)), withExtension: "jpg") : URL(fileURLWithPath: path)
+            if let url, let source = CGImageSourceCreateWithURL(url as CFURL, nil) { camera.fixture = CGImageSourceCreateImageAtIndex(source, 0, nil) }
         }
         if let script = env["GENITA_FIXTURE_SCRIPT"] {
             let steps = FixtureMic.parse(script)

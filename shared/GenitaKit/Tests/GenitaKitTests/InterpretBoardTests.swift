@@ -16,7 +16,7 @@ struct InterpretBoardTests {
     }
 
     @Test func listeningThenDetectedThenThemSpeakingThenJinSaysIt() {
-        var b = InterpretBoard()
+        var b = InterpretBoard(companionName: "Jin")
         b.apply(Self.pair(nil))
         #expect(b.active)
         #expect(b.bar == .init(title: "Interpreting", subtitle: "Listening for the other language", warn: false))
@@ -38,7 +38,7 @@ struct InterpretBoardTests {
     }
 
     @Test func myReplyGoesOutInKoreanAndTheirBubbleTurnsFaint() {
-        var b = InterpretBoard()
+        var b = InterpretBoard(companionName: "Jin")
         b.apply(Self.pair("Korean"))
         b.apply(Self.bubble(1, .them, .done, "혹시 이 근처에 약국 있어요?", lang: "Korean", translation: "Is there a pharmacy near here?", to: "English", utterance: 1))
         b.holding = true
@@ -53,7 +53,7 @@ struct InterpretBoardTests {
     }
 
     @Test func unclearLanguageWarnsAndSkippedBubblesDisappear() {
-        var b = InterpretBoard()
+        var b = InterpretBoard(companionName: "Jin")
         b.apply(Self.pair("Korean"))
         b.apply(Self.bubble(1, .me, .hearing, "Yes", lang: "English"))
         b.apply(Self.bubble(1, .me, .skipped, "Yes", lang: "English", reason: "echo"))
@@ -69,7 +69,7 @@ struct InterpretBoardTests {
     }
 
     @Test func macCallRoutesTheirTranslationToHeadphonesAndMineToTheSpeaker() {
-        var b = InterpretBoard()
+        var b = InterpretBoard(companionName: "Jin")
         b.apply(Self.pair(nil, source: .call, app: "FaceTime"))
         #expect(b.bar.title == "FaceTime · Interpreting")
         #expect(!b.showsIntro)

@@ -26,9 +26,15 @@ No database migrations, app changes, deployment, push or PR are part of this lan
   cancels active replies/history. Completed stale upserts are blocked by persistent
   normalized-text hash tombstones. Changed *new* statements can create new memories;
   this is not semantic erasure of unrelated/rephrased facts across all future speech.
+- Device handoff offers turns from calls ended within ten minutes, in process memory and tagged with
+  that user's persisted Forget revision. Single/all Forget evicts this cache;
+  live-call reads and late socket-close writes must match the revision under the
+  same per-user lock. Client `handoff: true` history is accepted only at revision
+  zero; after any Forget it is ignored, including after restarting the service.
+  New server-side turns after Forget can still hand off normally.
 - Metadata (last user-message time, last three opening words, settings, UTC daily
-  photo quota/opener guard) is separate from the memory-table interface. No original
-  conversation transcript is retained between calls.
+  photo quota/opener guard) is separate from the memory-table interface. Conversation
+  transcripts are never persisted; the short-lived handoff cache above is in memory only.
 - An episode opener requires the configured gap from the last user message, a
   different source call and `follow_up=true`; a seen crop >=6h old takes priority.
   One opener per UTC day; no eligible episode means an ordinary greeting. The
@@ -157,5 +163,4 @@ The main session can commit these reviewable groups with its normal Git access:
 3. `evals/memory/`, `scripts/{eval-memory,check-memory}.ts`,
    `test/memory-eval.test.ts`, `package.json`, `.gitignore`, this README (eval/handoff).
 
-Use `git -c user.name=summerlee -c user.email=chelsea@users.noreply.github.com commit` and end each
-message with `Co-Authored-By: Codex <noreply@openai.com>`. No push or PR was made.
+Commit with your own Git identity.

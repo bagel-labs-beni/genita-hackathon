@@ -2,6 +2,12 @@ import SwiftUI
 
 @main struct GenitaApp: App {
     @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
+    @State private var appConfig = GenitaAppConfigStore.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var handoff = PhoneHandoff.shared
+    /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
+    /// PF-1b / r03 full: a full Finds sheet leaves a dark band under the status bar, so it turns light too.
+    private var darkStatusBar: Bool { model.stage == .signIn || model.stage == .bringing || CallController.shared.finds.state == .full || (handoff.surface != .active && handoff.motion == nil && !model.menuOpen && !model.settingsOpen && !handoff.settings) }
     var body: some Scene {
         WindowGroup {
             Group {
@@ -17,9 +23,16 @@ import SwiftUI
                         model.setup.response = "Communication style: clear and warm."
                         model.setup.voice = 0
                     }
+                    if let i = ProcessInfo.processInfo.arguments.firstIndex(of: "--media-state"), ProcessInfo.processInfo.arguments.indices.contains(i + 1) {
+                        PhoneHandoff.shared.media.showDeniedForReview(ProcessInfo.processInfo.arguments[i + 1] == "camera-denied" ? .camera : .microphone)
+                    }
                     #endif
                 }
-                .preferredColorScheme(model.stage == .signIn ? .dark : .light)
+                .preferredColorScheme(darkStatusBar ? .dark : .light)
+                // server-driven config (GET /v1/app-config): launch + every foreground; bundled defaults offline
+                .overlay(alignment: .top) { UpdateBanner(config: appConfig.config) }
+                .task { await appConfig.refreshUnlessTesting(force: true) }
+                .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await appConfig.refreshUnlessTesting() } } }
         }
     }
 }

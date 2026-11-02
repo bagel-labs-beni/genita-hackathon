@@ -32,8 +32,8 @@ import CoreMedia
     private let capture = WatchCapture()
     private var reactingTask: Task<Void, Never>?
     private static let noticeKey = "genita.watch.noticeShown"
-    private let queue = DispatchQueue(label: "com.genita.screen-sharing")
-    private let audioQueue = DispatchQueue(label: "com.genita.screen-sharing.audio")
+    private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
+    private let audioQueue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing.audio")
     override init() { super.init(); SCContentSharingPicker.shared.add(self) }
     func requestSharing() {
         if isSharing { stop(); return }
@@ -120,13 +120,15 @@ import CoreMedia
         switch event {
         case .state(_, let isBlank): blank = isBlank || blank
         case .reaction:
+            // MS-2 first reaction (Chelsea 11/2 21:10: watch together is back, reactions on)
             reacting = true
             reactingTask?.cancel()
             reactingTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(1500))
                 if !Task.isCancelled { self.reacting = false }
             }
-        case .speaker(let name): speakerName = name
+        // The speaker chip (FT-SPK) stays cut (D40): who is talking in the video never shows.
+        case .speaker: break
         case .closed: speakerName = nil
         }
     }

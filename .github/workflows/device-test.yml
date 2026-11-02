@@ -4,13 +4,26 @@ name: Device test builds
 # - iOS: signed Release archive uploaded to TestFlight (internal + external groups).
 #   Build number = run_number * 10 + run_attempt, so every run is a new build.
 # - Mac: GenitaMac.app signed with Developer ID (hardened runtime), packed in a DMG,
-#   notarized and stapled; artifact "Genita-Mac-dmg".
-# Runs on push to release/** (and ci/testflight), or by hand (workflow_dispatch).
+#   notarized and stapled; artifact "Genita-Mac-dmg". Same build number as iOS.
+#   Sparkle auto-update: the DMG is EdDSA-signed (sign_update, key GENITA_SPARKLE_ED_PRIVATE = SSM
+#   /genita/apple/sparkle_ed_private) and published with an appcast entry to GitHub Pages
+#   (bagel-labs-beni/genita-legal /mac/, deploy key GENITA_UPDATES_DEPLOY_KEY). Installed Macs pick it up
+#   at launch / daily and offer "Restart to update". Without those two secrets the publish step is skipped.
+# Runs on push to release/** (and ci/testflight), or by hand (workflow_dispatch; inputs below).
 # Checklist: ./_qa-scripts/genita-release/RELEASE_CHECKLIST.md (local).
 on:
   push:
     branches: [ci/testflight, "release/**"]
   workflow_dispatch:
+    inputs:
+      ios:
+        description: "Build and upload iOS to TestFlight"
+        type: boolean
+        default: true
+      publish_mac_update:
+        description: "Publish the Mac DMG to the Sparkle appcast (installed Macs update)"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -27,6 +40,7 @@ env:
 
 jobs:
   ios-testflight:
+    if: github.event_name != 'workflow_dispatch' || inputs.ios
     runs-on: macos-15
     timeout-minutes: 60
     steps:
@@ -170,8 +184,20 @@ jobs:
   mac-app:
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      SPARKLE_VERSION: "2.10.0"
+      SPARKLE_SHA256: c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
+      UPDATES_BASE_URL: https://bagel-labs-beni.github.io/genita-legal/mac
+      PUBLISH_UPDATE: ${{ github.event_name == 'push' || inputs.publish_mac_update }}
+      HAS_UPDATE_SECRETS: ${{ secrets.GENITA_SPARKLE_ED_PRIVATE != '' && secrets.GENITA_UPDATES_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set build number
+        run: |
+          BUILD_NUMBER=$(( ${{ github.run_number }} * 10 + ${{ github.run_attempt }} ))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "MAC_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' ios-app/Info.plist)" >> "$GITHUB_ENV"
 
       - name: Select Xcode 26
         run: |
@@ -183,9 +209,21 @@ jobs:
       - name: Build GenitaMac (Release, unsigned)
         working-directory: ios-app
         run: |
+          xcodebuild -resolvePackageDependencies -project Genita.xcodeproj | tail -n 5
           xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Release -sdk macosx \
-            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO | grep -E "error:|\*\* BUILD" | cut -c1-300
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" MARKETING_VERSION="$MAC_VERSION" | grep -E "error:|\*\* BUILD" | cut -c1-300
           exit "${PIPESTATUS[0]}"
+
+      - name: Check version and Sparkle in the app
+        run: |
+          APP=ios-app/build/Release/GenitaMac.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist")" = "$BUILD_NUMBER"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$MAC_VERSION"
+          /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" > /dev/null
+          test -d "$APP/Contents/Frameworks/Sparkle.framework" || { echo "::error::Sparkle.framework is not embedded"; ls -la "$APP/Contents/Frameworks" || true; exit 1; }
+          echo "GenitaMac $MAC_VERSION ($BUILD_NUMBER), Sparkle embedded"
 
       - name: Install Developer ID identity
         id: identity
@@ -230,8 +268,18 @@ jobs:
       - name: Sign app with Developer ID (hardened runtime)
         run: |
           APP=ios-app/build/Release/GenitaMac.app
-          # inside-out: nested frameworks, dylibs, helpers first, then the app
-          find "$APP/Contents" -depth \( -name "*.dylib" -o -name "*.framework" -o -name "*.xpc" -o -name "*.appex" -o -name "*.bundle" \) -print0 2>/dev/null |
+          SIGN=(codesign --force --options runtime --timestamp --keychain "$KC" --sign "$DEVID_HASH")
+          # Sparkle's helpers first, in Sparkle's documented order (no --deep), then the framework
+          SPK="$APP/Contents/Frameworks/Sparkle.framework"
+          if [ -d "$SPK" ]; then
+            "${SIGN[@]}" "$SPK/Versions/B/XPCServices/Installer.xpc"
+            "${SIGN[@]}" --preserve-metadata=entitlements "$SPK/Versions/B/XPCServices/Downloader.xpc"
+            "${SIGN[@]}" "$SPK/Versions/B/Autoupdate"
+            "${SIGN[@]}" "$SPK/Versions/B/Updater.app"
+            "${SIGN[@]}" "$SPK"
+          fi
+          # inside-out: other nested frameworks, dylibs, helpers, then the app
+          find "$APP/Contents" -depth \( -name "*.dylib" -o -name "*.framework" -o -name "*.xpc" -o -name "*.appex" -o -name "*.bundle" \) -not -path "*/Sparkle.framework*" -print0 2>/dev/null |
             while IFS= read -r -d '' item; do
               codesign --force --options runtime --timestamp --keychain "$KC" --sign "$DEVID_HASH" "$item"
             done
@@ -272,7 +320,8 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           test "$STATUS" = "Accepted"
-          xcrun stapler staple "$DMG"
+          # stapler fetches the ticket from Apple's CDN; retry its network flakes (error 68)
+          for i in 1 2 3 4; do xcrun stapler staple "$DMG" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
           xcrun stapler validate "$DMG"
 
       - name: Verify Gatekeeper
@@ -282,6 +331,11 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null
           spctl -a -t exec -vv "$MNT/GenitaMac.app"
           codesign --verify --deep --strict "$MNT/GenitaMac.app"
+          # Sparkle compares versions: the shipped app must carry both, equal to this run's numbers
+          V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          echo "DMG app: $SV ($V)"
+          test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           hdiutil detach "$MNT" >/dev/null
           shasum -a 256 "$DMG"
           {
@@ -290,6 +344,60 @@ jobs:
             echo "SHA-256: $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
             echo "Source commit: $GITHUB_SHA"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sparkle-sign the DMG
+        if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
+        env:
+          SPARKLE_ED_PRIVATE: ${{ secrets.GENITA_SPARKLE_ED_PRIVATE }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+          echo "$SPARKLE_SHA256  $RUNNER_TEMP/sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/sparkle" && tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle" bin
+          OUT="$(printf '%s' "$SPARKLE_ED_PRIVATE" | "$RUNNER_TEMP/sparkle/bin/sign_update" -f - "$DMG")"
+          SIG="$(sed -nE 's/.*edSignature="([^"]+)".*/\1/p' <<< "$OUT")"
+          LEN="$(sed -nE 's/.*length="([0-9]+)".*/\1/p' <<< "$OUT")"
+          test -n "$SIG" && test -n "$LEN"
+          printf '%s' "$SPARKLE_ED_PRIVATE" | "$RUNNER_TEMP/sparkle/bin/sign_update" --verify -f - "$DMG" "$SIG"
+          echo "SPARKLE_SIG=$SIG" >> "$GITHUB_ENV"
+          echo "SPARKLE_LEN=$LEN" >> "$GITHUB_ENV"
+
+      - name: Check out the updates site
+        if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: bagel-labs-beni/genita-legal
+          ssh-key: ${{ secrets.GENITA_UPDATES_DEPLOY_KEY }}
+          path: updates-site
+
+      - name: Publish the appcast entry (installed Macs update from here)
+        if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
+        run: |
+          NAME="Genita-Mac-$BUILD_NUMBER.dmg"
+          ROOT="$PWD"
+          cd updates-site
+          git config user.name "genita-release-bot"
+          git config user.email "chelsea@users.noreply.github.com"
+          # Another branch may publish at the same time: rebuild the entry on the newest site state each try.
+          published=0
+          for i in 1 2 3 4; do
+            git fetch -q origin main && git reset -q --hard origin/main
+            mkdir -p mac && cp "$ROOT/$DMG" "mac/$NAME"
+            node "$ROOT/.github/device-test/appcast.mjs" --dir mac --dmg "$NAME" --build "$BUILD_NUMBER" --version "$MAC_VERSION" \
+              --signature "$SPARKLE_SIG" --length "$SPARKLE_LEN" --base "$UPDATES_BASE_URL" --commit "$GITHUB_SHA"
+            git add -A mac
+            git commit -q -m "mac: Genita $MAC_VERSION ($BUILD_NUMBER) from ${GITHUB_SHA::7}"
+            if git push -q origin HEAD:main; then published=1; break; fi
+            sleep $((i * 5))
+          done
+          test "$published" = 1 || { echo "::error::could not push the appcast entry after 4 tries"; exit 1; }
+          {
+            echo "### Sparkle update published"
+            echo "Genita $MAC_VERSION ($BUILD_NUMBER) → $UPDATES_BASE_URL/appcast.xml. Pages deploys in about a minute; installed Macs see it at next launch or daily check."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update publish skipped
+        if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS != 'true'
+        run: echo "::warning::GENITA_SPARKLE_ED_PRIVATE / GENITA_UPDATES_DEPLOY_KEY not set — DMG built but not published to the Sparkle appcast (run ./_qa-scripts/genita-release/sparkle-setup.sh once)"
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
