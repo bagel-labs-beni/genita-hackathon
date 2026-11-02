@@ -41,6 +41,7 @@ struct ReferenceSignInView: View {
                 let bottom = size.height - 844
                 ZStack(alignment: .topLeading) {
                     Image(resource: "signin").resizable().frame(width: 757, height: 1009)
+                        .background(alignment: .top) { Color(white: 0.014).padding(-2000) } // #189: the photo's dark bottom continues on tall screens
                         .offset(x: -172 + (size.width - 390) / 2, y: -168 + top)
                         .frame(width: size.width, height: size.height, alignment: .topLeading).clipped()
                     Image(resource: "logo").resizable().frame(width: 63.142, height: 22.626).position(x: 66.571, y: 78.823 + top)
