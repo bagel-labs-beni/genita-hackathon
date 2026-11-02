@@ -93,6 +93,17 @@ struct SavedSetup: Codable {
     var savingPrefs = false
     var setupSummary: SetupSummary?
     var prep: PrepProgress?
+    /// NM01-0 "Use {name}": the server's suggestion, kept after the field is cleared
+    var suggestedCompanionName: String?
+    /// PREP-1e Try again in flight
+    var retryingPrep = false
+    /// PREP-1e: the one line under the buttons when Try again itself failed
+    var prepError: String?
+    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
+    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
+    var sceneImage: (key: String, data: Data)?
+    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
+    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
@@ -182,6 +193,7 @@ struct SavedSetup: Codable {
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         storage.set(true, forKey: Self.signedOutKey)
+        prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
@@ -204,6 +216,7 @@ struct SavedSetup: Codable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
+            prep = nil; sceneImage = nil
         }
         setup.accountId = id
     }
@@ -224,6 +237,7 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        prep = nil; sceneImage = nil
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {

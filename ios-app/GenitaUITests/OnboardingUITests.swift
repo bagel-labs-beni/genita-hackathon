@@ -26,6 +26,8 @@ final class OnboardingUITests: XCTestCase {
             "GENITA_FIXTURE_SCRIPT": "none",
             "GENITA_REVIEW_STILL": "1",
         ]
+        // PREP-1e: the stub's face step fails at 7 of 13 images until Try again
+        stubPost("/__prep", json: #"{"failAt":7}"#)
         app.launch()
 
         func capture(_ name: String) {
@@ -106,7 +108,12 @@ final class OnboardingUITests: XCTestCase {
         capture("NM01")
         app.buttons["clearName"].tap()
         XCTAssertFalse(primary.isEnabled, "NM01-0: empty name, Continue off")
+        XCTAssertTrue(app.buttons["useSuggestedName"].waitForExistence(timeout: 3), "NM01-0: Use Jin (154:2)")
         capture("NM01-0")
+        app.buttons["useSuggestedName"].tap()
+        expectation(for: suggested, evaluatedWith: name)
+        waitForExpectations(timeout: 5)
+        app.buttons["clearName"].tap()
         name.typeText("Maxwell the Wonderful Companion")
         XCTAssertEqual((name.value as? String)?.count, 20, "the 21st character can't be typed")
         app.buttons["clearName"].tap()
@@ -125,18 +132,56 @@ final class OnboardingUITests: XCTestCase {
         capture("SUM")
         primary.tap()
 
-        // PREP-1: stages follow the server, Continue once the scene exists, then S07 "Connecting to Max…"
+        // PREP-1 (Figma 182:51 → 182:3 → 182:142 → 182:96): stages follow the server's real Meta-only shape,
+        // Start talking once the scene exists, Try again after the face step fails, then ready → S07 by itself
         XCTAssertTrue(element("PREP-1").waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["prepContinue"].isEnabled, "PREP-1a: Start talking off before the scene")
         capture("PREP1-start")
-        // Continue lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
+        // Start talking lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 15)
+        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped Peter lips don't mark Mouth done")
         capture("PREP1-scene-done")
-        app.buttons["prepContinue"].tap()
+        // PREP-1e: the stub fails the face step at 7/13 (expressions done, mouth failed)
+        XCTAssertTrue(app.buttons["prepRetry"].waitForExistence(timeout: 20), "PREP-1e Try again")
+        XCTAssertTrue(app.buttons["prepContinuePhoto"].exists, "Continue with the photo")
+        XCTAssertEqual(element("prepStage-mouth").value as? String, "failed")
+        XCTAssertEqual(element("prepStage-expressions").value as? String, "done")
+        capture("PREP1-failed")
+        app.buttons["prepRetry"].tap()
+        // retry carries on from 7/13 → ready about 6 s later: "Max is ready." without a button, then S07
+        expectation(for: NSPredicate(format: "label == %@", "Max is ready."), evaluatedWith: element("PREP-1"))
+        waitForExpectations(timeout: 20)
+        XCTAssertFalse(app.buttons["prepContinue"].exists || app.buttons["prepRetry"].exists, "PREP-1c has no button")
+        capture("PREP1-ready")
         let pill = element("connectingPill")
         if pill.waitForExistence(timeout: 5) { capture("S07") }
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 20), "S09 after S07")
         capture("S09-first-call")
+    }
+
+    /// F12 / #86: a returning account whose face is still being made opens straight on the call (no onboarding,
+    /// no PREP-1) with the photo face and the S09-PREP pill (228:543) following the server's prep.
+    func testReturningWhileTheFaceIsStillBeingMade() throws {
+        stubPost("/__companion", json: #"{"name":"Jin","faceMs":5000}"#)
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = [
+            "GENITA_API_URL": "http://127.0.0.1:8790",
+            "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
+            "GENITA_FIXTURE_SCRIPT": "none",
+            "GENITA_REVIEW_STILL": "1",
+        ]
+        app.launch()
+        XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 25), "StartRouter → S07 → S09, no onboarding")
+        XCTAssertFalse(app.buttons["copyPrompt"].exists, "no I01 for an account with a companion")
+        let pill = app.descendants(matching: .any).matching(identifier: "callPrepPill").firstMatch
+        XCTAssertTrue(pill.waitForExistence(timeout: 15), "S09-PREP while prep runs")
+        XCTAssertTrue(pill.label.hasPrefix("Getting the"), pill.label)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-S09-PREP"
+        shot.lifetime = .keepAlways
+        add(shot)
     }
 
     /// I01 "I don't use an AI assistant" → N1 → N2 → N3 → I04-S, for the eye check against Figma N1–N3.

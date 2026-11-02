@@ -108,6 +108,10 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
+                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                            CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
+                        }
                         }
                         if connecting {
                             let label = DesignLibrary.nodes("connecting").first { $0.type == "text" && ($0.characters ?? "").hasPrefix("Connecting") }!
@@ -158,6 +162,10 @@ struct ConversationView: View {
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
+        // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
+        // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
+        .task(id: "\(connecting) \(model.prep?.status ?? "")") { if !connecting { await model.followPrep(every: 5) } }
         .onAppear {
             if !connecting {
                 call.companionName = model.companionDisplayName
@@ -320,5 +328,25 @@ struct CallGlassControl: View {
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
+    }
+}
+
+/// S09-PREP (Figma 228:543): small dark pill with a turning arc under the status line while prep runs.
+/// (#179 draws the same pill from `CallController.prepStage`; this one reads the account's prep poll.)
+struct CallPrepLine: View {
+    let text: String
+    @State private var turn = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().stroke(CallInk.onInk.opacity(0.32), lineWidth: 2)
+                .overlay(Circle().trim(from: 0, to: 0.25).stroke(CallInk.blueOnInk, style: StrokeStyle(lineWidth: 2, lineCap: .round)).rotationEffect(.degrees(turn ? 360 : 0)))
+                .frame(width: 14, height: 14)
+                .onAppear { if !reduceMotion && !CallMotion.reviewStill { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
+            Text(text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 36)
+        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+        .accessibilityElement(children: .combine).accessibilityIdentifier("callPrepPill")
     }
 }
