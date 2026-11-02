@@ -232,6 +232,14 @@ enum CallStop: Equatable {
 
     func flipCamera() { camera.flip() }
 
+    /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
+    static var interruptedHoldMs: Int {
+        #if DEBUG
+        if let ms = ProcessInfo.processInfo.environment["GENITA_INTERRUPT_HOLD_MS"].flatMap(Int.init) { return ms }
+        #endif
+        return 1200
+    }
+
     func setInterpreting(_ on: Bool) {
         let next: ConversationMode = on ? .interpret : .chat
         guard next != mode else { return }
@@ -471,7 +479,7 @@ enum CallStop: Equatable {
             awaitingFirstAudio = false
             holdTask?.cancel()
             holdTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(1200))
+                try? await Task.sleep(for: .milliseconds(Self.interruptedHoldMs))
                 guard !Task.isCancelled else { return }
                 self?.interruptedHold = false
             }

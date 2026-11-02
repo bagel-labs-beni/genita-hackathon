@@ -1,7 +1,7 @@
 // Replays a recorded genita-server session (PROTOCOL.md v1) so the call screen can be driven through
 // its states on a simulator without vendor keys. No dependencies (Node ≥ 20).
 //
-//   node ios-app/Tools/call-replay/server.mjs [--port 8788] [--file session-r1.json]
+//   node ios-app/Tools/call-replay/server.mjs [--port 8788] [--file session-r1.json] [--scale 1]
 //
 // start → handshake events (ready, state listening). audio_start → the recorded timeline at its original
 // pace (speech, thinking, reply audio, barge-in, second reply). Audio is a quiet tone of the recorded
@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 
 const arg = (name, d) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : d; };
 const port = Number(arg("--port", 8788));
+// --scale 3 stretches the recorded timeline (UI tests on slow CI simulators need time to look).
+const scale = Number(arg("--scale", 1));
 const file = arg("--file", join(dirname(fileURLToPath(import.meta.url)), "session-r1.json"));
 const rec = JSON.parse(readFileSync(file, "utf8"));
 let refuseUntil = 0;
@@ -45,8 +47,8 @@ function session(socket) {
     log("replay start");
     let end = 0;
     for (const item of rec.timeline) {
-      end = Math.max(end, item.t);
-      at(item.t, () => {
+      end = Math.max(end, item.t * scale);
+      at(item.t * scale, () => {
         if (item.event) sendJson(item.event);
         else { const head = Buffer.from(item.frame.header, "base64"); sendBin(Buffer.concat([head, tone(item.frame.pcmBytes, toneAt)])); toneAt += item.frame.pcmBytes / 2; }
       });
