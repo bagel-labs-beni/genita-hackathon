@@ -120,6 +120,7 @@ struct FindEntry: Identifiable, Equatable {
                 card.items = i.items
                 if let s = i.subtitle { card.subtitle = s }
                 if let s = i.status { card.status = s }
+                if let p = i.pill { card.pill = p } // later item updates without a pill keep it
                 e.card = card
             }
             pendingItems[i.findId] = i.items
@@ -247,12 +248,15 @@ struct FindEntry: Identifiable, Equatable {
 
     /// PF-1 status pill (Figma 179:4/68/494/921): what the sheet is doing, one line (server strings ≤ 28 chars).
     /// nil = the ordinary call cue. Product searches only.
+    /// Fridge (recipe) cards use the server's short `pill` ("Egg, tofu +2"); the full sentence is only spoken.
     var pillText: String? {
-        guard let f = current, f.kind == .product, state != .idle, state != .dismissed else { return nil }
-        if f.failed != nil { return "Nothing I’d pick for you." }
-        if state == .searching || f.card == nil { return "On it…" }
+        guard let f = current, f.kind == .product || f.kind == .recipe, state != .idle, state != .dismissed else { return nil }
+        if f.failed != nil { return f.kind == .product ? "Nothing I’d pick for you." : f.failureLines?.title }
+        if state == .searching || f.card == nil { return f.kind == .product ? "On it…" : "Let me take a look…" }
         if f.saved { return "Saved. They’re in Finds." }
-        return f.card?.say
+        if let pill = f.card?.pill, !pill.isEmpty { return pill }
+        if let say = f.card?.say, say.count <= 28 { return say }
+        return nil
     }
 
     /// PF-1d Retry: drop the failed line and ask the same question again; the new find.started brings the searching sheet back.

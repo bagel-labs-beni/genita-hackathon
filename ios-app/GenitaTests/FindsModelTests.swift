@@ -271,4 +271,17 @@ import XCTest
         r.apply(started("r")); r.force(.half)
         XCTAssertNil(r.pillText, "recipe and other cards keep the ordinary call cue")
     }
+
+    /// Fridge pill (#122 follow-up): the server's short line is shown; the long sentence is not.
+    func testFridgePillUsesTheServerLineNotTheSentence() throws {
+        let m = FindsModel()
+        m.apply(started("r"))
+        XCTAssertEqual(m.pillText, "Let me take a look…")
+        m.apply(created("r")); m.force(.half)
+        let items = try ServerEvent.decode(#"{"type":"find.items","findId":"r","items":[],"checking":true,"pill":"Egg, tofu +2"}"#)
+        m.apply(items)
+        XCTAssertEqual(m.pillText, "Egg, tofu +2")
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"r","items":[],"checking":false}"#))
+        XCTAssertEqual(m.pillText, "Egg, tofu +2", "a later update without a pill keeps it")
+    }
 }
