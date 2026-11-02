@@ -30,7 +30,7 @@ import UniformTypeIdentifiers
         case .name: model.validName
         case .paste: model.validResponse && !model.importing
         case .image: model.setup.imageData != nil
-        case .voice: model.setup.voice != nil && player.playing == nil
+        case .voice: !player.loading && model.setup.voice != nil && player.playing == nil && player.fetching == nil && !model.savingVoice
         case .help, .relationship: model.setup.answers[stage.rawValue] != nil
         case .presence: !model.setup.presence.isEmpty
         case .summary: !model.savingPrefs
@@ -76,6 +76,7 @@ import UniformTypeIdentifiers
         .onAppear { if stage == .name && !referenceViewport { nameFocused = true }; if referenceViewport { progress = 0.62 } }
         .onDisappear { player.stop() }
         .task(id: stage) {
+            if stage == .voice && !referenceViewport { await loadVoices() }
             guard stage == .preparing && !referenceViewport else { return }
             #if DEBUG
             if ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"] == "preparing" { progress = 0.62; return }
@@ -164,7 +165,7 @@ import UniformTypeIdentifiers
         // "Continue in the background": the import keeps running and fills I04 when it lands
         case .preparing, .preferences: model.go(.image)
         case .image: model.checkImage()
-        case .voice: player.stop(); model.go(.companionName)
+        case .voice: player.stop(); model.saveVoiceAndContinue()
         case .summary: model.saveSetupAndPrepare()
         default: model.nextPreference()
         }
@@ -301,36 +302,69 @@ import UniformTypeIdentifiers
             }.designSlot(n, width: width, top: top, stretch: stretch)
         }
     }
+    /// V04 (Figma F2 "voice model" frames): four server voices, a black ring on the picked one, a black round
+    /// play button that turns into pause while the clip plays. Greyed with "Voice preview is waking up" when
+    /// the voice service is down; the first voice (the recommended default) stays picked so Continue works.
     @ViewBuilder func voiceContent(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
+        let waking = !player.loading && !player.available
+        HStack(spacing: 8) {
+            Text(waking ? "Voice preview is waking up" : "Tap play to hear each one.")
+                .font(.custom("PretendardVariable-Regular", fixedSize: 14)).foregroundStyle(Color(white: 0.45))
+                .accessibilityIdentifier(waking ? "voiceWaking" : "voiceHint")
+            if waking { ProgressView().controlSize(.small).tint(Color(white: 0.45)).accessibilityIdentifier("voiceWakingSpinner") }
+        }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 187 + top + 9)
         ForEach(Array(cardFrames.enumerated()), id: \.element.id) { i, n in
-            let playing = player.playing == i
-            let selected = model.setup.voice == i && !playing
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(selected ? Color("Selection") : .white)
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(playing ? Color("AccentColor") : selected ? .clear : Color(white: 227.0 / 255), lineWidth: 1))
-                ForEach(cardTexts(n)) { label in
-                    let selectedColor = label.characters == "Warm, steady" ? UIColor(red: 84.0 / 255, green: 193.0 / 255, blue: 1, alpha: 1) : UIColor(red: 0, green: 162.0 / 255, blue: 1, alpha: 1)
-                    // the device's own voices (name, quality) in the board's "Mira / Warm, steady" slots
-                    let text: String? = referenceViewport ? nil : label.characters == "Mira" ? VoicePlayer.name(i) : label.characters == "Warm, steady" ? VoicePlayer.detail(i) : nil
-                    DesignText(node: label, text: text, color: selected ? selectedColor : nil)
-                        .frame(width: text == nil ? label.w : 190, height: label.h).position(x: label.x - n.x + (text == nil ? label.w : 190) / 2 + (label.characters == "00:08" ? width - 390 : 0), y: label.y - n.y + label.h / 2)
-                }
-                HStack(spacing: 0) {
-                    Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.accessibilityLabel("Select voice \(i + 1)").accessibilityIdentifier("voice\(i)")
-                    Button { selectVoice(i); player.preview(i) } label: {
-                        ZStack {
-                            Image(resource: playing ? "voice-playing" : selected ? "voice-selected-play" : "reference-play").resizable().frame(width: 32, height: 32)
-                            if playing { HStack(spacing: 2) { Rectangle().frame(width: 3, height: 11); Rectangle().frame(width: 3, height: 11) }.foregroundStyle(.white) }
-                        }.frame(width: 44, height: 44)
-                    }.accessibilityLabel("Preview voice \(i + 1)").padding(.trailing, 62)
-                }
-            }.buttonStyle(.plain).designSlot(n, width: width, top: top, stretch: stretch)
+            if i < voiceList.count {
+                voiceCard(voiceList[i], index: i, waking: waking || (player.loading && !referenceViewport) || model.savingVoice).designSlot(n, width: width, top: top, stretch: stretch)
+            }
         }
     }
+    /// until the server answers (and in the reference snapshot) the curated four per look are drawn greyed
+    var voiceList: [OnboardingClient.CompanionVoice] { player.voices.isEmpty ? VoicePlayer.fallback(kind: model.setup.imageType) : player.voices }
+    func voiceCard(_ v: OnboardingClient.CompanionVoice, index i: Int, waking: Bool) -> some View {
+        let playing = player.playing == v.id
+        let picked = model.setup.voice == i
+        let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
+        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
+        return ZStack {
+            RoundedRectangle(cornerRadius: 12).fill(.white)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
+            Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
+                .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(v.name).font(.custom("PretendardVariable-SemiBold", fixedSize: 18)).foregroundStyle(Color("Ink"))
+                Text(detail).font(.custom("PretendardVariable-Medium", fixedSize: 12)).foregroundStyle(detailColor)
+            }.padding(.leading, 21).padding(.top, 13).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).allowsHitTesting(false)
+            Button { selectVoice(i); player.preview(v, client: model.onboarding) } label: {
+                ZStack {
+                    Circle().fill(Color("Ink")).frame(width: 32, height: 32)
+                    if playing { HStack(spacing: 4) { RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11); RoundedRectangle(cornerRadius: 1).frame(width: 3, height: 11) }.foregroundStyle(.white) }
+                    else if player.fetching == v.id { ProgressView().controlSize(.small).tint(.white) }
+                    else { Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white).offset(x: 1) }
+                }.frame(width: 44, height: 44)
+            }.disabled(waking).accessibilityLabel(playing ? "Stop \(v.name)" : "Play \(v.name)").accessibilityIdentifier("play\(i)")
+                .frame(maxWidth: .infinity, alignment: .trailing).padding(.trailing, 14)
+        }.opacity(waking ? 0.5 : 1).buttonStyle(.plain)
+    }
     func selectVoice(_ i: Int) {
+        guard i < player.voices.count else { return }   // greyed placeholders are never picked
         model.setup.voice = i
-        model.setup.deviceVoice = VoicePlayer.voice(i)?.identifier
-        UserDefaults.standard.set(model.setup.deviceVoice, forKey: VoicePlayer.selectedKey)
+        model.setup.voiceId = player.voices[i].id
+        model.setup.voiceName = player.voices[i].name
+    }
+    /// Opens V04: the server's list, then the earlier pick (or the default while the voice service wakes).
+    func loadVoices() async {
+        await player.load(client: model.onboarding, imageId: model.setup.imageId, kind: model.setup.imageType)
+        if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { selectVoice(i) }
+        else if !player.available { selectVoice(0) }
+        else { model.setup.voice = nil }
+        // voice service cold: ask again every 4 s for up to 60 s, then the normal list replaces the greyed one
+        var waited = 0
+        while !player.available && waited < 60 && !Task.isCancelled {
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            waited += 4
+            await player.refresh(client: model.onboarding, imageId: model.setup.imageId)
+        }
     }
     @ViewBuilder func presence(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {
         // The reference frame has "Calm" twice; the fourth chip is "Warm" (PRD v12 F4, B10)

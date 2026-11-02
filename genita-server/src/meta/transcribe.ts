@@ -14,6 +14,7 @@
  */
 import { EventEmitter } from "node:events";
 import WebSocket from "ws";
+import { getOps } from "../ops/limits.ts";
 
 export const ASR_URL = "wss://api.meta.ai/v1/asr/realtime";
 
@@ -58,6 +59,7 @@ export class TranscribeStream extends EventEmitter<TranscribeEvents> {
   connect(): Promise<void> {
     this.closedByUs = false;
     return new Promise((resolve, reject) => {
+      getOps().consumeMeta(); // one per socket open (including reconnects), never per PCM frame
       const ws = new WebSocket(this.opts.url ?? ASR_URL, { maxPayload: 1 << 20 });
       this.ws = ws;
       let settled = false;

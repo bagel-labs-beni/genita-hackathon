@@ -6,8 +6,9 @@
  *   POST /v1/import/skip {interests, replies, avoid}  N1–N3 → style card, no Spark call
  *   GET  /v1/import                         F3-L2  {status, style} (after "Continue in the background")
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
- *   GET  /v1/companion/voices?imageId=      F2-L8  four voices, Spark order
- *   GET  /v1/companion/voices/:id/preview   F2-L8  mp3 (cached)
+ *   GET  /v1/companion/voices?imageId=      F2-L8  4–6 curated voices for the look, recommended first; available = voice service up
+ *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached); device voices → 404 device_preview
+ *   PUT  /v1/companion/voice {voiceId}      V04: the picked voice is saved on the companion (404 no companion, 400 unknown_voice)
  *   POST /v1/companion {imageId, voiceId, name?}   F2-L3 subset: create (409 if one exists) + start prep
  *   POST /v1/companion/name/suggest {imageId}      F2-L26 NM01 pre-fill: Spark → {name, ms, suggested} (10/min/user)
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
@@ -190,9 +191,10 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voices: r.voices.map((v) =>
           v.locale
             ? { id: v.id, name: v.name, blurb: v.blurb, locale: v.locale, gender: v.gender ?? "neutral", style: v.style ?? "", previewUrl: null }
-            : { id: v.id, name: v.name, blurb: v.blurb, previewUrl: `/v1/companion/voices/${v.id}/preview` },
+            : { id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${v.id}/preview` },
         ),
         suggested: r.suggested,
+        available: r.available,
         ms: r.ms,
       });
     }
@@ -208,6 +210,20 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const wav = await voicePreview(d, id);
       res.writeHead(200, { "content-type": "audio/wav", "content-length": wav.length, "cache-control": "public, max-age=86400" });
       return void res.end(wav);
+    }
+
+    if (m === "PUT" && p === "/v1/companion/voice") {
+      const b = await readJson(req);
+      const voice = typeof b.voiceId === "string" ? d.voices.find((v) => v.id === b.voiceId) : undefined;
+      if (!voice) throw new PrepError(400, "unknown_voice");
+      const c = await d.store.patchCompanion(user, (x) => ({
+        ...x,
+        voiceId: voice.id,
+        persona: x.persona ? { ...x.persona, card: { ...x.persona.card, voice: { id: voice.id } } } : x.persona,
+      }));
+      if (!c) throw new PrepError(404, "no_companion");
+      d.log("voice.selected", { voice_id: voice.id });
+      return send(res, 200, companionView(c, await d.store.getStyle(user)));
     }
 
     if (m === "POST" && p === "/v1/companion") {

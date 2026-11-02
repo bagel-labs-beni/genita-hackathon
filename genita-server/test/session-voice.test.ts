@@ -81,7 +81,9 @@ const voice = { url: "https://v", token: "t", speakers: { human: 3, animal: 5, c
 
 type TtsReq = { voiceId: string; text: string; lang?: string; signal?: AbortSignal };
 
-function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: number } = {}) {
+type Timing = NonNullable<TtsChunk["timing"]>;
+
+function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: number; timing?: (text: string) => Timing | null; timingDelayMs?: number } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: TtsReq[] = [];
@@ -104,6 +106,12 @@ function setup(opts: { sparkText?: string; failAt?: number; chunkDelayMs?: numbe
       await sleep(opts.chunkDelayMs ?? 1);
       if (req.signal?.aborted) return;
       yield { audio: Buffer.alloc(4800), alignment: { chars: [...req.text], startsSec: [...req.text].map((_, k) => k * 0.02), endsSec: [...req.text].map((_, k) => k * 0.02 + 0.02) }, model: "seamless-m4t-v2" };
+      const timing = opts.timing?.(req.text);
+      if (timing) {
+        await sleep(opts.timingDelayMs ?? 0);
+        if (req.signal?.aborted) return;
+        yield { audio: Buffer.alloc(0), alignment: null, model: "seamless-m4t-v2", timing };
+      }
     },
     voicePrefetch: (s) => prefetched.push(s),
   });
@@ -279,5 +287,67 @@ test("mid-sentence failure without timing (MMS backup) says the whole sentence a
   await session.onClientText(JSON.stringify({ type: "text", text: "x" }));
   await client.waitFor((m) => m.type === "reply");
   assert.deepEqual(client.of("say").map((s) => s.text), ["We should get noodles tonight."]);
+  session.close();
+});
+
+// ---------- word + phoneme timing follow-up (MMS forced aligner) ----------
+const timingFor = (text: string): Timing => ({
+  words: text.split(" ").map((w, k) => ({ w, s: 10 + k * 30, e: 35 + k * 30 })),
+  phonemes: [{ p: "OW", s: 10, e: 20 }, { p: "W", s: 20, e: 35 }],
+});
+
+test("voice timing: each clause's audio.timing follows its audio, keyed to its seq, ms on the reply timeline", async () => {
+  const { client, session } = setup({ timing: timingFor });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply");
+  const audio = client.of("audio");
+  const timing = client.of("audio.timing");
+  assert.equal(timing.length, 3);
+  for (const [k, t] of timing.entries()) {
+    assert.equal(t.utteranceId, audio[k].utteranceId);
+    assert.equal(t.sentence, audio[k].sentence);
+    assert.equal(t.seq, audio[k].seq, "keyed to the clause's first audio chunk");
+    assert.ok(client.json.indexOf(t) > client.json.indexOf(audio[k]), "after its audio, never before");
+  }
+  // clause 2 starts at 100 ms on the reply timeline: its times are shifted by that
+  assert.deepEqual((timing[1].words as { s: number }[])[0], { w: "you're", s: 110, e: 135 });
+  assert.deepEqual(timing[1].phonemes, [{ p: "OW", s: 110, e: 120 }, { p: "W", s: 120, e: 135 }]);
+  // the audio events are unchanged: words still come with the audio
+  assert.ok((audio[0].words as unknown[]).length > 0);
+  session.close();
+});
+
+test("voice timing: the first audio frame is not held for the timing", async () => {
+  const { client, session } = setup({ timing: timingFor, timingDelayMs: 150 });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "audio");
+  assert.equal(client.bin.length, 1, "first frame already out");
+  assert.equal(client.of("audio.timing").length, 0, "timing still pending");
+  await client.waitFor((m) => m.type === "reply", 3000);
+  assert.equal(client.of("audio.timing").length, 3);
+  session.close();
+});
+
+test("voice timing: no timing from the service → no audio.timing (the app falls back to loudness + text)", async () => {
+  const { client, session } = setup({ timing: (t) => (t.startsWith("you") ? null : timingFor(t)) });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(client.of("audio.timing").map((t) => t.sentence), [0, 2]);
+  session.close();
+});
+
+test("voice timing: nothing for a cancelled utterance", async () => {
+  const { client, session } = setup({ timing: timingFor, timingDelayMs: 80, chunkDelayMs: 40, sparkText: "<happy> Oh wow, that is a long story. Tell me everything. Start from the top." });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "story" }));
+  await client.waitFor((m) => m.type === "audio");
+  await session.onClientText(JSON.stringify({ type: "barge_in" }));
+  const cancelled = await client.waitFor((m) => m.type === "utterance.cancelled");
+  await sleep(250);
+  const after = client.json.slice(client.json.indexOf(cancelled));
+  assert.equal(after.filter((m) => m.type === "audio.timing" && m.utteranceId === cancelled.utteranceId).length, 0);
   session.close();
 });
