@@ -1,11 +1,14 @@
 """Genita voice service: SeamlessM4T v2 text-to-speech on Modal (Meta open model, D3).
 
     POST /v1/tts   Authorization: Bearer <GENITA_VOICE_TOKEN>
-      {"text": "Hey, you're back!", "lang": "eng"|"kor", "speaker": 0..199, "speed": 1.0, "tail_ms": 0}
+      {"text": "Hey, you're back!", "lang": "eng"|"kor", "speaker": 0..199, "speed": 1.0, "tail_ms": 0,
+       "align": false}
     -> application/x-ndjson, one line per <= 1 s chunk:
       {"audio_base64": <PCM s16le 24 kHz mono>, "alignment": {"characters": [...],
        "character_start_times_seconds": [...], "character_end_times_seconds": [...]} | null}
-      last line: {"done": true, "gen_ms": 87, "audio_ms": 2310, "speaker": 0}
+      with "align": true (Seamless only), after the audio lines, when the aligner succeeds in time:
+      {"timing": {"words": [{"w", "s", "e"}], "phonemes": [{"p", "s", "e"}]}}   (ms from this request's audio start)
+      last line: {"done": true, "gen_ms": 87, "audio_ms": 2310, "speaker": 0, "align_ms": 14 | null}
     GET /healthz -> {"ok": true, "gpu": "...", "warm": true}
 
 Why not `model.generate()`: for same-language TTS generate() first *translates* eng->eng
@@ -18,7 +21,12 @@ Timing: the unit model predicts a duration (in 20 ms units) for every character,
 vocoder predicts how many frames each unit lasts. Hooks capture both, so each character gets a
 start/end time on the output audio (same shape as ElevenLabs with-timestamps).
 
-Deploy: VOICE_GPU=L4 modal deploy voice_app.py   (needs Modal secret `genita-voice-auth`)
+Word/phoneme timing (align.py): Meta MMS forced aligner (torchaudio MMS_FA) on the same GPU, run after the
+first audio line is out, so it never delays the first sound. Fails or late (> ALIGN_WAIT_MS after the last
+audio line) -> no timing line; the app keeps its own fallback (loudness + text).
+
+Deploy: VOICE_GPU=A10G modal deploy voice_app.py   (needs Modal secret `genita-voice-auth`)
+Try a change first on its own app: VOICE_APP=genita-voice-align VOICE_GPU=A10G modal deploy voice_app.py
 Scale: python scale.py warm|cold   (min_containers 1 / 0)
 Bench: VOICE_GPU=H100 modal run voice_app.py::bench   (ephemeral app, stops when done)
 """
@@ -35,19 +43,23 @@ OUT_SR = 24000
 vol = modal.Volume.from_name("genita-voice-cache", create_if_missing=True)
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install("torch==2.6.0", "transformers==4.56.2", "sentencepiece", "protobuf", "numpy<2", "scipy", "uroman",
-                 "fastapi[standard]==0.115.6")
-    .env({"HF_HOME": HF, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false"})
+    .pip_install("torch==2.6.0", "torchaudio==2.6.0", "transformers==4.56.2", "sentencepiece", "protobuf", "numpy<2",
+                 "scipy", "uroman", "fastapi[standard]==0.115.6")
+    .env({"HF_HOME": HF, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false", "TORCH_HOME": "/opt/torch"})
+    # MMS_FA weights (~1.2 GB) baked into the image, so a cold container does not download them
+    .run_commands("python -c 'import torchaudio; torchaudio.pipelines.MMS_FA.get_model(with_star=False)'")
+    .add_local_python_source("align")
 )
 app = modal.App(APP)
 
 LANGS = {"eng", "kor"}
 MAX_CHARS = 400
+ALIGN_WAIT_MS = int(os.environ.get("VOICE_ALIGN_WAIT_MS", "250"))
 REGION = os.environ.get("VOICE_REGION", "us")  # broad region = 1.15x price; "us-east" = 1.75x
 # Daily cap (cost guard after 11/5, when Modal bills the card): requests per UTC day across containers.
 # Over the cap -> 429 "daily_cap" and genita-server falls back to the app's own voice. 80% logs an ALERT line.
 DAILY_CAP = int(os.environ.get("VOICE_DAILY_CAP", "20000"))
-usage = modal.Dict.from_name("genita-voice-usage", create_if_missing=True)
+usage = modal.Dict.from_name(f"{APP}-usage", create_if_missing=True)  # genita-voice -> genita-voice-usage (unchanged)
 
 
 class Usage:
@@ -206,8 +218,9 @@ class Engine:
             u += d
         return res
 
-    def render(self, text, lang, speaker, speed=1.0, tail_ms=0):
-        """-> (pcm16 bytes @24 kHz, alignment dict, gen_ms, audio_ms)."""
+    def render(self, text, lang, speaker, speed=1.0, tail_ms=0, keep=None):
+        """-> (pcm16 bytes @24 kHz, alignment dict, gen_ms, audio_ms). keep: dict that gets "wav16", the
+        16 kHz audio exactly as sent (trimmed, before the tail), for the aligner."""
         import numpy as np
         from scipy.signal import resample_poly
         wav, align, gen_ms = self.synth(text, lang, speaker, speed)
@@ -221,6 +234,8 @@ class Engine:
             wav = wav[lead_cut:end]
         peak = float(np.abs(wav).max() or 1.0)
         wav = wav * min(1.0, 0.95 / peak)
+        if keep is not None:
+            keep["wav16"] = wav.astype(np.float32)
         out = resample_poly(wav, 3, 2).astype(np.float32)  # 16 kHz -> 24 kHz
         if tail_ms > 0:
             out = np.concatenate([out, np.zeros(int(OUT_SR * min(tail_ms, 1500) / 1000), np.float32)])
@@ -274,7 +289,7 @@ class MmsEngine:
         return (np.clip(out, -1, 1) * 32767).astype("<i2").tobytes(), None, (time.perf_counter() - t0) * 1000, len(out) / OUT_SR * 1000
 
 
-def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, first_ms=300, chunk_ms=1000):
+def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, first_ms=300, chunk_ms=1000, done=True):
     """NDJSON lines: a short first piece (first_ms, so playback can start after a few KB even over a slow
     link), then <= chunk_ms pieces; each piece carries the characters that start in it (times stay
     relative to the start of this request's audio, like ElevenLabs)."""
@@ -293,7 +308,38 @@ def chunk_lines(pcm: bytes, alignment, gen_ms, audio_ms, speaker, first_ms=300, 
             if idx:
                 al = {key: [alignment[key][k] for k in idx] for key in alignment}
         yield json.dumps({"audio_base64": base64.b64encode(pcm[a:b]).decode(), "alignment": al}) + "\n"
-    yield json.dumps({"done": True, "gen_ms": round(gen_ms), "audio_ms": round(audio_ms), "speaker": speaker}) + "\n"
+    if done:
+        yield done_line(gen_ms, audio_ms, speaker)
+
+
+def done_line(gen_ms, audio_ms, speaker, align_ms=None):
+    d = {"done": True, "gen_ms": round(gen_ms), "audio_ms": round(audio_ms), "speaker": speaker}
+    if align_ms is not None:
+        d["align_ms"] = round(align_ms, 1)
+    return json.dumps(d) + "\n"
+
+
+async def aligned_lines(pcm, alignment, gen_ms, audio_ms, speaker, wav16, text, aligner, wait_ms=ALIGN_WAIT_MS):
+    """Audio lines exactly as chunk_lines; the aligner starts only after the first audio line has been handed
+    to the server, then a {"timing": ...} line follows the audio if it is ready within wait_ms of the last
+    audio line. Any failure or a late result -> no timing line (never an error: the audio already went out)."""
+    lines = chunk_lines(pcm, alignment, gen_ms, audio_ms, speaker, done=False)
+    first = next(lines, None)
+    if first is not None:
+        yield first
+    job = asyncio.ensure_future(asyncio.to_thread(aligner.align, wav16, text))
+    for line in lines:
+        yield line
+    timing, align_ms = None, None
+    try:
+        timing, align_ms = await asyncio.wait_for(asyncio.shield(job), wait_ms / 1000)
+    except asyncio.TimeoutError:
+        print(f"align: late (> {wait_ms} ms after the audio), no timing", flush=True)
+    except Exception as e:  # noqa: BLE001  never fail the audio for the timing
+        print("align failed:", str(e)[:160], flush=True)
+    if timing:
+        yield json.dumps({"timing": timing}, ensure_ascii=False) + "\n"
+    yield done_line(gen_ms, audio_ms, speaker, align_ms)
 
 
 WARM_LINES = [("Hey! Oh wow, you're back already?", "eng"), ("네, 바로 저 모퉁이 돌면 있어요.", "kor"),
@@ -316,6 +362,16 @@ class Voice:
         except Exception as e:  # backup only; Seamless still serves
             self.mms = None
             print("mms backup unavailable:", str(e)[:160])
+        try:
+            from align import Aligner
+            self.aligner = Aligner()
+            for t, l in WARM_LINES * 2:
+                keep = {}
+                self.engine.render(t, l, 0, keep=keep)
+                self.aligner.align(keep["wav16"], t)
+        except Exception as e:  # timing is optional; the voice still serves
+            self.aligner = None
+            print("aligner unavailable:", str(e)[:160])
         self.usage = Usage()
         self.engine.warm = True
         print(f"voice: loaded in {self.engine.load_s:.1f}s on {self.engine.torch.cuda.get_device_name(0)}")
@@ -327,7 +383,7 @@ class Voice:
         from fastapi.responses import JSONResponse, StreamingResponse
         api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
         token = os.environ["GENITA_VOICE_TOKEN"].encode()
-        eng, mms, use = self.engine, self.mms, self.usage
+        eng, mms, use, aligner = self.engine, self.mms, self.usage, self.aligner
 
         def authed(req: Request) -> bool:
             got = req.headers.get("authorization", "").removeprefix("Bearer ").strip().encode()
@@ -335,7 +391,8 @@ class Voice:
 
         @api.get("/healthz")
         def health():
-            return {"ok": True, "warm": eng.warm, "gpu": eng.torch.cuda.get_device_name(0), "mms": mms is not None}
+            return {"ok": True, "warm": eng.warm, "gpu": eng.torch.cuda.get_device_name(0), "mms": mms is not None,
+                    "align": aligner is not None}
 
         @api.post("/v1/tts")
         async def tts(req: Request):
@@ -360,8 +417,14 @@ class Voice:
             model = body.get("model", "seamless")
             if model not in ("seamless", "mms") or (model == "mms" and mms is None):
                 return JSONResponse({"error": "bad_model"}, status_code=400)
+            want_align = body.get("align") is True and model == "seamless" and aligner is not None
             if not use.hit():
                 return JSONResponse({"error": "daily_cap"}, status_code=429)
+            if want_align:
+                keep = {}
+                pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, keep)
+                return StreamingResponse(aligned_lines(pcm, al, gen_ms, audio_ms, speaker, keep["wav16"], text, aligner),
+                                         media_type="application/x-ndjson")
             pcm, al, gen_ms, audio_ms = await asyncio.to_thread((mms if model == "mms" else eng).render, text, lang, speaker, speed, tail)
             return StreamingResponse(chunk_lines(pcm, al, gen_ms, audio_ms, speaker), media_type="application/x-ndjson")
 
