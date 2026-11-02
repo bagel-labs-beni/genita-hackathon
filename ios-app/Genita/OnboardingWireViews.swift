@@ -9,6 +9,8 @@ import UIKit
 /// The reference screens' scaffold: back chevron, serif title, grey subtitle, black primary button.
 struct WirePage<Content: View>: View {
     var title: String
+    /// UI-test handle on the title (a page-level identifier would override every child's identifier)
+    var pageID: String? = nil
     var subtitle: String?
     var back: (() -> Void)?
     var primary: String?
@@ -32,6 +34,7 @@ struct WirePage<Content: View>: View {
                     Text(title).font(TypeStyle.title(35)).kerning(-0.35).foregroundStyle(CallInk.ink).lineSpacing(0)
                         .frame(width: full.size.width - 62, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                         .position(x: 31 + (full.size.width - 62) / 2, y: 118 + top).accessibilityAddTraits(.isHeader)
+                        .accessibilityIdentifier(pageID ?? "pageTitle")
                     if let subtitle {
                         Text(subtitle).font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
                             .frame(width: full.size.width - 62, alignment: .leading).position(x: 31 + (full.size.width - 62) / 2, y: 160 + top)
@@ -72,7 +75,7 @@ struct ImageCheckView: View {
 
     /// V03 "Finding the details that make them recognizable." — a scan line over the photo and the real wait.
     private var analyzingPage: some View {
-        WirePage(title: "Finding the details\nthat make them\nrecognizable.", back: { model.back() }) { width, top, _ in
+        WirePage(title: "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 240)
                 .overlay(alignment: .top) {
                     Rectangle().fill(Color(red: 0, green: 0.635, blue: 1)).frame(height: 2).shadow(color: Color(red: 0, green: 0.635, blue: 1).opacity(0.6), radius: 6)
@@ -96,12 +99,11 @@ struct ImageCheckView: View {
                 withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * 0.05) }
             }
         }
-        .accessibilityIdentifier("V03")
     }
 
     /// V02-T (type chips, three green checks, rights line, Use this image) or V02-F (the failed rows, Choose another image).
     private var resultPage: some View {
-        WirePage(title: "Bring an image", subtitle: "One clear front-facing image works best.", back: { model.returnTo(.image) },
+        WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F", subtitle: "One clear front-facing image works best.", back: { model.returnTo(.image) },
                  primary: passed ? "Use this image" : "Choose another image", primaryBusy: model.creatingCompanion,
                  action: { if passed { model.useCheckedImage() } else { model.setup.imageData = nil; model.returnTo(.image) } }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 289)
@@ -120,7 +122,6 @@ struct ImageCheckView: View {
             Text(note).font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).frame(width: width - 62, alignment: .leading)
                 .position(x: 31 + (width - 62) / 2, y: 686 + top).accessibilityIdentifier(passed ? "rightsLine" : "failHint")
         }
-        .accessibilityIdentifier(passed ? "V02-T" : "V02-F")
     }
 
     /// The three V02 rows; a failed check shows the server's own reason text (V02-F).
@@ -148,7 +149,7 @@ struct ImageCheckView: View {
                     .background(on ? CallInk.ink.opacity(0.84) : Color.white.opacity(0.8), in: Capsule())
                     .accessibilityAddTraits(on ? .isSelected : [])
             }
-        }.accessibilityIdentifier("typeChips")
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("typeChips")
     }
 
     @ViewBuilder private func photo(width: CGFloat) -> some View {
@@ -170,7 +171,7 @@ struct CompanionNameView: View {
     }
 
     var body: some View {
-        WirePage(title: "Give them a name.", subtitle: "Suggested from your chats and photo.", back: { model.back() },
+        WirePage(title: "Give them a name.", pageID: "NM01", subtitle: "Suggested from your chats and photo.", back: { model.back() },
                  primary: "Continue", primaryEnabled: model.validCompanionName, primaryBusy: model.savingName,
                  action: { focused = false; model.saveCompanionName() }) { width, top, _ in
             avatar.frame(width: 72, height: 72).clipShape(Circle()).position(x: 31 + 36, y: 200 + 36 + top)
@@ -196,7 +197,6 @@ struct CompanionNameView: View {
                 .frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 378 + top).accessibilityIdentifier("nameHint")
         }
         .onAppear { model.suggestName() }
-        .accessibilityIdentifier("NM01")
     }
 
     @ViewBuilder private var avatar: some View {
@@ -243,7 +243,7 @@ struct SkipImportView: View {
     }
 
     var body: some View {
-        WirePage(title: title, subtitle: step == .skipReplies ? "Pick one." : "Pick any. You can skip this.", back: { model.back() },
+        WirePage(title: title, pageID: step.rawValue, subtitle: step == .skipReplies ? "Pick one." : "Pick any. You can skip this.", back: { model.back() },
                  primary: "Continue", primaryBusy: model.importing,
                  action: {
                      addCustom()
@@ -265,7 +265,6 @@ struct SkipImportView: View {
                 if let e = model.flowError { Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2)) }
             }.frame(width: width - 48, alignment: .topLeading).position(x: width / 2, y: 220 + 130 + top)
         }
-        .accessibilityIdentifier(step.rawValue)
     }
 
     private func addCustom() {
@@ -346,7 +345,7 @@ struct BringingView: View {
     private var canContinue: Bool { !model.serverWired || (prep?.canStartCall ?? false) }
 
     var body: some View {
-        WirePage(title: "Bringing \(model.companionDisplayName)\nto life", subtitle: nil, back: nil,
+        WirePage(title: "Bringing \(model.companionDisplayName)\nto life", pageID: "PREP-1", subtitle: nil, back: nil,
                  primary: "Continue", primaryEnabled: canContinue, primaryID: "prepContinue", action: { model.startFirstCall() }) { width, top, bottom in
             photo.frame(width: width - 48, height: 300)
                 .scaleEffect(breathe ? PrepStyle.breathScale : 1)
@@ -370,7 +369,6 @@ struct BringingView: View {
             withAnimation(.linear(duration: PrepStyle.sweepSeconds).repeatForever(autoreverses: false)) { sweep = 1 }
         }
         .onChange(of: prep?.isReady) { _, ready in if ready == true { model.startFirstCall() } }
-        .accessibilityIdentifier("PREP-1")
     }
 
     private var footnote: String {
