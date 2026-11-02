@@ -84,6 +84,7 @@ Migrations run on boot (`GENITA_DB_MIGRATE=0` to skip) · `GENITA_JWT_SECRET` (�
 `GENITA_PUBLIC_URL` (Apple web callback base, default https://genita-api.thebeni.ai) · `GENITA_TRUST_PROXY=1` behind a proxy ·
 `APPLE_TEAM_ID` / `APPLE_KEY_ID` / `APPLE_PRIVATE_KEY` (SIWA .p8; only needed for code exchange and revoke on delete) ·
 `APPLE_BUNDLE_ID` (ai.thebeni.genita) / `APPLE_SERVICES_ID` (ai.thebeni.genita.web) ·
+email code sign-in (`POST /auth/email/start` → `/auth/email/verify`): `RESEND_API_KEY` + `GENITA_MAIL_FROM` (a sender on a domain verified in that Resend account); unset on a loopback dev server = the code is printed in the server log (`auth.email_code_dev`), unset when deployed = 503 ·
 blobs: `GENITA_S3_BUCKET` + `GENITA_S3_REGION` + optional `GENITA_S3_ENDPOINT` (R2/MinIO, path-style) + `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`; unset = files under `GENITA_DATA_DIR/blobs`.
 Without `DATABASE_URL` nothing changes: prep keeps the JSON file store and `/auth/*`, `/me` answer 503.
 Tests use PGlite in memory; set `TEST_DATABASE_URL=postgres://…` to run them on a real Postgres (CI does both).
