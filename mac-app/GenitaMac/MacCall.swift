@@ -111,6 +111,25 @@ import Foundation
         }
     }
 
+    /// A02-M · Continue with email, step 1: the server mails a 6-digit code. nil = sent (wait `resendAfterSec`), else the line to show.
+    func startEmailSignIn(_ email: String) async -> (message: String?, resendAfterSec: Int) {
+        do { return (nil, try await auth.startEmailSignIn(email: email).resendAfterSec) } catch { return (EmailSignInCopy.message(for: error, sendingCode: true), 0) }
+    }
+
+    /// A02-M · step 2: the code → the same session as Apple. nil = signed in, else the line to show.
+    func signInWithEmail(_ email: String, code: String) async -> String? {
+        let gen = generation
+        // a scratch store: the token reaches the keychain only if no sign-out (or other sign-in) happened meanwhile
+        let client = GenitaAuthClient(baseURL: auth.baseURL, store: InMemoryTokenStore())
+        let signedIn: GenitaSignInResponse
+        do { signedIn = try await client.signInWithEmailCode(email: email, code: code, device: .mac) } catch { return EmailSignInCopy.message(for: error, sendingCode: false) }
+        guard gen == generation else { return nil }
+        generation += 1
+        auth.store.save(signedIn.token)
+        await refresh()
+        return nil
+    }
+
     /// A02-J · Judge access: a code from the submission form instead of an Apple ID. nil = signed in.
     func signInWithJudgeCode(_ code: String) async -> String? {
         let gen = generation

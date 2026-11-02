@@ -27,13 +27,16 @@ import CoreText
             case "mac-rs-b": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.full); override = ""
             case "mac-rs-half": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = ""
             case "mac-link": call.finds.load(recorded: MacResultFixture.events(results: true), frames: []); call.finds.force(.half); override = "link"
-            case "a02", "a02-j", "cs01": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01": break
             default: setenv("GENITA_MAC_REVIEW", state, 1)
             }
             let page: AnyView
             switch state {
             case "a02": page = AnyView(MacSignInView())
             case "a02-j": page = AnyView(MacJudgeCodeSheet())
+            case "a02-m": page = AnyView(MacEmailSheet())
+            case "a02-m2": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com"))
+            case "a02-m2-error": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com", message: "That code didn’t work. Check it and try again."))
             case "cs01": page = AnyView(MacConsentView())
             default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
             }

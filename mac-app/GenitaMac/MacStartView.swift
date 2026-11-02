@@ -25,6 +25,8 @@ struct MacStartView: View {
 struct MacSignInView: View {
     @ObservedObject private var call = MacCall.shared
     @State private var judge = false
+    /// A02-M Continue with email (NEW · design check)
+    @State private var email = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,6 +41,11 @@ struct MacSignInView: View {
                 }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
                     .frame(width: 320, height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
             }.buttonStyle(.plain).disabled(call.account == .signingIn).padding(.top, 32).accessibilityIdentifier("macSignIn")
+            Button { email = true } label: {
+                Label("Continue with email", systemImage: "envelope")
+                    .font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
+                    .frame(width: 320, height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(call.account == .signingIn).padding(.top, 12).accessibilityIdentifier("macContinueWithEmail")
             if call.account == .signingIn {
                 Text("Finish signing in in the window that opened.").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).padding(.top, 10)
             }
@@ -53,6 +60,112 @@ struct MacSignInView: View {
         .frame(width: 420)
         .background(MacSheetInk.sheet)
         .sheet(isPresented: $judge) { MacJudgeCodeSheet() }
+        .sheet(isPresented: $email) { MacEmailSheet() }
+    }
+}
+
+/// A02-M · Continue with email (NEW · design check, no Figma frame): the iPhone sheet's two steps in the A02-J
+/// Mac sheet's type, ink, field and buttons. Address → Send code → 6-digit code → signed in (CS01 for a new account).
+struct MacEmailSheet: View {
+    enum Step { case address, code }
+    @Environment(\.dismiss) private var dismiss
+    @State private var step: Step
+    @State private var email: String
+    @State private var code = ""
+    @State private var sending = false
+    @State private var message: String?
+    @State private var resendAt = Date.distantPast
+    @State private var now = Date()
+    @FocusState private var focused: Bool
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    /// non-default `step` / `email` only for the review renders (watch-shots harness)
+    init(step: Step = .address, email: String = "", message: String? = nil) {
+        _step = State(initialValue: step)
+        _email = State(initialValue: email)
+        _message = State(initialValue: message)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(step == .address ? "Continue with email" : "Check your email").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(email.trimmingCharacters(in: .whitespaces)).")
+                .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+            Group {
+                if step == .address {
+                    TextField("Email address", text: $email).textContentType(.emailAddress).accessibilityIdentifier("macEmailField")
+                } else {
+                    TextField("6-digit code", text: $code).textContentType(.oneTimeCode)
+                        .onChange(of: code) { _, v in
+                            let digits = String(v.filter(\.isNumber).prefix(6))
+                            if digits != v { code = digits }
+                            if digits.count == 6 { verify() }
+                        }
+                        .accessibilityIdentifier("macEmailCodeField")
+                }
+            }
+            .textFieldStyle(.plain).autocorrectionDisabled().focused($focused)
+            .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
+            .padding(.horizontal, 16).frame(height: 50)
+            .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(message == nil ? .clear : MacSheetInk.ink, lineWidth: 1))
+            .padding(.top, 24).onSubmit { step == .address ? sendCode() : verify() }
+            if let message {
+                Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macEmailError")
+            }
+            Button { step == .address ? sendCode() : verify() } label: {
+                ZStack {
+                    if sending { ProgressView().controlSize(.small).tint(MacSheetInk.onInk) } else { Text(step == .address ? "Send code" : "Continue") }
+                }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
+                    .frame(maxWidth: .infinity).frame(height: 50)
+                    .background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(sending || !canContinue).padding(.top, 24)
+                .keyboardShortcut(.defaultAction).accessibilityIdentifier("macEmailContinue")
+            if step == .code {
+                HStack {
+                    Button("Use a different email") { step = .address; code = ""; message = nil; focused = true }
+                    Spacer()
+                    Button(resendLeft > 0 ? "Resend in \(resendLeft)s" : "Resend code") { sendCode() }.disabled(sending || resendLeft > 0)
+                }
+                .buttonStyle(.plain).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).frame(height: 44).padding(.top, 4)
+            }
+            Button("Cancel") { dismiss() }
+                .buttonStyle(.plain).font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
+                .frame(maxWidth: .infinity).frame(height: 50).disabled(sending).keyboardShortcut(.cancelAction)
+        }
+        .padding(24).frame(width: 400)
+        .background(MacSheetInk.sheet)
+        .onAppear { focused = true }
+        .onReceive(tick) { now = $0 }
+    }
+
+    private var canContinue: Bool { step == .address ? GenitaAuthClient.looksLikeEmail(email) : code.count == 6 }
+    private var resendLeft: Int { max(0, Int(resendAt.timeIntervalSince(now).rounded(.up))) }
+
+    private func sendCode() {
+        guard !sending, GenitaAuthClient.looksLikeEmail(email) else { return }
+        sending = true
+        message = nil
+        Task { @MainActor in
+            defer { sending = false }
+            let r = await MacCall.shared.startEmailSignIn(email)
+            if let m = r.message { message = m; return }
+            resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
+            code = ""
+            step = .code
+            focused = true
+        }
+    }
+
+    private func verify() {
+        guard !sending, code.count == 6 else { return }
+        sending = true
+        message = nil
+        Task { @MainActor in
+            defer { sending = false }
+            if let failure = await MacCall.shared.signInWithEmail(email, code: code) { message = failure; code = "" } else { dismiss() }
+        }
     }
 }
 
