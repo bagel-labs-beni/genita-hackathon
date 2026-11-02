@@ -457,17 +457,17 @@ export class WatchController {
     if (!this.sharing) return false;
     const recent = () => this.lines.filter((l) => this.deps.now() - l.at <= ECHO_WINDOW_MS).map((l) => l.text);
     const t0 = Date.now();
-    let partials = 0;
+    let settleUntil: number | null = null;
     while (this.sharing && this.dialogueActive) {
       const v = echoNow(userText, this.openLine);
       if (v === "echo") return true;
-      // A mismatching partial may lag the mic by a word or two: give it one update before trusting it (Codex P2).
-      if (v === "user" && partials > 0) break;
-      const left = ECHO_WAIT_MS - (Date.now() - t0);
-      if (left <= 0) break;
-      const heard = await this.nextSound(v === "user" ? Math.min(ECHO_SETTLE_MS, left) : left);
-      if (!heard && v === "user") break;
-      partials++;
+      // A mismatching partial may lag the mic by a word or two: keep re-checking its updates for 350 ms before
+      // the turn counts as the user's (Codex P2 ×2). A partial too short to tell waits up to the full 1.5 s.
+      const now = Date.now();
+      if (v === "user") settleUntil ??= now + ECHO_SETTLE_MS;
+      const until = Math.min(t0 + ECHO_WAIT_MS, settleUntil ?? Infinity);
+      if (until - now <= 0) break;
+      await this.nextSound(until - now);
     }
     return isVideoEcho(userText, recent());
   }

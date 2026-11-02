@@ -571,6 +571,13 @@ test("realtime: a partial that lags the mic catches up within one update and the
   asr.fire({ type: "partial", text: "welcome everyone today we are making" });
   setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce" }), 40);
   assert.equal(await c.isEcho("pasta with tomato sauce"), true);
+  // the partial catches up over two updates (40 ms: one word, 80 ms: the rest) — still the video's line
+  asr.fire({ type: "speechComplete", turnId: 0, text: "welcome everyone today we are making pasta with tomato sauce" });
+  asr.fire({ type: "speechStart", turnId: 1 });
+  asr.fire({ type: "partial", text: "now we chop the" });
+  setTimeout(() => asr.fire({ type: "partial", text: "now we chop the fresh" }), 40);
+  setTimeout(() => asr.fire({ type: "partial", text: "now we chop the fresh basil leaves very finely" }), 80);
+  assert.equal(await c.isEcho("fresh basil leaves very finely"), true);
   // a real user line over the same video: the next partial still doesn't match → theirs
   setTimeout(() => asr.fire({ type: "partial", text: "welcome everyone today we are making pasta with tomato sauce and basil" }), 40);
   assert.equal(await c.isEcho("Oh, it's Karina!"), false);
