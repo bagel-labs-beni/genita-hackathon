@@ -67,7 +67,6 @@ struct FindsTabView: View {
     private var empty: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            // the art has wide transparent margins: 450 pt wide shows the ~165 pt orb of the board
             // the art has wide transparent margins: draw it 450 pt wide in an overlay (no layout width) clipped to the 314 × 190 slot
             Color.clear.frame(width: 314, height: 190)
                 .overlay(Image(resource: "reference-orb-round").resizable().scaledToFill().frame(width: 450, height: 450 * 975 / 748))
