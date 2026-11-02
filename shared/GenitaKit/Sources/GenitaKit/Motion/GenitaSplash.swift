@@ -123,7 +123,7 @@ public struct GenitaSplash: View {
         // Reduce Motion: fade in 0.2 s, crossfade to A02 at 0.7 s over 0.4 s
         let calmAlpha = calm ? clamp(t / 0.2) * (1 - clamp((t - 0.7) / 0.4)) : 1
         // last part of the hand-off: the overlay thins out so A02's copy and buttons come through
-        let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.4) / (hDur * 0.6)))
+        let sceneAlpha = calm ? calmAlpha : 1 - Self.smooth(clamp((t - hStart - hDur * 0.3) / (hDur * 0.7)))
         let markAlpha = 1 - clamp(h / 0.35)
         let markOrigin = CGPoint(x: disc.x - BrandMarkShape.pupil.x, y: disc.y - BrandMarkShape.pupil.y)
         // wordmark: out in place during the first 30 % of the hand-off (1.90–2.14 s); A02 logo in at its spot 2.26–2.66 s.
@@ -150,7 +150,7 @@ public struct GenitaSplash: View {
             if let logo = genitaBundleImage("logo") {
                 logo.resizable()
                     .frame(width: 63.142, height: 22.626)
-                    .offset(x: 35 + dx, y: 67.5 + top)
+                    .offset(x: 35, y: 67.5 + top) // A02 places its logo at a fixed x (no centring offset)
                     .opacity(logoAlpha)
             }
         }
@@ -344,8 +344,8 @@ struct CoronaView: View {
         let outer = r + k2
         let light = CGSize(width: lean.width * 2.5, height: lean.height * 2.5)
         // as the shader: corona → bright areas only by smoothstep(0, 0.4, reveal); disc fades by smoothstep(0.08, 0.45)
-        let s = GenitaSplash.smooth(max(0, min(1, reveal / 0.4)))
-        let discDark = 1 - GenitaSplash.smooth(max(0, min(1, (reveal - 0.08) / 0.37)))
+        let s = GenitaSplash.smooth(max(0, min(1, reveal / 0.25)))
+        let discDark = 1 - GenitaSplash.smooth(max(0, min(1, (reveal - 0.04) / 0.26)))
         let breath = sin(time / 3.2 * 2 * .pi)
         let glowEnd = min(1, (k1 * 2.6) / (outer - r))
         ZStack(alignment: .topLeading) {
@@ -355,7 +355,7 @@ struct CoronaView: View {
                 RadialGradient(stops: [
                     .init(color: .clear, location: 0),
                     .init(color: .clear, location: ring(0, r, outer) - 0.002),
-                    .init(color: GenitaCorona.cool.opacity(0.10), location: ring(0, r, outer)),
+                    .init(color: GenitaCorona.cool.opacity(0.06), location: ring(0, r, outer)),
                     .init(color: GenitaCorona.cool.opacity(0.03), location: ring(0.5, r, outer)),
                     .init(color: GenitaCorona.cool.opacity(0), location: 1),
                 ], center: .center, startRadius: 0, endRadius: outer)
@@ -364,7 +364,7 @@ struct CoronaView: View {
                 RadialGradient(stops: [
                     .init(color: .clear, location: 0),
                     .init(color: .clear, location: ring(0, r, outer) - 0.002),
-                    .init(color: .white.opacity(0.42), location: ring(0, r, outer)),
+                    .init(color: .white.opacity(0.3), location: ring(0, r, outer)),
                     .init(color: Color(red: 0.86, green: 0.9, blue: 0.97).opacity(0.18), location: ring(glowEnd / 2.6, r, outer)),
                     .init(color: .clear, location: ring(glowEnd, r, outer)),
                 ], center: .center, startRadius: 0, endRadius: outer)
@@ -414,8 +414,8 @@ struct CoronaView: View {
                 .init(color: .white.opacity(0.35), location: mid),
                 .init(color: .clear, location: 1),
             ], center: .center, startRadius: 0, endRadius: outer))
-            .blur(radius: 0.9)
-            .opacity(0.6)
+            .blur(radius: 0.8)
+            .opacity(0.45)
     }
 
     private static var cache: [Double: [Gradient.Stop]] = [:]
