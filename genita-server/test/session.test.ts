@@ -79,7 +79,7 @@ class FakeClient implements ClientSink {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number } = {}) {
+function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: number; deps?: Partial<SessionDeps> } = {}) {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const sparkCalls: SparkRequest[] = [];
@@ -110,6 +110,7 @@ function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: numb
         yield { audio: Buffer.alloc(960), alignment: { chars: ["a", "b"], startsSec: [0.0, 0.01], endsSec: [0.01, 0.02] }, model: req.model };
       }
     },
+    ...opts.deps,
   };
   const session = new Session("s1", client, deps);
   return { asr, client, session, sparkCalls, ttsCalls, ttsAborted: () => ttsAborted };
@@ -443,5 +444,181 @@ test("finds × interpretation: a card line is not spoken while interpreting; 'As
   assert.ok(!ttsCalls.some((t) => t.includes("Found a recipe")), "card line stays silent during interpretation");
   assert.ok(!client.json.some((m) => m.type === "interpret.bubble"), "card question not translated");
   assert.ok(!client.json.some((m) => m.type === "transcript" && m.text === "Walk me through it"));
+  session.close();
+});
+
+// ───────────── F2-L26 rename by voice · D21 first-call wait ─────────────
+
+const GREET = "The call just connected. Greet the user.";
+const asksGreeting = (reqs: SparkRequest[]) => reqs.filter((r) => JSON.stringify(r.input).includes(GREET)).length;
+
+test("rename: 'Call yourself Max' renames for the rest of the call, persists via the dep, and emits companion.named", async () => {
+  const saved: Array<[string, string]> = [];
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async (u, n) => void saved.push([u, n]) } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  const named = await client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(named, { type: "companion.named", name: "Max" });
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(saved, [["u1", "Max"]]);
+  // the reply to the rename turn already uses the new name and is told to acknowledge it
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  assert.match(sparkCalls[0].instructions!, /renamed you from Jin to Max/);
+  // the event comes before the reply's first caption
+  assert.ok(client.json.indexOf(named) < client.json.findIndex((m) => m.type === "reply.delta"));
+
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "What's your name?" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.match(sparkCalls[1].instructions!, /^You are Max,/);
+  assert.doesNotMatch(sparkCalls[1].instructions!, /renamed you/, "the acknowledgement line is for the rename turn only");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 1);
+  session.close();
+});
+
+test("rename: by voice too; questions are not renames; no rename while interpreting", async () => {
+  const saved: string[] = [];
+  const a = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await a.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  a.asr.fire({ type: "speechComplete", turnId: 0, text: "What should I call you?" });
+  await a.client.waitFor((m) => m.type === "reply");
+  assert.equal(a.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(a.sparkCalls[0].instructions!, /^You are Jin,/);
+  await sleep(80);
+  a.asr.fire({ type: "speechComplete", turnId: 1, text: "Your name is Max now." });
+  await a.client.waitFor((m) => m.type === "companion.named");
+  assert.deepEqual(saved, ["Max"]);
+  a.session.close();
+
+  const b = setup({ deps: { userId: "u1", renameCompanion: async (_u, n) => void saved.push(n) } });
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, mode: "interpret" }));
+  await b.session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await sleep(60);
+  assert.equal(b.client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.deepEqual(saved, ["Max"], "nothing persisted from interpretation");
+  b.session.close();
+});
+
+test("rename: works without a rename dep (no store / no user) — the call still renames itself", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I'll call you Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.ok(client.json.some((m) => m.type === "companion.named"));
+  assert.match(sparkCalls[0].instructions!, /^You are Max,/);
+  session.close();
+});
+
+test("D21 greetAfterMs: the user speaks inside the window → no greeting, the user's turn is answered", async () => {
+  const { asr, client, session, sparkCalls } = setup();
+  // the window outlasts the user's whole reply, so only the cancel (not "busy replying") keeps the greeting out
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await sleep(40);
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "Hey, what should I call you?" });
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 2);
+  await sleep(750); // past the window
+  assert.equal(asksGreeting(sparkCalls), 0, "companion spoke first 0 times");
+  assert.equal(client.json.filter((m) => m.type === "reply").length, 1);
+  // the user's first line was an ordinary turn (kept in history), not swallowed as "the greeting"
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes("what should I call you"));
+  session.close();
+});
+
+test("D21 greetAfterMs: typed text inside the window also cancels the greeting", async () => {
+  const { client, session, sparkCalls } = setup();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 700 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await client.waitFor((m) => m.type === "reply");
+  await sleep(900);
+  assert.equal(asksGreeting(sparkCalls), 0);
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes('"hi"'), "the typed line is a normal turn");
+  session.close();
+});
+
+test("D21 greetAfterMs: silence → exactly one greeting after about the window, without the memory dependency", async () => {
+  const { client, session, sparkCalls } = setup();
+  const t0 = Date.now();
+  await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 150 }));
+  await sleep(60);
+  assert.equal(sparkCalls.length, 0, "no greeting inside the window");
+  const reply = await client.waitFor((m) => m.type === "reply", 2000);
+  assert.ok(Date.now() - t0 >= 140, `greeted after ${Date.now() - t0} ms`);
+  assert.equal(asksGreeting(sparkCalls), 1);
+  assert.ok(!client.json.some((m) => m.type === "transcript"), "no synthetic user transcript");
+  assert.equal(reply.text, "Hey you! That sounds great.");
+  // the greeting prompt is not kept as a user line in the history
+  await sleep(80);
+  await session.onClientText(JSON.stringify({ type: "text", text: "how are you" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.ok(!JSON.stringify(sparkCalls[1].input).includes(GREET));
+  session.close();
+});
+
+test("D21: without greetAfterMs (and no memory) nothing changes — no greeting; values are clamped to 0–3000", async () => {
+  const a = setup();
+  await a.session.onClientText(JSON.stringify({ type: "start", persona }));
+  await sleep(80);
+  assert.equal(a.sparkCalls.length, 0);
+  a.session.close();
+
+  const b = setup();
+  await b.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: -50 }));
+  await b.client.waitFor((m) => m.type === "reply", 1000); // clamped to 0 → greets right away
+  b.session.close();
+
+  const c = setup();
+  await c.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: "2000" }));
+  await sleep(60);
+  assert.equal(c.sparkCalls.length, 0, "a non-number is ignored");
+  c.session.close();
+
+  const d = setup();
+  await d.session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 2000, mode: "interpret" }));
+  await sleep(60);
+  d.session.close();
+  assert.equal(asksGreeting(d.sparkCalls), 0, "never greets into interpretation");
+});
+
+test("rename (Codex P2): a failed save keeps the old name — no companion.named, the call stays consistent", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { userId: "u1", renameCompanion: async () => { throw new Error("db down"); } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(client.json.filter((m) => m.type === "companion.named").length, 0);
+  assert.match(sparkCalls[0].instructions!, /^You are Jin,/);
+  session.close();
+});
+
+test("rename (Codex P2): the save finishes before companion.named goes out", async () => {
+  let saved = false;
+  const { client, session } = setup({ deps: { userId: "u1", renameCompanion: async () => { await sleep(30); saved = true; } } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" } }));
+  let savedAtEvent: boolean | null = null;
+  const orig = client.sendJson.bind(client);
+  client.sendJson = (m) => { if (m.type === "companion.named") savedAtEvent = saved; orig(m); };
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.equal(savedAtEvent, true);
+  session.close();
+});
+
+test("D21 (Codex P2): a greeting the window could not deliver (companion busy) is dropped, not given to the user's next turn", async () => {
+  const { client, session, sparkCalls } = setup({ ttsChunks: 30, ttsDelayMs: 5, deps: { userId: "u1", renameCompanion: async () => {} } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: { name: "Jin" }, greetAfterMs: 50 }));
+  // the companion is already speaking on its own (e.g. a watch reaction / card line) when the window ends
+  (session as unknown as { dispatch(e: unknown): void }).dispatch({ type: "self_speak", text: "Ooh, look at that.", origin: "card" });
+  await sleep(120);
+  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
+  await client.waitFor((m) => m.type === "companion.named");
+  assert.equal(asksGreeting(sparkCalls), 0);
   session.close();
 });
