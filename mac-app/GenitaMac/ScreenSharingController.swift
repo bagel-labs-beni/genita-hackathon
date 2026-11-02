@@ -27,10 +27,14 @@ import CoreMedia
         // a reconnect gives the call a new session id: a running share moves to it (or starts, if it began before ready)
         didSet { if isSharing, watchConfig != oldValue { uplink?.stop(); uplink = nil; connectUplink(source: sourceName) } }
     }
-    private var stream: SCStream?
+    private struct CaptureSession {
+        let stream: SCStream
+        let output: WatchStreamOutput
+    }
+    private var activeCapture: CaptureSession?
+    private var startingCapture: CaptureSession?
     private var captureRequest = ScreenSharingRequest()
     private var uplink: WatchUplink?
-    private let capture = WatchCapture()
     private var reactingTask: Task<Void, Never>?
     private static let noticeKey = "genita.watch.noticeShown"
     private let queue = DispatchQueue(label: "ai.thebeni.genita.mac.screen-sharing")
@@ -51,6 +55,7 @@ import CoreMedia
     }
     func showPicker() {
         captureRequest.begin()
+        stopStartingCapture()
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = [.singleDisplay, .singleWindow]
         if let id = Bundle.main.bundleIdentifier { configuration.excludedBundleIDs = [id] }
@@ -63,14 +68,25 @@ import CoreMedia
     }
     func stop() {
         captureRequest.invalidate()
-        let old = stream; stream = nil; isSharing = false
+        stopStartingCapture()
+        let old = activeCapture; activeCapture = nil; isSharing = false
         SCContentSharingPicker.shared.isActive = false
-        if let old { Task { try? await old.stopCapture() } }
+        stopCapture(old)
         uplink?.stop(); uplink = nil
         reactingTask?.cancel(); reactingTask = nil
         blank = false; reacting = false; speakerName = nil; sourceName = nil
-        let capture = capture
-        queue.async { capture.reset() }
+    }
+    private func stopCapture(_ session: CaptureSession?) {
+        guard let session else { return }
+        session.output.invalidate()
+        Task { try? await session.stream.stopCapture() }
+    }
+    private func stopStartingCapture() {
+        let old = startingCapture; startingCapture = nil
+        stopCapture(old)
+    }
+    private func cancelPicker() {
+        captureRequest.cancelPicker()
     }
     /// End this account's capture, including a picker/start still in flight, before another account can sign in.
     func resetForSignOut() {
@@ -78,21 +94,21 @@ import CoreMedia
         watchConfig = nil
         noticeVisible = false; permissionRequired = false; error = nil
     }
-    private func start(_ picked: SCContentFilter) {
-        guard let request = captureRequest.current else { return }
+    private func start(_ picked: SCContentFilter, replacing stream: SCStream?) {
+        // Control Center can reselect an existing stream without showPicker().
+        // Only a stream still owned by this account may authorize that selection.
+        if let stream {
+            guard activeCapture?.stream === stream || startingCapture?.stream === stream else { return }
+            captureRequest.begin()
+            stopStartingCapture()
+        }
+        guard let request = captureRequest.beginCapture() else { return }
         Task {
             do {
-                guard captureRequest.isCurrent(request) else { return }
+                guard captureRequest.isStarting(request) else { return }
                 let filter = await Self.excludingGenita(picked)
-                guard captureRequest.isCurrent(request) else { return }
+                guard captureRequest.isStarting(request) else { return }
                 let name = Self.sourceName(of: picked)
-                if let stream {
-                    try await stream.updateContentFilter(filter)
-                    guard captureRequest.isCurrent(request), self.stream === stream else { return }
-                    wireCapture(request: request)
-                    sourceName = name
-                    return
-                }
                 let config = SCStreamConfiguration()
                 // long side ≤ 1024 px (uploads are ≤1024 JPEG); frames are sampled ~2 fps and sent only when changed
                 let px = CGSize(width: picked.contentRect.width * CGFloat(picked.pointPixelScale), height: picked.contentRect.height * CGFloat(picked.pointPixelScale))
@@ -106,41 +122,52 @@ import CoreMedia
                 config.sampleRate = 24_000
                 config.channelCount = 1
                 let newStream = SCStream(filter: filter, configuration: config, delegate: self)
-                try newStream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-                try newStream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
-                stream = newStream // stop() must also see a stream whose startCapture() is still pending.
-                wireCapture(request: request)
+                let output = WatchStreamOutput(stream: newStream, request: request)
+                wireCapture(output)
+                try newStream.addStreamOutput(output, type: .screen, sampleHandlerQueue: queue)
+                try newStream.addStreamOutput(output, type: .audio, sampleHandlerQueue: audioQueue)
+                let session = CaptureSession(stream: newStream, output: output)
+                startingCapture = session // stop/logout can also see a start still in flight.
                 try await newStream.startCapture()
-                guard captureRequest.isCurrent(request), stream === newStream else {
+                guard startingCapture?.stream === newStream, captureRequest.completeCapture(request) else {
+                    output.invalidate()
                     try? await newStream.stopCapture()
                     return
                 }
+                startingCapture = nil
+                let old = activeCapture
+                activeCapture = session
+                stopCapture(old)
+                blank = false
                 isSharing = true; permissionRequired = false; sourceName = name
+                uplink?.stop(); uplink = nil
                 connectUplink(source: name)
             } catch {
-                guard captureRequest.isCurrent(request) else { return }
-                stop()
+                guard captureRequest.isStarting(request) else { return }
+                captureRequest.cancelCapture(request)
+                stopStartingCapture()
                 self.error = error.localizedDescription
             }
         }
     }
-    private func wireCapture(request: UInt64) {
-        let capture = capture
+    private func wireCapture(_ output: WatchStreamOutput) {
+        let request = output.request
+        let capture = output.capture
         capture.onFrame = { [weak self] jpeg, blank in
             Task { @MainActor in
-                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
                 self.uplink?.sendFrame(jpeg, blank: blank)
             }
         }
         capture.onAudio = { [weak self] pcm in
             Task { @MainActor in
-                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
                 self.uplink?.sendAudio(pcm)
             }
         }
         capture.onBlank = { [weak self] on in
             Task { @MainActor in
-                guard let self, self.captureRequest.isCurrent(request), self.isSharing else { return }
+                guard let self, self.captureRequest.acceptsSamples(request), self.isSharing else { return }
                 self.blank = on
             }
         }
@@ -184,19 +211,47 @@ import CoreMedia
     }
 }
 extension ScreenSharingController: SCContentSharingPickerObserver {
-    nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) {}
-    nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) { Task { @MainActor in self.start(filter) } }
+    nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) { Task { @MainActor in if stream == nil { self.cancelPicker() } } }
+    nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) { Task { @MainActor in self.start(filter, replacing: stream) } }
     nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) { Task { @MainActor in self.error = error.localizedDescription } }
 }
-extension ScreenSharingController: SCStreamDelegate, SCStreamOutput {
+extension ScreenSharingController: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor in
-            guard self.stream === stream else { return }
+            if self.startingCapture?.stream === stream {
+                if let request = self.startingCapture?.output.request { self.captureRequest.cancelCapture(request) }
+                self.stopStartingCapture(); self.error = error.localizedDescription
+                return
+            }
+            guard self.activeCapture?.stream === stream else { return }
             self.stop(); self.error = error.localizedDescription
         }
     }
-    nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        // Frames and sound go to the watch uplink only while sharing; nothing is stored on disk.
+}
+
+/// Each SCStream owns its media processor and immutable request binding. The lock
+/// serializes screen/audio intake with invalidation; callbacks are set before registration.
+private final class WatchStreamOutput: NSObject, SCStreamOutput, @unchecked Sendable {
+    let request: UInt64
+    let capture = WatchCapture()
+    private let lock = NSLock()
+    private var gate: ScreenSharingSampleGate
+
+    init(stream: SCStream, request: UInt64) {
+        self.request = request
+        gate = ScreenSharingSampleGate(request: request, stream: ObjectIdentifier(stream))
+        super.init()
+    }
+
+    func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        gate.invalidate()
+        capture.reset()
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        lock.lock(); defer { lock.unlock() }
+        guard gate.accepts(stream: ObjectIdentifier(stream), request: request) else { return }
         switch type {
         case .screen: capture.handleScreen(sampleBuffer)
         case .audio: capture.handleAudio(sampleBuffer)
