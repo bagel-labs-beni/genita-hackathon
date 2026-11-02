@@ -38,7 +38,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import type { MemoryRetryState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -105,6 +105,11 @@ export type SessionDeps = {
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
   /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
   personalize?: SessionPersonalize;
+  /**
+   * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
+   * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
+   */
+  companionVoiceId?: () => Promise<string | null | undefined>;
 };
 
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
@@ -121,6 +126,10 @@ const SHORTER_AFTER_CUTS = 2;
 const STARTCALL_TIMEOUT_MS = 1500;
 /** at most this many correction checks per call, one at a time */
 const MAX_CORRECTION_CHECKS = 12;
+
+/** A slow prep store never holds up `ready`: past this the client's voice stays. */
+const COMPANION_VOICE_WAIT_MS = 800;
+
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
   return () => clearTimeout(timer);
@@ -244,6 +253,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** the account's saved companion voice (same presence), looked up as the socket opens */
+  private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -296,6 +307,8 @@ export class Session {
     this.deps = deps;
     this.now = deps.now ?? (() => performance.now());
     this.voiceId = deps.config.defaultVoiceId;
+    // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
+    this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
@@ -310,6 +323,27 @@ export class Session {
   /** F6-L7: `start` was accepted (the handoff layer gives a conversation nobody holds to this device). */
   get hasStarted(): boolean {
     return this.started && !this.closed;
+  }
+
+  private pickVoice(id: string | undefined, kind: PersonaCard["kind"]): void {
+    this.voiceId = id ?? this.deps.config.defaultVoiceId;
+    const voice = this.deps.config.voice;
+    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
+    if (voice) this.voiceId = `seamless:${resolveSpeaker(id, kind, voice)}`;
+  }
+
+  /** The account's saved companion voice, or null (none, store error, or slower than COMPANION_VOICE_WAIT_MS). */
+  private async companionVoice(): Promise<string | null> {
+    if (!this.deps.companionVoiceId) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
+    try {
+      const lookup = this.deps.companionVoiceId;
+      const id = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
+      return typeof id === "string" && id.trim() ? id.trim().slice(0, 64) : null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -438,10 +472,7 @@ export class Session {
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     this.language = str(msg.language, 40) ?? "English";
-    this.voiceId = str(msg.voiceId, 64) ?? persona.voice?.id ?? this.deps.config.defaultVoiceId;
-    const voice = this.deps.config.voice;
-    // Meta voice service: the voice is a Seamless speaker ("seamless:<n>"); other ids → the kind's default speaker
-    if (voice) this.voiceId = `seamless:${resolveSpeaker(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind, voice)}`;
+    this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
     const asLip = (v: unknown, d: LipMode): LipMode => (v === "atlas" || v === "none" ? v : v === undefined ? d : "none");
     const mode = asLip(lip.mode, persona.kind === "human" ? "none" : "atlas");
@@ -468,14 +499,18 @@ export class Session {
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
       });
-      try {
+      // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
+      // budget the call starts without memory context, and the late result never touches this call.
+      let abandoned = false;
+      const memoryCall = this.memoryCall;
+      const init = async () => {
         // startMode, not this.mode: switchMode runs later, so an interpret start would still read "chat" here
         // and the greeting prompt would be sent to the translator
-        const item = await this.memoryCall.open(startMode === "chat");
-        // A Forget during open already cleared these; do not restore its older result.
-        if (this.historyRevision === null) {
+        const item = await memoryCall.open(startMode === "chat");
+        // A Forget during open already cleared these; do not restore its older result (nor a late one).
+        if (this.historyRevision === null && !abandoned) {
           this.greeting = startMode === "chat" ? { item } : null;
-          this.recentReplies = [...this.memoryCall.recentReplies, ...this.recentReplies].slice(-3);
+          this.recentReplies = [...memoryCall.recentReplies, ...this.recentReplies].slice(-3);
         }
         // Validate and copy together under the same per-user lock as Forget. The cache/live call must
         // carry this persisted revision. Clients cannot prove their snapshot's age, so after ANY Forget
@@ -483,6 +518,8 @@ export class Session {
         await memory.serial(userId, async () => {
           const revision = (await memory.state.getState(userId)).revision;
           if (this.closed) return;
+          // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
+          if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
           this.historyRevision = revision;
           if (startMode !== "chat" || this.history.length) return;
           const server = this.deps.priorTurns?.(revision) ?? null;
@@ -495,10 +532,22 @@ export class Session {
           this.continued = true;
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
+      };
+      const outcome = await within(init().then(() => "ok" as const, () => "error" as const), MEMORY_START_BUDGET_MS, "slow" as const);
+      if (outcome === "error") { this.log("memory.unavailable", {}); memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
+      else if (outcome === "slow") {
+        abandoned = true;
+        this.log("memory.slow_start", { budget_ms: MEMORY_START_BUDGET_MS });
+        // a plain greeting (no shared past); no handoff seeding without a verified Forget revision
+        if (startMode === "chat" && !this.greeting && this.historyRevision === null) this.greeting = { item: null };
       }
-      catch { this.log("memory.unavailable", {}); this.memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
     }
     if (this.closed) return;
+    const owned = await this.ownedVoice;
+    if (this.closed) return;
+    // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
+    if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
+    else if (owned) this.log("voice.owned_late", {});
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
