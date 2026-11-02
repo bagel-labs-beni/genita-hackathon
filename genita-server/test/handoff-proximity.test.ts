@@ -130,7 +130,7 @@ test("proximity: only while the iPhone owns it, in a live call, with its socket 
     phone.handle.setActive(false);
     s.tick(MIN_SEEN_INTERVAL_MS);
     await mac.handle.proximitySeen(token);
-    assert.equal(mac.last("proximity.result").reason, "phone_inactive", "locked iPhone");
+    assert.equal(mac.last("proximity.result").reason, "unknown_token", "locking the iPhone drops its tokens");
     phone.handle.setActive(true);
     phone.handle.proximityDisarm();
     s.tick(MIN_SEEN_INTERVAL_MS);
@@ -194,6 +194,64 @@ test("proximity: 10 s cooldown after a move, and a Mac reports at most one token
   await mac.handle.proximitySeen(again);
   assert.equal(mac.last("proximity.result").accepted, true, "after the cooldown it moves");
   assert.equal((await s.hub.current("u1")).owner, "mac");
+});
+
+test("proximity: a tap, a lock or a disarm that lands while the report waits wins over it (re-checked before the write)", async () => {
+  const s = setup();
+  {
+    const { phone, mac, token } = await armed(s, "a");
+    const pending = mac.handle.proximitySeen(token);
+    phone.handle.proximityDisarm();
+    await pending;
+    assert.equal(mac.last("proximity.result").reason, "unknown_token");
+    assert.equal((await s.hub.current("a")).owner, "iphone");
+  }
+  {
+    const { phone, mac, token } = await armed(s, "b");
+    // a move away and back is still in flight (queued, not written) when the report arrives
+    void mac.handle.claim(null, "button");
+    void phone.handle.claim(null, "continue");
+    const pending = mac.handle.proximitySeen(token);
+    await pending;
+    await flush();
+    assert.equal(mac.last("proximity.result").reason, "not_owner", "a newer claim moved the epoch first");
+    assert.equal((await s.hub.current("b")).owner, "iphone", "the iPhone's own tap is the last word");
+  }
+});
+
+test("proximity: a locked Mac never takes the call", async () => {
+  const s = setup();
+  const { mac, token } = await armed(s);
+  mac.handle.setActive(false);
+  await mac.handle.proximitySeen(token);
+  assert.equal(mac.last("proximity.result").reason, "mac_inactive");
+  assert.equal((await s.hub.current("u1")).owner, "iphone");
+});
+
+test("proximity: the report limit is per account, not per socket", async () => {
+  const s = setup();
+  const { mac, token } = await armed(s);
+  const mac2 = s.open("u1", "mac");
+  await mac2.handle.proximitySeen("ABCDEFGH");
+  await mac.handle.proximitySeen(token);
+  assert.equal(mac.last("proximity.result").reason, "rate_limited", "a second Mac socket doesn't reset the limit");
+  assert.equal((await s.hub.current("u1")).owner, "iphone");
+});
+
+test("proximity: the Mac hears when its iPhone is armed (it scans and asks for Bluetooth only then)", async () => {
+  const s = setup();
+  const { phone, mac } = await armed(s);
+  assert.equal(mac.last("proximity.peer").armed, true);
+  const late = s.open("u1", "mac");
+  assert.equal(late.last("proximity.peer").armed, true, "a Mac that opens later learns it at once");
+  phone.handle.proximityDisarm();
+  assert.equal(mac.last("proximity.peer").armed, false);
+  await phone.handle.proximityArm();
+  assert.equal(mac.last("proximity.peer").armed, true);
+  phone.handle.close();
+  assert.equal(mac.last("proximity.peer").armed, false, "iPhone gone");
+  const other = s.open("u2", "mac");
+  assert.equal(other.last("proximity.peer").armed, false, "another account's Mac never hears this one");
 });
 
 test("proximity: garbage tokens are a bad_message, never a lookup", async () => {

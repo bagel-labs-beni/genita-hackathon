@@ -28,20 +28,35 @@ import os
     private var chime: AVAudioPlayer?
     private var moment = 0
     private var lastLog = 0.0
+    /// The server says this account's iPhone is advertising (it is in a live call): `proximity.peer`.
+    private var phoneArmed = false
+    private var screenLocked = false
     private let log = Logger(subsystem: "ai.thebeni.genita", category: "proximity")
 
     func attach(_ handoff: MacHandoff) {
         guard self.handoff == nil else { return }
         self.handoff = handoff
         handoff.server.onMessage = { [weak self] m in self?.receive(m) }
+        // A locked Mac never takes the call.
+        let center = DistributedNotificationCenter.default()
+        center.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenLocked = true; self?.stopScan() }
+        }
+        center.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenLocked = false }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
 
     private var enabled: Bool { ProximityHandoffFlag.enabled(remote: GenitaAppConfigStore.shared.config.flag("proximityHandoff", default: false)) }
 
+    private var wanted: Bool {
+        guard let handoff else { return false }
+        return ProximityPolicy.macShouldScan(enabled: enabled, macOwner: handoff.ownership.isOwner, serverConnected: handoff.server.connected,
+                                             phoneActive: handoff.server.peerActive, phoneArmed: phoneArmed, screenUnlocked: !screenLocked)
+    }
+
     private func tick() {
-        guard let handoff else { return }
-        let wanted = ProximityPolicy.macShouldScan(enabled: enabled, macOwner: handoff.ownership.isOwner, serverConnected: handoff.server.connected, phoneActive: handoff.server.peerActive)
         guard wanted else { return stopScan() }
         guard let central else {
             // First time it is useful: this creates the Bluetooth permission prompt (NSBluetoothAlwaysUsageDescription).
@@ -51,7 +66,9 @@ import os
         guard central.state == .poweredOn else { return stopScan() }
         guard !scanning else { return }
         scanning = true
-        detector = ProximityDetector(config: .current())
+        // keep the cooldown and the "must leave first" latch across scans; only the readings start over
+        detector.config = .current()
+        detector.reset()
         tokens = [:]
         // Duplicates on: every advertisement is an RSSI reading for the hold.
         central.scanForPeripherals(withServices: [CBUUID(string: ProximityToken.serviceUUID)], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
@@ -80,10 +97,11 @@ import os
     }
 
     private func seen(_ id: UUID, name: String?, rssi: Int) {
-        guard scanning, let handoff else { return }
+        // a late callback after the flag went off, a lock or a move: nothing
+        guard scanning, wanted, let handoff else { return }
         if let token = ProximityToken.parse(name) { tokens[id] = token }
         let now = Date().timeIntervalSince1970
-        let fire = detector.observe(id.uuidString, rssi: rssi, at: now)
+        let fire = detector.observe(id.uuidString, rssi: rssi, at: now, canReport: tokens[id] != nil)
         if now - lastLog > 0.5 {
             lastLog = now
             let level = detector.smoothed(id.uuidString) ?? rssi, enter = detector.config.enterRSSI, hasToken = tokens[id] != nil
@@ -102,6 +120,9 @@ import os
             log.info("proximity result \(accepted, privacy: .public) \(reason, privacy: .public)")
             // Refused (another account's token, a stale one…): the next approach may try again; the detector keeps its cooldown.
             if !accepted { detector.reset(); tokens = [:] }
+        case let .peer(armed):
+            phoneArmed = armed
+            if !armed { stopScan() }
         case .moved(to: .mac):
             stopScan()
             guard enabled else { return }

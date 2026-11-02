@@ -17,7 +17,7 @@
 import { randomBytes } from "node:crypto";
 
 /** Crockford base32 without I L O U, so a token survives being read aloud in a QA log too. */
-export const TOKEN_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+export const CROCKFORD32 = "0123456789" + "ABCDEFGHJKMNPQRSTVWXYZ";
 /** iOS gives a foreground advertiser 8 bytes of local name next to one 128-bit service UUID. */
 export const TOKEN_LENGTH = 8;
 export const TOKEN_TTL_MS = 60_000;
@@ -33,6 +33,7 @@ export type ProximityReason =
   | "not_owner"
   | "not_in_call"
   | "phone_inactive"
+  | "mac_inactive"
   | "cooldown"
   | "rate_limited";
 
@@ -41,16 +42,16 @@ export function newToken(bytes: Buffer = randomBytes(5)): string {
   let bits = 0n;
   for (const b of bytes.subarray(0, 5)) bits = (bits << 8n) | BigInt(b);
   let out = "";
-  for (let i = TOKEN_LENGTH - 1; i >= 0; i--) out += TOKEN_ALPHABET[Number((bits >> BigInt(i * 5)) & 31n)];
+  for (let i = TOKEN_LENGTH - 1; i >= 0; i--) out += CROCKFORD32[Number((bits >> BigInt(i * 5)) & 31n)];
   return out;
 }
 
 export function isToken(v: unknown): v is string {
-  return typeof v === "string" && v.length === TOKEN_LENGTH && [...v].every((c) => TOKEN_ALPHABET.includes(c));
+  return typeof v === "string" && v.length === TOKEN_LENGTH && [...v].every((c) => CROCKFORD32.includes(c));
 }
 
 export type Issued = { token: string; expiresAt: number; issuedAt: number; epoch: number; armedBy: object };
-type Book = { tokens: Issued[]; cooldownUntil: number };
+type Book = { tokens: Issued[]; cooldownUntil: number; lastReportAt: number };
 
 /** Per account: the live tokens and the cooldown. In memory, one process (same as the audio gate). */
 export class ProximityBook {
@@ -62,7 +63,7 @@ export class ProximityBook {
 
   private book(userId: string): Book {
     let b = this.users.get(userId);
-    if (!b) this.users.set(userId, (b = { tokens: [], cooldownUntil: 0 }));
+    if (!b) this.users.set(userId, (b = { tokens: [], cooldownUntil: 0, lastReportAt: -Infinity }));
     return b;
   }
 
@@ -88,6 +89,19 @@ export class ProximityBook {
     const t = this.users.get(userId)?.tokens.find((x) => x.token === token);
     if (!t) return "unknown_token";
     return t.expiresAt > now ? t : "expired";
+  }
+
+  /** One Mac report per account per MIN_SEEN_INTERVAL_MS, however many Mac sockets it opens. */
+  reportAllowed(userId: string, now: number): boolean {
+    const b = this.book(userId);
+    if (now - b.lastReportAt < MIN_SEEN_INTERVAL_MS) return false;
+    b.lastReportAt = now;
+    return true;
+  }
+
+  /** This account's iPhone is advertising (a live token exists): the Mac scans only then. */
+  armed(userId: string, now: number): boolean {
+    return (this.users.get(userId)?.tokens ?? []).some((t) => t.expiresAt > now);
   }
 
   coolingDown(userId: string, now: number): boolean {

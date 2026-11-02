@@ -86,6 +86,24 @@ final class ProximityTests: XCTestCase {
         XCTAssertNotNil(feed(&d, rssi: -40, from: 3.0, seconds: 1), "left below −55, so it re-arms")
     }
 
+    func testContinueHereWithThePhoneStillOnTheMacNeverBouncesBack() {
+        var d = ProximityDetector()
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 0, seconds: 1))
+        // the call moved, the Mac stopped scanning; the user taps Continue here with the iPhone still on the palm rest
+        d.reset()
+        XCTAssertNil(feed(&d, "rotated-token-peripheral", rssi: -40, from: 1, seconds: 30), "no move until the iPhone really leaves")
+        XCTAssertNil(feed(&d, rssi: -65, from: 31.05, seconds: 0.3))
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 31.4, seconds: 1), "taken away and brought back: moves")
+    }
+
+    func testHoldWaitsForTheToken() {
+        var d = ProximityDetector()
+        var t = 0.0
+        // strong readings but the local name (token) hasn't arrived in a scan response yet
+        while t < 1 { XCTAssertFalse(d.observe("p", rssi: -40, at: t, canReport: false)); t += 0.05 }
+        XCTAssertTrue(d.observe("p", rssi: -40, at: t, canReport: true), "the first reading with the token completes the hold")
+    }
+
     func testRSSINotAvailableIsIgnored() {
         var d = ProximityDetector()
         XCTAssertNil(feed(&d, rssi: 127, from: 0, seconds: 2))
@@ -114,6 +132,7 @@ final class ProximityTests: XCTestCase {
         XCTAssertEqual(ProximityMessage(["type": "ownership", "owner": "mac", "epoch": 4, "trigger": "proximity"]), .moved(to: .mac))
         XCTAssertNil(ProximityMessage(["type": "ownership", "owner": "mac", "epoch": 4, "trigger": "button"]), "a button move has no proximity moment")
         XCTAssertNil(ProximityMessage(["type": "peer", "device": "mac", "online": true]))
+        XCTAssertEqual(ProximityMessage(["type": "proximity.peer", "armed": true]), .peer(armed: true))
     }
 
     func testFlagIsOffByDefault() {
@@ -135,8 +154,10 @@ final class ProximityTests: XCTestCase {
         XCTAssertFalse(ProximityPolicy.phoneShouldAdvertise(enabled: true, inFront: true, owner: false, callLive: true, serverConnected: true, macOnline: true), "already on the Mac")
         XCTAssertFalse(ProximityPolicy.phoneShouldAdvertise(enabled: true, inFront: false, owner: true, callLive: true, serverConnected: true, macOnline: true), "locked or in the background")
         XCTAssertFalse(ProximityPolicy.phoneShouldAdvertise(enabled: true, inFront: true, owner: true, callLive: true, serverConnected: true, macOnline: false), "Mac app closed: no Bluetooth prompt, no advertising")
-        XCTAssertTrue(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true))
-        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: true, serverConnected: true, phoneActive: true), "the conversation is already here")
-        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: false), "the iPhone is locked")
+        XCTAssertTrue(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true, phoneArmed: true, screenUnlocked: true))
+        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: true, serverConnected: true, phoneActive: true, phoneArmed: true, screenUnlocked: true), "the conversation is already here")
+        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: false, phoneArmed: true, screenUnlocked: true), "the iPhone is locked")
+        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true, phoneArmed: false, screenUnlocked: true), "no iPhone call: no scan, no Bluetooth prompt on the Mac")
+        XCTAssertFalse(ProximityPolicy.macShouldScan(enabled: true, macOwner: false, serverConnected: true, phoneActive: true, phoneArmed: true, screenUnlocked: false), "a locked Mac never takes the call")
     }
 }

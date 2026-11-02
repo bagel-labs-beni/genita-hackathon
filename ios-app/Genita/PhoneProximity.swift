@@ -76,12 +76,14 @@ import os
         guard let message = ProximityMessage(m) else { return }
         switch message {
         case let .token(t, _):
+            // an answer to an arm that was since cancelled (disarm, flag off, call ended): don't advertise it
+            guard armedAt.isFinite, enabled else { return }
             token = t; advertise()
         case let .unavailable(reason):
             log.info("proximity unavailable: \(reason, privacy: .public)")
             if manager?.isAdvertising == true { manager?.stopAdvertising() }
             advertised = nil; token = nil
-        case .result: break
+        case .result, .peer: break
         case .moved(to: .mac):
             guard enabled else { return }
             celebrate()

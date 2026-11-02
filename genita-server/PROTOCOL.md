@@ -16,7 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
-| 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
+| 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
@@ -597,7 +597,8 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
 | `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |
 | `proximity.unavailable` | `reason: not_owner \| not_in_call` | answer to `proximity.arm` (`not_owner` = the Mac has it): don't advertise |
-| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
+| `proximity.peer` | `armed` | to Macs: this account's iPhone is (not) advertising a token now. Sent on connect and on every change; the Mac scans (and asks for Bluetooth) only while `armed` |
+| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
@@ -621,9 +622,12 @@ live iPhone call the iPhone (owner) sends `proximity.arm`; the server answers wi
 the conversation and reports a token whose RSSI held at or above the threshold (default −45 dBm, re-armed below
 −55 dBm) for 0.5 s. The server accepts it only when the token was issued to this account, is unexpired, its iPhone
 presence socket is open and in front, the Mac has not taken the conversation since the token was issued (same epoch; a fresh conversation nobody claimed counts as the iPhone's), the account
-has a live call socket, and no proximity move happened in the last 10 s. Then it claims for the Mac with trigger
-`proximity` (the usual gate, cancel and `ownership` broadcast), and all of that account's tokens are spent.
-A stranger's token never matches another account. A Mac may report once per 200 ms (`rate_limited`). Tokens are
+has a started call (`start` accepted, not closed), the reporting Mac is in front, and no proximity move happened in the
+last 10 s. All of that is checked inside the account's serial claim section, right before the write, so a tap, lock or
+disarm that arrives first wins. Then it claims for the Mac with trigger `proximity` (the usual gate, cancel and
+`ownership` broadcast), and all of that account's tokens are spent. Locking the iPhone (`presence {active:false}`) drops
+its tokens. A stranger's token never matches another account. One report per account per 200 ms, across all its Mac
+sockets (`rate_limited`). Tokens are
 never logged; a rejection logs `handoff.proximity_rejected {reason}`.
 
 Events for analytics: the server logs `handoff.preparing {from, to, trigger}`, `handoff.committed {from, to, total_ms, trigger, epoch}`, `handoff.failed {reason}`.

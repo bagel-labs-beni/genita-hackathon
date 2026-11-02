@@ -232,15 +232,17 @@ test("proximity on the real server: an ungated iPhone call (today's apps) + pres
   const macPresence = await open(base, "/v1/presence?device=mac", "prox");
   const stranger = await open(base, "/v1/presence?device=iphone", "someone-else");
 
-  // no call yet → no token
+  // a call socket that never sent `start` is not a call → no token
+  const phoneCall = await open(base, "/v1/session", "prox");
   phonePresence.send({ type: "proximity.arm" });
   assert.equal((await phonePresence.waitFor((m) => m.type === "proximity.unavailable")).reason, "not_in_call");
+  assert.equal((await macPresence.waitFor((m) => m.type === "proximity.peer")).armed, false, "the Mac learns the iPhone isn't advertising");
 
-  const phoneCall = await open(base, "/v1/session", "prox");
   phoneCall.send({ type: "start", persona: { name: "Jin" } });
   await phoneCall.waitFor((m) => m.type === "ready");
   phonePresence.send({ type: "proximity.arm" });
   const { token } = await phonePresence.waitFor((m) => m.type === "proximity.token");
+  await macPresence.waitFor((m) => m.type === "proximity.peer" && m.armed === true);
 
   // another account's iPhone in a call, next to this Mac
   const strangerCall = await open(base, "/v1/session", "someone-else");

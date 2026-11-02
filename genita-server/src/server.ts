@@ -144,7 +144,7 @@ export async function startServer(
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   // proximity handoff moves a conversation only while the account has a live call socket
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
-    liveCall: (userId) => [...sessionUsers.values()].includes(userId),
+    liveCall: (userId) => [...sessionUsers].some(([id, u]) => u === userId && sessions.get(id)?.hasStarted === true),
   });
   const presence = new Map<() => void, string>(); // closer → users.id
   if (accounts) accounts.onUserDeleted = (userId) => {

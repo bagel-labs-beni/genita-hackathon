@@ -40,6 +40,8 @@ enum ProximityMessage: Equatable {
     case result(accepted: Bool, reason: String)
     /// An ownership change made by a proximity move (trigger `proximity`).
     case moved(to: ConversationDevice)
+    /// Mac: this account's iPhone is (not) advertising a token right now.
+    case peer(armed: Bool)
 
     init?(_ m: [String: Any]) {
         switch m["type"] as? String {
@@ -47,6 +49,9 @@ enum ProximityMessage: Equatable {
             guard let t = ProximityToken.parse(m["token"] as? String) else { return nil }
             self = .token(t, expiresIn: (m["expiresIn"] as? NSNumber)?.doubleValue ?? 60)
         case "proximity.unavailable": self = .unavailable(reason: m["reason"] as? String ?? "")
+        case "proximity.peer":
+            guard let armed = m["armed"] as? Bool else { return nil }
+            self = .peer(armed: armed)
         case "proximity.result":
             guard let accepted = m["accepted"] as? Bool else { return nil }
             self = .result(accepted: accepted, reason: m["reason"] as? String ?? "")
@@ -89,13 +94,17 @@ struct ProximityConfig: Equatable {
 /// - The RSSI is smoothed with the median of the last 3 readings (one spike doesn't count).
 /// - "Close" must hold continuously for `holdSeconds` with at least `minSamples` readings; a reading below
 ///   `enterRSSI` or a gap over `maxGapSeconds` restarts the hold.
-/// - After a trigger that peripheral is latched until it goes below `exitRSSI` (hysteresis), and no
-///   peripheral can trigger again for `cooldownSeconds`.
+/// - After a trigger nothing triggers again until a phone is seen below `exitRSSI` (hysteresis: it really left),
+///   and not for `cooldownSeconds`. This survives `reset()` and scan restarts, so "Continue here" with the
+///   iPhone still lying next to the Mac never bounces the call back.
+/// - A hold only completes while the peripheral's token is known (`canReport`); until then it keeps counting.
 struct ProximityDetector {
     var config: ProximityConfig
-    private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0; var latched = false }
+    private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0 }
     private var tracks: [String: Track] = [:]
     private var cooldownUntil = -Double.infinity
+    /// false after a trigger until a phone is seen far (below exitRSSI)
+    private var departed = true
 
     init(config: ProximityConfig = ProximityConfig()) { self.config = config }
 
@@ -103,7 +112,7 @@ struct ProximityDetector {
     func smoothed(_ key: String) -> Int? { tracks[key].map { Self.median($0.recent) } }
 
     /// Returns true when this reading completes a hold: report the peripheral's token now.
-    mutating func observe(_ key: String, rssi: Int, at now: Double) -> Bool {
+    mutating func observe(_ key: String, rssi: Int, at now: Double, canReport: Bool = true) -> Bool {
         // 127 = "RSSI not available" in CoreBluetooth; 0 and positives are not real readings either.
         guard rssi < 0 else { return false }
         var t = tracks[key] ?? Track(lastAt: now)
@@ -115,14 +124,14 @@ struct ProximityDetector {
         if level >= config.enterRSSI {
             if t.closeSince == nil { t.closeSince = now; t.samples = 0 }
             t.samples += 1
-            if !t.latched, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
+            if departed, canReport, now >= cooldownUntil, let since = t.closeSince, now - since >= config.holdSeconds, t.samples >= config.minSamples {
                 fire = true
-                t.latched = true
+                departed = false
                 cooldownUntil = now + config.cooldownSeconds
             }
         } else {
             t.closeSince = nil; t.samples = 0
-            if level < config.exitRSSI { t.latched = false }
+            if level < config.exitRSSI { departed = true }
         }
         tracks[key] = t
         // forget peripherals not heard for a while (tokens rotate, so keys come and go)
@@ -130,8 +139,8 @@ struct ProximityDetector {
         return fire
     }
 
-    /// The server refused the report (stale token, cooldown on the server...): let the same approach try again
-    /// after the phone is moved away and back, but keep the cooldown.
+    /// Scan restarted or the server refused a report: forget the readings, keep the cooldown and the
+    /// "must leave first" latch (the next move needs the phone taken away and brought back).
     mutating func reset() { tracks = [:] }
 
     private static func median(_ v: [Int]) -> Int {
@@ -147,9 +156,10 @@ enum ProximityPolicy {
     static func phoneShouldAdvertise(enabled: Bool, inFront: Bool, owner: Bool, callLive: Bool, serverConnected: Bool, macOnline: Bool) -> Bool {
         enabled && inFront && owner && callLive && serverConnected && macOnline
     }
-    /// Mac: scan while the iPhone has the conversation and is in front (the server says so).
-    static func macShouldScan(enabled: Bool, macOwner: Bool, serverConnected: Bool, phoneActive: Bool) -> Bool {
-        enabled && !macOwner && serverConnected && phoneActive
+    /// Mac: scan while the iPhone has the conversation, is in front and is advertising (the server says so:
+    /// it is in a live call), and this Mac's screen is unlocked. So the Mac asks for Bluetooth during a call too.
+    static func macShouldScan(enabled: Bool, macOwner: Bool, serverConnected: Bool, phoneActive: Bool, phoneArmed: Bool, screenUnlocked: Bool) -> Bool {
+        enabled && !macOwner && serverConnected && phoneActive && phoneArmed && screenUnlocked
     }
     /// The iPhone re-arms (rotates the token) this often; the server keeps a token 60 s.
     static let rotateSeconds = 30.0
