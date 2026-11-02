@@ -326,7 +326,28 @@ final class FlowMorph: @unchecked Sendable {
             cheekRig = CheekRig(rules: c, data: data, neutralStill: neutralStill, scale: s, face: face, mouth: mouth, stillWidth: Double(neutralStill.width))
         } else { cheekRig = nil }
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
+        nkF = data.nk; knF = data.kn
+        let v2p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil)
+        if let p = v2p, p.chinScale > 0, let mouth, data.map.drive != "snap" {
+            // row weight w(y) = 1 − chinScale·clip((y − yl)/(yc − yl)), yl = lower lip + 3.5% H, yc = yl + 3% H
+            let H = Double(neutralStill.height)
+            let yl = Double(mouth.maxY) + 0.035 * H, yc = yl + 0.03 * H
+            let fw = data.flowSize.w, fh = data.flowSize.h
+            var rowW = [Float](repeating: 1, count: fh)
+            for gy in 0..<fh {
+                let Y = Double(data.roi.minY) + (Double(gy) + 0.5) / Double(fh) * Double(data.roi.height)
+                rowW[gy] = Float(1 - p.chinScale * min(1, max(0, (Y - yl) / (yc - yl))))
+            }
+            func scaled(_ f: [Float]) -> [Float] {
+                var o = f
+                for gy in 0..<fh { let w = rowW[gy]; for gx in 0..<fw { let i = (gy * fw + gx) * 2; o[i] *= w; o[i + 1] *= w } }
+                return o
+            }
+            nkF = nkF.mapValues(scaled); knF = knF.mapValues(scaled)
+        }
     }
+    /// Key flows used at runtime (v25: the chin below the lower lip follows them only partly).
+    private(set) var nkF: [String: [Float]] = [:], knF: [String: [Float]] = [:]
     let workScale: Double
     /// v2: 356 px face-box height at 960 tall = 1 (clip .6…1.2).
     var faceNorm: Double = 1
@@ -657,7 +678,7 @@ final class FlowMorph: @unchecked Sendable {
         if mo != nil, let ctx = context, let p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil),
            case let ph = ctx.timeline.phonemeTimings, !ph.isEmpty {
             if v2 == nil { v2 = MotionV2(params: p, faceNorm: faceNorm) }
-            if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { Double(ctx.timeline.sample(atMs: $0).openness) },
+            if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { ctx.timeline.loudness(atMs: $0) },
                                 order: order, resolve: resolve) {
                 am = r.amounts; v2Closed = r.closed; usedV2 = true
                 textureAmounts = am
@@ -673,7 +694,8 @@ final class FlowMorph: @unchecked Sendable {
         if usedV2, !overridden {
             // v2 texture: the leading key above .12 (hysteresis .05 for the one shown), fading in with
             // its amount; a closure is geometry only (neutral texture).
-            var j = am.indices.max { am[$0] < am[$1] }
+            let mbpIdx = order.firstIndex(of: "MBP")
+            var j = am.indices.filter { $0 != mbpIdx }.max { am[$0] < am[$1] }   // MBP: geometry only, never its texture
             if let jj = j, am[jj] < 0.12 { j = nil }
             if let d = v2Shown, let jj = j, jj != d, am[d] >= 0.12, am[jj] - am[d] < 0.05 { j = d }
             v2Shown = v2Closed ? nil : j
@@ -706,7 +728,7 @@ final class FlowMorph: @unchecked Sendable {
         var gn = [Float](repeating: 0, count: n2)
         var gs: [[Float]] = []
         for idx in act {
-            let a = am[idx], f = data.nk[order[idx]]!, bk = data.kn[order[idx]]!
+            let a = am[idx], f = nkF[order[idx]]!, bk = knF[order[idx]]!
             let cf = -a * (1 - a), cb = a * a
             var g = [Float](repeating: 0, count: n2)
             for q in stride(from: 0, to: n2, by: 2) {
@@ -728,7 +750,7 @@ final class FlowMorph: @unchecked Sendable {
         // amount fell to 0 (leaving it out left that weight unpainted: a black mouth).
         let zero = [Float](repeating: 0, count: n2)
         for idx in order.indices where cw[idx] > 0 {
-            let a = am[idx], f = data.nk[order[idx]]!, bk = data.kn[order[idx]]!
+            let a = am[idx], f = nkF[order[idx]]!, bk = knF[order[idx]]!
             let cf = (1 - a) * (1 - a), cb = -a * (1 - a)
             var g = [Float](repeating: 0, count: n2)
             let gj = act.firstIndex(of: idx).map { gs[$0] } ?? zero

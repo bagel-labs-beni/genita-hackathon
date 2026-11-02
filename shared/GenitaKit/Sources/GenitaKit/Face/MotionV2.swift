@@ -23,6 +23,14 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var idle = 0.2
     public var stressPercentile = 70.0
     public var shortStressedMs = 150.0
+    /// v25: short stressed vowel floors (lip aperture, jaw ladder input)
+    public var shortStressedLip = 0.45, shortStressedJaw = 0.30
+    /// v25: the frame before a closure eases its targets (×closePre)
+    public var closePre = 0.6
+    /// v25: loudness onset micro-movement added to the jaw (×amp)
+    public var micro = 0.15
+    /// v25: how much the chin follows the key flows below the lower lip (applied to the flows at load)
+    public var chinScale = 0.5
     public init() {}
 }
 
@@ -46,10 +54,11 @@ struct MotionV2 {
     private var rng = SplitMix64(seed: 9)
     private var jitter: [Double] = [0, 0, 0]
     private var idleNoise: [Double] = Array(repeating: 0, count: 12)
+    private var f1 = 0.0, f2 = 0.0, fPeak = 0.05
 
     init(params: MotionV2Params, faceNorm: Double) { p = params; self.faceNorm = faceNorm }
 
-    mutating func reset() { jv = 0; shape = [0, 0, 1]; x = []; v = []; lastMs = nil }
+    mutating func reset() { jv = 0; shape = [0, 0, 1]; x = []; v = []; lastMs = nil; f1 = 0; f2 = 0; fPeak = 0.05 }
 
     /// Key amounts at audio time `ms` (lookahead already added). `phonemes`: everything received so far
     /// for this reply (ms, sorted); `openness(ms)`: loudness 0…1. Returns nil when there are no phonemes.
@@ -110,10 +119,15 @@ struct MotionV2 {
         let xj = closed ? 0 : openness(ms) * pre * amp * (p.unstressed + (1 - p.unstressed) * st) * (0.85 + 0.3 * st)
         let aa = 1 - exp(-dt / p.jawAttackMs), ar = 1 - exp(-dt / p.jawReleaseMs)
         jv = closed ? 0 : jv + (xj > jv ? aa : ar) * (xj - jv)
+        // loudness onsets: a fast-minus-slow envelope nudges the jaw (running p95 ≈ decaying peak)
+        let o = openness(ms)
+        f1 += (1 - exp(-dt / 30)) * (o - f1); f2 += (1 - exp(-dt / 160)) * (o - f2)
+        fPeak = max(abs(f1 - f2), fPeak * exp(-dt / 2000))
+        if p.micro > 0, !closed, o > 0.05 { jv += p.micro * p.amp * max(0, (f1 - f2) / max(0.02, 0.8 * fPeak)) }
         var J = tanh(jv * p.jawKnee)
         if p.idle > 0, !closed { J = max(0, J + 0.15 * p.idle * sin(2 * .pi * 0.3 * ms / 1000 + 0.7)) }
         var A = p.lip > 0 ? min(1, jv / max(p.amp, 1e-3) * p.lip) : J
-        if shortStressed { A = max(A, 0.6); J = max(J, 0.4) }
+        if shortStressed { A = max(A, p.shortStressedLip); J = max(J, p.shortStressedJaw) }
         // key targets
         var tgt = [Double](repeating: 0, count: order.count)
         let mbp = order.firstIndex(of: "MBP")
@@ -144,6 +158,10 @@ struct MotionV2 {
                 let n = idleNoise.reduce(0, +) / 12
                 tgt[mid] += max(0, p.idle * (0.6 + 0.4 * sin(2 * .pi * 0.3 * ms / 1000) + 0.6 * n))
             }
+        }
+        // the frame before a closure eases off (the lips are already on their way)
+        if !closed, p.closePre < 1, ph.contains(where: { ["M", "B", "P"].contains($0.p) && $0.s > ms && $0.s <= ms + 40 }) {
+            tgt = tgt.map { $0 * p.closePre }
         }
         let target0 = tgt
         // spring (closures fast)
