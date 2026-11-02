@@ -129,9 +129,9 @@ def lip_map(kind):
         m['rig'] = {'chinLpHz': 2.0, 'chinGain': 0.3, 'chinRamp': [0.035, 0.03], 'blendFloor': [0.12, 0.40],
                     'teethTop': {'hyst': 0.05, 'min': 0.08, 'alpha': [0.06, 0.12], 'fade': [0.1, 0.3], 'cavity': [52, 28, 30],
                                  # v42-v44: teeth-layer-only tone + teeth leave one frame before a closure
-                                 'tone': {'cavityDark': 0.5, 'teethLift': 0.5, 'band': 0.85, 'split': 0.55, 'thrPct': 50},
+                                 'tone': {'cavityDark': 0.5, 'teethLift': 0.5, 'band': 0.90, 'split': 0.40, 'thrPct': 50},   # app v9.1 (critic 8.5)
                                  'exitBeforeClose': 1},
-                    'lipFlowPx': 1.2, 'lipFlowSigma': 0.012, 'lipTex': 0.15}
+                    'lipFlowPx': 1.2, 'lipFlowSigma': 0.012, 'lipTex': 0.15, 'lipTone': 1}
     m['profile'] = kind
     return m
 

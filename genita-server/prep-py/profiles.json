@@ -875,7 +875,9 @@
     "texPreClose": 0.4,
     "micro": 0.15,
     "warmStart": true,
-    "cornerRef": 3.36
+    "cornerRef": 3.36,
+    "stressedJawGain": 1.3,
+    "unstressedJawGain": 0.75
    }
   }
  },
