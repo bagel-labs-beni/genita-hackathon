@@ -373,9 +373,8 @@ test("store: saved first then newest; delete + undo; owner isolation; account de
   assert.equal((await s.list("alice")).length, 3);
   await s.remove("alice", "find-0002");
   now += UNDO_MS + 1;
-  assert.equal(await s.restore("alice", "find-0002"), true, "restore still possible before a purge runs");
-  await s.remove("alice", "find-0002");
-  now += UNDO_MS + 1;
+  // PROTOCOL: Undo is 24 h. It used to work until the next purge ran (Codex review 11/2): no longer.
+  assert.equal(await s.restore("alice", "find-0002"), false, "no restore after the undo window, purge or not");
   assert.equal((await s.list("alice")).length, 2);
   assert.equal(await s.restore("alice", "find-0002"), false, "purged after the undo window");
   // re-put keeps saved
