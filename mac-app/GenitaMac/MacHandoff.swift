@@ -343,7 +343,79 @@ struct MacHomeView:View {
     private static let blue=Color(red:0,green:162.0/255,blue:1)
     private var paired:Bool { handoff.link.connected }
     private var spacedCode:String { let c=handoff.link.code;return c.count==6 ? String(c.prefix(3))+" "+String(c.suffix(3)) : c }
+    /// MAC-3 v2: "Pair it" opens MAC-P in place (paired users never see a code).
+    @State private var pairing=false
     var body:some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+    // MARK: Mac v2 (Figma 282:2 · MAC-2 / MAC-P / MAC-3 / MAC-4 / MAC-OFF): title → status row → body → buttons, one rhythm.
+    private enum V2Screen:Equatable { case setup, pair, onPhone, here, offline(String) }
+    private var v2Screen:V2Screen {
+        switch kind {
+        case .noCompanion: .setup
+        case .onPhone: pairing && !paired ? .pair : .onPhone
+        case .here: paired ? .here : .pair
+        case .offline(let reason): .offline(reason)
+        }
+    }
+    private var v2Title:String {
+        switch v2Screen { case .setup: "Set up on your iPhone."; case .pair: "Pair with your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac."; case .offline: "Can’t reach Genita." }
+    }
+    private var v2Status:(String,MacV2Status.Kind) {
+        switch v2Screen {
+        case .setup: ("Waiting for your companion",.waiting)
+        case .pair: ("Looking for your iPhone",.waiting)
+        case .onPhone: ("Talking on your iPhone",.live)
+        case .here: ("Paired with your iPhone",.live)
+        case .offline: ("No connection",.idle)
+        }
+    }
+    private func v2Para(_ text:String)->some View {
+        Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+    }
+    private var v2Body:some View {
+        VStack(alignment:.leading,spacing:0) {
+            MacV2Title(text:v2Title)
+            MacV2Status(text:v2Status.0,kind:v2Status.1,id:"macHomeStatus").padding(.top,10)
+            switch v2Screen {
+            case .setup:
+                v2Para("Your companion is made on iPhone: face, voice and setup. They’ll show up here when you’re done.").padding(.top,16)
+                MacV2Button(label:"Get Genita for iPhone",style:.secondary,id:"macGetGenita") { if let url=URL(string:"https://testflight.apple.com/join/Ybqh482p") {NSWorkspace.shared.open(url)} }.padding(.top,24)
+            case .pair:
+                MacPairingCode(code:handoff.link.code,connected:paired).padding(.top,16)
+                if kind == .here && handoff.canMoveToPhone {
+                    MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() }.padding(.top,24)
+                }
+                if kind == .onPhone {
+                    MacV2Button(label:"Not now",style:.text,id:"macPairNotNow") { pairing=false }.frame(maxWidth:.infinity).padding(.top,12)
+                }
+            case .onPhone:
+                MacV2Button(label:"Continue on this Mac",id:"macContinueHere") { handoff.continueHere() }.padding(.top,24)
+                if !paired {
+                    Rectangle().fill(Color(white:232.0/255)).frame(height:1).padding(.top,20)
+                    HStack(spacing:6) {
+                        Text("First time with this iPhone?").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
+                        Button("Pair it") { pairing=true }.buttonStyle(.plain).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline()
+                            .padding(.horizontal,4).frame(height:44).contentShape(Rectangle()).accessibilityIdentifier("macPairIt")
+                    }.frame(height:44).padding(.top,4)
+                }
+            case .here:
+                HStack(spacing:12) {
+                    if handoff.canMoveToPhone { MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() } }
+                    MacV2Button(label:"Show screen",style:.secondary,id:"macShowScreen") { handoff.showRegistration() }
+                }.padding(.top,24)
+                Text("Show screen helps your iPhone find this display, so you can pass the call across.")
+                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(5).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
+            case .offline(let reason):
+                v2Para(reason).padding(.top,16)
+                MacV2Button(label:"Try again",id:"macTryAgain") { Task { await MacCall.shared.refresh() } }.padding(.top,24)
+            }
+        }
+        .padding(.horizontal,32).padding(.top,24).padding(.bottom,28).frame(width:420,alignment:.topLeading)
+        .background(MacSheetInk.sheet)
+        .animation(.easeOut(duration:0.2),value:v2Screen)
+    }
+    private var v1Body:some View {
         VStack(alignment:.leading,spacing:12) {
             Text(title).font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height:34,alignment:.leading)
                 .fixedSize(horizontal:true,vertical:false).accessibilityAddTraits(.isHeader)
@@ -387,7 +459,7 @@ struct MacHomeView:View {
     }
     /// "First time with this iPhone?" + the six digits (MAC-3 88:19 / 88:21).
     @ViewBuilder private var pairingBlock:some View {
-        if MacDesignV2.enabled { MacPairingCode(code:handoff.link.code,connected:paired).padding(.top,8) } else { pairingBlockV1 }
+        pairingBlockV1
     }
     @ViewBuilder private var pairingBlockV1:some View {
         Text("First time with this iPhone? Enter this code in Genita on your iPhone.")

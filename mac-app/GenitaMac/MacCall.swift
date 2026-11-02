@@ -38,6 +38,12 @@ import Foundation
     /// The companion's scene picture from the server (prep `sceneUrl`), shown as the face until the
     /// Muse Image face layer (#151/#152, lane L4) replaces the still.
     @Published private(set) var face: NSImage?
+    /// Mac v2 Settings' Account row: the signed-in address (Apple's relay address included), else the provider.
+    @Published private(set) var accountLabel: String?
+    #if DEBUG
+    /// watch-shots review renders only
+    func reviewAccountLabel(_ label: String) { accountLabel = label }
+    #endif
     let call = CallController.shared
     let auth = GenitaAuthClient()
     private var signIn: WebSignIn?
@@ -74,6 +80,7 @@ import Foundation
         var plan: CompanionCallPlan?
         do {
             let me: GenitaMe = try await get("/me", token: token)
+            if gen == generation { accountLabel = me.user.email ?? me.user.displayName ?? (me.user.provider == "apple" ? "Apple ID" : me.user.provider.capitalized) }
             if !me.consented {
                 next = .needsConsent
             } else if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
@@ -173,6 +180,7 @@ import Foundation
         generation += 1
         account = .signedOut
         face = nil
+        accountLabel = nil
         history = []
         call.end()
         // Clear now and revoke exactly this token, so a sign-in right after can't be undone by a slow logout.

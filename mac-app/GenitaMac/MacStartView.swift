@@ -27,7 +27,33 @@ struct MacStartView: View {
 /// The first moment after launch while `/me` answers: the window's own background, nothing else.
 struct MacLaunchBlank: View {
     var body: some View {
-        MacSheetInk.sheet.frame(width: 420, height: 296).accessibilityLabel("Genita").accessibilityIdentifier("macLaunch")
+        if MacDesignV2.enabled { MacLaunchV2() } else {
+            MacSheetInk.sheet.frame(width: 420, height: 296).accessibilityLabel("Genita").accessibilityIdentifier("macLaunch")
+        }
+    }
+}
+
+/// MAC-0 v2: the A′ "Corona calm" resting frame at the Mac window's size (launch colour #070707, white disc
+/// in the mark's counter with the corona only behind it, the original mark and wordmark). The animated splash
+/// is #191's `genitaSplash`; this is what shows while /me answers instead of an empty white window.
+struct MacLaunchV2: View {
+    var body: some View {
+        ZStack {
+            Color(white: 7.0 / 255)
+            RadialGradient(colors: [Color(red: 1, green: 250.0 / 255, blue: 240.0 / 255).opacity(0.55), Color(red: 1, green: 240.0 / 255, blue: 220.0 / 255).opacity(0.18),
+                                    Color(red: 1, green: 240.0 / 255, blue: 220.0 / 255).opacity(0.05), .clear], center: .center, startRadius: 0, endRadius: 110)
+                .frame(width: 220, height: 220).position(x: 210, y: 104)
+            Circle().fill(Color.white).frame(width: 34, height: 34)
+                .overlay(Circle().strokeBorder(Color(red: 250.0 / 255, green: 238.0 / 255, blue: 221.0 / 255), lineWidth: 1))
+                .shadow(color: Color(red: 1, green: 236.0 / 255, blue: 210.0 / 255).opacity(0.9), radius: 11)
+                .position(x: 224, y: 104)
+            resourceImage("brandmark").renderingMode(.template).resizable().foregroundStyle(MacSheetInk.ink)
+                .frame(width: 108, height: 50.4).rotationEffect(.degrees(-14)).position(x: 210, y: 104)
+            resourceImage("logo").renderingMode(.template).resizable().foregroundStyle(Color(red: 243.0 / 255, green: 234.0 / 255, blue: 223.0 / 255))
+                .frame(width: 72, height: 25.8).position(x: 210, y: 185)
+        }
+        .frame(width: 420, height: 296)
+        .accessibilityElement().accessibilityLabel("Genita").accessibilityIdentifier("macLaunch")
     }
 }
 
@@ -42,6 +68,36 @@ struct MacSignInView: View {
     @State private var email = false
 
     var body: some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+
+    /// MAC-1 v2 (Mac v2 r01): sentence title like every other window, one legal sentence with inline links,
+    /// outlined second button, Judge access as a small mute link (D41).
+    private var v2Body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacV2Title(text: "Sign in to Genita.")
+            Text("Use the same account as on your iPhone.").font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink)
+                .frame(height: 22, alignment: .leading).padding(.top, 8)
+            VStack(spacing: 12) {
+                MacV2Button(label: "Continue with Apple", icon: Image(systemName: "apple.logo"), loading: call.account == .signingIn, id: "macSignIn") { call.signInWithApple() }
+                MacV2Button(label: "Continue with email", style: .secondary, id: "macContinueWithEmail") { email = true }
+            }.disabled(call.account == .signingIn).padding(.top, 24)
+            if call.account == .signingIn || call.signInMessage != nil {
+                Text(call.account == .signingIn ? "Finish signing in in the browser window that opened." : call.signInMessage ?? "")
+                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.ink).lineSpacing(5).fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 356, alignment: .leading).padding(.top, 16).accessibilityIdentifier("macSignInMessage")
+            }
+            MacV2Legal().padding(.top, 16)
+            Button("Judge access") { judge = true }.buttonStyle(.plain).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).underline()
+                .frame(height: 32).padding(.top, 2).accessibilityIdentifier("macJudgeAccess")
+        }
+        .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 22).frame(width: 420, alignment: .topLeading)
+        .background(MacSheetInk.sheet)
+        .sheet(isPresented: $judge) { MacJudgeCodeSheet() }
+        .sheet(isPresented: $email) { MacEmailSheet() }
+    }
+
+    private var v1Body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Genita").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
@@ -93,14 +149,65 @@ struct MacEmailSheet: View {
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     /// non-default `step` / `email` only for the review renders (watch-shots harness)
-    init(step: Step = .address, email: String = "", message: String? = nil) {
+    init(step: Step = .address, email: String = "", message: String? = nil, code: String = "") {
         _step = State(initialValue: step)
+        _code = State(initialValue: code)
         _email = State(initialValue: email)
         _sentTo = State(initialValue: email)
         _message = State(initialValue: message)
     }
 
     var body: some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+
+    /// MAC-1e / MAC-1c v2: the home window's title, outlined field, 50 pt buttons; the code is P01's six boxes.
+    private var v2Body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacV2Title(text: step == .address ? "Continue with email." : "Check your email.")
+            Text(step == .address ? "We’ll send a six-digit code. No password." : "Enter the code we sent to \(sentTo).")
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineLimit(1).truncationMode(.middle).padding(.top, 8)
+            if step == .address && MacDesignV2.reviewRender {
+                // review renders: ImageRenderer can't draw the AppKit field, so draw its focused empty look
+                Text(verbatim: "you@example.com").font(MacSheetInk.sans(16)).foregroundStyle(MacDesignV2.faint)
+                    .padding(.horizontal, 16).frame(maxWidth: .infinity, alignment: .leading).frame(height: 50)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(MacSheetInk.ink, lineWidth: 1.5)).padding(.top, 24)
+            } else if step == .address {
+                TextField("you@example.com", text: $email).textContentType(.emailAddress)
+                    .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
+                    .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
+                    .padding(.horizontal, 16).frame(height: 50)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
+                    .onSubmit { sendCode() }.padding(.top, 24).accessibilityIdentifier("macEmailField")
+            } else {
+                MacV2CodeField(code: $code, disabled: sending, id: "macEmailCodeField") { verify() }.padding(.top, 20)
+            }
+            if let message {
+                Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
+                    .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macEmailError")
+            }
+            MacV2Button(label: step == .address ? "Send code" : "Continue", loading: sending, id: "macEmailContinue") { step == .address ? sendCode() : verify() }
+                .disabled(sending || !canContinue).keyboardShortcut(.defaultAction).padding(.top, step == .address ? 12 : 24)
+            if step == .code {
+                HStack(spacing: 0) {
+                    MacV2Button(label: resendLeft > 0 ? "Resend in \(resendLeft)s" : "Resend code", style: .text, id: "macEmailResend") { sendCode() }.disabled(sending || resendLeft > 0)
+                    MacV2Button(label: "Use another email", style: .text, id: "macEmailOther") { step = .address; code = ""; message = nil; focused = true }
+                }.frame(maxWidth: .infinity).padding(.top, 4)
+                Button("") { dismiss() }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0)
+            } else {
+                MacV2Button(label: "Cancel", style: .text, id: "macEmailCancel") { dismiss() }.disabled(sending).keyboardShortcut(.cancelAction)
+                    .frame(maxWidth: .infinity).padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 20).frame(width: 420, alignment: .topLeading)
+        .background(MacSheetInk.sheet)
+        .onAppear { focused = true }
+        .onReceive(tick) { now = $0 }
+    }
+
+    private var v1Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
             Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
@@ -250,6 +357,34 @@ struct MacConsentView: View {
     ]
 
     var body: some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+
+    /// CS01-M v2: iPhone CS01 copy; rows 15/14 like every other list; the links fold into one legal sentence.
+    private var v2Body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacV2Title(text: "Before we start.")
+            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(7).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
+                .frame(width: 356, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(rows, id: \.0) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.0).font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink)
+                        Text(row.1).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).fixedSize(horizontal: false, vertical: true)
+                    }.padding(.vertical, 8).accessibilityElement(children: .combine)
+                }
+            }.padding(.top, 20)
+            MacV2Legal(prefix: "Read the ").padding(.top, 16)
+            MacV2Button(label: "Agree and continue", loading: sending, id: "macConsentAgree") { agree() }.disabled(sending).padding(.top, 20)
+            MacV2Button(label: "Not now", style: .text, id: "macConsentNotNow") { call.signOut() }.disabled(sending).frame(maxWidth: .infinity).padding(.top, 4)
+        }
+        .padding(.horizontal, 32).padding(.top, 24).padding(.bottom, 20).frame(width: 420, alignment: .topLeading)
+        .background(MacSheetInk.sheet)
+        .alert("Couldn’t save that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
+    }
+
+    private var v1Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Before we start.").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
@@ -297,6 +432,58 @@ struct MacSettingsSheet: View {
     @ObservedObject private var call = MacCall.shared
 
     var body: some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+
+    /// MAC-SET v2: who is signed in and which build, the legal pages as rows, Sign out as a row, one Done button.
+    private var v2Body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MacV2Title(text: "Settings")
+            VStack(spacing: 0) {
+                row("Account", value: call.accountLabel ?? "Signed in", id: "macSettingsAccount")
+                Divider().overlay(Color(white: 232.0 / 255))
+                row("Version", value: Self.version, id: "macSettingsVersion")
+                Divider().overlay(Color(white: 232.0 / 255))
+                link("Terms", MacDesignV2.terms)
+                Divider().overlay(Color(white: 232.0 / 255))
+                link("Privacy Policy", MacDesignV2.privacy)
+            }.overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 232.0 / 255), lineWidth: 1)).padding(.top, 20)
+            Button { dismiss(); call.signOut() } label: {
+                Text("Sign out").font(MacSheetInk.sans(15, .medium)).foregroundStyle(MacSheetInk.ink)
+                    .padding(.horizontal, 16).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+            }.buttonStyle(.plain).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 232.0 / 255), lineWidth: 1))
+                .padding(.top, 12).accessibilityIdentifier("macSettingsSignOut")
+            MacV2Button(label: "Done", id: "macSettingsDone") { dismiss() }.keyboardShortcut(.defaultAction).padding(.top, 24)
+        }
+        .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 24).frame(width: 420, alignment: .topLeading)
+        .background(MacSheetInk.sheet)
+    }
+
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "–"
+        let b = info?["CFBundleVersion"] as? String
+        return b.map { "\(v) (\($0))" } ?? v
+    }
+    private func row(_ title: String, value: String, id: String) -> some View {
+        HStack {
+            Text(title).foregroundStyle(MacSheetInk.ink)
+            Spacer(minLength: 12)
+            Text(value).foregroundStyle(MacSheetInk.mute).lineLimit(1).truncationMode(.middle)
+        }.font(MacSheetInk.sans(15)).padding(.horizontal, 16).frame(height: 44)
+            .accessibilityElement(children: .combine).accessibilityIdentifier(id)
+    }
+    private func link(_ title: String, _ url: String) -> some View {
+        Button { if let u = URL(string: url) { NSWorkspace.shared.open(u) } } label: {
+            HStack {
+                Text(title).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink)
+                Spacer()
+                Image(systemName: "arrow.up.right").font(.system(size: 11, weight: .medium)).foregroundStyle(MacSheetInk.mute)
+            }.padding(.horizontal, 16).frame(height: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).accessibilityAddTraits(.isLink)
+    }
+
+    private var v1Body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Settings").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
