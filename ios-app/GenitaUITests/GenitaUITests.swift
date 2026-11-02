@@ -82,6 +82,8 @@ final class GenitaUITests: XCTestCase {
         open("connecting"); capture("30-연결중"); app.terminate()
         open("conversation"); capture("31-영상대화")
         XCTAssertFalse(app.buttons["Share screen"].exists)
+        // #147: the call now starts on its own in this stage; the rail appears once it's on screen
+        XCTAssertTrue(app.buttons["cameraToggle"].waitForExistence(timeout: 15), "camera toggle on the call rail")
         XCTAssertTrue(app.buttons["cameraToggle"].isEnabled)
         XCTAssertTrue(app.buttons["micToggle"].isEnabled)
         app.buttons["more"].tap(); XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)); capture("31a-더보기")
