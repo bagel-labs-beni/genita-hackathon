@@ -183,7 +183,7 @@ import XCTest
     }
 
     private func productStarted(_ id: String) -> ServerEvent {
-        try! ServerEvent.decode(#"{"type":"find.started","findId":"\#(id)","utteranceId":1,"kind":"product","title":"Looking for 2 that match your style…","detail":"Jacket"}"#)
+        try! ServerEvent.decode(#"{"type":"find.started","findId":"\#(id)","utteranceId":1,"kind":"product","title":"Finding 2 for your style…","detail":"Jacket"}"#)
     }
     private let noMatch = #"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
 
@@ -241,5 +241,14 @@ import XCTest
         XCTAssertNotEqual(CallController.tokenSubject(jwt("user-a")), CallController.tokenSubject(jwt("user-b")))
         XCTAssertEqual(CallController.tokenSubject("shared-dev-token"), "dev")
         XCTAssertNil(CallController.tokenSubject(nil))
+    }
+
+    func testStatusLineShortensByWholeWordsOnly() {
+        XCTAssertEqual(OneLineText.afterDot("Light jacket · checking 2 shops"), ["Checking 2 shops"])
+        XCTAssertEqual(OneLineText.afterDot("Finding 2 for your style…"), [])
+        let opts = OneLineText.options("Couldn’t find a good match", [])
+        XCTAssertEqual(opts.first, "Couldn’t find a good match")
+        XCTAssertEqual(Array(opts.dropFirst()), ["Couldn’t find a good…", "Couldn’t find a…", "Couldn’t find…", "Couldn’t…"])
+        for o in opts { XCTAssertTrue(o.replacingOccurrences(of: "…", with: "").split(separator: " ").allSatisfy { "Couldn’t find a good match".split(separator: " ").contains($0) }, "no cut word: \(o)") }
     }
 }

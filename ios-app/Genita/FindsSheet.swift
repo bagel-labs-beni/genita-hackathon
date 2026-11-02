@@ -197,8 +197,14 @@ struct FindsSheet: View {
             HStack(spacing: 12) {
                 FindsTalkWave()
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(f?.failureLines?.title ?? f?.searchTitle ?? "Looking").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                    Text(f?.failureLines?.body ?? f?.searchDetail ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(2)
+                    // one line each next to Stop at 390 pt (Chelsea 11/3): never wraps, never cuts a word
+                    OneLineText(text: f?.failureLines?.title ?? f?.searchTitle ?? "Looking", font: TypeStyle.body(16, .medium), color: CallInk.ink)
+                        .accessibilityIdentifier("findSearchTitle")
+                    let detail = f?.failureLines?.body ?? f?.searchDetail ?? ""
+                    if !detail.isEmpty {
+                        OneLineText(text: detail, font: TypeStyle.body(14), color: CallInk.mute, alternates: OneLineText.afterDot(detail))
+                            .accessibilityIdentifier("findSearchDetail")
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Button(f?.failed == nil ? "Stop" : f?.canRetry == true ? "Retry" : "Close") {
                     withAnimation(.drawer) { f?.failed == nil ? finds.stop() : f?.canRetry == true ? finds.retry() : finds.close() }
@@ -881,5 +887,43 @@ struct FindsToast: View {
         .padding(.leading, 16).padding(.trailing, 8)
         .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain).accessibilityIdentifier("findToast")
+    }
+}
+
+
+/// A status line that stays on one line: the whole text when it fits, else the given alternates, else the text
+/// shortened by whole words with "…" — never a cut word, never a smaller font. VoiceOver reads the whole text.
+struct OneLineText: View {
+    let text: String
+    let font: Font
+    let color: Color
+    var alternates: [String] = []
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(Self.options(text, alternates), id: \.self) { option in
+                Text(option).font(font).foregroundStyle(color).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .accessibilityElement(children: .ignore).accessibilityLabel(text)
+    }
+
+    /// "Light jacket · checking 2 shops" → ["Checking 2 shops"]
+    static func afterDot(_ text: String) -> [String] {
+        guard let r = text.range(of: " · ") else { return [] }
+        let tail = String(text[r.upperBound...])
+        return tail.isEmpty ? [] : [tail.prefix(1).uppercased() + tail.dropFirst()]
+    }
+
+    static func options(_ text: String, _ alternates: [String]) -> [String] {
+        var out = [text] + alternates
+        var words = text.split(separator: " ").map(String.init)
+        while words.count > 1 {
+            words.removeLast()
+            let head = words.joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " ,;:·–-…."))
+            if !head.isEmpty { out.append(head + "…") }
+        }
+        var seen = Set<String>()
+        return out.filter { seen.insert($0).inserted }
     }
 }
