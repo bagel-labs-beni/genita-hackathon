@@ -63,3 +63,16 @@ test("aborting the parent aborts every lane", async () => {
   await p;
   assert.deepEqual(log.sort(), ["l0 aborted", "l1 aborted"]);
 });
+
+test("closing the consumer aborts and closes all three independent iterators", async () => {
+  const closed: number[] = [];
+  const output = hedged(3, async function* (signal, lane): AsyncGenerator<Ev> {
+    try {
+      if (lane) await sleep(200, signal);
+      yield { type: "text", v: "Yes!" };
+    } finally { closed.push(lane); }
+  }, new AbortController().signal, isText);
+  for await (const _event of output) break;
+  await sleep(5);
+  assert.deepEqual(closed.sort(), [0, 1, 2]);
+});

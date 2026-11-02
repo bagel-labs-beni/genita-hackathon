@@ -72,7 +72,7 @@ export async function* sparkStream(
     for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
       for (const ev of parser.feed(dec.decode(chunk, { stream: true }))) {
         if (ev.data === "[DONE]") continue;
-        let e: { type?: string; delta?: string; item?: FunctionCall; response?: { id?: string; status?: string; output?: FunctionCall[]; error?: { message?: string } | null } };
+        let e: { type?: string; delta?: string; item?: FunctionCall; response?: { id?: string; status?: string; output?: Array<FunctionCall | { type: "message"; content?: Array<{ type: string; text?: string }> }>; error?: { message?: string } | null } };
         try {
           e = JSON.parse(ev.data);
         } catch {
@@ -81,7 +81,7 @@ export async function* sparkStream(
         const type = e.type ?? ev.event;
         if (type === "response.created" && e.response?.id) responseId = e.response.id;
         if (type === "response.output_text.delta" && e.delta) {
-          clearTimeout(timer);
+          if (e.delta.trim()) clearTimeout(timer);
           text += e.delta;
           yield { type: "text", delta: e.delta };
         } else if (type === "response.output_item.done" && e.item?.type === "function_call") {
@@ -93,6 +93,14 @@ export async function* sparkStream(
         } else if (type === "response.failed" || type === "error") {
           throw new UpstreamError("meta", null, e.response?.error?.message ?? ev.data);
         } else if (type === "response.completed" || type === "response.incomplete") {
+          // Some completed responses include output only in the terminal
+          // object. Recover the missing suffix, never replay existing deltas.
+          const finalText = outputText(e.response ?? {});
+          if (finalText.startsWith(text) && finalText.length > text.length) {
+            const delta = finalText.slice(text.length);
+            text = finalText;
+            yield { type: "text", delta };
+          }
           for (const item of e.response?.output ?? []) {
             if (item.type === "function_call" && !calls.has(item.call_id)) { calls.add(item.call_id); yield item; }
           }
@@ -107,7 +115,7 @@ export async function* sparkStream(
   }
 }
 
-type ResponseObject = { id: string; output?: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
+type ResponseObject = { id?: string; output?: Array<{ type: string; content?: Array<{ type: string; text?: string }> }> };
 
 export function outputText(d: ResponseObject): string {
   return (d.output ?? [])

@@ -163,6 +163,28 @@ test("a web_search after narration also suppresses the first clause", async (t) 
   assert.deepEqual(ttsCalls, ["Tofu works."]);
 });
 
+test("tool narration with no answer is retried instead of producing an empty reply", async (t) => {
+  const calls: SparkRequest[] = [];
+  const { session, client, ttsCalls } = setup({ deps: { async *spark(req): AsyncGenerator<SparkStreamEvent> {
+    calls.push(req);
+    if (calls.length === 1) {
+      yield { type: "text", delta: "<curious> Let me search the web for that." };
+      yield { type: "tool", name: "web_search", status: "completed" };
+      yield { type: "done", responseId: "r1", text: "", status: "incomplete" };
+      return;
+    }
+    yield { type: "text", delta: "Tofu works." };
+    yield { type: "done", responseId: "r2", text: "Tofu works.", status: "completed" };
+  } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a recipe." }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, "Tofu works.");
+  assert.deepEqual(ttsCalls, ["Tofu works."]);
+  assert.equal(calls.length, 2);
+  assert.equal(client.json.filter((m) => m.type === "reply.delta").map((m) => m.text).join(""), "Tofu works.");
+});
+
 test("interpretation preserves a translated tool announcement as content", async (t) => {
   const text = "I'll look that up. Tofu works.";
   const { session, client, ttsCalls } = setup({ sparkText: text });
@@ -300,7 +322,7 @@ test("a reply opening with the same interjection as a recent reply is spoken and
   session.close();
 });
 
-test("an empty Spark answer (e.g. a web search that never produced text) is retried once without tools", async () => {
+test("an empty Spark answer (e.g. a web search that never produced text) is retried once with the same tools", async () => {
   const asr = new FakeAsr();
   const client = new FakeClient();
   const calls: SparkRequest[] = [];
@@ -327,7 +349,7 @@ test("an empty Spark answer (e.g. a web search that never produced text) is retr
   assert.equal(reply.text, "Try a comedy special tonight.");
   assert.equal(calls.length, 2);
   assert.ok(calls[0].tools?.length);
-  assert.equal(calls[1].tools, undefined);
+  assert.deepEqual(calls[1], calls[0]);
   session.close();
 });
 
