@@ -263,7 +263,11 @@ final class OnboardingUITests: XCTestCase {
         if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
         XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+        // Genita is behind Safari now; it may already be suspended (`.runningBackgroundSuspended`), so any non-foreground
+        // state counts (waiting for exactly `.runningBackground` failed on CI after #309)
+        let left = Date().addingTimeInterval(5)
+        while app.state == .runningForeground, Date() < left { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertNotEqual(app.state, .runningForeground, "Genita left the foreground for the AI app")
         app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
