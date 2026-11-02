@@ -36,6 +36,17 @@ import UIKit
         model.route(.timeLimit)
         XCTAssertEqual(model.stage, .signIn, "4001 is not a route")
     }
+    func testSignOutSurvivesARestartAndSignInReturnsToTheCall() {
+        let model = AppState(storage: store)
+        model.setup.hasOnboarded = true; model.go(.conversation); model.save()
+        model.signedOut()
+        XCTAssertEqual(model.stage, .signIn)
+        let restarted = AppState(storage: store)
+        XCTAssertEqual(restarted.stage, .signIn, "a signed-out user does not land back in the call")
+        restarted.signedIn()
+        XCTAssertEqual(restarted.stage, .conversation)
+        XCTAssertEqual(AppState(storage: store).stage, .conversation)
+    }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
         model.go(.prompt); model.go(.paste); model.go(.preparing); model.go(.preferences)
