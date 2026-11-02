@@ -43,6 +43,11 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["copyPrompt"].waitForExistence(timeout: 15), "StartRouter → I01")
         XCTAssertTrue(app.buttons["openChatGPT"].exists && app.buttons["openClaude"].exists)
         XCTAssertTrue(app.buttons["skipImport"].exists)
+        // D44/D55: the copy says "the AI assistant you use"; only the two Open buttons name ChatGPT / Claude
+        let named = NSPredicate(format: "(label CONTAINS[c] 'chatgpt' OR label CONTAINS[c] 'claude') AND NOT (label BEGINSWITH 'Open ')")
+        XCTAssertFalse(app.staticTexts.matching(named).firstMatch.exists, "I01 copy names no assistant (D44)")
+        let skipLabel = app.buttons["skipImport"].label.lowercased()
+        XCTAssertFalse(skipLabel.contains("chatgpt") || skipLabel.contains("claude"), "I01 skip link names no assistant (D44)")
         capture("I01")
         primary.tap()
 
@@ -216,5 +221,37 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(primary.isEnabled, "the default voice is picked, Continue works")
         primary.tap()
         XCTAssertTrue(app.textFields["companionNameInput"].waitForExistence(timeout: 10), "NM01 follows")
+    }
+
+    /// I01 "I don't use an AI assistant" → N1 → N2 → N3 → I04-S, for the eye check against Figma N1–N3.
+    /// Named to run before testOnboardingAgainstTheServer: it creates no companion on the stub.
+    func testImportSkipPath() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
+        app.launch()
+        func capture(_ name: String) {
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "onb-" + name
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        let skip = app.buttons["skipImport"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 15), "StartRouter → I01")
+        skip.tap()
+        XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5), "N1")
+        app.buttons["Design"].tap()
+        capture("N1")
+        app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(element("skipReplies").waitForExistence(timeout: 5), "N2")
+        app.buttons["Show me options"].tap()
+        capture("N2")
+        app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5), "N3")
+        capture("N3")
+        app.buttons["primaryCTA"].tap()
+        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
+        capture("I04-S")
     }
 }

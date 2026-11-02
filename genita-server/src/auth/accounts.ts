@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { iso, type Db, type Queryable } from "../db/index.ts";
 
-export type Provider = "apple" | "google" | "dev";
+export type Provider = "apple" | "google" | "dev" | "email";
 export type Device = "iphone" | "mac" | "web" | "dev";
 export const DEVICES: Device[] = ["iphone", "mac", "web", "dev"];
 export const SESSION_DAYS = 30;
@@ -38,20 +38,40 @@ export class Accounts {
     this.db = db;
   }
 
-  /** Insert or find by (provider, sub). Email refreshes when given; the display name only fills a blank (Apple sends it once). */
-  async upsertUser(p: { provider: Provider; sub: string; email?: string | null; displayName?: string | null }): Promise<{ user: User; isNew: boolean }> {
+  /**
+   * Insert or find by (provider, sub). Email refreshes when given, together with whether the provider
+   * verified it (only a verified address can be reached by email sign-in); the display name only fills a
+   * blank (Apple sends it once).
+   */
+  async upsertUser(p: { provider: Provider; sub: string; email?: string | null; emailVerified?: boolean; displayName?: string | null }): Promise<{ user: User; isNew: boolean }> {
     const name = p.displayName?.trim().slice(0, 40) || null;
     const r = await this.db.query(
-      `INSERT INTO users (provider, provider_sub, email, display_name)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO users (provider, provider_sub, email, email_verified, display_name)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (provider, provider_sub) DO UPDATE
          SET email = COALESCE(EXCLUDED.email, users.email),
+             email_verified = CASE WHEN EXCLUDED.email IS NULL THEN users.email_verified ELSE EXCLUDED.email_verified END,
              display_name = COALESCE(NULLIF(users.display_name, ''), EXCLUDED.display_name),
              updated_at = now()
        RETURNING *, (xmax = 0) AS inserted`,
-      [p.provider, p.sub, p.email ?? null, name],
+      [p.provider, p.sub, p.email ?? null, !!p.email && p.emailVerified === true, name],
     );
     return { user: toUser(r.rows[0]), isNew: r.rows[0].inserted === true };
+  }
+
+  /**
+   * Email code sign-in: the account an earlier email sign-in made for this address, else the oldest
+   * account whose provider verified it (Apple with email_verified), else a new 'email' account.
+   * Dev/judge rows never match.
+   */
+  async userForVerifiedEmail(email: string): Promise<{ user: User; isNew: boolean }> {
+    // an email account made for this address wins over any later-verified one, so the address never switches accounts
+    const r = await this.db.query(
+      "SELECT * FROM users WHERE lower(email) = $1 AND email_verified AND provider <> 'dev' ORDER BY (provider = 'email') DESC, created_at, id LIMIT 1",
+      [email],
+    );
+    if (r.rows[0]) return { user: toUser(r.rows[0]), isNew: false };
+    return this.upsertUser({ provider: "email", sub: email, email, emailVerified: true });
   }
 
   async getUser(id: string, q: Queryable = this.db): Promise<User | null> {
@@ -141,6 +161,11 @@ export class Accounts {
       prepStatus: (c.rows[0]?.prep_status ?? "none") as "none" | "running" | "ready" | "failed",
       conversation: conv.rows[0] ? { activeDevice: conv.rows[0].active_device ?? null, epoch: Number(conv.rows[0].epoch) } : null,
     };
+  }
+
+  /** Companion ids identify legacy assets in avatars/<id>/ blob storage. */
+  async companionIds(userId: string): Promise<string[]> {
+    return (await this.db.query("SELECT id FROM companions WHERE user_id = $1", [userId])).rows.map((r) => String(r.id));
   }
 
   /** Deletes the user row; ON DELETE CASCADE clears every user-owned table. */

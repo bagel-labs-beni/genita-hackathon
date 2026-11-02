@@ -9,16 +9,18 @@ export const PROTOCOL_VERSION = 1;
 /** Binary server frame: "GA" | kind u8 | reserved u8 | seq u32 LE | payload */
 export const FRAME_HEADER_BYTES = 8;
 export const FRAME_KIND_TTS_PCM = 1;
-/** Peter mouth crop: header seq = utteranceId; payload = frame u32 LE + JPEG (F4-L17) */
-export const FRAME_KIND_PETER = 2;
 
-export type LipMode = "peter" | "atlas" | "none";
+export type LipMode = "atlas" | "none";
+/** Who speaks the reply: the server (Meta voice PCM frames) or the device (`say` text, on-device TTS). */
+export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
 export type CancelReason = "barge_in" | "text" | "client";
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
 export type WordTiming = { w: string; s: number; e: number };
+/** ARPAbet label (GenitaKit LipViseme(phoneme:)), ms on the reply's audio timeline */
+export type PhonemeTiming = { p: string; s: number; e: number };
 export type LipPlan = { requested: LipMode; active: LipMode; reason: string | null };
 
 // F8 interpretation
@@ -65,9 +67,11 @@ export type StartMessage = {
   mode?: Mode;
   language?: string;
   voiceId?: string;
-  lip?: LipMode | { mode: LipMode; fallback?: LipMode; avatarId?: string };
+  lip?: LipMode | { mode: LipMode; fallback?: LipMode };
   bargeIn?: { minMs?: number; minWords?: number };
   mic?: boolean;
+  /** default: "device" unless the server runs server TTS (GENITA_VOICE_URL + GENITA_VOICE_TOKEN) */
+  tts?: TtsMode;
   /** F8: only read when mode is "interpret" */
   interpret?: InterpretOptionsWire;
   /**
@@ -151,6 +155,8 @@ export type ServerEvent =
       lip: LipPlan;
       voiceId: string;
       bargeIn: { minMs: number; minWords: number };
+      /** the voice mode actually used for this call */
+      tts: TtsMode;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -174,6 +180,11 @@ export type ServerEvent =
       words: WordTiming[];
       mouth?: MouthCue[];
     }
+  /** server voice, GENITA_VOICE_ALIGN: forced-aligner word + phoneme timing of one clause, after its audio.
+   * seq = the clause's first `audio` seq; ms on the reply's audio timeline (like audio.words). */
+  | { type: "audio.timing"; utteranceId: number; sentence: number; seq: number; words: WordTiming[]; phonemes: PhonemeTiming[] }
+  /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
+  | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
   | { type: "utterance.cancelled"; utteranceId: number; reason: CancelReason }
   | {
@@ -191,7 +202,7 @@ export type ServerEvent =
     }
   | { type: "asr.status"; status: "connected" | "reconnecting" }
   | { type: "mode.changed"; mode: Mode; by: "client" | "model" }
-  | { type: "lip.changed"; lip: LipPlan; peter?: { bundleId: string; pasteDy: number; fps: number } }
+  | { type: "lip.changed"; lip: LipPlan }
   | { type: "error"; code: ErrorCode; message: string; retryable: boolean }
   | { type: "pong"; t: unknown }
   | { type: "find.started"; findId: string; utteranceId: number; kind: FindKind; title: string; detail: string }
@@ -224,7 +235,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
@@ -236,6 +247,8 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "reply.delta": { required: ["utteranceId", "text"], optional: [] },
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
+  "audio.timing": { required: ["utteranceId", "sentence", "seq", "words", "phonemes"], optional: [] },
+  say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },
   "turn.metrics": {
@@ -254,7 +267,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   },
   "asr.status": { required: ["status"], optional: [] },
   "mode.changed": { required: ["mode", "by"], optional: [] },
-  "lip.changed": { required: ["lip"], optional: ["peter"] },
+  "lip.changed": { required: ["lip"], optional: [] },
   error: { required: ["code", "message", "retryable"], optional: [] },
   pong: { required: ["t"], optional: [] },
   "find.started": { required: ["findId", "utteranceId", "kind", "title", "detail"], optional: [] },

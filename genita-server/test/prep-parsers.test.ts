@@ -131,13 +131,12 @@ test("ruleLine normalizes casing and 'Genita should'", () => {
 });
 
 test("voices: Spark order applied safely", () => {
-  const ids = DEFAULT_VOICES.map((v) => v.id);
-  assert.deepEqual(applyOrder(DEFAULT_VOICES, [ids[2], ids[0], ids[3], ids[1]]).map((v) => v.id), [ids[2], ids[0], ids[3], ids[1]]);
+  const ids = DEFAULT_VOICES.slice(0, 4).map((v) => v.id);
+  assert.deepEqual(applyOrder(DEFAULT_VOICES.slice(0, 4), [ids[2], ids[0], ids[3], ids[1]]).map((v) => v.id), [ids[2], ids[0], ids[3], ids[1]]);
   // unknown, duplicate and missing ids
-  assert.deepEqual(applyOrder(DEFAULT_VOICES, ["nope", ids[3], ids[3]]).map((v) => v.id), [ids[3], ids[0], ids[1], ids[2]]);
-  assert.deepEqual(applyOrder(DEFAULT_VOICES, null).map((v) => v.id), ids);
-  assert.equal(DEFAULT_VOICES.length, 4);
-  assert.equal(DEFAULT_VOICES[0].id, "7PbNGDB5sJCFnOZuMPNL"); // demo voice
+  assert.deepEqual(applyOrder(DEFAULT_VOICES.slice(0, 4), ["nope", ids[3], ids[3]]).map((v) => v.id), [ids[3], ids[0], ids[1], ids[2]]);
+  assert.deepEqual(applyOrder(DEFAULT_VOICES.slice(0, 4), null).map((v) => v.id), ids);
+  assert.equal(DEFAULT_VOICES[0].id, "72"); // Meta speaker (human default)
   assert.deepEqual(voicesFromEnv("a1:Ann:Soft,b2:Ben"), [
     { id: "a1", name: "Ann", blurb: "Soft", tags: "Soft" },
     { id: "b2", name: "Ben", blurb: "", tags: "" },

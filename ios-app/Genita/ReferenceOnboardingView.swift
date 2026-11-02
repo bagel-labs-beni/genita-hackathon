@@ -201,7 +201,7 @@ import UniformTypeIdentifiers
                 appButton("Open Claude", app: "claude://", web: "https://claude.ai/new")
             }.frame(width: width - 48).position(x: width / 2, y: cardBottom + 32)
             Button { model.go(.skipTopics) } label: {
-                Text("I don’t use ChatGPT or Claude").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
+                Text("I don’t use an AI assistant").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
             }.buttonStyle(.plain).position(x: width / 2, y: cardBottom + 78).accessibilityIdentifier("skipImport")
         } else {
             let editorHeight = max(1, min(card.h - 76, keyboardTop - body.y - top - 8))

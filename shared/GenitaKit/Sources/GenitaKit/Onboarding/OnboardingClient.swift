@@ -215,7 +215,7 @@ public final class OnboardingClient: @unchecked Sendable {
         try style(try await auth.send("POST", "/v1/import", json: ["text": text], timeout: 60))
     }
 
-    /// N1–N3 (no ChatGPT/Claude): chips → the same style card, no Spark call.
+    /// N1–N3 (no AI assistant): chips → the same style card, no Spark call.
     public func importSkip(interests: [String], replies: String?, avoid: [String]) async throws -> ImportedStyle {
         var body: [String: Any] = ["interests": interests, "avoid": avoid]
         body["replies"] = replies ?? NSNull()

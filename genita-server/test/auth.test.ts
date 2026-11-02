@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import { startServer, defaultDeps } from "../src/server.ts";
@@ -47,7 +48,7 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
     GENITA_AUTH_RATE_PER_MIN: "1000",
     ...apple.env,
   };
-  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED, ...over };
+  const config = { ...loadConfig({ MODEL_API_KEY: "m" }), port: 0, sessionToken: SHARED, ...over };
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => events.push({ event, data });
   const accounts = (await createAccounts(env, log, { loopback: true, db: await testDb(false) }))!;
@@ -245,9 +246,11 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   assert.equal((await call("GET", "/v1/companion", { token: SHARED, user: "demo" })).json.error, "no_companion");
   assert.equal((await call("GET", "/me", { token: SHARED, user: "demo" })).json.user.provider, "dev");
 
-  // ── F1-L8 delete account ──
+  // ── F1-L8 delete account (including stored companion assets) ──
+  await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
   const del = await call("DELETE", "/me", { token });
-  assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 1 });
+  assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 2 });
+  assert.equal((await accounts.blobs.list("avatars/comp1/")).length, 0, "avatar cache gone from blob storage");
   const revoke = apple.requests.find((r) => r.url.endsWith("/auth/revoke"))!;
   // the latest login's refresh token is kept (here the Mac web one) and revoked with its own client_id
   assert.equal(revoke.form.get("token"), "rt-ai.thebeni.genita.web");

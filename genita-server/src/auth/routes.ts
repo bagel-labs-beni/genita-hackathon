@@ -5,26 +5,68 @@
  *   GET    /auth/apple/start      ?challenge=<b64url sha256(verifier)>&device=mac                Mac: 302 to Apple
  *   POST   /auth/apple/callback   Apple form_post (code, id_token, state, user)                  302 genita://auth?code=…
  *   POST   /auth/exchange         {code, verifier}                                                Mac: one-time code → session
+ *   POST   /auth/email/start      {email}                                                         mails a 6-digit code (also /v1/auth/email/start)
+ *   POST   /auth/email/verify     {email, code, device?}                                          code → session (also /v1/auth/email/verify)
  *   POST   /auth/logout           (session)                                                       revokes this session
  *   GET    /me                    {user, consented, hasCompanion, prepStatus, conversation}
  *   PATCH  /me                    {displayName}                                                   blank → 400
  *   POST   /me/consent            {kind?: "ai_data", version?}
- *   DELETE /me                    Apple revoke → blobs users/<id>/ → rows (cascade)
+ *   DELETE /me                    Apple revoke → blobs users/<id>/ + avatars/<companion>/ → rows (cascade)
  *
  * Threat line: callers are the Genita iOS/macOS apps, plus Apple's form_post
  * through the user's browser on /auth/apple/callback. Auth: Apple identity
  * token checked against Apple's JWKS (aud + nonce) for sign-in; HMAC-signed
- * state + one-time 60 s code + PKCE verifier for the Mac web flow; the
- * session JWT (HS256, 30 d, revocable sid) for /me*. Limits: 30 req/min per
- * IP on /auth/*, 64 KB bodies. Exposes only the caller's own user row.
+ * state + one-time 60 s code + PKCE verifier for the Mac web flow; a mailed
+ * 6-digit code (10 min, 5 tries, keyed hash) for email sign-in; the session JWT
+ * (HS256, 30 d, revocable sid) for /me*. Limits: 30 req/min per IP on /auth/*,
+ * 64 KB bodies; email: 1 send/60 s, 5/h and 10/day per address, 20 sends/h and
+ * 20 wrong codes/10 min per IP (the last X-Forwarded-For entry behind CloudFront),
+ * 60 sends/min overall, and start answers the same whether or not an account
+ * exists. Exposes only the caller's own user row.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { JwtError, b64url, sha256B64url, sha256Hex } from "./jwt.ts";
 import { DEVICES, type Device } from "./accounts.ts";
 import type { AccountsCore, Principal } from "./index.ts";
+import { CODE_TTL_SEC, RESEND_AFTER_SEC, maskEmail, normalizeEmail } from "./email.ts";
 
 const BODY_LIMIT = 64 * 1024;
+const EMAIL_SENDS_PER_IP_HOUR = 20;
+const EMAIL_FAILS_PER_IP_10MIN = 20;
+/** all addresses together: caps what any number of IPs can make the mail provider send */
+const EMAIL_SENDS_PER_MIN = 60;
+
+/** Fixed-window counter per key (one server instance; expired keys are dropped past 10k keys). */
+function windowCounter(limit: number, windowMs: number) {
+  const m = new Map<string, { n: number; reset: number }>();
+  const live = (k: string) => {
+    const h = m.get(k);
+    return h && h.reset > Date.now() ? h : null;
+  };
+  return {
+    full: (k: string) => (live(k)?.n ?? 0) >= limit,
+    add(k: string) {
+      const h = live(k);
+      if (h) h.n++;
+      else {
+        if (m.size > 10_000) for (const [key, v] of m) if (v.reset <= Date.now()) m.delete(key);
+        m.set(k, { n: 1, reset: Date.now() + windowMs });
+      }
+    },
+    /** check + count in one synchronous step (before any await), so parallel requests can't all pass */
+    take(k: string): boolean {
+      if ((live(k)?.n ?? 0) >= limit) return false;
+      this.add(k);
+      return true;
+    },
+    /** hand a taken slot back (nothing was sent) */
+    give(k: string) {
+      const h = live(k);
+      if (h && h.n > 0) h.n--;
+    },
+  };
+}
 const STATE_TTL_SEC = 10 * 60;
 export const APP_CALLBACK = "genita://auth";
 
@@ -106,11 +148,16 @@ export function readState(secret: string, state: string, nowSec = Math.floor(Dat
   }
 }
 
-function clientIp(req: IncomingMessage, trustProxy: boolean): string {
+/**
+ * Behind CloudFront (the only proxy; the instance accepts nothing else) the viewer's address is the LAST
+ * X-Forwarded-For entry: CloudFront appends it to whatever the client sent, so earlier entries are the
+ * client's own words and must never key a rate limit.
+ */
+export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
     const xff = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
-    if (first) return first;
+    const last = (Array.isArray(xff) ? xff.join(",") : xff)?.split(",").pop()?.trim();
+    if (last) return last;
   }
   return req.socket.remoteAddress ?? "?";
 }
@@ -123,6 +170,9 @@ export type AccountRoutes = {
 
 export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   const { accounts, apple, blobs, log } = core;
+  const emailSends = windowCounter(EMAIL_SENDS_PER_IP_HOUR, 60 * 60_000);
+  const emailFails = windowCounter(EMAIL_FAILS_PER_IP_10MIN, 10 * 60_000);
+  const emailSendsAll = windowCounter(EMAIL_SENDS_PER_MIN, 60_000);
   const hits = new Map<string, { n: number; reset: number }>();
   const limited = (ip: string) => {
     const now = Date.now();
@@ -149,7 +199,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, who: Principal | null) {
     const m = req.method ?? "GET";
-    const p = url.pathname.replace(/\/+$/, "");
+    const p = url.pathname.replace(/\/+$/, "").replace(/^\/v1(?=\/auth\/email\/)/, "");
 
     if (p.startsWith("/auth/") && limited(clientIp(req, core.trustProxy))) throw new HttpError(429, "rate_limited");
 
@@ -168,7 +218,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       }
       const fn = (b.fullName && typeof b.fullName === "object" ? b.fullName : {}) as Record<string, unknown>;
       const name = [str(fn.givenName, 60), str(fn.familyName, 60)].filter(Boolean).join(" ") || null;
-      const { user, isNew } = await accounts.upsertUser({ provider: "apple", sub: id.sub, email: id.email, displayName: name });
+      const { user, isNew } = await accounts.upsertUser({ provider: "apple", sub: id.sub, email: id.email, emailVerified: id.emailVerified, displayName: name });
       const code = str(b.authorizationCode, 2048);
       if (code && apple.canExchange) {
         const t = await apple.exchangeCode(code, apple.cfg.bundleId).catch(() => null);
@@ -213,7 +263,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         const u = JSON.parse(form.get("user") ?? "null") as { name?: { firstName?: string; lastName?: string } } | null;
         name = [str(u?.name?.firstName, 60), str(u?.name?.lastName, 60)].filter(Boolean).join(" ") || null;
       } catch {}
-      const { user, isNew } = await accounts.upsertUser({ provider: "apple", sub: id.sub, email: id.email, displayName: name });
+      const { user, isNew } = await accounts.upsertUser({ provider: "apple", sub: id.sub, email: id.email, emailVerified: id.emailVerified, displayName: name });
       const code = form.get("code");
       if (code && apple.canExchange) {
         const t = await apple.exchangeCode(code, apple.cfg.servicesId, core.callbackUrl).catch(() => null);
@@ -233,6 +283,77 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const want = Buffer.from(c.challenge);
       if (a.length !== want.length || !timingSafeEqual(a, want)) throw fail("apple", "verifier_mismatch");
       return send(res, 200, await issue(c.userId, c.device, c.isNew, "apple"));
+    }
+
+    // ── email one-time code (any address; same answer whether or not an account exists) ──
+    if (m === "POST" && p === "/auth/email/start") {
+      const ip = clientIp(req, core.trustProxy);
+      const email = normalizeEmail((await readJson(req)).email);
+      if (!email) throw new HttpError(400, "bad_email");
+      if (!core.mail) {
+        log("auth.failed", { provider: "email", reason: "no_mail_sender" });
+        throw new HttpError(503, "email_unavailable", "Email sign-in isn't available right now.");
+      }
+      if (!emailSends.take(ip)) {
+        log("auth.failed", { provider: "email", reason: "ip_send_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      if (!emailSendsAll.take("all")) {
+        emailSends.give(ip);
+        log("auth.failed", { provider: "email", reason: "global_send_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      const giveBack = () => {
+        emailSends.give(ip);
+        emailSendsAll.give("all");
+      };
+      const issued = await core.emailCodes.issue(email).catch((e) => {
+        giveBack();
+        throw e;
+      });
+      if (!issued.ok) {
+        giveBack();
+        log("auth.failed", { provider: "email", reason: "email_send_limit" });
+        return send(res, 429, { error: "rate_limited", retryAfterSec: issued.retryAfterSec });
+      }
+      try {
+        await core.mail.send(email, issued.code, CODE_TTL_SEC / 60);
+      } catch (e) {
+        await core.emailCodes.discard(issued.id);
+        giveBack();
+        log("auth.email_send_failed", { to: maskEmail(email), sender: core.mail.kind, message: String(e).slice(0, 80) });
+        throw new HttpError(502, "send_failed", "Couldn't send the code. Try again.");
+      }
+      log("auth.email_code_sent", { to: maskEmail(email), sender: core.mail.kind });
+      return send(res, 200, { ok: true, expiresInSec: CODE_TTL_SEC, resendAfterSec: RESEND_AFTER_SEC });
+    }
+
+    if (m === "POST" && p === "/auth/email/verify") {
+      const ip = clientIp(req, core.trustProxy);
+      const b = await readJson(req);
+      const email = normalizeEmail(b.email);
+      const code = typeof b.code === "string" ? b.code.trim() : "";
+      if (!email || !/^\d{6}$/.test(code)) throw new HttpError(400, "bad_request");
+      // every try holds a "wrong code" slot until it turns out right, so parallel guesses can't overshoot
+      if (!emailFails.take(ip)) {
+        log("auth.failed", { provider: "email", reason: "ip_fail_limit" });
+        return send(res, 429, { error: "rate_limited" });
+      }
+      const device: Device = b.device === "mac" ? "mac" : "iphone";
+      const r = await core.emailCodes.check(email, code).catch((e) => {
+        emailFails.give(ip);
+        throw e;
+      });
+      if (r === "ok") emailFails.give(ip);
+      else {
+        if (r === "too_many") {
+          log("auth.failed", { provider: "email", reason: "too_many_attempts" });
+          return send(res, 429, { error: "too_many_attempts", message: "Too many tries. Ask for a new code." });
+        }
+        throw fail("email", "code_invalid");
+      }
+      const { user, isNew } = await accounts.userForVerifiedEmail(email);
+      return send(res, 200, await issue(user.id, device, isNew, "email"));
     }
 
     // ── everything below needs a session ──
@@ -278,8 +399,11 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       if (link && appleStatus !== 200) log("account.apple_revoke_failed", { status: appleStatus });
       // blobs first: if storage is down, keep the rows so the user can retry
       let blobsDeleted: number;
+      const companionIds = await accounts.companionIds(who.userId);
       try {
         blobsDeleted = await blobs.deletePrefix(`users/${who.userId}/`);
+        // Legacy companion assets are keyed by companion id, outside users/<id>/
+        for (const cid of companionIds) blobsDeleted += await blobs.deletePrefix(`avatars/${cid}/`);
       } catch (e) {
         log("account.delete_failed", { stage: "blobs", message: String(e).slice(0, 120) });
         throw new HttpError(502, "delete_failed", "Couldn't delete your files. Try again.");
@@ -300,7 +424,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   }
 
   return {
-    handles: (p) => p === "/me" || p.startsWith("/me/") || p.startsWith("/auth/"),
+    handles: (p) => p === "/me" || p.startsWith("/me/") || p.startsWith("/auth/") || p.startsWith("/v1/auth/email/"),
     async handle(req, res, who) {
       const url = new URL(req.url ?? "/", "http://localhost");
       try {

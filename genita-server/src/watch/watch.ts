@@ -46,6 +46,13 @@ export type WatchDeps = {
   openAsr: (mode: "ENDPOINTING" | "DIARIZATION") => WatchAsr;
   spark: (req: SparkRequest, opts: { signal?: AbortSignal; firstEventTimeoutMs?: number }) => AsyncIterable<SparkStreamEvent>;
   diarize?: boolean;
+  /**
+   * Watch together = watch YouTube together and chat (Chelsea 11/2 21:10): first reactions (MS-2) are on
+   * (the session turns them off only with GENITA_WATCH_REACTIONS=0). The speaker chip (FT-SPK) stays cut (D40):
+   * on only with GENITA_WATCH_SPEAKER=1. Undefined = on (direct use, tests).
+   */
+  reactions?: boolean;
+  speakerChip?: boolean;
   memoEveryMs?: number;
   memoAfterLineMs?: number;
   log?: (event: string, data: Record<string, unknown>) => void;
@@ -270,7 +277,7 @@ export class WatchController {
           this.stats.lines++;
           this.lineSinceMemo = true;
           this.log("watch.line", { label, text: text.slice(0, 120) });
-          if (label && speakerChipEnabled(this.labelsSeen, now)) this.setSpeaker(label);
+          if (label && this.deps.speakerChip !== false && speakerChipEnabled(this.labelsSeen, now)) this.setSpeaker(label);
         }
         this.flushWaiters();
         if (this.speakerOn) {
@@ -378,6 +385,7 @@ export class WatchController {
   }
 
   private tryReact(v: MemoVerdict, verdictAt: number): void {
+    if (this.deps.reactions === false) return;
     const script = reactionScript(v.moment, v.reaction);
     if (!script) return;
     const gate = reactionAllowed({

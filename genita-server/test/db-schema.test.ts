@@ -22,15 +22,24 @@ const USER_TABLES = [
   "users",
 ];
 
+/** tables with no user_id: email_codes is keyed by address (the user may not exist yet) */
+const ALL_TABLES = [...USER_TABLES, "email_codes"].sort();
+
 test("F1-L4: migrations go up and down on an empty database", async () => {
   const db = await testDb(false);
   try {
-    assert.deepEqual(await migrateUp(db), ["001_init"]);
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login"]);
     assert.deepEqual(await migrateUp(db), [], "second up is a no-op");
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES);
+    assert.deepEqual(await migrateDown(db), ["003_email_login"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES);
     assert.deepEqual(await migrateDown(db), ["001_init"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), []);
-    assert.deepEqual(await migrateUp(db), ["001_init"], "up again after down");
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login"], "up again after down");
+    // with email accounts present the down step refuses instead of deleting them (and their data)
+    await db.query("INSERT INTO users (provider, provider_sub, email) VALUES ('email', 'a@example.com', 'a@example.com')");
+    await assert.rejects(migrateDown(db));
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM users WHERE provider = 'email'")).rows[0].n, 1);
   } finally {
     await db.close();
   }

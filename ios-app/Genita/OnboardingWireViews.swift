@@ -214,7 +214,7 @@ struct CompanionNameView: View {
     }
 }
 
-// MARK: N1–N3 (no ChatGPT or Claude, D33)
+// MARK: N1–N3 (no AI assistant, D33)
 
 struct SkipImportView: View {
     @Bindable var model: AppState
