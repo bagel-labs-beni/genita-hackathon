@@ -25,23 +25,27 @@ const SELF_EXCLUDED_PATHS = new Set([
   'scripts/gate-i-words.mjs',
 ]);
 const DOCUMENTATION_EXCEPTION = /\b(?:not used|does not call|never calls)\b/i;
-const FORBIDDEN_PATTERNS = [
-  { label: 'elevenlabs', expression: /elevenlabs/i },
-  { label: 'fal.ai', expression: /fal\.ai/i },
-  { label: 'fal-ai', expression: /fal-ai/i },
-  { label: 'FAL_KEY', expression: /FAL_KEY/i },
-  { label: 'peter', expression: /\bpeter\b/i },
-  { label: 'Ported from legacy-studio', expression: /Ported from legacy-studio/i },
-  { label: 'legacy-engine', expression: /legacy-engine/i },
-  { label: '/Users/', expression: /\/Users\//i },
-  { label: 'legacy-studio', expression: /legacy-studio/i },
-  { label: 'legacy-app', expression: /legacy-app/i },
-  { label: 'vendor/old', expression: /vendor\/old/i },
-  { label: 'peter-engine', expression: /peter-engine/i },
-  { label: 'kling', expression: /kling/i },
-  { label: 'minimax', expression: /minimax/i },
-  { label: 'gpt-image', expression: /gpt-image/i },
+// Base64 so this public file does not itself contain the internal names it guards against.
+// Each entry: [label, regex source], both base64. Decode to read: node -e "console.log(Buffer.from('…','base64').toString())"
+const ENCODED_PATTERNS = [
+  ['ZWxldmVubGFicw==', 'ZWxldmVubGFicw=='],
+  ['ZmFsLmFp', 'ZmFsXC5haQ=='],
+  ['ZmFsLWFp', 'ZmFsLWFp'],
+  ['RkFMX0tFWQ==', 'RkFMX0tFWQ=='],
+  ['cGV0ZXI=', 'XGJwZXRlclxi'],
+  ['UG9ydGVkIGZyb20gc3R1ZGlvLWJlbmk=', 'UG9ydGVkIGZyb20gc3R1ZGlvLWJlbmk='],
+  ['YmVuaS1vcmlnaW5hbA==', 'YmVuaS1vcmlnaW5hbA=='],
+  ['L1VzZXJzLw==', 'XC9Vc2Vyc1wv'],
+  ['c3R1ZGlvLWJlbmk=', 'c3R1ZGlvLWJlbmk='],
+  ['YWx0ZXJpbQ==', 'YWx0ZXJpbQ=='],
+  ['dmVuZG9yL2Jlbmk=', 'dmVuZG9yXC9iZW5p'],
+  ['cGV0ZXItZW5naW5l', 'cGV0ZXItZW5naW5l'],
+  ['a2xpbmc=', 'a2xpbmc='],
+  ['bWluaW1heA==', 'bWluaW1heA=='],
+  ['Z3B0LWltYWdl', 'Z3B0LWltYWdl'],
 ];
+const decode = (value) => Buffer.from(value, 'base64').toString('utf8');
+const FORBIDDEN_PATTERNS = ENCODED_PATTERNS.map(([label, source]) => ({ label: decode(label), expression: new RegExp(decode(source), 'i') }));
 
 function runGit(args, options = {}) {
   return execFileSync('git', args, { encoding: options.encoding ?? 'utf8' });
