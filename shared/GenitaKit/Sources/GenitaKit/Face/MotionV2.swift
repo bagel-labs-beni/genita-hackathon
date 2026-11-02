@@ -177,6 +177,9 @@ struct MotionV2 {
             A = min(1, A * g); J = min(0.95, J * (stressed ? p.stressedJawGain : p.unstressedJawGain))
         }
         if shortStressed { A = max(A, p.shortStressedLip); J = max(J, p.shortStressedJaw) }
+        else if let i = curVowel, vow[i].e - vow[i].s < p.shortStressedMs { A = max(A, 0.35) }   // every short vowel shows
+        // inside a consonant that doesn't close the lips, the lips come back too (syllable beat)
+        if curVowel == nil, !closed, ph.contains(where: { $0.s <= ms && ms < $0.e && !Self.vowels.contains($0.p) }) { A *= 0.4 }
         // key targets
         var tgt = [Double](repeating: 0, count: order.count)
         let mbp = order.firstIndex(of: "MBP")

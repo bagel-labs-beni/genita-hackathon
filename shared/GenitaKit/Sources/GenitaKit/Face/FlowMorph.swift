@@ -493,6 +493,8 @@ final class FlowMorph: @unchecked Sendable {
     private var v2Shown: Int?
     /// Expression layer (v29): events on the reply's audio clock; only used when the rig was built with them.
     var expressionEvents: [FaceExpressionEvent] = []
+    /// Laugh weight and audio time of the last frame (the renderer bobs the head with it).
+    private(set) var lastLaugh: (w: Double, ms: Double) = (0, 0)
 
     /// Weight per tag at audio time `ms`: intensity × attack 250 ms before start, release 400 ms after end.
     func expressionWeights(atMs ms: Double) -> [String: Double] {
@@ -858,7 +860,7 @@ final class FlowMorph: @unchecked Sendable {
                         var c = Self.bilinear3(k.key, w, h, px + dk.0, py + dk.1)
                         if let th = k.teeth, k.u < 1 {
                             let tmk = Self.bilinear1(th, w, h, px + dk.0, py + dk.1) * (1 - k.u)
-                            c = (c.0 * (1 - tmk) + 52 * tmk, c.1 * (1 - tmk) + 28 * tmk, c.2 * (1 - tmk) + 30 * tmk)
+                            c = (c.0 * (1 - tmk) + 30 * tmk, c.1 * (1 - tmk) + 17 * tmk, c.2 * (1 - tmk) + 19 * tmk)
                         }
                         if let lip = k.lip {
                             // the key's colour only inside its lip hull (warped with it); skin = warped neutral
@@ -887,6 +889,7 @@ final class FlowMorph: @unchecked Sendable {
             ? min(1, am.reduce(0, +))
             : ["EH", "EI", "TEETH"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }
         let ew = (context.map { expressionWeights(atMs: $0.audioMs) }) ?? [:]
+        lastLaugh = (ew["laugh"] ?? 0, context?.audioMs ?? 0)
         let image = rig.render(morph: out, morphWidth: width, morphHeight: height, d: d, dPrev: cornerD, lift: Double(lift), expressions: ew)
         cornerD = d
         return image
@@ -1119,11 +1122,12 @@ final class CheekRig: @unchecked Sendable {
         func cheekApple(_ k: Double) -> [Part] { eyes.map { e in (e.0 + 0.15 * (e.0 - mcx), eyeY + 0.17 * H, 0.09 * W, 0.06 * H, 0, -3 * k) } }
         func lowerLid(_ k: Double, _ dy: Double = -1.6, _ off: Double = 0.9) -> [Part] { eyes.map { e in (e.0, eyeY + off * eh, 0.07 * W, 0.6 * eh, 0, dy * k) } }
         func brows(_ dy: Double) -> [Part] { eyes.map { e in (e.0, eyeY - 2.2 * eh, 0.09 * W, 1.0 * eh, 0, dy) } }
-        let smile = corner(1, 1) + cheekApple(1) + lowerLid(1)
+        // review 11/3: a real smile widens more than it lifts, and the eyes join in (×1.5 overall)
+        let smile = corner(1.5, 0.9) + cheekApple(1.5) + lowerLid(1.6)
         var tags: [String: [Part]] = [:]
         tags["smile"] = smile
         tags["smileopen"] = smile.map { ($0.cx, $0.cy, $0.sx, $0.sy, $0.dx * 1.15, $0.dy * 1.15) }
-        tags["laugh"] = corner(1.4, 1.5) + cheekApple(1) + lowerLid(1.9) + brows(-1.5)
+        tags["laugh"] = corner(2.1, 1.35) + cheekApple(1.6) + lowerLid(2.6) + brows(-2.2)
         tags["surprised"] = brows(-5) + eyes.map { e in (e.0, eyeY - 0.6 * eh, 0.06 * W, 0.35 * eh, 0, -1.6) } + lowerLid(1, 0.8, 0.7)
         tags["concerned"] = eyes.map { e in (e.0 + 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.035 * W, 0.8 * eh, (mcx - e.0 > 0 ? 1.6 : -1.6), -2.6) }
             + eyes.map { e in (e.0 - 0.45 * (mcx - e.0), eyeY - 2 * eh, 0.05 * W, 0.8 * eh, 0, 1.2) }

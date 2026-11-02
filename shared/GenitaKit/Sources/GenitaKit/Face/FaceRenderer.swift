@@ -230,7 +230,12 @@ public final class FaceRenderer: @unchecked Sendable {
                                      tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
-        let m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        // laugh: the head bobs with the "ha-ha" (4.5 Hz), 2.5 px at 960 high
+        if let lw = flowMorph?.lastLaugh, lw.w > 0.01 {
+            let bob = 2.5 * lw.w * pow(sin(2 * Double.pi * 4.5 * lw.ms / 1000), 2) * Double(extent.height) / 960
+            m.head = m.head.concatenating(CGAffineTransform(translationX: 0, y: -CGFloat(bob)))
+        }
         let inv = fill.inverted()
         func inOutput(_ a: CGAffineTransform) -> CGAffineTransform { inv.concatenating(a).concatenating(fill) }
         let bodyT = inOutput(m.body), headT = inOutput(m.head)
