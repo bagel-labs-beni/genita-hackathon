@@ -191,7 +191,7 @@ extension AppState {
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
         if setup.companionCreated == true { go(.voice); return }
-        guard let data = setup.imageData else { return }
+        guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
