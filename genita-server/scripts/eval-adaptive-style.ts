@@ -25,7 +25,7 @@ else {
     const sk = skipStyleCard({ interests: ["Cooking"], avoid: [] });
     if (!sk.ok) throw new Error("skip card");
     await store.putStyle("eval-style", (sk as { card: StyleCard }).card);
-    const lines = ["Can you be more direct with me?", "Just get to the point please.", "Skip the small talk today.", "Give it to me in one sentence."];
+    const lines = ["Can you be more direct with me?", "Just get to the point please.", "Less detail from now on.", "TL;DR please"];
     let caught = 0, applied = 0;
     for (const line of lines) {
       if (!mightBeCorrection(line)) continue;
@@ -34,17 +34,23 @@ else {
       if (r?.applied.some((a) => a.field === "communication" || a.field === "response")) applied++;
       console.log(JSON.stringify({ line, fields: r?.applied.map((a) => a.field) ?? [], events: r?.events.map((e) => e.text) ?? [] }));
     }
+    // no stated preference: the user just keeps coming back to it with excitement (observed, times >= 2)
     const n = await p.endCall("eval-style", [
-      { role: "user", text: "Okay so I've been getting really into trail running lately, it's my favorite thing." },
-      { role: "assistant", text: "Oh nice, where do you run?" },
-      { role: "user", text: "Mostly the hills near my place! Honestly trail running is the best part of my week, I could talk about it all day." },
-      { role: "assistant", text: "Love that." },
-      { role: "user", text: "Anyway, what should I make for dinner?" },
+      { role: "user", text: "I went trail running before work, the fog on the ridge was unreal!" },
+      { role: "assistant", text: "That sounds beautiful. How far did you go?" },
+      { role: "user", text: "Like eight kilometers, and halfway up I saw two deer right on the trail!" },
+      { role: "assistant", text: "Wow." },
+      { role: "user", text: "Okay what should I make for dinner?" },
+      { role: "assistant", text: "How about a quick stir fry?" },
+      { role: "user", text: "Sure. Oh, and the trail run tomorrow is going to be at sunrise, I can't wait." },
     ], null);
     const card = await store.getStyle("eval-style");
-    const profile = card ? styleProfileText(card) : "";
-    const litUp = /trail running/i.test(JSON.stringify(card?.sections?.interests ?? []));
-    console.log(`adaptive style: prefilter ${caught}/${lines.length} · applied to communication/response ${applied}/${caught} · post-call updates ${n} · lit-up topic stored as interest: ${litUp}`);
-    console.log(profile.split("\n").filter((l) => /direct|point|short|sentence|small talk|trail/i.test(l)).slice(0, 6).join("\n"));
+    const items = (card?.sections?.interests ?? []) as Array<{ text: string; label?: string }>;
+    const lit = items.find((i) => /trail|running/i.test(i.text));
+    const observed = lit?.label === "observed";
+    console.log(`adaptive style: prefilter ${caught}/${lines.length} · stored as a style line ${applied}/${caught} · post-call updates ${n} · lit-up topic stored as an observed interest: ${observed} (${lit ? JSON.stringify(lit.text) : "none"})`);
+    console.log(styleProfileText(card!).split("\n").filter((l) => /direct|point|short|sentence|small talk|trail/i.test(l)).slice(0, 6).join("\n"));
+    // pass = every style line reached the check, at least one became a style line, the lit-up topic was observed
+    if (caught !== lines.length || applied < 1 || !observed) process.exitCode = 1;
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }

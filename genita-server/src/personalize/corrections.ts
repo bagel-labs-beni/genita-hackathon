@@ -19,13 +19,15 @@ const HINT =
  * merged into communication/response, editable in HISY and forgettable. Speech rate is the voice lane's.
  */
 const STYLE_HINT =
-  /\b(?:(?:can you |could you |please )?be (?:more|less) (?:direct|concise|casual|formal|playful|serious|funny|detailed|blunt|gentle|chatty)|(?:more|less) (?:detail|details|small talk|jokes|questions|chatty|formal|casual|enthusiasm|energy)|get (?:straight )?to the point|skip the (?:small talk|intro|pleasantries|chit ?chat)|(?:just|only) give me (?:the|one|a)|(?:in|just) one (?:sentence|line|word)|no more (?:\w+ )?(?:questions|jokes|lists|options)|(?:that'?s|that is|you'?re) (?:way )?too (?:long|wordy|much|formal|chatty|serious)|tl;?dr)\b/i;
+  /\b(?:(?:can you |could you |please )?be (?:more|less) (?:direct|concise|casual|formal|playful|serious|funny|detailed|blunt|gentle|chatty)|(?:more|less) (?:detail|details|small talk|jokes|questions|chatty|formal|casual|enthusiasm|energy)|get (?:straight )?to the point|skip the (?:small talk|intro|pleasantries|chit ?chat)|just (?:give me )?the (?:short version|gist|bottom line)|(?:in |just )?one (?:sentence|line) (?:please|only|max)|(?:in|just) one (?:sentence|line)|no more (?:\w+ )?(?:questions|jokes|lists|options)|(?:that'?s|that is|you'?re) (?:way )?too (?:long|wordy|much|formal|chatty|serious)|tl;?dr)\b/i;
 
 /** Lines worth one Spark call. Questions alone ("What should I cook?") are not. */
 export function mightBeCorrection(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'").trim();
+  // a short, clear style ask ("Less detail.", "TL;DR please") counts even under three words
+  if (STYLE_HINT.test(t)) return true;
   if (t.split(/\s+/).length < 3) return false;
-  return HINT.test(t) || STYLE_HINT.test(t);
+  return HINT.test(t);
 }
 
 const update = {

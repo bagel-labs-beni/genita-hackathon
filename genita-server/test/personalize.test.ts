@@ -498,8 +498,8 @@ test("Codex round 6: a boundary naming a condition is dropped; a sensitive Budge
 });
 
 test("adaptive style (memory lane 11/3): how-to-talk-to-me phrasings the first prefilter missed reach the correction check", () => {
-  for (const s of ["Can you be more direct with me?", "Just get to the point please.", "Less detail, more answers.", "Skip the small talk today.", "Give it to me in one sentence.", "No more questions, just tell me.", "That's way too long for me."]) assert.ok(mightBeCorrection(s), s);
-  for (const s of ["Tell me more about Seoul.", "Can you be here at five?", "What's the point of this?", "One more thing about dinner."]) assert.ok(!mightBeCorrection(s), s);
+  for (const s of ["Can you be more direct with me?", "Just get to the point please.", "Less detail, more answers.", "Skip the small talk today.", "Give it to me in one sentence.", "No more questions, just tell me.", "That's way too long for me.", "Less detail", "More questions", "TL;DR please", "One sentence please", "Just the gist."]) assert.ok(mightBeCorrection(s), s);
+  for (const s of ["Tell me more about Seoul.", "Can you be here at five?", "What's the point of this?", "One more thing about dinner.", "Please just give me a pasta recipe.", "Just give me the recipe.", "Only give me one minute."]) assert.ok(!mightBeCorrection(s), s);
 });
 
 test("adaptive style: the post-call growth prompt asks for lit-up topics and repeated reactions as observed lines (times ≥ 2)", () => {
