@@ -1,6 +1,7 @@
 import { type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
 import { safeMemoryText, type Extractor, type Turn } from "./extract.ts";
 import { validSeen, type SeenCandidate, type SeenContext } from "./seen.ts";
+import { SUMMARY_KEEP, type CallSummary, type Summarizer, type SummaryRepository } from "./summaries.ts";
 
 type Log = (event: string, data: Record<string, unknown>) => void;
 export type MemoryOptions = {
@@ -15,6 +16,9 @@ export type MemoryOptions = {
   /** Seen memory (SM-1~3). Off in the hackathon build via createMemory (D40); defaults on for direct use/tests. */
   seenMemory?: boolean;
   isSafe?: (text: string) => Promise<boolean>;
+  /** Session memory (per-thread call summaries). Off when unset or sessionMemory=false (GENITA_SESSION_MEMORY=0). */
+  summarize?: Summarizer;
+  sessionMemory?: boolean;
   /** createMemory's default in-process store: the server swaps it for Postgres when accounts are on (useStore). */
   ephemeral?: boolean;
   log?: Log;
@@ -38,8 +42,49 @@ export class MemoryService {
     this.ephemeral = options.ephemeral === true;
   }
   /** Durable store swap (server start, before any traffic): P0 11/3, memory survives deploys. */
-  useStore(store: MemoryRepository & CallStateRepository): void {
+  useStore(store: MemoryRepository & CallStateRepository & Partial<SummaryRepository>): void {
     this.repository = store; this.state = store; this.ephemeral = false;
+  }
+  /** the store's summary side, when it has one */
+  private get summaryStore(): SummaryRepository | null {
+    const r = this.repository as MemoryRepository & Partial<SummaryRepository>;
+    return typeof r.putSummary === "function" && typeof r.listSummaries === "function" && typeof r.deleteSummaries === "function" ? (r as SummaryRepository) : null;
+  }
+  /** (user, thread) → the call that continued it last (in process, like the handoff turn cache) */
+  private threadOwners = new Map<string, string>();
+  claimThread(userId: string, threadId: string, sessionId: string): void {
+    const key = userId + "\u0000" + threadId;
+    this.threadOwners.delete(key); this.threadOwners.set(key, sessionId);
+    while (this.threadOwners.size > 5000) this.threadOwners.delete(this.threadOwners.keys().next().value!);
+  }
+  /** an unclaimed thread belongs to the call that started it */
+  ownsThread(userId: string, threadId: string, sessionId: string): boolean {
+    const owner = this.threadOwners.get(userId + "\u0000" + threadId);
+    return owner === undefined || owner === sessionId;
+  }
+  get sessionMemory(): boolean { return !!this.options.summarize && this.options.sessionMemory !== false && !!this.summaryStore; }
+  /** Newest first; the current thread (a handed-off call already has its turns) is left out. */
+  async summaries(userId: string, exceptThread?: string, limit = SUMMARY_KEEP): Promise<CallSummary[]> {
+    if (!this.sessionMemory) return [];
+    // No lock (a slow store must not block the user's other memory work); Forget deletes summaries
+    // BEFORE it notifies calls, so a load that races it is discarded by the caller (MemoryCall.open).
+    return (await this.summaryStore!.listSummaries(userId, limit + 1)).filter((s) => s.thread_id !== exceptThread).slice(0, limit);
+  }
+  /** Background only (call close / every few turns). Turns are summarized, never stored; Forget wins. */
+  async summarizeThread(userId: string, threadId: string, turns: Turn[], revision: number, covered = turns.length): Promise<CallSummary | null> {
+    if (!this.sessionMemory || !turns.length) return null;
+    if ((await this.state.getState(userId)).revision !== revision) return null;
+    const previous = (await this.summaryStore!.listSummaries(userId, SUMMARY_KEEP)).find((s) => s.thread_id === threadId) ?? null;
+    const body = await this.options.summarize!(turns, previous);
+    if (!body) return null;
+    return this.serial(userId, async () => {
+      if ((await this.state.getState(userId)).revision !== revision) return null;
+      const now = this.now();
+      const summary: CallSummary = { ...body, thread_id: threadId, created_at: now, updated_at: now, turns: covered };
+      await this.summaryStore!.putSummary(userId, summary);
+      this.log("memory.summarized", { turns: covered, topics: body.topics.length, open_threads: body.open_threads.length, promises: body.promises.length });
+      return summary;
+    });
   }
   async serial<T>(userId: string, fn: () => Promise<T>): Promise<T> {
     const task = (this.locks.get(userId) ?? Promise.resolve()).catch(() => {}).then(fn);
@@ -119,6 +164,9 @@ export class MemoryService {
   async forget(userId: string, id?: string): Promise<void> {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
+      // Session summaries are free text across many topics: any Forget (one item or all) drops them all,
+      // the same rule as the handoff turn cache. First, so no call can load them after the notification.
+      await this.summaryStore?.deleteSummaries(userId);
       const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
       for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);

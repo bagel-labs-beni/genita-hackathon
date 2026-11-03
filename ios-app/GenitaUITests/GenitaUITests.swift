@@ -208,6 +208,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["Cancel"].waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["primaryCTA"].isEnabled, "V01: off until the rights line is on (SUB-8)")
+        app.buttons["rightsAck"].tap()
         XCTAssertTrue(app.buttons["primaryCTA"].isEnabled)
         app.buttons["primaryCTA"].tap()
         XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
@@ -245,7 +247,8 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Witty"].exists)
     }
     func testBackAndCopyPreserveDraft() {
-        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launch()
+        // this test walks the demo sign-in through the Google button, which A02 hides by default (#218)
+        let app = XCUIApplication(); app.launchArguments = ["--uitesting"]; app.launchEnvironment = ["GENITA_HIDE_GOOGLE": "0"]; app.launch()
         app.buttons["getStarted"].tap(); app.buttons["Continue with Google"].tap(); app.alerts.buttons["Cancel"].tap()
         XCTAssertTrue(app.buttons["Continue with Apple"].exists)
         app.buttons["Continue with Google"].tap(); app.alerts.buttons["Continue in demo"].tap()
@@ -255,5 +258,79 @@ final class GenitaUITests: XCTestCase {
         app.buttons["back"].tap(); app.buttons["primaryCTA"].tap()
         XCTAssertEqual(app.textViews["responseInput"].value as? String, "A local draft")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "AI reply input"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// #217 · A02 Terms / Privacy Policy open the live pages in an in-app Safari sheet (and close again).
+    func testA02LegalLinksOpenSafari() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        let terms = app.buttons["Terms"], privacy = app.buttons["Privacy Policy"]
+        XCTAssertTrue(terms.waitForExistence(timeout: 10) && privacy.exists)
+        // the two hit areas never overlap (a tap at the bottom of Terms must not open Privacy Policy)
+        XCTAssertLessThanOrEqual(terms.frame.maxY, privacy.frame.minY, "Terms \(terms.frame) / Privacy \(privacy.frame)")
+        for (label, id) in [("Terms", "legal-terms"), ("Privacy Policy", "legal-privacy")] {
+            let link = app.buttons[label]
+            XCTAssertTrue(link.waitForExistence(timeout: 10), label)
+            XCTAssertGreaterThanOrEqual(link.frame.height, 28, "\(label) hit area")
+            link.tap()
+            let safari = app.descendants(matching: .any)["legalSafari"]
+            let done = app.buttons["Done"]
+            XCTAssertTrue(safari.waitForExistence(timeout: 10) || done.waitForExistence(timeout: 5), "\(label) opens the Safari sheet (\(id))")
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "call-A02-legal-" + id
+            shot.lifetime = .keepAlways
+            add(shot)
+            if done.exists { done.tap() } else { app.swipeDown() }
+            XCTAssertTrue(app.buttons[label].waitForExistence(timeout: 10), "back on A02 after closing \(label)")
+        }
+    }
+
+    /// #218 · A02 hides Google by default and keeps Apple, in the lower slot (no hole between buttons and the legal line).
+    func testA02HidesGoogleByDefault() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        let apple = app.buttons["Continue with Apple"]
+        XCTAssertTrue(apple.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Continue with Google"].exists)
+        let legal = app.buttons["Terms"]
+        if legal.exists { XCTAssertLessThan(legal.frame.minY - apple.frame.maxY, 120, "no awkward gap between Apple and the legal line") }
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02-no-google"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
+    /// #218 · the flag turns Google back on (reversible).
+    func testA02ShowsGoogleWhenFlagOff() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_HIDE_GOOGLE": "0"]
+        app.launch()
+        XCTAssertTrue(app.buttons["Continue with Apple"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Continue with Google"].exists)
+    }
+
+    /// #235 · A02-E: the failure card sits under the subtitle, fully inside the screen, and does not cover the headline.
+    func testA02ESignInFailedCardDoesNotCoverTheTitle() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "signIn", "GENITA_REVIEW_STILL": "1", "GENITA_REVIEW_SIGNIN_FAILED": "1"]
+        app.launch()
+        let toast = app.descendants(matching: .any)["signInFailed"].firstMatch
+        XCTAssertTrue(toast.waitForExistence(timeout: 10))
+        // one element that reads the whole message (VoiceOver, and the query is unambiguous)
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "signInFailed").count, 1)
+        XCTAssertTrue(toast.label.contains("Couldn’t reach Apple. Check your connection and try again."), toast.label)
+        // headline + subtitle end near canvas y 265 (design) -> the card must start below 250 pt on any phone
+        XCTAssertGreaterThanOrEqual(toast.frame.minY, 250, "the card starts under 'Built from your stories, rhythm and boundaries.'")
+        XCTAssertLessThanOrEqual(toast.frame.width, 342.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "call-A02E-toast"
+        shot.lifetime = .keepAlways
+        add(shot)
     }
 }

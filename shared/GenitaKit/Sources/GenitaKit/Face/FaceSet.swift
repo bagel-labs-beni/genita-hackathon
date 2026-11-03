@@ -6,6 +6,7 @@
 // shape falls back to its nearest neighbour.
 
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 
@@ -96,6 +97,10 @@ public final class FaceSet: @unchecked Sendable {
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
+    /// Person (subject) mask from prep (`images.person`, SAM 3.1): head / body motion stays inside it so
+    /// the background never moves. Absent → a fixed head-and-shoulders ellipse lock (no on-device ML:
+    /// runtime AI is Meta-only).
+    public let personMask: CGImage?
     /// What each shape draws after fallbacks (nil = the expression's own mouth).
     public let resolved: [LipViseme: LipViseme?]
     /// Load decisions worth logging (rejections, fallbacks, shifts).
@@ -212,6 +217,11 @@ public final class FaceSet: @unchecked Sendable {
             do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { notes.append("flow: \(error) → key patches") }
         }
         self.flow = flowData
+        var person: CGImage?   // prep only
+        if let ref = manifest.images["person"] {
+            do { person = try Self.decode(try load(ref), name: "person") } catch { notes.append("person: \(error) → ellipse layers") }
+        }
+        personMask = person
         let resolved = Self.resolve(available: Set(patches.keys))
         for v in LipViseme.shapes where resolved[v]! != v {
             notes.append("\(v.rawValue) → \(resolved[v]!.map(\.rawValue) ?? "rest")")
