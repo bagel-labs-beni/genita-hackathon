@@ -376,4 +376,12 @@ import UIKit
         signedIn.go(.name)
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
     }
+
+    /// QA build 7 (LG-03): a system alert over the launch (iPhone Mirroring's microphone sheet) used up the 0.9 s
+    /// relaunch splash unseen. On iPhone an inactive scene holds the splash clock.
+    func testSplashClockHoldsWhileTheSceneIsNotActive() {
+        XCTAssertTrue(GenitaSplash.holds(.inactive))
+        XCTAssertTrue(GenitaSplash.holds(.background))
+        XCTAssertFalse(GenitaSplash.holds(.active))
+    }
 }
