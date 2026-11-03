@@ -59,6 +59,20 @@ struct LiveBox: Identifiable, Equatable {
     /// The status line pill ("Listening", "Jin is talking": 36 pt tall, centred at y 142 + top, up to ~240 pt wide), padded 4 pt.
     /// A box label under it read as one pill over another ("Green onion" behind "Listening", UI sweep 11/3).
     static func statusRect(view: CGSize, top: CGFloat) -> CGRect { CGRect(x: view.width / 2 - 120 - 4, y: 142 + top - 18 - 4, width: 240 + 8, height: 36 + 8) }
+    /// How far the right-hand control rail (camera, mic, more) moves up with the Finds sheet (ConversationView reads it too).
+    static func railShift(_ s: SheetState) -> CGFloat {
+        switch s {
+        case .half, .rising, .full: -440
+        case .peek, .searching: -122
+        default: 0
+        }
+    }
+    /// The control rail: three 50 pt glass buttons centred at x = width − 56, y 665 / 724 / 783 (+ the screen's extra
+    /// height below 844, + the sheet shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
+    static func railRect(view: CGSize, sheet: SheetState) -> CGRect {
+        let y = 665 + (view.height - 844) + railShift(sheet)
+        return CGRect(x: view.width - 56 - 25 - 4, y: y - 25 - 4, width: 50 + 8, height: 783 - 665 + 50 + 8)
+    }
     /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
     static func pipRect(view: CGSize, top: CGFloat, sheetHalf: Bool) -> CGRect {
         let midX = sheetHalf ? 68 : view.width - 68

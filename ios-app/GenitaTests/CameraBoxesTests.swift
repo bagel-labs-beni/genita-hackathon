@@ -207,4 +207,15 @@ import XCTest
         XCTAssertFalse(ra.intersects(rb), "two pills never overlap")
         XCTAssertFalse(rb.intersects(obstacles[1]))
     }
+
+    /// UI sweep 11/3: "Whole milk" sat under the camera / mic / more buttons; the rail moves with the sheet.
+    func testLabelsStayClearOfTheControlRail() {
+        let view = CGSize(width: 390, height: 844), top: CGFloat = 59, label = CGSize(width: 90, height: 28)
+        let rail = CameraBoxes.railRect(view: view, sheet: .idle)
+        XCTAssertTrue(rail.contains(CGPoint(x: 334, y: 665)) && rail.contains(CGPoint(x: 334, y: 783)), "camera and more buttons inside")
+        XCTAssertEqual(CameraBoxes.railRect(view: view, sheet: .half).minY, rail.minY - 440)
+        let milk = CGRect(x: 280, y: 690, width: 90, height: 120)
+        let o = CameraBoxes.labelOrigin(milk, label: label, view: view, topInset: 96 + top, obstacles: [rail])
+        XCTAssertFalse(CGRect(origin: o, size: label).intersects(rail), "moved off the buttons")
+    }
 }

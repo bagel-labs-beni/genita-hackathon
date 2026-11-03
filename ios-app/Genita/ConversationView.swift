@@ -291,13 +291,7 @@ struct ConversationView: View {
         }
     }
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
-    private func railShift(_ s: SheetState) -> CGFloat {
-        switch s {
-        case .half, .rising, .full: -440
-        case .peek, .searching: -122
-        default: 0
-        }
-    }
+    private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
 
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
