@@ -132,6 +132,10 @@ export class Insights {
       const stillOk = async () => {
         if (this.seq.get(userId) !== mine) return false;
         const latest = await this.store.getStyle(userId);
+        // again after the read: a forget() / newer write may have landed while it ran (Codex r10); a card that is
+        // gone ("Forget all of this") stops a non-import write too
+        if (this.seq.get(userId) !== mine) return false;
+        if (!latest && !opts.gate) return false;
         return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
       };
       const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);

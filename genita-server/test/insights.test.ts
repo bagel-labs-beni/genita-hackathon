@@ -604,3 +604,10 @@ test("lead 11/4: a strength / watch-out that reuses no word of a quote or pick h
   assert.deepEqual(r.strengths.map((s) => s.text), ["Two or three options and you're already deciding."]);
   assert.equal(r.watchouts.length, 0, "an empty watch-outs section is fine");
 });
+
+test("eval 11/4: reading them against themselves is creepy — counts of how often, 'says X then does Y anyway'", () => {
+  for (const s of ["You order serious, then send memes anyway.", "You asked for sneaker help six times.", "You say no jokes but still send memes."]) assert.equal(insightProblem(s), "creepy", s);
+  assert.equal(insightProblem("You ask for two or three options, then decide fast."), null, "an ordinary 'then' is fine");
+  assert.equal(insightProblem("You decide by comparing, not by being told."), null);
+  assert.equal(insightProblem("You keep the final say on anything that leaves your hands."), null);
+});
