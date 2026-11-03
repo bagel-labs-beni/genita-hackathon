@@ -34,3 +34,10 @@ test("a capitalised sentence start is not a person; a capitalised name is", () =
   assert.match(taskHint("Should I text him or not", [h("user", "Okay I need your honest opinion")]) ?? "", /who/i);
   assert.equal(taskHint("should I text him", [h("user", "Jake keeps liking my stories")]), null);
 });
+
+test("a food constraint from earlier in the call rides the food ask (intel eval ctx-vegan-sister 3/5)", () => {
+  const hist = [h("user", "my sister's coming over saturday"), h("assistant", "Fun."), h("user", "she went vegan last month btw"), h("assistant", "Oh nice.")];
+  assert.match(taskHint("ok so what do i make", hist) ?? "", /"vegan" earlier/);
+  assert.equal(taskHint("ok so what do i wear", hist), null);
+  assert.equal(taskHint("what should i make", [h("user", "I love eggs")]), null);
+});

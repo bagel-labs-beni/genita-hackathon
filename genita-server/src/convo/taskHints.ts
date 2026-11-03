@@ -25,9 +25,20 @@ export function repeatedWords(history: Line[]): string[] {
   return [...count].filter(([w, n]) => n >= 2 && !user.has(w)).map(([w]) => w).slice(0, 3);
 }
 
+// a food constraint said earlier in the call (ctx-vegan-sister 3/5: egg, cheese and fish sauce in a "vegan" pick)
+const CONSTRAINT = /\b(?:vegan|vegetarian|pescatarian|gluten[- ]free|dairy[- ]free|lactose[- ]intolerant|halal|kosher|keto|(?:nut|peanut|shellfish|egg|dairy|gluten) allergy|allergic to [a-z]+|(?:doesn'?t|don'?t|can'?t|won'?t) eat [a-z]+(?: [a-z]+)?|no (?:pork|beef|meat|dairy|gluten|nuts|shellfish))\b/i;
+const FOOD_ASK = /\b(?:make|cook|eat|order|dinner|lunch|breakfast|brunch|recipe|snack|bake|grab food|food)\b/i;
+export function constraintFrom(userText: string, history: Line[]): string | null {
+  if (!FOOD_ASK.test(userText)) return null;
+  for (const h of [...history.slice(-10).filter((x) => x.role === "user").map((x) => x.text), userText].reverse()) { const m = CONSTRAINT.exec(h); if (m) return m[0].toLowerCase(); }
+  return null;
+}
+
 export function taskHint(userText: string, history: Line[]): string | null {
   const out: string[] = [];
   const t = userText.trim();
+  const need = constraintFrom(t, history);
+  if (need) out.push(`They said "${need}" earlier: whatever you pick has to fit that, every ingredient.`);
   if (WORK.test(t)) out.push("They want you to work something out: give the real answer with the actual numbers, times or steps in order (up to four short spoken sentences), then your take.");
   if (PRONOUN_ASK.test(t) && !history.slice(-8).some((h) => h.role === "user" && PERSON.test(h.text))) {
     out.push("You don't know who they mean yet: don't guess or advise blind; ask one short question about who or what happened.");
