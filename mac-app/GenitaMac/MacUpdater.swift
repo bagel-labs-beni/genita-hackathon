@@ -152,7 +152,7 @@ struct UpdateReadyPill: View {
                 Text(action).font(.custom("PretendardVariable-SemiBold", fixedSize: 12.5)).lineLimit(1).fixedSize().padding(.horizontal, 11).padding(.vertical, 5)
                     .background(.white, in: Capsule()).foregroundStyle(.black)
             }.buttonStyle(.plain).accessibilityIdentifier("macUpdateRestart").accessibilityHint("Installs build \(version) and reopens Genita")
-            Button(action: later) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.7)) }
+            Button(action: later) { Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.7)).frame(width: 24, height: 24).contentShape(Rectangle()) }   // 10 pt bold read as a speck (icon sweep 11/4)
                 .buttonStyle(.plain).accessibilityLabel("Later")
         }
         .fixedSize()
