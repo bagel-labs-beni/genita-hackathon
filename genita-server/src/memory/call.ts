@@ -50,6 +50,12 @@ export function memoryPrompt(items: Memory[], opening = false, notes = false): s
     + (opening ? "\nThe call just connected. Open with one short natural follow-up about this ONE past item. Do not claim you can see it now.\n" : "\nUse only relevant memories. Do not invent a shared past.\n");
 }
 
+/**
+ * CV-01 (eval v2 11/4: 9 invented-past lines / 100 calls): said on a user turn while nothing from an earlier call (memories,
+ * notes, last call's lines, a recall result) has reached Spark in this call. Short on purpose (Spark reasons on every line).
+ */
+export const NO_PAST_LINE = "\nNothing from earlier calls is in front of you: don't act like you two have history (no \"again\", \"last time\", \"as usual\", \"I remember\"). If they ask about before and you find nothing, say you don't remember that part and ask.\n";
+
 /** Per-call batching: only NEW completed pairs enter extraction, never old history. */
 export class MemoryCall {
   private pending: Turn[] = [];
@@ -68,6 +74,8 @@ export class MemoryCall {
   /** pairs this thread covers in total (the other device's count + this call's), and at the last summary */
   covered = 0;
   private summarizedAt = 0;
+  /** CV-01: something from an earlier call (memory, note, last call's lines, recall result) reached Spark in this call */
+  pastShown = false;
   /** earlier threads' summaries for this call's instructions (loaded once at open) */
   summaries: CallSummary[] = [];
   /** what the user had removed from their profile ("forget that…"): never summarized, extracted or put in a prompt */
@@ -102,7 +110,7 @@ export class MemoryCall {
       this.forgetsSeen++;
       this.lastCall = null;
       this.pinned = [];
-      this.pending = []; this.recentReplies = []; this.thread = []; this.covered = 0; this.summarizedAt = 0; this.summaries = [];
+      this.pending = []; this.recentReplies = []; this.thread = []; this.covered = 0; this.summarizedAt = 0; this.summaries = []; this.pastShown = false;
       this.revision = revision;
       if (!this.closed) onForget(revision);
     });
@@ -118,6 +126,8 @@ export class MemoryCall {
    */
   continueThread(thread: ThreadState | null, history: Array<{ role: "user" | "assistant"; text: string }>): void {
     if (thread) this.threadId = thread.threadId;
+    // the call goes on from the other device: its turns are this call's past (no "nothing from before" line)
+    this.pastShown = true;
     this.service.claimThread(this.userId, this.threadId, this.sessionId);
     let pairs: Turn[] = thread?.pairs ?? [];
     if (!thread) {
@@ -256,6 +266,7 @@ export class MemoryCall {
     if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) {
       const memories = await within(this.service.recall(this.userId, args.query, { rerank: true }).then((m) => m, () => null), TOOL_BUDGET_MS, null);
       // only what the model needs: never recall keys or bookkeeping (Codex 11/3); nothing the user asked to forget
+      if (memories && this.clearOf(memories).length) this.pastShown = true;
       return memories ? { memories: this.clearOf(memories).map((m) => ({ id: m.id, text: m.text, ...(m.image_ref ? { seen: true } : {}) })) } : { error: "memory_unavailable" };
     }
     if (call.name === "remember" && typeof args.fact === "string" && (args.kind === "fact" || args.kind === "episode")) {
@@ -283,7 +294,10 @@ export class MemoryCall {
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));
       const extra = this.clearOf(items).filter((m) => !pinnedIds.has(m.id));
-      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
+      if (pinned.length || notes || extra.length) this.pastShown = true;
+      // CV-01: nothing from an earlier call has reached Spark in this call → no "again" / "last time" / fake recall
+      const noPast = this.pastShown || opening !== undefined ? "" : NO_PAST_LINE;
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes) + noPast, tools: [...req.tools ?? [], ...replyMemoryTools()] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;

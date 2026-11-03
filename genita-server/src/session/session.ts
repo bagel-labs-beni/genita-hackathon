@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { unbackedPast } from "../convo/pastGuard.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1617,6 +1618,11 @@ export class Session {
     return picked.map((m) => m.text);
   }
 
+  /** CV-01: anything from before this call reached the model (memories, notes, last call, recall, the other device's turns) */
+  private hasPast(): boolean {
+    return this.continued || this.memories.length > 0 || !!this.memoryCall?.pastShown;
+  }
+
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
   threadInfo(): ThreadState | null {
     return this.memoryCall?.threadState() ?? null;
@@ -2070,6 +2076,11 @@ export class Session {
         if (this.v1 && tts && !interpret && !self) {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
+        if (this.v1 && tts && !interpret && !self) {
+          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText });
+          if (kept !== tts) { tts = kept; this.log("convo.unbacked_past", { utteranceId, dropped: !kept }); }
         }
         // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
         if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {

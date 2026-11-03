@@ -6,7 +6,8 @@
  * Not imported by the server. Types are structural so this file needs nothing from evals/.
  */
 import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
-import { memoryPrompt } from "../memory/call.ts";
+import { memoryPrompt, NO_PAST_LINE } from "../memory/call.ts";
+import { unbackedPast } from "./pastGuard.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -29,7 +30,11 @@ type Scenario = {
   memories?: string[];
   opening?: string | null;
   summaries?: { open_threads: string[]; promises: string[]; asks: string[] }[];
+  /** earlier turns of this same call (the iPhone half of a handoff) */
+  priorHistory?: { role: "user" | "assistant"; text: string }[];
 };
+/** CV-01: what session.hasPast() / MemoryCall.pastShown see — anything from before this call (or the other device) */
+const hasPast = (s: Scenario) => !!(s.memories?.length || s.summaries?.length || s.opening || s.priorHistory?.length);
 /** series: consecutive calls of one user (harness --openers); index = which call, used as the day seed */
 type Ctx = { scenario: Scenario; history: { role: "user" | "assistant"; text: string }[]; turn: Turn; series?: { id: string; index: number } };
 /** #341: what the session persists per user (opener_topics), per eval series */
@@ -81,7 +86,7 @@ export const adapter = {
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
       crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
-    const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false) + (hasPast(s) ? "" : NO_PAST_LINE);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
@@ -96,6 +101,7 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
+      if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText });
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
       const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
