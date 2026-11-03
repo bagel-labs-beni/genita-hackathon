@@ -314,3 +314,17 @@ test("QA sweep 11/3: a round's tool calls run side by side, not one after anothe
   assert.equal(maxInFlight >= 2, true, `max in flight ${maxInFlight}`);
   call.close();
 });
+
+test("Codex #423 P1: an explicit 'remember …' goes to extraction at once (saveNow), and is not sent twice when the reply completes", async () => {
+  const { service } = setup(); const call = new MemoryCall(service, "a", "s"); await call.open();
+  const batches: string[][] = [];
+  const realExtract = service.extract.bind(service);
+  service.extract = ((u: string, sid: string, turns: { user: string }[], rev: unknown) => { batches.push(turns.map((t) => t.user)); return realExtract(u, sid, turns as never, rev as never); }) as typeof service.extract;
+  call.saveNow("Remember that I like pistachio ice cream.");
+  await new Promise((r) => setTimeout(r, 50));
+  call.completedTurn("Remember that I like pistachio ice cream.", "Pistachio, noted… kidding, obviously.");
+  call.close();
+  await new Promise((r) => setTimeout(r, 50));
+  const all = batches.flat().filter((u) => /pistachio/.test(u));
+  assert.equal(all.length, 1, JSON.stringify(batches));
+});

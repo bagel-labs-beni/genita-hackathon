@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive" | "appearance";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -21,13 +21,16 @@ export type GuardContext = {
 const CLASSES: Array<[GuardClass, RegExp]> = [
   ["assistant", /\b(?:as an ai\b|(?:an? )?(?:ai )?language model|how can i (?:help|assist)|is there anything else|let me know if|great question|i'?m (?:just )?here to (?:help|chat|listen|assist))/i],
   ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been) (?:really |so |super )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest)|take your time|^\s*i'?m (?:still |right )?here(?: (?:for you|with you))?[.!]*\s*$)/i],
-  ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into))/i],
+  ["intake", /\bare you more (?:of )?(?:a |an |into )?[^.!?]{0,40}\bor\b|\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into))/i],
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
   // QA sweep 11/3 (first-call opener 3/3): a personality label instead of a topic — "you totally seem like someone who
   // deletes an app if the icons look cheap", "you give off … energy", "you're the type who…" (DESIGN §8.5: never type them)
-  ["label", /\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:seem|look|sound|strike me|come across|read)(?:s)? (?:like|as) (?:the )?(?:type|kind|sort|someone|somebody|a person|one of those)\b|\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey )?(?:giv(?:e|es|ing) off|have(?: such)? an?)\b[^.!?]{0,80}\b(?:energy|vibes?)\b|\byou'?re (?:totally |so |definitely |100% )?(?:the|that) (?:type|kind|sort) (?:of (?:person|human|girl|guy) )?(?:who|that|to)\b|\bi bet you'?re (?:the|that|one of those) (?:type|kind|people)\b/i],
+  ["label", /\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:seem|look|sound|strike me|come across|read)(?:s)? (?:like|as) (?:the )?(?:type|kind|sort|someone|somebody|a person|one of those)\b|\byou\s+(?:totally |so |really |just |definitely |kinda |lowkey )?giv(?:e|ing) off\b[^.!?]{0,80}\b(?:energy|vibes?)\b|\byou'?re (?:totally |so |definitely |100% )?(?:the|that) (?:type|kind|sort) (?:of (?:person|human|girl|guy) )?(?:who|that|to)\b|\bi bet you'?re (?:the|that|one of those) (?:type|kind|people)\b|\byou(?:'re| are)\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:someone|somebody|the kind of person|a person|one of those people) (?:who|that)\b|\byou give (?:off |total |such |major |big |serious |strong |real )?[^.!?]{0,60}\b(?:energy|vibes?)\b/i],
+  // AI sweep 11/3 (3/4 with the camera ON): their face, skin, hair, smile or body, rated — never, camera or not
+  // (DESIGN §8.2/§8.5). The clothes themselves are fine ("that blazer is sharp").
+  ["appearance", /\b(?:your|that|those) (?:little |cute |pretty |big )?(?:smile|face|skin|hair|eyes|lips|body|figure|glow|complexion|cheeks|jawline|legs|arms|curves)\b|\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning) as hell\b|\byou(?:'re| are| look(?:s|ing)?)\s+(?:so |really |totally |kinda )?(?:cute|hot|pretty|gorgeous|beautiful|handsome|glowy|glowing|sexy|stunning|adorable|radiant)\b|\b(?:cozy and glowy|glowy|glowing skin)\b/i],
   ["unseen", /\b(?:you (?:totally |really |so |just |kinda )?look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
 
@@ -143,21 +146,24 @@ const INTERRUPTION = /\b(?:(?:you|u)\s+(?:keep\s+|kept\s+|just\s+)?(?:cut(?:ting
 const SAVE_TALK = [
   // saving out loud (QA sweep 11/3, 2 of 7 memory turns): "I'll save that bouldering detail quietly while we keep,
   // chatting.", "Biscuit — locking that in so I keep his beach story straight." Not "I'll save you a seat".,
-  /\b(?:i'?ll|i will|let me|lemme|gonna|i'?m (?:gonna|going to|just going to))\s+(?:quietly\s+|just\s+|go ahead and\s+)?(?:save|store|log|stash|jot(?: down)?|note(?: down)?|file(?: away)?|lock(?: in)?|write down|keep track of|make a (?:mental )?note of)\s+(?:that|this|it|the|your|his|her|their)\b/i,
+  /\b(?:i'?ll|i will|let me|lemme|gonna|i'?m (?:gonna|going to|just going to))\s+(?:quietly\s+|just\s+|go ahead and\s+)?(?:save|store|log|stash|jot(?: down)?|note(?: down)?|file(?: away)?|lock(?: in)?|write down|keep track of|make a (?:mental )?note of)\s+(?:(?:that|this|it)\b(?!\s+(?:for|in|on|until)\s+(?:tomorrow|later|tonight|the|next|you|a))|(?:the|your|his|her|their)\s+(?:\w+\s+)?(?:detail|details|story|fact|facts|info|name|names)\b)/i,
   /^(?:[\p{L}'’]+\s*[—–,-]\s*)?(?:locking|saving|storing|logging|noting|filing|stashing|jotting)\s+(?:that|this|it)\b(?:\s+(?:in|down|away))?/iu,
   /\b(?:saved|locked|noted|logged|filed|stored)\s+(?:that|it|this)\s+(?:in|away|down)?\s*(?:for (?:later|next time)|in my (?:memory|head|notes))\b/i,
   /\bso i (?:keep|get|have) [^.!?]{0,40}\bstraight\b/i,
 ];
 
 /** K-test 11/3: what they're wearing / how they look, said with no camera ("you're in something all black right now") */
-const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight|looks?|is)\b)/i;
+const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b[^.!?]{0,30}\b(?:black|white|red|blue|green|grey|gray|beige|camel|navy|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|blazer|coat|pajamas|sweats|minimal|monochrome|something)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight)\b)/i;
 const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|hair|makeup|look(?:s|ing)? like)\b/i;
 /**
  * K-test 11/3 [P2]: sensitive details said back ("eighty five K, you're doing solid"): an income / salary amount, or a
  * health detail, is never repeated unless the user's own line this turn says it. Product prices stay ("one twenty nine").
  */
 const NUM_WORD = "(?:\\d[\\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)";
-const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b|\b(?:your|you) (?:salary|income|pay|paycheck)\b|\byou (?:make|earn|pull in|bring in)\s+(?:like\s+)?\$?${NUM_WORD}`, "i");
+const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b[^.!?]{0,25}\byou(?:'re| are)\b|\byou(?:'re| are)? (?:making|earning|pulling in|bringing in|on)\s+(?:like\s+)?\$?${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand|a year)\b|\byour (?:salary|income|paycheck|raise)\b`, "i");
+const APPEARANCE_WORDS = /\b(?:smile|face|skin|hair|eyes|lips|body|figure|glow\w*|complexion|cheeks|jawline|legs|arms|curves|cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant)\b/i;
+/** they asked about it themselves ("should I dye my hair?"): talking about it is fine */
+const APPEARANCE_WORDS_USER = /\b(?:my (?:smile|face|skin|hair|eyes|lips|makeup|body)|do i look|how do i look|am i (?:cute|pretty|hot))\b/i;
 const HEALTH = /\b(?:diagnos\w*|medication|meds|therapy|depress\w*|anxiety|adhd|diabet\w*|pregnan\w*|surgery|chemo|cancer|blood pressure|insulin)\b/i;
 
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
@@ -170,10 +176,12 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!ctx.camera && WEARING_NOW.test(sentence) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
-  if ((INCOME.test(sentence) && !INCOME.test(ctx.userText) && !/\b(?:salary|income|make|earn|paid|k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
+  if ((INCOME.test(sentence) && !/\b(?:salary|income|make|earn|paid|\d+\s?k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
+  if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
   for (const [cls, re] of CLASSES) {
     if (!re.test(sentence)) continue;
     if (cls === "unseen" && ctx.camera) continue;
+    if (cls === "appearance") continue;
     if (cls === "intake" && ctx.askTurn) continue;
     return cls;
   }
@@ -189,7 +197,7 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen";
+  return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen" || cls === "appearance";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {
@@ -255,4 +263,23 @@ export function addressUser(sentence: string, ctx: AddressContext): string {
   // another named person in the clause ("a photo of Alice in her wedding dress"): whose "her" is unclear, leave it
   if (/\s[A-Z][a-z]+/.test(head.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/^\s*(?:You're|You)\s/, " "))) return head + tail;
   return head.replace(/\b(in|with|on|at|from|over|under|around|across|against|into|onto|near|by|to)\s+(?:her|his)\b(?=\s+\p{L})/giu, "$1 your") + tail;
+}
+
+/**
+ * AI sweep 11/3 [P2]: the user's own name as a sentence subject ("Summer should know that by now") is talking about
+ * them, not to them. At a sentence start only, with a verb right after: → "You should know that by now".
+ */
+const TO_YOU: Record<string, string> = { is: "are", has: "have", was: "were", does: "do", "doesn't": "don't", "isn't": "aren't", "wasn't": "weren't", "hasn't": "haven't" };
+const VERB_S = /^(?:knows|loves|likes|wants|needs|gets|seems|looks|thinks|says|deserves|keeps|makes|goes|does|has|is|was)$/;
+export function nameAsYou(sentence: string, name: string | undefined): string {
+  const n = (name ?? "").trim();
+  if (n.length < 2 || !/^[\p{L}' -]+$/u.test(n)) return sentence;
+  const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^((?:\\s*(?:\\[[^\\]]*\\]|<[^<>]*>))*\\s*)${esc}('s|\\s+)(should|would|could|can|will|must|might|always|never|just|really|totally|definitely|is|was|has|does|doesn't|isn't|wasn't|hasn't|knows|loves|likes|wants|needs|gets|seems|looks|thinks|says|deserves|keeps|makes|goes)\\b`, "u");
+  const m = re.exec(sentence);
+  if (!m) return sentence;
+  const [all, lead, glue, verb] = m;
+  if (glue === "'s") return lead + "You're" + sentence.slice(lead.length + n.length + 2);
+  const v = TO_YOU[verb] ?? (VERB_S.test(verb) ? verb.replace(/ies$/, "y").replace(/(?<=[^s])s$/, "") : verb);
+  return lead + "You " + v + sentence.slice(all.length);
 }

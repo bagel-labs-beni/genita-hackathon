@@ -137,9 +137,22 @@ export class MemoryCall {
     const word = recentOpeningWords([text])[0];
     if (word) this.service.background(() => this.service.noteOpener(this.userId, word));
   }
+  /**
+   * "Remember that I like pistachio ice cream": with the in-reply save gone (replyMemoryTools), an explicit ask is
+   * sent to extraction at once, so a reply cut off or a call ended mid-answer never loses it (Codex #423 P1).
+   */
+  saveNow(user: string): void {
+    if (this.closed || !user.trim()) return;
+    this.savedNow.add(user);
+    this.pending.push({ user, assistant: "" });
+    this.flush();
+  }
+  private savedNow = new Set<string>();
+
   completedTurn(user: string, assistant: string): void {
     if (this.closed || !user.trim()) return;
-    this.pending.push({ user, assistant });
+    // already sent by saveNow: not twice
+    if (!this.savedNow.delete(user)) this.pending.push({ user, assistant });
     if (this.pending.length >= 4) this.flush();
     this.thread = [...this.thread, { user: user.slice(0, 1000), assistant: assistant.slice(0, 1000) }].slice(-SUMMARY_MAX_PAIRS);
     this.covered++;

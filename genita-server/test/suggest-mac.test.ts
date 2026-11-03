@@ -267,3 +267,17 @@ test("mustNameMac: a reply naming the Mac in its second sentence passes through 
   for await (const ev of mustNameMac(src(), "FIXED")) if (ev.type === "text") out += ev.delta;
   assert.equal(out, "<excited> Of course! Can you move our call to your Mac? I want to see it all.");
 });
+
+test("mustNameMac (Codex #423): a stream that stalls after its first words gets the fixed line on its own clock", async () => {
+  const { mustNameMac } = await import("../src/session/session.ts");
+  async function* stalled() {
+    yield { type: "text" as const, delta: "<excited> Of course! " };
+    await new Promise((r) => setTimeout(r, 5000));
+    yield { type: "done" as const, responseId: "r", text: "", status: "completed" };
+  }
+  const t0 = Date.now();
+  let out = "";
+  for await (const ev of mustNameMac(stalled(), "FIXED Mac line", Date.now, 300)) if (ev.type === "text") out += ev.delta;
+  assert.equal(out, "FIXED Mac line");
+  assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
+});

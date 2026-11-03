@@ -922,7 +922,7 @@ test("session v1 (Codex review): 'Well. Well water needs testing.' keeps the wor
 });
 
 test("session v1 (QA P3): a sentence never starts lower case after a dropped name / a full stop; a comma clause keeps its case", { skip: !v1 }, async () => {
-  const { client, session } = setup(["<happy> No way, Summer. That's huge.", "<excited> Called it. told you you'd crush it, honestly."]);
+  const { client, session } = setup(["<happy> No way, Summer. That's huge.", "<excited> Called it. That sounds really tough. told you you'd crush it, honestly."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
   await session.onClientText(JSON.stringify({ type: "text", text: "I got the job" }));
   const first = await client.waitFor((m) => m.type === "reply");
@@ -959,7 +959,7 @@ test("session v1: a first-call opener that only labels the user is retried, neve
   const reply = await client.waitFor((m) => m.type === "reply", 4000);
   assert.equal(reply.text, "Kimchi pasta at midnight is elite and I will not be taking questions.");
   assert.ok(calls.length >= 2);
-  assert.match(calls[0].instructions!, /Talk about the thing, never about what kind of person they are\./);
+  assert.match(calls[0].instructions!, /Talk about the thing, never about who they are: no describing, typing or labeling them/);
   session.close();
 });
 
@@ -982,7 +982,7 @@ test("K-test 11/3: mentionsProfile — a profile taste the user didn't bring up 
   assert.equal(mentionsProfile("<happy> casual and witty, love it", profile, "hi"), false, "how-they-talk lines are not tastes");
 });
 
-test("session v1 (K-test): after the opener spends the one personal mention, later turns are told not to volunteer tastes and the GK question waits", { skip: !v1 }, async () => {
+test("session v1 (K-test): after the opener spends the one personal mention, later turns are told not to volunteer tastes; the GK question is not a mention (Codex #423)", { skip: !v1 }, async () => {
   const personalize = { startCall: async () => ({ taste: [], calls: 1, profile: "Into: minimal monochrome fashion, aespa.", ask: "Ask what size they wear.", askItem: "size", askTopic: { item: "size", field: "likes" } }), voiceCorrection: async () => null, endCall: async () => 0 };
   const { client, session, calls } = setup(["<teasing> Aespa on loop tonight, no notes.", "<happy> Fair."], { personalize: personalize as never, userId: "u1" });
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer" } }));
@@ -991,6 +991,58 @@ test("session v1 (K-test): after the opener spends the one personal mention, lat
   await client.waitFor((m) => m.type === "reply" && m !== first);
   const second = calls.at(-1)!.instructions!;
   assert.match(second, /Don't bring up their tastes or personal details on your own; only if they do\./);
-  assert.doesNotMatch(second, /Ask what size they wear/);
+  assert.match(second, /Ask what size they wear/, "GK-1 asks what we don't know: not held behind the budget");
   session.close();
+});
+
+test("AI sweep 11/3 guard: face / skin / hair / smile ratings are never said, camera on or off; clothes and products stay", () => {
+  const cam = { camera: true, userText: "which one?" };
+  for (const t of ["That little smile is doing all the work.", "Cute as hell, that color pops with your hair.", "You look cozy and glowy tonight."]) assert.equal(guardSentence(t, cam), "appearance", t);
+  for (const t of ["That blazer is sharp.", "You have a black blazer that gives the whole outfit a sharper vibe.", "Those boots cost two grand.", "This camera records in 4K.", "You're in luck, the black pair is available.", "I'll save the cream knit for tomorrow and wear the black one tonight."]) assert.equal(guardSentence(t, cam), null, t);
+  assert.equal(guardSentence("Go for the bangs, your hair would look great.", { camera: true, userText: "should I cut my hair?" }), null, "they asked");
+});
+
+test("AI sweep 11/3: the user's name as a subject becomes 'you'; vocatives and other names stay", async () => {
+  const { nameAsYou } = await import("../src/convo/guard.ts");
+  assert.equal(nameAsYou("Summer should know that by now.", "Summer"), "You should know that by now.");
+  assert.equal(nameAsYou("Summer knows the drill.", "Summer"), "You know the drill.");
+  assert.equal(nameAsYou("Summer, you crushed it.", "Summer"), "Summer, you crushed it.");
+  assert.equal(nameAsYou("Summer Walker is amazing.", "Summer"), "Summer Walker is amazing.");
+});
+
+test("session v1 (AI sweep P1 safety): a real crisis reply with no pointer to help gets the help line; one with it doesn't", { skip: !v1 }, async () => {
+  const { CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  const a = setup(["<warm> I care about you and I'm staying right here with you."]);
+  await a.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await a.session.onClientText(JSON.stringify({ type: "text", text: "honestly i don't want to be alive anymore" }));
+  const r1 = await a.client.waitFor((m) => m.type === "reply");
+  assert.ok(String(r1.text).endsWith(CRISIS_HELP_LINE.replace(/<[^>]*>\s*/, "")), String(r1.text));
+  a.session.close();
+  const b = setup(["<warm> I'm really glad you told me. Can you call or text 988 right now?"]);
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await b.session.onClientText(JSON.stringify({ type: "text", text: "honestly i don't want to be alive anymore" }));
+  const r2 = await b.client.waitFor((m) => m.type === "reply");
+  assert.equal(r2.text, "I'm really glad you told me. Can you call or text 988 right now?");
+  b.session.close();
+});
+
+test("session v1 (Codex #423): a sentence nobody cut keeps its case ('npm install ws.'); a greeting statement stays a statement", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<neutral> Easy. npm install ws."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "how do I install ws" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Easy. npm install ws.");
+  session.close();
+  const g = setup(["<warm> You still have that interview tomorrow."]);
+  await g.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
+  const greet = await g.client.waitFor((m) => m.type === "reply");
+  assert.equal(greet.text, "You still have that interview tomorrow.");
+  g.session.close();
+});
+
+test("guard (opener sweep v4 profile): 'you're someone who…', 'you give … energy' are labels; 'are you more X or Y' is intake", () => {
+  assert.equal(guardSentence("You're totally someone who judges a product by its face first.", none), "label");
+  assert.equal(guardSentence("You give total Apple-store-polish energy.", none), "label");
+  assert.equal(guardSentence("Are you more clean and minimal or bold and loud?", none), "intake");
+  for (const t of ["Are you coming tonight or tomorrow?", "That song gives total summer energy.", "You give great advice."]) assert.equal(guardSentence(t, none), null, t);
 });
