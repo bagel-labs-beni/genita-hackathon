@@ -12,7 +12,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
-import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorPhrases, colorsOf, releaseWarm, type CachedProducts } from "./productCache.ts";
+import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
 
@@ -200,7 +200,7 @@ export class FindsRunner {
       const key = cacheKey("shoes", colorPhrases(phrase), taste);
       if (cacheGet(key, Date.now()) || !claimWarm(key, Date.now())) return;
       const card = await this.searchInBackground(`Find ${phrase} shoes that match their style.`, `warm-${randomUUID()}`).catch(() => null);
-      if (card && cardIsKind(card.card, "shoes") && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
+      if (card && this.tasteText() === taste && cardIsKind(card.card, "shoes") && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
       else releaseWarm(key);
     }));
   }
@@ -316,6 +316,7 @@ export class FindsRunner {
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
     const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
+    const tasteAtStart = this.tasteText(); // a profile change while it searched: not cached (Codex #522 r5 P1)
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
         this.onEvent({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
@@ -328,7 +329,7 @@ export class FindsRunner {
       if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {
         const cat = categoryOf(t.text);
         const colors = colorsOf(t.text);
-        if (cat && colors.length && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colorPhrases(t.text), this.tasteText()), { at: Date.now(), card: r.card, sourceFindId: findId });
+        if (cat && colors.length && tasteAtStart === this.tasteText() && plainAsk(t.text) && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colorPhrases(t.text), tasteAtStart), { at: Date.now(), card: r.card, sourceFindId: findId });
       }
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       return r;
@@ -409,7 +410,7 @@ export class FindsRunner {
   /** A cached card for this ask: same category, its colors proven, nothing narrower asked (price, brand, material…). */
   private cacheFor(text: string): CachedProducts | null {
     const cat = categoryOf(text);
-    if (!cat) return null;
+    if (!cat || !plainAsk(text)) return null;
     const lower = text.toLowerCase();
     const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
     if (EXCLUDE.test(lower) || named.some((w) => MATERIAL.test(w)) || /\$\s?\d|\bunder \d|\bcheap|\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower) || brandsIn(text).length) return null;
@@ -458,8 +459,9 @@ export class FindsRunner {
     const cardMs = Math.round(c.now() - t0);
     // refresh behind it (yields to calls), for the next ask
     const kind = categoryOf(t.text) ?? "shoes";
-    const key = cacheKey(kind, colorPhrases(t.text), this.tasteText());
-    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
+    const taste = this.tasteText();
+    const key = cacheKey(kind, colorPhrases(t.text), taste);
+    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && this.tasteText() === taste && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
     return { card, timings: { cardMs, cached: 1 } };
   }
 

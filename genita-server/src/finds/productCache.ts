@@ -40,7 +40,7 @@ const SHOE_KINDS = new Set(["boots", "sneakers", "loafers", "heels", "flats", "s
  * Every thing-to-buy word an ask can name (the finds label list and more): an ask whose words are not all of one
  * kind ("black shoes and a blazer", "… and a belt") is never served from or stored in the cache (Codex #522 r2/r3).
  */
-const THING = /\b(jackets?|coats?|blazers?|parkas?|vests?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|blouses?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|leggings|suits?|ties?|gowns?|outfits?|pajamas|swimsuits?|bikinis?|socks|gloves|belts?|hats?|caps?|beanies?|scarf|scarves|watch(?:es)?|sunglasses|glasses|jewelry|rings?|earrings?|necklaces?|bracelets?|wallets?|umbrellas?|perfume|makeup|lipstick|accessor(?:y|ies)|lamps?|chairs?|mugs?|headphones|earbuds|phones?|cases?|laptops?|gifts?|sandals?|slippers?|slides|mules?|clogs?|flip[- ]?flops?|boots?|booties|sneakers?|trainers?|loafers?|heels?|pumps?|flats|ballet|totes?|backpacks?|rucksacks?|bags?|purses?|clutch|crossbody|shoes?|oxfords?|derbys?|footwear)\b/gi;
+const THING = /\b(jackets?|coats?|blazers?|parkas?|vests?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|blouses?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|leggings|suits?|ties?|gowns?|pajamas|swimsuits?|bikinis?|socks|gloves|belts?|hats?|caps?|beanies?|scarf|scarves|watch(?:es)?|sunglasses|glasses|jewelry|rings?|earrings?|necklaces?|bracelets?|wallets?|umbrellas?|perfume|makeup|lipstick|accessor(?:y|ies)|lamps?|chairs?|mugs?|headphones|earbuds|phones?|cases?|laptops?|gifts?|sandals?|slippers?|slides|mules?|clogs?|flip[- ]?flops?|boots?|booties|sneakers?|trainers?|loafers?|heels?|pumps?|flats|ballet|totes?|backpacks?|rucksacks?|bags?|purses?|clutch|crossbody|shoes?|oxfords?|derbys?|footwear)\b/gi;
 
 const kindOfWord = (w: string) => KINDS.find(([, re]) => re.test(w))?.[0] ?? null;
 
@@ -71,6 +71,21 @@ export function cardIsKind(card: FindCard, kind: string): boolean {
     if (ks.some((k) => !k)) return false;   // "Leather Belt", "Slide Sandal"
     return ks.every((k) => (kind === "shoes" ? SHOE_KINDS.has(k!) : k === kind));
   });
+}
+
+/** words a plain "find me <color> <kind>" ask may hold beside its color and kind */
+const FILLER = new Set(("a an the some any pair pairs of can could would you me my i i'd id we us find get show see look looking for find need want like love please " +
+  "that this these those with go goes going match matches matching to on in it its and or but just new nice good great cute something " +
+  "outfit look style wear wearing today tonight now recommend suggest pick picks one ones two three couple few links link send buy shop yeah ok okay so hey also maybe what which " +
+  "are is be would should will gonna wanna some more other another them they there here up").split(" "));
+
+/**
+ * The ask is nothing but a color and a kind ("Can you find me some dark brown shoes that go with this?"): any other
+ * word ("running", "waterproof", "for a wedding") narrows it, so the cache is not used for it (Codex #522 r5).
+ */
+export function plainAsk(text: string): boolean {
+  const words = text.toLowerCase().replace(/[’']/g, "'").match(/[a-z']+/g) ?? [];
+  return words.every((w) => FILLER.has(w) || COLOR_WORD.test(w) || SHADE.test(w) || !!kindOfWord(w));
 }
 
 /** base color words of an ask ("dark brown" → brown) */

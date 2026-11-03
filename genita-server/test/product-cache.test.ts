@@ -114,6 +114,10 @@ test("Codex #522 r3: other things named, unknown-kind products, shades and unkno
   assert.equal(cardIsKind(card(["Black Chelsea Boot", "Samba OG"]), "shoes"), false, "a product of no known kind never passes");
   assert.notDeepEqual(colorPhrases("dark brown shoes"), colorPhrases("light brown shoes"));
   assert.deepEqual(colorPhrases("Find me some dark brown shoes"), ["dark brown"]);
+  const { plainAsk } = await import("../src/finds/productCache.ts");
+  assert.equal(plainAsk("Can you find me some dark brown shoes that go with this?"), true);
+  assert.equal(plainAsk("Find black running shoes"), false, "running narrows it (Codex #522 r5)");
+  assert.equal(plainAsk("Find black shoes for a wedding"), false);
   // an ask with no known color ("aqua") is never served from the cache
   clearProductCache();
   const { v, searches } = vendors(10);
@@ -133,6 +137,22 @@ test("Codex #522 r3: other things named, unknown-kind products, shades and unkno
   assert.ok(created!.card.products!.every((p) => !p.image || p.image.status !== "pending"), JSON.stringify(created!.card.products!.map((p) => p.image)));
   await a.r.settle();
   a.r.close();
+});
+
+test("S5 cache (Codex #522 r5 P1): a search whose profile changed while it ran is not cached", async () => {
+  clearProductCache();
+  const { v } = vendors(40);
+  const { r, events } = runner(v, "acct-x", "");   // no profile: no warm-up
+  r.onTurn({ text: "Find me some black shoes", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
+  await sleep(5);
+  r.configure({ owner: "acct-x", memories: [], profile: "How the user wants to be treated:\n- Taste: Navy and grey, suede." }); // its warm-up: navy / grey only
+  await r.settle();
+  await sleep(20);
+  const s = r.onTurn({ text: "Find me some black shoes", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  await sleep(5);
+  assert.ok(!events.some((e) => e.type === "find.created" && e.findId === s!.findId), "nothing cached under the new taste");
+  await r.settle();
+  r.close();
 });
 
 test("Spark search slots (Codex #522 r3): with a limit of 1 a background search gives up at once instead of waiting forever", async (t) => {
