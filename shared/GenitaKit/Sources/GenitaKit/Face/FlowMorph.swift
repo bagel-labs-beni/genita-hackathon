@@ -654,9 +654,16 @@ final class FlowMorph: @unchecked Sendable {
         order = data.keys
         if let tone = data.map.rig?.teethTone {
             let lit = data.kind == "human" && (FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false)
+            var mx: (cx: Float, hw: Float)? = nil
+            if let mouth, data.roi.width > 0 {
+                let kxs = Double(width) / Double(data.roi.width)
+                mx = (Float((Double(mouth.midX) - Double(data.roi.minX)) * kxs), Float(Double(mouth.width) / 2 * kxs))
+            }
             for (k, inn) in ip { if let p = keyPix[k] {
-                teethTex[k] = lit ? Self.toneTeethLit(p, interior: inn, width: width, height: height, tone: tone)
-                                  : Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone)
+                if lit {
+                    let r = Self.toneTeethLitW(p, interior: inn, width: width, height: height, tone: tone, mouthX: mx)
+                    teethTex[k] = r.tex; teethIn[k] = r.inside
+                } else { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) }
             } }
         }
         if let rg = data.map.rig, rg.lipTone > 0, data.neutralROI != nil, let closedLip = lm["MBP"] {
@@ -755,6 +762,8 @@ final class FlowMorph: @unchecked Sendable {
     private let intPix: [String: [Float]]
     /// Lip rig teeth-layer textures (teethTop.tone); keys without one use their own texture.
     private var teethTex: [String: [Float]] = [:]
+    /// 11/4: per key, how surely a teeth-layer pixel is inside the mouth (narrow-gap shade only there)
+    private var teethIn: [String: [Float]] = [:]
     private var rigLo: [Float] = []
     /// mouth box in working px (lip thinning)
     private var rigMouth: CGRect?
@@ -1310,7 +1319,7 @@ final class FlowMorph: @unchecked Sendable {
             drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], nil, u, lf))
         }
         // Teeth layer (rig): the top key's mouth inside, opaque, alpha = its warped interior × opening.
-        var teethL: (key: [Float], field: [Float], int: [Float], s: Float, lit: Float)? = nil
+        var teethL: (key: [Float], field: [Float], int: [Float], s: Float, lit: Float, inside: [Float]?)? = nil
         if let rg, let j = rigTop, let ip = intPix[order[j]] {
             let s = Float(min(1, max(0, (Double(am[j]) - rg.teethAlpha[0]) / max(1e-3, rg.teethAlpha[1]))))
             let leaving = rg.teethExitBeforeClose && usedV2 && (v2?.preClose ?? false)
@@ -1321,7 +1330,7 @@ final class FlowMorph: @unchecked Sendable {
                 let u = min(1, max(0, (open - 0.1) / 0.35))
                 lit = Float(0.55 + 0.45 * u * u * (3 - 2 * u))
             }
-            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s, lit) }
+            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s, lit, teethIn[order[j]]) }
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -1487,7 +1496,10 @@ final class FlowMorph: @unchecked Sendable {
                         al = min(1, al * tl.s)
                         if al > 0.002 {
                             var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
-                            if tl.lit < 1 { c = (c.0 * tl.lit, c.1 * tl.lit, c.2 * tl.lit) }
+                            if tl.lit < 1 {
+                                let k = 1 - (1 - tl.lit) * (tl.inside.map { Self.bilinear1($0, w, h, px + dk.0, tY + dk.1) } ?? 1)
+                                c = (c.0 * k, c.1 * k, c.2 * k)
+                            }
                             // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
                             if let ow = openW, tY < ow.yc {
                                 let l = (c.0 + c.1 + c.2) / 3, bw = min(1, max(0, (l - 120) / 60)) * 0.18
@@ -1633,13 +1645,20 @@ final class FlowMorph: @unchecked Sendable {
     /// fixed white, no gap-filled slab. The whole mouth inside falls into shadow toward the corners and under the
     /// upper lip, the lower teeth sit a little darker, bright unsaturated (teeth) pixels take a touch of the skin's
     /// colour (same light), and the dark cavity is warmed and darkened as in v44 (`cavityDark`).
-    static func toneTeethLit(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone) -> [Float] {
+    static func toneTeethLit(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone, mouthX: (cx: Float, hw: Float)? = nil) -> [Float] {
+        toneTeethLitW(p, interior: interior, width: w, height: h, tone: tone, mouthX: mouthX).tex
+    }
+
+    /// `toneTeethLit` plus each pixel's "really inside the mouth" weight (0 on the mask's rim and past the mouth's
+    /// corners, where a prep mask can leak onto the cheek) — the narrow-gap shade uses it too.
+    static func toneTeethLitW(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone, mouthX: (cx: Float, hw: Float)? = nil) -> (tex: [Float], inside: [Float]) {
         var ys: [Int] = [], xs: [Int] = [], vs: [Float] = []
         for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 {
             let i = (y * w + x) * 3
             ys.append(y); xs.append(x); vs.append(max(p[i], p[i + 1], p[i + 2]))
         } }
-        guard ys.count > 20, let y0 = ys.min(), let y1 = ys.max(), let x0 = xs.min(), let x1 = xs.max() else { return p }
+        var inside = [Float](repeating: 0, count: w * h)
+        guard ys.count > 20, let y0 = ys.min(), let y1 = ys.max(), let x0 = xs.min(), let x1 = xs.max() else { return (p, inside) }
         vs.sort(); let thr = vs[min(vs.count - 1, max(0, Int(Double(vs.count - 1) * min(100, max(0, tone.thrPct.isFinite ? tone.thrPct : 50)) / 100)))]
         func clip(_ v: Float) -> Float { min(1, max(0, v)) }
         func sstep(_ a: Float, _ b: Float, _ v: Float) -> Float { let u = clip((v - a) / (b - a)); return u * u * (3 - 2 * u) }
@@ -1651,7 +1670,8 @@ final class FlowMorph: @unchecked Sendable {
         }
         var tint: (Float, Float, Float) = (1, 1, 1)
         if sn > 0 { let m = (sr + sg + sb) / (3 * sn); if m > 1 { tint = (sr / sn / m, sg / sn / m, sb / sn / m) } }
-        let cx = Float(x0 + x1) / 2, hw = max(1, Float(x1 - x0) / 2), split = Float(tone.split), dark = Float(min(1, max(0, tone.cavityDark)))
+        // corners: the mouth box's (a mask leaking past a corner must not move the falloff), else the inside's extent
+        let cx = mouthX?.cx ?? Float(x0 + x1) / 2, hw = max(1, mouthX?.hw ?? Float(x1 - x0) / 2), split = Float(tone.split), dark = Float(min(1, max(0, tone.cavityDark)))
         // edge weight: 0 on the inside mask's rim → 1 two px in (the rim holds lip / skin pixels the mask caught)
         var ed = [Float](repeating: 0, count: w * h)
         for y in y0...y1 { for x in x0...x1 where interior[y * w + x] > 0.5 { ed[y * w + x] = 3 } }
@@ -1695,11 +1715,14 @@ final class FlowMorph: @unchecked Sendable {
                     let dk = 1 - (1 - dark) * 0.4
                     c = (c.0 * (1 - cav) + c.0 * min(1, dk * 1.1) * cav, c.1 * (1 - cav) + c.1 * dk * 0.82 * cav, c.2 * (1 - cav) + c.2 * dk * 0.8 * cav)
                 }
-                let e = clip((ed[y * w + x] - 1) / 2)
+                // the rim, and anything past the mouth's corners (cheek skin a prep mask leaked onto: shading it drew grey
+                // blotches on pale faces), keeps the key's own pixels
+                let e = clip((ed[y * w + x] - 1) / 2) * (mouthX == nil ? 1 : 1 - sstep(1.0, 1.15, dx))
+                inside[y * w + x] = e
                 o[i] = p[i] + (c.0 - p[i]) * e; o[i + 1] = p[i + 1] + (c.1 - p[i + 1]) * e; o[i + 2] = p[i + 2] + (c.2 - p[i + 2]) * e
             }
         }
-        return o
+        return (o, inside)
     }
 
     /// Teeth-layer texture (v44 teethTop.tone): inside the interior, low-saturation pixels darker than
