@@ -419,7 +419,7 @@ struct SettingsCompanionPage: View {
             SettingsGroup {
                 SettingsRowLabel(title: "Name", value: model.companionDisplayName)
                 SettingsSeparator()
-                SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? "Default")
+                SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default")
             }
         }
         .navigationTitle("Your companion")
@@ -518,4 +518,11 @@ struct AboutYouPage: View {
         }
         return out.filter { !$0.claims.isEmpty }
     }
+}
+
+/// The four V04 voices' names by server id (genita-server src/prep/voices.ts DEFAULT_VOICES). Lives here, not in the
+/// iOS-only OnboardingViews.swift, because the GenitaMac target compiles this file too.
+enum CuratedVoices {
+    static let names = ["72": "Tara", "9": "Leah", "19": "Leo", "26": "Dan"]
+    static func name(_ id: String?) -> String? { id.flatMap { names[$0] } }
 }

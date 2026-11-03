@@ -67,6 +67,8 @@ extension AppState {
         setup.imageType = c.type
         setup.companionCreated = true
         setup.companionDemo = c.demo
+        // the saved voice (Settings → Voice); the name comes from this phone's pick or the curated list
+        if let v = c.voiceId, v != setup.voiceId { setup.voiceId = v; setup.voiceName = VoicePlayer.name(forVoiceId: v) }
         if let p = c.session?.persona { setup.serverPersona = p }
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep

@@ -292,8 +292,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/voices") {
       const imageId = url.searchParams.get("imageId");
       const img = imageId ? await d.store.getImage(imageId).catch(() => null) : null;
-      const kind = img && img.rec.userId === user ? img.rec.check.type : null;
-      const r = await orderedVoices(d, user, kind);
+      const own = img && img.rec.userId === user ? img : null;
+      const r = await orderedVoices(d, user, own?.rec.check.type ?? null, own?.rec.check.raw?.voice_fit);
       return send(res, 200, {
         voices: r.voices.map((v) =>
           v.locale
