@@ -227,7 +227,8 @@ jobs:
           # Xcode's generated Info.plist writes CFBundleName = $(PRODUCT_NAME) = GenitaMac over mac-app/Info.plist; the menu
           # bar and About/Hide/Quit read it. Set the visible names here, before Developer ID signing (Chelsea 11/4: "Genita").
           /usr/libexec/PlistBuddy -c 'Set :CFBundleName Genita' "$APP/Contents/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Genita' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string Genita' "$APP/Contents/Info.plist"
+          # CFBundleDisplayName must equal the file name (GenitaMac) for Finder to use the localized "Genita" (en.lproj).
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName GenitaMac' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string GenitaMac' "$APP/Contents/Info.plist"
 
       - name: Install Developer ID identity
         id: identity
@@ -373,7 +374,12 @@ jobs:
           N="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$MNT/GenitaMac.app/Contents/Info.plist")"
           DN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$MNT/GenitaMac.app/Contents/Info.plist")"
           echo "names: CFBundleName=$N CFBundleDisplayName=$DN"
-          test "$N" = Genita && test "$DN" = Genita || { echo "::error::visible app name is '$N' / '$DN', not Genita"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          test "$N" = Genita && test "$DN" = GenitaMac || { echo "::error::CFBundleName '$N' (want Genita) / CFBundleDisplayName '$DN' (want GenitaMac = file name)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          # what Finder / Dock actually show for the installed copy
+          CHK="$(mktemp -d)"; ditto "$MNT/GenitaMac.app" "$CHK/GenitaMac.app"
+          SHOWN="$(osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSFileManager.defaultManager.displayNameAtPath(ObjC.wrap("'"$CHK"'/GenitaMac.app")).js')"
+          rm -rf "$CHK"; echo "Finder name: $SHOWN"
+          test "$SHOWN" = Genita || { echo "::error::Finder shows '$SHOWN', not Genita"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           plutil -p "$MNT/GenitaMac.app/Contents/Resources/en.lproj/InfoPlist.strings" | grep -q '"CFBundleDisplayName" => "Genita"' \
             || { echo "::error::en.lproj/InfoPlist.strings (localized display name) missing"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
