@@ -13,15 +13,8 @@ extension SheetState {
 }
 
 struct MacResultSheet: View {
-    /// "Why these" lines break only after a " · " and never inside a short tail: no line starts with "·"
-    /// ("… what you said / · fieldandco.com") and "for this weekend" doesn't split as "· for / this weekend".
-    static func keepTogether(_ line: String) -> String {
-        var parts = line.components(separatedBy: " · ")
-        if parts.count > 1, let last = parts.last, last.split(separator: " ").count <= 4 {
-            parts[parts.count - 1] = last.replacingOccurrences(of: " ", with: "\u{00A0}")
-        }
-        return parts.joined(separator: "\u{00A0}· ")
-    }
+    /// The " · " parts of a "Why these" line, for the stacked form.
+    static func parts(_ line: String) -> [String] { line.components(separatedBy: " · ").filter { !$0.isEmpty } }
 
     let finds: FindsModel
     /// MAC-LINK: a product page was opened in the default browser.
@@ -156,8 +149,17 @@ struct MacResultSheet: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Why these").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
                                 ForEach(Array(evidence.lines.enumerated()), id: \.offset) { i, line in
-                                    Text(Self.keepTogether(line)).font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                    // D4 / QA: one line when it fits; else each " · " part on its own line, the "·" dropped —
+                                    // never a line that ends or starts with "·"
+                                    ViewThatFits(in: .horizontal) {
+                                        Text(line).lineLimit(1)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            ForEach(Array(Self.parts(line).enumerated()), id: \.offset) { _, part in
+                                                Text(part).fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                    .font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
                                 }
                             }.padding(.top, 36).accessibilityElement(children: .combine).accessibilityIdentifier("macResultEvidence")
                         }
