@@ -246,6 +246,8 @@ struct FindEntry: Identifiable, Equatable {
         }
         undoState = state
         state = .dismissed
+        // FT-NOSEE (D56, AU-58): the fridge card closed — the camera says what it didn't see and asks to move, for 8 s
+        if let card = current?.card, card.camera != nil, let check = NoSeeCheck.from(card: card) { showNoSee(check) }
         toastTask?.cancel()
         toastTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(4))

@@ -148,4 +148,22 @@ import XCTest
         m.undo()
         XCTAssertEqual(m.state, .half)
     }
+
+    /// AU-58 · D56: FT-NOSEE comes from the fridge card in a real call (it was fixture-only): closing the card shows
+    /// what the camera didn't see; a card with everything in view, or without the camera, shows nothing.
+    func testClosingAFridgeCardShowsWhatTheCameraDidntSee() throws {
+        let m = FindsModel()
+        let json = #"{"id":"r1","kind":"recipe","createdAt":"2026-11-04T10:00:00Z","eyebrow":"From your camera","title":"Kimchi fried rice","subtitle":"","items":[{"id":"i1","name":"eggs","tier":"have","from":"camera"},{"id":"i2","name":"cooked rice","tier":"buy","from":"recipe"}],"steps":[],"options":[],"why":[],"ask":[],"sources":[],"how":[],"camera":{"frame":0,"at":"2026-11-04T10:00:00Z","w":480,"h":854,"label":"Your camera · 10:00"}}"#
+        let card = try JSONDecoder().decode(FindCard.self, from: Data(json.utf8))
+        m.apply(started("r1", kind: .recipe)); m.apply(.findCreated(.init(findId: "r1", card: card))); m.force(.half)
+        XCTAssertNil(m.noSee, "never over the sheet")
+        m.close()
+        XCTAssertEqual(m.noSee?.title, "For kimchi fried rice")
+        XCTAssertEqual(m.noSee?.rows.map(\.seen), [true, false])
+        XCTAssertEqual(m.noSee?.rows.last?.name, "cooked rice")
+        // a product card never makes one
+        let p = FindsModel()
+        p.apply(started("p1")); p.apply(created("p1")); p.force(.half); p.close()
+        XCTAssertNil(p.noSee)
+    }
 }

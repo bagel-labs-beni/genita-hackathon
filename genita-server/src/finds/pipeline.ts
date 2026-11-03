@@ -185,6 +185,8 @@ const pending = (slot: string): FindImage => ({ slot, status: "pending" });
 /** FD-01 step 1 'How I found this' on camera cards (Figma 151:29/54/74); never on product cards (D50). AU-76 */
 export const MODEL_CREDIT = "Muse Spark · SAM 3.1";
 /** AU-68: health, nutrition or diet advice never reaches a recipe card (steps, ask). */
+/** AU-68 steps: advice, not an ingredient ("low-fat milk" is an ingredient; "for a healthier dish" is advice, Codex r1). */
+export const HEALTH_STEP = /\b(?:health(?:y|ier|iest)?|nutrition(?:al)?|nutritious|nutrients?|calories?|caloric|guilt[- ]free|good for you|vitamins?|cholesterol|(?:on|for) (?:a|your) diet)\b/i;
 export const HEALTH_ADVICE = /\b(health(?:y|ier|iest)?|nutrition(?:al)?|nutritious|nutrients?|calories?|caloric|low[- ](?:fat|carb|cal|sodium)|diet(?:ary|ing)?|guilt[- ]free|good for you|vitamins?|protein[- ](?:packed|rich)|cholesterol|keto)\b/i;
 
 // ───────────────────────── recipe (fridge) ─────────────────────────
@@ -375,7 +377,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   pushItems(true);
 
-  const steps = strList(r?.steps, 4, 140).filter((t) => !HEALTH_ADVICE.test(t));
+  const steps = strList(r?.steps, 4, 140).filter((t) => !HEALTH_STEP.test(t));
   const sources = (Array.isArray(r?.sources) ? r!.sources : [])
     .map((s) => s as { title?: unknown; url?: unknown })
     .map((s) => ({ title: str(s.title, 120), url: str(s.url, 500) }))

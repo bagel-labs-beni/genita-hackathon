@@ -176,14 +176,25 @@ export function shortName(s: string): string {
 const PLURAL_GOODS = "boots|shoes|sneakers|loafers|sandals|heels|flats|jackets|coats|blazers|dresses|shirts|tops|tees|sweaters|hoodies|pants|trousers|jeans|skirts|bags|totes|accessories|clothing";
 /** "/womens-brown-boots", "/mens-jackets", "/boots-dark-brown/": a category slug, not one item (AU-79). */
 const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-(?:[a-z]+-){0,3}(?:${PLURAL_GOODS})|(?:${PLURAL_GOODS})(?:-[a-z]+){0,3})$`, "i");
-/** A page title that names a list: "Women's Boots | Shop", "24 results", "Brown boots collection". */
-const LIST_TITLE = new RegExp(`\\b(?:\\d+ (?:items|results|products|styles)|results for|shop (?:all|women|men)|collection|category|(?:women|men)'?s (?:${PLURAL_GOODS}))\\b`, "i");
+/** A title only a results page has: "24 results", "Results for brown boots", "Shop all". */
+const LIST_TITLE_STRONG = /\b(?:\d+ (?:items|results|products|styles)|results for|shop all)\b/i;
+/** One title part that names a category: "Women's Boots", "Brown boots collection", "Boots". */
+const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:[a-z]+ ){0,2}(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
+/**
+ * A title that is only a category (+ a short shop name): "Women's Boots | Shop", "Brown boots collection – Acme".
+ * "Women's Boots - Heritage Chelsea Boot" names one item in another part, so it is not (Codex AU-79 r1).
+ */
+function categoryTitle(title: string): boolean {
+  const parts = title.split(/\s+[|–—:-]\s+/).map((p) => p.trim()).filter(Boolean);
+  return parts.some((p) => CATEGORY_PART.test(p)) && parts.every((p) => CATEGORY_PART.test(p) || p.split(/\s+/).length <= 2);
+}
 
 /** A category / collection the URL slug or the page title gives away, when the markup can't say (AU-79). */
 export function looksLikeList(url: string, title?: string): boolean {
-  if (title && LIST_TITLE.test(title)) return true;
-  // "/products/boots-dark-brown" is one product whatever its slug says
+  if (title && LIST_TITLE_STRONG.test(title)) return true;
+  // "/products/boots-dark-brown" is one product whatever its slug or a category word in its title says
   if (urlShape(url) === "product") return false;
+  if (title && categoryTitle(title)) return true;
   try {
     const seg = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
     return LIST_SLUG.test(seg.replace(/\.html?$/i, ""));

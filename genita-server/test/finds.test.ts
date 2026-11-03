@@ -636,14 +636,17 @@ test("AU-60/61 CW-02 variants: clothes held up and a choice between them is an o
   assert.deepEqual(classifyTurn("Which one should I make for dinner?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("What can I make for lunch?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which jacket would you recommend for this weekend?", false), { kind: "product" }, "no camera: nothing to choose between");
+  // Codex r1: ordering one is a search; jacket potatoes are food
+  assert.deepEqual(classifyTurn("Which jacket would you recommend that I order online?", true), { kind: "product" });
+  assert.deepEqual(classifyTurn("Which one should I make for dinner with these jacket potatoes?", true), { kind: "recipe" });
 });
 
 test("AU-68 CW-01: no health or nutrition advice on the recipe card", async () => {
-  const json = `{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry the kimchi.","Use less oil for a healthier dish.","Top with egg."],"sources":[{"title":"K","url":"https://www.maangchi.com/recipe/kimchi-bokkeumbap"}],"ask":["Is it healthy?","How spicy is it?","Lower calorie swap?","Add cheese?"],"say":"Found one."}`;
+  const json = `{"dish":"kimchi fried rice","minutes":15,"ingredients":[{"name":"kimchi","optional":false}],"steps":["Fry the kimchi.","Use less oil for a healthier dish.","Mix the eggs with low-fat milk.","Top with egg."],"sources":[{"title":"K","url":"https://www.maangchi.com/recipe/kimchi-bokkeumbap"}],"ask":["Is it healthy?","How spicy is it?","Lower calorie swap?","Add cheese?"],"say":"Found one."}`;
   const v = fakeVendors({ seen: "eggs | 6 | carton\nkimchi | - | red jar\n", recipe: json });
   const { ctx } = ctxFor("recipe", v, { images: false });
   const card = (await runRecipe(ctx)).card!;
-  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Top with egg."]);
+  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Mix the eggs with low-fat milk.", "Top with egg."], "an ingredient named low-fat stays (Codex r1)");
   assert.deepEqual(card.ask, ["How spicy is it?", "Add cheese?"]);
 });
 

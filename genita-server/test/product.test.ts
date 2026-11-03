@@ -437,4 +437,8 @@ test("AU-79 FD-02: a category page nothing could read never fills a product slot
   assert.equal(isProductPage("https://shop.example.com/en/highwood-chelsea-boot", null), true);
   assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Highwood Chelsea Boot – Dark Brown" }), true);
   assert.equal(isProductPage("https://shop.example.com/collections/x", { kind: "product" }), true, "the page's own markup wins (unchanged)");
+  // Codex r1: a product URL with a category word in its title, and a title that names one item after the category
+  assert.equal(isProductPage("https://shop.example.com/products/heritage-chelsea-12345", { kind: "unknown", title: "Women's Boots - Heritage Chelsea Boot" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Women's Boots - Heritage Chelsea Boot" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Brown boots collection – Acme" }), false);
 });
