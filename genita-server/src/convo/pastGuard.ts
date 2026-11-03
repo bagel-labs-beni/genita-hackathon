@@ -27,11 +27,25 @@ const CLAIMED_RECALL = new RegExp([
 
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 
+// a habit no memory ever backs ("like usual", "as always"): cut even when the call has a past (eval v2 r2, 3/14 with memories)
+const ALWAYS_HABIT = /,?\s*\b(?:as usual|like usual|per usual|as always|like always)\b(?=\s*[,.!?…]|\s*$)/giu;
+/** the user said it themselves: fair to echo */
+const USER_HABIT = /\b(?:again|as usual|like usual|per usual|as always|like always)\b/i;
+// "you still on that aespa phase?" with no past: "still" claims they were before
+const STILL = /\b(you(?:'re| are)?|u|are you|you guys)\s+still\b\s*/giu;
+
 export function unbackedPast(sentence: string, ctx: PastContext): string {
-  if (ctx.past || !sentence.trim()) return sentence;
+  if (!sentence.trim()) return sentence;
   const user = ctx.userText ?? "";
+  if (ctx.past) {
+    if (USER_HABIT.test(user)) return sentence;
+    ALWAYS_HABIT.lastIndex = 0;
+    const out = sentence.replace(ALWAYS_HABIT, "");
+    return /[\p{L}\p{N}]/u.test(out.replace(/<[^>]*>|\[[^\]]*\]/g, "")) ? out : sentence;
+  }
+  if (!said(STILL, user)) { STILL.lastIndex = 0; sentence = sentence.replace(STILL, "$1 "); }
   if (CLAIMED_RECALL.test(sentence) && !CLAIMED_RECALL.test(user)) return "";
-  if (said(HABIT, user)) return sentence;
+  if (USER_HABIT.test(user)) return sentence;
   HABIT.lastIndex = 0;
   const out = sentence.replace(HABIT, (m, offset: number, whole: string) => (RETRY_BEFORE.test(whole.slice(0, offset)) ? m : ""));
   // nothing but tags / punctuation left: keep the original (the caller decides; never an empty "?")

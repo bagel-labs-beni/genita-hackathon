@@ -27,3 +27,12 @@ test("CV-01: kept — a retry 'again', the user's own words, any call with a pas
   assert.equal(unbackedPast("Again!", none()), "Again!");
   assert.equal(unbackedPast("I remember the 2014 World Cup final like it was yesterday.", none()), "I remember the 2014 World Cup final like it was yesterday.");
 });
+
+test("CV-01 r2 (eval v2 after, 14 left): 'still' with no past; 'like usual' even with memories", () => {
+  assert.equal(unbackedPast("You still on that aespa phase?", none()), "You on that aespa phase?");
+  assert.equal(unbackedPast("Are you still stuck on the ramen thing?", none()), "Are you stuck on the ramen thing?");
+  assert.equal(unbackedPast("Thursday's interview, you prepped or winging it like usual?", { past: true, userText: "lol yeah" }), "Thursday's interview, you prepped or winging it?");
+  assert.equal(unbackedPast("You still on that aespa phase?", { past: true, userText: "hi" }), "You still on that aespa phase?");
+  assert.equal(unbackedPast("Still raining there?", none()), "Still raining there?");
+  assert.equal(unbackedPast("Late again, like usual.", { past: true, userText: "late like usual lol" }), "Late again, like usual.");
+});
