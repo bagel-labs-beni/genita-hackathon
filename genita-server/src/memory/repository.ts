@@ -15,6 +15,8 @@ export type Memory = {
   follow_up: boolean;
   source_session_id: string;
   image_ref?: string;
+  /** recall keys (memory lane 11/3): words someone might ask about it with ("pet" for "my cat"), written off-path */
+  keys?: string[];
 };
 
 /** Postgres lane boundary. put is an upsert; false means a Forget tombstone blocked it.
