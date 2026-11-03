@@ -20,7 +20,9 @@
   "neutral": "neutral.jpg",
   "blink": "blink.jpg",
   "smile": "smile.jpg",
-  "warm": "warm.jpg"
+  "warm": "warm.jpg",
+  "surprised": "surprised.jpg",
+  "concerned": "concerned.jpg"
  },
  "visemes": {
   "MBP": "MBP.jpg",

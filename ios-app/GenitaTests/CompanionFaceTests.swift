@@ -224,9 +224,9 @@ import XCTest
         let loader = CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: fetch)
 
         guard case let .loaded(key, set) = try await loader.load(currentKey: nil) else { return XCTFail("no face set") }
-        XCTAssertEqual(set.expressions.count, 4)
+        XCTAssertEqual(set.expressions.count, 6)
         XCTAssertGreaterThanOrEqual(set.patches.count, 8, set.notes.joined(separator: "; "))
-        XCTAssertEqual(seen.value.count, 1 + 14, "prep + 4 expressions + 10 visemes")
+        XCTAssertEqual(seen.value.count, 1 + 16, "prep + 6 expressions (neutral blink smile warm surprised concerned) + 10 visemes")
         for req in seen.value {
             XCTAssertEqual(req.url?.scheme, "https")
             XCTAssertEqual(req.url?.host(), "api.genita.test")
@@ -237,9 +237,9 @@ import XCTest
         // Same companion again: images come from the disk cache, and the driver can stay as it is.
         guard case .loaded(let again, _) = try await loader.load(currentKey: nil) else { return XCTFail("cache miss") }
         XCTAssertEqual(again, key)
-        XCTAssertEqual(seen.value.count, 15 + 1, "only the prep call; images from Caches")
+        XCTAssertEqual(seen.value.count, 17 + 1, "only the prep call; images from Caches")
         guard case .unchanged = try await loader.load(currentKey: key) else { return XCTFail("rebuilt an unchanged set") }
-        XCTAssertEqual(seen.value.count, 16 + 1)
+        XCTAssertEqual(seen.value.count, 18 + 1)
     }
 
     func testLoaderToleratesARejectedImageButNeedsNeutral() async throws {
