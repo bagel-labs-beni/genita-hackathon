@@ -620,6 +620,11 @@ struct BringingView: View {
             LinearGradient(colors: [PrepStyle.background.opacity(0), PrepStyle.background], startPoint: .top, endPoint: .bottom)
                 .frame(height: 300)
         }
+        // the white status bar stays readable over a light photo (a pencil drawing on paper, pixel QA 11/4)
+        .overlay(alignment: .top) {
+            LinearGradient(colors: [PrepStyle.background.opacity(0.45), PrepStyle.background.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 120).allowsHitTesting(false)
+        }
         .frame(width: width, height: PrepStyle.photoHeight).clipped()
         .accessibilityLabel("\(model.companionDisplayName)'s photo")
     }
