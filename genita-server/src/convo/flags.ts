@@ -5,6 +5,9 @@
  *   GENITA_INITIATIVE=0    → the companion never speaks first mid-call (silence / memory / camera cues)
  *   GENITA_BACKCHANNEL=0   → no "mm-hm" cue mid-turn on a long user turn (P1 #345; on by default since 11/4 — Chelsea:
  *                            flags are for rollback only)
+ *   GENITA_EOT_HOLD=0      → every Transcribe final ends the turn at once again (the pre-CA-14 policy); default on (11/4):
+ *                            a final that looks unfinished is held (src/convo/endOfTurn.ts) so a thinking pause gets a
+ *                            backchannel, not a reply
  *   GENITA_ENGLISH_ONLY=0  → a mostly-Hangul transcript in chat mode is auto-interpreted again (F8); default on (11/3,
  *                            Chelsea: English only), so a misheard line never turns a chat reply into a translation
  */
@@ -22,4 +25,8 @@ export function englishOnly(env: NodeJS.ProcessEnv = process.env): boolean {
 
 export function backchannelOn(env: NodeJS.ProcessEnv = process.env): boolean {
   return convoV1(env) && env.GENITA_BACKCHANNEL !== "0";
+}
+
+export function eotHoldOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GENITA_EOT_HOLD !== "0";
 }

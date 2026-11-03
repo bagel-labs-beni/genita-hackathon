@@ -58,8 +58,9 @@ import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
+import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -429,7 +430,8 @@ export class Session {
   private backchannel: Backchannel | null = backchannelOn()
     ? new Backchannel({
         now: () => this.now(),
-        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
+        // CA-14: a turn the end-of-turn hold keeps open is still the user's turn
+        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.userTurnOpen(),
         send: (kind) => void this.sendBackchannel(kind),
       })
     : null;
@@ -445,6 +447,17 @@ export class Session {
   private bcGen = 0;
   /** a cue played during this user turn: a stray "mm-hm" in its transcript is the cue's echo, not the user */
   private cuedTurn = false;
+  /**
+   * CA-14 (11/4): a Transcribe final that looked unfinished ("…and then he started."), held until `timer` commits it
+   * (src/convo/endOfTurn.ts). The user resuming clears the timer and the next final is joined to `text`. Never set
+   * in interpretation, while a reply runs, or with the mic off. null = no held turn.
+   */
+  private held: { text: string; turnId: number; kind: EotKind; since: number; segments: number; timer: NodeJS.Timeout | null } | null = null;
+
+  /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
+  private userTurnOpen(): boolean {
+    return this.turn.userSpeaking || this.held !== null;
+  }
 
   private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
     const gen = this.bcGen;
@@ -457,7 +470,7 @@ export class Session {
         if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
       } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
     }
-    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking || gen !== this.bcGen) return;
+    if (this.closed || this.mode !== "chat" || this.reply || !this.userTurnOpen() || gen !== this.bcGen) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
     // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
     this.cuedTurn = true;
@@ -561,7 +574,7 @@ export class Session {
         convo: () => ({
           companionSpeaking: this.turn.phase === "speaking",
           lastReplyEndAt: this.lastReplyEndAt,
-          userSpeaking: this.turn.userSpeaking,
+          userSpeaking: this.userTurnOpen(),
           lastUserSpeechAt: this.lastUserSpeechAt,
         }),
         log: (event, data) => this.log(event, data),
@@ -638,6 +651,8 @@ export class Session {
         this.micOn = false;
         // ~0.8 s of silence lets endpointing finish a sentence cut by the mute
         this.asr?.sendAudio(Buffer.alloc(Math.round(PCM_SAMPLE_RATE * 0.8) * 2));
+        // muting ends the turn: a held one is answered now (CA-14)
+        this.commitHeld("mic_off");
         return;
       case "text": {
         const text = str(msg.text, 2000)?.trim();
@@ -650,6 +665,8 @@ export class Session {
           return;
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
+        // a held voice turn ends here, as before CA-14: its reply starts and the typed line cuts it (reducer `text`)
+        this.commitHeld("text");
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
@@ -908,7 +925,7 @@ export class Session {
     this.greetTimer = (this.deps.greetScheduler ?? schedule)(() => {
       this.greetTimer = null;
       if (!this.greeting || this.closed) return;
-      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
+      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.userTurnOpen()) {
         // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
         this.greeting = null;
         this.dropPreGreet();
@@ -952,6 +969,7 @@ export class Session {
       this.skipPendingGreeting("mode");
       // a chat reply in progress is cut; the interpreter owns the voice now
       if (this.turn.phase !== "listening") this.dispatch({ type: "client_barge_in" });
+      this.dropHeld();
       this.dropSpeculation();
       this.mode = "interpret";
       this.client.sendJson({ type: "mode.changed", mode, by });
@@ -1120,6 +1138,7 @@ export class Session {
     this.dropPreGreet();
     if (this.initiativeTimer) clearInterval(this.initiativeTimer);
     this.perceptionUnsub?.();
+    this.dropHeld();
     this.dropSpeculation();
     if (this.reply) {
       // the call ended while a looked-up answer was still playing: it was said, so it is kept in Finds
@@ -1171,22 +1190,32 @@ export class Session {
     if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
     if (this.interp) return this.onInterpretAsr(e);
     if (this.cuedTurn && (e.type === "partial" || e.type === "speechComplete")) e = { ...e, text: stripCueEcho(e.text) };
-    if (e.type === "speechComplete") this.cuedTurn = false;
     switch (e.type) {
-      case "speechStart":
+      case "speechStart": {
         this.metrics = {};
         this.bcGen++;
-        this.backchannel?.start();
+        // the user goes on inside a held turn (CA-14): no commit while they talk; their next final joins it
+        const resumed = this.held !== null;
+        if (this.held?.timer) clearTimeout(this.held.timer);
+        if (this.held) {
+          this.held.timer = null;
+          this.log("turn.resumed", { afterMs: Math.round(this.now() - this.held.since), segments: this.held.segments });
+        }
+        this.backchannel?.start(resumed);
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
-      case "partial":
+      }
+      case "partial": {
         this.metrics.lastPartialAt = t;
         this.bcGen++;
-        this.backchannel?.partial(e.text);
-        this.client.sendJson({ type: "transcript", final: false, text: e.text });
-        this.dispatch({ type: "partial", text: e.text });
-        return this.considerSpeculation(e.text);
+        // inside a held turn the partial continues it: the bubble, the cue's word count and the guess see the whole turn
+        const text = this.held ? joinSegments(this.held.text, e.text) : e.text;
+        this.backchannel?.partial(text);
+        this.client.sendJson({ type: "transcript", final: false, text });
+        this.dispatch({ type: "partial", text });
+        return this.considerSpeculation(text);
+      }
       case "speechEnd":
         this.bcGen++;
         this.backchannel?.stop();
@@ -1200,6 +1229,8 @@ export class Session {
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
         // exactly one final transcript goes out either way
         if (interpretCommand(e.text) === "start") {
+          this.cuedTurn = false;
+          this.dropHeld();
           this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
           // INT-0 by voice: "Can you interpret for me?"
           this.switchMode("interpret", "model");
@@ -1236,11 +1267,72 @@ export class Session {
     }
   }
 
+  /**
+   * A Transcribe final. CA-14 (11/4): it is a candidate end of turn, not a commit. An unfinished-looking turn
+   * (src/convo/endOfTurn.ts) is held open — the backchannel cue may play inside the hold, Spark may already guess —
+   * and only a long enough silence commits it; if the user resumes, the next final is joined to it.
+   */
   private completeTurn(turnId: number, text: string): void {
+    const whole = this.held ? joinSegments(this.held.text, text) : text;
+    const v = this.holdVerdict(whole);
+    if (v) return this.holdTurn(turnId, whole, v);
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    const h = this.held;
+    this.held = null;
+    if (h) this.log("turn.commit", { reason: "final", heldMs: Math.round(this.now() - h.since), segments: h.segments + 1, kind: h.kind });
+    this.commitTurn(turnId, whole);
+  }
+
+  private commitTurn(turnId: number, text: string): void {
+    this.cuedTurn = false;
+    this.backchannel?.stop();
     this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
     this.dispatch({ type: "speech_complete", text });
     // not consumed by a reply (backchannel / empty): stop the guess
     this.dropSpeculation();
+  }
+
+  /** hold this final? Only a plain chat turn to a quiet companion, with the mic on; null = commit now */
+  private holdVerdict(text: string): EotVerdict | null {
+    if (!eotHoldOn() || this.closed || this.mode !== "chat" || this.interp || !this.micOn || !text.trim()) return null;
+    if (this.turn.phase !== "listening" || this.turn.backchannel || this.turn.pendingBargeIn) return null;
+    const v = judgeEndOfTurn(text, eotTuning());
+    return v.holdMs > 0 ? v : null;
+  }
+
+  private holdTurn(turnId: number, text: string, v: EotVerdict): void {
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    const prev = this.held;
+    const timer = setTimeout(() => this.commitHeld("silence"), v.holdMs);
+    this.held = { text, turnId, kind: v.kind, since: prev?.since ?? this.now(), segments: (prev?.segments ?? 0) + 1, timer };
+    // the cue only for a turn that looks unfinished; a missing "." alone just waits a little
+    if (v.kind === "incomplete") this.backchannel?.held(text, EOT.cueAfterMs, v.holdMs);
+    // the bubble keeps the whole turn (the final goes out on commit)
+    this.client.sendJson({ type: "transcript", final: false, text });
+    // Spark may start on it now (it is buffered until the commit; a resumed turn makes it a miss)
+    if (this.deps.config.speculate && !(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS)) {
+      if (this.specTimer) clearTimeout(this.specTimer);
+      this.specTimer = null;
+      void this.startSpeculation(text);
+    }
+    this.log("turn.hold", { kind: v.kind, why: v.why, holdMs: v.holdMs, segment: this.held.segments, words: text.split(/\s+/).length });
+  }
+
+  /** the held turn ends now (silence ran out, the mic went off, the user typed) */
+  private commitHeld(reason: "silence" | "mic_off" | "text"): void {
+    const h = this.held;
+    if (!h) return;
+    if (h.timer) clearTimeout(h.timer);
+    this.held = null;
+    if (this.closed) return;
+    this.log("turn.commit", { reason, heldMs: Math.round(this.now() - h.since), segments: h.segments, kind: h.kind });
+    this.commitTurn(h.turnId, h.text);
+  }
+
+  /** the held turn is dropped unanswered (the call closed or switched to interpretation) */
+  private dropHeld(): void {
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    this.held = null;
   }
 
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
@@ -1252,6 +1344,8 @@ export class Session {
     if (this.closed || this.mode === "interpret") return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
+    // a held turn waits again from here (the video's line was not the user going on)
+    if (this.held) return this.completeTurn(turnId, "");
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
@@ -1264,7 +1358,7 @@ export class Session {
     this.watch ??= new WatchController(
       {
         companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
-        conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        conversationQuiet: () => this.turn.phase === "listening" && !this.userTurnOpen() && !this.turn.pendingBargeIn,
         react: (script) => {
           // interpretation owns the voice: no watch reactions over it
           if (this.mode === "interpret") return null;
@@ -1332,7 +1426,7 @@ export class Session {
   private announce(text: string): void {
     // interpretation owns the voice: a card that lands mid-interpretation stays on the sheet, unspoken
     if (this.closed || this.mode === "interpret") return;
-    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "self_speak", text, origin: "card" });
+    if (this.turn.phase === "listening" && !this.userTurnOpen()) return this.dispatch({ type: "self_speak", text, origin: "card" });
     if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
@@ -1569,7 +1663,7 @@ export class Session {
 
   private initiativeIdle(): boolean {
     return !this.closed && this.mode === "chat" && this.micOn && !this.reply && !this.cueTurn && !this.greeting && !this.greetTimer
-      && !this.pendingAnnounce && this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn && !this.watch?.isSharing;
+      && !this.pendingAnnounce && this.turn.phase === "listening" && !this.userTurnOpen() && !this.turn.pendingBargeIn && !this.watch?.isSharing;
   }
 
   /** test seam: one governor check now */
