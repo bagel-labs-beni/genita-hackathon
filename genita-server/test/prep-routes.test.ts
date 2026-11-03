@@ -37,6 +37,19 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
     return { status: r.status, json: (await r.json()) as Record<string, any> };
   };
 
+  // SUB-8 (#125): an upload without the rights acknowledgement is a 400 and nothing is stored or checked
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  const raw = (path: string, body: Buffer) => fetch(base + path, { method: "POST", headers: { "x-genita-user": "u1", "content-type": "image/jpeg" }, body: new Uint8Array(body) });
+  const noAck = await raw("/v1/companion/image", jpeg);
+  assert.equal(noAck.status, 400);
+  assert.equal(((await noAck.json()) as Record<string, any>).error, "rights_required");
+  assert.equal((await raw("/v1/companion/image?rights=0", jpeg)).status, 400);
+  assert.equal((await call("POST", "/v1/companion/image", { image: jpeg.toString("base64") })).json.error, "rights_required");
+  assert.equal((await call("POST", "/v1/companion/image", { image: jpeg.toString("base64"), rightsAck: false })).json.error, "rights_required");
+  // with the ack the gate is passed: an empty body is then refused for being empty, not for rights
+  assert.equal((await call("POST", "/v1/companion/image", { image: "", rightsAck: true })).json.error, "empty_image");
+  assert.equal((await raw("/v1/companion/image?rights=1", Buffer.alloc(0))).status, 400);
+
   const p = await call("GET", "/v1/import/prompt");
   assert.equal(p.status, 200);
   assert.match(p.json.prompt, /^Create an evidence-based personalization profile for Genita/);
@@ -71,7 +84,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   await runner.run("u1"); // fake input has no usable scene; route validation remains available
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
-  assert.equal(prep.json.progress.total, 14);
+  assert.equal(prep.json.progress.total, 19);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers
@@ -102,11 +115,12 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-naming-"));
   const store = new FileStore(dir);
   let sparkCalls = 0;
+  const logs: string[] = [];
   const d: PrepDeps = {
     metaKey: "",
     store,
     voices: DEFAULT_VOICES,
-    log: () => {},
+    log: (event) => logs.push(event),
     spark: async () => {
       sparkCalls++;
       return { name: "Jin" } as never;
@@ -151,6 +165,8 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
   const created = await call("POST", "/v1/companion", { imageId: "img1", voiceId: DEFAULT_VOICES[0].id, name: "  Jin " });
   assert.equal(created.status, 201);
   assert.equal(created.json.name, "Jin");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 1, "one naming log on creation");
+  assert.equal(logs.filter((event) => event === "companion.created").length, 1);
 
   // PATCH: empty / whitespace-only / 21+ chars / missing → 400 bad_name
   for (const name of ["", "   ", "x".repeat(21), undefined, 7]) {
@@ -159,11 +175,13 @@ test("prep routes: name suggest + PATCH /v1/companion {name}", async (t) => {
     assert.equal(r.json.error, "bad_name");
   }
   assert.equal((await call("PATCH", "/v1/companion", { name: "Max" }, "u3")).status, 404, "no companion");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 1, "failed renames do not log success");
 
   await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } });
   const patched = await call("PATCH", "/v1/companion", { name: "  Max  " });
   assert.equal(patched.status, 200);
   assert.equal(patched.json.name, "Max");
+  assert.equal(logs.filter((event) => event === "companion.named").length, 2, "one additional naming log on app rename");
   const after = await call("GET", "/v1/companion");
   assert.equal(after.json.name, "Max");
   assert.equal(after.json.persona.card.name, "Max");
@@ -225,6 +243,21 @@ test("POST /v1/import/skip: N1–N3 → style card, no vendor call, readable via
   const got = await call("GET", "/v1/import");
   assert.equal(got.json.status, "ready");
   assert.equal(got.json.style.source, "skip");
+
+  // N3 taste picker (Figma 269:2): n3.{clothes,food,chats}.{like,no}
+  const n3 = await call("POST", "/v1/import/skip", {
+    interests: ["Design"], replies: "Start with the answer",
+    n3: { clothes: { like: ["Minimal", "Comfy"], no: ["Colorful"] }, food: { like: ["Spicy", "Noodles"], no: ["Seafood"] }, chats: { like: ["Jokes"], no: ["Unasked advice", "Talk about looks"] } },
+  }, "u3");
+  assert.equal(n3.status, 200);
+  assert.match(n3.json.profile, /Style: Minimal, Comfy\./);
+  assert.match(n3.json.profile, /Dislikes seafood\./);
+  assert.match(n3.json.profile, /No advice you didn't ask for\./);
+  assert.match(n3.json.profile, /No comments on your looks\./);
+  assert.match(n3.json.profile, /Likes jokes in our chats\./);
+  for (const bad of [{ n3: "x" }, { n3: { food: [] } }, { n3: { food: { like: Array(9).fill("a") } } }, { n3: { chats: { no: [1] } } }]) {
+    assert.equal((await call("POST", "/v1/import/skip", { interests: ["Design"], ...bad })).json.error, "bad_skip", JSON.stringify(bad));
+  }
 
   // only N2 answered
   const only = await call("POST", "/v1/import/skip", { replies: "Start with the answer" }, "u2");

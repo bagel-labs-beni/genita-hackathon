@@ -13,6 +13,7 @@ import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
 import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
+import type { Personalize } from "../personalize/service.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -26,7 +27,14 @@ export type PrepDeps = {
   spark?: <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
   /** Muse Image + SAM; tests pass a fake */
   media?: MediaApi;
+  /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
+  python?: string | null;
+  /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
+  personalize?: Personalize;
 };
+
+/** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */
+export const STORY_GRACE_MS = 1500;
 
 export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
 export const mediaOf = (d: PrepDeps): MediaApi => d.media ?? META_MEDIA;
@@ -48,7 +56,7 @@ const since = (t0: number) => Math.round(performance.now() - t0);
 
 // ---------- F2-L20: image check ----------
 
-export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean): Promise<ImageRecord> {
+export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rightsAck: boolean, createdAt = new Date().toISOString()): Promise<ImageRecord> {
   if (!bytes.length) throw new PrepError(400, "empty_image");
   if (bytes.length > MAX_IMAGE_BYTES) throw new PrepError(413, "image_too_large", "image must be under 8 MB; downscale on device (1280 px is plenty)");
   const mime = sniffImage(bytes);
@@ -79,7 +87,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     rightsAck,
-    createdAt: new Date().toISOString(),
+    // This is captured after the upload body is read, before any model check.
+    createdAt,
     ms: { check: checkMs, sam: head?.ms ?? null },
   };
   await d.store.putImage(rec, bytes);
@@ -94,10 +103,23 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();
   // raw text is redacted before it leaves the server and never stored or logged
-  const raw = await sparkJson<ImportRaw>(d.metaKey, buildImportRequest(redactSensitive(p.text)));
-  const card = toStyleCard(raw, "import");
+  const redacted = redactSensitive(p.text);
+  // D47: the story is written from the same redacted text in parallel, so I03 has no extra wait
+  const storyJob = d.personalize?.storyFromText(redacted) ?? null;
+  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
+  const raw = await json<ImportRaw>(buildImportRequest(redacted));
+  let card = toStyleCard(raw, "import");
   if (card.itemCount === 0) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
-  await d.store.putStyle(userId, card);
+  if (storyJob && d.personalize) {
+    const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
+    const s = await Promise.race([storyJob, grace]);
+    if (s && s !== "late") card = d.personalize.withStory(card, s);
+    // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
+    else if (s === "late") d.personalize.trackLate(userId, storyJob);
+  }
+  // under the personalize lock: a call starting at the same moment can't write the old card back
+  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   return card;
 }

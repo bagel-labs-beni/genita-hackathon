@@ -26,6 +26,7 @@
  */
 import { readFileSync } from "node:fs";
 import type { SparkRequest } from "../meta/spark.ts";
+import type { Story } from "../personalize/story.ts";
 
 export const IMPORT_PROMPT = readFileSync(new URL("./assets/import-prompt.txt", import.meta.url), "utf8");
 
@@ -33,7 +34,8 @@ export const IMPORT_MIN_CHARS = 200;
 export const IMPORT_MAX_CHARS = 24_000;
 
 export type EvidenceLabel = "explicit" | "observed" | "memory" | "suggested";
-export type Finding = { text: string; label: EvidenceLabel; scope: string };
+/** at = when a correction or a call added it (lane 개인화); import findings have none */
+export type Finding = { text: string; label: EvidenceLabel; scope: string; at?: string };
 export type ConditionalRule = { when: string; then: string; label: EvidenceLabel };
 
 /** v3 order: section n of the prompt is SECTION_KEYS[n - 1]. */
@@ -226,6 +228,16 @@ export type StyleCard = {
   itemCount: number;
   /** what was dropped by the server-side filters (counts only, no text) */
   dropped: { injection: number; sensitive: number };
+  /** D47 HISY story cards (src/personalize/story.ts); absent until generated */
+  story?: Story;
+  /** calls made with this profile and the still-to-confirm items asked (first 3 calls ask one each) */
+  growth?: { calls: number; asked: Array<{ item: string; at: string; answered?: boolean; declined?: boolean }> };
+  /** last correction / call update */
+  updatedAt?: string;
+  /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
+  importedAt?: string;
+  /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
+  removed?: Array<{ text: string; at: string; field?: string }>;
 };
 
 type FindingKey = Exclude<SectionKey, "to_confirm">;
@@ -273,7 +285,7 @@ export function toStyleCard(raw: Partial<ImportRaw> | null | undefined, source: 
     if (k === "to_confirm") continue;
     const list = Array.isArray(raw?.sections?.[k]) ? raw!.sections![k] : [];
     sections[k] = list
-      .map((f) => ({ text: clean(f?.text), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any" }))
+      .map((f) => ({ text: clean(f?.text), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any", ...(typeof f?.at === "string" ? { at: f.at.slice(0, 40) } : {}) }))
       .filter((f) => keep(f.text))
       .slice(0, 12) as Finding[];
   }
@@ -340,7 +352,7 @@ const PROFILE_PER_SECTION = 3;
  * the rules come before anything else. Facts and suggestions are kept apart
  * so the companion does not treat a suggestion as something the user said.
  */
-export function styleProfileText(card: StyleCard, max = 2000): string {
+export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?: boolean } = {}): string {
   const line = (k: FindingKey, f: Finding) => `- ${PROFILE_NAMES[k]}: ${f.text}${f.scope && f.scope !== "any" ? ` (${f.scope})` : ""}`;
   const list = (k: FindingKey): Finding[] => (Array.isArray(card.sections?.[k]) ? card.sections[k] : []);
   const facts = (keys: FindingKey[], per: number) => keys.flatMap((k) => list(k).filter((f) => f.label !== "suggested").slice(0, per).map((f) => line(k, f)));
@@ -359,7 +371,8 @@ export function styleProfileText(card: StyleCard, max = 2000): string {
   const parts: string[] = [];
   if (main.length) parts.push("How the user wants to be treated:", ...main);
   if (rules.length) parts.push("Rules:", ...rules.map((r) => `- ${ruleLine(r)}`));
-  if (card.toConfirm?.length) parts.push(`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`);
+  // toConfirm:false — the call asks one item at a time (src/personalize/unknowns.ts)
+  if (card.toConfirm?.length && opts.toConfirm !== false) parts.push(`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`);
   if (more.length) parts.push("Also:", ...more);
   if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
   let out = parts.join("\n");
@@ -400,6 +413,38 @@ function skipList(v: unknown, max: number): string[] | null {
   return out;
 }
 
+/** N3 (PRD v12 D33, Figma 269:2): `n3.{clothes,food,chats}.{like,no}` — each chip off, liked or "no". */
+const N3_GROUPS = ["clothes", "food", "chats"] as const;
+type N3Group = (typeof N3_GROUPS)[number];
+interface N3Answers { like: string[]; no: string[] }
+/** The chat chips' "no" in the user's words (Figma HISY-S3 lines); anything else becomes "Avoid: X". */
+const N3_CHATS_NO: Record<string, string> = {
+  "unasked advice": "No advice you didn't ask for.",
+  "talk about looks": "No comments on your looks.",
+  "lots of questions": "Don't ask too many questions.",
+  jokes: "No jokes.",
+};
+
+function parseN3(v: unknown): Record<N3Group, N3Answers> | null {
+  const empty = (): Record<N3Group, N3Answers> => ({ clothes: { like: [], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } });
+  if (v === undefined || v === null) return empty();
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  const out = empty();
+  const src = v as Record<string, unknown>;
+  for (const g of N3_GROUPS) {
+    if (src[g] === undefined || src[g] === null) continue;
+    const grp = src[g];
+    if (typeof grp !== "object" || Array.isArray(grp)) return null;
+    const like = skipList((grp as Record<string, unknown>).like, SKIP_INTEREST_MAX);
+    const no = skipList((grp as Record<string, unknown>).no, SKIP_INTEREST_MAX);
+    if (!like || !no) return null;
+    out[g] = { like, no };
+  }
+  return out;
+}
+
+const lower = (xs: string[]) => xs.map((x) => x.toLowerCase());
+
 /** N1–N3 answers → the same card the import makes, without Spark. null = bad_skip. */
 export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { ok: false } {
   const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
@@ -407,18 +452,30 @@ export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { 
   const interests = skipList(b.interests, SKIP_INTEREST_MAX);
   const avoid = skipList(b.avoid, SKIP_AVOID_MAX);
   const reply = b.replies === undefined || b.replies === null ? null : typeof b.replies === "string" && Object.hasOwn(SKIP_REPLIES, b.replies) ? SKIP_REPLIES[b.replies] : false;
-  if (!interests || !avoid || reply === false) return { ok: false };
+  const n3 = parseN3(b.n3);
+  if (!interests || !avoid || reply === false || !n3) return { ok: false };
   const f = (text: string): Finding => ({ text, label: "explicit", scope: "any" });
+  // N3 likes and "no"s: clothes and food are Likes & dislikes, chat likes shape the communication line, chat "no"s are boundaries
+  const taste: Finding[] = [];
+  if (n3.clothes.like.length) taste.push(f(`Style: ${n3.clothes.like.join(", ")}.`));
+  if (n3.food.like.length) taste.push(f(`Food: ${lower(n3.food.like).join(", ")}.`));
+  if (n3.clothes.no.length) taste.push(f(`Dislikes ${lower(n3.clothes.no).join(", ")} clothes.`));
+  if (n3.food.no.length) taste.push(f(`Dislikes ${lower(n3.food.no).join(", ")}.`));
+  const communication = n3.chats.like.length ? [f(`Likes ${lower(n3.chats.like).join(", ")} in our chats.`)] : [];
+  const boundaries = [
+    ...avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+    ...n3.chats.no.map((a) => f(N3_CHATS_NO[a.toLowerCase()] ?? `Avoid: ${a}`)),
+  ].slice(0, SKIP_MAX_ITEMS);
   const raw: ImportRaw = {
     sections: {
       tendencies: [],
-      communication: [],
+      communication,
       response: reply ? [f(reply)] : [],
       help: [],
       support: [],
       interests: interests.map(f),
-      likes: [],
-      boundaries: avoid.map((a) => f(SKIP_AVOID[a.toLowerCase()] ?? `Avoid: ${a}`)),
+      likes: taste,
+      boundaries,
       approach: [],
     },
     rules: [],

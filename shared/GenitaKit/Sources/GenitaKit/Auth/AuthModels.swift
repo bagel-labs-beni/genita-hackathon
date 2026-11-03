@@ -54,6 +54,18 @@ public struct GenitaSignInResponse: Decodable, Sendable {
     }
 }
 
+/// `POST /auth/email/start` reply.
+public struct GenitaEmailStart: Decodable, Equatable, Sendable {
+    public var ok: Bool
+    public var expiresInSec: Int
+    public var resendAfterSec: Int
+    public init(ok: Bool, expiresInSec: Int, resendAfterSec: Int) {
+        self.ok = ok
+        self.expiresInSec = expiresInSec
+        self.resendAfterSec = resendAfterSec
+    }
+}
+
 public struct GenitaDeleteResult: Decodable, Equatable, Sendable {
     public var deleted: Bool
     public var appleRevoked: Bool?

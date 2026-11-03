@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { CallSummary, SummaryRepository } from "./summaries.ts";
+import { SUMMARY_KEEP } from "./summaries.ts";
 
 export type MemoryKind = "fact" | "episode";
 export type Memory = {
@@ -13,6 +15,8 @@ export type Memory = {
   follow_up: boolean;
   source_session_id: string;
   image_ref?: string;
+  /** recall keys (memory lane 11/3): words someone might ask about it with ("pet" for "my cat"), written off-path */
+  keys?: string[];
 };
 
 /** Postgres lane boundary. put is an upsert; false means a Forget tombstone blocked it.
@@ -51,7 +55,7 @@ export function memoryId(text: string): string {
   return "mem_" + createHash("sha256").update(normalized).digest("hex").slice(0, 32);
 }
 
-type Bucket = { memories: Memory[]; deleted: string[]; state: CallState };
+type Bucket = { memories: Memory[]; deleted: string[]; state: CallState; summaries?: CallSummary[] };
 type Data = { version: 1; users: Record<string, Bucket> };
 const empty = (): Data => ({ version: 1, users: {} });
 // Hash user IDs so even special object keys and personal identifiers stay out of disk keys.
@@ -60,7 +64,15 @@ function bucket(data: Data, id: string): Bucket {
   return data.users[userKey(id)] ??= { memories: [], deleted: [], state: emptyCallState() };
 }
 
-export class InMemoryMemoryRepository implements MemoryRepository, CallStateRepository {
+/** Upsert by thread; a copy covering fewer turns (the other device's older half of a handoff) never wins. */
+export function mergeSummary(list: CallSummary[], next: CallSummary): CallSummary[] {
+  const old = list.find((s) => s.thread_id === next.thread_id);
+  if (old && old.turns > next.turns) return list;
+  const merged = { ...next, created_at: old?.created_at ?? next.created_at };
+  return [...list.filter((s) => s.thread_id !== next.thread_id), merged].sort((a, b) => b.updated_at - a.updated_at).slice(0, SUMMARY_KEEP);
+}
+
+export class InMemoryMemoryRepository implements MemoryRepository, CallStateRepository, SummaryRepository {
   protected data: Data = empty();
   private tail: Promise<unknown> = Promise.resolve();
   protected async load(): Promise<void> {}
@@ -107,6 +119,15 @@ export class InMemoryMemoryRepository implements MemoryRepository, CallStateRepo
   }
   putState(userId: string, state: CallState): Promise<void> {
     return this.run(true, (data) => { bucket(data, userId).state = state; });
+  }
+  putSummary(userId: string, summary: CallSummary): Promise<void> {
+    return this.run(true, (data) => { const b = bucket(data, userId); b.summaries = mergeSummary(b.summaries ?? [], summary); });
+  }
+  listSummaries(userId: string, limit: number): Promise<CallSummary[]> {
+    return this.run(false, (data) => (bucket(data, userId).summaries ?? []).slice(0, limit));
+  }
+  deleteSummaries(userId: string): Promise<void> {
+    return this.run(true, (data) => { bucket(data, userId).summaries = []; });
   }
 }
 

@@ -16,21 +16,36 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
 | 11/2 | v1 published. |
+| 11/3 | Watch together, screen text (additive): `start.title` and a new `context {title}` message carry the shared window's title (a browser tab: "<YouTube video title> - YouTube"), read on the Mac with the ScreenCaptureKit window title (no OCR, no extra permission). Server: control/bidi characters stripped, ≤ 160 chars, handed to Spark as quoted data (memo + question context), cleared on stop. A name written on screen (title, caption) may be used as written; the no-face-identity rule is unchanged. Old clients simply never send it. |
+| 11/3 | Watch together, motion + reactions (additive): `frame.motion` (optional); the Mac sends ≤ 3 fps at ≤ 768 px. The memo (scene timeline) runs every 3 s while the screen changes, 1.2 s after a finished video line, and 0.7 s after a motion spike, on a 5-frame sequence ~0.6 s apart; a turn gets the last ~1.4 s as 3 frames. Proactive reactions: ≥ 25 s apart, held for a pause (never over the video's dialogue or anyone talking), face tag `[smileopen]` (funny), `[smile]` (sweet), `[surprised]`. A black video inside a visible page (DRM, e.g. Netflix) gets one honest line instead of a guess. |
+| 11/3 | Watch together, realtime (no wire change): a turn while sharing gets the newest screen frame (last) plus one ~2 s older (was 4 over ≈6 s), the memo refreshes every 5 s while the screen changes (was 12 s), the echo check decides from the video's partial line instead of waiting up to 1.5 s, and the prompt takes the user's naming of someone on screen as given and answers with what is visible (no face-based identity). |
 | 11/3 | Handoff (#199): with server memory on, a call starting while the account has another live call (or one ended < 10 min ago) is seeded with that call's turns and skips the greeting; optional `start.handoff: true` lets the app's own `history` seed it when the server has none. Additive. |
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
+| 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
+| 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
+| 11/3 | SAM masks (#298, behind server env `GENITA_SAM_MASKS=1`): `observe.boxes.items[]` gains optional `mask {w, h, rle}` — a w×h binary grid stretched over that item's `box`, row-major run lengths alternating 0s then 1s (the first run may be 0), `sum(rle) == w*h`, long side ≤ 96. With the flag on, an ingredient with several matches arrives as one item per match (same `label` repeated, each with its own `box`/`mask`), at most 12 items; over that, the largest group arrives as one merged item. An item without `mask` (flag off, or a mask that did not decode) is drawn as a box. Additive. |
+| 11/3 | Fridge order (#122, D23): a camera cooking turn's reply is now the short line "Let me take a look." (not a full answer from the raw photo); `observe.boxes` follow; then one server-initiated reply names only `have` items ("I can see eggs and tofu. You could make …, if you have kimchi."), also stored as `card.say`. A failed card for such a turn (or a product search) is spoken as its own reply. Same message types; additive. |
+| 11/3 | F7 product search (#119): `FindKind` gains `product`; `FindCard` gains optional `products[]` ({id, name, url, domain, store, price?, image?, taste, situation}) and `evidence` ({style, situation}). A product ask (voice alone, no camera) gets a short spoken line ("On it.") as that turn's reply instead of a full answer, then the card and its `say`. Product pictures are `find.image` slots `product-1`/`product-2`. Swift `FindKind` decodes an unknown kind as `.unknown`. Additive. |
 | 11/2 | F7/F9: optional server memory, Spark `recall`/`remember`, automatic greeting after `ready`, and authenticated REST memory/settings/Us-photo routes. No new WebSocket fields/events; legacy sessions without the memory dependency retain their behavior. |
 | 11/2 | Metaface (lane L4) device voice mode: `start.tts` (`server` \| `device`), `ready.tts` (always sent), new event `say`. In device mode the server sends no `audio` events and no binary frames, and `ready.lip` is `{active:"none", reason:"device_tts"}`. Default is `device` unless the server runs server TTS (`GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN`). Additive — but an app that does not handle `say` hears nothing in device mode; it needs a server with `GENITA_VOICE_URL` + `GENITA_VOICE_TOKEN` (there, an omitted `start.tts` means `server`). |
 | 11/2 | L6 Meta voice service (SeamlessM4T v2 on our GPU, D3): with `GENITA_VOICE_URL` set the server runs server voice again — same `audio` events + binary kind 1 frames as before, `audio.model` = `seamless-m4t-v2`, `ready.voiceId` = `seamless:<speaker>`. If the voice service fails mid-reply the rest of that reply comes as `say` (after one `tts_unavailable`). Additive: apps that play server audio need no change; apps that handle `say` also get the fallback. See "Server voice (Meta voice service)". |
+| 11/3 | Funnel telemetry: authenticated `POST /v1/events` accepts up to 20 allowlisted, flat app event properties and returns `204`; server logs `call.greeted`, `tts.first_audio`, `tts.fallback_device`, prep readiness, cancellation and mode events. `turn.metrics` adds nullable `stt_ms`, `llm_ms`, `tts_ms`, and `first_audio_ms`. Additive. |
 | 11/3 | F2-L26 naming + D21 first-call wait: new event `companion.named {name}` (the user renamed the companion by voice, already saved — update every {name} label); optional `start.greetAfterMs` (0–3000; the app sends 2000 on the first call after onboarding: the server waits that long for the user to speak or type first, then greets). REST `POST /v1/companion/name/suggest`, `PATCH /v1/companion {name}` (PREP_API.md). Additive: an app that ignores both sees no change. |
+| 11/3 | Lane 개인화: new events `profile.updated {text, fields}` (a correction said in the call — "Updated: no cilantro" — or the answer to the call's getting-to-know-you question — "Noted: quiet company" — was saved; chip for 2.5 s) and `profile.asking {topic}` (the companion just asked that question; soft chip "Getting to know you · {topic}"). `FindCard.reasons?` (1–2 `{text, source, from}` chips: `from:"profile"` blue "Your style/taste: …", `from:"call"` grey "You said: …"). With an account the server uses the **stored** profile (corrections included) instead of `start.user.profile`. REST `GET /v1/profile/story`, `PATCH /v1/profile` (PREP_API.md). Additive: an app that ignores them sees no change. |
 | 11/2 | F5 watch together: second socket `/v1/watch?session=<sessionId>` (section below). On the call socket nothing new except that the companion may now speak first while a screen is shared (normal `state`/`speaking`/`audio`/`reply` events) and `speaking.emotion` can be `laugh` (play the laugh clip, F4-L13). Additive. |
 | 11/2 | F6-L7: conversation owner. New socket `/v1/presence` and `GET /v1/handoff`, `POST /v1/handoff/claim|release` (section **Handoff**). `/v1/session?device=iphone\|mac` now plays audio only while that device owns the conversation; a call without `device` is not gated (old builds keep working). Call sockets also get the `ownership` event (unknown to old builds → ignored). After a move the old device's reply ends with `utterance.cancelled` reason `client`, so every build flushes its queue. No breaking change. |
 | 11/3 | L4 lip timing (Meta MMS forced aligner): new event `audio.timing {utteranceId, sentence, seq, words, phonemes}` after each clause's audio when the server runs with `GENITA_VOICE_ALIGN=1`. Additive: unknown to old builds → ignored; `audio` events are unchanged. |
+| 11/3 | Expression layer: new event `expression {utteranceId, sentence, tag, intensity, startMs, endMs}` (tag `smile\|smileopen\|laugh\|surprised\|concerned`), at most one per reply clause, server voice only, after that clause's audio. Nothing for neutral clauses. `GENITA_EXPRESSION=0` turns it off. Additive: unknown to old builds → ignored. |
+| 11/3 | PERC-1 perception (#319): new app message `perception.frame {image}` and optional `ready.perception: true` (sent only when the server runs `GENITA_PERCEPTION=1`). The app sends face crops only when it sees `ready.perception`. No server event; the companion just reacts more like a person. Additive: off by default, old apps send nothing and see nothing new. |
+| 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
+| 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 
 ```
 wss://<host>/v1/session
@@ -71,6 +86,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `audio_start` | — | mic on (default after `start` unless `mic:false`) |
 | `audio_stop` | — | mic off; server pads 0.8 s silence so a cut sentence still ends |
 | `text` | `text`, optional `frames` | typed message (S08). Cancels any reply in progress, starts a new one. |
+| `perception.frame` | `image: jpeg` | PERC-1: one fixed upper-centre crop of the front-camera frame (the selfie face region, no face detection on device), base64 JPEG 256–384 px, < 300 k chars, for perception. Only when `ready.perception` is true, camera on, chat mode; on face change (≥ 1 s apart) or every 2.5 s. Ignored otherwise; never stored. See **Perception**. |
 | `frames` | `images: [jpeg]` (≤2) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
 | `barge_in` | — | user tapped to interrupt; cancels immediately |
 | `playback_done` | `utteranceId` | app finished playing the reply; ends `speaking` earlier than the server's estimate |
@@ -176,6 +192,18 @@ deletion/storage errors return `503`; retries can complete the deletion.
 unset means in-memory only. `REVISIT_GAP_HOURS` defaults to `6` (seen crops always
 require six hours), and revisit openers are limited to one per UTC day.
 
+## App funnel events REST
+
+The app may batch its client-only funnel transitions on the same authenticated,
+consented principal as the other `/v1/*` routes. The server discards unknown names
+and every property outside that event's closed schema, then writes one JSON log line
+per accepted event. It never logs a client event body or free-text value. Allowed
+properties are fixed enums, bounded integers, booleans, and safe IDs only.
+
+| method | path | result |
+| --- | --- | --- |
+| POST | `/v1/events` | `{events:[{name,at?,props?}]}`; max 20 events, 120 events/user/minute; `204` accepted, malformed bodies/over-20 `400`, over rate `429` |
+
 The trusted vision adapter supplies only a <=480px SAM crop plus a safe one-line
 summary to `src/memory/`; original camera frames are never persisted. Its pixel
 safety check must exclude faces/people, documents, money and addresses. Integration
@@ -198,6 +226,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `say` | `utteranceId`, `sentence`, `text`, `emotion`, `lang` | device mode only: one sentence for the app to speak, in order. `text` is plain (no tags); `lang` is a BCP-47 hint (`en-US`, `ko-KR`, …) |
 | `audio` | `utteranceId`, `seq`, `sentence`, `offsetMs`, `durationMs`, `sampleRate`, `model`, `words`, `mouth?` | server mode only: timing for the binary frame that follows |
 | `audio.timing` | `utteranceId`, `sentence`, `seq`, `words`, `phonemes` | server voice with `GENITA_VOICE_ALIGN=1`: forced-aligner timing of one clause, after its audio (below) |
+| `expression` | `utteranceId`, `sentence`, `tag`, `intensity`, `startMs`, `endMs` | server voice: the face expression of one clause, after its audio (below) |
 | `reply` | `utteranceId`, `text`, `emotion`, `interpret`, `final:true` | full reply text (what was spoken) |
 | `utterance.cancelled` | `utteranceId`, `reason: barge_in \| text \| client` | **stop playback now and drop queued audio** |
 | `turn.metrics` | `model`, `ttsModel`, `speechEndToFirstAudioMs`, … | per-turn latency breakdown (server clock). Device mode: `ttsModel:"device"`, "first audio" = first `say` sent, `audioMs` = the speaking estimate below |
@@ -209,11 +238,13 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `find.started` | `findId`, `utteranceId`, `kind: recipe \| outfit \| link`, `title`, `detail` | open the sheet in "searching" (r03 #1) |
 | `find.progress` | `findId`, `detail` | update the searching line ("Kimchi, eggs, tofu · recipes") |
 | `find.items` | `findId`, `items`, `checking`, `subtitle?`, `status?` | full ingredient list each time; replace, don't merge. `checking:false` = all checks done |
-| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s) |
+| `observe.boxes` | `findId`, `frame`, `w`, `h`, `items[{label, box, mask?}]` | boxes to pop on the camera preview (CAM-H, 240 ms pop, 4 s); `mask` = SAM outline over the box (`GENITA_SAM_MASKS=1`, see changelog 11/3) |
 | `find.created` | `findId`, `card` | the card's text; pictures may still be `pending` |
 | `find.image` | `findId`, `slot`, `status: ready \| failed`, `url?` | an illustration landed (or failed: show r03 #15, keep the text) |
 | `find.failed` | `findId`, `reason: unclear \| search_failed \| error \| stopped`, `message` | `unclear` = IC-4 "show me again"; nothing was made up |
 | `companion.named` | `name` | the user renamed the companion in the call ("Call yourself Max"); already saved. Update every {name} label |
+| `profile.updated` | `text`, `fields` | saved to the profile from the call: a correction (`text` = "Updated: no cilantro") or the answer to the call's question (`text` = "Noted: quiet company"); `fields` = profile sections, e.g. `likes`. Chip under the status line for 2.5 s (CC-1). Comes beside the reply, any time after the user's line |
+| `profile.asking` | `topic` | the companion's reply just asked this call's getting-to-know-you question (calls 1–3, once per call). Soft chip "Getting to know you · {topic}" (GK-1), no modal |
 
 `audio` timing (all ms on the reply's own audio timeline, 0 = first sample of the reply):
 
@@ -300,6 +331,21 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
   - Fallback: if the aligner fails, is late (> 250 ms after the clause's last audio) or is not confident, no
     `audio.timing` comes for that clause; keep using `audio.words` / text + loudness for it. Nothing comes for a
     cancelled utterance.
+- **Face expression (`expression`, 11/3)**: at most one per clause of a chat reply, never for a neutral clause, never in
+  interpretation or device mode. Sent after the clause's audio (and after its `audio.timing` when the aligner is on):
+
+  ```json
+  { "type": "expression", "utteranceId": 4, "sentence": 0, "tag": "smile", "intensity": 0.7, "startMs": 40, "endMs": 520 }
+  ```
+  - `tag` = `smile` | `smileopen` | `laugh` | `surprised` | `concerned`. `intensity` 0…1: 0.7, `laugh` 1.0.
+  - `startMs`/`endMs` = ms on the reply's audio timeline (the `audio.offsetMs` clock): the clause's first word start →
+    last word end from the aligner when it is on, else the clause's audio span. The app eases in before `startMs`
+    and out after `endMs` (envelope in the app spec).
+  - Where it comes from: Spark may start a clause with `[smile]`, `[laugh]`, … (the server strips it: never spoken,
+    never in captions). Without a tag, laughing words ("haha") → `laugh`, "oh no / sorry / long day" → `concerned`,
+    else the reply's leading `<emotion>` on its first clause (`happy`/`warm`/`teasing` → `smile`, `excited` →
+    `smileopen`, `surprised` → `surprised`, `sad` → `concerned`; `curious`/`whisper`/`neutral` → none).
+  - `GENITA_EXPRESSION=0` on the server sends none.
 - Interpretation uses the same service: a sentence that is mostly Hangul is spoken in Korean (`kor`),
   everything else in English (`eng`). Same speaker as the companion.
 - Text is rewritten for speech before synthesis (numbers, money, times, %, ordinals, units, `Dr.`, lists →
@@ -313,6 +359,15 @@ runs device mode (above), so a checkout with only `MODEL_API_KEY` still works.
 Threat line (no new endpoint on genita-server): the voice service is called only by genita-server, bearer
 token from SSM, constant-time compare, 400-char text cap, max 3 GPU containers, daily request cap
 (`VOICE_DAILY_CAP`, 429 → device voice). Data sent = reply text only.
+
+## Perception (PERC-1, camera reactions)
+
+Off unless the server runs `GENITA_PERCEPTION=1`; then `ready.perception: true`. While the camera is on in chat mode the app
+sends `perception.frame` (a fixed upper-centre crop of the front-camera frame; no on-device AI, runtime AI is Meta-only) at most every second, normally every 2.5 s or when the face changes. The server reads one
+crop at a time with Muse Spark (strict JSON: expression, intensity, gaze, engagement, notable, confidence), smooths the reads
+and keeps only that in memory for the call; the crop is dropped right after the read. Nothing comes back on the socket: the
+conversation engine uses the state to react (a smile at its joke, a laugh, confusion, tiredness, looking away) at most once a
+minute. No new server events. Design: `conversation-engine/PERCEPTION.md`.
 
 ## Watch together (F5, Mac screen share)
 
@@ -332,7 +387,7 @@ from hitting the 120 s idle close.
 
 | Direction | Frame | Content |
 |---|---|---|
-| app → server | text | `start {source?}` first (source = shared app name, "Safari"), then `frame {image, blank?}`, `stop`, `ping {t}` |
+| app → server | text | `start {source?}` first (source = shared app name, "Safari"; sent again while sharing = the share moved to another window or display), then `frame {image, blank?, motion?}`, `context {title}` (title changed, 11/3), `stop`, `ping {t}`. `start.title` = window title. `motion` (11/3, optional): 0–1 change from the previous sent frame (mean abs luma, 32×18); ≥ 0.1 = a cut or a big move |
 | app → server | binary | the shared screen's **system audio**, PCM s16le mono 24 kHz, real time (ScreenCaptureKit `capturesAudio`, `excludesCurrentProcessAudio` so Genita's voice is never in it). Gaps are padded with silence on the server. |
 | server → app | text | events below |
 
@@ -353,9 +408,14 @@ Server side (genita-server/src/watch): the system audio gets its own Muse Transc
 (DIARIZATION), so the video never becomes a user turn; a user turn that repeats a line the
 video just said (speakers, no earphones) is dropped. Every ~12 s, or 4 s after a new line,
 Spark writes a 1–2 line memo from the new frames and lines and judges whether a friend would
-react out loud. Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
+react out loud (11/3: every ~5 s while the screen changes). Reactions: only while sharing, ≥ 30 s apart, not in the first 6 s, never while
 the user or companion talks or the video's dialogue is running. A question while sharing gets
 the memo, the last 90 s of lines (with speaker names) and the newest 4 frames (≈ 6 s).
+11/3 realtime: the newest frame (≤ 1 s old while a video plays; the last image, "the screen right now") plus one ~2 s
+older. "Oh, it's Karina!": the companion goes along with the user's name and adds one thing visible on that person now
+(outfit, setting, action). It never identifies anyone from their face and adds no facts about a real person; with nobody
+on screen it says it can't spot them. While the video is mid-line, the echo check uses that line's partial transcript and
+only waits (≤ 1.5 s) when the partial is too short to tell. `npm run watch-sim -- --naming` measures it.
 
 Measured 11/2 (`npm run watch-sim`, local server, real vendors; T5 clips played in real time, then asked as typed turns):
 T5 set 38/50 correct (T5 video-file baseline 42/50; same judge re-run: 37 vs 42 strict, 39 vs 45 tone-tolerant — most misses are
@@ -426,7 +486,7 @@ person → the speaker the call app's mic hears.
 Owned by later tickets; listed so nobody reuses them for something else. Shapes are
 decided in those tickets and will be added here as additive changes.
 
-`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` Peter frames (F4-L17) ·
+`mouth {f, cell}` (F4-L20 atlas cells) · binary kind `2` (retired, never reuse) ·
 `camera`, `frame` (F5) · `claim`, `ownership` (handoff: now defined, see **Handoff**) ·
 `interpret.*` beyond `interpret.detected` / `pair` / `bubble` (F8) · `prep.progress` (F2-L3).
 
@@ -459,6 +519,40 @@ how[], page?{url, opened}, saved?`. Image `url`s are server-relative
 When the card lands the companion says `card.say` as its own short reply — only
 into silence, after the current reply, and not if the user starts talking first.
 
+**Fridge order (D23, #122).** A camera cooking turn is answered in three steps:
+① the turn's reply is "Let me take a look." at once (a full answer from the raw
+photo named things that were not there, 7/10 on 11/1); ② `observe.boxes` as each
+item is confirmed; ③ once the checks are in (at most 3 s after the card), one
+reply names only `have` items (Spark YES + SAM box, or a confirmed "맞아?") and the
+dish, qualifying any dish ingredient that is not `have` ("…, if you have kimchi").
+That line is also `card.say`. Real vendors, 10 runs on the test fridge photos:
+names outside the photo 0/10, boxes before the line 10/10, short line p50 8 ms
+after the question (server), first boxes p50 4.0 s, line p50 6.1 s, card p50 4.7 s.
+
+**Product search (F7 PF-1 / MAC-RS, D2 D24 D25).** A shopping ask needs no camera
+("can we look for a jacket for this weekend?", "find a couple that match my style,
+and send me the links"). That turn's reply is a short line ("On it.") — never a
+full answer, which would guess products and links — and the card follows:
+
+```
+find.started {kind:"product", title:"Finding 2 for your style…", detail:"Jacket · searching shops", evidence?:{style:"<import line>", situation:""}}
+→ find.progress {detail:"Light jacket · checking 2 shops"} → find.created (products[], pictures pending)
+→ find.image {slot:"product-1"|"product-2"} → the companion says card.say
+```
+
+`products[]` holds at most 2 product detail pages. Each `url` is an `open_page` the
+search really completed (Spark's tool trace); a URL the model only wrote, a failed
+open, or a category / collection / search page (URL shape, or the page's own
+og:type / JSON-LD) is dropped. `price` only when the page showed it (absent → show
+"Price on site"). `taste` (blue chip) follows a line of the account's import
+(I04 Likes & dislikes), quoted in `evidence.style`; empty when there is none.
+`situation` (grey chip) follows what they said (+ weather), quoted in
+`evidence.situation`. One proven product → the card has one and says so; none →
+`find.failed {reason:"search_failed"}` ("Couldn't find a good match…"). A later
+product ask in the same call that names no new thing ("match my style") refines
+the last search. Pictures are the page's og:image, fetched by the server (public
+https hosts only, size-capped) and served like illustrations.
+
 REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 
 | method | path | |
@@ -471,7 +565,26 @@ REST (same bearer token; owner = `X-Genita-User` header = `start.user.id`):
 | GET | `/v1/finds/:id/images/:slot` | illustration bytes (`?token=` also accepted) |
 | DELETE | `/v1/finds` | delete everything for this owner (account deletion) |
 
-Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations.
+Server env: `GENITA_FINDS=0` off · `GENITA_FINDS_DIR` (default `./data/finds`) · `GENITA_FIND_IMAGES=0` no illustrations · `GENITA_SHOP_REGION` (default `US`) where product search shops.
+
+## App config (`GET /v1/app-config`)
+
+Public (no token: the apps read it before sign-in; the body has no user data). Data only — the apps never run
+downloaded code; they bundle the same defaults (`shared/protocol-samples/http/app-config.json` shape) and ignore unknown keys.
+
+| field | meaning |
+|---|---|
+| `schema` | `1` |
+| `updates.ios` / `updates.mac` | `{minBuild, latestBuild, url}` — iOS: `latestBuild` > installed `CFBundleVersion` shows the "new version" banner linking `url` (TestFlight public link); below `minBuild` the banner can't be dismissed. Mac: below `minBuild` the app asks Sparkle to check now (`url` = appcast) |
+| `flags` | booleans, e.g. `watchReactions`, `textChat`, `judgeAccess`, `interactiveSplash`, `motion` |
+| `tuning` | numbers, e.g. `prepContinueAfterSceneMs`, `prepStallMs`, `firstCallWaitMs`, `updateCheckHours`; `bargeInMs` mirrors the server's `GENITA_BARGE_IN_MIN_MS` (read-only) |
+| `copy` | strings by key (`{name}` placeholders), e.g. `prep.title`, `call.thinking`, `update.title` |
+| `assets` | name → https URL (remote motion assets) |
+
+Caching: `ETag` + `If-None-Match` → `304`; `Cache-Control: public, max-age=60, stale-while-revalidate=600`.
+Server env: `GENITA_APP_CONFIG_FILE` = JSON overrides deep-merged over the defaults (`src/appconfig/appConfig.ts`), re-read when the file
+changes (checked at most every 5 s), sanitized per key (wrong types, non-https URLs, copy over 500 chars are dropped; a broken file keeps
+the last good config). Change a flag or string on AWS = edit that file on the instance, no restart.
 
 ## Handoff (F6-L7): which device has the sound
 
@@ -493,6 +606,9 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `release` | `epoch?` | the owner gives it up → owner null until the next call `start` or claim |
 | `move.request` | `to` | Move to Mac / Move to iPhone. Relayed to the other device, which answers by sending `claim`. |
 | `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
+| `proximity.arm` | — | iPhone only: "I own the conversation in a live call, give me a Bluetooth token". Re-sent every 30 s to rotate. |
+| `proximity.disarm` | — | iPhone only: the call ended, moved, or the app left the front; its tokens stop counting |
+| `proximity.seen` | `token` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s) |
 | `ping` | `t` | → `pong {t}` |
 
 | server → app | fields | meaning |
@@ -502,6 +618,10 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `peer` | `device`, `online`, `active` | the other device's presence |
 | `move.request` | `from` | the other device asked to move here: claim if the app is in front |
 | `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
+| `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |
+| `proximity.unavailable` | `reason: not_owner \| not_in_call` | answer to `proximity.arm` (`not_owner` = the Mac has it): don't advertise |
+| `proximity.peer` | `armed` | to Macs: this account's iPhone is (not) advertising a token now. Sent on connect and on every change; the Mac scans (and asks for Bluetooth) only while `armed` |
+| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
@@ -515,6 +635,23 @@ a `start` while the other device owns it does not move it.
 
 HTTP (same auth): `GET /v1/handoff` → `{owner, epoch, conversationId}` ·
 `POST /v1/handoff/claim {device, epoch?, trigger?}` / `POST /v1/handoff/release {device, epoch?}` → `{accepted, owner, epoch, conversationId}` (400 on a bad device or an epoch outside int4).
+
+### Proximity: bring the iPhone close to the Mac (no code, no tap)
+
+Both apps are signed in to the same account, so they are already paired: the server knows both presences. During a
+live iPhone call the iPhone (owner) sends `proximity.arm`; the server answers with an 8-symbol token (Crockford base32,
+40 random bits, valid 60 s, at most two live per account). The iPhone advertises it over Bluetooth LE: service
+`6E1D0001-7A2B-4C3D-9E4F-6A656E697461`, local name = the token. The Mac app scans for that service while the iPhone owns
+the conversation and reports a token whose RSSI held at or above the threshold (default −45 dBm, re-armed below
+−55 dBm) for 0.5 s. The server accepts it only when the token was issued to this account, is unexpired, its iPhone
+presence socket is open and in front, the Mac has not taken the conversation since the token was issued (same epoch; a fresh conversation nobody claimed counts as the iPhone's), the account
+has a started call (`start` accepted, not closed), the reporting Mac is in front, and no proximity move happened in the
+last 10 s. All of that is checked inside the account's serial claim section, right before the write, so a tap, lock or
+disarm that arrives first wins. Then it claims for the Mac with trigger `proximity` (the usual gate, cancel and
+`ownership` broadcast), and all of that account's tokens are spent. Locking the iPhone (`presence {active:false}`) drops
+its tokens. A stranger's token never matches another account. One report per account per 200 ms, across all its Mac
+sockets (`rate_limited`). Tokens are
+never logged; a rejection logs `handoff.proximity_rejected {reason}`.
 
 Events for analytics: the server logs `handoff.preparing {from, to, trigger}`, `handoff.committed {from, to, total_ms, trigger, epoch}`, `handoff.failed {reason}`.
 One process holds the gate (in memory); several server instances would need a shared channel for it.
