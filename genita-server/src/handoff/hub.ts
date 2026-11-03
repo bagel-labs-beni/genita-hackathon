@@ -98,7 +98,11 @@ export class HandoffHub {
   connect(userId: string, opts: { device: HandoffDevice; send: (m: Msg) => void }): PresenceHandle {
     const u = this.user(userId);
     const conn: Conn = { device: opts.device, send: opts.send, active: true };
-    for (const other of u.conns) if (other.device !== conn.device) conn.send(this.peer(u, other.device));
+    // the other device's state now, once: its presence, or a call already running on it (Codex P2 on #480: a Mac that
+    // joined mid-call said "Not in a call right now" when the iPhone's presence socket wasn't open, and said it twice
+    // per extra socket otherwise)
+    const other: HandoffDevice = conn.device === "mac" ? "iphone" : "mac";
+    if ([...u.conns].some((c) => c.device === other) || (u.live.get(other) ?? 0) > 0) conn.send(this.peer(u, other));
     u.conns.add(conn);
     this.peerChanged(u, conn.device);
     if (conn.device === "mac") this.proximityArmedChanged(u, conn);
