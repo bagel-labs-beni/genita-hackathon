@@ -53,7 +53,7 @@ struct SettingsView: View {
                         .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsCompanion")
                 }
                 SettingsGroup(header: "About you") {
-                    NavigationLink { AboutYouPage(model: model) } label: { aboutYouRow }
+                    NavigationLink { aboutYouPage } label: { aboutYouRow }
                         .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsAboutYou")
                     SettingsSeparator()
                     NavigationLink { SettingsShowsUpPage(model: model) } label: {
@@ -94,6 +94,10 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity).padding(.top, 24)
             }
             .navigationTitle("Settings")
+            #if os(iOS)
+            // the About you row's preview and counts come from the insight report (GET /v1/profile/insights)
+            .task { if model.insightReport == nil && model.insightsEnabled { await model.loadInsights() } }
+            #endif
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -125,6 +129,21 @@ struct SettingsView: View {
         #endif
     }
 
+    /// M02 r01 C (Chelsea OK 04:19): About you is the insight report R1 without its CTA; when the report can't be had
+    /// (flag off, failed) the style card's own lines in the same groups.
+    @ViewBuilder private var aboutYouPage: some View {
+        #if os(iOS)
+        if model.useInsightReport {
+            InsightReportView(model: model, showsCTA: false)
+                .navigationTitle("About you")
+                .navigationBarTitleDisplayMode(.inline)
+        } else {
+            AboutYouPage(model: model)
+        }
+        #else
+        AboutYouPage(model: model)
+        #endif
+    }
     /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #6E6E73.
     private var companionCard: some View {
         HStack(spacing: 14) {
@@ -145,7 +164,7 @@ struct SettingsView: View {
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
     private var aboutYouRow: some View {
-        let summary = AboutYouSummary(model: model)
+        let summary = AboutYouSummary(report: model.insightReport, companion: companionName)
         return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("What \(companionName) knows about you").font(SettingsType.font(17, .semibold)).foregroundStyle(SettingsInk.ink)
@@ -366,8 +385,8 @@ struct AboutYouSummary: Equatable {
     var counts: String?
 
     init(preview: String, counts: String?) { self.preview = preview; self.counts = counts }
-    init(model: AppState) {
-        self = Self.make(headline: nil, known: 0, learning: 0, companion: model.companionDisplayName)
+    init(report: InsightReport?, companion: String) {
+        self = Self.make(headline: report?.headline, known: report?.observations.count ?? 0, learning: report?.learning.count ?? 0, companion: companion)
     }
     /// The headline in curly quotes; the counts only when something is known.
     static func make(headline: String?, known: Int, learning: Int, companion: String) -> AboutYouSummary {
