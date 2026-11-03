@@ -87,31 +87,36 @@ import Observation
         let workspace = NSWorkspace.shared.notificationCenter
         lockObservers = [
             distributed.addObserver(forName: .init("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.screenAway() }
+                MainActor.assumeIsolated { self?.away(locked: true) }
             },
             distributed.addObserver(forName: .init("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.screenBack() }
+                MainActor.assumeIsolated { self?.back(locked: true) }
             },
             workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.screenAway() }
+                MainActor.assumeIsolated { self?.away(locked: false) }
             },
+            // waking is not unlocking: a Mac that asks for the password stays paused until screenIsUnlocked (Codex P1)
             workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.screenBack() }
+                MainActor.assumeIsolated { self?.back(locked: false) }
             },
         ]
     }
     private var lockObservers: [NSObjectProtocol] = []
     private var screenLocked = false
+    private var asleep = false
+    /// Locked or asleep: no call runs, starts or resumes (a move that lands now starts the call on return).
+    private var screenAwayNow: Bool { screenLocked || asleep }
 
-    private func screenAway() {
-        screenLocked = true
+    private func away(locked: Bool) {
+        if locked { screenLocked = true } else { asleep = true }
         guard !call.isEnded else { return }
         call.sceneActivityChanged(.background)
     }
 
-    private func screenBack() {
-        guard screenLocked else { return }
-        screenLocked = false
+    private func back(locked: Bool) {
+        let wasAway = screenAwayNow
+        if locked { screenLocked = false } else { asleep = false }
+        guard wasAway, !screenAwayNow else { return }
         call.sceneActivityChanged(.active)
         if call.isEnded, call.stopped == nil, wantsCall, MacHandoff.shared.ownership.isOwner { startCall() }
     }
@@ -323,6 +328,7 @@ import Observation
 
     private func startCall() {
         guard case let .ready(plan) = account else { return }
+        guard !screenAwayNow else { return }   // back(locked:) starts it once the Mac is unlocked
         call.companionName = plan.name
         var start = plan.start
         start.history = history.isEmpty ? nil : Array(history.suffix(20))
