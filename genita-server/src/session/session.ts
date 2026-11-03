@@ -8,6 +8,7 @@ import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
 import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
+import type { WebSearch } from "../finds/webAnswer.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
@@ -182,6 +183,8 @@ type Reply = {
   chars: number;
   /** server mode: GPU capacity or a voice failure sent this reply to the app as `say` */
   fellBack: boolean;
+  /** Chelsea 11/3: the sources card of a web-searched answer, shown once the answer has played (never after a barge-in) */
+  webAnswer?: (() => void) | null;
 };
 
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
@@ -917,6 +920,11 @@ export class Session {
     this.perceptionUnsub?.();
     this.dropSpeculation();
     if (this.reply) {
+      // the call ended while a looked-up answer was still playing: it was said, so it is kept in Finds
+      // (an account delete purges right after)
+      const card = this.reply.webAnswer;
+      this.reply.webAnswer = null;
+      if (card && reason !== "account_deleted" && !this.reply.abort.signal.aborted) card();
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
@@ -1623,12 +1631,16 @@ export class Session {
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
+    // Chelsea 11/3: a web-searched answer also lands in the sheet with its sources (not when a card runs for this turn)
+    let cardTurn = false;
+    let searches: WebSearch[] = [];
     // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
     if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
       const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
@@ -1898,6 +1910,8 @@ export class Session {
                 }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
+              } else if (ev.type === "sources") {
+                if (!interpret && searches.length < 4) searches.push({ query: ev.query, urls: ev.urls.slice(0, 10) });
               } else if (ev.type === "done") status = ev.status;
             }
           } catch (err) {
@@ -1926,6 +1940,7 @@ export class Session {
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
+          searches = [];
           askHold = [];
           onlyOpener = null;
           guarded.first = null;
@@ -2179,6 +2194,16 @@ export class Session {
     const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
+    // speech first, sheet after: the sources card when the answer has played (finishReply: playback_done or the estimate)
+    if (searches.length && full && !interpret && !self && !synthetic && !cardTurn && !sparkError && this.finds) {
+      const finds = this.finds;
+      const looked = searches;
+      reply.webAnswer = () => {
+        if (this.finds !== finds) return;
+        const findId = finds.webAnswer({ utteranceId, question: text, said: full, searches: looked });
+        if (findId) this.log("finds.web_answer", { utteranceId, findId, searches: looked.length });
+      };
+    }
   }
 
   /**
@@ -2209,6 +2234,9 @@ export class Session {
     reply.doneTimer = null;
     if (this.reply !== reply) return;
     this.reply = null;
+    const card = reply.webAnswer;
+    reply.webAnswer = null;
+    if (card && !reply.abort.signal.aborted && !this.closed && this.mode !== "interpret") card();
     this.initiative?.activity(this.now());
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
