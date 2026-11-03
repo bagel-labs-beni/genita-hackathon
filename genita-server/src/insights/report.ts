@@ -424,7 +424,8 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
       const hits = stems(e.quote).filter((w) => words.has(w)).length + [...chipWords].filter((w) => words.has(w) && e.source === "answer").length;
       if (hits > bestHits) { best = e; bestHits = hits; }
     }
-    return best;
+    // two of the receipt's own words (eval 11/4: with one, 15 % of the lines were still judged ungrounded; with two, 8 %)
+    return bestHits >= 2 ? best : null;
   };
   const sure = (id: string) => observations.find((x) => x.id === id)?.confidence === "high";
   // AU-21: the headline, the type line and every chain step reuse a concrete word of the kept traits or the picks
@@ -578,8 +579,8 @@ Fields:
   - category: talk | think | humor | taste | help | boundary | rhythm | interest. Mix categories. One may be a playful prediction ("You'll …") about how they'll use you, clearly grounded.
   - use_in_call: starts with "I'll", at most 70 characters, a concrete thing you will do in calls because of it.
   - chips: only for taste/interest: short labels from the material (polarity like/dislike). Otherwise [].
-- strengths: 0-3 lines, at most 60 characters, what this person is great at BECAUSE of one observation's evidence; trait = that observation's 0-based index. It must reuse a concrete word from that observation's quote or pick (it is shown with that receipt). Write none rather than a compliment that fits anyone.
-- watchouts: 0-2 playful, kind lines (text at most 70 characters): the funny flip side of one observation, reusing a concrete word from its quote or pick (it is shown with that receipt), never a flaw diagnosis; fix = what you'll do about it, starting with "I'll", at most 60 characters; trait = the observation index.
+- strengths: 0-3 lines, at most 60 characters, what this person is great at BECAUSE of one observation's evidence; trait = that observation's 0-based index. It must reuse at least two concrete words from that observation's quote (it is shown with that receipt) and claim nothing the quote doesn't say. Write none rather than a compliment that fits anyone.
+- watchouts: 0-2 playful, kind lines (text at most 70 characters): the funny flip side of one observation, reusing at least two concrete words from its quote (it is shown with that receipt) and claiming nothing the quote doesn't say, never a flaw diagnosis; fix = what you'll do about it, starting with "I'll", at most 60 characters; trait = the observation index.
 - chain: the reading's logic in three steps, built only from the observations: you_are (starts "You", at most 50 characters) → so_you (starts "So you", at most 50) → so_ill (starts "So I'll", at most 60).
 Strengths, watch-outs, the type, the headline and the chain add NO new facts: no habits, numbers, durations, places or skills that the material doesn't state.
 - usage: one line, at most 90 characters, starts with "In our calls", how you'll use all this.
