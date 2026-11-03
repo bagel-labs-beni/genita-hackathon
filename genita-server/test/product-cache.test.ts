@@ -147,6 +147,20 @@ test("Spark search slots (Codex #522 r3): with a limit of 1 a background search 
   assert.equal(searchSlotsUsed(), 0);
 });
 
+test("Spark search slots (Codex #522 r4): a limit of 2 lets one background search run beside a call's", async (t) => {
+  const prev = process.env.GENITA_SPARK_SEARCH_MAX;
+  process.env.GENITA_SPARK_SEARCH_MAX = "2";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_SPARK_SEARCH_MAX; else process.env.GENITA_SPARK_SEARCH_MAX = prev; });
+  let inFlight = 0, peak = 0;
+  const v = { async spark() { inFlight++; peak = Math.max(peak, inFlight); await sleep(20); inFlight--; return { text: "{}", output: [] }; } } as unknown as FindsVendors;
+  const ac = new AbortController();
+  const bg = hedgedSearch(v, "warm", 1, ac.signal, [], { background: true });
+  const fg = hedgedSearch(v, "ask", 1, ac.signal);
+  await Promise.all([bg, fg]);
+  assert.equal(peak, 2, "the call's search never waits behind the warm-up");
+  assert.equal(searchSlotsUsed(), 0);
+});
+
 test("Spark search slots: never more than GENITA_SPARK_SEARCH_MAX in flight across searches; extra lanes only when free", async (t) => {
   const prev = process.env.GENITA_SPARK_SEARCH_MAX;
   process.env.GENITA_SPARK_SEARCH_MAX = "3";

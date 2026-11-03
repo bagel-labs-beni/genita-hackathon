@@ -326,8 +326,8 @@ export function sparkSearchMax(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(n) && n >= 1 && n <= 64 ? n : 8;
 }
 const slots = { used: 0, fg: [] as Array<() => void>, bg: [] as Array<() => void> };
-/** slots background searches may use: all but two (one with a limit of 2; none with a limit of 1) */
-const backgroundMax = () => Math.max(0, sparkSearchMax() - Math.min(2, sparkSearchMax() - 1));
+/** slots background searches may use: all but two; 1 with a limit of 2; none with a limit of 1 (Codex #522 r4) */
+const backgroundMax = () => { const n = sparkSearchMax(); return n <= 1 ? 0 : n === 2 ? 1 : n - 2; };
 function tryTake(background: boolean): boolean {
   // a background search leaves slots for the people in calls
   if (slots.used < (background ? backgroundMax() : sparkSearchMax())) { slots.used++; return true; }
