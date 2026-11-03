@@ -176,13 +176,16 @@ struct ScreenSharingRequestTests {
         #expect(request.current == nil)
     }
 
-    @Test func afterTheWaitTheNextCallbackBelongsToTheNewPicker() {
+    @Test func afterTheWaitAnInstantAnswerIsStillTheOldPickers() {
         var request = ScreenSharingRequest()
-        request.begin()
-        request.invalidate()
-        request.clearStalePicker()               // the app waited; A's picker never answered
-        let b = request.begin()
-        #expect(request.beginCapture() == b)
+        request.begin()                          // A
+        request.invalidate()                     // logout, A's picker still open
+        let b = request.begin()                  // B asks; the app waits 1.5 s, A never answers
+        request.clearStalePicker(presentingAt: 100)
+        #expect(request.beginCapture(now: 100.3) == nil)     // A's in-flight selection: dropped
+        #expect(request.cancelPicker(now: 100.5) == false)   // A's in-flight cancel: dropped
+        #expect(request.isCurrent(b))
+        #expect(request.beginCapture(now: 101.4) == b)       // B's own pick
     }
 
     @Test func stopWithoutAnOpenPickerLeavesNothingStale() {

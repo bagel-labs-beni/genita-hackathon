@@ -15,6 +15,9 @@ public struct ScreenSharingRequest: Sendable {
     private var pickerOpen = false
     /// A presentation from before the last stop/logout may still answer.
     public private(set) var stalePicker = false
+    /// After a stale wait timed out, answers before this moment are too fast for a person in the new picker:
+    /// they are the old presentation's in-flight answer (Codex review on #496).
+    private var guardUntil: Double = -.infinity
 
     public init() {}
 
@@ -27,20 +30,26 @@ public struct ScreenSharingRequest: Sendable {
     }
 
     /// The picker was cancelled. False = it was the stale presentation's answer (dropped, the current request stays).
-    @discardableResult public mutating func cancelPicker() -> Bool {
+    @discardableResult public mutating func cancelPicker(now: Double? = nil) -> Bool {
         if stalePicker { stalePicker = false; return false }
+        if let now, now < guardUntil { return false }
         current = nil
         pickerOpen = false
         return true
     }
 
-    /// The stale presentation is assumed gone (no callback within the app's wait); the next callback is current's.
-    public mutating func clearStalePicker() { stalePicker = false }
+    /// The stale presentation got no answer within the app's wait. The new picker is presented at `now`; answers in
+    /// the next `guardSeconds` are still treated as the old one's (nobody picks that fast in a picker just shown).
+    public mutating func clearStalePicker(presentingAt now: Double, guardSeconds: Double = 1) {
+        stalePicker = false
+        guardUntil = now + guardSeconds
+    }
 
     /// Consume a picker selection once, before any asynchronous work starts. A stale presentation's selection is
     /// consumed here and dropped (nil), leaving the current request untouched.
-    public mutating func beginCapture() -> UInt64? {
+    public mutating func beginCapture(now: Double? = nil) -> UInt64? {
         if stalePicker { stalePicker = false; return nil }
+        if let now, now < guardUntil { return nil }
         guard let current else { return nil }
         pickerOpen = false
         self.current = nil

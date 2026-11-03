@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
 import CoreMedia
+import QuartzCore
 
 @MainActor final class ScreenSharingController: NSObject, ObservableObject {
     @Published var permissionRequired = false
@@ -96,7 +97,7 @@ import CoreMedia
                 if !self.captureRequest.stalePicker { break }
             }
             guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
-            self.captureRequest.clearStalePicker()
+            self.captureRequest.clearStalePicker(presentingAt: CACurrentMediaTime())
             self.presentPicker()
         }
     }
@@ -130,7 +131,7 @@ import CoreMedia
         stopCapture(old)
     }
     private func cancelPicker() {
-        captureRequest.cancelPicker()
+        captureRequest.cancelPicker(now: CACurrentMediaTime())
     }
     /// End this account's capture, including a picker/start still in flight, before another account can sign in.
     func resetForSignOut() {
@@ -146,7 +147,7 @@ import CoreMedia
             captureRequest.begin()
             stopStartingCapture()
         }
-        guard let request = captureRequest.beginCapture() else { return }
+        guard let request = captureRequest.beginCapture(now: CACurrentMediaTime()) else { return }
         Task {
             do {
                 guard captureRequest.isStarting(request) else { return }
