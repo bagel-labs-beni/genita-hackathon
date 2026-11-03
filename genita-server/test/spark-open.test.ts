@@ -8,7 +8,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
-  SPARK_OPEN_MODEL, backgroundJson, setLlmLog, sparkOpenJson, sparkOpenKey, sparkOpenStatus,
+  SPARK_OPEN_MODEL, backgroundJson, markSparkOpen, probeSparkOpen, setLlmLog, sparkOpenJson, sparkOpenKey, sparkOpenState, sparkOpenStatus, sparkOpenTarget,
 } from "../src/meta/sparkOpen.ts";
 import { sparkJson } from "../src/meta/spark.ts";
 import { UpstreamError } from "../src/meta/http.ts";
@@ -22,21 +22,23 @@ const SCHEMA = {
 };
 const REQ = { schemaName: "memoryExtract", schema: SCHEMA, instructions: "Extract.", input: "{\"turns\":[]}", maxOutputTokens: 300 };
 
+const T = (key = "test-baseten") => sparkOpenTarget({ BASETEN_API_KEY: key })!;
 type Seen = { host: string; path: string; auth: string | null; body: Record<string, unknown> };
 type Reply = (s: Seen) => Response | Promise<Response>;
 
 /** Fake fetch for both vendors; BASETEN_API_KEY set unless `key: null`. Restores everything after. */
 const restoring = new WeakSet<TestContext>();
-function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | null; flag?: string } = {}) {
+function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | null; flag?: string; state?: "available" | "not_listed" | null } = {}) {
   // originals saved once per test: a second fake() in the same test must not "restore" the first fake (Codex P2)
   if (!restoring.has(t)) {
     restoring.add(t);
-    const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN, hop: process.env.GENITA_SPARK_OPEN_HOP_MS };
+    const env = { key: process.env.BASETEN_API_KEY, flag: process.env.GENITA_SPARK_OPEN, hop: process.env.GENITA_SPARK_OPEN_HOP_MS, provider: process.env.GENITA_SPARK_OPEN_PROVIDER, modalKey: process.env.MODAL_ENDPOINT_KEY, url: process.env.GENITA_SPARK_OPEN_URL };
     const original = globalThis.fetch;
     t.after(() => {
       globalThis.fetch = original;
       setLlmLog(null);
-      for (const [name, v] of [["BASETEN_API_KEY", env.key], ["GENITA_SPARK_OPEN", env.flag], ["GENITA_SPARK_OPEN_HOP_MS", env.hop]] as const) {
+      markSparkOpen(null);
+      for (const [name, v] of [["BASETEN_API_KEY", env.key], ["GENITA_SPARK_OPEN", env.flag], ["GENITA_SPARK_OPEN_HOP_MS", env.hop], ["GENITA_SPARK_OPEN_PROVIDER", env.provider], ["MODAL_ENDPOINT_KEY", env.modalKey], ["GENITA_SPARK_OPEN_URL", env.url]] as const) {
         if (v === undefined) delete process.env[name]; else process.env[name] = v;
       }
     });
@@ -46,6 +48,7 @@ function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | nu
   if (o.key === null) delete process.env.BASETEN_API_KEY; else process.env.BASETEN_API_KEY = o.key ?? "test-baseten";
   if (o.flag === undefined) delete process.env.GENITA_SPARK_OPEN; else process.env.GENITA_SPARK_OPEN = o.flag;
   setLlmLog((event, data) => logs.push({ event, data }));
+  markSparkOpen(o.state === undefined ? "available" : o.state);
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const headers = new Headers(init?.headers);
@@ -56,8 +59,11 @@ function fake(t: TestContext, o: { open?: Reply; meta?: Reply; key?: string | nu
     const reply = url.hostname === "inference.baseten.co" ? (o.open ? o.open(s) : openOk({ memories: [] }))
       : url.hostname === "api.meta.ai" ? (o.meta ? o.meta(s) : metaOk({ memories: [] }))
       : Promise.reject(new Error(`unexpected host ${url.hostname}`));
-    // like real fetch: an abort rejects a pending request
-    return Promise.race([reply, new Promise<never>((_, rej) => signal?.addEventListener("abort", () => rej(signal.reason ?? new Error("aborted")), { once: true }))]);
+    // like real fetch: an abort rejects a pending request. AbortSignal.timeout's timer is unref'd and a real
+    // socket would hold the event loop open; a hanging fake must too, or node:test ends the file mid-test (CI)
+    const keep = setInterval(() => {}, 1000);
+    return Promise.race([reply, new Promise<never>((_, rej) => signal?.addEventListener("abort", () => rej(signal.reason ?? new Error("aborted")), { once: true }))])
+      .finally(() => clearInterval(keep));
   }) as typeof fetch;
   return { seen, logs, hosts: () => seen.map((s) => s.host) };
 }
@@ -71,14 +77,14 @@ test("config: on when the key exists, GENITA_SPARK_OPEN=0 turns it off, status n
   assert.equal(sparkOpenKey({}), null);
   assert.equal(sparkOpenKey({ BASETEN_API_KEY: "  " }), null);
   const s = sparkOpenStatus({ BASETEN_API_KEY: "secret-value" });
-  assert.deepEqual(s, { configured: true, model: SPARK_OPEN_MODEL, provider: "baseten" });
+  assert.deepEqual(s, { spark_open: "unknown", spark_open_provider: "baseten", spark_open_model: SPARK_OPEN_MODEL });
   assert.ok(!JSON.stringify(s).includes("secret-value"));
-  assert.equal(sparkOpenStatus({}).configured, false);
+  assert.equal(sparkOpenStatus({}).spark_open, "no_key");
 });
 
 test("sparkOpenJson: Baseten chat completions with the hackathon model id, schema in the prompt, think block stripped, logged with latency", async (t) => {
   const f = fake(t, { open: () => openOk({ memories: [{ text: "Likes spicy food", kind: "fact" }] }, "<think>the user said…</think>\n") });
-  const out = await sparkOpenJson<{ memories: unknown[] }>("test-baseten", REQ);
+  const out = await sparkOpenJson<{ memories: unknown[] }>(T(), REQ);
   assert.deepEqual(out, { memories: [{ text: "Likes spicy food", kind: "fact" }] });
   const [s] = f.seen;
   assert.equal(s.host, "inference.baseten.co");
@@ -108,13 +114,13 @@ test("sparkOpenJson: Baseten chat completions with the hackathon model id, schem
 test("sparkOpenJson: an answer that breaks the schema (missing field, wrong enum, no JSON) is an error", async (t) => {
   for (const bad of [{ nope: 1 }, { memories: [{ text: "x" }] }, { memories: [{ text: "x", kind: "rumor" }] }, "no json here"]) {
     fake(t, { open: () => (typeof bad === "string" ? Response.json({ choices: [{ message: { content: bad } }] }) : openOk(bad)) });
-    await assert.rejects(sparkOpenJson("test-baseten", REQ), UpstreamError, JSON.stringify(bad));
+    await assert.rejects(sparkOpenJson(T(), REQ), UpstreamError, JSON.stringify(bad));
   }
 });
 
 test("sparkOpenJson: refuses image input (vision stays on Muse Spark API)", async (t) => {
   const f = fake(t);
-  await assert.rejects(sparkOpenJson("test-baseten", { ...REQ, input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA" }] }] }));
+  await assert.rejects(sparkOpenJson(T(), { ...REQ, input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,AA" }] }] }));
   assert.equal(f.seen.length, 0);
 });
 
@@ -234,11 +240,11 @@ test("fake(): two fakes in one test restore the real fetch and env once, at the 
 
 test("logs and errors never carry the key or vendor/reply text (Codex P1)", async (t) => {
   const f = fake(t, { open: (s) => new Response(`invalid key ${s.auth}`, { status: 401 }) });
-  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => e instanceof UpstreamError && e.status === 401 && !String(e).includes("sk-secret-123") && !String(e).includes("invalid key"));
+  await assert.rejects(sparkOpenJson(T("sk-secret-123"), REQ), (e: unknown) => e instanceof UpstreamError && e.status === 401 && !String(e).includes("sk-secret-123") && !String(e).includes("invalid key"));
   fake(t, { open: () => Response.json({ choices: [{ message: { content: "I have diabetes and live at 12 Main St" }, finish_reason: "stop" }] }) });
-  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => !String(e).includes("diabetes"));
+  await assert.rejects(sparkOpenJson(T("sk-secret-123"), REQ), (e: unknown) => !String(e).includes("diabetes"));
   fake(t, { open: () => openOk({ memories: [{ text: "I have diabetes", kind: "secret-kind" }] }) });
-  await assert.rejects(sparkOpenJson("sk-secret-123", REQ), (e: unknown) => !String(e).includes("diabetes"));
+  await assert.rejects(sparkOpenJson(T("sk-secret-123"), REQ), (e: unknown) => !String(e).includes("diabetes"));
   const all = JSON.stringify(f.logs);
   assert.ok(f.logs.length >= 1 && !all.includes("sk-secret-123") && !all.includes("invalid key") && !all.includes("diabetes"), all);
 });
@@ -249,4 +255,69 @@ test("sparkJson hop: Spark Open hanging after a Muse 503 still ends in the origi
   await assert.rejects(sparkJson("test-meta", REQ), (e: unknown) => e instanceof UpstreamError && e.status === 503);
   assert.deepEqual(f.hosts(), ["api.meta.ai", "inference.baseten.co"]);
   assert.equal(f.logs.find((l) => l.event === "llm.call")?.data.error, "timeout");
+});
+
+const modalEnv = { GENITA_SPARK_OPEN_PROVIDER: "modal", MODAL_ENDPOINT_KEY: "wk-1.ws-secret", GENITA_SPARK_OPEN_URL: "https://summer--muse.modal.run/" };
+test("provider is pluggable: modal = MODAL_ENDPOINT_KEY + GENITA_SPARK_OPEN_URL, model meta/muse-spark-open; incomplete config = off", () => {
+  assert.deepEqual(sparkOpenTarget(modalEnv), { provider: "modal", base: "https://summer--muse.modal.run/v1", model: "meta/muse-spark-open", name: "muse-spark-open", key: "wk-1.ws-secret" });
+  assert.equal(sparkOpenTarget({ ...modalEnv, GENITA_SPARK_OPEN_URL: "" }), null);
+  assert.equal(sparkOpenTarget({ ...modalEnv, MODAL_ENDPOINT_KEY: "" }), null);
+  assert.equal(sparkOpenTarget({ ...modalEnv, BASETEN_API_KEY: "b", GENITA_SPARK_OPEN_PROVIDER: "baseten" })?.base, "https://inference.baseten.co/v1");
+  assert.equal(sparkOpenTarget({ ...modalEnv, GENITA_SPARK_OPEN_MODEL: "meta/muse-glimmer-30b-bf16" })?.name, "muse-glimmer-30b-bf16");
+  assert.equal(sparkOpenStatus(modalEnv).spark_open_provider, "modal");
+});
+
+test("modal provider: background calls go to the Modal endpoint with its proxy token, logged provider=modal", async (t) => {
+  const f = fake(t, { key: null, state: null });
+  Object.assign(process.env, modalEnv);
+  markSparkOpen("available");
+  const seen: string[] = [];
+  const base = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => { seen.push(String(input)); return String(input).includes("modal.run") ? openOk({ memories: [] }) : base(input, init); }) as typeof fetch;
+  assert.deepEqual(await backgroundJson("test-meta", REQ, { timeoutMs: 5000 }), { memories: [] });
+  assert.deepEqual(seen, ["https://summer--muse.modal.run/v1/chat/completions"]);
+  const log = f.logs.find((l) => l.event === "llm.call")!;
+  assert.equal(log.data.provider, "modal");
+  assert.equal(log.data.model, "muse-spark-open");
+  assert.ok(!JSON.stringify(f.logs).includes("ws-secret"));
+});
+
+test("availability gate: configured but not_listed / not probed yet → Muse Spark API only, both directions", async (t) => {
+  for (const state of ["not_listed", null] as const) {
+    const f = fake(t, { state, meta: () => metaOk({ memories: [] }) });
+    assert.deepEqual(await backgroundJson("test-meta", REQ, { timeoutMs: 5000 }), { memories: [] });
+    assert.deepEqual(f.hosts(), ["api.meta.ai"]);
+    const g = fake(t, { state, meta: () => new Response("down", { status: 504 }) });
+    await assert.rejects(sparkJson("test-meta", REQ));
+    assert.deepEqual(g.hosts(), ["api.meta.ai"]);
+  }
+});
+
+test("probe: listed → available; hidden but callable → available; neither → not_listed; no key → no_key without a request; logs on change, never the key", async (t) => {
+  const listing = (ids: string[], call: number) => (s: Seen) => (s.path === "/v1/models" ? Response.json({ data: ids.map((id) => ({ id })) }) : new Response(call === 200 ? "{}" : "nope", { status: call }));
+  let f = fake(t, { state: null, open: listing(["zai-org/GLM-5.3", SPARK_OPEN_MODEL], 404) });
+  assert.equal(await probeSparkOpen(), "available");
+  assert.deepEqual(f.seen.map((s) => s.path), ["/v1/models"]);
+  assert.equal(f.seen[0].auth, "Bearer test-baseten");
+  assert.equal(sparkOpenState(), "available");
+
+  f = fake(t, { state: null, open: listing(["zai-org/GLM-5.3"], 200) });
+  assert.equal(await probeSparkOpen(), "available");
+  assert.deepEqual(f.seen.map((s) => s.path), ["/v1/models", "/v1/chat/completions"]);
+  assert.equal(f.seen[1].body.model, SPARK_OPEN_MODEL);
+
+  f = fake(t, { state: null, open: listing(["zai-org/GLM-5.3"], 404) });
+  assert.equal(await probeSparkOpen(), "not_listed");
+  const change = f.logs.find((l) => l.event === "llm.spark_open")!;
+  assert.deepEqual({ status: change.data.status, provider: change.data.provider, model: change.data.model, call_http: change.data.call_http }, { status: "not_listed", provider: "baseten", model: "muse-spark-open-1026", call_http: 404 });
+  assert.ok(!JSON.stringify(f.logs).includes("test-baseten"));
+
+  // the 10-min re-probe picks up a later grant without a redeploy
+  f = fake(t, { state: "not_listed", open: listing([SPARK_OPEN_MODEL], 404) });
+  assert.equal(await probeSparkOpen(), "available");
+  assert.ok(f.logs.some((l) => l.event === "llm.spark_open" && l.data.status === "available"));
+
+  f = fake(t, { key: null, state: null });
+  assert.equal(await probeSparkOpen(), "no_key");
+  assert.equal(f.seen.length, 0);
 });

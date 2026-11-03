@@ -25,6 +25,8 @@ export const SPARK_OPEN_MODEL = "meta-models/muse-spark-open-1026";
 export const SPARK_OPEN_NAME = "muse-spark-open-1026";
 export const SPARK_OPEN_PROVIDER = "baseten";
 export const BASETEN_BASE = "https://inference.baseten.co/v1";
+/** Modal Shared Endpoint model id (docs 11/3: `meta/muse-spark-open`; the endpoint's own /v1/models has the exact id) */
+export const MODAL_DEFAULT_MODEL = "meta/muse-spark-open";
 /** the Muse Spark API model name as it appears in fallback logs (meta/spark.ts SPARK_MODEL) */
 const MUSE_NAME = "muse-spark-1.3";
 /** Spark Open's own budget in the background path; reasoning is always on, so generous */
@@ -48,15 +50,107 @@ export function logLlm(event: string, data: Record<string, unknown>): void {
   try { llmLog(event, data); } catch { /* logging never breaks a call */ }
 }
 
-/** The Baseten key when Spark Open is on (key present and GENITA_SPARK_OPEN !== "0"), else null. */
-export function sparkOpenKey(env: NodeJS.ProcessEnv = process.env): string | null {
-  const key = env.BASETEN_API_KEY?.trim();
-  return key && env.GENITA_SPARK_OPEN !== "0" ? key : null;
+export type Provider = "baseten" | "modal";
+/** Where Spark Open is served. Never logged whole: `key` stays in here. */
+export type SparkOpenTarget = { provider: Provider; base: string; model: string; name: string; key: string };
+
+/**
+ * The configured Spark Open server, or null (off / no key). Pluggable (11/3: the Baseten hackathon model may
+ * stay locked until the credit grant lands):
+ *   GENITA_SPARK_OPEN_PROVIDER=baseten (default)  BASETEN_API_KEY, model meta-models/muse-spark-open-1026
+ *   GENITA_SPARK_OPEN_PROVIDER=modal              MODAL_ENDPOINT_KEY (proxy token "wk-….ws-…"), GENITA_SPARK_OPEN_URL
+ *                                                 (the endpoint URL), model meta/muse-spark-open
+ *   GENITA_SPARK_OPEN_MODEL overrides the model id; GENITA_SPARK_OPEN=0 turns it all off.
+ */
+export function sparkOpenTarget(env: NodeJS.ProcessEnv = process.env): SparkOpenTarget | null {
+  if (env.GENITA_SPARK_OPEN === "0") return null;
+  const provider: Provider = env.GENITA_SPARK_OPEN_PROVIDER?.trim().toLowerCase() === "modal" ? "modal" : "baseten";
+  const key = (provider === "modal" ? env.MODAL_ENDPOINT_KEY : env.BASETEN_API_KEY)?.trim();
+  let base = provider === "modal" ? (env.GENITA_SPARK_OPEN_URL ?? "").trim().replace(/\/+$/, "") : BASETEN_BASE;
+  if (!key || !/^https:\/\//.test(base)) return null;
+  if (!/\/v1$/.test(base)) base += "/v1";
+  const model = env.GENITA_SPARK_OPEN_MODEL?.trim() || (provider === "modal" ? MODAL_DEFAULT_MODEL : SPARK_OPEN_MODEL);
+  return { provider, base, model, name: model.slice(model.lastIndexOf("/") + 1), key };
 }
 
-/** /healthz: configured yes/no, never the key. */
+/** The key when Spark Open is configured (not necessarily available yet), else null. */
+export function sparkOpenKey(env: NodeJS.ProcessEnv = process.env): string | null {
+  return sparkOpenTarget(env)?.key ?? null;
+}
+
+// ── availability (11/3): the model may be configured but not yet open to our account ──
+export type SparkOpenState = "available" | "not_listed" | "no_key" | "unknown" | "error";
+const sig = (t: SparkOpenTarget) => `${t.provider}|${t.base}|${t.model}`;
+let probed: { sig: string; status: "available" | "not_listed" | "error"; at: number } | null = null;
+
+/** What the server knows right now (no network): no_key, unknown (not probed yet), available, not_listed, error. */
+export function sparkOpenState(env: NodeJS.ProcessEnv = process.env): SparkOpenState {
+  const t = sparkOpenTarget(env);
+  if (!t) return "no_key";
+  return probed && probed.sig === sig(t) ? probed.status : "unknown";
+}
+
+/** Tests / ops: set the probe result for the current target without the network. */
+export function markSparkOpen(status: "available" | "not_listed" | "error" | null, env: NodeJS.ProcessEnv = process.env): void {
+  const t = sparkOpenTarget(env);
+  probed = status && t ? { sig: sig(t), status, at: Date.now() } : null;
+}
+
+/** Calls go to Spark Open only when the last probe found the model. */
+export function activeSparkOpen(env: NodeJS.ProcessEnv = process.env): SparkOpenTarget | null {
+  const t = sparkOpenTarget(env);
+  return t && probed?.sig === sig(t) && probed.status === "available" ? t : null;
+}
+
+/**
+ * Is the model there for us? GET /v1/models lists it → available. Not listed (hackathon ids can be hidden)
+ * → one tiny completion; a 200 also counts as available. Otherwise not_listed. A network failure keeps the
+ * last result (error when there is none). Logs `llm.spark_open` when the status changes; never the key.
+ */
+export async function probeSparkOpen(env: NodeJS.ProcessEnv = process.env): Promise<SparkOpenState> {
+  const t = sparkOpenTarget(env);
+  if (!t) { probed = null; return "no_key"; }
+  const headers = { authorization: `Bearer ${t.key}`, "content-type": "application/json" };
+  const before = sparkOpenState(env);
+  let status: "available" | "not_listed" | "error";
+  let detail: Record<string, unknown> = {};
+  try {
+    const r = await fetch(t.base + "/models", { headers, signal: AbortSignal.timeout(10_000) });
+    const ids = r.ok ? (((await r.json()) as { data?: Array<{ id?: string }> }).data ?? []).map((m) => m.id) : (await r.body?.cancel().catch(() => {}), []);
+    if (ids.includes(t.model)) { status = "available"; detail = { listed: true }; }
+    else {
+      const c = await fetch(t.base + "/chat/completions", {
+        method: "POST", headers, signal: AbortSignal.timeout(60_000),
+        body: JSON.stringify({ model: t.model, messages: [{ role: "user", content: "Reply with: ok" }], max_tokens: 64 }),
+      });
+      await c.body?.cancel().catch(() => {});
+      status = c.ok ? "available" : "not_listed";
+      detail = { listed: false, models_http: r.status, call_http: c.status };
+    }
+  } catch (err) {
+    status = probed?.sig === sig(t) && probed.status !== "error" ? probed.status : "error";
+    detail = { probe_error: errorKind(err) };
+  }
+  probed = { sig: sig(t), status, at: Date.now() };
+  if (status !== before) logLlm("llm.spark_open", { status, provider: t.provider, model: t.name, ...detail });
+  return status;
+}
+
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+/** Boot: probe now, then every 10 min (a later credit grant is picked up without a redeploy). Once per process. */
+export function startSparkOpenProbe(everyMs = 10 * 60_000): void {
+  if (probeTimer) return;
+  const run = () => { void probeSparkOpen().catch(() => {}); };
+  run();
+  probeTimer = setInterval(run, everyMs);
+  probeTimer.unref?.();
+}
+
+/** /healthz: state + where, never the key. */
 export function sparkOpenStatus(env: NodeJS.ProcessEnv = process.env) {
-  return { configured: !!sparkOpenKey(env), model: SPARK_OPEN_MODEL, provider: SPARK_OPEN_PROVIDER };
+  const t = sparkOpenTarget(env);
+  const provider = t?.provider ?? (env.GENITA_SPARK_OPEN_PROVIDER?.trim().toLowerCase() === "modal" ? "modal" : SPARK_OPEN_PROVIDER);
+  return { spark_open: sparkOpenState(env), spark_open_provider: provider, spark_open_model: t?.model ?? (provider === "modal" ? MODAL_DEFAULT_MODEL : SPARK_OPEN_MODEL) };
 }
 
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
@@ -136,21 +230,21 @@ function errorKind(err: unknown): string {
  * One structured call to Muse Spark Open on Baseten. Throws UpstreamError (vendor "meta", it is a Meta
  * model) on HTTP errors, a reply without JSON, or JSON that breaks the schema.
  */
-export async function sparkOpenJson<T>(key: string, req: StructuredRequest, signal?: AbortSignal): Promise<T> {
+export async function sparkOpenJson<T>(t: SparkOpenTarget, req: StructuredRequest, signal?: AbortSignal): Promise<T> {
   if (getOps().isPaused("spark_open")) throw new SparkOpenError("paused", null);
   const body = {
-    model: SPARK_OPEN_MODEL,
+    model: t.model,
     messages: messages(req),
     max_tokens: Math.max(MIN_MAX_TOKENS, (req.maxOutputTokens ?? 0) * 4),
     response_format: { type: "json_schema", json_schema: { name: req.schemaName, schema: req.schema, strict: true } },
   };
   const t0 = performance.now();
   const done = (ok: boolean, extra: Record<string, unknown> = {}) =>
-    logLlm("llm.call", { model: SPARK_OPEN_NAME, provider: SPARK_OPEN_PROVIDER, purpose: req.schemaName, ok, ms: Math.round(performance.now() - t0), ...extra });
+    logLlm("llm.call", { model: t.name, provider: t.provider, purpose: req.schemaName, ok, ms: Math.round(performance.now() - t0), ...extra });
   try {
-    const r = await fetch(BASETEN_BASE + "/chat/completions", {
+    const r = await fetch(t.base + "/chat/completions", {
       method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      headers: { authorization: `Bearer ${t.key}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal,
     });
@@ -181,20 +275,20 @@ export async function backgroundJson<T>(
   opts: { timeoutMs: number; openTimeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
   const withBudget = (ms: number) => (opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms));
-  const key = sparkOpenKey();
-  if (!key || !textOnly(req)) return museJson<T>(metaKey, req, withBudget(opts.timeoutMs));
+  const target = activeSparkOpen();
+  if (!target || !textOnly(req)) return museJson<T>(metaKey, req, withBudget(opts.timeoutMs));
   try {
-    return await sparkOpenJson<T>(key, req, withBudget(opts.openTimeoutMs ?? OPEN_TIMEOUT_MS));
+    return await sparkOpenJson<T>(target, req, withBudget(opts.openTimeoutMs ?? OPEN_TIMEOUT_MS));
   } catch (err) {
     if (opts.signal?.aborted) throw err;
-    logLlm("llm.fallback", { from: SPARK_OPEN_NAME, to: MUSE_NAME, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
+    logLlm("llm.fallback", { from: target.name, to: MUSE_NAME, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
     return museJson<T>(metaKey, req, withBudget(opts.timeoutMs));
   }
 }
 
 /** sparkJson's hop: a Muse Spark API 5xx (or network failure) on a text-only json_schema call → Spark Open once. */
-export function openFallbackFor(err: unknown, req: StructuredRequest, signal?: AbortSignal): string | null {
+export function openFallbackFor(err: unknown, req: StructuredRequest, signal?: AbortSignal): SparkOpenTarget | null {
   if (signal?.aborted || !textOnly(req)) return null;
   const outage = (err instanceof UpstreamError && err.vendor === "meta" && err.status !== null && err.status >= 500) || (err instanceof TypeError && /fetch failed/i.test(err.message));
-  return outage ? sparkOpenKey() : null;
+  return outage ? activeSparkOpen() : null;
 }

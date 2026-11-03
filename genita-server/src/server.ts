@@ -1,6 +1,6 @@
 /**
  * HTTP + WebSocket entry.
- *   GET  /healthz          → {ok:true, sessions, spark_open:{configured, model, provider}}
+ *   GET  /healthz          → {ok:true, sessions, spark_open, spark_open_provider, spark_open_model}
  *   WS   /v1/session       → one realtime conversation (PROTOCOL.md)
  *   *    /v1/finds…        → result cards (finds/http.ts, F10-L6)
  *   WS   /v1/watch?session= → the Mac's screen share for that call (src/watch, F5)
@@ -26,7 +26,7 @@ import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { META_BASE, metaHeaders } from "./meta/http.ts";
-import { setLlmLog, sparkOpenStatus } from "./meta/sparkOpen.ts";
+import { setLlmLog, sparkOpenStatus, startSparkOpenProbe } from "./meta/sparkOpen.ts";
 import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
@@ -110,7 +110,8 @@ export async function startServer(
   const ops = configureOps(config, { log, db: accounts?.db });
   // background structured calls → Muse Spark Open on Baseten (meta/sparkOpen.ts); one boot line for partner verification
   setLlmLog(log);
-  log("llm.spark_open", sparkOpenStatus());
+  // boot probe + every 10 min: is the model open to us yet? (llm.spark_open on each change; nothing without a key)
+  startSparkOpenProbe();
   // P0 11/3: without GENITA_MEMORY_FILE, memory lived in this process and every deploy erased it.
   // With accounts on, long-term memory goes to Postgres (migration 005), keyed by users.id.
   if (accounts && deps.memory?.ephemeral) deps.memory.useStore(new PgMemoryRepository(accounts.db));
@@ -218,8 +219,8 @@ export async function startServer(
       if (!who) return json(res, 401, { error: "unauthorized" });
       return handleHandoffHttp(handoff, req, res, url, who.userId, who.device);
     }
-    // spark_open: Muse Spark Open on Baseten configured yes/no (model + provider, never the key)
-    if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size, spark_open: sparkOpenStatus() });
+    // spark_open: available | not_listed | no_key | unknown | error, + provider/model (never the key)
+    if (req.url === "/healthz") return json(res, 200, { ok: true, sessions: sessions.size, ...sparkOpenStatus() });
     json(res, 404, { error: "not_found" });
   }
 
