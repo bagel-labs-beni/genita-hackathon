@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { taskHint } from "../convo/taskHints.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1548,7 +1549,9 @@ export class Session {
         crisisInCall: this.crisisInCall,
       }) ?? undefined;
     }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
+    // intel eval 11/4: plan / math / how-to asks get the real work, an unknown "him" gets a question, a reused word is named
+    const task = !turn.greeting && !turn.cue && userText ? taskHint(userText, this.history) ?? undefined : undefined;
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine, task };
   }
 
   private stopInitiative(): void {

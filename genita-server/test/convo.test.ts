@@ -1577,3 +1577,13 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("intel eval 11/4 task hints: a plan ask gets the work-it-out line, an unknown 'him' gets ask-who, chit-chat gets neither", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<teasing> Pack first, ten minutes."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
+  assert.doesNotMatch(await say("lol hi"), /work something out|who they mean/);
+  assert.match(await say("i have 45 minutes before i leave, need to shower, eat and pack. go"), /work something out/);
+  assert.match(await say("should i text him or not"), /who they mean/);
+  session.close();
+});
