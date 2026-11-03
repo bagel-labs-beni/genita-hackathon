@@ -226,13 +226,36 @@ extension AppState {
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
         importing = true
+        let ownerBefore = setup.skipOwner
         Task {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
-                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
+                // marked as this account's before they go (saved on disk): if the app dies mid-send they never move to
+                // another account; a sure "not saved" below takes the mark back (Codex #516 AU-20 r2)
+                setup.skipOwner = setup.accountId ?? "unknown"
+                let style = try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3)
+                // only a saved send makes them this account's (AU-20): a 401 / offline / 400 leaves them unsent, so the
+                // next N3 tap keeps N1/N2 and signing in again carries them (the case #516 is for)
+                setup.skipSent = true
+                applyStyle(style)
                 go(.preferences)
-            } catch { flowError = Self.errorLine(error); route(error) }
+            } catch {
+                // the server may have saved them (no answer, or a 5xx): they stay this account's, never carried to
+                // another sign-in; a 401 / 403 / 4xx is a sure "not saved" (Codex #516 AU-20 r1)
+                if !Self.maybeSaved(error) { setup.skipOwner = ownerBefore }
+                flowError = Self.errorLine(error); route(error)
+            }
+        }
+    }
+
+    /// A failed send whose outcome is unknown: no answer at all (`offline` includes timeouts and dropped
+    /// connections), a 5xx, or an unreadable answer. A 401 / consent / 4xx answer means nothing was saved.
+    static func maybeSaved(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .unauthorized?, .consentRequired?, .cancelled?: return false
+        case .server(let status, _, _)?: return status >= 500
+        default: return true
         }
     }
 

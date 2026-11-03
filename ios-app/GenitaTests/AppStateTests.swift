@@ -71,6 +71,30 @@ import UIKit
         XCTAssertFalse(model.setup.hasOnboarded)
         XCTAssertEqual(model.stage, .consent)
     }
+    /// QA build 5 (device171 h14): N1·N2 picked before signing in must reach the new account's skip request;
+    /// an account whose answers were already sent (imported style) never hands them on.
+    func testUnsentSkipPicksSurviveSigningInAsAnotherAccount() {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a", consented: true)
+        model.signedOut()
+        model.setup.skipInterests = ["Food", "Style"]; model.setup.skipReplies = "Show me options"; model.setup.skipSent = false
+        model.signedIn(userId: "user-b", consented: true)
+        XCTAssertEqual(model.setup.skipInterests, ["Food", "Style"])
+        XCTAssertEqual(model.setup.skipReplies, "Show me options")
+        XCTAssertEqual(model.setup.skipSent, false, "still unsent: an N3 pick after sign-in keeps N1·N2 (Codex r4)")
+        XCTAssertEqual(AppState.skipAnswers(model.setup).interests, ["Food", "Style"], "the skip request carries them")
+        // B tried to send them (even with the reply lost: no style yet), then C signs in: C starts clean (Codex P1)
+        model.setup.skipSent = true
+        model.signedOut()
+        model.signedIn(userId: "user-c", consented: true)
+        XCTAssertNil(model.setup.skipInterests)
+        XCTAssertNil(model.setup.skipReplies)
+        // an older build's saved picks (no skipSent): unknown whether sent → never carried (Codex #516 r2)
+        model.signedOut()
+        model.setup.skipInterests = ["Travel"]; model.setup.skipSent = nil
+        model.signedIn(userId: "user-d", consented: true)
+        XCTAssertNil(model.setup.skipInterests)
+    }
     func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
         var accounts: [String?] = []
         let model = AppState(storage: store, onHandoffAccountChange: { accounts.append($0) })

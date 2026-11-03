@@ -374,7 +374,16 @@ struct SkipImportView: View {
         default: []
         }
     }
+    /// A pick on answers that were already sent (or are from an older build) starts a new, unsent set: one edit
+    /// never turns another account's answers into this phone's own (Codex #516 r3).
+    private func markUnsent() {
+        if model.setup.skipSent != false {
+            model.setup.skipInterests = nil; model.setup.skipReplies = nil; model.setup.skipLikes = nil; model.setup.skipAvoid = nil
+        }
+        model.setup.skipSent = false
+    }
     private func toggle(_ v: String) {
+        markUnsent()
         switch step {
         case .skipTopics: var s = model.setup.skipInterests ?? []; if let i = s.firstIndex(of: v) { s.remove(at: i) } else if s.count < 8 { s.append(v) }; model.setup.skipInterests = s
         case .skipReplies: model.setup.skipReplies = model.setup.skipReplies == v ? nil : v
@@ -383,6 +392,7 @@ struct SkipImportView: View {
     }
     /// N3 chips: tap once = like, twice = avoid, three times = clear (Chelsea 11/3: likes and things to avoid).
     private func cycleTaste(_ v: String) {
+        markUnsent()
         var like = model.setup.skipLikes ?? [], avoid = model.setup.skipAvoid ?? []
         if let i = like.firstIndex(of: v) { like.remove(at: i); avoid.append(v) }
         else if let i = avoid.firstIndex(of: v) { avoid.remove(at: i) }

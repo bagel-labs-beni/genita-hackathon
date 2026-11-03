@@ -79,3 +79,50 @@ final class RestoreStub: URLProtocol, @unchecked Sendable {
         XCTAssertFalse(storage.bool(forKey: AppState.signedOutKey))
     }
 }
+
+/// AU-20 (11/4 audit): the N1–N3 send failing (401 / offline / 400) leaves the picks unsent, so the next N3 tap keeps
+/// N1/N2 and signing in again carries them; only a saved send marks them sent.
+@MainActor final class SkipSendTests: XCTestCase {
+    private func model(status: Int) -> AppState {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RestoreStub.self]
+        RestoreStub.handler = { req in
+            (req.url?.path ?? "").hasSuffix("/v1/import/skip") ? (status, Data(#"{"error":"unauthorized"}"#.utf8)) : (404, Data())
+        }
+        let m = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        m.routeAfterSignIn = {}
+        m.onboarding = OnboardingClient(auth: GenitaAuthClient(baseURL: URL(string: "https://skip.stub")!, store: InMemoryTokenStore("token-a"), session: URLSession(configuration: config)))
+        m.setup.skipInterests = ["Food", "Style"]; m.setup.skipReplies = "Show me options"; m.setup.skipSent = false
+        return m
+    }
+
+    private func finish(_ m: AppState) async throws -> Bool {
+        m.finishSkip()
+        for _ in 0..<500 where m.importing { try await Task.sleep(for: .milliseconds(10)) }
+        return !m.importing
+    }
+
+    func testFailedSkipSendLeavesThePicksUnsent() async throws {
+        for status in [401, 400] {
+            let m = model(status: status)
+            m.setup.accountId = "acct-a"
+            // one request at a time: the next stub only after this one finished (Codex #516 r1 P2)
+            guard try await finish(m) else { return XCTFail("HTTP \(status): the send never finished") }
+            XCTAssertEqual(m.setup.skipSent, false, "HTTP \(status): still unsent")
+            XCTAssertNil(m.setup.skipOwner, "HTTP \(status): surely not saved")
+            XCTAssertEqual(m.setup.skipInterests, ["Food", "Style"], "HTTP \(status): the picks stay")
+        }
+    }
+
+    /// A 5xx (or no answer): maybe saved at A — the picks stay on this phone for A but never go to account B.
+    func testUncertainSkipSendNeverCarriesToAnotherAccount() async throws {
+        let m = model(status: 503)
+        m.setup.accountId = "acct-a"
+        guard try await finish(m) else { return XCTFail("the send never finished") }
+        XCTAssertEqual(m.setup.skipSent, false)
+        XCTAssertEqual(m.setup.skipOwner, "acct-a")
+        XCTAssertEqual(m.setup.skipInterests, ["Food", "Style"], "still here for A")
+        m.adopt(accountId: "acct-b")
+        XCTAssertNil(m.setup.skipInterests, "never carried to B")
+    }
+}
