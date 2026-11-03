@@ -607,7 +607,36 @@ final class FlowMorph: @unchecked Sendable {
         }
         intPix = ip
         let m = Self.rgb(data.mask, crop: CGRect(x: 0, y: 0, width: data.mask.width, height: data.mask.height), width: width, height: height)
-        maskW = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
+        var mw = stride(from: 0, to: m.count, by: 3).map { m[$0] / 255 }
+        // 11/3 night (gate: only the mouth and jaw move): the blend mask stops at the chin — the SAM face box's
+        // bottom — so neck, collar, chest fur and the beard below the jaw stay the still photo.
+        if Self.chinStop, let face, data.roi.height > 0 {
+            let kys = Double(height) / Double(data.roi.height)
+            let chin = (Double(face.maxY) - Double(data.roi.minY)) * kys
+            let feather = max(2, 0.05 * Double(face.height) * kys)
+            let top = chin - feather
+            for y in 0..<height where Double(y) > top {
+                let k = Float(max(0, 1 - (Double(y) - top) / (2 * feather)))
+                let k2 = k * k * (3 - 2 * k)
+                for x in 0..<width { mw[y * width + x] *= k2 }
+            }
+        }
+        // … and only an ellipse around the mouth and jaw blends (cheeks, freckles and pores outside stay the photo):
+        // from a mouth height above the lips down to the chin, 0.36 face widths either side, soft edge
+        if Self.chinStop, let face, let mouth, data.roi.width > 0, data.roi.height > 0 {
+            let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
+            let top = (Double(mouth.minY) - Double(mouth.height) - Double(data.roi.minY)) * kys
+            let bottom = (Double(face.maxY) - Double(data.roi.minY)) * kys
+            let cx = (Double(mouth.midX) - Double(data.roi.minX)) * kxs, cy = (top + bottom) / 2
+            let rx = max(4, 0.36 * Double(face.width) * kxs), ry = max(4, (bottom - top) / 2)
+            for y in 0..<height { for x in 0..<width {
+                let dx = (Double(x) - cx) / rx, dy = (Double(y) - cy) / ry
+                let r = (dx * dx + dy * dy).squareRoot()
+                let k = Float(max(0, min(1, (1.0 - r) / 0.25)))
+                mw[y * width + x] *= k * k * (3 - 2 * k)
+            } }
+        }
+        maskW = mw
         order = data.keys
         if let tone = data.map.rig?.teethTone {
             for (k, inn) in ip { if let p = keyPix[k] { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) } }
@@ -711,6 +740,8 @@ final class FlowMorph: @unchecked Sendable {
     private var rigLo: [Float] = []
     /// mouth box in working px (lip thinning)
     private var rigMouth: CGRect?
+    /// The blend mask fades out across the chin line (rollback: false)
+    nonisolated(unsafe) public static var chinStop = true
     /// v60: the magnifier's strength, low-passed (its peaks jumped: jerk 1.8 vs the reference 0.8)
     private var openKS: Float = 0, openKT: Double?
     private var stillH: Double = 0
