@@ -131,7 +131,8 @@ const recallNow = (s: string) => RECALL_HEAD.test(s) && !RECALL_PRED.test(s);
  * train leaves at 11, so I'll try another search for a later bus" keeps the train time) */
 const SEARCH_META = /\b(?:search|query|results?|nothing (?:yet|so far)|came (?:up|back) (?:empty|blank|short|with nothing)|no luck)\b/;
 const searchRetry = (s: string) => {
-  if (!SEARCH_RETRY.test(s)) return false;
+  // help in the sentence is the answer (Codex #431 r2 P1: "Call the police and I'll look again for support resources")
+  if (!SEARCH_RETRY.test(s) || HELP_ACTION.test(s)) return false;
   const parts = s.split(/\s*(?:,|;|—|–| - )\s*(?:so |and |but )?|\s+so\s+/).map((p) => p.trim()).filter(Boolean);
   // a retry part that carries a result is an answer ("Let me look again at the tag because it says hand wash only", Codex #431 P2)
   return parts.every((p) => (SEARCH_RETRY.test(p) && !/\bbecause\b/.test(p) && !PROGRESS_RESULT.test(p)) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));

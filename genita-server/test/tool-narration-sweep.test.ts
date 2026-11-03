@@ -71,6 +71,7 @@ const answers = [
   "Let me get you the crisis line: 988.",
   "Getting you support: call the police right now.",
   "Call 988 now, and I'll find support resources for you.",
+  "Call the police and I'll look again for support resources.",
   "I'll find you the crisis line, it's one oh nine, call it now.",
   "Let me look again at the tag because it says hand wash only.",
   "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
