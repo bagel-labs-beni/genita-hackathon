@@ -113,6 +113,13 @@ export class OpsLimits {
     return null;
   }
 
+  /** Meta calls left today (Infinity when uncapped): optional work (the V03 face scan) only starts with room to spare */
+  metaCallsLeft(): number {
+    this.today();
+    const cap = this.cap("calls");
+    return cap <= 0 ? Infinity : Math.max(0, cap - this.calls);
+  }
+
   consumeMeta(image = false): void {
     const limit = this.metaLimit(image);
     if (limit) throw new UpstreamError("meta", 429, `daily_cap:${limit}`);
