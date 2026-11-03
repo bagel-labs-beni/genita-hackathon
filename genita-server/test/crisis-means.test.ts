@@ -133,3 +133,8 @@ test("Codex 11/4 crisis-means r6: someone else's knife seen by the user; 'all of
   assert.ok(!realCrisisSignal("I take all of my meds with breakfast"));
   assert.ok(!realCrisisSignal("I'm chopping onions with a knife for my mom"));
 });
+
+test("Codex 11/4 crisis-means r7: a knife 'to cut' a person is never an everyday job", () => {
+  for (const line of ["I'm holding a knife to cut her throat", "I'm holding a knife to cut him", "I'm holding a knife to cut myself"]) assert.ok(realCrisisSignal(line), line);
+  assert.ok(!realCrisisSignal("I'm holding a knife to cut the tape on this box"));
+});

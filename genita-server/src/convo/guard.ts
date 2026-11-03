@@ -165,14 +165,14 @@ const CRISIS_MEANS = new RegExp([
   String.raw`\b(?:rope|cord|belt)\s+(?:around|round)\s+my\s+neck\b`,
   String.raw`\bnoose\b`,
   String.raw`\b(?:tied|tying|made|making|hung|hanging)\s+(?:up\s+)?(?:a|the)\s+rope\b(?![^.!?]*\b(?:swing|hammock|boat|tent|tarp|clothesline|laundry|climb\w*|knot practice)\b)`,
-  String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|gun|pistol)\b(?!\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?!\s+(?:my|myself|me)\b))(?![^.!?]*\b(?:range|hunting|cleaning|cook\w*|kitchen|recipe|prop|costume|cosplay|toy|nerf|water gun|glue gun|hot glue)\b)`,
+  String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|gun|pistol)\b(?!\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?![^.!?,]{0,20}\b(?:my|myself|me|her|him|them|his|their|your|you|someone|somebody|throat|wrists?|neck|arms?|skin|chest|face|head)\b))(?![^.!?]*\b(?:range|hunting|cleaning|cook\w*|kitchen|recipe|prop|costume|cosplay|toy|nerf|water gun|glue gun|hot glue)\b)`,
   String.raw`\bloaded\s+(?:the|my|his|her|a)\s+(?:(?:dad|father|mom|mother|grandpa|brother)'?s\s+)?(?:gun|pistol|rifle|revolver)\b(?![^.!?]*\b(?:range|hunt\w*|target|practice|class|course|skeet|clay|competition|lesson)\b)`,
 ].join("|"), "gi");
 
 /** food prep / a cake: "I'm holding a knife, chopping onions" is a kitchen, not a crisis (11/1 rule) */
 const KITCHEN_KNIFE = /\b(?:chop|dic(?:e|ing)|slic|minc|peel|cut|carv|spread|butter)\w*\b[^.!?]{0,40}\b(?:onions?|garlic|veg\w*|carrots?|potato\w*|tomato\w*|steak|meat|chicken|bread|fruit|apples?|herbs|peppers?|cucumbers?|cabbage|kimchi|tofu|cake|pizza|cheese|toast|bagel|avocado|lemon|lime|mango|watermelon|pumpkin)\b|\b(?:butter|bread|steak|chef'?s|paring|kitchen|cake)\s+knife\b/i;
 /** a knife or a gun with an everyday job ("a knife to cut the tape"), never one aimed at the body */
-const PURPOSE = /\b(?:knife|blade|gun)\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?!\s+(?:my|myself|me)\b)/i;
+const PURPOSE = /\b(?:knife|blade|gun)\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?![^.!?,]{0,20}\b(?:my|myself|me|her|him|them|his|their|your|you|someone|somebody|throat|wrists?|neck|arms?|skin|chest|face|head)\b)/i;
 const WEAPON = /\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi;
 /** on a screen or in a story: a game, a film, a villain (not "in the movie theater") */
 const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|anime|book|novel|scene|comic|manga)\b(?!\s+(?:theat(?:er|re)|store|shop|room|center|centre|night|studio|cafe|café|bar|lounge|arcade|lot|set|park|house|home|hall|building|parking|place)\b)|\b(?:villain|character|protagonist|npc)\b/i;
