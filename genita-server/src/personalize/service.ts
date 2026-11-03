@@ -16,7 +16,7 @@ import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
 import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -41,6 +41,30 @@ const CALL_SIDE_MAX = 12;
 const STOPW = new Set("the and you your with for that this from into like likes about very really".split(" "));
 /** content words, 5-letter stems: "Lo-fi while working" ~ "Media: slow-burn dramas; lo-fi while working." */
 const keyWords = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOPW.has(w)).map((w) => w.slice(0, 5));
+
+/**
+ * The style card with the marked lines taken out where they are the profile's own findings: the same words, or
+ * nearly (Spark may word a card line a little differently: most of its words), only in the card's own sections.
+ */
+export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId): StyleCard {
+  const words = (t: string) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
+  const marked = items.map(words).filter((w) => w.size);
+  if (!marked.length) return card;
+  const out = (text: string) => {
+    const w = words(text);
+    return w.size > 0 && marked.some((m) => {
+      let both = 0;
+      for (const x of w) if (m.has(x)) both++;
+      return both / Math.max(w.size, m.size) >= 0.6;
+    });
+  };
+  const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
+  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, keys.has(k) && Array.isArray(v) ? v.filter((f) => !out(f.text)) : v])) as StyleCard["sections"];
+  const rowKeys: Record<string, string> = { communication: "communication", response: "response", help: "help", interests: "interests", likes: "likes", boundaries: "boundaries" };
+  const display = (card.display ?? []).map((r) => (keys.has(rowKeys[r.key] ?? r.key) ? { ...r, items: r.items.filter((i) => !out(i.text)) } : r));
+  return { ...card, sections, display };
+}
+const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
 
 export class PersonalizeError extends Error {
   readonly status: number;
@@ -316,7 +340,11 @@ export class Personalize {
     this.queueCorrection(userId, () => this.applyCorrection(userId, cardId, items, text, asOf, shown, texts), `${userId}\u0000${asOf}`);
     const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
     this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "background" });
-    return { card, ack: ACK, changed, profile: styleProfileText(before), rows: before.display };
+    // M02 / the call follow the save at once (QA build 6: "That's not me" on "Likes jokes in our chats." stayed in
+    // Your preferences — the app keeps these rows, and the merge lands seconds later): the marked lines that are the
+    // profile's own words are out of the rows and the profile text now; Spark's merge settles the rest
+    const now = withoutMarked(before, items, cardId);
+    return { card, ack: ACK, changed, profile: styleProfileText(now), rows: now.display };
   }
 
   /** Saves kept in pendingCorrections with no job here (a restart, or Spark down twice): apply them again. */

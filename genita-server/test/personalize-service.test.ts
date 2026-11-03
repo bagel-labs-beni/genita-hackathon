@@ -552,3 +552,19 @@ test("Codex P2 #432: a removed line doesn't hide a tag two remaining lines still
   const tags = (await h.p.story("u1", 0)).cards.find((c) => c.id === "taste")!.tags!.map((x) => x.text);
   assert.deepEqual(tags, ["Noodles and tofu"]);
 });
+
+test("QA build 6 M02: 'That's not me' on a profile line takes it out of the rows and the call's profile at once (before Spark's merge)", async () => {
+  const { withoutMarked } = await import("../src/personalize/service.ts");
+  const { skipStyleCard, styleProfileText } = await import("../src/prep/importProfile.ts");
+  const r = skipStyleCard({ interests: ["Food", "Style"], replies: "Show me options", avoid: [], n3: { clothes: { like: ["Minimal"], no: [] }, food: { like: ["Spicy"], no: [] }, chats: { like: ["Jokes"], no: [] } } });
+  assert.ok(r.ok);
+  const row = (c: typeof r.card, key: string) => c.display.find((d) => d.key === key)!.items.map((i) => i.text);
+  assert.deepEqual(row(r.card, "communication"), ["Likes jokes in our chats."]);
+  for (const said of ["Likes jokes in our chats.", "You like jokes in our chats"]) {
+    const after = withoutMarked(r.card, [said], "talk");
+    assert.deepEqual(row(after, "communication"), [], said);
+    assert.doesNotMatch(styleProfileText(after), /jokes/i);
+    assert.deepEqual(row(after, "interests"), row(r.card, "interests"), "other rows untouched");
+  }
+  assert.deepEqual(row(withoutMarked(r.card, ["Spicy food is the move"], "talk"), "likes"), row(r.card, "likes"), "only the card's own sections");
+});
