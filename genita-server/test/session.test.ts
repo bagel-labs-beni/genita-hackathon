@@ -993,3 +993,30 @@ test("AU-70 (Codex r2): a spoken question right after find.focus waits for the c
   assert.match(JSON.stringify(sparkCalls.at(-1)), /Yesterday's tofu stew/);
   s2.close();
 });
+
+test("AU-70 (Codex r3): a turn barged in while the card loads never starts its search afterwards", async () => {
+  const { asr, client, session } = setup();
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  class SlowStore extends MemoryFindsStore {
+    override async get(owner: string, id: string) {
+      await sleep(80);
+      return super.get(owner, id);
+    }
+  }
+  const store = new SlowStore();
+  await store.put(ownerKey("dev-1"), { id: "11111111-aaaa-4bbb-8ccc-00000000000a", kind: "recipe", createdAt: "2026-11-03T10:00:00Z", eyebrow: "", title: "Stew", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] });
+  const vendors = { async spark() { return { text: "", output: [] }; }, async *sparkStream() {}, async sam() { return []; }, async image() { return null; } };
+  const s2 = new Session("f4", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: false, imageBase: "/v1/finds" } as never, userId: "dev-1" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona }));
+  const focus = s2.onClientText(JSON.stringify({ type: "find.focus", findId: "11111111-aaaa-4bbb-8ccc-00000000000a" }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "Can you find me black boots?" });
+  await sleep(10);
+  await s2.onClientText(JSON.stringify({ type: "barge_in" }));
+  await focus;
+  await sleep(50);
+  assert.ok(!client.json.some((m) => m.type === "find.started"), "no search for a turn that was cancelled");
+  s2.close();
+});

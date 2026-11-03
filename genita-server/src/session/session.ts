@@ -654,7 +654,8 @@ export class Session {
           return;
         }
         // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2)
-        await this.focusLoad;
+        await this.focusSettled();
+        if (this.closed) return;
         if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
@@ -1817,6 +1818,11 @@ export class Session {
     }
   }
 
+  /** Every find.focus read started so far is done, a later one included (overlapping picks, Codex r3). */
+  private async focusSettled(): Promise<void> {
+    while (this.focusPending > 0) await this.focusLoad;
+  }
+
   private dropSpeculation(): void {
     this.specCheck++;
     if (this.specTimer) clearTimeout(this.specTimer);
@@ -1926,7 +1932,11 @@ export class Session {
       memoryRetry = preGreet.memoryRetry;
       this.log("call.greet_prestarted", { utteranceId });
     } else preGreet?.abort.abort();
-    if (!built && this.focusPending) await this.focusLoad;
+    if (!built && this.focusPending) {
+      await this.focusSettled();
+      // barged in or replaced while the card loaded: this turn is over (Codex r3)
+      if (signal.aborted || this.reply !== reply || this.closed) return;
+    }
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
     const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;

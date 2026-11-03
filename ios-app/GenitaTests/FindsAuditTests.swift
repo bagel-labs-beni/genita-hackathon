@@ -128,4 +128,14 @@ import XCTest
         XCTAssertNil(CallController.firstLink(in: "example dot com"))
         XCTAssertNil(CallController.firstLink(in: ""))
     }
+
+    /// Codex r3: an older Finds list (picture still pending) never takes back a picture the call already got.
+    func testReopeningKeepsAPictureTheListDoesNotHaveYet() {
+        let m = FindsModel()
+        m.apply(started("a")); m.apply(created("a", hero: "pending")); m.force(.peek)
+        m.apply(try! ServerEvent.decode(#"{"type":"find.image","findId":"a","slot":"hero","status":"ready","url":"/v1/finds/a/images/hero"}"#))
+        XCTAssertEqual(m.current?.card?.hero?.status, .ready)
+        m.openSaved(card("a", kind: .product, hero: "pending"), frames: [])
+        XCTAssertEqual(m.current?.card?.hero?.status, .ready)
+    }
 }

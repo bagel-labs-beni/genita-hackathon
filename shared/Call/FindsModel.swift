@@ -334,8 +334,9 @@ struct FindEntry: Identifiable, Equatable {
         risingTask?.cancel(); toastTask?.cancel()
         if let i = entries.firstIndex(where: { $0.id == card.id }) {
             entries[i].reopened = true
-            // Finds has the server's copy: pictures that finished after a reconnect or the call's end are in it (AU-72)
-            entries[i].card = card
+            // Finds has the server's copy: pictures that finished after a reconnect or the call's end are in it (AU-72);
+            // a picture this call already got stays, the list may be older than that (Codex r3)
+            entries[i].card = Self.merged(card, keeping: entries[i].card)
             entries[i].failed = nil
             entries[i].checking = false
             if let saved = card.saved { entries[i].saved = saved; entries[i].card?.saved = saved }
@@ -349,6 +350,20 @@ struct FindEntry: Identifiable, Equatable {
         selectedItem = nil; browser = nil; newFind = nil; undoState = nil
         boxes.clear(stale: false)
         state = .half
+    }
+
+    /// The Finds list's card, with any picture the live card already has that the list still shows as pending.
+    static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
+        guard let live else { return listed }
+        let pick = { (a: FindImage?, b: FindImage?) -> FindImage? in a?.status == .pending && b != nil && b?.status != .pending ? b : a }
+        var c = listed
+        c.hero = pick(c.hero, live.hero)
+        for s in c.steps.indices where live.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, live.steps[s].image) }
+        if var products = c.products, let lp = live.products {
+            for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
+            c.products = products
+        }
+        return c
     }
 
     /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
