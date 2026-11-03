@@ -126,3 +126,19 @@ test("names: no row, a store error or a slow store keeps the app's names and nev
     session.close();
   }
 });
+
+test("AU-53 (Codex P2): a first input that races the lookups still ends on the stored name and the account's name", async (t) => {
+  const late = <T,>(v: T) => () => new Promise<T>((r) => setTimeout(() => r(v), 150));
+  const { client, session, sparkCalls } = setup({ companionName: late("Max"), accountName: late("Summer") });
+  t.after(() => session.close());
+  const started = session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
+  await started;
+  await client.waitFor((m) => m.type === "reply");
+  assert.deepEqual(client.of("companion.named"), [{ type: "companion.named", name: "Max" }]);
+  await session.onClientText(JSON.stringify({ type: "text", text: "what's your name?" }));
+  await client.waitFor((m) => client.of("reply").length >= 2);
+  const last = prompt(sparkCalls.at(-1)!);
+  assert.match(last, /Max/);
+  assert.match(last, /The user's name is Summer/);
+});

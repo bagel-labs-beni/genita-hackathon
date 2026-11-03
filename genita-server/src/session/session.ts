@@ -864,14 +864,13 @@ export class Session {
     // AU-42: the Mac never sends start.user.name; the account's name fills it (a name the app sent always wins)
     if (!this.user?.name && accountName) this.user = { ...this.user, name: accountName };
     // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
-    // Same rule as the voice: not once something already started speaking under the old name.
+    // Unlike the voice, a name can switch even if a first input raced the lookup: like a voice rename, a reply already
+    // under way keeps its prompt and the next one uses the stored name (Codex AU-53 P2).
     let nameSynced = false;
     if (ownedName && ownedName !== this.persona!.name) {
-      if (this.turn.utteranceId === 0 && !this.reply) {
-        this.log("companion.name_synced", { chars: [...ownedName].length });
-        this.persona = { ...this.persona!, name: ownedName };
-        nameSynced = true;
-      } else this.log("companion.name_late", {});
+      this.log("companion.name_synced", { chars: [...ownedName].length, raced: this.turn.utteranceId !== 0 || !!this.reply });
+      this.persona = { ...this.persona!, name: ownedName };
+      nameSynced = true;
     }
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
