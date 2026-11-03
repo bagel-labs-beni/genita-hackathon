@@ -121,6 +121,8 @@ export type SessionDeps = {
   macNearby?: () => boolean;
   /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
   personalize?: SessionPersonalize;
+  /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
+  continuesCall?: () => boolean;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -338,6 +340,8 @@ export class Session {
   private callStartedAt: string | null = null;
   /** this call was counted as a new call by personalize (not a handoff) */
   private callPlanned = false;
+  /** the question watch together took back: a reply built before still asking it has that sentence dropped */
+  private askDropped: UnknownItem | null = null;
   /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
   private timeZone: string | undefined;
   private nod: string | null = null;
@@ -640,7 +644,8 @@ export class Session {
         // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
         // a handoff (iPhone → Mac, seeded or `start.handoff`) is the same conversation: profile only, no question,
         // no first-call nod, not counted as a call (P1 11/3: the Mac's S4 answer ended with the call-2 question)
-        const continuation = this.continued || msg.handoff === true;
+        let continuation = this.continued || msg.handoff === true;
+        try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
         const p = await Promise.race([
           this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
@@ -1005,6 +1010,7 @@ export class Session {
     if (this.callPlanned && this.deps.personalize?.unplanCall && this.deps.userId && !this.ask?.asked) {
       const item = this.ask?.item ?? null;
       this.callPlanned = false;
+      this.askDropped = this.ask?.topic ?? null;
       this.ask = null;
       this.nod = null;
       void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
@@ -1626,6 +1632,11 @@ export class Session {
         if (this.v1 && !interpret && !self) {
           const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
+        }
+        // watch together took this call's question back: a reply already asking it (built before) drops that sentence
+        if (this.askDropped && !interpret && !self && /\?\s*$/.test(parseTaggedSentence(tts).displayText) && replyAsks(parseTaggedSentence(tts).displayText, this.askDropped)) {
+          this.log("profile.ask_dropped", { utteranceId });
+          continue;
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);

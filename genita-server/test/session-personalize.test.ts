@@ -380,3 +380,47 @@ test("P1: watch together attached before the question → no question, the call 
   assert.ok(!g.asked.some((a) => a.item === "Reminder frequency"), "the topic is free for the next call");
   session.close();
 });
+
+test("Codex P1 #1: a handoff the server sees (other device) is a continuation even with memory off and no start.handoff", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("m", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+    continuesCall: () => true,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a jacket for Friday." }));
+  await client.waitFor(() => client.json.some((m) => m.type === "reply"));
+  assert.doesNotMatch(calls[0].instructions!, /ask one casual question to learn about/);
+  assert.equal((await store.getStyle("u1"))!.growth?.calls ?? 0, 0);
+  session.close();
+});
+
+test("Codex P1 #2: a reply already asking the question when watch together attaches drops that sentence", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  // a slow reply that asks the planned question ("Weekend rhythm" / "Busy or slow?")
+  (s.session as unknown as { deps: SessionDeps }).deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Fun. Are your weekends busy, or slow?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Fun.");
+  assert.ok(!s.client.json.some((m) => m.type === "profile.asking"));
+  s.session.close();
+});
