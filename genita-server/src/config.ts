@@ -65,6 +65,8 @@ export type VoiceConfig = {
   align?: boolean;
   /** GENITA_VOICE_POST=0: ask the voice GPU for the raw vocoder voice (no post chain, no emotion moves). Unset: unchanged requests. */
   post?: boolean;
+  /** GENITA_VOICE_EMOTION=0: keep the post chain but send no reply emotion (no pitch/tone moves). Unset: emotion on. */
+  emotion?: boolean;
   /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
   expressions?: boolean;
 };
@@ -108,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
           align: env.GENITA_VOICE_ALIGN === "1",
           ...(env.GENITA_VOICE_POST === "0" ? { post: false } : {}),
+          ...(env.GENITA_VOICE_EMOTION === "0" ? { emotion: false } : {}),
           expressions: env.GENITA_EXPRESSION !== "0",
         }
       : null;

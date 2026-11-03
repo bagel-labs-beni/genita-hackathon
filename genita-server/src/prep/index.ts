@@ -21,6 +21,8 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
     log,
     // AWS box: /opt/genita/pyflow (bootstrap.sh); "0" turns the flow step off
     python: env.GENITA_PYFLOW === "0" ? null : env.GENITA_PYFLOW || "python3",
+    // photo polish + confirm before prep (11/4); "0" = straight to today's flow
+    photoPolish: env.GENITA_PHOTO_POLISH !== "0",
   };
   // lane 개인화: HISY story, corrections, first-call asks, call growth (same store; the server hands it to calls)
   deps.personalize = new Personalize({ store: deps.store, metaKey: config.metaKey, log });

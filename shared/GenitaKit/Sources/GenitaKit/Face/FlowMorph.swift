@@ -193,8 +193,10 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var camera = 0.0
         /// 11/3 pm: the person never moves vertically against the locked still (false = the old nod / drift / breathing)
         public var lockY = true
+        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head
+        public var sway = 1.0
         public init() {}
-        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY }
+        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY, sway }
         public init(from decoder: Decoder) throws {
             self.init()
             cheekGain = 1      // a prep that sends alive sends its cheek values as meant
@@ -207,6 +209,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .nodWidth) { nodWidth = max(0.25, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .camera) { camera = max(0, v) }
             if let v = try? c.decodeIfPresent(Bool.self, forKey: .lockY) { lockY = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .sway) { sway = min(2, max(0, v)) }
             if let v = try c.decodeIfPresent(Double.self, forKey: .headGain) { headGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .nodGain) { nodGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .cheekGain) { cheekGain = v }
@@ -216,7 +219,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(headGain, forKey: .headGain); try c.encode(nodGain, forKey: .nodGain); try c.encode(cheekGain, forKey: .cheekGain)
             try c.encode(lipLifePx, forKey: .lipLifePx); try c.encodeIfPresent(rollGain, forKey: .rollGain); try c.encode(nodWidth, forKey: .nodWidth); try c.encode(camera, forKey: .camera)
-            try c.encode(lockY, forKey: .lockY)
+            try c.encode(lockY, forKey: .lockY); try c.encode(sway, forKey: .sway)
         }
     }
     public var alive: Alive? = nil
@@ -2000,24 +2003,39 @@ final class CheekRig: @unchecked Sendable {
         let jawPx = (pr?.jawDropPx ?? 0) * peri.open / stillToOut
         let mx = micro.0 / stillToOut, my = micro.1 / stillToOut
         var out = [UInt8](repeating: 0, count: width * height * 4)
+        // Mac CPU (QA 171: 80–90 % in a call, this loop ≈ 60 % of it). Same arithmetic in the same order, so the pixels
+        // are identical; only (1) pixels whose coverage rounds every channel to 0 are left at 0 without the warp,
+        // and (2) no nested-array reads / per-write uniqueness checks.
+        let wCheek0 = self.wCheek[0], wCheek1 = self.wCheek[1], wCorner0 = self.wCorner[0], wCorner1 = self.wCorner[1]
+        let wSpread0: [Float] = pr != nil && sprPx != 0 ? self.wSpread[0] : [], wSpread1: [Float] = pr != nil && sprPx != 0 ? self.wSpread[1] : []
+        let wRing = self.wRing, wSideL = self.wSideL, wLower = self.wLower, wPhil = self.wPhil, wChin = self.wChin, wJaw = self.wJaw, alpha = self.alpha
+        let d0 = d[0], d1 = d[1], p0 = dPrev[0], p1 = dPrev[1], pull = rules.pull
+        out.withUnsafeMutableBufferPointer { out in
         for j in 0..<height {
             for i in 0..<width {
                 let k = j * width + i
+                let a = alpha[k]
+                if a < 0.0001 { continue }   // every channel rounds to 0 (c·a < 0.5 for any c < 5000) = the buffer's zeros
                 var vx = 0.0, vy = 0.0
-                for side in 0..<2 {
-                    let wk = Double(wCheek[side][k]), wc = Double(wCorner[side][k])
-                    vx += wk * (spreadK * dPrev[side].0 + (side == 0 ? -bulge : bulge)) - wc * rules.pull * d[side].0
-                    vy += wk * (spreadK * dPrev[side].1 - up) - wc * rules.pull * d[side].1
+                do {
+                    let wk = Double(wCheek0[k]), wc = Double(wCorner0[k])
+                    vx += wk * (spreadK * p0.0 + -bulge) - wc * pull * d0.0
+                    vy += wk * (spreadK * p0.1 - up) - wc * pull * d0.1
+                }
+                do {
+                    let wk = Double(wCheek1[k]), wc = Double(wCorner1[k])
+                    vx += wk * (spreadK * p1.0 + bulge) - wc * pull * d1.0
+                    vy += wk * (spreadK * p1.1 - up) - wc * pull * d1.1
                 }
                 if pr != nil {
                     let r = Double(wRing[k]), sl = Double(wSideL[k])
-                    vx += follow * r * (sl * d[0].0 + (1 - sl) * d[1].0)
-                    vy += follow * r * (sl * d[0].1 + (1 - sl) * d[1].1) + Double(wLower[k]) * lowerPx
+                    vx += follow * r * (sl * d0.0 + (1 - sl) * d1.0)
+                    vy += follow * r * (sl * d0.1 + (1 - sl) * d1.1) + Double(wLower[k]) * lowerPx
                         - Double(wPhil[k]) * philPx - Double(wChin[k]) * chinPx
                     let lw = r + Double(wPhil[k]) * 0.5
                     vx += lw * mx; vy += lw * my
                     if sprPx != 0 {
-                        let a = Double(wSpread[0][k]), b = Double(wSpread[1][k])
+                        let a = Double(wSpread0[k]), b = Double(wSpread1[k])
                         vx += sprPx * (b - a)
                     }
                     vy += Double(wJaw[k]) * jawPx
@@ -2026,12 +2044,13 @@ final class CheekRig: @unchecked Sendable {
                 var c: (Float, Float, Float)
                 if abs(vx) + abs(vy) < 0.01 { c = (frame[k * 3], frame[k * 3 + 1], frame[k * 3 + 2]) }
                 else { c = FlowMorph.bilinear3(frame, width, height, Float(Double(i) - vx * scale), Float(Double(j) - vy * scale)) }
-                let a = alpha[k], o = k * 4
+                let o = k * 4
                 out[o] = UInt8(min(255, max(0, c.0 * a)).rounded())
                 out[o + 1] = UInt8(min(255, max(0, c.1 * a)).rounded())
                 out[o + 2] = UInt8(min(255, max(0, c.2 * a)).rounded())
                 out[o + 3] = UInt8(min(255, max(0, 255 * a)).rounded())
             }
+        }
         }
         return PixelBuffer.makeImage(out, width: width, height: height)
     }

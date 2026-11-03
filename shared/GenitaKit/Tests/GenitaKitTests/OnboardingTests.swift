@@ -71,6 +71,29 @@ final class OnbStub: URLProtocol, @unchecked Sendable {
         #expect(!r.passed && r.reasons.first?.label == "Too blurry to make a face from" && r.checks?.sharpAndLit == false)
     }
 
+    /// Photo polish (11/4): the upload says `polish`, the app asks for the polished image and loads its bytes for V02-T.
+    @Test func polishedImageIsRequestedThenLoaded() async throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        OnbStub.handler = { req in
+            switch (req.httpMethod, req.url?.path) {
+            case ("POST", "/v1/companion/image"): return (200, Data(#"{"imageId":"src1","passed":false,"type":"animal","checks":{"oneFaceFrontFacing":false,"sharpAndLit":true,"noText":true},"reasons":[{"code":"side_view","label":"Side view"}],"polish":true,"heads":[]}"#.utf8))
+            case ("POST", "/v1/companion/image/polish"): return (200, Data(#"{"imageId":"pol1","sourceImageId":"src1","passed":true,"type":"animal","checks":{"oneFaceFrontFacing":true,"sharpAndLit":true,"noText":true},"reasons":[],"headBox":null,"attempt":1,"retriesLeft":2,"ms":{"polish":11000,"check":3000}}"#.utf8))
+            case ("GET", "/v1/companion/image/pol1"): return (200, png)
+            default: return (404, Data())
+            }
+        }
+        let check = try await client.checkImage(jpeg: Data([0xFF, 0xD8, 0xFF]))
+        #expect(!check.passed && check.polish == true)
+        let p = try await client.polishImage(imageId: check.imageId)
+        let post = try JSONSerialization.jsonObject(with: try #require(OnbStub.seen.last?.httpBody)) as! [String: Any]
+        #expect(post["imageId"] as? String == "src1")
+        #expect(p.imageId == "pol1" && p.passed && p.type == "animal" && p.attempt == 1 && p.retriesLeft == 2)
+        #expect(try await client.imageBytes(imageId: p.imageId) == png)
+        // an older server answer has no `polish`: today's flow
+        OnbStub.handler = { _ in (200, Data(#"{"imageId":"img1","passed":true,"type":"human","checks":null,"reasons":[]}"#.utf8)) }
+        #expect(try await client.checkImage(jpeg: Data([0xFF, 0xD8, 0xFF])).polish == nil)
+    }
+
     @Test func createUsesTheSuggestedCatalogVoiceThenRenames() async throws {
         OnbStub.handler = { req in
             switch (req.httpMethod, req.url?.path) {

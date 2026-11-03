@@ -3,7 +3,7 @@ name: Device test builds
 # Release builds:
 # - iOS: signed Release archive uploaded to TestFlight (internal + external groups).
 #   Build number = run_number * 10 + run_attempt, so every run is a new build.
-# - Mac: GenitaMac.app signed with Developer ID (hardened runtime), packed in a DMG,
+# - Mac: GenitaMac.app (shown as "Genita") signed with Developer ID (hardened runtime), packed in Genita-<version>.dmg,
 #   notarized and stapled; artifact "Genita-Mac-dmg". Same build number as iOS.
 #   Sparkle auto-update: the DMG is EdDSA-signed (sign_update, key GENITA_SPARKLE_ED_PRIVATE = SSM
 #   /genita/apple/sparkle_ed_private) and published with an appcast entry to GitHub Pages
@@ -224,6 +224,11 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" > /dev/null
           test -d "$APP/Contents/Frameworks/Sparkle.framework" || { echo "::error::Sparkle.framework is not embedded"; ls -la "$APP/Contents/Frameworks" || true; exit 1; }
           echo "GenitaMac $MAC_VERSION ($BUILD_NUMBER), Sparkle embedded"
+          # Xcode's generated Info.plist writes CFBundleName = $(PRODUCT_NAME) = GenitaMac over mac-app/Info.plist; the menu
+          # bar and About/Hide/Quit read it. Set the visible names here, before Developer ID signing (Chelsea 11/4: "Genita").
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleName Genita' "$APP/Contents/Info.plist"
+          # CFBundleDisplayName must equal the file name (GenitaMac) for Finder to use the localized "Genita" (en.lproj).
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName GenitaMac' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string GenitaMac' "$APP/Contents/Info.plist"
 
       - name: Install Developer ID identity
         id: identity
@@ -311,8 +316,9 @@ jobs:
           fi
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$ZIP"
           test "$STATUS" = "Accepted"
-          for i in 1 2 3 4; do xcrun stapler staple "$APP" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
-          xcrun stapler validate "$APP"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$APP" && xcrun stapler validate "$APP" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Build and sign DMG
@@ -323,7 +329,7 @@ jobs:
           mkdir -p "$STAGE" build-output
           ditto "$APP" "$STAGE/GenitaMac.app"
           ln -s /Applications "$STAGE/Applications"
-          DMG="build-output/Genita-Mac-$VERSION.dmg"
+          DMG="build-output/Genita-$VERSION.dmg"
           hdiutil create -volname "Genita" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           codesign --force --timestamp --keychain "$KC" --sign "$DEVID_HASH" "$DMG"
           codesign --verify --verbose=2 "$DMG"
@@ -347,8 +353,9 @@ jobs:
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           test "$STATUS" = "Accepted"
           # stapler fetches the ticket from Apple's CDN; retry its network flakes (error 68)
-          for i in 1 2 3 4; do xcrun stapler staple "$DMG" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
-          xcrun stapler validate "$DMG"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
 
       - name: Verify Gatekeeper
         run: |
@@ -363,6 +370,18 @@ jobs:
           V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
           SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
           echo "DMG app: $SV ($V)"
+          # Chelsea 11/4: people see "Genita", never "GenitaMac" (menu bar, About/Quit, Dock, Finder). File name stays (Sparkle).
+          N="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          DN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          echo "names: CFBundleName=$N CFBundleDisplayName=$DN"
+          test "$N" = Genita && test "$DN" = GenitaMac || { echo "::error::CFBundleName '$N' (want Genita) / CFBundleDisplayName '$DN' (want GenitaMac = file name)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          # what Finder / Dock actually show for the installed copy
+          CHK="$(mktemp -d)"; ditto "$MNT/GenitaMac.app" "$CHK/GenitaMac.app"
+          SHOWN="$(osascript -l JavaScript -e 'ObjC.import("Foundation"); $.NSFileManager.defaultManager.displayNameAtPath(ObjC.wrap("'"$CHK"'/GenitaMac.app")).js')"
+          rm -rf "$CHK"; echo "Finder name: $SHOWN"
+          test "$SHOWN" = Genita || { echo "::error::Finder shows '$SHOWN', not Genita"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          plutil -p "$MNT/GenitaMac.app/Contents/Resources/en.lproj/InfoPlist.strings" | grep -q '"CFBundleDisplayName" => "Genita"' \
+            || { echo "::error::en.lproj/InfoPlist.strings (localized display name) missing"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           # #347: a notarized DMG must also start. Sparkle needs the Frameworks rpath, then a 10 s launch smoke.
           BIN="$MNT/GenitaMac.app/Contents/MacOS/GenitaMac"
@@ -412,7 +431,7 @@ jobs:
       - name: Publish the appcast entry (installed Macs update from here)
         if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
         run: |
-          NAME="Genita-Mac-$BUILD_NUMBER.dmg"
+          NAME="Genita-Mac-$BUILD_NUMBER.dmg"  # appcast download URL only (appcast.mjs keeps this pattern); Sparkle downloads it silently
           ROOT="$PWD"
           cd updates-site
           git config user.name "genita-release-bot"

@@ -134,10 +134,10 @@ test("hub: lock and disconnect keep the owner; the other device sees the peer st
   await mac.conn.claim(null, "button");
   phone.conn.setActive(false); // iPhone locked
   assert.equal(hub.ownership("u")?.owner, "mac");
-  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: true, active: false });
+  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: true, active: false, inCall: false });
   phone.conn.close();
   assert.equal(hub.ownership("u")?.owner, "mac", "socket gone, Mac keeps talking");
-  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: false, active: false });
+  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: false, active: false, inCall: false });
   // and the other way: the owner iPhone locks → the Mac never takes it by itself
   const hub2 = new HandoffHub(new MemoryOwnershipStore());
   const p2 = device(hub2, "v", "iphone");
@@ -147,6 +147,28 @@ test("hub: lock and disconnect keep the owner; the other device sees the peer st
   p2.conn.close();
   await m2.conn.hello({ owner: "mac", epoch: 0 });
   assert.equal(hub2.ownership("v")?.owner, "iphone");
+});
+
+test("hub: the Mac hears peer.inCall only while the iPhone has a started call (QA 171: no 'Talking' without a call)", () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const phone = device(hub, "u", "iphone");
+  const mac = device(hub, "u", "mac");
+  assert.equal(mac.last("peer")?.inCall, false, "app open, no call");
+  const end = hub.callStarted("u", "iphone");
+  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: true, active: true, inCall: true });
+  assert.equal(phone.last("peer")?.inCall, false, "the iPhone's own call is not announced back to it");
+  const second = hub.callStarted("u", "iphone"); // a reconnect overlaps the old socket
+  const sent = mac.got.length;
+  end();
+  end(); // idempotent
+  assert.equal(mac.got.length, sent, "still one call open: nothing changes");
+  second();
+  assert.equal(mac.last("peer")?.inCall, false, "last call closed");
+  // a Mac that connects mid-call learns it at once
+  const end2 = hub.callStarted("u", "iphone");
+  const late = device(hub, "u", "mac");
+  assert.equal(late.last("peer")?.inCall, true);
+  end2();
 });
 
 test("hub: move request is relayed to the other device; offline or locked target fails at once", async () => {

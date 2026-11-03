@@ -34,6 +34,7 @@ import CoreText
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
             case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings", "settings-call": break
+            case _ where state.hasPrefix("splash-"): break
             case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
             default: setenv("GENITA_MAC_REVIEW", state, 1)
@@ -55,6 +56,12 @@ import CoreText
             case "mac-4-unpaired": MacHandoff.shared.reviewCanMove = false; MacHandoff.shared.link.connected = false; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
             case "mac-offline": page = AnyView(MacHomeView(kind: .offline("Check your connection and try again."), name: "Mina", handoff: MacHandoff.shared))
             case "launch": page = AnyView(MacLaunchBlank())
+            // MAC-0 "A · Eclipse" frozen frames: splash-out-<ms> (signed out, /me at 2.5 s), splash-in-<ms> (signed in, /me at 0.5 s)
+            case _ where state.hasPrefix("splash-"):
+                let parts = state.split(separator: "-"), t = Double(parts.last ?? "") ?? 0, signedIn = parts.count > 2 && parts[1] == "in"
+                page = AnyView(MacLaunchReviewFrame(t: t, me: signedIn ? 500 : 2500, signedIn: signedIn) {
+                    if signedIn { MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared) } else { MacSignInView() }
+                })
             case "settings": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet())
             // Settings from the call window (phone-sized, ~340 pt): the compact width (Mac QA 11/3)
             case "settings-call": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet(compact: true))

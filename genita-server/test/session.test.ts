@@ -741,7 +741,8 @@ test("D21 greetAfterMs: the user speaks inside the window → no greeting, the u
   await client.waitFor((m) => m.type === "reply");
   await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 2);
   clock.fire();
-  assert.equal(asksGreeting(sparkCalls), 0, "companion spoke first 0 times");
+  // the greeting's Spark call started during the window (11/3 pre-start) and was dropped unheard
+  assert.ok(asksGreeting(sparkCalls) <= 1, "at most the pre-started call");
   assert.equal(client.json.filter((m) => m.type === "reply").length, 1);
   // the user's first line was an ordinary turn (kept in history), not swallowed as "the greeting"
   await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
@@ -757,7 +758,8 @@ test("D21 greetAfterMs: typed text inside the window also cancels the greeting",
   await session.onClientText(JSON.stringify({ type: "text", text: "hi" }));
   await client.waitFor((m) => m.type === "reply");
   clock.fire();
-  assert.equal(asksGreeting(sparkCalls), 0);
+  assert.ok(asksGreeting(sparkCalls) <= 1, "at most the pre-started call, never said");
+  assert.equal(client.json.filter((m) => m.type === "reply").length, 1, "no greeting reply");
   await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
   await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
   assert.ok(JSON.stringify(sparkCalls.at(-1)!.input).includes('"hi"'), "the typed line is a normal turn");
@@ -768,7 +770,9 @@ test("D21 greetAfterMs: silence → exactly one greeting after about the window,
   const clock = greetingScheduler();
   const { client, session, sparkCalls } = setup({ deps: { greetScheduler: clock.schedule } });
   await session.onClientText(JSON.stringify({ type: "start", persona, greetAfterMs: 150 }));
-  assert.equal(sparkCalls.length, 0, "no greeting inside the window");
+  // pre-started (11/3): the greeting's Spark answer runs during the window; nothing is said before it ends
+  assert.equal(asksGreeting(sparkCalls), 1, "started at once");
+  assert.ok(!client.json.some((m) => m.type === "reply" || m.type === "say"), "nothing said inside the window");
   clock.fire();
   const reply = await client.waitFor((m) => m.type === "reply", 2000);
   assert.equal(asksGreeting(sparkCalls), 1);
@@ -841,7 +845,8 @@ test("D21 (Codex P2): a greeting the window could not deliver (companion busy) i
   await client.waitFor((m) => m.type === "state" && m.state === "listening" && client.json.indexOf(m) > 3, 3000);
   await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
   await client.waitFor((m) => m.type === "companion.named");
-  assert.equal(asksGreeting(sparkCalls), 0);
+  assert.ok(asksGreeting(sparkCalls) <= 1, "only the pre-started call, never said");
+  assert.ok(!JSON.stringify(sparkCalls.at(-1)!.input).includes(GREET), "the next turn is not the greeting");
   session.close();
 });
 

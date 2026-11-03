@@ -23,6 +23,9 @@ export function attachWatchSocket(ws: WebSocket, session: Session, log: (event: 
   sink.send({ type: "ready", protocol: PROTOCOL_VERSION, sessionId: session.id });
   log("watch.open", { session: session.id });
   ws.on("message", (data, isBinary) => {
+    // Replaced by a newer uplink for this call (another window picked): its in-flight `stop`, frames and sound are
+    // stale and must not end or feed the new share (#313 review P2). The socket is already closing with 4409.
+    if (!watch.owns(sink)) return;
     try {
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
       if (isBinary) return watch.onAudio(buf);
