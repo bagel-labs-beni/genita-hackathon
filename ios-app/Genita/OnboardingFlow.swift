@@ -62,8 +62,12 @@ extension AppState {
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
         // Every launch into a call asks which companion the account has: another phone may have replaced it, and its
-        // cached scene / photo must not open this call (handover b9-6). Not on this phone yet → bring it back.
-        if route == .connecting || route == .textWhilePreparing { await restoreCompanion(for: request) }
+        // cached scene / photo must not open this call (handover b9-6). Not on this phone yet, or another one now →
+        // bring it back in full; the same one → only confirm it (inputs on this phone stay, Codex P2).
+        if route == .connecting || route == .textWhilePreparing {
+            if setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+            else { await confirmCompanion(for: request) }
+        }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else {
             // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
@@ -102,11 +106,25 @@ extension AppState {
         sceneCompanionConfirmed = true
     }
 
+    /// The companion on this phone is the server's one → confirmed; another one → restored in full.
+    func confirmCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
+        let launchRequest = launchAuthSnapshot
+        let request = request ?? onboardingSnapshot()
+        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
+        if c.imageId == setup.imageId { adoptServerCompanion(imageId: c.imageId); return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
+        await applyServerCompanion(c, launchRequest: launchRequest, request: request)
+    }
+
+    private func applyServerCompanion(_ c: CompanionInfo, launchRequest: LaunchAuthSnapshot, request: OnboardingSessionGeneration.Snapshot) async {
         adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
@@ -141,13 +159,14 @@ extension AppState {
     func loadScene(for upcoming: PrepProgress? = nil) async {
         let p = upcoming ?? prep
         guard serverWired, let url = p?.sceneURL else { return }
-        let account = setup.accountId ?? "-", key = "\(account)|\(url.absoluteString)"
+        // keyed by account and companion, like `sceneKey` (Codex P1: one key format for save and lookup)
+        let owner = sceneOwner, key = "\(owner)\(url.absoluteString)"
         guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
               !Task.isCancelled else { return }
         // the account or companion may have changed while the image was on its way: keep it only for the same
         // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
         // applied by the caller right after this, so its scene always wins)
-        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
+        guard sceneOwner == owner, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
         sceneImage = (key, data)
     }
 
