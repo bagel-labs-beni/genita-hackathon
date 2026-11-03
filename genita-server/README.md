@@ -31,8 +31,10 @@ curl http://127.0.0.1:8787/healthz
 
 Expected: HTTP 200 with `{"ok":true,"sessions":0}`.
 
-Next run the [iOS simulator](../ios-app/README.md) or the
-[Mac app](../mac-app/README.md) using their Xcode instructions. In Xcode,
+Next run the [iOS simulator](../ios-app/README.md) first: a new account makes its
+companion there (the Mac app has no setup flow). Then run the
+[Mac app](../mac-app/README.md) and sign in with the same email to call from the Mac.
+Both use their Xcode instructions. In Xcode,
 Edit Scheme → Run → Arguments → Environment Variables, set
 `GENITA_API_URL=http://127.0.0.1:8787` and
 `GENITA_SERVER_URL=ws://127.0.0.1:8787/v1/session` for the app you run.

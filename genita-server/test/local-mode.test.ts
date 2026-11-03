@@ -123,3 +123,17 @@ test("Origin guard: keyless loopback WS refuses any Origin, apps without Origin 
   app.send(JSON.stringify({ type: "start", persona: { name: "Local", kind: "human" }, mic: false }));
   assert.equal(JSON.parse((await ready)[0].toString()).tts, "device");
 });
+
+test("Origin guard: keyless loopback HTTP refuses a browser page (no preflight text/plain POST), native calls work", { timeout: 10_000 }, async (t) => {
+  const config = loadConfig({ MODEL_API_KEY: "fake", PORT: "0" });
+  const deps = { ...defaultDeps(config, () => {}), memory: undefined };
+  const server = await startServer(config, () => {}, deps, { GENITA_DATA_DIR: scratch(t) });
+  t.after(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  for (const origin of ["https://web-page.example", "null"]) {
+    const r = await fetch(`${base}/v1/import/skip`, { method: "POST", headers: { origin, "content-type": "text/plain" }, body: "{}" });
+    assert.equal(r.status, 401, origin);
+  }
+  const app = await fetch(`${base}/v1/import/prompt`);
+  assert.notEqual(app.status, 401, "a native app (no Origin) keeps the keyless dev identity");
+});

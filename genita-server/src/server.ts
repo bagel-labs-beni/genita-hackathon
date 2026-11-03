@@ -162,7 +162,9 @@ export async function startServer(
   async function principal(req: IncomingMessage, url: URL): Promise<Principal | null> {
     const token = bearer(req, url);
     if (accounts && looksLikeJwt(token)) return accounts.verifyToken(token).catch(() => null);
-    const devOk = config.sessionToken ? sameToken(token, config.sessionToken) : loopback;
+    // keyless loopback access is for native apps: a browser page (any Origin header) never gets the dev identity,
+    // on HTTP as on WebSocket (a text/plain POST from a page skips CORS preflight)
+    const devOk = config.sessionToken ? sameToken(token, config.sessionToken) : loopback && req.headers.origin === undefined;
     if (!devOk) return null;
     const h = req.headers["x-genita-user"];
     const name = (Array.isArray(h) ? h[0] : h) ?? "demo";
