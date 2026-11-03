@@ -16,10 +16,9 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
-import { isSensitiveDetail } from "../personalize/sensitive.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, settingsFrom, toReport, type InsightInputs } from "./report.ts";
+import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, type InsightInputs } from "./report.ts";
 import type { InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
@@ -62,6 +61,9 @@ export class Insights {
   private readonly jobs = new Map<string, Job>();
   private readonly texts = new Map<string, { text: string; at: number }>();
   private readonly failedAt = new Map<string, number>();
+  /** the newest write per user (a slower older one never lands over it) */
+  private readonly seq = new Map<string, number>();
+  private seqNext = 0;
 
   constructor(o: { personalize: Personalize; store: Pick<PrepStore, "getStyle">; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date; enabled?: boolean }) {
     this.personalize = o.personalize;
@@ -88,7 +90,11 @@ export class Insights {
   private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"]): Promise<InsightReport> {
     const t0 = performance.now();
     const once = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
-    let r = await once();
+    // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
+    let r = await once().catch(async (err) => {
+      this.log("insights.retry", { from, message: String(err).slice(0, 120) });
+      return once();
+    });
     if (r.observations.length < OBS_MIN) {
       const again = await once().catch(() => null);
       if (again && again.observations.length > r.observations.length) r = again;
@@ -100,27 +106,32 @@ export class Insights {
 
   /**
    * Start a write. `inputsOf` reads the latest card; `gate` (import) holds the save until the import's card is
-   * stored. The result is saved only if no newer card / report landed meanwhile; verdicts carry over by id.
+   * stored and says which card (its importedAt). Saved only onto the card it was made from, only if no newer write
+   * started for this user meanwhile (Codex P1/P2), and filtered again by the latest "not me" list; "right" carries over.
    */
-  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<boolean>; settings?: InsightReport["settings"] } = {}) {
+  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<string | null>; settings?: InsightReport["settings"] } = {}) {
     if (!this.enabled) return;
-    const startedAt = Date.now();
+    const mine = ++this.seqNext;
+    this.seq.set(userId, mine);
     const promise = (async () => {
       // import: the card isn't there yet — the paste is the source
       const card = opts.gate ? null : await this.store.getStyle(userId);
       const inputs = inputsOf(card);
       if (!inputs) return;
       const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null);
-      if (opts.gate && !(await opts.gate)) return;
+      const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
+      if (opts.gate && !basis) return;
       await this.personalize.patchStyle(userId, (c) => {
-        // a newer import replaced the card, or a newer report landed: this one is stale
-        if (!opts.gate && c.importedAt && Date.parse(c.importedAt) > startedAt) return null;
-        if (opts.gate && (!c.importedAt || Date.parse(c.importedAt) < startedAt)) return null;
-        if (c.insights && Date.parse(c.insights.at) > Date.parse(report.at)) return null;
+        if (this.seq.get(userId) !== mine) return null; // a newer write started
+        if ((c.importedAt ?? null) !== basis) return null; // the card was replaced (another import / skip)
         const old = opts.gate ? undefined : c.insights;
+        const denied = old?.denied ?? [];
+        const gone = report.observations.filter((o) => denied.some((d) => d.id === o.id || similarClaim(d.claim, o.claim))).map((o) => o.id);
         const right = new Set((old?.observations ?? []).filter((o) => o.verdict === "right").map((o) => o.id));
-        const observations = report.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
-        return { ...c, insights: { ...report, observations, ...(old?.denied?.length ? { denied: old.denied } : {}) } };
+        // and what the user asked to forget / corrected away since (card.removed)
+        const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
+        const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
+        return { ...c, insights: { ...kept, observations, ...(denied.length ? { denied } : {}) } };
       });
       this.failedAt.delete(userId);
     })()
@@ -129,18 +140,19 @@ export class Insights {
         this.log("insights.failed", { from, message: String(err).slice(0, 160) });
       })
       .finally(() => { if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId); });
-    this.jobs.set(userId, { promise, startedAt });
+    this.jobs.set(userId, { promise, startedAt: Date.now() });
   }
 
-  /** Import: the report starts on the redacted paste now; commit() after the card is saved, cancel() if the import failed. */
-  begin(userId: string, redactedText: string): { commit(): void; cancel(): void } {
-    let settle!: (ok: boolean) => void;
-    const gate = new Promise<boolean>((r) => (settle = r));
-    if (this.enabled) {
-      this.rememberText(userId, redactedText);
-      this.start(userId, "import", () => ({ text: redactedText, findings: [], picks: [], source: "import" }), { gate });
-    }
-    return { commit: () => settle(true), cancel: () => settle(false) };
+  /** Import: the report starts on the redacted paste now; commit(importedAt) after the card is saved, cancel() if the import failed. */
+  begin(userId: string, redactedText: string): { commit(importedAt: string): void; cancel(): void } {
+    let settle!: (at: string | null) => void;
+    const gate = new Promise<string | null>((r) => (settle = r));
+    this.start(userId, "import", () => ({ text: redactedText, findings: [], picks: [], source: "import" }), { gate });
+    return {
+      // the paste is kept (memory only) for the answers rewrite only once its card is the user's card
+      commit: (at) => { if (this.enabled) this.rememberText(userId, redactedText); settle(at); },
+      cancel: () => settle(null),
+    };
   }
 
   /** N1–N3: the skip card is saved; the report comes from the picks. */
@@ -202,7 +214,7 @@ export class Insights {
       if (typeof b.correction !== "string" || b.correction.length > CORRECTION_MAX) throw new InsightsError(400, "bad_correction", `correction: up to ${CORRECTION_MAX} characters`);
       const t = b.correction.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim();
       // kept only when it's safe to put in the call profile
-      if (t && !looksLikeInjection(t) && !isSensitiveDetail(t) && redactSensitive(t) === t) correction = t;
+      if (t && !looksLikeInjection(t) && redactSensitive(t) === t && !privateDetail(t)) correction = t;
     }
     let found = false;
     const next = await this.personalize.patchStyle(userId, (c) => {
@@ -215,7 +227,8 @@ export class Insights {
       }
       const learning = ins.learning.some((l) => l.id === o.category) ? ins.learning : [...ins.learning, { id: o.category, label: LEARN_LABEL[o.category] }];
       const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString() }].slice(-DENIED_MAX);
-      return { ...c, insights: { ...ins, observations: ins.observations.filter((x) => x.id !== id), learning: learning.slice(0, 5), denied } };
+      // the type / strengths / watch-outs / headline built on it go too (Codex P2)
+      return { ...c, insights: { ...withoutObservations(ins, [id]), learning: learning.slice(0, 5), denied } };
     });
     if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
     this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });

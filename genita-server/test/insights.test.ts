@@ -14,7 +14,7 @@ import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { PrepRunner } from "../src/prep/runner.ts";
 import { Personalize } from "../src/personalize/service.ts";
 import { styleProfileText, toStyleCard, type StyleCard } from "../src/prep/importProfile.ts";
-import { GENERIC_PHRASES, genericHit, insightProblem, picksFromAnswers, settingsFrom, toReport, type InsightInputs } from "../src/insights/report.ts";
+import { GENERIC_PHRASES, genericHit, insightProblem, picksFromAnswers, picksFromSkip, scrubRemoved, settingsFrom, toReport, type InsightInputs } from "../src/insights/report.ts";
 import { Insights, insightProfileLines } from "../src/insights/service.ts";
 
 const PASTE = [
@@ -170,8 +170,7 @@ test("service: the import's report is written in the background and saved only a
   const h = harness(async () => { await gate; return RAW; });
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
-  await h.p.replaceStyle("u1", CARD);
-  job.commit();
+  job.commit(await h.p.replaceStyle("u1", CARD));
   const pending = await h.ins.get("u1", 0);
   assert.equal(pending.status, "pending");
   release();
@@ -192,8 +191,7 @@ test("service: setup answers re-write the report (import text kept in memory onl
   const h = harness((req) => (req.schemaName === "insight_report" ? RAW : null));
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
-  await h.p.replaceStyle("u1", CARD);
-  job.commit();
+  job.commit(await h.p.replaceStyle("u1", CARD));
   await h.ins.get("u1", 3000);
   await h.ins.fromAnswers("u1", { help: "Think with me", relationship: "Trusted partner", presence: ["Warm"] });
   const r = await h.ins.get("u1", 3000);
@@ -236,7 +234,7 @@ test("service: a Spark failure leaves the old report (or none) and GET says so; 
   assert.equal(r.report, null);
   const off = new Insights({ json: h.json!, personalize: h.p, store: h.store, enabled: false });
   const before = h.calls.length;
-  off.begin("u1", PASTE).commit();
+  off.begin("u1", PASTE).commit("x");
   assert.equal((await off.get("u1", 0)).status, "none");
   assert.equal(h.calls.length, before);
 });
@@ -314,4 +312,130 @@ test("report: the type read (춘식이 r02) — type, strengths, watch-outs, cha
   assert.equal(toReport({ ...raw, type: { ...raw.type, signature: ["Options", "Light"] } }, INPUTS, { at: "", from: "import" }).type, null, "exactly three");
   assert.equal(toReport({ ...raw, observations: [] }, INPUTS, { at: "", from: "import" }).type, null, "no traits → no type");
   assert.equal(toReport({ ...raw, observations: [] }, INPUTS, { at: "", from: "import" }).share, null);
+});
+
+// ───────── Codex review round 1 ─────────
+
+test("codex: a profile update (merge) keeps the report, the picks and the not-me list", async () => {
+  const { mergeUpdates } = await import("../src/personalize/merge.ts");
+  const card = { ...CARD, insights: { ...toReport(RAW, INPUTS, { at: "t", from: "import" }), denied: [{ id: "x", claim: "You hate mornings.", category: "rhythm" as const, at: "t" }] }, picks: [{ question: "q", label: "Spicy" }] };
+  const r = mergeUpdates(card, [{ field: "likes", text: "Likes ramen.", label: "explicit" }] as never, "2026-11-04T00:00:00Z");
+  assert.ok(r.applied.length);
+  assert.equal(r.card.insights!.observations.length, 3);
+  assert.equal(r.card.insights!.denied![0].claim, "You hate mornings.");
+  assert.deepEqual(r.card.picks, [{ question: "q", label: "Spicy" }]);
+});
+
+test("codex: skip picks go through the same privacy filters", () => {
+  const picks = picksFromSkip({ interests: ["Design", "synthetic@example.invalid", "my therapist"], replies: "Show me options", n3: { food: { like: ["Spicy"] } } });
+  assert.deepEqual(picks.map((p) => p.label), ["Design", "Show me options", "Spicy"]);
+});
+
+test("codex: a late import report never lands on the card of a newer import; an older write never lands over a newer one", async (t) => {
+  let releaseA!: () => void;
+  const gateA = new Promise<void>((r) => (releaseA = r));
+  let n = 0;
+  const h = harness(async () => { n++; if (n === 1) await gateA; return RAW; });
+  t.after(h.cleanup);
+  const a = h.ins.begin("u1", PASTE);
+  a.commit(await h.p.replaceStyle("u1", CARD));
+  await new Promise((r) => setTimeout(r, 5));
+  await h.p.replaceStyle("u1", { ...CARD, toConfirm: ["B"] }); // import B replaced the card (its own report job not started here)
+  releaseA();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal((await h.store.getStyle("u1"))!.insights, undefined, "A's report is not B's");
+
+  // answers: the first (slow) write must not land after the second
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>((r) => (releaseSlow = r));
+  let m = 0;
+  const h2 = harness(async (req) => { m++; if (m === 1) await slow; return { ...RAW, headline: m === 1 ? "You are the old one." : RAW.headline }; });
+  t.after(h2.cleanup);
+  await h2.p.replaceStyle("u1", CARD);
+  await h2.ins.fromAnswers("u1", { help: "Think with me" });
+  await h2.ins.fromAnswers("u1", { help: "Be there" });
+  await h2.ins.get("u1", 3000);
+  releaseSlow();
+  await new Promise((r) => setTimeout(r, 30));
+  const ins = (await h2.store.getStyle("u1"))!.insights!;
+  assert.equal(ins.settings!.why, "Be there");
+  assert.equal(ins.headline, RAW.headline);
+});
+
+test("codex: a 'not me' made while a rewrite runs is not brought back; what was built on it goes", async (t) => {
+  let release!: () => void;
+  let gated = false;
+  const gate = new Promise<void>((r) => (release = r));
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0] }, strengths: [{ text: "You know a good option when you see one.", trait: 0 }] };
+  const h = harness(async () => { if (gated) await gate; return TYPED; });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const first = (await h.ins.get("u1", 3000)).report!;
+  const think = first.observations.find((o) => o.category === "think")!;
+  assert.ok(first.type && first.strengths.length === 1);
+  gated = true;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  const after = await h.ins.verdict("u1", think.id, { verdict: "not_me" });
+  assert.equal(after.type, null, "the type was built only on it");
+  assert.equal(after.share, null);
+  assert.equal(after.strengths.length, 0);
+  release();
+  const r = await h.ins.get("u1", 3000);
+  assert.ok(!r.report!.observations.some((o) => o.id === think.id), "the rewrite doesn't bring it back");
+});
+
+test("codex: quotes match whole words; creepy quotes and corrections are dropped; chips must be grounded", async (t) => {
+  const text = "Dislikes seafood. Often feels lonely after work. Korean food, the spicier the better.";
+  const inputs: InsightInputs = { text, findings: [], picks: [{ question: "Food: you like", label: "Spicy" }], source: "import" };
+  const half = toReport({ ...RAW, observations: [obs({ evidence: [ev("import", "likes seafood.")] })] }, inputs, { at: "", from: "import" });
+  assert.equal(half.observations.length, 0, "'likes seafood' is not in 'Dislikes seafood'");
+  const lonely = toReport({ ...RAW, observations: [obs({ evidence: [ev("import", "Often feels lonely after work.")] })] }, inputs, { at: "", from: "import" });
+  assert.equal(lonely.observations.length, 0);
+  const chips = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You eat loud and dress quiet on purpose.", evidence: [ev("import", "the spicier the better")], chips: [{ label: "Spicy", polarity: "like" }, { label: "Seafood", polarity: "dislike" }, { label: "Sushi", polarity: "dislike" }, { label: "Spicy", polarity: "dislike" }] })] }, inputs, { at: "", from: "import" });
+  assert.deepEqual(chips.observations[0].chips, [{ label: "Spicy", polarity: "like" }, { label: "Seafood", polarity: "dislike" }]);
+
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  await h.ins.verdict("u1", r.observations[0].id, { verdict: "not_me", correction: "I live in Seoul." });
+  assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined);
+});
+
+// ───────── Codex review round 2 ─────────
+
+test("codex r2: 'forget that …' takes the traits that cite it out of the report (and the call profile)", () => {
+  const LEATHER = "Loves leather accessories and wears a leather jacket every day.";
+  const inputs: InsightInputs = { ...INPUTS, text: `${PASTE}\n- ${LEATHER}` };
+  const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "taste", claim: "You dress quiet but your jacket does the talking.", evidence: [ev("import", LEATHER)], surprise: 1, use_in_call: "I'll suggest leather accessories that fit your look." })] };
+  const r = toReport(raw, inputs, { at: "", from: "import" });
+  assert.ok(r.observations.some((o) => /leather/.test(o.use_in_call)));
+  const removed = [{ text: "leather accessories", at: "t", forget: true as const }];
+  const scrubbed = scrubRemoved(r, removed);
+  assert.ok(!JSON.stringify(scrubbed).includes("leather"));
+  assert.equal(scrubbed.observations.length, r.observations.length - 1);
+  const card = { ...CARD, insights: scrubbed, removed };
+  assert.ok(!styleProfileText(card).toLowerCase().includes("leather accessories that"));
+});
+
+test("codex r2: 'not me' drops a type built on it; a like chip needs a plain mention; a minor's age is never kept", async (t) => {
+  const text = "Dislikes seafood. Korean food, the spicier the better.";
+  const inputs: InsightInputs = { text, findings: [], picks: [], source: "import" };
+  const like = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You eat loud and dress quiet on purpose.", evidence: [ev("import", "the spicier the better")], chips: [{ label: "Seafood", polarity: "like" }] })] }, inputs, { at: "", from: "import" });
+  assert.equal(like.observations[0].chips, undefined, "'Dislikes seafood' is never a like");
+
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
+  const h = harness(() => TYPED);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  assert.ok(r.type);
+  const think = r.observations.find((o) => o.category === "think")!;
+  const after = await h.ins.verdict("u1", think.id, { verdict: "not_me", correction: "I'm 15 and I just like choices." });
+  assert.equal(after.type, null, "one of its two bases is gone → the type goes");
+  assert.equal(after.share, null);
+  assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined, "a minor's age is never stored");
 });
