@@ -322,7 +322,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
-  if (realCrisisSignal(ctx.userText) || ctx.crisisInCall) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!ctx.camera && (WEARING_NOW.test(sentence) || CLOTHES_NOW.test(sentence)) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
   if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";
@@ -334,6 +334,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
     if (cls === "unseen" && ctx.camera) continue;
     if (cls === "appearance") continue;
     if (cls === "intake" && ctx.askTurn) continue;
+    // Codex #610 r2: after a crisis line in this call only the staying / help lines are spared (never the number,
+    // appearance or unseen guards)
+    if (ctx.crisisInCall && (cls === "counselor" || cls === "referral" || cls === "guilt")) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

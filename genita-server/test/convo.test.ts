@@ -1594,3 +1594,8 @@ test("Codex #610 P1: after a crisis line in the call, 'I'm right here with you â
   assert.match(String(reply.text), /put the pills down/);
   session.close();
 });
+
+test("Codex #610 r2: crisisInCall spares staying/help lines only â€” a salary said back is still dropped", () => {
+  assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "ok", crisisInCall: true }), null);
+  assert.equal(guardSentence("Eighty five K, nice.", { camera: false, userText: "I make 85k now", crisisInCall: true }), "sensitive");
+});
