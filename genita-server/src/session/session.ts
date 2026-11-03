@@ -153,6 +153,8 @@ export type SessionPersonalize = {
   startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
   /** watch together attached before the question: not a new conversation after all (give the count back) */
   unplanCall?(userId: string, item: string | null): Promise<void>;
+  /** "Forget all of this" was the last profile event (AU-92): a timed-out profile read uses no profile */
+  isForgotten?(userId: string): boolean;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
@@ -863,6 +865,8 @@ export class Session {
         this.callStartedAt = new Date().toISOString();
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
+        // the read timed out right after "Forget all of this" (AU-92): no profile, never the app's (or another device's) old copy
+        else if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
         if (p?.nod) this.nod = p.nod;
         // what they removed from their profile stays out of memory, notes and the handed-off turns
         if (p?.removed?.length) {

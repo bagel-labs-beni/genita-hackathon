@@ -141,12 +141,14 @@ extension AppState {
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         guard serverWired else { importing = false; return }
         let request = onboardingSnapshot()
+        let forgets = profileForgets
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let style = try await onboarding.importReply(text)
-                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                // "Forget all of this" meanwhile (AU-92): the old answer is never applied
+                guard !Task.isCancelled, ownsOnboardingResponse(request), profileForgets == forgets else { return }
                 applyStyle(style)
                 importing = false
                 if stage == .preparing { go(.preferences) }
@@ -177,11 +179,14 @@ extension AppState {
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
         importing = true
+        let forgets = profileForgets
         Task {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
-                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
+                let style = try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3)
+                guard profileForgets == forgets else { return }   // "Forget all of this" meanwhile (AU-92)
+                applyStyle(style)
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }

@@ -62,3 +62,21 @@ test("AU-92: an import that started before 'Forget all of this' is not saved; a 
   await p.replaceStyle("u1", style.card, p.generation("u1"));
   assert.equal((await store.getStyle("u1"))?.forgotten, undefined, "a new import replaces the marker");
 });
+
+test("AU-92 r2: a paste's late story from before the forget is dropped; a timed-out call profile read after it uses none", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "profile-forget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const p = new Personalize({ store, json: (async () => null) as never });
+  let land!: (v: { raw: unknown; ms: number }) => void;
+  p.trackLate("u1", new Promise((r) => { land = r; }));
+  await p.forgetAll("u1");
+  assert.equal(p.isForgotten("u1"), true);
+  const style = skipStyleCard({ interests: ["Design"], replies: "Ask me questions", avoid: [] });
+  assert.ok(style.ok);
+  await p.replaceStyle("u1", style.card, p.generation("u1"));
+  assert.equal(p.isForgotten("u1"), false, "a new profile: not forgotten any more");
+  land({ raw: { cards: [{ id: "talk", headline: "Short, direct replies.", items: [] }], topics: [] }, ms: 1 });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal((await store.getStyle("u1"))?.story, undefined, "the old paste's story never lands on the new profile");
+});

@@ -96,6 +96,9 @@ export class Personalize {
   /** per user: bumped by forgetAll, so an import that started before it never writes the old profile back */
   private readonly gens = new Map<string, number>();
   generation(userId: string): number { return this.gens.get(userId) ?? 0; }
+  /** users whose last profile event in this process was "Forget all of this" (a call whose profile read times out uses no profile, never the app's old copy) */
+  private readonly forgotten = new Set<string>();
+  isForgotten(userId: string): boolean { return this.forgotten.has(userId); }
 
   /**
    * "Forget all of this" (AU-92): what Genita knows about them — the import, HISY, corrections, insights, call growth —
@@ -106,6 +109,7 @@ export class Personalize {
   async forgetAll(userId: string): Promise<void> {
     await this.serial(userId, async () => {
       this.gens.set(userId, this.generation(userId) + 1);
+      this.forgotten.add(userId);
       await this.store.putStyle(userId, { ...toStyleCard(null, "import"), forgotten: true, importedAt: this.now().toISOString() });
     });
     this.storyFailedAt.delete(userId);
@@ -142,6 +146,7 @@ export class Personalize {
       // an import that started before "Forget all of this" never brings the old profile back (AU-92)
       if (since !== undefined && since !== this.generation(userId)) throw new PersonalizeError(409, "profile_forgotten", "The profile was cleared while this was reading.");
       await this.store.putStyle(userId, { ...card, importedAt: at });
+      this.forgotten.delete(userId);
     });
   }
 
@@ -167,8 +172,10 @@ export class Personalize {
 
   /** The paste's story is still being written after the import answered: GET story waits for it instead of writing another. */
   trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>): void {
+    // written from the paste of this generation: after "Forget all of this" (and a new profile) it is dropped (AU-92 r2)
+    const gen = this.generation(userId);
     const j = job
-      .then((r) => (r ? this.attachLate(userId, r) : undefined))
+      .then((r) => (r && gen === this.generation(userId) ? this.attachLate(userId, r) : undefined))
       .catch(() => {})
       .finally(() => { if (this.storyJobs.get(userId) === j) this.storyJobs.delete(userId); });
     this.storyJobs.set(userId, j);

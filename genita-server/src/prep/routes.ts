@@ -164,10 +164,13 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const body = await readJson(req);
       const job = importStyle(d, user, body.text);
       if (body.background === true) {
-        importJobs.set(user, { status: "processing" });
+        const state = { status: "processing" as const };
+        importJobs.set(user, state);
+        // only this job's own entry: "Forget all of this" (AU-92) or a newer import took the slot meanwhile
+        const mine = () => importJobs.get(user) === state;
         job.then(
-          () => importJobs.delete(user),
-          (err) => importJobs.set(user, { status: "failed", error: err instanceof PrepError ? err.code : "import_failed" }),
+          () => { if (mine()) importJobs.delete(user); },
+          (err) => { if (mine()) importJobs.set(user, { status: "failed", error: err instanceof PrepError ? err.code : "import_failed" }); },
         );
         d.log("import.backgrounded", {});
         return send(res, 202, { status: "processing" });
@@ -448,6 +451,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       if (!d.personalize) throw new PrepError(404, "not_found");
       if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
       await d.personalize.forgetAll(user);
+      importJobs.delete(user);   // a background import still reading: GET /v1/import says none, its result is refused
       // call memory, live calls, cards made from the old taste; a failure answers 502 and a retry runs it all again
       await d.onProfileForgotten?.(user);
       return send(res, 200, { ok: true });
