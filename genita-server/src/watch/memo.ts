@@ -228,19 +228,29 @@ export function buildQuestionContext(c: {
   names: Map<string, string>;
   frames: string[];
   blank: boolean;
+  /** react-worthy moments seen in the last minute (spoken or not), oldest first */
+  moments?: { agoSec: number; moment: string; line: string }[];
+  /** the newest moment's frame, when it is older than `frames` */
+  momentFrame?: { url: string; agoSec: number } | null;
 }): QuestionContext {
   const out = [`You and the user are watching their shared screen together${c.source ? ` (${c.source})` : ""}.`];
   const tl = titleLine(c.title);
   if (tl) out.push(`${tl} It is what the page or video is called; you may use it ("this is the one about…") and any name written in it.`);
   if (c.memo.length) out.push(`What you've seen so far, oldest first:\n${c.memo.map((e) => `- ${e.text}`).join("\n")}`);
   if (c.lines.length) out.push(`Lines just heard from the screen, oldest first:\n${dialogueText(c.lines, c.names)}`);
+  if (c.moments?.length) {
+    out.push(`Moments you noticed in the last minute (what you'd have blurted out, said or not), oldest first:\n${c.moments.map((m) => `- ${m.agoSec} s ago (${m.moment}): ${JSON.stringify(m.line)}`).join("\n")}`);
+    out.push(`If the user asks about something that just happened ("did you see that?", "that dunk"), it is most likely one of these: answer from it even if the screen has moved on.`);
+  }
   if (c.blank) {
     out.push("The shared screen shows up black to you right now (some apps block capture). You can't see it: say so and don't guess what's on it.");
     return { instructions: out.join("\n"), images: [] };
   }
-  if (c.frames.length) out.push(`The attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
+  const moment = c.momentFrame ?? null;
+  if (moment) out.push(`The first attached image is the shared screen at that last moment, ${moment.agoSec} s ago.`);
+  if (c.frames.length) out.push(`The ${moment ? "other " : ""}attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
   if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
   out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
   if (c.frames.length) out.push(NAMING_RULE);
-  return { instructions: out.join("\n"), images: c.frames };
+  return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }
