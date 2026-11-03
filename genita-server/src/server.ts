@@ -429,7 +429,9 @@ export async function startServer(
     // Demo S4: an iPhone call may suggest moving to this account's open Mac app
     const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId,
+    // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
+    const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
@@ -445,7 +447,7 @@ export async function startServer(
     sessionDevices.set(id, callDevice);
     const gen = ++nextGen;
     sessionGens.set(id, gen);
-    log("session.open", { session: id, sessions: sessions.size, auth: who.kind });
+    log("session.open", { session: id, sessions: sessions.size, auth: who.kind, ...(who.judge ? { judge: who.judge } : {}) });
     let idle = setTimeout(() => session.close(4000, "idle"), IDLE_MS);
     const touch = () => {
       clearTimeout(idle);

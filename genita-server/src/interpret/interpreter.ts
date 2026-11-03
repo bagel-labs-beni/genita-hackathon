@@ -269,8 +269,8 @@ export class Interpreter {
       bubble.original = { lang: this.user, text: clean };
       return this.closeBubble(bubble, "skipped", "no_other_language");
     }
-    if (!this.host.admitTurn()) return;
     bubble.original = { lang: this.user, text: clean };
+    if (!this.host.admitTurn()) return this.closeBubble(bubble, "cancelled"); // refused by a daily cap: no open bubble
     const abort = new AbortController();
     const now = this.host.now();
     const stream = new Eager(this.host.translate(this.request(clean, this.user, this.other), abort.signal));
