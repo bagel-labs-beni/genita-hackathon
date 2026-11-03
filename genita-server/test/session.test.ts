@@ -136,8 +136,10 @@ const persona = { name: "Mina", kind: "animal", traits: ["warm"] };
 for (const [text, expected] of [
   ["<curious> I'll look that up. Tofu works.", "Tofu works."],
   ["<curious> 기억을 찾아볼게요. 두부가 좋아요.", "두부가 좋아요."],
-  ["<curious> I'll look that up.", "I'll look that up."],
+  // conversation engine v1 (prod smoke 11/3): an announcement is never spoken; announcement-only retries, then says it doesn't know
+  ["<curious> I'll look that up.", process.env.GENITA_CONVO_V1 === "0" ? "I'll look that up." : "Hmm, not sure off the top of my head."],
   ["<warm> Let me think — tofu works.", "Let me think — tofu works."],
+  // an announcement after real content is kept (v1 drops only a leading one, Codex #356 r6)
   ["<warm> Tofu works. I'll look that up.", "Tofu works. I'll look that up."],
 ] as const) test(`first narration only, with more content required: ${text}`, async (t) => {
   const { session, client } = setup({ sparkText: text });

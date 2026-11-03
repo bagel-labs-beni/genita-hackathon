@@ -362,3 +362,129 @@ test("guard (Codex round 2 P1): emergency help is never dropped, even when the d
   assert.equal(guardSentence("Stay with me and call emergency services right now.", { camera: false, userText: "something weird is happening" }), null);
   assert.equal(guardSentence("Stay with me instead, tell me everything.", { camera: false, userText: "friends want me out" }), "guilt");
 });
+
+// ───────────── tool / process narration (prod smoke 11/3, 9d27196, server voice) ─────────────
+
+const NARRATION_HARD_FAILS = [
+  "Figuring out where you mean so I can map City Hall for you.",
+  "let me pull up what you told me.",
+  // paraphrases
+  "Okay, let me pull that up real quick.",
+  "One sec, I'm checking my notes.",
+  "Let me look into it.",
+  "I'll search for City Hall on the map.",
+  "Pulling up what you said about the interview.",
+  "Hang on, figuring out the route for you.",
+  "Lemme check what you told me last time.",
+  "Searching my memory for that.",
+  "Give me a sec while I map it.",
+  "I'm gonna look that up.",
+  "Let me see what you told me about it.",
+  "Mapping the route to City Hall now.",
+];
+const NOT_NARRATION = [
+  "Let me see what you've got!", "Looking good!", "I'll pick the black one.", "Checking out your fridge, I see onions and garlic.",
+  "Finding a good ramen spot is a whole sport.", "City Hall is like ten minutes from you, take the 2 line.", "Let me guess, black on black?",
+  "Hmm, the black one, obviously.", "Wait, how'd the interview go?!",
+];
+
+test("guard: tool/process narration is a hard fail — both prod lines and paraphrases are dropped, never spoken as a fallback", () => {
+  for (const line of NARRATION_HARD_FAILS) assert.equal(guardSentence(line, none), "narration", line);
+  for (const line of NOT_NARRATION) assert.equal(guardSentence(line, none), null, line);
+});
+
+test("session v1: a narration-only first sentence is never voiced (server voice path); the answer after it is", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<neutral> Figuring out where you mean so I can map City Hall for you. <happy> City Hall is ten minutes away, take the 2 line."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "How do I get to City Hall?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "City Hall is ten minutes away, take the 2 line.");
+  assert.ok(!client.json.some((m) => (m.type === "say" || m.type === "reply.delta") && /figuring out/i.test(String(m.text))), "never sent to the voice or captions");
+  session.close();
+});
+
+test("narration (Codex #356): an answer joined to the announcement stays; emergency help and crisis turns come first; 'searching for a job' is a sentence", () => {
+  assert.equal(guardSentence("I'll search my memory for that but tofu works.", none), null);
+  assert.equal(guardSentence("Searching for a job is exhausting.", none), null);
+  assert.equal(guardSentence("Checking on your friend means calling emergency services right now.", none), null);
+  assert.equal(guardSentence("Let me find the nearest crisis line for you.", { camera: false, userText: "i want to kill myself" }), null);
+  assert.equal(guardSentence("Let me pull that up real quick.", none), "narration");
+});
+
+test("narration (Codex #356 round 2): an answer after a colon or comma stays; a subject-less joined lookup is still narration", () => {
+  assert.equal(guardSentence("Let me check my memory: tofu works.", none), null);
+  assert.equal(guardSentence("Let me check my memory, tofu works.", none), null);
+  assert.equal(guardSentence("Let me pull that up and check the route for you.", none), "narration");
+  assert.equal(guardSentence("Okay, let me pull that up.", none), "narration");
+  assert.equal(guardSentence("Hang on, figuring out the route for you.", none), "narration");
+});
+
+test("narration (Codex #356 round 3): a joined result clause with its own subject stays", () => {
+  assert.equal(guardSentence("Let me check my notes but Google Maps says it is ten minutes.", none), null);
+  assert.equal(guardSentence("Let me pull that up and check the route for you.", none), "narration");
+});
+
+test("narration (Codex #356 round 4): a lookup clause that already states its result is the answer", () => {
+  assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
+  // known cost: a relative "where that is" reads as a statement, so this announcement is spoken (losing an answer is worse)
+  assert.equal(guardSentence("Let me look into where that is.", none), null);
+  assert.equal(guardSentence("Checking the map confirms City Hall is closed today.", none), null, "Codex round 5");
+  assert.equal(guardSentence("Figuring out where you mean so I can map City Hall for you.", none), "narration");
+});
+
+// Scene 5 (Mac product search): the narration before the tool is never voiced, the product answer is, and there is
+// no "not sure" with a tool in flight (main 11/3)
+function toolSetup(attempts: SparkStreamEvent[][]) {
+  const client = new Client();
+  let n = 0;
+  const session = new Session("t1", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> { for (const e of attempts[Math.min(n++, attempts.length - 1)]) { await new Promise((r) => setTimeout(r, 1)); yield e; } },
+    async *tts() {},
+  });
+  return { client, session };
+}
+
+test("Scene 5 eval: product search turn → product answer, zero narration, zero 'not sure'", { skip: !v1 }, async () => {
+  const text = (t: string): SparkStreamEvent => ({ type: "text", delta: t });
+  const { client, session } = toolSetup([[
+    text("<curious> Let me search for some black boots that match your style. "),
+    { type: "tool", name: "web_search", status: "in_progress" },
+    { type: "tool", name: "web_search", status: "completed" },
+    text("<happy> Got two: the Dr. Martens 1460 in black and the Blundstone 2058, both under two hundred."),
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ]]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find me boots that go with this outfit." }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.match(String(reply.text), /Dr\. Martens 1460/);
+  const said = client.json.filter((m) => m.type === "say" || m.type === "reply.delta").map((m) => String(m.text)).join(" ");
+  assert.doesNotMatch(said, /let me search|not sure off the top/i);
+  session.close();
+});
+
+test("tool in flight with only narration (both attempts) → silence, never the 'not sure' line", { skip: !v1 }, async () => {
+  const attempt: SparkStreamEvent[] = [
+    { type: "text", delta: "<curious> Figuring out where you mean so I can map City Hall for you. " },
+    { type: "tool", name: "web_search", status: "completed" },
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ];
+  const { client, session } = toolSetup([attempt, attempt]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Map City Hall for me." }));
+  await client.waitFor((m) => m.type === "error" || m.type === "reply");
+  const said = client.json.filter((m) => m.type === "say" || m.type === "reply.delta" || m.type === "reply").map((m) => String(m.text)).join(" ");
+  assert.doesNotMatch(said, /not sure off the top|figuring out/i);
+  session.close();
+});
+
+test("narration (Codex #356 round 6): any stated result stays — past tense, numbers, results in a joined clause", () => {
+  assert.equal(guardSentence("Looking up the address returned 123 Main Street.", none), null);
+  assert.equal(guardSentence("Let me pull that up; checking my notes confirms your appointment for Thursday.", none), null);
+  for (const line of ["Figuring out where you mean so I can map City Hall for you.", "let me pull up what you told me.", "Let me pull that up and check the route for you."]) assert.equal(guardSentence(line, none), "narration", line);
+});
+
+test("narration (real Spark probe 11/3): 'I'll check what tomorrow's weather looks like in Seoul.' is an announcement", () => {
+  assert.equal(guardSentence("I'll check what tomorrow's weather looks like in Seoul.", none), "narration");
+  assert.equal(guardSentence("Checking now, it looks like rain at five.", none), null);
+});
