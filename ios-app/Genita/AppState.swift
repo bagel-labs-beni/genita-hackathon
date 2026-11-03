@@ -149,12 +149,19 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
         }
     }
-    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
-    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for the same account.
+    /// account | companion (its image id) | scene URL: a scene never outlives its companion (handover b9-6: another
+    /// phone on the account opened its next call on a deleted companion's cached scene).
+    var sceneKey: String? { prep?.sceneURL.map { "\(sceneOwner)\($0.absoluteString)" } }
+    var sceneOwner: String { "\(setup.accountId ?? "-")|\(setup.imageId ?? "-")|" }
+    /// This launch asked the server which companion the account has and it is the one on this phone (or the phone
+    /// now holds the server's). Until then a saved scene isn't shown: the server may have replaced the companion.
+    @ObservationIgnored var sceneCompanionConfirmed = false
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account and this companion,
+    /// once the server confirmed the companion.
     var sceneImageData: Data? {
         sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
-            return saved.key.hasPrefix("\(setup.accountId ?? "-")|") ? saved.data : nil
+            return sceneCompanionConfirmed && saved.key.hasPrefix(sceneOwner) ? saved.data : nil
         }
     }
     var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }

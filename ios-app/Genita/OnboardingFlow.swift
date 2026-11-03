@@ -61,7 +61,9 @@ extension AppState {
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        // Every launch into a call asks which companion the account has: another phone may have replaced it, and its
+        // cached scene / photo must not open this call (handover b9-6). Not on this phone yet → bring it back.
+        if route == .connecting || route == .textWhilePreparing { await restoreCompanion(for: request) }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else {
             // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
@@ -90,11 +92,22 @@ extension AppState {
         if stage == .consent { consentAccepted() }
     }
 
+    /// The server's companion vs the one this phone remembers: a different one (replaced or deleted on another
+    /// device) drops this phone's scene and picture before anything draws them; the same one confirms the cache.
+    func adoptServerCompanion(imageId: String?) {
+        if let mine = setup.imageId, mine != imageId {
+            sceneImage = nil
+            setup.imageData = nil
+        }
+        sceneCompanionConfirmed = true
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
         guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
+        adoptServerCompanion(imageId: c.imageId)
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
