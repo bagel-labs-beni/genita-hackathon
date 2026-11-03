@@ -246,11 +246,13 @@ const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
 /** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
-export const CRISIS_HELP_LINE = "<warm> Please reach out to someone you trust right now, or call or text 988, or your local emergency number if you might act on this.";
-const HELP_POINTER = /\b(?:988|911|112|999|crisis (?:line|text line)|hotline|emergency|someone you trust|samaritans|lifeline|call or text|reach out to)\b/i;
+export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
+/** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
+const HELP_POINTER = /\b(?:988|911|112|999|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| are| was| were| did| do| does| has| have| had| will| would| can| could)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
  * Mac open always gets this line, at once (no Spark); rotates by utterance */
+const SUGGEST_MAC_TAIL = "<happy> Can you move our call to your Mac? I want to see your whole outfit.";
 export const SUGGEST_MAC_REPLIES = [
   "<excited> Of course! Can you move our call to your Mac? I want to see your whole outfit.",
   "<happy> Ooh, yes. Move our call to your Mac real quick? I want to see the whole fit.",
@@ -1515,7 +1517,8 @@ export class Session {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
         maxOutputTokens: 800,
-        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+        // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
+        tools: this.deps.config.webSearch && !realCrisisSignal(text) ? [{ type: "web_search" }] : undefined,
       },
     };
   }
@@ -1888,6 +1891,12 @@ export class Session {
         const prevEnd = sentences.at(-1)?.display.trim();
         // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
         if ((droppedOpener && !sentences.length) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
+        // capitalised goes back to how Spark wrote it
+        if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {
+          const w = /^(\s*(?:\[[^\]]*\]\s*)*)(\p{Lu})([\p{Ll}']*)/u.exec(tts);
+          if (w && w[2] + w[3] !== "I" && !new RegExp(`\\b${w[2]}${w[3]}\\b`, "u").test(p.ttsText) && new RegExp(`\\b${w[2].toLowerCase()}${w[3]}\\b`, "u").test(p.ttsText)) tts = w[1] + w[2].toLowerCase() + tts.slice(w[1].length + 1);
+        }
         // QA P3: a returning greeting's question ended with "." 1/2 ("…how's the prep going.") — a greeting or initiative
         // sentence that is plainly a question ends with "?"
         if (this.v1 && synthetic && QUESTION_START.test(parseTaggedSentence(tts).displayText) && /\.\s*$/.test(tts) && !/\.\.\.\s*$/.test(tts)) tts = tts.replace(/\.\s*$/, "?");
@@ -2019,6 +2028,9 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) enqueueSentences([CRISIS_HELP_LINE], true);
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -2043,6 +2055,9 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) enqueueSentences([CRISIS_HELP_LINE], true);
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
         }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);

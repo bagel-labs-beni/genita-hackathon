@@ -281,3 +281,18 @@ test("mustNameMac (Codex #423): a stream that stalls after its first words gets 
   assert.equal(out, "FIXED Mac line");
   assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
 });
+
+test("Codex #423 final: a guard drops the Mac sentence (camera off, 'you look great') → the ask is still said", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Of course! You look great already, but move our call to your Mac so I can see it all." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("qa-mac-guard", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => replies(events) >= 1);
+  const reply = events.filter((e) => e.type === "reply").at(-1) as { text: string };
+  assert.match(reply.text, /\bMac\b/);
+  s.close();
+});

@@ -143,16 +143,25 @@ export class MemoryCall {
    */
   saveNow(user: string): void {
     if (this.closed || !user.trim()) return;
-    this.savedNow.add(user);
+    const st: { ok: boolean | null; waiting: { user: string; assistant: string } | null } = { ok: null, waiting: null };
+    this.savedNow.set(user, st);
     this.pending.push({ user, assistant: "" });
-    this.flush();
+    // a failed extraction gives the turn back to the normal batch (Codex #423 final P1: never lost)
+    this.flush()?.then(() => { st.ok = true; }, () => {
+      st.ok = false;
+      if (st.waiting && !this.closed) { this.pending.push(st.waiting); st.waiting = null; }
+    });
   }
-  private savedNow = new Set<string>();
+  private savedNow = new Map<string, { ok: boolean | null; waiting: { user: string; assistant: string } | null }>();
 
   completedTurn(user: string, assistant: string): void {
     if (this.closed || !user.trim()) return;
-    // already sent by saveNow: not twice
-    if (!this.savedNow.delete(user)) this.pending.push({ user, assistant });
+    // already sent by saveNow: not twice — unless that save failed (then it goes in this batch), or is still running
+    // (then it waits: pushed only if the save fails)
+    const st = this.savedNow.get(user);
+    if (!st || st.ok === false) this.pending.push({ user, assistant });
+    else if (st.ok === null) st.waiting = { user, assistant };
+    if (st) this.savedNow.delete(user);
     if (this.pending.length >= 4) this.flush();
     this.thread = [...this.thread, { user: user.slice(0, 1000), assistant: assistant.slice(0, 1000) }].slice(-SUMMARY_MAX_PAIRS);
     this.covered++;
@@ -177,8 +186,8 @@ export class MemoryCall {
     this.queue = job;
     this.service.background(() => job);
   }
-  private flush(): void {
-    if (!this.pending.length) return;
+  private flush(): Promise<unknown> | undefined {
+    if (!this.pending.length) return undefined;
     const turns = this.pending.splice(0, 4);
     const forgets = this.forgetsSeen;
     const before = this.queue;
@@ -188,6 +197,7 @@ export class MemoryCall {
       forgets === this.forgetsSeen ? this.service.extract(this.userId, this.sessionId, turns, this.revision) : undefined);
     this.queue = job;
     this.service.background(() => job);
+    return job;
   }
   close(): void {
     if (this.closed) return;

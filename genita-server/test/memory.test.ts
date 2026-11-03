@@ -328,3 +328,17 @@ test("Codex #423 P1: an explicit 'remember …' goes to extraction at once (save
   const all = batches.flat().filter((u) => /pistachio/.test(u));
   assert.equal(all.length, 1, JSON.stringify(batches));
 });
+
+test("Codex #423 final P1: a failed saveNow extraction gives the turn back to the normal batch (never lost)", async () => {
+  const { service } = setup(); const call = new MemoryCall(service, "a", "s"); await call.open();
+  const batches: string[][] = [];
+  let fail = true;
+  const realExtract = service.extract.bind(service);
+  service.extract = ((u: string, sid: string, turns: { user: string }[], rev: unknown) => { batches.push(turns.map((t) => t.user)); if (fail) { fail = false; return Promise.reject(new Error("blip")); } return realExtract(u, sid, turns as never, rev as never); }) as typeof service.extract;
+  call.saveNow("Remember that I like pistachio ice cream.");
+  await new Promise((r) => setTimeout(r, 50));
+  call.completedTurn("Remember that I like pistachio ice cream.", "Pistachio it is.");
+  call.close();
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(batches.flat().filter((u) => /pistachio/.test(u)).length, 2, JSON.stringify(batches));
+});

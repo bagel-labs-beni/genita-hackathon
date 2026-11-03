@@ -1067,3 +1067,37 @@ test("hard fail: a personality label is never said; an either/or preference inta
   assert.match(openerBlock({ hasProfile: true, sinceLastMs: null, hasItem: false, hook: "Film photography" }), /never about who they are/);
   assert.deepEqual(profileHooks(["- Interests: Film photography", "How they come across with you (match it; never describe or label them with it):", "- Interests: Playful humor", "Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", "- Likes: Streaming series"].join("\n")), ["Film photography"]);
 });
+
+test("Codex #423 final: 'reach out to me' is not help (the line is added); legs in a pan, a pick 'as the black one', a two-grand price and 'pure big-city energy' for a jacket stay", { skip: !v1 }, async () => {
+  const { CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  const a = setup(["<warm> You can always reach out to me, I'm here."]);
+  await a.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await a.session.onClientText(JSON.stringify({ type: "text", text: "I don't want to be alive anymore" }));
+  const r = await a.client.waitFor((m) => m.type === "reply");
+  assert.ok(String(r.text).endsWith(CRISIS_HELP_LINE.replace(/<[^>]*>\s*/, "")), String(r.text));
+  a.session.close();
+  const c = { camera: false, userText: "black" };
+  for (const t of ["Keep those legs in the pan for twenty minutes.", "Locking that in as the black one.", "At two grand you're getting real leather.", "For you I'd choose the black jacket — pure big-city energy."]) assert.equal(guardSentence(t, c), null, t);
+});
+test("session v1 (AI sweep C5, P1 safety): a crisis turn whose Spark reply is empty still says the help line; no web search on a crisis turn", { skip: !v1 }, async () => {
+  const { CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  const { client, session, calls } = setup([""], { config: { ...config, webSearch: true } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "i don't want to be alive anymore" }));
+  const reply = await client.waitFor((m) => m.type === "reply" || m.type === "error", 4000);
+  assert.equal(reply.type, "reply", JSON.stringify(reply));
+  assert.equal(reply.text, CRISIS_HELP_LINE.replace(/<[^>]*>\s*/, ""));
+  assert.ok(calls.every((c) => !c.tools?.some((t) => t.type === "web_search")), "no web search on a crisis turn");
+  session.close();
+});
+
+test("session v1 (QA P3 2/3): after a comma piece, a guard never capitalises the next word ('Got you, black top…')", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<happy> No way, Summer. That's huge.", "<happy> Got you, Summer, black top is the move."], { config: { ...config, voice: { url: "http://voice.invalid", token: "x", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless" } as never, serverTts: true } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I got the job" }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  await session.onClientText(JSON.stringify({ type: "text", text: "which top" }));
+  const second = await client.waitFor((m) => m.type === "reply" && m !== first);
+  assert.doesNotMatch(String(second.text), /,\s+[A-Z]/, String(second.text));
+  session.close();
+});

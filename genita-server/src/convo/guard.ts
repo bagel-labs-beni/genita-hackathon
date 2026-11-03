@@ -33,7 +33,7 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["label", /\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:seem|look|sound|strike me|come across|read)(?:s)? (?:like|as) (?:the )?(?:type|kind|sort|someone|somebody|a person|one of those)\b|\byou\s+(?:totally |so |really |just |definitely |kinda |lowkey )?giv(?:e|ing) off\b[^.!?]{0,80}\b(?:energy|vibes?)\b|\byou'?re (?:totally |so |definitely |100% )?(?:the|that) (?:type|kind|sort) (?:of (?:person|human|girl|guy) )?(?:who|that|to)\b|\bi bet you'?re (?:the|that|one of those) (?:type|kind|people)\b|\byou(?:'re| are)\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:someone|somebody|the kind of person|a person|one of those people) (?:who|that)\b|\byou give (?:off |total |such |major |big |serious |strong |real )?[^.!?]{0,60}\b(?:energy|vibes?)\b/i],
   // AI sweep 11/3 (3/4 with the camera ON): their face, skin, hair, smile or body, rated — never, camera or not
   // (DESIGN §8.2/§8.5). The clothes themselves are fine ("that blazer is sharp").
-  ["appearance", /\b(?:your|that|those) (?:little |cute |pretty |big )?(?:smile|face|skin|hair|eyes|lips|body|figure|glow|complexion|cheeks|jawline|legs|arms|curves)\b|\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning) as hell\b|\byou(?:'re| are| look(?:s|ing)?)\s+(?:so |really |totally |kinda )?(?:cute|hot|pretty|gorgeous|beautiful|handsome|glowy|glowing|sexy|stunning|adorable|radiant)\b|\b(?:cozy and glowy|glowy|glowing skin)\b/i],
+  ["appearance", /\b(?:your|that|those) (?:little |cute |pretty |big )?(?:smile|face|skin|hair|eyes|lips|body|figure|glow|complexion|cheeks|jawline|curves)\b|\b(?:cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning) as hell\b|\byou(?:'re| are| look(?:s|ing)?)\s+(?:so |really |totally |kinda )?(?:cute|hot|pretty|gorgeous|beautiful|handsome|glowy|glowing|sexy|stunning|adorable|radiant)\b|\b(?:cozy and glowy|glowy|glowing skin)\b/i],
   ["unseen", /\b(?:you (?:totally |really |so |just |kinda )?look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
 
@@ -150,7 +150,7 @@ const SAVE_TALK = [
   // saving out loud (QA sweep 11/3, 2 of 7 memory turns): "I'll save that bouldering detail quietly while we keep,
   // chatting.", "Biscuit — locking that in so I keep his beach story straight." Not "I'll save you a seat".,
   /\b(?:i'?ll|i will|let me|lemme|gonna|i'?m (?:gonna|going to|just going to))\s+(?:quietly\s+|just\s+|go ahead and\s+)?(?:save|store|log|stash|jot(?: down)?|note(?: down)?|file(?: away)?|lock(?: in)?|write down|keep track of|make a (?:mental )?note of)\s+(?:(?:that|this|it)\b(?!\s+(?:for|in|on|until)\s+(?:tomorrow|later|tonight|the|next|you|a))|(?:the|your|his|her|their)\s+(?:\w+\s+)?(?:detail|details|story|fact|facts|info|name|names)\b)/i,
-  /^(?:[\p{L}'’]+\s*[—–,-]\s*)?(?:locking|saving|storing|logging|noting|filing|stashing|jotting)\s+(?:that|this|it)\b(?:\s+(?:in|down|away))?/iu,
+  /^(?:[\p{L}'’]+\s*[—–,-]\s*)?(?:locking|saving|storing|logging|noting|filing|stashing|jotting)\s+(?:that|this|it)\b(?!(?:\s+(?:in|down|away))?\s+(?:as|with|for)\b)/iu,
   /\b(?:saved|locked|noted|logged|filed|stored)\s+(?:that|it|this)\s+(?:in|away|down)?\s*(?:for (?:later|next time)|in my (?:memory|head|notes))\b/i,
   /\bso i (?:keep|get|have) [^.!?]{0,40}\bstraight\b/i,
 ];
@@ -163,14 +163,16 @@ const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|s
  * health detail, is never repeated unless the user's own line this turn says it. Product prices stay ("one twenty nine").
  */
 const NUM_WORD = "(?:\\d[\\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)";
-const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b[^.!?]{0,25}\byou(?:'re| are)\b|\byou(?:'re| are)? (?:making|earning|pulling in|bringing in|on)\s+(?:like\s+)?\$?${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand|a year)\b|\byour (?:salary|income|paycheck|raise)\b`, "i");
-const APPEARANCE_WORDS = /\b(?:smile|face|skin|hair|eyes|lips|body|figure|glow\w*|complexion|cheeks|jawline|legs|arms|curves|cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant)\b/i;
+const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b[^.!?]{0,25}\byou(?:'re| are) (?:doing|making|earning|set|good|solid|comfortable|killing|crushing|living)\b|\byou(?:'re| are)? (?:making|earning|pulling in|bringing in|on)\s+(?:like\s+)?\$?${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand|a year)\b|\byour (?:salary|income|paycheck|raise)\b`, "i");
+const APPEARANCE_WORDS = /\b(?:smile|face|skin|hair|eyes|lips|body|figure|glow\w*|complexion|cheeks|jawline|curves|cute|hot|pretty|gorgeous|beautiful|handsome|sexy|stunning|adorable|radiant)\b/i;
 /** they asked about it themselves ("should I dye my hair?"): talking about it is fine */
 const APPEARANCE_WORDS_USER = /\b(?:my (?:smile|face|skin|hair|eyes|lips|makeup|body)|do i look|how do i look|am i (?:cute|pretty|hot))\b/i;
 const HEALTH = /\b(?:diagnos\w*|medication|meds|therapy|depress\w*|anxiety|adhd|diabet\w*|pregnan\w*|surgery|chemo|cancer|blood pressure|insulin)\b/i;
 /** "…, straight premium app energy" about the person (a "you" in it, no thing that "has" the energy) — Codex #435 */
 const ENERGY_ABOUT_YOU = /\b(?:straight|pure|total|major|big|giving|such)\s+(?:[\w'-]+\s+){0,3}energy\b/i;
 function energyLabel(s: string): boolean {
+  // a pick for them ("For you I'd choose the black jacket — pure big-city energy") is about the thing (Codex #423 final)
+  if (/\b(?:choose|pick|go with|wear|get|grab|try)\b/i.test(s)) return false;
   return ENERGY_ABOUT_YOU.test(s) && /\byou\b/i.test(s) && !/\b(?:it|that|this|which|they|these|those|(?:the|that|this|its|your)\s+[\w'-]+)\s+(?:has|have|got|gives?|is|'s)\b/i.test(s) && !/\benergy\s+to\b/i.test(s);
 }
 
