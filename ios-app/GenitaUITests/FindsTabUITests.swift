@@ -99,6 +99,26 @@ final class FindsTabUITests: XCTestCase {
 
     private let camera = ["GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-1", "GENITA_CALL_AUTOCAMERA": "1", "GENITA_FIXTURE_SCRIPT": "none"]
 
+    /// PRD D22 (WT-09): double-tap my view → back camera; ⋮ → Flip camera → front again.
+    func testDoubleTapMyViewFlipsToTheBackCamera() throws {
+        let app = launch(camera)
+        let stage = any(app, "cameraStage")
+        XCTAssertTrue(stage.waitForExistence(timeout: 25), "camera on")
+        XCTAssertEqual(stage.value as? String, "front", "starts on the front camera")
+        stage.doubleTap()
+        let end = Date().addingTimeInterval(5)
+        while Date() < end, (stage.value as? String) != "back" { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertEqual(stage.value as? String, "back", "double-tap → back camera")
+        capture(app, "cam-d22-back")
+        app.buttons["more"].tap()
+        XCTAssertTrue(app.buttons["moreFlip"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["moreFlip"].isEnabled)
+        app.buttons["moreFlip"].tap()
+        let end2 = Date().addingTimeInterval(5)
+        while Date() < end2, (stage.value as? String) != "front" { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertEqual(stage.value as? String, "front", "⋮ Flip camera → front again")
+    }
+
     /// Boxes pop on the live preview, then fade (the board's 4 s).
     func testBoxesOverLivePreviewThenFade() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "30"]) { $1 })

@@ -92,6 +92,8 @@ enum CallStop: Equatable {
     private(set) var micOn = false
     private(set) var micDenied = false
     private(set) var cameraOn = false
+    /// D22: the next camera start faces back (the self view was double-tapped while the camera was off)
+    @ObservationIgnored private var startCameraBack = false
     /// The front camera's preview is mirrored, the frames sent to the server are not: boxes need to know (CAM-H).
     private(set) var cameraFront = true
     private(set) var cameraDenied = false
@@ -446,6 +448,7 @@ enum CallStop: Equatable {
             guard camera.available else { return }
             beforeCameraStart?()
             camera.start()
+            if startCameraBack { startCameraBack = false; camera.flip() }
             cameraFront = camera.front
             cameraOn = true
             onCameraChange?()
@@ -453,6 +456,13 @@ enum CallStop: Equatable {
     }
 
     func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
+    /// PRD D22: the self view double-tapped → the back camera. Off → it turns on facing back (after the usual
+    /// permission); on and facing front → it flips.
+    func useBackCamera() {
+        if cameraOn { if cameraFront { flipCamera() }; return }
+        startCameraBack = true
+        toggleCamera()
+    }
 
     /// PERC-2: ~2 fps look at the camera; a face crop goes up when it changed (≥ 1 s apart) or every 2.5 s.
     private func startPerception() {
