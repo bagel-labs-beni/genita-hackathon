@@ -1158,3 +1158,12 @@ test("AI sweep V5/C1: 'how do I look' is not permission to rate the face; 'glad 
   assert.equal((String(reply.text).match(/glad you told me/g) ?? []).length, 1, String(reply.text));
   session.close();
 });
+
+test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greeting is a question; 'you always look' with the camera off is unseen", { skip: !v1 }, async () => {
+  assert.equal(guardSentence("Black, no contest, you always look lethal in black.", none), "unseen");
+  const { client, session } = setup(["<teasing> Okay Summer, when am I finally getting a taste of that kimchi grilled cheese."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
+  const greet = await client.waitFor((m) => m.type === "reply");
+  assert.equal(greet.text, "Okay Summer, when am I finally getting a taste of that kimchi grilled cheese?");
+  session.close();
+});
