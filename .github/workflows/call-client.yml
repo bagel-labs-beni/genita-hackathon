@@ -57,6 +57,7 @@ jobs:
             -only-testing:GenitaUITests/SplashUITests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/GenitaUITests/testJudgeAccessSheet \
             -only-testing:GenitaUITests/GenitaUITests/testA02LegalLinksOpenSafari \
             -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleByDefault \
             -only-testing:GenitaUITests/GenitaUITests/testA02ShowsGoogleWhenFlagOff \

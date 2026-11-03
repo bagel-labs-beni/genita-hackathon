@@ -3,6 +3,7 @@
  * Read per call so an env change on restart is the rollback; no config plumbing.
  *   GENITA_CONVO_V1=0      → the 11/2 prompt, greeting and faces (legacy), no sentence guard
  *   GENITA_INITIATIVE=0    → the companion never speaks first mid-call (silence / memory / camera cues)
+ *   GENITA_BACKCHANNEL=1   → a soft "mm" / "yeah" event mid-turn on a long user turn (P1 #345; off by default, off for the demo)
  *   GENITA_ENGLISH_ONLY=0  → a mostly-Hangul transcript in chat mode is auto-interpreted again (F8); default on (11/3,
  *                            Chelsea: English only), so a misheard line never turns a chat reply into a translation
  */
@@ -16,4 +17,8 @@ export function initiativeOn(env: NodeJS.ProcessEnv = process.env): boolean {
 
 export function englishOnly(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_ENGLISH_ONLY !== "0";
+}
+
+export function backchannelOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return convoV1(env) && env.GENITA_BACKCHANNEL === "1";
 }

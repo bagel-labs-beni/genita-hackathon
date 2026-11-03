@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
 | 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
@@ -27,6 +28,8 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/2 | F0-L4: TS + Swift types and shared samples. Added optional `turn.metrics.speculative` (`hit`/`miss`/`none`). No breaking change. |
 | 11/2 | F10 Finds (F5-L3, F5-L8, F10-L3~L6): new events `find.started`, `find.progress`, `find.items`, `observe.boxes`, `find.created`, `find.image`, `find.failed`; new client messages `find.confirm`, `find.stop`; optional `text.findId`, `start.user.id`, `start.user.timeZone`; REST `/v1/finds`. A turn may now get one server-initiated reply after it (the card's line; an ordinary `state`/`reply.delta`/`audio`/`reply` sequence with a new `utteranceId`). Additive. |
 | 11/2 | F1-L5: the bearer can be the user's session JWT (from `POST /auth/apple` or `/auth/exchange`); the shared `GENITA_SESSION_TOKEN` keeps working as a dev fallback. Auth failures now complete the upgrade and close with `4401` (was HTTP 401 before the upgrade); a signed-in user without AI-data consent gets `4403`. Clients that treated any failed connect as "can't connect" keep working; to route correctly, map 4401 → sign in (A02), 4403 → consent (CS01). |
+| 11/3 | D41 Judge access: `POST /auth/judge {code, device?}` → the same body as `POST /auth/apple` (session JWT + `/me` view) for the demo account that code belongs to. 401 wrong code, 400 no code, 429 after 5 wrong tries per IP in 10 min, 404 when `GENITA_JUDGE_CODES` is unset. Additive; WS and other routes unchanged. |
+| 11/3 | D41 Judge access daily cap: new `error` code `daily_limit` (retryable `false`) when a judge demo account has used today's turns (per code, UTC day, `GENITA_JUDGE_DAILY_TURNS`, default 200). The socket stays open; the refused turn gets no reply. Additive: apps that don't know the code just log it. |
 | 11/2 | F8-L1 interpretation: new events `interpret.pair` and `interpret.bubble` (two-language bubbles with speaker side); new app message `hold`; `start` and `mode` take optional `interpret {source, other, app}`; Mac call mode sends app→server binary frames with a `GA` header (kind `3` mic, `4` call sound); `mode.changed.by` can be `model` (voice switch). In interpret mode speech no longer cancels Genita (only `barge_in` does). Additive: a chat-only app sees nothing new. |
 | 11/3 | Pill line: optional `FindCard.pill` and `find.items.pill` — the status pill's text for a card, ≤ 28 characters (one line on iPhone and Mac). `say` is spoken, `pill` is shown. Product: same as `say`. Additive. |
 | 11/3 | #199: `find.started` and `find.progress` take optional `evidence {style, situation}` on product searches — the import line the search follows (top Likes line at start, the line the picks follow once known); show as-is when present. A product ask on a call continued from the other device refines the search asked there (from the conversation's turns). Additive. |
@@ -216,6 +219,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
+| `backchannel` | `kind: mm \| yeah` | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 6 s apart): play a short soft listening clip; not a reply, no state change. Only with `GENITA_BACKCHANNEL=1` |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
 | `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
 | `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |
@@ -663,6 +667,7 @@ One process holds the gate (in memory); several server instances would need a sh
 | `spark_unavailable` | yes | show the "couldn't answer" state (S09-F); nothing was made up |
 | `tts_unavailable` | yes | show captions for this reply; the next reply tries voice again |
 | `asr_unavailable` | yes | voice input down; offer text (S08) |
+| `daily_limit` | no | this account's turns for today are used up (Judge access codes, `GENITA_JUDGE_DAILY_TURNS`, D41). The turn was not answered and nothing was made up; the call stays open. Show the "couldn't answer" state; the limit resets at 00:00 UTC |
 | `not_started`, `already_started`, `bad_persona`, `bad_message`, `unknown_type`, `frame_too_large` | no | client bug |
 
 ## Measured (11/2, local server, real vendors, `npm run smoke -- --turns=20`)

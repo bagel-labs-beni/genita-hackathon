@@ -778,7 +778,8 @@ enum CallStop: Equatable {
             if t.name == "web_search", lookedUp.insert(t.utteranceId).inserted { findsCount += 1 }
         case let .error(e):
             log.error("server error \(e.code, privacy: .public): \(e.message, privacy: .public)")
-            if e.code == "spark_unavailable" { answerFailed = true }
+            // daily_limit (D41 judge cap): the turn got no answer either; same "couldn't answer" state
+            if e.code == "spark_unavailable" || e.code == "daily_limit" { answerFailed = true }
         case let .modeChanged(m):
             mode = m.mode
             if m.mode == .chat { start?.interpret = nil; uplink.callFraming = false }
@@ -821,6 +822,9 @@ enum CallStop: Equatable {
             // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
             break
         case .interpretDetected, .asrStatus, .pong, .unknown:
+            break
+        case .backchannel:
+            // convo P1 #345: the server flag is off by default; playing a soft clip is a follow-up
             break
         }
     }

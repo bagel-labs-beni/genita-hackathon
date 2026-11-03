@@ -29,6 +29,8 @@ struct ReferenceSignInView: View {
     @State private var signingIn = false
     /// A02-E: "Couldn't reach Apple…" for 4 s; a cancel stays silent (board §1).
     @State private var signInFailed = false
+    /// A02-J Judge access alert (D41)
+    @State private var judgeAlert = false
     /// A02-M Continue with email (NEW · design check)
     @State private var emailSheet = false
     var referenceViewport = false
@@ -57,6 +59,9 @@ struct ReferenceSignInView: View {
                     emailButton.frame(width: size.width - 77, height: 50).position(x: (size.width - 1) / 2, y: 659 + bottom)
                     // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
                     LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
+                    // D41: a small text link between the provider buttons and the legal line; no new design
+                    Button { if !signingIn { judgeAlert = true } } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
+                        .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
@@ -73,6 +78,7 @@ struct ReferenceSignInView: View {
                     .transition(.opacity).accessibilityElement(children: .combine).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
             }
         }
+        .judgeAccessAlert(isPresented: $judgeAlert, busy: $signingIn, model: model)
         #if DEBUG
         .onAppear { if ProcessInfo.processInfo.environment["GENITA_REVIEW_SIGNIN_FAILED"] == "1" { signInFailed = true } }
         #endif

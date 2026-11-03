@@ -84,3 +84,24 @@ test("persona request: survey listed before the profile, profile fenced as data"
   assert.doesNotMatch(s, /imported_profile/); // no style → no profile block
   assert.match(String(r.instructions), /never the user/);
 });
+
+// convo P1 #342 (DESIGN §2.4): two opinions + one quirk of the companion's own ride in the backstory
+test("persona card: 2 opinions + 1 quirk from Spark land in the backstory; politics, the user and long ones are dropped", () => {
+  const raw = {
+    traits: ["curious"], speaking_style: "short", role: "a trusted partner who helps the user think things through",
+    opinions: ["Cold pizza beats hot pizza", "Rainy Sundays are the best Sundays", "Elections are overrated"],
+    quirk: "hums when it's thinking",
+    summary: { why: "", energy: "", initiative: "", never: "" },
+  };
+  const p = toPersona(raw, input(right as SetupAnswers));
+  assert.match(p.card.backstory!, /^A trusted partner who helps the user think things through\. Own takes: Cold pizza beats hot pizza; Rainy Sundays are the best Sundays\. Quirk: hums when it's thinking\./);
+  assert.doesNotMatch(p.card.backstory!, /Elections/);
+  const unsafe = toPersona({ ...raw, opinions: ["Your outfit needs work", "The government should ban homework forever and ever and ever and ever"], quirk: "" }, input(right as SetupAnswers));
+  assert.doesNotMatch(unsafe.card.backstory!, /Own takes|Quirk/);
+  assert.match(toPersona(null, input(right as SetupAnswers)).card.backstory!, /^A trusted partner/, "no Spark: card as before");
+  const instr = buildInstructions({ persona: p.card, mode: "chat", style: "v1" });
+  assert.match(instr, /Background: [^\n]*Own takes: Cold pizza beats hot pizza/);
+  const req = buildPersonaRequest(input(right as SetupAnswers));
+  assert.match(req.instructions!, /opinions: exactly 2 mild, specific opinions/);
+  assert.ok((req.schema as { required: string[] }).required.includes("opinions"));
+});

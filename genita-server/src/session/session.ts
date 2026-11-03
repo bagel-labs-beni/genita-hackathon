@@ -6,6 +6,7 @@
  */
 import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
+import type { TurnGate } from "../auth/judge.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
@@ -54,7 +55,8 @@ import { mightBeCorrection } from "../personalize/corrections.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -97,6 +99,8 @@ export type SessionDeps = {
   voiceSeats?: VoiceSeats;
   /** Identity is assigned by the authenticated upgrade, never by start.user. */
   userId?: string;
+  /** D41 per-account daily turn cap (judge demo accounts only); unset = no cap. */
+  turnGate?: TurnGate;
   ops?: OpsLimits;
   /** null: shared-token dev identity has no persisted user row. */
   turnUserId?: string | null;
@@ -205,6 +209,8 @@ const DEVICE_MS_PER_CHAR = 70;
 const DEVICE_SLACK_MS = 1500;
 const DEVICE_MAX_MS = 60_000;
 const ASR_RETRY_MS = 2000;
+/** F8: interpretation always hears both sides, even when chat listens in English only (prod GENITA_ASR_LANGUAGES=English) */
+const INTERPRET_ASR_LANGUAGES = ["English", "Korean"];
 
 /**
  * Words of `spoken` (the spoken form the voice was given) not yet voiced, given the voiced characters.
@@ -236,6 +242,8 @@ const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
+/** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
+const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -287,6 +295,14 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
+  private backchannel: Backchannel | null = backchannelOn()
+    ? new Backchannel({
+        now: () => this.now(),
+        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
+        send: (kind) => { this.client.sendJson({ type: "backchannel", kind }); this.log("convo.backchannel", { kind }); },
+      })
+    : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
   private perceptionUnsub: (() => void) | null = null;
@@ -309,6 +325,10 @@ export class Session {
   /** Demo S4: the move-to-Mac suggestion was made in this call */
   private macSuggested = false;
   private asr: AsrLike | null = null;
+  /** the languages `asr` was opened with (joined), so a mode switch can tell whether it must reopen */
+  private asrLanguagesKey: string | null = null;
+  /** set while `start` runs: `mode` only becomes "interpret" in enterInterpret, after the mic ASR is opened */
+  private startingMode: Mode | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
@@ -553,6 +573,8 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
+    // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
+    this.startingMode = startMode;
     this.language = str(msg.language, 40) ?? "English";
     this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -682,6 +704,7 @@ export class Session {
       ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
@@ -730,6 +753,7 @@ export class Session {
     }
     this.leaveInterpret();
     this.mode = "chat";
+    this.retuneMicAsr();
     // back from interpretation: the silence clock starts now, and a call that started interpreting gets a governor
     this.initiative?.activity(this.now());
     if (this.started && initiativeOn()) this.startInitiative();
@@ -745,12 +769,14 @@ export class Session {
       source: opts.source ?? "face",
       other: opts.other ?? null,
       app: opts.app,
-      speculate: this.deps.config.speculate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
+      // capped accounts don't guess on partials: a guess calls Spark before the turn is admitted
+      speculate: this.deps.config.speculate && !this.deps.turnGate && !(this.deps.ops ?? getOps()).cappedUser(this.limitUserId()),
       speculateStableMs: this.deps.config.speculateStableMs,
     });
     this.interp.begin();
     if (this.interp.source === "call") void this.ensureCallAsr();
     else this.dropCallAsr();
+    this.retuneMicAsr();
   }
 
   private leaveInterpret(): void {
@@ -784,6 +810,7 @@ export class Session {
         return this.turn.utteranceId;
       },
       // no memory context or recall/remember tools in translation (useMemory = false)
+      // D41 daily cap: each translation is a user turn, charged in admitTurn() together with the D46 cap.
       translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
@@ -809,9 +836,11 @@ export class Session {
     retry.connecting = true;
     let asr: AsrLike | null = null;
     try {
-      asr = this.deps.openAsr(this.deps.config.asrLanguages);
+      // the call's sound is only listened to for interpretation
+      const languages = this.asrLanguages(source === "call" ? "interpret" : this.startingMode ?? this.mode);
+      asr = this.deps.openAsr(languages);
       const stream = asr;
-      if (source === "mic") this.asr = stream;
+      if (source === "mic") { this.asr = stream; this.asrLanguagesKey = languages.join(","); }
       else this.callAsr = stream;
       stream.on("event", (e) => {
         if (this.closed || current() !== stream) return;
@@ -851,6 +880,27 @@ export class Session {
     } finally {
       retry.connecting = false;
     }
+    // the mode changed while this stream was connecting
+    if (source === "mic") this.retuneMicAsr();
+  }
+
+  /** Chat listens in the configured languages; interpretation adds English and Korean (the face-to-face pair). */
+  private asrLanguages(mode: Mode): string[] {
+    const base = this.deps.config.asrLanguages;
+    return mode === "interpret" ? [...new Set([...base, ...INTERPRET_ASR_LANGUAGES])] : base;
+  }
+
+  /** Mode switch: reopen the mic ASR when it listens in the wrong languages (not while one is connecting). */
+  private retuneMicAsr(): void {
+    const stream = this.asr;
+    if (this.closed || !stream || this.asrRetry.mic.connecting) return;
+    const want = this.asrLanguages(this.startingMode ?? this.mode).join(",");
+    if (this.asrLanguagesKey === want) return;
+    this.log("asr.retune", { mode: this.mode, languages: want });
+    this.asr = null;
+    this.asrLanguagesKey = null;
+    try { stream.end(); } catch { /* already unusable */ }
+    if (this.micOn) void this.ensureAsr();
   }
 
   close(code = 1000, reason = "closed"): void {
@@ -868,6 +918,7 @@ export class Session {
     }
     this.interp?.stop();
     this.perceptionCtl?.close();
+    this.backchannel?.stop();
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
@@ -904,19 +955,23 @@ export class Session {
     switch (e.type) {
       case "speechStart":
         this.metrics = {};
+        this.backchannel?.start();
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.metrics.lastPartialAt = t;
+        this.backchannel?.partial(e.text);
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
+        this.backchannel?.stop();
         this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
+        this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
         // exactly one final transcript goes out either way
@@ -1422,6 +1477,7 @@ export class Session {
     const ops = this.deps.ops ?? getOps();
     if (ops.cappedUser(this.limitUserId()) && !ops.canSpeculate(this.limitUserId())) return;
     if (check !== this.specCheck || this.turn.phase !== "listening") return;
+    if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
     this.dropSpeculation();
@@ -1481,6 +1537,15 @@ export class Session {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
+    // D41 daily cap: real user turns were charged in admitTurn(); the greeting and an initiative cue only run
+    // while a turn is left and never spend one. Over the cap: no Spark call, a daily_limit error, the call stays open.
+    if (synthetic && this.deps.turnGate && !this.deps.turnGate.peek()) {
+      this.dropSpeculation();
+      this.dailyLimit();
+      // after the reducer's own effects (state thinking) went out, so the last state is listening
+      queueMicrotask(() => this.finishReply(reply));
+      return;
+    }
     const signal = reply.abort.signal;
     const spec = self ? null : this.spec;
     if (!self) this.spec = null; // this turn was admitted synchronously before start_reply
@@ -1589,9 +1654,47 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true }[] = [];
+    // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
+    // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
+    const ends = (d: string) => LOOKS_FINAL.test(d.trim());
+    let askHold: string[] = [];
+    let askReleasing = false;
+    /** a hold beat goes out on its own: it never releases or joins a held question clause (Codex r1 P2) */
+    let beating = false;
+    let droppedAsk = false;
+    /** the queued, not-yet-ended clauses of the sentence in progress (before the next one) */
+    const openClauses = (): number[] => {
+      const out: number[] = [];
+      // a dropped clause is a boundary: the dropped question never joins the next sentence (Codex r1 P2)
+      for (let k = sentences.length - 1; k >= 0 && !sentences[k].beat && !sentences[k].drop && !ends(sentences[k].display); k--) out.unshift(k);
+      return out;
+    };
+    /** Consumer side: clause i is part of a whole queued sentence that asks the dropped question → drop all of it. */
+    const askedAt = (i: number): boolean => {
+      if (!this.askDropped || interpret || self || sentences[i]?.beat) return false;
+      if (sentences[i].drop) return true;
+      let a = i, b = i;
+      while (a > 0 && !sentences[a - 1].beat && !sentences[a - 1].drop && !ends(sentences[a - 1].display)) a--;
+      while (b < sentences.length && !sentences[b].drop && !ends(sentences[b].display)) b++;
+      if (b < sentences.length && sentences[b].drop) return false;
+      if (b >= sentences.length) return false; // the sentence isn't finished yet: its end is judged on enqueue
+      const full = sentences.slice(a, b + 1).map((x) => x.display).join(" ");
+      if (!/\?\s*$/.test(sentences[b].display) || !replyAsks(full, this.askDropped)) return false;
+      // never leave the reply empty: when the question was its only real sentence and nothing else is coming,
+      // a short reaction takes its place (coordinator 11/3)
+      const alone = sparkDone && !sentences.some((x, k) => (k < a || k > b) && !x.beat && !x.drop);
+      for (let k = a; k <= b; k++) sentences[k].drop = true;
+      droppedAsk = true;
+      this.log("profile.ask_dropped", { utteranceId, queued: true, replaced: alone });
+      if (!alone || i < a) return true;
+      const ack = parseTaggedSentence(WATCH_ASK_FALLBACK);
+      sentences[i] = { tts: ack.ttsText, display: ack.displayText, emotion: ack.emotion ?? sentences[i].emotion, face: null };
+      if (jobs[i]) jobs[i] = undefined as never; // a prefetched TTS of the question is not used
+      return false;
+    };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
-    const said = () => sentences.filter((x) => !x.beat);
+    const said = () => sentences.filter((x) => !x.beat && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1634,9 +1737,29 @@ export class Session {
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         // watch together took this call's question back: a reply already asking it (built before) drops that sentence
-        if (this.askDropped && !interpret && !self && /\?\s*$/.test(parseTaggedSentence(tts).displayText) && replyAsks(parseTaggedSentence(tts).displayText, this.askDropped)) {
-          this.log("profile.ask_dropped", { utteranceId });
-          continue;
+        if (this.askDropped && !interpret && !self && !askReleasing && !beating) {
+          const shown = parseTaggedSentence(tts).displayText;
+          // a clause that may start the question waits for the rest of its sentence
+          if (!ends(shown) && (askHold.length || replyAsks(`${shown.replace(/[\s,;:—-]+$/u, "")}?`, this.askDropped))) {
+            askHold.push(raw);
+            continue;
+          }
+          if (askHold.length || /\?\s*$/.test(shown)) {
+            const held = askHold;
+            askHold = [];
+            const queued = openClauses();
+            const full = [...queued.map((k) => sentences[k].display), ...held.map((h) => parseTaggedSentence(h).displayText), shown].join(" ");
+            if (/\?\s*$/.test(shown) && replyAsks(full, this.askDropped)) {
+              for (const k of queued) sentences[k].drop = true; // its first clause, queued before watch attached
+              droppedAsk = true;
+              this.log("profile.ask_dropped", { utteranceId });
+              continue;
+            }
+            if (held.length) {
+              askReleasing = true;
+              try { enqueueSentences(held, keepOpener); } finally { askReleasing = false; }
+            }
+          }
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
@@ -1680,6 +1803,14 @@ export class Session {
       }
       enqueueSentences(speak);
     };
+    /** a held clause whose sentence never ended was not the question: say it */
+    const releaseAskHold = () => {
+      if (!askHold.length) return;
+      const held = askHold;
+      askHold = [];
+      askReleasing = true;
+      try { enqueueSentences(held); } finally { askReleasing = false; }
+    };
     const pushSentences = (list: string[]) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1697,7 +1828,8 @@ export class Session {
       beatTimer = setTimeout(() => {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
-        enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true);
+        beating = true;
+        try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
       }, HOLD_BEAT_MS);
@@ -1747,6 +1879,7 @@ export class Session {
           if (signal.aborted) return;
           pushSentences(splitter.flush());
           applyNarration(narration.finish());
+          releaseAskHold();
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
@@ -1758,11 +1891,14 @@ export class Session {
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
           if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          // the only real sentence was the question watch together took back: a short reaction instead of a retry
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
+          askHold = [];
           onlyOpener = null;
           guarded.first = null;
           laughs = 0;
@@ -1773,7 +1909,12 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
-        if (!signal.aborted) applyNarration(narration.finish());
+        if (!signal.aborted) {
+          applyNarration(narration.finish());
+          releaseAskHold();
+          // the consumer dropped the only real sentence while Spark was still writing (nothing else came)
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+        }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
@@ -1783,7 +1924,7 @@ export class Session {
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
     const startJob = (i: number) => {
-      if (jobs[i] || !sentences[i]) return;
+      if (jobs[i] || !sentences[i] || askedAt(i)) return;
       const s = sentences[i];
       jobs[i] = new Eager(
         this.deps.tts({
@@ -1822,6 +1963,9 @@ export class Session {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
+      // watch together attached while this question was queued (or its TTS prefetched): it is not said
+      // (read the sentence after the check: the only sentence may have been replaced by the short reaction)
+      if (askedAt(i)) continue;
       const s = sentences[i];
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
@@ -2042,14 +2186,27 @@ export class Session {
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
   }
 
+  private dailyLimit(): void {
+    this.log("turn.daily_limit", {});
+    this.error("daily_limit", "Today's turns for this access code are used up. The limit resets at 00:00 UTC.", false);
+  }
+
   private limitUserId(): string | null | undefined {
     return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
   }
 
+  /** One admission point for both caps: the D41 judge cap is checked first and spent only when the D46 cap
+   * also admits the turn, so a refusal by either never charges the other. */
   private admitTurn(): boolean {
     if (this.closed) return false;
+    const gate = this.deps.turnGate;
+    if (gate && !gate.peek()) {
+      this.dailyLimit();
+      return false;
+    }
     let admitted = false;
     (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+    if (admitted && gate) gate.take();
     return admitted;
   }
 
