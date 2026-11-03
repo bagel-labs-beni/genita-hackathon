@@ -378,7 +378,7 @@ struct MouthQualityTests {
         let size = CGSize(width: 540, height: 960)
         let talk = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
         let face = faceCI(animalSet)
-        let eyes = CGPoint(x: face.midX + face.width * 0.2, y: face.maxY - face.height * 0.3)   // off the roll axis
+        let eyes = CGPoint(x: face.midX, y: face.maxY - face.height * 0.3)   // on the roll axis: any vertical move is a bob
         let k = size.width / animalSet.pixelSize.width
         var lo = CGFloat.infinity, hi = -CGFloat.infinity
         for i in 0..<250 {
@@ -389,7 +389,7 @@ struct MouthQualityTests {
             lo = min(lo, y); hi = max(hi, y)
         }
         print(String(format: "vertical: eyes p2p %.2f px", hi - lo))
-        #expect(hi - lo < 2.5)     // roll only (±1.3°), was ~16 px with nod + drift + breathing
+        #expect(hi - lo < 0.5)     // was ~16 px on T9 with nod + drift + breathing
     }
 
     @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
