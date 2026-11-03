@@ -11,7 +11,8 @@ const LOOKUP_CONTENT = `[^${CLAUSE_SEPARATORS}.!?…。！？]+`;
 const QUERY = `(?: (?:for|about) ${LOOKUP_CONTENT})?`;
 const LOOKUP = `(?:check ${TARGET}${QUERY}|search (?:my memory|the web)${QUERY}|look (?:up (?!at\\b|to\\b)${LOOKUP_CONTENT}|(?:that|this|it) up)|recall ${TARGET}${QUERY}|remember (?:that|this|it)|save (?:that|this|it) to memory)`;
 const SEPARATOR = `[${CLAUSE_SEPARATORS} ]+`;
-const WAIT = "(?:one sec(?:ond)?|give me a sec(?:ond)?|just a moment)";
+// "hang on," / "hold on," lead a lookup announcement too: held until the next clause is judged (Codex #356 P2)
+const WAIT = "(?:one sec(?:ond)?|give me a sec(?:ond)?|just a moment|one moment|give me a moment|hang on|hold on)";
 const KOREAN_WAIT = "(?:잠깐|잠시만요?|잠시)";
 const INTENT = new RegExp(`^(?:(?:${WAIT}|${KOREAN_WAIT})${SEPARATOR})?(?:i'll|i will|let me) ${LOOKUP}$`);
 const INTERJECTION = "(?:hm+|mm+|um+|uh+|oh+|ah+|eh+|er+m*|huh|well|ok(?:ay)?|alright)";

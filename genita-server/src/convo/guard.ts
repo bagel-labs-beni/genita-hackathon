@@ -41,16 +41,23 @@ const NARRATION = [
   // "let me / I'll / I'm gonna / one sec while I … pull up / check / map …"
   new RegExp(String.raw`${LEAD}(?:let me|lemme|i'?ll|i will|i'?m (?:gonna|going to|just going to|about to)|gonna|while i)\s+(?:quickly\s+|just\s+|real quick\s+|go\s+)?${LOOKUP_VERB}\b`, "i"),
   // a process gerund that says what it's doing: "Figuring out where you mean…", "Pulling up what you told me…"
-  new RegExp(String.raw`${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking (?:on|where|what|that|it|this|my|your notes|the (?:map|address|route|location))|searching|digging (?:up|into|through)|mapping|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
+  new RegExp(String.raw`${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking (?:on|where|what|that|it|this|my|your notes|the (?:map|address|route|location))|searching (?:for (?:it|that|this|the (?:address|route|place|way)|where|what)|my|the web|online|up)|digging (?:up|into|through)|mapping (?:it|that|this|the|out|where|your)|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
   // memory plumbing said out loud: "let me see what you told me", "searching my memory"
   /\b(?:let me|i'?ll|lemme)\s+(?:see|check|remember)\s+what (?:you (?:told|said to) me|i (?:remember|have|know) about)\b/i,
   /\b(?:searching|checking|scanning) (?:my|our) (?:memory|memories|notes|past (?:chats|conversations))\b/i,
   /\bso i can (?:map|look (?:it |that )?up|search|find|pull (?:it |that )?up|check)\b/i,
 ];
 
+/** a clause that carries an answer after the announcement ("… but tofu works") keeps the whole sentence (Codex #356 P1) */
+const FILLER_PART = /^(?:ok(?:ay)?|alright|sure|hm+|yeah|yep|one sec(?:ond)?|hang on|hold on|real quick|for you|now|right now)[.!,…]*$/i;
+const CONTENT_JOIN = /(?:,\s*|\s+)(?:but|and|though|because|plus)\s+|\s+[—–]\s+|;\s+/i;
+
 export function isNarration(sentence: string): boolean {
   const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ");
-  return NARRATION.some((re) => re.test(s));
+  if (!NARRATION.some((re) => re.test(s))) return false;
+  // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
+  const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
+  return parts.every((p) => NARRATION.some((re) => re.test(p)) || FILLER_PART.test(p));
 }
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
@@ -79,9 +86,9 @@ const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call
 
 /** The class that drops this sentence, or null to speak it. */
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
-  // narration first: it is never content, crisis or not (a crisis turn has no lookup to announce)
-  if (isNarration(sentence)) return "narration";
+  // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

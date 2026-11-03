@@ -402,3 +402,11 @@ test("session v1: a narration-only first sentence is never voiced (server voice 
   assert.ok(!client.json.some((m) => (m.type === "say" || m.type === "reply.delta") && /figuring out/i.test(String(m.text))), "never sent to the voice or captions");
   session.close();
 });
+
+test("narration (Codex #356): an answer joined to the announcement stays; emergency help and crisis turns come first; 'searching for a job' is a sentence", () => {
+  assert.equal(guardSentence("I'll search my memory for that but tofu works.", none), null);
+  assert.equal(guardSentence("Searching for a job is exhausting.", none), null);
+  assert.equal(guardSentence("Checking on your friend means calling emergency services right now.", none), null);
+  assert.equal(guardSentence("Let me find the nearest crisis line for you.", { camera: false, userText: "i want to kill myself" }), null);
+  assert.equal(guardSentence("Let me pull that up real quick.", none), "narration");
+});
