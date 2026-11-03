@@ -818,9 +818,12 @@ enum CallStop: Equatable {
             showProfileChip(p.text)
         case let .profileAsking(a):
             showAskingChip(a.topic)
-        case .expression:
-            // expression layer (11/3, #284): FaceDriver consumes it in a follow-up; nothing to do here yet
-            break
+        case let .expression(x):
+            // expression layer (11/3, #284): one clause's feeling → the face's expression stills (eyes, brows, cheeks)
+            if !cancelled.contains(x.utteranceId), !routed.contains(x.utteranceId) {
+                let id = faceId(x.utteranceId)
+                feedFace(x.utteranceId) { $0.handle(expression: x.tag, intensity: x.intensity, startMs: x.startMs, endMs: x.endMs, utteranceId: id) }
+            }
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
         case .backchannel:

@@ -32,6 +32,7 @@ struct Options {
     var dumpAmounts: String?
     var amounts: String?
     var expr: String?          // "tag:intensity:startMs:endMs,…"
+    var tailMs = 300.0         // frames after the audio (the expression's mood hold plays out here)
     var framesDir: String?
     var framesPrefix = "face"
     var bitrate = 1_100_000
@@ -64,7 +65,10 @@ func parse() -> Options {
         case "--dump-amounts": o.dumpAmounts = v()
         case "--amounts": o.amounts = v()
         case "--flow-density": FaceRenderer.flowDensity = Double(v()) ?? 1
-        case "--expr": o.expr = v(); FaceRenderer.expressionLayer = true
+        case "--expr": o.expr = v()   // the expression stills layer (server events), like the app
+        case "--expr-warp": o.expr = v(); FaceRenderer.expressionLayer = true   // + the v29 warp layer (off in the app)
+        case "--no-stills": FaceRenderer.expressionStills = false
+        case "--tail": o.tailMs = Double(v()) ?? 300
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -241,7 +245,7 @@ if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
 for item in (o.expr ?? "").split(separator: ",") {
     let f = item.split(separator: ":")
     if f.count == 4, let i = Double(f[1]), let a = Int(f[2]), let b = Int(f[3]) {
-        renderer.addExpression(FaceExpressionEvent(tag: String(f[0]), intensity: i, startMs: a, endMs: b))
+        renderer.addExpression(FaceExpressionEvent(tag: String(f[0]), intensity: i, startMs: a, endMs: b), utteranceId: 1)
     }
 }
 // The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
@@ -251,7 +255,7 @@ if let e = o.emotion { metricRenderer.setEmotion(e, at: 0.3) }
 
 let fps = 25
 let audioMs = Double(pcm.count / 2) / outRate * 1000
-let frameCount = Int((audioMs + 300) / 1000 * Double(fps))
+let frameCount = Int((audioMs + o.tailMs) / 1000 * Double(fps))
 
 // Writer
 let outURL = URL(fileURLWithPath: o.out)
@@ -334,7 +338,8 @@ func renderFrame(_ i: Int) {
     let r0 = Date()
     if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
     let ahead = renderer.lipAheadMs > 0 ? timeline.sample(atMs: t * 1000 + renderer.lipLookaheadMs + renderer.lipAheadMs) : nil
-    let ctx = LipContext(audioMs: t * 1000 + renderer.lipLookaheadMs, timeline: timeline)
+    // like the app: no audio clock once the reply's audio has played out
+    let ctx: LipContext? = t * 1000 <= audioMs ? LipContext(audioMs: t * 1000 + renderer.lipLookaheadMs, timeline: timeline) : nil
     let image = renderer.image(at: t, lip: lip, ahead: ahead, context: ctx)
     if o.dumpAmounts != nil, let keys = faceSet.flow?.keys { let a = renderer.flowAmounts; amountRows.append(keys.map { a[$0] ?? 0 }) }
     var pbOut: CVPixelBuffer?
