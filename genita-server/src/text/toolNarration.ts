@@ -124,9 +124,13 @@ const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:abou
 /** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
  * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
 const HELP_ACTION = /\b(?:call|text|dial|police|emergency|put (?:[\w']+ ){0,3}(?:down|away)|pills|safe|someone you trust|stay with (?:someone|a friend|me)|move away from|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
+/** a comma inside the lookup clause is fine only inside its object ("getting you fast, accurate support options");
+ * anything else after a comma, colon or semicolon ("…, please step back from the ledge") is real content (Codex #450 r4–r5) */
+const LOOKUP_NOUN = /\b(?:options|resources|support|spots|places|score|scores|results?|stats|standings|numbers?|lines?|hotlines?|forecast|weather|schedule|times?|route|directions|picks|ideas|recs|recommendations)(?: (?:for you|now|right now|nearby|near you|tonight))*$/;
+const commaTailIsObject = (c: string) => { const parts = c.split(/[,:;]/); return parts.length < 2 || LOOKUP_NOUN.test(parts[parts.length - 1].trim()); };
 // a turn to something else ("…, but put the pills down now") is real content: kept (Codex #450 r3 P1)
 // …and an instruction after a comma or colon is real content ("…, put the pills down", Codex #450 r4)
-const progressClause = (c: string) => !HELP_ACTION.test(c) && !/[,:;]\s*(?:please |just |now |and )?(?:put|call|stay|go|move|text|take|breathe|don'?t|do not|keep|hold|sit|lie|tell|reach|get (?:away|out|somewhere))\b/.test(c) && !/\b(?:but|because|so|then|and)\b/.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
+const progressClause = (c: string) => !HELP_ACTION.test(c) && commaTailIsObject(c) && !/\b(?:but|because|so|then|and)\b/.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
 // "which concert that was" is the thing being recalled, not a predicate
 const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
 const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
