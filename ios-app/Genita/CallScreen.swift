@@ -112,9 +112,12 @@ struct CallCueView: View {
     var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
+    /// HUD r01 A: the room on the menu row (between the menu button and its mirror). A "{name} is …" line that would
+    /// not fit there says "Thinking" / "Talking" instead (NM01 allows 20-character names). nil = no limit.
+    var rowWidth: CGFloat? = nil
     var body: some View {
         if let content {
-            HStack(spacing: 8) {
+            HStack(spacing: CallPillMetrics.iconSpacing) {
                 content.icon
                 // the push runs inside the line's own box: the old words leave and the new ones rise within the pill,
                 // never drawn above or below it (a mid-change capture showed three lines stacked, UI sweep 11/3)
@@ -125,12 +128,15 @@ struct CallCueView: View {
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
-                    }.buttonStyle(.plain).padding(.vertical, -4).padding(.trailing, -8).accessibilityIdentifier("cueAction")
+                    // a 44 pt tap target that lays out at the pill's text height, so the pill stays 32 tall
+                    }.buttonStyle(.plain).padding(.vertical, -(44 - (CallPillMetrics.height - 2 * CallPillMetrics.vertical)) / 2).padding(.trailing, -8).accessibilityIdentifier("cueAction")
                 }
             }
-            .padding(.leading, 16).padding(.trailing, content.action == nil ? 16 : 8).padding(.vertical, 8)
-            .frame(minHeight: 36)
-            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+            // HUD r01 A: 32 tall, 12 / 14 (8 with an action), 6 top and bottom; CallHUDGrid places it
+            .padding(.leading, CallPillMetrics.leading).padding(.trailing, content.action == nil ? CallPillMetrics.trailing : CallPillMetrics.trailingWithAction)
+            .padding(.vertical, CallPillMetrics.vertical)
+            .frame(minHeight: CallPillMetrics.height)
+            .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
@@ -140,18 +146,55 @@ struct CallCueView: View {
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
-    private var content: Content? {
-        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+
+    /// "{name} is thinking" when its pill fits in `rowWidth`, else the short word (HUD r01 A: plain cues stay on the row).
+    static func nameLine(_ name: String, _ verb: String, short: String, rowWidth: CGFloat?) -> String {
+        let full = "\(name) is \(verb)"
+        guard let rowWidth else { return full }
+        return pillWidth(text: full) <= rowWidth ? full : short
+    }
+    private static func textWidth(_ text: String) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+    /// The pill's width for a line (icon counted at its widest, the 20 pt alert). With a button: + 7 + 8 + title + 8.
+    static func pillWidth(text: String, action: String? = nil) -> CGFloat {
+        let base = CallPillMetrics.leading + 20 + CallPillMetrics.iconSpacing + textWidth(text)
+        guard let action else { return base + CallPillMetrics.trailing }
+        return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
+    }
+    /// What the pill says: the Finds line (PF-1) unless the call is reconnecting or the answer failed, else the cue.
+    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> (text: String, action: String?)? {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return (findsText, nil) }
         return switch cue {
         case .none: nil
-        case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
-        case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
-        case .speaking: Content(icon: AnyView(CueWave()), text: "\(name) is talking", action: nil)
-        case .interrupted: Content(icon: AnyView(CueDot()), text: "Stopped. Go ahead.", action: nil)
-        case .reconnecting: Content(icon: AnyView(CueSpinner()), text: "Reconnecting…", action: nil)
-        case .answerFailed: Content(icon: AnyView(CueAlert()), text: "Couldn’t get an answer.", action: ("Try again", retry))
-        case .micBlocked: Content(icon: AnyView(CueAlert()), text: "Microphone is off for Genita.", action: ("Settings", openSettings))
+        case .listening: ("Listening", nil)
+        case .thinking: (nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), nil)
+        case .speaking: (nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), nil)
+        case .interrupted: ("Stopped. Go ahead.", nil)
+        case .reconnecting: ("Reconnecting…", nil)
+        case .answerFailed: ("Couldn’t get an answer.", "Try again")
+        case .micBlocked: ("Microphone is off for Genita.", "Settings")
         }
+    }
+    /// The measured pill width of what it shows now; nil = nothing to show.
+    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> CGFloat? {
+        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth).map { pillWidth(text: $0.text, action: $0.action) }
+    }
+    private var content: Content? {
+        guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
+        let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
+        let icon: AnyView
+        if showingFinds { icon = AnyView(CueWave()) } else {
+            switch cue {
+            case .none, .speaking: icon = AnyView(CueWave())
+            case .listening, .interrupted: icon = AnyView(CueDot())
+            case .thinking, .reconnecting: icon = AnyView(CueSpinner())
+            case .answerFailed, .micBlocked: icon = AnyView(CueAlert())
+            }
+        }
+        guard let title = line.action else { return Content(icon: icon, text: line.text, action: nil) }
+        return Content(icon: icon, text: line.text, action: (title: title, run: cue == .micBlocked ? openSettings : retry))
     }
 }
 
@@ -177,6 +220,11 @@ struct ProfileChipView: View {
         .onAppear { withAnimation(.fade) { shown = true } }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
+    }
+    /// 14 + icon ≤ 13 + 6 + text (13 medium) + 14.
+    static func width(_ text: String, soft: Bool) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 13) ?? .systemFont(ofSize: 13, weight: .medium)
+        return 14 + 13 + 6 + ceil((text as NSString).size(withAttributes: [.font: font]).width) + 14
     }
 }
 
@@ -223,14 +271,14 @@ struct CallToggleGlass: View {
     let on: Bool
     var body: some View {
         ZStack {
-            CallGlassControl(icon: icon, size: 46)
+            CallGlassControl(icon: icon, size: CallHUDGrid.button)
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
                     Image(uiImage: image).resizable().colorInvert().frame(width: image.size.width / 4, height: image.size.height / 4)
                 }
             }
-        }.frame(width: 46, height: 46).contentShape(Circle())
+        }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())
     }
 }
 
