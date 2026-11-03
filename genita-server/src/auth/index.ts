@@ -110,7 +110,8 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     jwtSecret,
     callbackUrl: `${publicUrl}/auth/apple/callback`,
     trustProxy: env.GENITA_TRUST_PROXY === "1",
-    authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 30,
+    // every /auth/* request per IP per minute; a shared NAT signs many people in at once (11/4)
+    authRatePerMin: Number(env.GENITA_AUTH_RATE_PER_MIN) || 300,
     judge: new JudgeAccess(env.GENITA_JUDGE_CODES),
     judgeTurns: JudgeDailyTurns.fromEnv(env.GENITA_JUDGE_DAILY_TURNS),
     log,

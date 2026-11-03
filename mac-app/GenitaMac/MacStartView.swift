@@ -175,8 +175,19 @@ struct MacEmailSheet: View {
     private var v2Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacV2Title(text: step == .address ? "Continue with email." : "Check your email.")
-            Text(step == .address ? "We’ll send a six-digit code. No password." : "Enter the code we sent to \(sentTo).")
-                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineLimit(1).truncationMode(.middle).padding(.top, 8)
+            if step == .address {
+                Text("We’ll send a six-digit code. No password.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 8)
+            } else {
+                // QA 171: one middle-truncated line cut the sentence ("…we sent t…ae2207@…"). The address gets its own
+                // line; only a very long address is shortened, in its middle.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enter the code we sent to")
+                    Text(verbatim: sentTo + ".").lineLimit(1).truncationMode(.middle)
+                }
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).padding(.top, 8)
+                .accessibilityElement(children: .combine)
+            }
             if step == .address && MacDesignV2.reviewRender {
                 // review renders: ImageRenderer can't draw the AppKit field, so draw its focused empty look
                 Text(verbatim: "you@example.com").font(MacSheetInk.sans(16)).foregroundStyle(MacDesignV2.faint)
@@ -191,6 +202,7 @@ struct MacEmailSheet: View {
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                     .onSubmit { sendCode() }.padding(.top, 24).accessibilityIdentifier("macEmailField")
+                    .macASCIIOnlyInput(focused: focused)
             } else {
                 MacV2CodeField(code: $code, disabled: sending, id: "macEmailCodeField") { verify() }.padding(.top, 20)
             }
@@ -241,6 +253,7 @@ struct MacEmailSheet: View {
             .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(message == nil ? .clear : MacSheetInk.ink, lineWidth: 1))
             .padding(.top, 24).onSubmit { step == .address ? sendCode() : verify() }
+            .macASCIIOnlyInput(focused: focused)
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macEmailError")
@@ -325,6 +338,7 @@ struct MacJudgeCodeSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                 .padding(.top, 24).onSubmit { submit() }
                 .accessibilityIdentifier("macJudgeCodeField")
+                .macASCIIOnlyInput(focused: focused)
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macJudgeCodeError")
