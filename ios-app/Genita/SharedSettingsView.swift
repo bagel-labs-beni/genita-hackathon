@@ -139,7 +139,7 @@ struct SettingsView: View {
                 model.signedOut()
             } catch _ where !asked.accepts(model.launchAuthSnapshot) {
                 return
-            } catch GenitaAuthError.server(status: 429, _) {
+            } catch GenitaAuthError.server(status: 429, _, _) {
                 resetError = "You’ve started over a lot today. Try again tomorrow."
             } catch {
                 resetError = "Try again in a moment. Nothing was removed."
