@@ -149,7 +149,8 @@ struct MacV2CodeBoxes: View {
                 if i == 3 { Capsule().fill(MacSheetInk.handle).frame(width: 10, height: 2).padding(.horizontal, 2) }
                 Text(i < chars.count ? String(chars[i]) : "")
                     .font(MacSheetInk.sans(24, .medium)).foregroundStyle(MacSheetInk.ink).monospacedDigit()
-                    .frame(width: 50, height: 56)
+                    // 6 × 49 + the 14 pt dash + 6 gaps × 8 = 356 = the 420 window minus 32 + 32 (50 overflowed by 6 pt, Mac QA 11/3)
+                    .frame(width: 49, height: 56)
                     .background(focus == i ? Color.white : Color(white: 241.0 / 255), in: RoundedRectangle(cornerRadius: 12))
                     .overlay { if focus == i { RoundedRectangle(cornerRadius: 12).strokeBorder(MacSheetInk.ink, lineWidth: 1.5) } }
             }
