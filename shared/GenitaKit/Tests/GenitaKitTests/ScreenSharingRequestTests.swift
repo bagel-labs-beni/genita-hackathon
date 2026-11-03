@@ -151,4 +151,60 @@ struct ScreenSharingRequestTests {
         #expect(!request.isCurrent(previous))
         #expect(!request.isCurrent(latest))
     }
+
+    // #318 review P1: A's picker answers late, after logout and after B opened a picker.
+    @Test func aStalePickerSelectionCannotConsumeTheNextAccountsRequest() {
+        var request = ScreenSharingRequest()
+        request.begin()                      // A opens the picker
+        request.invalidate()                 // A signs out while it is still on screen
+        #expect(request.stalePicker)
+        let b = request.begin()              // B opens a picker
+        let r1 = request.beginCapture()
+        #expect(r1 == nil)   // A's late selection: dropped
+        #expect(request.isCurrent(b))            // B's request is untouched
+        let r2 = request.beginCapture()
+        #expect(r2 == b)     // B's own selection starts B's capture
+        #expect(!request.stalePicker)
+    }
+
+    @Test func aStalePickerCancelDoesNotCancelTheNextPicker() {
+        var request = ScreenSharingRequest()
+        request.begin()
+        request.invalidate()
+        let b = request.begin()
+        let r3 = request.cancelPicker()
+        #expect(r3 == false)  // A's cancel: dropped
+        #expect(request.isCurrent(b))
+        let r4 = request.cancelPicker()
+        #expect(r4 == true)   // B's own cancel
+        #expect(request.current == nil)
+    }
+
+    @Test func afterTheWaitAnInstantAnswerIsStillTheOldPickers() {
+        var request = ScreenSharingRequest()
+        request.begin()                          // A
+        request.invalidate()                     // logout, A's picker still open
+        let b = request.begin()                  // B asks; the app waits 1.5 s, A never answers
+        request.clearStalePicker(presentingAt: 100)
+        let r5 = request.beginCapture(now: 100.3)
+        #expect(r5 == nil)     // A's in-flight selection: dropped
+        let r6 = request.cancelPicker(now: 100.5)
+        #expect(r6 == false)   // A's in-flight cancel: dropped
+        #expect(request.isCurrent(b))
+        let r7 = request.beginCapture(now: 101.4)
+        #expect(r7 == b)       // B's own pick
+    }
+
+    @Test func stopWithoutAnOpenPickerLeavesNothingStale() {
+        var request = ScreenSharingRequest()
+        request.begin()
+        let active = request.beginCapture()!
+        let done = request.completeCapture(active)
+        #expect(done)
+        request.invalidate()
+        #expect(!request.stalePicker)
+        let b = request.begin()
+        let r8 = request.beginCapture()
+        #expect(r8 == b)
+    }
 }

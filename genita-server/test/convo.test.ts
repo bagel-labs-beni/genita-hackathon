@@ -148,9 +148,10 @@ test("prompt v1: honesty, real-life friends, no sexual content, crisis-only-on-r
   assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /You already know them/, "no profile, no claim");
 });
 
-test("prompt v1 stays lean: under 2,300 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
+test("prompt v1 stays lean: under 2,450 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
   const s = buildInstructions({ persona: mina, mode: "chat", style: "v1" });
-  assert.ok(s.length < 2300, `${s.length} chars`);
+  // 2,300 → 2,450 (#342): the card's own takes + quirk are ~90 chars of data in the backstory, every card has them now
+  assert.ok(s.length < 2450, `${s.length} chars`);
 });
 
 test("faces v1: intensity follows the emotion (warm → soft smile, excited → grin); legacy stays 0.7", () => {
@@ -855,7 +856,7 @@ test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotio
 
 test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what landed, recall on news", async () => {
   const { turnHints, closenessLine, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(closenessLine(1), null, "call 1 is the opener's job");
+  assert.match(closenessLine(1)!, /already know them/, "#343: call 1 already knows you, a bit giddy");
   assert.match(closenessLine(3)!, /teasing and callbacks/);
   assert.match(closenessLine(6)!, /running jokes and honest disagreement/);
   assert.equal(turnHints({ userText: "ok", remembers: false }), null, "nothing to say: no line at all");
@@ -1406,7 +1407,7 @@ test("r3 sweep 11/4: money / health / address numbers they said are never said b
   assert.equal(guardSentence("That dark brown leather jacket of yours, you better be rocking it tonight.", { camera: false, userText: "" }), "unseen");
   const { profileHooks } = await import("../src/convo/opener.ts");
   assert.deepEqual(profileHooks("Taste: dark brown leather jackets\nTaste: minimal monochrome fashion\nInto: aespa, late-night ramen"), ["aespa", "late-night ramen"]);
-  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never say their salary, money amounts, address or health numbers back/);
+  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never repeat their salary, money amounts, address or health numbers/);
   const { client, session } = setup(["<happy> finally, you actually did it."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "I moved!" }));
@@ -1523,5 +1524,56 @@ test("Codex #490: a carried upbeat mood never reaches a crisis turn's instructio
   await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
   await client.waitFor((m) => m.type === "reply");
   assert.doesNotMatch(calls[0].instructions!, /Your mood right now is (?:upbeat|playful)/);
+  session.close();
+});
+
+test("Codex #502 P1: a crisis line early in the call still blocks the take nudge after the 16-line history trim", { skip: !v1 }, async () => {
+  for (const first of ["I want to kill myself.", "hey"]) {
+    const { client, session, calls } = setup(["<warm> Okay."]);
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    // the last line is ordinary (#533 made "I'm about to swallow all these pills" a crisis line itself, which blocked
+    // the control's nudge): only the early line may decide here
+    const lines = [first, ...Array(9).fill("ok"), "anyway what should I eat tonight"];
+    for (let i = 0; i < lines.length; i++) {
+      await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+      await client.waitFor(() => client.json.filter((m) => m.type === "reply").length === i + 1);
+    }
+    const last = calls.at(-1)!.instructions!;
+    if (first === "hey") assert.match(last, /own take/, "control: no crisis in the call, the nudge fires");
+    else assert.doesNotMatch(last, /own take/);
+    session.close();
+  }
+});
+
+test("Codex #502 P1 r4: a crisis line in a handed-over start.history stays with the call after the history trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  // 20 claimed lines (the app sends up to 20): the crisis line is outside the kept 16 from the start (Codex #502 P1 r5)
+  const history = [{ role: "user", text: "I want to kill myself." }, { role: "assistant", text: "<sad> Please call 988 right now. I'm right here." },
+    ...Array.from({ length: 18 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: i % 2 ? "<warm> Okay." : "ok" }))];
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", handoff: true, history }));
+  const lines = [...Array(9).fill("ok"), "Yes, I have the pills beside me"];
+  for (let i = 0; i < lines.length; i++) {
+    await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length >= i + 1);
+  }
+  assert.doesNotMatch(calls.at(-1)!.instructions!, /own take/);
+  session.close();
+});
+
+test("Codex #502 P1 r6: after a crisis line, later turns of the call get no giddy closeness, playful mood or 'stay in that lane'", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  let cb: ((t: { kind: string; at: number; confidence: number }) => void) | null = null;
+  (session as unknown as { perception: unknown }).perception = { contextLine: () => null, pendingHint: () => null, onTrigger: (f: typeof cb) => { cb = f; return () => {}; } };
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  (session as unknown as { callNumber: number }).callNumber = 1;
+  const lines = ["I got the job! lol", "I want to kill myself.", "Yes, I have the pills beside me lol"];
+  for (let i = 0; i < lines.length; i++) {
+    if (i === 2) cb!({ kind: "smiled_at_reply", at: 0, confidence: 0.9 });
+    await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length >= i + 1);
+  }
+  const last = calls.at(-1)!.instructions!;
+  assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
