@@ -354,11 +354,6 @@ export async function startServer(
     const save = () => {
       const cached = lastTurns.get(userId);
       const now = Date.now();
-      // A call whose conversation another call continued never caches (Codex 11/3), whatever is cached now.
-      if (thread && deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id)) {
-        log("history.not_cached", { session: session.id, by: "moved_on" });
-        return;
-      }
       // Compare when saving (inside the Forget lock), not before an asynchronous state read.
       // Only a still-valid newer snapshot can block this save.
       // An unchanged inherited snapshot still refreshes retention when its call ends.

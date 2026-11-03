@@ -501,7 +501,6 @@ test("server (Codex 11/3 r4): the old Mac's late close never replaces a newer iP
   await say(again, "Dark brown shoes, decided.");
   again.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => closes() === 2); await memory.drain();
   mac.ws.resume(); await waitFor(() => closes() === 3); await memory.drain(); // the old Mac finally closes
-  assert.ok(logs.includes("history.not_cached"), "the moved-on Mac call is not cached");
   requests.length = 0;
   const onMac = await open("mac"); start(onMac); await waitFor(onMac.ready);
   await say(onMac, "Where were we?");
