@@ -242,6 +242,11 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
 const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
+/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
+export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_HOLD_CAP_MS ?? 2200);
+  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 2200;
+}
 const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
@@ -1592,6 +1597,8 @@ export class Session {
     };
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
+    /** a Finds turn answered with a fixed ack / product reaction: no first-sound cap beat on top */
+    let ackTurn = false;
     let memoryRetry: MemoryRetryState = {};
     let built: Built | null = null;
     if (!self && this.specTimer) clearTimeout(this.specTimer);
@@ -1631,6 +1638,7 @@ export class Session {
       const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {
+        ackTurn = true;
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
         // the card's own line follows when it lands
         if (spec && speculative === "hit") spec.abort.abort();
@@ -1851,18 +1859,29 @@ export class Session {
     // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
     // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
     let beatTimer: NodeJS.Timeout | null = null;
-    const armBeat = () => {
-      if (beatTimer || !this.v1 || interpret || self) return;
-      beatTimer = setTimeout(() => {
+    let capTimer: NodeJS.Timeout | null = null;
+    const beat = () => {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
         beating = true;
         try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
-      }, HOLD_BEAT_MS);
+    };
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(beat, HOLD_BEAT_MS);
       beatTimer.unref?.();
     };
+    // first-sound cap (sweep 11/3 [P1]: speech end → first sound p50 3.34 s, max 5.3 s; Spark's first token alone
+    // is 1.3–3.4 s): nothing said HOLD_CAP_MS after the user stopped → the same one short beat. Not on a greeting or
+    // an initiative turn (nobody is waiting), not on a fixed ack (it is instant).
+    const capMs = holdCapMs();
+    if (capMs > 0 && this.v1 && !interpret && !self && !greeting && !cue && !ackTurn) {
+      const since = m.speechEndAt !== undefined ? this.now() - m.speechEndAt : 0;
+      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(0, capMs - since));
+      capTimer.unref?.();
+    }
     const producer = (async () => {
       try {
         if (self) {
@@ -1945,6 +1964,7 @@ export class Session {
         }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
+        if (capTimer) clearTimeout(capTimer);
         waiter.wake?.();
       }
     })();

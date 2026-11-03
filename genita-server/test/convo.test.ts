@@ -920,3 +920,31 @@ test("session v1 (Codex review): 'Well. Well water needs testing.' keeps the wor
   assert.equal(reply.text, "Well. Well water needs testing.");
   session.close();
 });
+
+test("first-sound cap (sweep 11/3 P1): Spark silent past GENITA_HOLD_CAP_MS → one short beat, then the answer; a fast answer gets none", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "150";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  let wait = 400;
+  const client = new Client();
+  const session = new Session("cap", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, wait));
+      yield { type: "text", delta: "<warm> Octopuses have three hearts." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "tell me something fun about octopuses" }));
+  const slow = await client.waitFor((m) => m.type === "reply", 5000);
+  assert.match(String(slow.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.) Octopuses have three hearts\.$/);
+  wait = 0;
+  client.json.length = 0;
+  await new Promise((r) => setTimeout(r, 300));
+  await session.onClientText(JSON.stringify({ type: "text", text: "and squid?" }));
+  const fast = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(fast.text, "Octopuses have three hearts.");
+  session.close();
+});
