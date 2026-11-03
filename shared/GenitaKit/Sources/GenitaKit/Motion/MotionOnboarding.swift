@@ -154,7 +154,8 @@ struct MotionTextLineReveal<Key: Equatable>: ViewModifier {
 
 /// For titles drawn outside SwiftUI Text (Core Text labels): while revealing, the view is drawn once per line band
 /// (`pitch` pt tall, from the top) and each band rises, sharpens and fades in on its own. Before and after the
-/// reveal it is the plain view (one accessibility element; the band copies are hidden from accessibility).
+/// reveal it is the plain view; during it the plain view stays invisible underneath as the one accessibility element
+/// (the band copies are hidden from accessibility).
 struct MotionBandLineReveal<Key: Equatable>: ViewModifier {
     var pitch: CGFloat
     var key: Key
@@ -165,7 +166,8 @@ struct MotionBandLineReveal<Key: Equatable>: ViewModifier {
     func body(content: Content) -> some View {
         Group {
             if MotionDetails.live(reduceMotion: reduceMotion), let start, pitch > 0 {
-                content.hidden().overlay(alignment: .topLeading) {
+                // the plain view stays (masked out, not hidden) so VoiceOver and UI tests keep the one title element
+                content.mask { Color.clear }.overlay(alignment: .topLeading) {
                     GeometryReader { g in
                         let n = min(MotionOnboarding.maxLines * 2, max(1, Int((g.size.height / pitch).rounded(.up))))
                         TimelineView(.animation) { tl in

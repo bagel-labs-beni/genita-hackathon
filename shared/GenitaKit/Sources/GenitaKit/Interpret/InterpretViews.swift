@@ -219,6 +219,7 @@ public struct InterpretHoldButton: View {
         let held = board.holding || down
         // motion details card 9 (flag `motionDetails`): off → the INT-4 look switches at once as before
         let details = MotionDetails.enabled
+        let haptics = details && !GenitaMotion.reviewStill
         let live = MotionDetails.live(reduceMotion: reduceMotion)
         VStack(spacing: 8) {
             HStack(spacing: 8) {
@@ -258,7 +259,7 @@ public struct InterpretHoldButton: View {
             .animation(details && !GenitaMotion.reviewStill ? MotionOnboarding.holdFill : nil, value: down)
             .sensoryFeedback(trigger: down) { _, pressed in
                 // soft on press, rigid when the release sends it
-                guard details else { return nil }
+                guard haptics else { return nil }
                 return pressed ? .impact(flexibility: .soft) : .impact(flexibility: .rigid)
             }
             .contentShape(Capsule())
