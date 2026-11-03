@@ -80,11 +80,25 @@ extension AppState {
     }
 
     /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
-    func loadScene() async {
-        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
-              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
+    /// `upcoming` = a prep answer not shown yet: its scene is fetched first so the screen never says ready over the
+    /// uploaded photo.
+    func loadScene(for upcoming: PrepProgress? = nil) async {
+        let p = upcoming ?? prep
+        guard serverWired, let url = p?.sceneURL else { return }
+        let key = "\(setup.accountId ?? "-")|\(url.absoluteString)"
+        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
         // the account or companion may have changed while the image was on its way
-        if sceneKey == key { sceneImage = (key, data) }
+        if "\(setup.accountId ?? "-")|\(url.absoluteString)" == key { sceneImage = (key, data) }
+    }
+
+    /// PREP-1 ready: hold S07 until the call scene is on screen (at most ~4 s, then go on with what there is).
+    /// No scene URL (photo face) = nothing to wait for.
+    func waitForScene() async {
+        guard serverWired, prep?.sceneURL != nil else { return }
+        for _ in 0..<8 where sceneImageData == nil && !Task.isCancelled {
+            await loadScene()
+            if sceneImageData == nil { try? await Task.sleep(for: .milliseconds(500)) }
+        }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
@@ -470,6 +484,12 @@ extension AppState {
                 setupSummary = r.summary
                 if let p = r.session?.persona { setup.serverPersona = p }
             } catch { route(error) }
+            // PREP-1 opens on the real state: a prep that is already ready draws "ready" from the first frame
+            // (no 0.5 s of empty "Bringing … to life" rows), with its scene already in
+            if let p = try? await onboarding.prep() {
+                if p.isReady { await loadScene(for: p) }
+                prep = p
+            }
             if stage == .summary { go(.bringing) }
         }
     }
@@ -482,6 +502,8 @@ extension AppState {
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
+                // ready is shown with the made face already in place, never over the uploaded photo
+                if p.isReady { await loadScene(for: p) }
                 prep = p
                 if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {

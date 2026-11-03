@@ -519,7 +519,8 @@ struct ChipLayout: Layout {
 
 /// PREP-1 motion and colours (Figma rp1wR9pxV0IsgyjvOcwo92 182:51 / 182:3 / 182:96 / 182:142 notes):
 /// photo breathes 1.00 → 1.03 over 8 s, a light band sweeps top → bottom every 2.8 s, a finished stage's check
-/// scales 0.8 → 1 in 200 ms, ready = 400 ms crossfade then S07 0.8 s later. Reduce Motion: no breathing, no sweep.
+/// scales 0.8 → 1 in 200 ms, ready = 400 ms crossfade then S07 2 s later (0.8 s read as no ready screen at all,
+/// design review 11/4). Reduce Motion: no breathing, no sweep.
 enum PrepStyle {
     static let breathScale: CGFloat = 1.03
     static let breathSeconds: Double = 8
@@ -531,7 +532,7 @@ enum PrepStyle {
         // UI tests: long enough for XCUITest to see and capture PREP-1c before S07
         if ProcessInfo.processInfo.arguments.contains("--uitesting") { return 3 }
         #endif
-        return 0.8
+        return 2.0
     }
     static let photoHeight: CGFloat = 560
     static let background = Color(red: 17 / 255, green: 17 / 255, blue: 17 / 255)
@@ -584,6 +585,8 @@ struct BringingView: View {
         .task(id: s.phase == .ready) {
             // PREP-1c: no button, "Saying hi…", then S07 by itself
             guard s.phase == .ready else { return }
+            // the call opens on the made face, not the uploaded photo (no face swap inside S09)
+            await model.waitForScene()
             try? await Task.sleep(for: .seconds(PrepStyle.crossfadeSeconds + PrepStyle.readyHoldSeconds))
             if !Task.isCancelled { model.startFirstCall() }
         }
