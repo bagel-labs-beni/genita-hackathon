@@ -29,7 +29,9 @@ const KINDS: Array<[string, RegExp]> = [
   ["loafers", /\b(loafers?)\b/i],
   ["heels", /\b(heels?|pumps?)\b/i],
   ["flats", /\b(flats|ballet)\b/i],
-  ["bags", /\b(bags?|totes?|backpacks?|purses?|clutch)\b/i],
+  ["totes", /\b(totes?)\b/i],
+  ["backpacks", /\b(backpacks?|rucksacks?)\b/i],
+  ["bags", /\b(bags?|purses?|clutch|crossbody)\b/i],
   ["shoes", /\b(shoes?|oxfords?|derbys?|footwear)\b/i],
 ];
 const SHOE_KINDS = new Set(["boots", "sneakers", "loafers", "heels", "flats", "shoes"]);
@@ -38,7 +40,11 @@ const SHOE_KINDS = new Set(["boots", "sneakers", "loafers", "heels", "flats", "s
  * The one kind of thing an ask is for ("boots", "sneakers", "shoes" …), or null when it names none or several
  * ("black shoes and a bag" is never served from or stored in the cache — Codex P1 #522).
  */
+/** anything else to buy named in the ask (a belt, a jacket …): then the ask is more than one kind */
+const OTHER_THINGS = /\b(belts?|jackets?|coats?|scarf|scarves|hats?|caps?|watch(?:es)?|sunglasses|jewelry|earrings?|necklaces?|bracelets?|wallets?|socks|gloves|dress(?:es)?|shirts?|pants|jeans|sweaters?|hoodies?|skirts?|accessor(?:y|ies)|lamps?|chairs?|mugs?|headphones|earbuds)\b/i;
+
 export function categoryOf(text: string): string | null {
+  if (OTHER_THINGS.test(text)) return null;
   const hits = KINDS.filter(([, re]) => re.test(text)).map(([k]) => k);
   if (hits.length !== 1) return hits.length === 2 && hits.includes("shoes") && hits.every((k) => SHOE_KINDS.has(k)) ? hits.find((k) => k !== "shoes")! : null;
   return hits[0];

@@ -446,10 +446,10 @@ export class FindsRunner {
       ...entry.card, id: c.findId, createdAt: new Date().toISOString(), products, saved: false,
       title: n === 1 ? `One ${shortLabel(label).toLowerCase()} pick` : `${n} ${shortLabel(label).toLowerCase()} picks`,
       subtitle: `${shortLabel(label)}, matched to your style.`,
-      reasons: undefined, say: undefined,
+      reasons: undefined, say: undefined, pill: undefined, status: `${n} link${n === 1 ? "" : "s"}`,
       ...(entry.card.evidence ? { evidence: { ...entry.card.evidence, situation: "" } } : {}),
     };
-    delete card.reasons; delete card.say;
+    delete card.reasons; delete card.say; delete card.pill;
     if (c.signal.aborted) return { card: null, timings: {} };
     c.emit({ type: "find.created", findId: c.findId, card });
     const cardMs = Math.round(c.now() - t0);

@@ -126,10 +126,13 @@ test("cardFitsColors: a plain name stands for the color it was searched for; ano
 
 test("Codex P1s #522: one kind per ask (a bag never answers shoes, boots never answer sneakers); colors from the product's own name; no profile = this account only", async () => {
   const { categoryOf, cardIsKind, cardFitsColors } = await import("../src/finds/productCache.ts");
+  const card = (names: string[], taste = "") => ({ products: names.map((name) => ({ name, taste, situation: "" })) }) as unknown as FindCard;
   assert.equal(categoryOf("Find black shoes and a black bag"), null, "two kinds: never cached or served");
   assert.equal(categoryOf("Find me black boots"), "boots");
   assert.equal(categoryOf("Can you find me some dark brown shoes?"), "shoes");
-  const card = (names: string[], taste = "") => ({ products: names.map((name) => ({ name, taste, situation: "" })) }) as unknown as FindCard;
+  assert.equal(categoryOf("Find black shoes and a black belt"), null, "a belt too: not one kind (Codex r2)");
+  assert.equal(categoryOf("Find a black tote"), "totes");
+  assert.equal(cardIsKind(card(["Black Leather Backpack", "Black Nylon Backpack"]), "totes"), false, "a backpack never answers a tote");
   assert.equal(cardIsKind(card(["Black Chelsea Boot", "Leather Tote Bag"]), "shoes"), false);
   assert.equal(cardIsKind(card(["Black Chelsea Boot", "Penny Loafer"]), "sneakers"), false);
   assert.equal(cardIsKind(card(["Black Chelsea Boot", "Penny Loafer"]), "shoes"), true);
