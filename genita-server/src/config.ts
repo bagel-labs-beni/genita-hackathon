@@ -5,36 +5,44 @@
  */
 export type Config = {
   metaKey: string;
-  /** ElevenLabs key; read only when serverTts is on, else null */
-  elevenKey: string | null;
-  /** server voice on: the Meta voice service (GENITA_VOICE_URL) or, legacy, GENITA_SERVER_TTS=1 ElevenLabs. Off = the app speaks (`say`, device mode) */
-  serverTts: boolean;
+  /** Operational controls (D46); optional for legacy embedded/test configs. */
+  paused?: boolean;
+  /** GENITA_PAUSE_FILE: while this file exists, generation is paused (no restart needed) */
+  pauseFile?: string | null;
+  metaDailyCalls?: number;
+  metaDailyImages?: number;
+  userDailyTurns?: number;
   /**
    * Server voice on our GPU (D3, Meta open model SeamlessM4T v2 on Modal): set by GENITA_VOICE_URL +
    * GENITA_VOICE_TOKEN. Optional: without it the server runs device mode (the app speaks), so a
    * judge can run the public repo with only a Meta key.
    */
   voice?: VoiceConfig | null;
-  /** GENITA_KLING=1: fal (gpt-image-2 scene fallback, Kling clips) in prep; needs FAL_KEY */
-  kling: boolean;
-  /** GENITA_PETER=1: Peter live worker (GENITA_PETER_URL/TOKEN) + Peter prepare */
-  peter: boolean;
+  /** Concurrent voice-GPU calls; default 3, 0 = unlimited. Older injected configs may omit it. */
+  voiceMaxCalls?: number;
+  /** Whether the Meta voice service is configured; otherwise the app speaks. */
+  serverTts: boolean;
   host: string;
   port: number;
   /** shared bearer token apps must present; unset = loopback-only dev mode */
   sessionToken: string | null;
-  ttsModel: string;
-  ttsFallbackModel: string;
   defaultVoiceId: string;
   webSearch: boolean;
+  /** PERC-1 (#319): camera perception (Spark face reads → triggers for the conversation engine). GENITA_PERCEPTION=1; default off. */
+  perception?: boolean;
   asrLanguages: string[];
   bargeInMinMs: number;
   bargeInMinWords: number;
   maxSessions: number;
   maxSessionMs: number;
   sparkFirstTokenTimeoutMs: number;
-  /** concurrent identical Spark requests per turn; first text wins (1 = off) */
+  /**
+   * concurrent identical Spark requests per turn; first text wins (1 = off). 3 since 11/3: in-region,
+   * 40 turns each, speech end → first audio p50 1488 → 1265 ms, p90 2127 → 1924 ms vs 2 lanes.
+   */
   sparkHedge: number;
+  /** idle ms a vendor HTTPS socket stays open between turns (0 = Node's 4 s default) */
+  httpKeepAliveMs?: number;
   /** start Spark on a likely-final partial transcript before speechComplete */
   speculate: boolean;
   /** an unpunctuated partial counts as likely-final after this long unchanged */
@@ -52,6 +60,11 @@ export type VoiceConfig = {
   timeoutMs: number;
   /** "seamless" (default) or "mms" (Meta MMS-TTS backup on the same service, no timing) */
   model: "seamless" | "mms";
+  /** GENITA_VOICE_ALIGN=1: ask the service for word + phoneme timing (Meta MMS forced aligner), sent to the app
+   * as `audio.timing` after each clause's audio. Off: requests are unchanged. */
+  align?: boolean;
+  /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
+  expressions?: boolean;
 };
 
 /** "human:12,animal:7,character:33" → per-kind Seamless speaker ids */
@@ -65,6 +78,8 @@ export function parseSpeakers(v: string | undefined, d: VoiceConfig["speakers"])
   return out;
 }
 
+const flag = (v: string | undefined) => v === "1";
+
 function num(v: string | undefined, d: number): number {
   const n = Number(v);
   return v !== undefined && v !== "" && Number.isFinite(n) ? n : d;
@@ -72,12 +87,9 @@ function num(v: string | undefined, d: number): number {
 
 const DEFAULT_SPEAKERS: VoiceConfig["speakers"] = { human: 0, animal: 0, character: 0 };
 
-const flag = (v: string | undefined) => v === "1";
-
 /**
  * Only MODEL_API_KEY is required (11/2: everything at call time is Meta or on
- * the device). Each non-Meta vendor sits behind a flag that is off by default;
- * its key is read and required only when its flag is on.
+ * the device). Prep uses Meta scene and face generation.
  */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const metaKey = env.MODEL_API_KEY ?? "";
@@ -92,39 +104,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           speed: Math.min(1.3, Math.max(0.8, num(env.GENITA_VOICE_SPEED, 1))),
           timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
+          align: env.GENITA_VOICE_ALIGN === "1",
+          expressions: env.GENITA_EXPRESSION !== "0",
         }
       : null;
   if (voiceUrl && !voice) throw new Error("GENITA_VOICE_URL needs GENITA_VOICE_TOKEN");
-  const serverTts = flag(env.GENITA_SERVER_TTS) || !!voice;
-  const kling = flag(env.GENITA_KLING);
-  const peter = flag(env.GENITA_PETER);
-  // ElevenLabs only as the legacy path when no Meta voice service is configured
-  const elevenKey = serverTts && !voice ? env.ELEVENLABS_API_KEY || null : null;
-  if (serverTts && !voice && !elevenKey) throw new Error("GENITA_SERVER_TTS=1 needs ELEVENLABS_API_KEY");
-  if (kling && !env.FAL_KEY) throw new Error("GENITA_KLING=1 needs FAL_KEY");
-  if (peter && !env.GENITA_PETER_URL) throw new Error("GENITA_PETER=1 needs GENITA_PETER_URL");
-  if (peter && !env.GENITA_PETER_TOKEN) throw new Error("GENITA_PETER=1 needs GENITA_PETER_TOKEN");
+  const serverTts = !!voice;
+  const voiceMaxCalls = num(env.GENITA_VOICE_MAX_CALLS?.trim(), 3);
   return {
     metaKey,
-    elevenKey,
+    paused: flag(env.GENITA_PAUSED),
+    pauseFile: env.GENITA_PAUSE_FILE?.trim() || null,
+    metaDailyCalls: num(env.GENITA_META_DAILY_CALLS, 20_000),
+    metaDailyImages: num(env.GENITA_META_DAILY_IMAGES, 600),
+    userDailyTurns: num(env.GENITA_USER_DAILY_TURNS, 300),
     serverTts,
     voice,
-    kling,
-    peter,
+    voiceMaxCalls: Number.isSafeInteger(voiceMaxCalls) && voiceMaxCalls >= 0 ? voiceMaxCalls : 3,
     host: env.HOST ?? "127.0.0.1",
     port: num(env.PORT, 8787),
     sessionToken: env.GENITA_SESSION_TOKEN || null,
-    ttsModel: env.GENITA_TTS_MODEL ?? "eleven_v4_turbo",
-    ttsFallbackModel: env.GENITA_TTS_FALLBACK_MODEL ?? "eleven_v3",
-    defaultVoiceId: env.GENITA_DEFAULT_VOICE_ID ?? "7PbNGDB5sJCFnOZuMPNL",
+    defaultVoiceId: env.GENITA_DEFAULT_VOICE_ID ?? "seamless:0",
     webSearch: env.GENITA_WEB_SEARCH !== "0",
+    perception: env.GENITA_PERCEPTION === "1",
     asrLanguages: (env.GENITA_ASR_LANGUAGES ?? "English,Korean").split(",").map((s) => s.trim()).filter(Boolean),
     bargeInMinMs: num(env.GENITA_BARGE_IN_MIN_MS, 400),
     bargeInMinWords: num(env.GENITA_BARGE_IN_MIN_WORDS, 2),
     maxSessions: num(env.GENITA_MAX_SESSIONS, 16),
     maxSessionMs: num(env.GENITA_MAX_SESSION_MS, 30 * 60_000),
     sparkFirstTokenTimeoutMs: num(env.GENITA_SPARK_TIMEOUT_MS, 8000),
-    sparkHedge: Math.max(1, Math.min(3, num(env.GENITA_SPARK_HEDGE, 2))),
+    sparkHedge: Math.max(1, Math.min(3, num(env.GENITA_SPARK_HEDGE, 3))),
+    httpKeepAliveMs: Math.max(0, num(env.GENITA_HTTP_KEEPALIVE_MS, 60_000)),
     speculate: env.GENITA_SPECULATE !== "0",
     speculateStableMs: num(env.GENITA_SPECULATE_STABLE_MS, 250),
   };

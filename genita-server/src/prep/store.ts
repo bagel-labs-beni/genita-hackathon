@@ -11,7 +11,6 @@
  */
 import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { FalRequest } from "./fal.ts";
 import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
 import type { StyleCard } from "./importProfile.ts";
@@ -19,22 +18,15 @@ import type { CompanionKind, PrepEmotion } from "./prompts.ts";
 import type { FaceState } from "./face.ts";
 import type { Depth, PersonaResult, SetupAnswers } from "./personaCard.ts";
 
-/** `skipped` = not part of this pipeline (Kling clips and lips when GENITA_KLING is off) */
+/** `skipped` = a legacy video/lip step outside the Meta pipeline */
 export type StepStatus = "pending" | "running" | "done" | "failed" | "todo" | "skipped";
 export type Step = {
   status: StepStatus;
   attempts: number;
   error?: string;
   ms?: number;
-  fal?: FalRequest;
   url?: string;
   source?: string;
-  /** lips: remote bake job id (Modal FunctionCall), saved before polling */
-  callId?: string;
-  /** lips (human): Peter avatar cache on the Modal Volume; the worker's READY.bundle_id must match */
-  avatarId?: string;
-  bundleId?: string;
-  nBase?: number;
   /** face: the face set so far (settled keys, scene boxes); a rerun redoes only the missing keys */
   face?: FaceState;
 };
@@ -46,9 +38,9 @@ export type PrepState = {
   steps: {
     scene: Step;
     videos: Record<PrepEmotion, Step>;
-    /** human: Peter avatar cache (F2-L22) · animal/character: mouth atlas (F2-L23) */
+    /** Legacy lip step retained for persisted records. */
     lips: Step;
-    /** Meta-only face set (expressions + visemes); absent on the Kling pipeline */
+    /** Meta-only face set (expressions + visemes); absent on older persisted records */
     face?: Step;
   };
   startedAt: string;
@@ -94,7 +86,7 @@ export interface PrepStore {
   patchCompanion(userId: string, fn: (c: CompanionRecord) => CompanionRecord): Promise<CompanionRecord | null>;
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer): Promise<void>;
+  putVoicePreview(voiceId: string, version: string, audio: Buffer): Promise<void>;
   /** removes the user's companion (and, on Postgres, its photo and users/<id>/companions/<cid>/ files); false if none */
   deleteCompanion(userId: string): Promise<boolean>;
   /**
@@ -204,13 +196,13 @@ export class FileStore implements PrepStore {
   }
   async getVoicePreview(voiceId: string, version: string) {
     try {
-      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.mp3`));
+      return await readFile(join(this.dir, `voices/${safe(voiceId)}-${safe(version)}.wav`));
     } catch {
       return null;
     }
   }
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.write(`voices/${safe(voiceId)}-${safe(version)}.mp3`, mp3);
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.write(`voices/${safe(voiceId)}-${safe(version)}.wav`, audio);
   }
   async deleteCompanion(userId: string) {
     const key = safe(userId);

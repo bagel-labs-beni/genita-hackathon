@@ -3,7 +3,7 @@ import CryptoKit
 import Security
 
 /// F1-L7 · app side of genita-server accounts. Keeps the session JWT in the
-/// token store; any 401 clears it (the app routes to A02). Also hands the
+/// token store; a 401 clears its matching session (the app routes to A02). Also hands the
 /// token to the realtime call (`Authorization: Bearer`, F1-L5).
 public final class GenitaAuthClient: @unchecked Sendable {
     public let baseURL: URL
@@ -50,6 +50,28 @@ public final class GenitaAuthClient: @unchecked Sendable {
         let r: GenitaSignInResponse = try await send("POST", "/auth/judge", json: ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue], authorized: false)
         store.save(r.token)
         return r
+    }
+
+    /// Email sign-in, step 1: the server mails a 6-digit code (same answer whether or not an account exists).
+    /// Too soon / too many = `.server(status: 429, code: "rate_limited")`; mail off = `.server(status: 503, …)`.
+    @discardableResult
+    public func startEmailSignIn(email: String) async throws -> GenitaEmailStart {
+        try await send("POST", "/auth/email/start", json: ["email": email.trimmingCharacters(in: .whitespacesAndNewlines)], authorized: false)
+    }
+
+    /// Email sign-in, step 2: the code → the same session as Apple. Wrong / expired code = `.unauthorized`
+    /// (nothing stored); 5 wrong tries = `.server(status: 429, code: "too_many_attempts")`.
+    @discardableResult
+    public func signInWithEmailCode(email: String, code: String, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        let body = ["email": email.trimmingCharacters(in: .whitespacesAndNewlines), "code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue]
+        let r: GenitaSignInResponse = try await send("POST", "/auth/email/verify", json: body, authorized: false)
+        store.save(r.token)
+        return r
+    }
+
+    /// Enough to enable "Send code" (the server has the final say).
+    public static func looksLikeEmail(_ text: String) -> Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil
     }
 
     /// Mac: the URL ASWebAuthenticationSession opens (server 302s to Apple).
@@ -100,20 +122,39 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     // MARK: transport
 
-    private struct EmptyReply: Decodable {}
+    struct EmptyReply: Decodable {}
     private struct ErrorReply: Decodable { var error: String? }
 
-    private func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, authorized: Bool = true) async throws -> T {
-        var req = URLRequest(url: baseURL.appendingPathComponent(String(path.dropFirst())))
+    /// Shared transport for the account and onboarding calls (OnboardingClient): bearer from the store,
+    /// 401 clears the matching sent token, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
+    func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                            query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> T {
+        let data = try await sendData(method, path, json: json, body: body, contentType: contentType, query: query, timeout: timeout, authorized: authorized)
+        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+    }
+
+    /// Same transport, raw bytes back (V04 voice previews are `audio/wav`).
+    func sendData(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
+                  query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> Data {
+        var url = baseURL.appendingPathComponent(String(path.dropFirst()))
+        if let query, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) { c.percentEncodedQuery = query; url = c.url ?? url }
+        var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 20
+        req.timeoutInterval = timeout
         if let json {
             req.setValue("application/json", forHTTPHeaderField: "content-type")
             req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        } else if let body {
+            req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "content-type")
+            req.httpBody = body
         }
+        let sentToken: String?
         if authorized {
             guard let token = store.load() else { throw GenitaAuthError.unauthorized }
+            sentToken = token
             req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        } else {
+            sentToken = nil
         }
         let data: Data, response: URLResponse
         do { (data, response) = try await http.data(for: req) } catch let e as URLError where [.notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut, .dataNotAllowed].contains(e.code) {
@@ -121,13 +162,13 @@ public final class GenitaAuthClient: @unchecked Sendable {
         }
         guard let status = (response as? HTTPURLResponse)?.statusCode else { throw GenitaAuthError.badResponse }
         if status == 401 {
-            if authorized { store.clear() }
+            if let sentToken { store.clear(ifMatching: sentToken) }
             throw GenitaAuthError.unauthorized
         }
         let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
         if status == 403, code == "consent_required" { throw GenitaAuthError.consentRequired }
         guard (200..<300).contains(status) else { throw GenitaAuthError.server(status: status, code: code) }
-        do { return try JSONDecoder().decode(T.self, from: data) } catch { throw GenitaAuthError.badResponse }
+        return data
     }
 }
 

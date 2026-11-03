@@ -2,7 +2,7 @@
  * PrepStore on Postgres + blob storage (F1-L4). Same contract as FileStore:
  *   user_styles            ← getStyle/putStyle
  *   companion_images       ← putImage/getImage (bytes in blobs at users/<uid>/images/<id>)
- *   companions + clip_jobs (+ companion_emotions, companion_prefs)  ← companion record
+ *   companions + clip_jobs (+ companion_prefs)  ← companion record
  *   blobs cache/voices/…   ← voice preview cache (not personal data)
  * patchCompanion is a SELECT … FOR UPDATE transaction, so the runner and the
  * prefs route can write the same companion without losing either update.
@@ -11,7 +11,6 @@ import { iso, json, type Db, type Queryable } from "../db/index.ts";
 import type { BlobStore } from "../storage/blob.ts";
 import type { StyleCard } from "./importProfile.ts";
 import { sniffImage } from "./classify.ts";
-import { PREP_EMOTIONS } from "./prompts.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 
 const imageKey = (userId: string, id: string) => `users/${userId}/images/${id}`;
@@ -118,16 +117,6 @@ export class PgPrepStore implements PrepStore {
          ready_at = EXCLUDED.ready_at, updated_at = now()`,
       [rec.id, rec.userId, prep.status, prep.attempts, json(prep), prep.startedAt, prep.readyAt ?? null],
     );
-    for (const e of PREP_EMOTIONS) {
-      const url = prep.steps.videos[e]?.url;
-      if (url)
-        await q.query(
-          `INSERT INTO companion_emotions (companion_id, emotion, video_url) VALUES ($1, $2, $3)
-           ON CONFLICT (companion_id, emotion) DO UPDATE SET video_url = EXCLUDED.video_url`,
-          [rec.id, e, url],
-        );
-      else await q.query("DELETE FROM companion_emotions WHERE companion_id = $1 AND emotion = $2", [rec.id, e]);
-    }
     if (rec.prefs)
       await q.query(
         `INSERT INTO companion_prefs (companion_id, depth, answers_json, updated_at) VALUES ($1, $2, $3::jsonb, $4)
@@ -165,11 +154,11 @@ export class PgPrepStore implements PrepStore {
   }
 
   getVoicePreview(voiceId: string, version: string) {
-    return this.blobs.get(`cache/voices/${voiceId}-${version}.mp3`).catch(() => null);
+    return this.blobs.get(`cache/voices/${voiceId}-${version}.wav`).catch(() => null);
   }
 
-  putVoicePreview(voiceId: string, version: string, mp3: Buffer) {
-    return this.blobs.put(`cache/voices/${voiceId}-${version}.mp3`, mp3, "audio/mpeg");
+  putVoicePreview(voiceId: string, version: string, audio: Buffer) {
+    return this.blobs.put(`cache/voices/${voiceId}-${version}.wav`, audio, "audio/wav");
   }
 
   /** Rows first (cascade: clip_jobs, prefs, emotions), then the photo and the companion's files. */

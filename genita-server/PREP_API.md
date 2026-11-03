@@ -17,21 +17,50 @@ Errors are `{error, message?}` with a 4xx status. A vendor failure is `502 {erro
 
 | call | body | answer |
 |---|---|---|
-| `GET /v1/import/prompt` | | `{prompt, chars}`, the text I01 copies |
-| `POST /v1/import` | `{text}` | `200 {status:"ready", style, profile}` (Spark 4–8 s) · `400 import_too_short/too_long/empty` → I02-E · `422 import_empty` |
+| `GET /v1/import/prompt` | | `{prompt, chars}`, the text I01 copies (prompt v3, 10 sections; same bytes as `docs/profile-import/prompt-v3.txt` and the app's bundled `import-prompt.txt` offline fallback, a test keeps all three identical) |
+| `POST /v1/import` | `{text}` | `200 {status:"ready", style, profile}` (Spark 5–11 s, n=4 on 11/2) · `400 import_too_short/too_long/empty` → I02-E · `422 import_empty` |
 | `POST /v1/import` | `{text, background:true}` | `202 {status:"processing"}` ("Continue in the background") |
+| `POST /v1/import/skip` | `{interests: string[≤8, each ≤40], replies: "Talk it out"\|"Show me options"\|"Start with the answer"\|"Ask me questions"\|null, avoid: string[≤8, each ≤60]}` (N1–N3, no Spark call) | `200 {status:"ready", style, profile}` with `style.source:"skip"` · `400 bad_skip`. Answers are `explicit`; unanswered rows stay empty and `toConfirm` lists them |
 | `GET /v1/import` | | `{status:"none"\|"processing"\|"failed"\|"ready", style?, profile?}` |
 
-`style.display` = I04's five rows `[{key, title, items:[{text, label}]}]`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile`. The pasted text is never stored.
+Prompt v3 has 10 sections: 1 Thinking style, 2 Communication style, 3 Response preferences, 4 How Genita can help, 5 Support/feedback/disagreement, 6 Interests, 7 Likes and dislikes, 8 Boundaries and initiative, 9 Recommended companion approach ("When …, Genita should …" rules), 10 Preferences still to confirm. Replies to the old 8-section prompt are still accepted: the server reads the headings and maps old "3 Useful help and explanations" to both Response preferences (how to answer) and How Genita can help (tasks), old 5's concrete tastes to Likes & dislikes. `style.sections` keys: `tendencies communication response help support interests likes boundaries approach` (cards saved before v3 may lack `response`/`likes`).
+
+`style.display` = I04's six rows in order `communication` Communication style (section 2) · `response` Response preferences (3, then rules fill free slots) · `help` How Genita can help (4) · `interests` Interests (6) · `likes` Likes & dislikes (7; when there is a dislike, one of the 3 slots shows it) · `boundaries` Boundaries (8), each `{key, title, items:[{text, label}]}` (max 3 items). Sections 1, 5, 9 are not rows; they go into `profile`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile` (≤2,000 chars): Likes & dislikes first as `- Taste:` lines (Finds' outfit and recipe cards read its first 800 chars), then the other five rows' fields, every boundary, the rules, the to-confirm line, then support/thinking/suggestions. The pasted text is never stored.
+
+## How I see you + corrections (D47 HISY v2, lane 개인화)
+
+Screens: Figma rp1wR9pxV0IsgyjvOcwo92 HISY-0~7 (import), S0~S4 (skip), C1~C3 (That's not me). HISY-0 and HISY-7 are the app's own copy; the server sends the cards between them.
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/import` | as above | now also `story`: the cards (written from the same paste **in parallel** with the parse; `null` if it isn't ready 1.5 s after the parse — then it's saved when it lands, read it with `GET /v1/profile/story?wait=8`) |
+| `GET /v1/profile/story?wait=s` | | `{status:"ready"\|"processing"\|"none", source:"import"\|"skip", cards, ms?}`. Not written yet (skip users, or the import's story failed) → the server writes it from the stored style (+ SUM lines once saved); `wait` (0–10 s) holds the answer that long. `processing` = still writing, ask again |
+| `PATCH /v1/profile` | `{cardId, items?: string[], text?: string}` (≤2 KB; `items` = texts the user marked on C1, each must be one of the card's own: item texts, tag texts — a dislike tag is `"Not for you: <tag lowercased>"` —, help labels, unknown topics; `text` ≤200 chars; at least one) | `200 {card, ack:"Got it. I'll remember that.", changed, profile, rows}`: `card` = the same card rewritten (C3; `null` if the correction emptied it), `changed` = its texts that are new (draw them with the blue border), `rows` = the six I04 rows, updated · `400 bad_correction` · `404 no_profile` · `409 card_not_shown` · `429 rate_limited` (10/min) · `502 upstream_failed`. On `unknowns`, `items:[topic]` + `text` answers that topic and it leaves the list |
+
+Card `{id, eyebrow, headline, subline?, items, promise?, evidence, tags?, note?, help?, unknowns?}`, in this order, each only when the profile has something for it (otherwise its topic joins `unknowns`):
+
+| id | eyebrow | shows |
+|---|---|---|
+| `think` | How you think | `headline` + 1–2 `items` |
+| `talk` | How you like to talk | `headline` + 1–2 `items` + `promise` ("So I'll …", the blue box) |
+| `taste` | What you're into | `headline` + `tags [{group: style\|food\|watch\|interest, text, dislike}]` (dislikes dashed with ✕) + card `evidence`; `note` "No favorites yet. Tell me one anytime, or show me on camera." when there are no likes. Skip users (S2, Figma 269:228): tags are exactly the N1 tiles (`interest`, "You said this") and the N3 Clothes / Food like (blue) and no (dashed) chips (legend "From your answers") — Spark only words the headline |
+| `help` | How I can help | headline "Where I'll actually be useful." + `help [{label, sub, mode: ask_first\|just_do_it}]` (≤3) + card `evidence` |
+| `lines` | Lines I won't cross | headline "Some things I'll leave alone." + 1–4 `items` (the app adds "And always: I won't buy, book, or message anyone for you.") |
+| `unknowns` | Still getting to know you | `headline` + `subline` (import / skip copy) + `unknowns [{item, topic, sub}]` (≤4; shrinks as calls answer them) |
+
+`items[].evidence` / card `evidence` ∈ `explicit` (You said this) · `observed` (You did this often) · `memory` (From your memories). Never stronger than the profile lines behind the card; a `[Suggested]` line is never shown as a fact. Server checks: no personality labels, diagnosis or flattery, no injection/sensitive text (a failing card falls back to the profile's own lines).
+
+In calls (with an account): the server uses the stored profile; each of the first 3 calls asks one `unknowns` topic (first 3 turns; `profile.asking` when the reply asks it, then the next line is checked for the answer → `profile.updated` "Noted: …"); corrections said in the call → `profile.updated` "Updated: …"; after the call, explicit statements and repeated patterns from it are saved. Finds cards get `reasons` (PROTOCOL.md).
 
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 
 | call | body | answer |
 |---|---|---|
 | `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
-| `GET /v1/companion/voices?imageId=` | | `{voices:[…], suggested}`, already in Spark's recommended order (see below) |
-| `GET /v1/companion/voices/{id}/preview` | | `audio/mpeg`, ~8 s (server TTS only; device voices → `404 {error:"device_preview"}`) |
-| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name). Starts prep in the background ("Use this image"). `409 companion_exists`, except over a `demo:true` companion, which this replaces (below) |
+| `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, label, previewUrl}], suggested, available}`: 4 curated Seamless speakers for the image's look (human/animal/character), recommended default first (72 / 16 / 68), `label` = "Tara · warm"; `available` = voice service answers /healthz (cached 15 s) |
+| `GET /v1/companion/voices/{id}/preview` | | `audio/wav` from the Meta voice service, cached; `503 voice_unavailable` without it; device voices → `404 {error:"device_preview"}` |
+| `PUT /v1/companion/voice` | `{voiceId}` | saves the V04 pick on the companion + persona card; `400 unknown_voice`, `404 no_companion` |
+| `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name; a given name follows the rule below, else `400 bad_name`). Starts prep in the background ("Use this image"). `409 companion_exists`, except over a `demo:true` companion, which this replaces (below) |
 | `GET /v1/companion` | | companion + `demo` + `prep` + `persona` + `session` (fields for the realtime `start` message) |
 
 ### Judge demo companion (D41)
@@ -43,18 +72,30 @@ A Judge access account (`POST /auth/judge`) that has no companion gets one at si
 
 ### Voices: device vs server TTS
 
-- **Server TTS off (default, `GENITA_SERVER_TTS` unset):** the device speaks, so the four cards are device voice descriptors, not ElevenLabs ids:
+- **Server TTS off (default, Meta voice service unset):** the device speaks, so the four cards are device voice descriptors:
   `{id:"device:en-US:f1", name:"Mira", blurb:"Warm, steady", locale:"en-US", gender:"female"|"male"|"neutral", style:"warm", previewUrl:null}`.
   The app maps each to the best installed system voice for `locale` + `gender` (Premium/Enhanced first) and previews it locally; the preview endpoint answers `404 {error:"device_preview"}`. `POST /v1/companion {voiceId}` takes the `device:…` id. Same names, blurbs and Spark ordering as before.
-- **`GENITA_SERVER_TTS=1`:** the ElevenLabs list `{id, name, blurb, previewUrl:"/v1/companion/voices/{id}/preview"}` as before.
+- **Meta voice service configured:** the Meta voice list `{id, name, blurb, previewUrl:"/v1/companion/voices/{id}/preview"}` as before.
+
+## Companion name (F2-L26, NM01, D21)
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/companion/name/suggest` | `{imageId}` (the checked image from `POST /v1/companion/image`; works before the companion exists) | `200 {name, ms, suggested}`. Spark 1.3 looks at the photo + the imported style card and proposes one first name for NM01. `suggested:false` = Spark failed or timed out (4 s) and `name` is a neutral fallback (never a 5xx for that). `404 unknown_image` (not yours / unknown) · `429 rate_limited` (10 per user per minute) |
+| `PATCH /v1/companion` | `{name}` | `200` companion (same shape as `GET`); `name`, `persona.card.name` and `session.persona.name` all carry the new name. `400 bad_name` · `404 no_companion` |
+
+Name rule (PATCH, POST, rename by voice): trimmed, 1–20 characters, letters/digits/spaces/`.` `'` `-`,
+at least one letter. Empty, whitespace-only and 21+ characters are `400 bad_name` — keep NM01's
+Continue disabled for those. A suggestion is letters/spaces/hyphens/apostrophes only and never "Genita".
+Renaming in a call ("Call yourself Max") saves the same way and sends `companion.named` (PROTOCOL.md).
 
 ## Prep progress (F2-L9, F2-L22)
 
-`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, face, emotionVideos:{neutral, happy, warm}, lips:{status, peter:{avatarId, bundleId, nBase}|null}, steps:{scene, videos, face:{status, settled, total, ms}|null}}`.
+`GET /v1/companion/prep` → `{status: running|ready|failed, progress:{done,total}, sceneUrl, face, emotionVideos:{}, lips:{status:"skipped", detail:null, url:null, ms:null}, steps:{scene, videos, face:{status, settled, total, ms}|null}}`.
 
-### Default pipeline (Meta only, `GENITA_KLING` unset)
+### Meta-only pipeline
 
-scene (Muse Image) → **face set** (13 Muse Image edits of the scene + SAM 3.1 checks). No fal, Kling, Peter or ElevenLabs call. `emotionVideos` is `{}`, `lips.status` and every `steps.videos.*.status` are `"skipped"`. `progress.total` = 14 (scene + 13 face images; a rejected image counts as settled). Measured 11/2 (`npm run face:e2e`, real API, n=1 per type): photo → face ready **85 s** person (check 4 s, scene 15 s, face set 66 s), **72 s** animal (5 / 18 / 49 s), **69 s** character (4 / 13 / 52 s). One Muse Image edit ≈ 11–21 s; it answers WebP 1152×2048.
+scene (Muse Image, retried once on failure) → **face set** (13 Muse Image edits of the scene + SAM 3.1 checks). For response compatibility, `emotionVideos` is `{}`, `lips.status` and every `steps.videos.*.status` are `"skipped"`, and video timing/lip URL fields are `null`, including for older stored records. Old video/lip job keys are ignored when resuming prep. `progress.total` = 14 (scene + 13 face images; a rejected image counts as settled). Measured 11/2 (`npm run face:e2e`, real API, n=1 per type): photo → face ready **85 s** person (check 4 s, scene 15 s, face set 66 s), **72 s** animal (5 / 18 / 49 s), **69 s** character (4 / 13 / 52 s). One Muse Image edit ≈ 11–21 s; it answers WebP 1152×2048.
 
 `face` is `null` until the face step is done, then:
 
@@ -78,14 +119,7 @@ scene (Muse Image) → **face set** (13 Muse Image edits of the scene + SAM 3.1 
 - `rejected[].reason`: `face_moved` (face-box centre moved > 3 % of the width), `face_resized` (linear size changed > 6 %), `no_face`, `no_mouth`, `size_mismatch` (aspect ratio differs), `content_policy` (Muse Image refused the prompt), `edit_failed` (vendor error). Each rejected key was retried once with a stricter prompt.
 - Image URLs are relative to this host: **`GET /v1/companion/face/{key}`** with the same `Authorization` + `x-genita-user` headers as every prep call. `key` ∈ `neutral`, `blink`, `smile`, `warm`, `MBP`, `FV`, `TH`, `L`, `WQ`, `O`, `EI`, `A`, `U`, `CDG`. Answers the image bytes (`image/webp` today; check `content-type`), `cache-control: private, max-age=86400`. `404 no_companion` / `no_image` (not made yet, or rejected) / `not_found` (unknown key). Only the caller's own companion is served. `sceneUrl` on this pipeline is `/v1/companion/face/neutral`.
 - A server restart during the face step resumes it: kept and rejected images are saved one by one, and only the missing ones are redone. If every edit fails (vendor down) the attempt fails and the runner retries (`MAX_PREP_ATTEMPTS`), then `failed`; `POST /v1/companion/prep/retry` resumes from the saved images.
-- Session `lip` in `GET /v1/companion` → `session` is `"none"` on this pipeline (the device animates the face set from its own speech).
-
-### `GENITA_KLING=1` (earlier pipeline)
-
-- A human companion takes about 7 min to clips (three 10 s Kling clips in parallel), then the Peter cache bake. Until `ready`, call with the photo (S09-P). On `failed`, the photo keeps breathing (S09-PF) and `POST /v1/companion/prep/retry` starts again.
-- `emotionVideos` are 1080×1920 mp4 URLs keyed by the session's `speaking.emotion`.
-- The lips step bakes Peter only with `GENITA_PETER=1` (else `todo`); session `lip` is `peter` for humans only with `GENITA_PETER=1`, `atlas` for animals/characters.
-- `lips.peter.avatarId` goes in the Peter worker HELLO (`{"type":"HELLO", token, avatar_id}`). The worker's READY `bundle_id` equals `lips.peter.bundleId`.
+- Session `lip` in `GET /v1/companion` → `session` is `"none"` for humans, animals and characters (the device animates the face set).
 
 ## Setup answers → persona (F2-L14, screens D01, P1–P7, SUM)
 

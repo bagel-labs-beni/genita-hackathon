@@ -18,6 +18,16 @@ if ! command -v node >/dev/null || ! node -v | grep -q '^v22'; then
   command -v node-22 >/dev/null && ln -sf "$(command -v node-22)" /usr/local/bin/node && ln -sf "$(command -v npm-22)" /usr/local/bin/npm
 fi
 NODE=$(command -v node); NPM=$(command -v npm)
+
+# face-flow prep (genita-server/prep-py/faceflow.py): classical OpenCV (ECC, DIS optical flow), no ML.
+# Optional: if this fails the server still runs and face sets ship without `flow` (device patches).
+PYFLOW=/opt/genita/pyflow
+if [ ! -x $PYFLOW/bin/python ] || ! $PYFLOW/bin/python -c 'import cv2, numpy' >/dev/null 2>&1; then
+  dnf install -y -q python3 python3-pip >/dev/null 2>&1 || true
+  python3 -m venv $PYFLOW >/dev/null 2>&1 && $PYFLOW/bin/pip install -q --disable-pip-version-check 'numpy<3' 'opencv-python-headless>=4.10,<5' >/dev/null 2>&1 || echo "pyflow: install failed (face flow off)"
+fi
+PYFLOW_ENV=""
+$PYFLOW/bin/python -c 'import cv2, numpy' >/dev/null 2>&1 && PYFLOW_ENV="GENITA_PYFLOW=$PYFLOW/bin/python"
 id genita >/dev/null 2>&1 || useradd --system --home /var/lib/genita --shell /sbin/nologin genita
 mkdir -p $APP/releases /var/lib/genita
 chown genita:genita /var/lib/genita
@@ -46,7 +56,7 @@ Wants=network-online.target
 [Service]
 User=genita
 WorkingDirectory=$APP/current
-Environment=GENITA_ENV_FILE=/nonexistent NODE_ENV=production AWS_REGION=$AWS_DEFAULT_REGION NODE_EXTRA_CA_CERTS=/opt/genita/rds-ca.pem
+Environment=GENITA_ENV_FILE=/nonexistent NODE_ENV=production AWS_REGION=$AWS_DEFAULT_REGION NODE_EXTRA_CA_CERTS=/opt/genita/rds-ca.pem ${PYFLOW_ENV:-GENITA_PYFLOW=0}
 ExecStart=$NODE --experimental-strip-types --no-warnings=ExperimentalWarning start.mjs
 Restart=always
 RestartSec=2

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";
 import { SentenceSplitter } from "../src/text/sentences.ts";
-import { createSeamless, resolveSpeaker, seamlessLang } from "../src/tts/seamless.ts";
+import { createSeamless, resolveSpeaker, seamlessLang, speedFor } from "../src/tts/seamless.ts";
 import { defaultDeps } from "../src/server.ts";
 
 // ---------- config ----------
@@ -17,16 +17,14 @@ test("config: no GENITA_VOICE_URL → no voice, device mode (judges run with onl
   assert.equal(c.serverTts, false);
 });
 
-test("config: GENITA_VOICE_URL + token → server voice on, no ElevenLabs key needed or read", () => {
+test("config: GENITA_VOICE_URL + token → server voice on, Meta voice enabled", () => {
   const c = loadConfig({
     MODEL_API_KEY: "k",
     GENITA_VOICE_URL: "https://voice.example/",
     GENITA_VOICE_TOKEN: "t",
     GENITA_VOICE_SPEAKERS: "human:12, animal:7,character:300,bogus:1",
-    ELEVENLABS_API_KEY: "should-not-be-read",
   });
   assert.equal(c.serverTts, true);
-  assert.equal(c.elevenKey, null);
   assert.equal(c.voice?.url, "https://voice.example");
   assert.deepEqual(c.voice?.speakers, { human: 12, animal: 7, character: 0 }, "out-of-range id keeps the default");
   assert.equal(c.voice?.model, "seamless");
@@ -37,7 +35,7 @@ test("config: GENITA_VOICE_URL without a token throws (misconfigured deploy fail
   assert.throws(() => loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v" }), /GENITA_VOICE_TOKEN/);
 });
 
-test("server deps: with a voice service, the TTS dep calls it (not ElevenLabs) and exposes prefetch", async () => {
+test("server deps: with a voice service, the TTS dep calls it and exposes prefetch", async () => {
   const c = loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "http://127.0.0.1:9", GENITA_VOICE_TOKEN: "t", GENITA_VOICE_TIMEOUT_MS: "300" });
   const deps = defaultDeps(c, () => {});
   assert.equal(typeof deps.voicePrefetch, "function");
@@ -124,7 +122,7 @@ test("client: sends spoken text, lang, speaker, pause; yields PCM + character al
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://voice.test/v1/tts");
   assert.equal(calls[0].auth, "Bearer secret");
-  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1, tail_ms: 260, model: "seamless" });
+  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1.05, tail_ms: 200, model: "seamless" });
   assert.equal(chunks.length, 2);
   assert.equal(chunks[0].audio.length, 4800);
   assert.deepEqual(chunks[0].alignment, { chars: ["H", "i"], startsSec: [0, 0.05], endsSec: [0.05, 0.1] });
@@ -194,7 +192,7 @@ test("client: emoji-only text makes no request", async () => {
 test("speaker: seamless:<n> or <n> picks that speaker; anything else → the kind's default", () => {
   assert.equal(resolveSpeaker("seamless:42", "human", cfg), 42);
   assert.equal(resolveSpeaker("17", "human", cfg), 17);
-  assert.equal(resolveSpeaker("7PbNGDB5sJCFnOZuMPNL", "animal", cfg), 5);
+  assert.equal(resolveSpeaker("legacy-voice", "animal", cfg), 5);
   assert.equal(resolveSpeaker(undefined, "character", cfg), 9);
   assert.equal(resolveSpeaker("seamless:250", "human", cfg), 3);
 });
@@ -239,5 +237,109 @@ test("client: text that grows past the service limit after normalisation is sent
   assert.ok(bodies.length >= 2, `pieces: ${bodies.length}`);
   assert.ok(bodies.every((b) => String(b.text).length <= 380));
   assert.deepEqual(bodies.map((b) => b.tail_ms).slice(0, -1).every((t) => t === 0), true);
-  assert.equal(bodies.at(-1)!.tail_ms, 220);
+  assert.equal(bodies.at(-1)!.tail_ms, 170);
+});
+
+// ---------- word + phoneme timing (MMS forced aligner on the voice GPU) ----------
+const TIMING = { words: [{ w: "Hi", s: 40, e: 180 }], phonemes: [{ p: "HH", s: 40, e: 90 }, { p: "IH", s: 90, e: 180 }] };
+
+test("config: GENITA_VOICE_ALIGN=1 turns timing on; off by default", () => {
+  const base = { MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" };
+  assert.equal(loadConfig(base).voice?.align, false);
+  assert.equal(loadConfig({ ...base, GENITA_VOICE_ALIGN: "1" }).voice?.align, true);
+});
+
+test("client (align on): asks for align, the timing line becomes a timing-only chunk after the audio", async () => {
+  let body: Record<string, unknown> = {};
+  const v = createSeamless({ ...cfg, align: true }, {
+    fetch: (async (_u: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return ndjson([{ audio_base64: pcm(2400), alignment: null }, { timing: TIMING }, { done: true, align_ms: 14 }]);
+    }) as typeof fetch,
+  });
+  const chunks = [];
+  for await (const c of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) chunks.push(c);
+  assert.equal(body.align, true);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].timing, undefined);
+  assert.equal(chunks[1].audio.length, 0);
+  assert.equal(chunks[1].alignment, null);
+  assert.deepEqual(chunks[1].timing, TIMING);
+});
+
+test("client (align off): no align field in the request (old body, byte for byte)", async () => {
+  let body: Record<string, unknown> = {};
+  const v = createSeamless(cfg, { fetch: (async (_u: string, init: RequestInit) => ((body = JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) void _;
+  assert.equal("align" in body, false);
+});
+
+test("client: a malformed timing line is dropped (the app falls back), the audio still plays", async () => {
+  const bad = [
+    { timing: { words: "x", phonemes: [] } },
+    { timing: { words: [{ w: "Hi", s: "a", e: 3 }], phonemes: [] } },
+    { timing: { words: [], phonemes: [{ p: 7, s: 0, e: 3 }] } },
+    { timing: { words: [{ w: "Hi", s: 50, e: 40 }], phonemes: [] } },
+    { timing: null },
+  ];
+  for (const line of bad) {
+    const v = createSeamless({ ...cfg, align: true }, { fetch: (async () => ndjson([{ audio_base64: pcm(10) }, line, { done: true }])) as typeof fetch });
+    const chunks = [];
+    for await (const c of v.speak({ voiceId: "seamless:3", text: "Hi.", emotion: null, model: "x" })) chunks.push(c);
+    assert.equal(chunks.length, 1, JSON.stringify(line));
+    assert.equal(chunks[0].timing, undefined);
+  }
+});
+
+test("client: timing of a later piece is shifted onto the sentence's timeline", async () => {
+  let n = 0;
+  const v = createSeamless({ ...cfg, align: true }, {
+    fetch: (async () => (n++, ndjson([{ audio_base64: pcm(24000) }, { timing: TIMING }, { done: true }]))) as typeof fetch,
+  });
+  const text = "Prices: 1234567, 2345678, 3456789, 4567890, 5678901, 6789012, 7890123 and 8901234 dollars.";
+  const timings = [];
+  for await (const c of v.speak({ voiceId: "seamless:3", text, emotion: null, model: "x" })) if (c.timing) timings.push(c.timing);
+  assert.ok(n >= 2);
+  assert.deepEqual(timings[0], TIMING);
+  assert.equal(timings[1].words[0].s, 1040, "second piece starts after the first piece's 1 s of audio");
+  assert.equal(timings[1].phonemes[1].e, 1180);
+});
+
+// 11/3 tone pass: texting slang is said as words (Seamless spelled "ngl" / "rn"), captions keep the written form
+test("normalize: texting slang is spoken as words; RN / FR in caps and words containing them are left alone", () => {
+  assert.equal(normalizeEnglish("Haha okay, ngl the cat leaving is the best part."), "Haha okay, not gonna lie the cat leaving is the best part.");
+  assert.equal(normalizeEnglish("tbh you deserve it, go rn"), "to be honest you deserve it, go right now");
+  assert.equal(normalizeEnglish("lol idk, fr"), "haha I don't know, for real");
+  assert.equal(normalizeEnglish("omg btw imo that's iconic"), "oh my god by the way in my opinion that's iconic");
+  assert.equal(normalizeEnglish("She's an RN in FR."), "She's an RN in FR.");
+  assert.equal(normalizeEnglish("Turn left at the frontier, then burn it."), "Turn left at the frontier, then burn it.");
+});
+
+test("pauses: casual gaps — a comma barely stops, a sentence end is shorter than before, '...' still the longest", () => {
+  assert.ok(pauseAfterMs("Wait,") <= 60);
+  assert.ok(pauseAfterMs("No way.") <= 180);
+  assert.ok(pauseAfterMs("Hmm...") > pauseAfterMs("Really?"));
+  assert.ok(pauseAfterMs("Really?") > pauseAfterMs("Okay."));
+});
+
+test("speedFor: the reply's emotion sets the rate (excited quicker, sad slower); short filler clauses keep the base rate", () => {
+  const long = "you actually made the soup?";
+  assert.equal(speedFor(1, "excited", long), 1.1);
+  assert.equal(speedFor(1, "sad", long), 0.94);
+  assert.equal(speedFor(1, "warm", long), 1);
+  assert.equal(speedFor(1, null, long), 1);
+  assert.equal(speedFor(1, "excited", "Oh wow,"), 1, "≤ 14 chars: the prefetched filler cache still hits");
+  assert.equal(speedFor(1.3, "excited", long), 1.3, "clamped to the config's range");
+});
+
+test("client: an excited clause is requested at the faster rate and cached apart from the base rate", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const v = createSeamless(cfg, {
+    fetch: (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return ndjson([{ audio_base64: pcm(240), alignment: null }, { done: true }]);
+    }) as typeof fetch,
+  });
+  for (const emotion of ["excited", "sad"]) for await (const _ of v.speak({ voiceId: "seamless:3", text: "you actually made the soup?", emotion, model: "x", lang: "en" })) void _;
+  assert.deepEqual(bodies.map((b) => b.speed), [1.1, 0.94]);
 });

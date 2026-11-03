@@ -54,6 +54,10 @@ struct ConsentView: View {
 
     private func agree() {
         guard !sending else { return }
+        #if DEBUG
+        // Appetize preview: the screen is shown and has to be agreed to, but there is no server to tell
+        if BrowserPreview.isActive { model.consentAccepted(); return }
+        #endif
         sending = true
         Task { @MainActor in
             defer { sending = false }
@@ -61,6 +65,8 @@ struct ConsentView: View {
                 try await GenitaAuthClient().consent()
                 guard model.stage == .consent else { return } // left this screen meanwhile
                 model.consentAccepted()
+                // a judge account already has its ready-made companion: /me sends it straight to the call
+                await model.routeOnLaunch()
             } catch GenitaAuthError.unauthorized {
                 // the session expired here: the token is gone, sign in again (A02)
                 model.signedOut()

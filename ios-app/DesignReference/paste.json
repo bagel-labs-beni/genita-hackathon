@@ -963,7 +963,7 @@
      "y": 86,
      "w": 328,
      "h": 48,
-     "characters": "Paste the full response from ChatGPT\nor Claude below.",
+     "characters": "Paste the full response from your AI\nassistant below.",
      "fontFamily": "Pretendard",
      "fontStyle": "Regular",
      "weight": 400,

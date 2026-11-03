@@ -26,9 +26,15 @@ No database migrations, app changes, deployment, push or PR are part of this lan
   cancels active replies/history. Completed stale upserts are blocked by persistent
   normalized-text hash tombstones. Changed *new* statements can create new memories;
   this is not semantic erasure of unrelated/rephrased facts across all future speech.
+- Device handoff offers turns from calls ended within ten minutes, in process memory and tagged with
+  that user's persisted Forget revision. Single/all Forget evicts this cache;
+  live-call reads and late socket-close writes must match the revision under the
+  same per-user lock. Client `handoff: true` history is accepted only at revision
+  zero; after any Forget it is ignored, including after restarting the service.
+  New server-side turns after Forget can still hand off normally.
 - Metadata (last user-message time, last three opening words, settings, UTC daily
-  photo quota/opener guard) is separate from the memory-table interface. No original
-  conversation transcript is retained between calls.
+  photo quota/opener guard) is separate from the memory-table interface. Conversation
+  transcripts are never persisted; the short-lived handoff cache above is in memory only.
 - An episode opener requires the configured gap from the last user message, a
   different source call and `follow_up=true`; a seen crop >=6h old takes priority.
   One opener per UTC day; no eligible episode means an ordinary greeting. The
@@ -42,7 +48,43 @@ before calling the vendor, and no keys/raw vendor errors are returned or logged 
 this module. A forged `companion_face`, `scene_image`, `room` or `user_face` field is
 rejected by the photo route.
 
+## Session memory (11/3, `GENITA_SESSION_MEMORY=0` turns it off)
+
+- At call close, and every 12 more completed turns in a long call, Muse Spark writes one compact
+  summary of the **thread**: topics, the user's mood, open threads, the companion's promises, what the
+  user asked for (`summaries.ts`). It runs in the background, never on the reply path. Every line
+  goes through `safeMemoryText` (health, religion, politics, sex, income/debt/finances, locations,
+  other people, identifiers). Turns are summarized and dropped, never stored.
+- The newest three summaries of *other* threads go into the next call's instructions as notes. The
+  greeting may pick up one open thread or promise. Loading them is capped at 800 ms, so a slow
+  store means no notes, not a slow call start.
+- A handoff (iPhone ↔ Mac) is one thread, not two calls. `server.ts` hands over the thread id and
+  pair count together with the turns (`priorThread`), both devices upsert the same
+  `call_summaries` row, and the copy covering more turns wins. The summarizer gets the thread's
+  previous notes, so the Mac's summary merges the iPhone's.
+- Any Forget (one item or all) drops every summary, and a summary started before a Forget is never
+  stored (revision check). Account delete removes them (Forget + cascade). The newest 10 are kept per user.
+
+## Recall (11/3)
+
+- Token overlap is still the candidate generator. Stop words ("my", "the", "what") no longer count as
+  a match.
+- Each memory carries up to 6 **recall keys**: lowercase words someone might ask about it with
+  ("my cat Miso" → cat, pet, animal, miso). Extraction writes them in the same Spark call. An
+  explicit `remember` gets them from one background Spark call, so the reply never waits. Keys go
+  through the sensitive filter.
+- The call's top 6 stable facts (used before first, then newest) are loaded once at call start and
+  sit in every reply's instructions, so the companion uses them with no tool call and no per-turn I/O.
+- Spark re-rank of up to 20 candidates on the `recall` **tool** path exists behind
+  `GENITA_MEMORY_RERANK=1` (budget `GENITA_RERANK_BUDGET_MS`, default 900 ms). It is off by default
+  because it measured p50 1.6 s, which the reply path can't afford. `npm run eval:recall -- --live [--rerank]`.
+
 ## Persistence / Postgres adapter
+
+With accounts on (`DATABASE_URL`), the server swaps the in-process store for `PgMemoryRepository`
+(migrations `005_memory_store`, `006_call_summaries`), so memory survives deploys. The boot log
+`memory.store {kind}` says which store is live. Without accounts, the JSON or in-memory adapters below apply.
+
 
 `MemoryRepository` is exactly `put(userId,memory):Promise<boolean>`,
 `list(userId):Promise<Memory[]>`, `delete(userId,id?):Promise<void>`.
@@ -127,6 +169,17 @@ Live checks run only with explicit opt-in, loading keys from
 ```sh
 npm run check:memory -- --live
 ```
+
+Session memory, live (real Spark for replies, extraction, summaries and the judge; synthetic facts):
+
+```sh
+npm run eval:session-memory -- --live --runs=5
+```
+
+Call 1 and call 2 for account A (one health line that must never be stored), then call 3 for A.
+It checks that A's companion brings up at least one right fact, open thread or promise on its own
+and that the Spark judge finds no invented shared past. The same call-3 lines then run for account B
+on the same service, and none of A's memory may appear in B's call.
 
 This runs five synthetic grocery extractions and real new-call greetings. Optional
 photos for the fridge/drama/outfit scenarios use only an approved companion image:
