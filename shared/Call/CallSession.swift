@@ -332,6 +332,7 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
+        micHeldForPreview = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
@@ -365,6 +366,7 @@ enum CallStop: Equatable {
     }
 
     private func suspendCapture() {
+        micHeldForPreview = false // a suspend wins over a Settings preview: the mic stays off after the clip (Codex P2)
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -550,7 +552,7 @@ enum CallStop: Equatable {
     private var micHeldForPreview = false
     func holdMicForPreview(_ hold: Bool) {
         if hold, micOn, !micHeldForPreview { micHeldForPreview = true; setMic(false) }
-        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation { setMic(true) } }
+        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation, link == .live { setMic(true) } }
     }
 
     private func setMic(_ on: Bool) {

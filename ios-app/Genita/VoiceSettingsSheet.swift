@@ -1,5 +1,4 @@
 import SwiftUI
-import GenitaKit
 
 /// One V04 voice card (Figma F2 "voice model"): white card, black ring when picked or playing, a black round play
 /// button that turns into pause while the clip plays. Shared by onboarding V04 and Settings → Voice (11/4).
@@ -82,13 +81,14 @@ struct VoiceSettingsSheet: View {
             .navigationTitle("Voice")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { player.stop(); dismiss() }.accessibilityIdentifier("voiceCancel") }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { player.stop(); dismiss() }.disabled(saving).accessibilityIdentifier("voiceCancel") }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(saving ? "Saving…" : "Save") { Task { await save() } }
                         .disabled(saving || pick == nil || player.voices.isEmpty).accessibilityIdentifier("voiceSave")
                 }
             }
         }
+        .interactiveDismissDisabled(saving)
         .task {
             await player.load(client: model.onboarding, imageId: model.setup.imageId, kind: model.setup.imageType)
             pick = model.setup.voiceId.flatMap { id in player.voices.first { $0.id == id }?.id } ?? player.voices.first?.id
@@ -106,8 +106,11 @@ struct VoiceSettingsSheet: View {
         if id == model.setup.voiceId { dismiss(); return }
         saving = true; failed = false
         defer { saving = false }
+        let account = model.setup.accountId
         do {
             _ = try await model.onboarding.saveVoice(id)
+            // the answer belongs to the account that asked (a sign-out in between must not touch the next one, Codex P2)
+            guard model.setup.accountId == account else { return }
             model.setup.voiceId = id
             model.setup.voiceName = player.voices.first { $0.id == id }?.name ?? CuratedVoices.name(id)
             model.setup.voice = player.voices.firstIndex { $0.id == id }
