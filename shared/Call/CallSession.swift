@@ -1121,7 +1121,29 @@ enum CallStop: Equatable {
         #endif
     }
 
+    /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
+    /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
+    @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
+    #if DEBUG
+    /// Tests: the face set loader (stub server, temp cache) instead of the live one.
+    @ObservationIgnored var faceLoaderOverride: ((CallEndpoint) -> CompanionFaceLoader)?
+    #endif
+
+    /// Loads the face set; while it isn't made yet (or the request failed) and the call screen is up, tries again
+    /// every `faceRetryInterval` until it loads. `hideFace` (and a newer load) cancels the wait.
     private func loadFace() async {
+        _ = await loadFaceOnce()
+    }
+
+    private func makeFaceLoader() -> CompanionFaceLoader {
+        #if DEBUG
+        if let faceLoaderOverride { return faceLoaderOverride(currentEndpoint) }
+        #endif
+        return CompanionFaceLoader(endpoint: currentEndpoint)
+    }
+
+    /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
+    private func loadFaceOnce() async -> Bool {
         let owner = Self.tokenSubject(currentEndpoint.token)
         do {
             let outcome: CompanionFaceLoader.Outcome
@@ -1131,22 +1153,28 @@ enum CallStop: Equatable {
                 let key = "dir:" + dir
                 outcome = key == faceKey ? .unchanged : .loaded(key: key, set: try await Task.detached { try FaceSet(directory: URL(fileURLWithPath: dir)) }.value)
             } else {
-                outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+                outcome = try await makeFaceLoader().load(currentKey: faceKey)
             }
             #else
-            outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+            outcome = try await makeFaceLoader().load(currentKey: faceKey)
             #endif
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             switch outcome {
-            case .unchanged: break
-            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+            case .unchanged: return false
+            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
+            case .pending:
+                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                return faceOnScreen
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
                 useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+                return false
             }
         } catch {
-            // Offline or the server said no: keep what is on screen (the still, or the face from before).
+            // Offline or the server said no: keep what is on screen (the still, or the face from before); with no
+            // face yet, try again while the call screen is up.
             log.error("face set: \(String(describing: error), privacy: .public)")
+            return !Task.isCancelled && faceOnScreen && face == nil
         }
     }
 

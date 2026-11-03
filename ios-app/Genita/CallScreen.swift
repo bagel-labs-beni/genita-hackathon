@@ -46,16 +46,19 @@ struct CompanionFaceView: View {
     /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
     var faceStill: CGImage? = nil
     var lip: LipSource = .none
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
             if let face {
-                FaceFrameView(driver: face, still: faceStill)
+                // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
+                FaceFrameView(driver: face, still: faceStill).transition(.opacity)
             } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
                 LoopingVideo(url: loop).allowsHitTesting(false)
             }
             LipLayer(source: lip).allowsHitTesting(false)
         }
+        .animation(reduceMotion || CallMotion.reviewStill ? nil : CompanionFace.revealCurve, value: face.map(ObjectIdentifier.init))
     }
 }
 
