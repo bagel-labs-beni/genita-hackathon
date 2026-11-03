@@ -45,6 +45,13 @@ import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
+import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
+import type { CallTurn } from "../personalize/extract.ts";
+import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
+import { mightBeCorrection } from "../personalize/corrections.ts";
+import { localTimeLine } from "../personalize/knows.ts";
+import type { UnknownItem } from "../personalize/story.ts";
+import type { TasteLine } from "../personalize/reasons.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
@@ -105,12 +112,29 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
+  personalize?: SessionPersonalize;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
    */
   companionVoiceId?: () => Promise<string | null | undefined>;
 };
+
+/** The slice of the personalize service a call uses (structural, so tests can fake it). */
+export type SessionPersonalize = {
+  startCall(userId: string): Promise<CallStart | null>;
+  voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
+  endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
+  /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
+  noteShorter?(userId: string): Promise<{ text: string; fields: string[]; profile: string } | null>;
+};
+/** Knows-Me S1 (GENITA_BARGE_SHORTER=0 turns it off): cut off this many times mid-reply → shorter replies */
+const SHORTER_AFTER_CUTS = 2;
+/** the call starts with the app's profile if the store takes longer than this */
+const STARTCALL_TIMEOUT_MS = 1500;
+/** at most this many correction checks per call, one at a time */
+const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
@@ -283,6 +307,21 @@ export class Session {
   private bargeCfg: { bargeInMinMs: number; bargeInMinWords: number };
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
+  /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
+  private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
+  /** the companion just asked this call's question: the next user line is checked for the answer */
+  private awaitingAnswer: UnknownItem | null = null;
+  private userTurns = 0;
+  private callStartedAt: string | null = null;
+  /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
+  private timeZone: string | undefined;
+  private nod: string | null = null;
+  /** Knows-Me S1: long replies the user cut off in this call; the one-time "I'll keep it short" line */
+  private longCuts = 0;
+  private shorterLine: string | null = null;
+  private taste: TasteLine[] = [];
+  private correcting: AbortController | null = null;
+  private correctionChecks = 0;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
 
@@ -540,8 +579,28 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
+    // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
+    if (this.deps.personalize && this.deps.userId && startMode === "chat") {
+      try {
+        // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
+        const p = await Promise.race([
+          this.deps.personalize.startCall(this.deps.userId),
+          new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
+        ]);
+        this.callStartedAt = new Date().toISOString();
+        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
+        if (p) this.user = { ...this.user, profile: p.profile || undefined };
+        if (p?.nod) this.nod = p.nod;
+        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
+        this.taste = p?.taste ?? [];
+      } catch (err) {
+        this.log("profile.unavailable", { message: String(err).slice(0, 120) });
+      }
+      if (this.closed) return;
+    }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
-    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: str(u.timeZone, 40) });
+    this.timeZone = str(u.timeZone, 40);
+    this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
     if (this.micOn) {
       await this.ensureAsr();
     }
@@ -746,6 +805,15 @@ export class Session {
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
+    this.correcting?.abort();
+    // lane 개인화: the call's turns grow the profile (not after an account delete)
+    if (this.deps.personalize && this.deps.userId && reason !== "account_deleted" && this.userTurns > 0) {
+      const turns: CallTurn[] = this.history.map((h) => ({ role: h.role, text: h.text }));
+      void this.deps.personalize.endCall(this.deps.userId, turns, this.ask?.item ?? null, this.callStartedAt ?? undefined).then(
+        (n) => this.log("profile.grown", { applied: n }),
+        (err) => this.log("profile.grow_failed", { message: String(err).slice(0, 120) }),
+      );
+    }
     // account deleted: Finds stop now and never write again (the delete runs right after)
     this.finds?.close({ purge: reason === "account_deleted" });
     this.watch?.close();
@@ -959,6 +1027,9 @@ export class Session {
     if (r.doneTimer) clearTimeout(r.doneTimer);
     this.reply = null;
     if (r.spoken.length) this.remember("assistant", r.spoken.join(" ") + " —");
+    // the user talked over a reply that was already a sentence or more in: they want it shorter
+    // long = two sentences or ~80 characters already out (a "Sure thing." cut is not a long reply — Codex round 6)
+    if (reason !== "client" && this.mode === "chat" && (r.spoken.length >= 2 || r.spoken.join(" ").length >= 80)) this.noteLongCut();
     this.client.sendJson({ type: "utterance.cancelled", utteranceId, reason });
     this.client.sendJson({ type: "speaking", on: false, utteranceId });
     this.log("utterance.cancelled", { utteranceId, reason });
@@ -984,6 +1055,58 @@ export class Session {
     this.frames = null;
     if (!f || this.now() - f.at > FRAMES_TTL_MS) return [];
     return f.images;
+  }
+
+  /** Knows-Me S1: the second long reply cut off → "Updated: shorter replies" + one "I'll keep it short" line. */
+  private noteLongCut(): void {
+    const p = this.deps.personalize;
+    if (process.env.GENITA_BARGE_SHORTER === "0" || !p?.noteShorter || !this.deps.userId) return;
+    this.longCuts++;
+    if (this.longCuts !== SHORTER_AFTER_CUTS) return;
+    // they asked for long answers themselves: two cut-offs don't override that (the server checks the labels too)
+    if (/\b(?:long|longer|detailed|thorough|in[- ]depth|whole story)\b[^.\n]{0,30}\b(?:answers?|repl(?:y|ies)|explanations?)\b/i.test(this.user?.profile ?? "")) return;
+    // set now so the very next reply says it; cleared if the server doesn't save it
+    const line = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    this.shorterLine = line;
+    void p.noteShorter(this.deps.userId).then(
+      (r) => {
+        if (!r) { if (this.shorterLine === line) this.shorterLine = null; return; }
+        if (this.closed) return;
+        this.user = { ...this.user, profile: r.profile };
+        this.finds?.setProfile(r.profile, this.taste);
+        this.client.sendJson({ type: "profile.updated", text: r.text, fields: r.fields });
+        this.log("profile.updated", { fields: r.fields, by: "cuts" });
+      },
+      (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
+    );
+  }
+
+  /** lane 개인화: "actually I don't like X" → merge → profile.updated. Beside the reply, never blocking it. */
+  private checkCorrection(text: string): void {
+    const p = this.deps.personalize;
+    const userId = this.deps.userId;
+    const asked = this.awaitingAnswer;
+    this.awaitingAnswer = null;
+    // only lines that will reach Spark count toward the per-call budget
+    if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
+    const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
+    const abort = new AbortController();
+    this.correcting = abort;
+    this.correctionChecks++;
+    void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
+      (r) => {
+        if (!r || this.closed || abort.signal.aborted) return;
+        this.user = { ...this.user, profile: r.profile };
+        // lines said in this call are "You said: …" on result cards (grey), the stored ones "Your taste: …" (blue)
+        const said = new Set(r.applied.filter((a) => a.field === "likes" && a.text).map((a) => a.text));
+        // the latest taste lines, even none (a "forget that" can empty them — Codex round 6)
+        this.taste = r.taste.map((t) => (said.has(t.text) || this.taste.some((x) => x.fromCall && x.text === t.text) ? { ...t, fromCall: true } : t));
+        this.finds?.setProfile(r.profile, this.taste);
+        for (const e of r.events) this.client.sendJson({ type: "profile.updated", text: e.text, fields: e.fields });
+        this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
+      },
+      (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
+    ).finally(() => { if (this.correcting === abort) this.correcting = null; });
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
@@ -1088,6 +1211,7 @@ export class Session {
 
   /** Pure apart from consuming pending camera frames. */
   private buildRequest(text: string, renamedFrom?: string, turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null } = {}): Built {
+    const greeting = !!turn.greeting;
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
     const interpret = this.mode === "interpret" || hangul;
@@ -1122,8 +1246,15 @@ export class Session {
       cameraAttached: camera.length > 0,
       onScreen: this.finds?.onScreen(),
       renamedFrom,
+      // this call's one question rides the first user turns (the turn being built is userTurns + 1)
+      ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
+      // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
+      nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,
       ...v1,
     });
+    // said once, on the next reply the user asked for (not a greeting or an initiative turn)
+    if (!greeting && !turn.cue) this.shorterLine = null;
     return {
       interpret,
       detected: null,
@@ -1293,10 +1424,15 @@ export class Session {
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
+    if (greeting) this.nod = null;
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!synthetic && !self) this.memoryCall?.userMessage();
-    if (!interpret && !synthetic && !self) this.remember("user", text);
+    if (!interpret && !synthetic && !self) {
+      this.checkCorrection(text);
+      this.userTurns++;
+      this.remember("user", text);
+    }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
     if (!interpret && !self && !synthetic && this.finds) {
@@ -1652,6 +1788,13 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
+    // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
+    if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
+      this.ask.asked = true;
+      this.awaitingAnswer = this.ask.topic;
+      this.client.sendJson({ type: "profile.asking", topic: this.ask.topic.topic });
+      this.log("profile.asked", {});
+    }
     this.client.sendJson({ type: "reply", utteranceId, text: full, emotion: emotion ?? "neutral", interpret, final: true });
     const metrics = {
       utteranceId,

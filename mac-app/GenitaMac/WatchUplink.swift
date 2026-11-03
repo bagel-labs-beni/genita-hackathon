@@ -65,6 +65,13 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         receive(task)
     }
 
+    /// The share switched to another window or display mid-call: the server's `start` while sharing only renames it.
+    func updateSource(_ source: String?) {
+        var start: [String: Any] = ["type": "start"]
+        if let source { start["source"] = source }
+        sendJSON(start)
+    }
+
     func stop() {
         sendJSON(["type": "stop"])
         let t = lock.withLock { () -> URLSessionWebSocketTask? in let t = task; task = nil; open = false; pending = []; return t }
@@ -73,8 +80,10 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
     }
 
     /// JPEG ≤ 1024 px, only when the picture changed. `blank`: the frame is (almost) black.
-    func sendFrame(_ jpeg: Data, blank: Bool) {
-        sendJSON(["type": "frame", "image": jpeg.base64EncodedString(), "blank": blank])
+    func sendFrame(_ jpeg: Data, blank: Bool, motion: Float? = nil) {
+        var frame: [String: Any] = ["type": "frame", "image": jpeg.base64EncodedString(), "blank": blank]
+        if let motion { frame["motion"] = (Double(motion) * 1000).rounded() / 1000 }
+        sendJSON(frame)
     }
 
     /// PCM s16le mono 24 kHz, real time.

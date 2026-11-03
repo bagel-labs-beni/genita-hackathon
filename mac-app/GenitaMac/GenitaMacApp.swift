@@ -14,6 +14,7 @@ import CoreText
         WindowGroup("Genita", id: "companion") {
             // Figma MAC-1~4: the window bar has the traffic lights only, no title text
             MacStartView().preferredColorScheme(.light).toolbar(removing: .title)
+                .genitaSplash() // launch splash B+ at window open (motion lane)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif
