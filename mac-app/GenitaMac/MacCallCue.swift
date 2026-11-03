@@ -22,13 +22,23 @@ enum MacSheetInk {
     static func serif(_ size: CGFloat) -> Font { .custom("KMUTTF-SungkokSemiSerif", fixedSize: size) }
 }
 
-/// (Lives here so the cue checks, which compile this file alone, build.) Dark Liquid Glass for pills over the companion's face (sharing chip, call cue, hover label). Falls back to the
-/// 84 % ink pill before macOS 26.
+/// Ink in glass, the iPhone #414 GlassCTA structure: an ink fill over tinted Liquid Glass. In a key window the fill is
+/// 55 % (same as the iPhone). In a non-key window (the call window is never key) tinted glass washes out to light
+/// grey (build 171), so the fill goes to 88 % and the ink holds near #111 while the glass rim stays.
+enum MacInkGlass {
+    static func fillOpacity(_ state: ControlActiveState) -> Double { state == .inactive ? 0.88 : 0.55 }
+}
+
+/// Pills over the companion's face (call cue, sharing chip, hover label): ink in glass (MacInkGlass). Before macOS 26
+/// the 84 % ink pill. Lives here so the cue checks, which compile this file alone, build.
 struct MacDarkGlass<S: Shape>: ViewModifier {
     var shape: S
+    @Environment(\.controlActiveState) private var activeState
     @ViewBuilder func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect(.regular.tint(MacSheetInk.ink.opacity(0.55)), in: shape).environment(\.colorScheme, .dark)
+            content.background(shape.fill(MacSheetInk.ink.opacity(MacInkGlass.fillOpacity(activeState))))
+                .glassEffect(.regular.tint(MacSheetInk.ink), in: shape).environment(\.colorScheme, .dark)
+                .animation(.easeOut(duration: 0.2), value: activeState)
         } else {
             content.background(MacSheetInk.pill, in: shape)
         }
