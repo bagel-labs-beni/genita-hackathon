@@ -18,6 +18,7 @@ import type { VoiceConfig } from "../config.ts";
 import type { TtsChunk, TtsRequest } from "./types.ts";
 import { pauseAfterMs, spokenText } from "../voice/normalize.ts";
 import { parseClauseTiming, shiftTiming } from "../lips/visemes.ts";
+import { g2pOn, relabelPhonemes } from "../lips/g2p.ts";
 
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
@@ -135,7 +136,9 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         }
         if ("timing" in j) {
           // word + phoneme timing for the audio above; a malformed one is dropped (the app falls back)
-          const timing = cfg.align ? parseClauseTiming(j.timing) : null;
+          const parsed = cfg.align ? parseClauseTiming(j.timing) : null;
+          // the aligner's letter-guessed phoneme labels → dictionary labels on its word times (lips/g2p.ts)
+          const timing = parsed && g2pOn() ? relabelPhonemes(parsed) : parsed;
           return timing ? { audio: Buffer.alloc(0), alignment: null, model: modelName, timing } : null;
         }
         const audio = Buffer.from(j.audio_base64 ?? "", "base64");
