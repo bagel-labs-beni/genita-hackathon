@@ -132,6 +132,10 @@ export async function sparkText(key: string, req: SparkRequest, signal?: AbortSi
   return outputText(await metaJson<ResponseObject>(key, "/responses", body(req, false), signal));
 }
 
+/** pause before the one json_schema retry */
+export const JSON_RETRY_MS = 600;
+const retryable = (err: unknown) => err instanceof UpstreamError && (err.status === null || err.status >= 500 || err.status === 429);
+
 /** Structured output via text.format json_schema; returns the parsed object. */
 export async function sparkJson<T>(
   key: string,
@@ -139,11 +143,18 @@ export async function sparkJson<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const { schemaName, schema, ...rest } = req;
-  const raw = await sparkText(
-    key,
-    { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } },
-    signal,
-  );
+  const call = () => sparkText(key, { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } }, signal);
+  let raw: string;
+  try {
+    raw = await call();
+  } catch (err) {
+    // 11/3 outage: json_schema calls 504'd for minutes. One retry after a short pause for a 5xx / dropped call;
+    // a 4xx (bad request, auth) or an abort is not retried. Callers still fail quietly and reprocess later.
+    if (!retryable(err) || signal?.aborted) throw err;
+    await new Promise((r) => setTimeout(r, JSON_RETRY_MS));
+    if (signal?.aborted) throw err;
+    raw = await call();
+  }
   const m = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
   if (!m) throw new UpstreamError("meta", null, `spark json: no JSON in reply: ${raw.slice(0, 120)}`);
   return JSON.parse(m[0]) as T;

@@ -60,15 +60,14 @@ for (const text of ["Okay.", "Yes!", "Oh!"]) {
   });
 }
 
-test("twice empty: retryable spark_unavailable with cause, no empty reply or say", async () => {
+test("twice empty (Spark outage 11/3): the call goes on with one line in character, no error card", async () => {
   let calls = 0;
   const { events, logs } = await turn({ async *spark() { calls++; yield done(); } });
   assert.equal(calls, 4);
-  assert.equal(answer(events), undefined);
-  assert.ok(events.some((e) => e.type === "error" && e.code === "spark_unavailable" && e.retryable));
-  assert.ok(!events.some((e) => e.type === "say"));
-  assert.ok(logs.some((l) => l.event === "spark.empty" && l.data.cause === "completed_without_text"));
-  assert.equal(events.at(-1)?.type, "state", "turn returns to listening");
+  assert.equal(answer(events), "Sorry, I lost you for a sec. Say that again?");
+  assert.ok(!events.some((e) => e.type === "error"), "no spark_unavailable card");
+  assert.ok(logs.some((l) => l.event === "spark.lost_line" && l.data.cause === "completed_without_text"));
+  assert.ok(events.some((e) => e.type === "turn.metrics"), "a normal turn: spoken, measured, the call goes on");
 });
 
 test("speculation: an already-ended empty hit retries", async () => {
@@ -238,4 +237,15 @@ test("memory: a completed remember call wins over a later text-only promise to r
     assert.equal((await memory.list("fake")).length, 1);
     assert.equal(textLaneAborted, true);
   } finally { await memory.drain(); }
+});
+
+test("Spark 504 on both tries: a short pause before the retry, then the in-character line (no error card)", async () => {
+  let calls = 0;
+  const at: number[] = [];
+  const { events, logs } = await turn({ async *spark() { calls++; at.push(performance.now()); throw new Error("meta 504: request timed out"); } });
+  assert.ok(calls >= 2);
+  assert.ok(at.at(-1)! - at[0] >= 350, `paused ${Math.round(at.at(-1)! - at[0])} ms before the retry (hedged lanes start together)`);
+  assert.equal(answer(events), "Sorry, I lost you for a sec. Say that again?");
+  assert.ok(!events.some((e) => e.type === "error"));
+  assert.ok(logs.some((l) => l.event === "spark.lost_line"));
 });

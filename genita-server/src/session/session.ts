@@ -55,7 +55,7 @@ import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
@@ -1597,6 +1597,7 @@ export class Session {
     let sparkDone = false;
     let sparkError: unknown = null;
     let emptyCause: string | null = null;
+    let lostLine = false;
     let droppedOpener = false;
     // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
     const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
@@ -1762,6 +1763,9 @@ export class Session {
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
+          // a 504 / dropped call: a short pause before the one retry, not straight back into the same spike
+          if (attempt === 0 && attemptError) await new Promise((r) => setTimeout(r, UPSTREAM_RETRY_MS));
+          if (signal.aborted) return;
           splitter = new SentenceSplitter(splitOptions);
           onlyOpener = null;
           guarded.first = null;
@@ -1769,6 +1773,12 @@ export class Session {
           emotion = null;
           droppedOpener = false;
           m.firstTokenAt = undefined;
+        }
+        // both tries came back empty or failed: the call goes on — one line in character, never the error card
+        if (!signal.aborted && !hasAnswer() && !interpret && !self) {
+          enqueueSentences([LOST_LINE], true);
+          lostLine = true;
+          this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
         }
       } catch (err) {
         if (!signal.aborted) sparkError = err;
@@ -1942,7 +1952,8 @@ export class Session {
       return;
     }
     if (sparkError) {
-      this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      // the lost-you line already covered it: no error card over a call that goes on
+      if (!lostLine) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     if (device) {

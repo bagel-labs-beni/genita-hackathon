@@ -428,8 +428,9 @@ for (const voice of ["server", "device"] as const) {
       const { events, logs, followups } = await recallTurn(voice, [["Hmm,"]], [followup]);
       assert.equal(followups, 2);
       assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
-      assert.equal(events.some((e) => e.type === "reply"), false);
-      assert.equal(events.filter((e) => e.type === "error" && e.code === "spark_unavailable").length, 1);
+      // 11/3 outage rule: no error card — one line in character and the call goes on
+      assert.ok(events.find((e) => e.type === "reply")?.text.endsWith("Say that again?"));
+      assert.equal(events.some((e) => e.type === "error"), false);
     });
   }
 
@@ -459,8 +460,8 @@ for (const voice of ["server", "device"] as const) {
     const { events, logs, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], ["", "Hmm."]);
     assert.equal(followups, 2);
     assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
-    assert.equal(events.some((e) => e.type === "reply"), false);
-    assert.equal(events.filter((e) => e.type === "error" && e.code === "spark_unavailable").length, 1);
+    assert.ok(events.find((e) => e.type === "reply")?.text.endsWith("Say that again?"));
+    assert.equal(events.some((e) => e.type === "error"), false);
   });
 
   test(`substantive content before an empty tool follow-up needs no retry (${voice})`, async () => {
