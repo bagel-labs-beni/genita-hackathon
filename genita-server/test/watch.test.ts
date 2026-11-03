@@ -1569,3 +1569,46 @@ test("nonverbal: the inhale is breath-quiet and short; the event is a valid back
   assert.ok(peak <= 1_100 && peak > 300, `peak ${peak} (~ −30 dBFS)`);
   assert.deepEqual(checkServerEvent({ type: "backchannel", kind: "inhale", audio: inhalePcmBase64() }), []);
 });
+
+test("Codex #542 r2 P2: a failed look's frames get the next look even when they're past the 3 s lookback", async () => {
+  let n = 0;
+  const q = quickController((r) => {
+    if ((r.text?.format as { name?: string }).name !== "watch_quick") return memoNone;
+    if (++n === 1) throw new Error("spark first-token timeout");
+    return JSON.stringify({ react: false, moment: "none", line: "", talkOver: true });
+  }, {}, { quickEveryMs: 1_000 });
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  const send = async (ms: number, id: string, motion: number) => { q.at(ms); q.c.onMessage({ type: "frame", image: `${frame}${id}`, motion }); await wait(1); };
+  await send(7_000, "A", 0.2);
+  await send(7_330, "B", 0.03); // look 1 (A, B) fails
+  await send(10_600, "C", 0.03);
+  await send(10_900, "D", 0.03); // 3.6 s later: A and B are out of the lookback
+  const looks = q.calls.filter(q.isQuick).map((r) => (r.input as { content: { type: string; image_url?: string }[] }[])[0].content.filter((p) => p.type === "input_image").map((p) => p.image_url!.slice(-1)));
+  assert.deepEqual(looks[0], ["A", "B"]);
+  assert.deepEqual(looks[1], ["A", "B"], "the failed look's frames are looked at again");
+});
+
+test("Codex #542 r2 P2: a page comment from a memo that started on the old page is dropped after most of the screen changes", async () => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const page = JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, product A", talkOver: false, memo: "Product A.", speakers: [] });
+  const reacted: string[] = [];
+  const { c, at } = controller([], {}, {
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await gate;
+      yield { type: "text", delta: page };
+      yield { type: "done", responseId: null, text: page, status: "completed" };
+    },
+  });
+  (c as unknown as { host: WatchHost }).host.react = (s) => (reacted.push(s), reacted.length);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "SHOP" });
+  at(7_000);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(9_100);
+  c.tick(); // memo on product A starts
+  at(9_500);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.45 }); // product B now
+  release();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(reacted, [], "A's comment is not said over B");
+});

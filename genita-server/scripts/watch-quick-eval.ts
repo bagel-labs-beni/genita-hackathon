@@ -89,7 +89,7 @@ async function look(mod: Quick, frames: string[]): Promise<{ raw: string; ms: nu
   return { raw, ms: Math.round(performance.now() - t) };
 }
 
-async function judge(line: string, truth: string): Promise<{ correct: boolean; invented: boolean; why: string }> {
+async function judge(line: string, truth: string): Promise<{ correct: boolean; invented: boolean; why: string; judged: boolean }> {
   for (let i = 0; i < 3; i++) {
     try {
       const g = await sparkText(key, {
@@ -97,10 +97,10 @@ async function judge(line: string, truth: string): Promise<{ correct: boolean; i
         effort: "low",
       });
       const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
-      if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") return { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80) };
+      if (o && typeof o.correct === "boolean" && typeof o.invented === "boolean") return { correct: o.correct, invented: o.invented, why: String(o.why ?? "").slice(0, 80), judged: true };
     } catch { /* retry */ }
   }
-  return { correct: false, invented: false, why: "judge failed", judged: false } as { correct: boolean; invented: boolean; why: string };
+  return { correct: false, invented: false, why: "judge failed", judged: false };
 }
 
 const spec = JSON.parse(readFileSync(join(dir, "moments.json"), "utf8")) as { clips: Clip[] };
@@ -148,7 +148,7 @@ for (const clip of clips) {
       const got = [];
       for (const l of chosen) { const row = await run(v, clip, `L=${l.L}`, l.frames, r); if (row) got.push(row); }
       const hit = got.find((g) => g.react);
-      rows.push({ variant: v.name, clip: clip.id, expect: clip.expect ?? "react", pos: `phase=${phase}`, run: r, looks: got.length, ms: got.length ? Math.max(...got.map((g) => g.ms)) : 0, frames: got.map((g) => g.frames), react: !!hit, line: hit?.line ?? null, seen: got.map((g) => g.seen).join(" | "), correct: hit ? (hit as { correct?: boolean }).correct : undefined, invented: got.some((g) => (g as { invented?: boolean }).invented), why: got.filter((g) => (g as { invented?: boolean }).invented).map((g) => `${g.line}: ${(g as { why?: string }).why}`).join("; ") });
+      rows.push({ variant: v.name, clip: clip.id, expect: clip.expect ?? "react", pos: `phase=${phase}`, run: r, looks: got.length, ms: got.length ? Math.max(...got.map((g) => g.ms)) : 0, frames: got.map((g) => g.frames), react: !!hit, line: hit?.line ?? null, seen: got.map((g) => g.seen).join(" | "), correct: hit ? (hit as { correct?: boolean }).correct : undefined, invented: got.some((g) => (g as { invented?: boolean }).invented), judgeFailed: got.some((g) => (g as { judged?: boolean }).judged === false), why: got.filter((g) => (g as { invented?: boolean }).invented).map((g) => `${g.line}: ${(g as { why?: string }).why}`).join("; ") });
     });
   }
 }
@@ -167,11 +167,12 @@ for (const v of variants) {
   summary[v.name] = {
     salientReact: `${react.filter((r) => r.react).length}/${react.length}`,
     quietReact: `${quiet.filter((r) => r.react).length}/${quiet.length}`,
-    invented: `${said.filter((r) => r.invented).length}/${said.length}`,
+    invented: `${said.filter((r) => r.invented).length}/${said.filter((r) => r.judged !== false && r.judgeFailed !== true).length}`,
     msP50: med(mine.map((r) => r.ms as number)),
     errors: rows.filter((r) => r.variant === v.name && r.error).length,
     // a judge that failed 3 times is not "nothing invented" (Codex #542 P2)
-    judgeFailed: said.filter((r) => r.why === "judge failed" || String(r.why ?? "").includes("judge failed")).length,
+    // a judge that failed 3 times is its own count, never "nothing invented" (Codex #542 P2 ×2)
+    judgeFailed: mine.filter((r) => r.judged === false || r.judgeFailed === true).length,
     byClip: Object.fromEntries(clips.map((c) => {
       const x = mine.filter((r) => r.clip === c.id);
       return [c.id, `${x.filter((r) => r.react).length}/${x.length} react, ${x.filter((r) => r.invented).length} invented`];
