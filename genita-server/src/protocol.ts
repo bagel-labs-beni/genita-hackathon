@@ -148,6 +148,8 @@ export type FindCard = {
   why: string[];
   ask: string[];
   sources: { title: string; url: string; domain: string }[];
+  /** lane 개인화 E: 1–2 chips from the user's own taste lines, e.g. "Your style: clean, minimal clothes", "You said: no cilantro" (source = that line) */
+  reasons?: { text: string; source: string; from: "profile" | "call" }[];
   how: string[];
   page?: { url: string; opened: boolean };
   saved?: boolean;
@@ -257,7 +259,11 @@ export type ServerEvent =
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
   | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
   /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
-  | { type: "companion.named"; name: string };
+  | { type: "companion.named"; name: string }
+  /** lane 개인화 B: a correction said in the call was saved ("Updated: no cilantro") — show it as a chip for 2.5 s */
+  | { type: "profile.updated"; text: string; fields: string[] }
+  /** lane 개인화 GK-1: the companion just asked this call's getting-to-know-you question — soft chip "Getting to know you · {topic}" */
+  | { type: "profile.asking"; topic: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -322,6 +328,8 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
   "companion.named": { required: ["name"], optional: [] },
+  "profile.updated": { required: ["text", "fields"], optional: [] },
+  "profile.asking": { required: ["topic"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
