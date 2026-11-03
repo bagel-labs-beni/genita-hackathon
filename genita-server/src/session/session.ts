@@ -236,6 +236,8 @@ const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
+/** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
+const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -1597,6 +1599,7 @@ export class Session {
     let askReleasing = false;
     /** a hold beat goes out on its own: it never releases or joins a held question clause (Codex r1 P2) */
     let beating = false;
+    let droppedAsk = false;
     /** the queued, not-yet-ended clauses of the sentence in progress (before the next one) */
     const openClauses = (): number[] => {
       const out: number[] = [];
@@ -1615,9 +1618,17 @@ export class Session {
       if (b >= sentences.length) return false; // the sentence isn't finished yet: its end is judged on enqueue
       const full = sentences.slice(a, b + 1).map((x) => x.display).join(" ");
       if (!/\?\s*$/.test(sentences[b].display) || !replyAsks(full, this.askDropped)) return false;
+      // never leave the reply empty: when the question was its only real sentence and nothing else is coming,
+      // a short reaction takes its place (coordinator 11/3)
+      const alone = sparkDone && !sentences.some((x, k) => (k < a || k > b) && !x.beat && !x.drop);
       for (let k = a; k <= b; k++) sentences[k].drop = true;
-      this.log("profile.ask_dropped", { utteranceId, queued: true });
-      return true;
+      droppedAsk = true;
+      this.log("profile.ask_dropped", { utteranceId, queued: true, replaced: alone });
+      if (!alone || i < a) return true;
+      const ack = parseTaggedSentence(WATCH_ASK_FALLBACK);
+      sentences[i] = { tts: ack.ttsText, display: ack.displayText, emotion: ack.emotion ?? sentences[i].emotion, face: null };
+      if (jobs[i]) jobs[i] = undefined as never; // a prefetched TTS of the question is not used
+      return false;
     };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
     const said = () => sentences.filter((x) => !x.beat && !x.drop);
@@ -1677,6 +1688,7 @@ export class Session {
             const full = [...queued.map((k) => sentences[k].display), ...held.map((h) => parseTaggedSentence(h).displayText), shown].join(" ");
             if (/\?\s*$/.test(shown) && replyAsks(full, this.askDropped)) {
               for (const k of queued) sentences[k].drop = true; // its first clause, queued before watch attached
+              droppedAsk = true;
               this.log("profile.ask_dropped", { utteranceId });
               continue;
             }
@@ -1816,6 +1828,8 @@ export class Session {
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
           if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          // the only real sentence was the question watch together took back: a short reaction instead of a retry
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -1832,7 +1846,12 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
-        if (!signal.aborted) { applyNarration(narration.finish()); releaseAskHold(); }
+        if (!signal.aborted) {
+          applyNarration(narration.finish());
+          releaseAskHold();
+          // the consumer dropped the only real sentence while Spark was still writing (nothing else came)
+          if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+        }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();

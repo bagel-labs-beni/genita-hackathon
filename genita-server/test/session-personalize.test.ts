@@ -553,3 +553,55 @@ test("#387 follow-up (Codex r1): a hold beat never releases or splits a held que
   assert.match(String(reply.text), /Either way, I'm in\.$/);
   s.session.close();
 });
+
+test("#387 follow-up (edge): the question was the reply's only sentence → a short reaction, never silence", async () => {
+  // dropped while streaming (producer side)
+  {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const s = setup({ async unplanCall() {} });
+    const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+    let sparkCalls = 0;
+    deps.spark = async function* () {
+      sparkCalls++;
+      await gate;
+      yield { type: "text", delta: "<happy> Are your weekends busy or slow?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    };
+    await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+    await sleep(20);
+    assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+    release();
+    const reply = await s.client.waitFor((m) => m.type === "reply");
+    assert.equal(reply.text, "Ooh, okay. Let's watch.");
+    assert.equal(sparkCalls, 1, "no Spark retry for it");
+    s.session.close();
+  }
+  // already queued and prefetched when watch attaches (consumer side), server voice
+  {
+    const s = setup({ async unplanCall() {} });
+    const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+    const said: string[] = [];
+    let attached = false;
+    deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+    deps.tts = async function* (req) {
+      said.push(req.text);
+      if (!attached) await sleep(80);
+      yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+    };
+    deps.spark = async function* () {
+      yield { type: "text", delta: "<happy> Mm. Are your weekends busy or slow? " };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    };
+    await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+    await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+    await sleep(30);
+    assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+    attached = true;
+    const reply = await s.client.waitFor((m) => m.type === "reply");
+    assert.equal(reply.text, "Mm.", "another real sentence was said, so the question just goes");
+    assert.ok(!said.some((t) => /weekends/i.test(t)), JSON.stringify(said));
+    s.session.close();
+  }
+});
