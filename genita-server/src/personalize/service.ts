@@ -547,12 +547,12 @@ export class Personalize {
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       if (!m.applied.length) return null;
-      if (answer && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
+      if (answer && m.applied.some((a) => a.answers === answer.answers) && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
       return { card: m.card, out: { m, card: m.card } };
     });
     if (!out) return forgotUpdate();
     const events: Array<{ text: string; fields: string[] }> = [];
-    const noted = out.m.applied.filter((a) => answer && a.text === answer.text);
+    const noted = out.m.applied.filter((a) => answer && a.answers === answer.answers);
     const rest = out.m.applied.filter((a) => !noted.includes(a));
     if (noted.length) events.push({ text: `Noted: ${noted[0].chip ?? noted[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [noted[0].field] });
     if (rest.length) events.push({ text: `Updated: ${rest.find((a) => a.chip)?.chip ?? rest[0].text.replace(/\.$/, "")}`.slice(0, 60), fields: [...new Set(rest.map((a) => a.field))] });

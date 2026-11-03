@@ -264,6 +264,7 @@ extension AppState {
         if setup.companionCreated == true { go(.voice); return }
         guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
+        polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
         go(.imageCheck)
@@ -282,16 +283,81 @@ extension AppState {
                 // a late answer for an image the user already replaced doesn't count
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
                 imageCheck = r
-                if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
+                // photo polish: V03 keeps waiting while the server polishes; V02-T then confirms the polished picture
+                if r.polish == true {
+                    polishRetriesLeft = 2
+                    await polish(source: r.imageId, ticket: ticket)
+                } else if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
             } catch {
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-                imageCheckError = Self.errorLine(error); route(error)
+                imageCheckError = Self.imageErrorLine(error); route(error)
             }
         }
     }
 
+    /// One polish of the uploaded photo (server: Muse Image edit + the same check on the result), then its bytes.
+    private func polish(source: String, ticket: UUID) async {
+        polishing = true; polishError = nil
+        defer { if imageCheckTicket == ticket { polishing = false } }
+        do {
+            polishAttempts += 1
+            let p = try await onboarding.polishImage(imageId: source)
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            // kept before the download: a failed download only reloads the picture, it never costs a polish
+            polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
+            setup.imageId = p.passed ? p.imageId : nil
+            if p.passed { setup.imageType = p.type }
+            await loadPolishedImage(ticket: ticket)
+        } catch {
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            switch error as? GenitaAuthError {
+            // a refusal comes back the same for this photo: choose another one
+            case .server(422, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
+            case .server(429, "polish_limit")?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
+            // the failed attempt counts on the server too: three per upload
+            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
+            default: polishError = Self.errorLine(error); route(error)
+            }
+        }
+    }
+
+    private func loadPolishedImage(ticket: UUID) async {
+        guard let p = polished else { return }
+        do {
+            let bytes = try await onboarding.imageBytes(imageId: p.imageId)
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishedImage = bytes; polishError = nil
+        } catch {
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishError = "Couldn't load the picture."; route(error)
+        }
+    }
+
+    /// The polished picture can still be changed: no companion yet, none being made (the face is fixed after, B7).
+    var canRetryPolish: Bool { setup.companionCreated != true && !creatingCompanion && !polishing }
+
+    /// V02-T "Try again": reload a picture whose download failed, else polish the same upload once more (two at most).
+    func retryPolish() {
+        guard canRetryPolish, let source = imageCheck?.imageId else { return }
+        let ticket = UUID(); imageCheckTicket = ticket
+        if polished != nil, polishedImage == nil {
+            imageCheckTask = Task { polishing = true; defer { if imageCheckTicket == ticket { polishing = false } }; await loadPolishedImage(ticket: ticket) }
+            return
+        }
+        guard polishRetriesLeft > 0 else { return }
+        imageCheckTask = Task { await polish(source: source, ticket: ticket) }
+    }
+
+    /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
+    static func imageErrorLine(_ error: Error) -> String {
+        if case GenitaAuthError.server(422, "unreadable_image")? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
+        return errorLine(error)
+    }
+
     /// V02-T "Use this image": the companion is made now and prep starts at once (D28); voice and name come next.
     func useCheckedImage() {
+        // photo polish: the confirmed polished picture is the companion's face from now on (the call scene too)
+        if let p = polished, p.passed, setup.imageId == p.imageId, let bytes = polishedImage { setup.imageData = bytes }
         go(.voice)
         guard serverWired, setup.companionCreated != true, let imageId = setup.imageId else { return }
         creatingCompanion = true
