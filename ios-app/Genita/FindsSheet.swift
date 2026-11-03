@@ -677,7 +677,7 @@ struct FindCardPage: View {
         }
     }
 
-    // MARK: product (PF-1b: two columns, View ↗ opens the shop page in the sheet browser)
+    // MARK: product (PF-1b: two columns, Open in browser ↗ opens the shop page in the sheet browser)
 
     @ViewBuilder private var product: some View {
         let items = Array((card.products ?? []).prefix(2))
@@ -702,14 +702,15 @@ struct FindCardPage: View {
             Button {
                 if !offline { withAnimation(.drawer) { finds.state = .full; finds.browser = FindCard.Source.make(title: p.name, url: p.url, domain: p.domain) } }
             } label: {
+                // Dyno's video (2:20): "Open in browser ↗" in a blue outline capsule; 13 pt so it stays one line in a column
                 HStack(spacing: 4) {
-                    Text("View").font(TypeStyle.body(14))
-                    Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .medium))
-                }.foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 34)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(FindsInk.line, lineWidth: 1))
+                    Text("Open in browser").font(TypeStyle.body(13, .medium)).lineLimit(1).minimumScaleFactor(0.85)
+                    Image(systemName: "arrow.up.right").font(.system(size: 11, weight: .medium))
+                }.foregroundStyle(CallInk.ink).padding(.horizontal, 10).frame(maxWidth: .infinity).frame(height: 34)
+                .overlay(Capsule().strokeBorder(Color(red: 0, green: 162 / 255, blue: 1), lineWidth: 1))
                 .padding(.vertical, 5).contentShape(Rectangle())
             }.buttonStyle(PressScale()).opacity(offline ? 0.5 : 1)
-            .accessibilityLabel("View \(p.name) at \(p.store)").accessibilityIdentifier("productLink-\(p.id)")
+            .accessibilityLabel("Open \(p.name) at \(p.store) in the browser").accessibilityIdentifier("productLink-\(p.id)")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 

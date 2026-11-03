@@ -41,7 +41,12 @@ export function normalizeEmail(raw: unknown): string | null {
 export const maskEmail = (e: string) => e.replace(/^(.{0,2})[^@]*/, "$1***");
 
 export type StartResult = { ok: true; id: string; code: string } | { ok: false; retryAfterSec: number };
-export type CheckResult = "ok" | "invalid" | "too_many";
+/**
+ * "invalid" / "too_many" = this try was compared against the live code (it counts); "no_code" = no live code to
+ * compare with, "burned" = the newest code was already used up — neither counts against the address (Codex P1 #492:
+ * anyone could otherwise lock an address before its owner asked for a code).
+ */
+export type CheckResult = "ok" | "invalid" | "too_many" | "no_code" | "burned";
 
 export class EmailCodes {
   private readonly key: Buffer;
@@ -99,14 +104,14 @@ export class EmailCodes {
       [email],
     );
     const row = newest.rows[0];
-    if (!row) return "invalid";
-    if (!row.live) return Number(row.attempts) >= MAX_ATTEMPTS ? "too_many" : "invalid";
+    if (!row) return "no_code";
+    if (!row.live) return Number(row.attempts) >= MAX_ATTEMPTS ? "burned" : "no_code";
     const id = row.id;
     const tried = await this.db.query(
       `UPDATE email_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND expires_at > now() AND attempts < ${MAX_ATTEMPTS} RETURNING attempts, code_hash`,
       [id],
     );
-    if (!tried.rows[0]) return "too_many";
+    if (!tried.rows[0]) return "burned";
     const want = Buffer.from(String(tried.rows[0].code_hash), "hex");
     const got = this.hash(email, code);
     if (want.length === got.length && timingSafeEqual(want, got)) {

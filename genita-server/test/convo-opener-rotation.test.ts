@@ -23,7 +23,8 @@ const APP = [
 ].join("\n");
 
 test("profileHooks: tastes and interests only, one per finding; free-form lists split; dislikes, talk and boundaries are not hooks", () => {
-  assert.deepEqual(profileHooks(FREE), ["cooking Korean-Western fusion", "minimal monochrome fashion", "K-pop (aespa)", "late-night ramen"]);
+  // r3 11/4: clothes / style are never an opener (camera off it reads as seeing them)
+  assert.deepEqual(profileHooks(FREE), ["cooking Korean-Western fusion", "K-pop (aespa)", "late-night ramen"]);
   assert.deepEqual(profileHooks(APP), ["Loves spicy food", "Film photography", "Bouldering on weekends"]);
   assert.deepEqual(profileHooks(undefined), []);
   assert.deepEqual(profileHooks("- Talk: short replies"), []);
@@ -40,7 +41,7 @@ test("pickOpenerHook: 5 calls in a row open on ≥4 different things and never o
       picks.push(h);
       recent = noteHook(recent, h);
     }
-    assert.ok(new Set(picks).size >= 4, `seed ${seed}: ${picks.join(" | ")}`);
+    assert.ok(new Set(picks).size >= Math.min(4, hooks.length), `seed ${seed}: ${picks.join(" | ")}`); // 3 hooks once clothes left (r3 11/4)
   }
   assert.equal(pickOpenerHook([], [], 0), null);
   assert.equal(pickOpenerHook(["only one"], ["only one"], 3), "only one", "one hook: still opens on it");
@@ -105,7 +106,7 @@ test("session (#341): consecutive calls of one account open on different profile
   for (let i = 0; i < 5; i++) picks.push(await greetOnce(`rot-${i}`));
   assert.ok(picks.every(Boolean), picks.join(" | "));
   for (let i = 1; i < picks.length; i++) assert.notEqual(picks[i], picks[i - 1]);
-  assert.ok(new Set(picks).size >= 4, picks.join(" | "));
+  assert.ok(new Set(picks).size >= 3, picks.join(" | ")); // every non-clothes hook (r3 11/4)
 });
 
 test("opener topics (Codex #352 round 2): a Forget anywhere voids the list; no safe hook → the companion's own thing, not 'one thing from the profile'", () => {

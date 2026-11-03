@@ -40,6 +40,8 @@ final class InterpretScreenUITests: XCTestCase {
         capture("INT-1-listening")
         XCTAssertTrue(wait(speaker) { $0.hasPrefix("Them") && $0.contains("Korean") }, "INT-2"); capture("INT-2-them-speaking")
         XCTAssertTrue(wait(bar) { $0.contains("Korean ↔ English") }, "pair detected")
+        // ui-deferred: right as the bar's words change — one title and one subtitle in the pill, never two stacked
+        capture("INT-bar-midchange")
         XCTAssertTrue(wait(speaker) { $0.contains("saying it in English") }, "INT-3"); capture("INT-3-jin-says-it")
         // INT-5: my English with its Korean line (the bubble stays until INT-6).
         let mine = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'interpretBubble' AND label CONTAINS '2호선'")).firstMatch
