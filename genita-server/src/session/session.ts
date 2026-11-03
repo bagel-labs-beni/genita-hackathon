@@ -380,11 +380,31 @@ export class Session {
     ? new Backchannel({
         now: () => this.now(),
         stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
-        send: (kind) => { this.client.sendJson({ type: "backchannel", kind }); this.log("convo.backchannel", { kind }); },
+        send: (kind) => void this.sendBackchannel(kind),
       })
     : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
+
+  /**
+   * P1 #345: the cue in the companion's own voice ("Mm-hm." / "Yeah." are prefetched fillers, so no GPU wait) rides
+   * the event as base64 PCM; the app plays it beside the reply queue and silences its uplink for it + 300 ms.
+   * Device voice: no audio (the app plays nothing). Sent only if it is still the user's turn after the lookup.
+   */
+  private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
+    let audio: string | undefined;
+    if (this.tts === "server" && !this.voiceOverflow) {
+      try {
+        const parts: Buffer[] = [];
+        for await (const c of this.deps.tts({ voiceId: this.voiceId, text: kind === "mm" ? "Mm-hm." : "Yeah.", emotion: null, model: SEAMLESS_MODEL, signal: AbortSignal.timeout(800), lang: "en-US" })) if (c.audio.length) parts.push(c.audio);
+        const pcm = Buffer.concat(parts);
+        if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
+      } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
+    }
+    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking) return;
+    this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
+    this.log("convo.backchannel", { kind, audio: !!audio });
+  }
   private perceptionUnsub: (() => void) | null = null;
   /** D21: start.greetAfterMs window; the user speaking or typing inside it cancels the greeting */
   private greetTimer: (() => void) | null = null;

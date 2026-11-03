@@ -874,3 +874,22 @@ test("backchannel is off by default: the same pause sends nothing", async () => 
   assert.ok(!client.json.some((m) => m.type === "backchannel"));
   session.close();
 });
+
+test("GENITA_BACKCHANNEL=1, server voice: the cue carries the companion's own 'Mm-hm.' as base64 PCM (11/4)", async () => {
+  process.env.GENITA_BACKCHANNEL = "1";
+  let clock = 0;
+  const { asr, client, session, ttsCalls } = setup({ deps: { now: () => clock } });
+  try {
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    clock += 4000;
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+    const bc = await client.waitFor((m) => m.type === "backchannel", 3000);
+    assert.equal(bc.kind, "mm");
+    assert.ok(typeof bc.audio === "string" && Buffer.from(String(bc.audio), "base64").length > 0, "audio attached");
+    assert.ok(ttsCalls.includes("Mm-hm."), JSON.stringify(ttsCalls));
+  } finally {
+    delete process.env.GENITA_BACKCHANNEL;
+    session.close();
+  }
+});

@@ -23,6 +23,9 @@ import os
 
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
+    /// Convo P1 #345: a soft listening cue ("mm-hm") played beside the reply queue — never a reply, never counted
+    /// in `isPlaying`, never flushed by barge-in bookkeeping. Same engine, so it goes through echo cancellation.
+    private var cuePlayer = AVAudioPlayerNode()
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(GenitaProtocol.sampleRate), channels: 1, interleaved: false)!
     private var engineHasMic = false
     private var pipeline: MicPipeline?
@@ -105,6 +108,21 @@ import os
         if startedUtterances.insert(utteranceId).inserted { onPlaybackStarted?(utteranceId) }
     }
 
+    /// Convo P1 #345: plays a short backchannel cue (s16le 24 kHz mono, ≤ 1.5 s) at once, quietly, while the user is
+    /// mid-turn. The uplink is silenced for its length + 300 ms. Skipped while a reply is playing.
+    func playCue(pcm: Data) {
+        let floats = PCM.floats(fromS16LE: pcm)
+        guard !floats.isEmpty, floats.count <= GenitaProtocol.sampleRate * 3 / 2, queuedBuffers == 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
+        buffer.frameLength = AVAudioFrameCount(floats.count)
+        floats.withUnsafeBufferPointer { buffer.floatChannelData![0].update(from: $0.baseAddress!, count: floats.count) }
+        if !engine.isRunning { try? engine.start() }
+        guard engine.isRunning else { return }
+        pipeline?.silence(for: Double(floats.count) / playFormat.sampleRate + 0.3)
+        if !cuePlayer.isPlaying { cuePlayer.play() }
+        cuePlayer.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+    }
+
     /// Where the playhead is in this utterance's audio (ms from its first sample), for lip worker mouth frames.
     func playbackPositionMs(utteranceId: Int) -> Double? {
         guard let start = utteranceStart[utteranceId], let now = nowSample() else { return nil }
@@ -180,6 +198,7 @@ import os
         engine.stop()
         engine = AVAudioEngine()
         player = AVAudioPlayerNode()
+        cuePlayer = AVAudioPlayerNode()
         utteranceStart.removeAll()
         scheduledEnd = 0
         queuedBuffers = 0
@@ -209,6 +228,9 @@ import os
         }
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: playFormat)
+        engine.attach(cuePlayer)
+        engine.connect(cuePlayer, to: engine.mainMixerNode, format: playFormat)
+        cuePlayer.volume = 0.6
         engine.prepare()
         do { try engine.start(); player.play() } catch { log.error("engine start: \(error.localizedDescription, privacy: .public)") }
         log.info("engine built mic=\(self.engineHasMic) aec=\(self.voiceProcessing)")
@@ -261,6 +283,13 @@ final class MicPipeline: @unchecked Sendable {
         set { lock.withLock { _enabled = newValue; if !newValue { framer.reset() } } }
     }
 
+    private var silencedUntil: TimeInterval = 0
+    /// Convo P1 #345: while a backchannel cue plays (+ a 300 ms tail) the uplink carries silence, so the cue's echo can
+    /// never reach the server's ASR or barge-in, even where echo cancellation misses it. Timing stays continuous.
+    func silence(for seconds: TimeInterval) {
+        lock.withLock { silencedUntil = max(silencedUntil, ProcessInfo.processInfo.systemUptime + seconds) }
+    }
+
     init(input: AVAudioFormat) {
         converter = AVAudioConverter(from: input, to: output)
         // Voice processing can report several channels; channel 0 is the processed voice.
@@ -281,7 +310,10 @@ final class MicPipeline: @unchecked Sendable {
             return buffer
         }
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return [] }
-        let chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
-        return lock.withLock { framer.append(chunk) }
+        var chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
+        return lock.withLock {
+            if ProcessInfo.processInfo.systemUptime < silencedUntil { chunk = [Int16](repeating: 0, count: chunk.count) }
+            return framer.append(chunk)
+        }
     }
 }
