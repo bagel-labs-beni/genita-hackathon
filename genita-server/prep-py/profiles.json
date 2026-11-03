@@ -318,7 +318,8 @@
    "AH2",
    "EH",
    "OH",
-   "U"
+   "U",
+   "AH3"
   ],
   "ladder": {
    "viseme": "A",
@@ -334,6 +335,10 @@
     [
      "AH2",
      0.45
+    ],
+    [
+     "AH3",
+     0.75
     ]
    ],
    "gain": [
@@ -345,7 +350,8 @@
   "cap": {
    "AH": 0.75,
    "AH2": 0.75,
-   "OH": 0.6
+   "OH": 0.6,
+   "AH3": 0.9
   },
   "dissolve": {
    "mode": "snap",
@@ -392,7 +398,8 @@
    "OH": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The lips are softly rounded into a relaxed, conversational 'oh': a small round opening, the jaw barely dropped.",
    "U": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, same materials and surface texture, colours, hair or fur, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. The nose, eyes and cheeks do not move. Only the mouth and jaw change, in the same style. Inside the mouth is a dark red-brown interior (not black), the top of the pink tongue visible low and simple even upper teeth, no gaps, no fangs. The lips are pushed forward and rounded into a small 'oo' pucker, almost closed.",
    "BLINK": "Edit this exact image of a 3D animated character. Keep everything identical: same materials, colours, face, mouth, pose, framing, lighting and background. Only change: the eyes are gently closed with smooth eyelids, as in the middle of a blink.",
-   "_notes": "FV dropped (read as a twisted lower lip). Muse filters some 'OH'/'AH' 3D prompts at random: retry once without the teeth sentence."
+   "_notes": "FV dropped (read as a twisted lower lip). Muse filters some 'OH'/'AH' 3D prompts at random: retry once without the teeth sentence.",
+   "AH3": "Edit this exact image of a 3D animated character. Keep everything identical: the same character, colours, hair, eyes, nose, eyebrows, face shape, pose, framing, lighting, background and art style. Only the mouth changes, in the same style: the character is talking happily with the mouth open wide in a big rounded 'aah' shape, dark red-brown inside, a simple even row of upper teeth."
   },
   "secondary": {
    "cheek": [
@@ -461,7 +468,8 @@
    "chooseV2When": "the widest key (AH2) is a shout-size opening (pixar) or the open keys have bright tongue/highlights in the cavity (mascot): the v41 cross-blend spreads them; v2 snap texture keeps a clean dark gap"
   },
   "teethTop": true,
-  "_teethTopFalseWhen": "non-human mouths (mascot animals): teethTop false; app: send no interior mask → v2 snap texture"
+  "_teethTopFalseWhen": "non-human mouths (mascot animals): teethTop false; app: send no interior mask → v2 snap texture",
+  "_AH3": "11/3 night: a wider 'aah' key on top of the ladder (the opening was capped by AH2; clay A/B render, r-1103pm/wn/clayAB2.jpg). Muse filtered 'jaw dropped well below' as content policy; this wording passes."
  },
  "character2d": {
   "keys": [
