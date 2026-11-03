@@ -486,6 +486,8 @@ export class Session {
         this.perceptionCtl?.frame(msg.image);
         return;
       case "stop":
+        // the app's hang-up (CallSocket.close sends stop, then a normal close): a new call later is a return, not a move
+        this.endedByUser = true;
         return this.close(1000, "stopped");
       case "find.confirm":
         if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
@@ -1170,7 +1172,8 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item };
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length };
+      // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
@@ -1268,6 +1271,10 @@ export class Session {
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
   get historyForgetRevision(): number | null { return this.historyRevision; }
+  /** stopped or closed, even if its socket has not finished closing yet */
+  get isClosed(): boolean { return this.closed; }
+  /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
+  endedByUser = false;
 
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
