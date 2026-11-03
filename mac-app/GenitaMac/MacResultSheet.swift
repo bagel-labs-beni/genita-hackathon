@@ -13,6 +13,16 @@ extension SheetState {
 }
 
 struct MacResultSheet: View {
+    /// "Why these" lines break only after a " · " and never inside a short tail: no line starts with "·"
+    /// ("… what you said / · fieldandco.com") and "for this weekend" doesn't split as "· for / this weekend".
+    static func keepTogether(_ line: String) -> String {
+        var parts = line.components(separatedBy: " · ")
+        if parts.count > 1, let last = parts.last, last.split(separator: " ").count <= 4 {
+            parts[parts.count - 1] = last.replacingOccurrences(of: " ", with: "\u{00A0}")
+        }
+        return parts.joined(separator: "\u{00A0}· ")
+    }
+
     let finds: FindsModel
     /// MAC-LINK: a product page was opened in the default browser.
     var opened: (ProductPick) -> Void
@@ -146,7 +156,7 @@ struct MacResultSheet: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text("Why these").font(MacSheetInk.sans(12)).foregroundStyle(MacSheetInk.faint)
                                 ForEach(Array(evidence.lines.enumerated()), id: \.offset) { i, line in
-                                    Text(line).font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
+                                    Text(Self.keepTogether(line)).font(MacSheetInk.sans(14)).foregroundStyle(i == 0 ? MacSheetInk.ink : MacSheetInk.mute)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }.padding(.top, 36).accessibilityElement(children: .combine).accessibilityIdentifier("macResultEvidence")

@@ -343,6 +343,18 @@ import UIKit
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
 
+    /// QA build 5: "Please sign in again." from the signed-out pass stayed on N3 after signing in.
+    func testSigningInClearsTheLastSessionsError() {
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        model.flowError = "Please sign in again."
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertNil(model.flowError)
+        model.flowError = "Please sign in again."
+        model.signedOut()
+        XCTAssertNil(model.flowError, "A02 starts clean too")
+    }
+
     /// QA build 5: signed out, the phone reopened on A03 and let N1–N3 run, then bounced to A02 at the end.
     /// No session → A02 before onboarding (PRD A02 → CS01 → A03); A01 / A02 themselves stay.
     func testNoSessionOpensOnSignInBeforeOnboarding() async {
