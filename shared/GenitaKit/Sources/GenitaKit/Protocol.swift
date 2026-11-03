@@ -145,6 +145,9 @@ public enum ServerEvent: Equatable, Sendable {
     /// Lane 개인화 GK-1: the companion just asked this call's getting-to-know-you question.
     /// Soft chip "Getting to know you · {topic}".
     case profileAsking(ProfileAsking)
+    /// Convo P1 #345 (server flag GENITA_BACKCHANNEL=1, off by default): mid user turn, play a soft listening
+    /// clip ("mm" / "yeah") from the app's own sounds. Not a reply, no state change.
+    case backchannel(Backchannel)
     /// A type this build does not know yet. Ignore it; never fail the socket.
     case unknown(type: String)
 
@@ -345,6 +348,10 @@ public enum ServerEvent: Equatable, Sendable {
         public var topic: String
         public init(topic: String) { self.topic = topic }
     }
+    public struct Backchannel: Codable, Equatable, Sendable {
+        public var kind: String
+        public init(kind: String) { self.kind = kind }
+    }
 }
 
 private enum TypeKey: String, CodingKey { case type }
@@ -386,6 +393,7 @@ extension ServerEvent: Codable {
         case "companion.named": self = .companionNamed(try .init(from: decoder))
         case "profile.updated": self = .profileUpdated(try .init(from: decoder))
         case "profile.asking": self = .profileAsking(try .init(from: decoder))
+        case "backchannel": self = .backchannel(try .init(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -425,6 +433,7 @@ extension ServerEvent: Codable {
         case .companionNamed: "companion.named"
         case .profileUpdated: "profile.updated"
         case .profileAsking: "profile.asking"
+        case .backchannel: "backchannel"
         case let .unknown(type): type
         }
     }
@@ -463,6 +472,7 @@ extension ServerEvent: Codable {
         case let .companionNamed(p): try p.encode(to: encoder)
         case let .profileUpdated(p): try p.encode(to: encoder)
         case let .profileAsking(p): try p.encode(to: encoder)
+        case let .backchannel(p): try p.encode(to: encoder)
         case .unknown: break
         }
         var c = encoder.container(keyedBy: TypeKey.self)

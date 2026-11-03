@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
 | 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
 | 11/2 | D34 / #153: removed non-Meta voice and remote lip-worker paths. Binary kind 2 is reserved and never emitted. Unknown legacy lip modes safely select `none`; `atlas` playback, kind 1 audio, `say` and protocol v1 remain supported. |
@@ -216,6 +217,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
+| `backchannel` | `kind: mm \| yeah` | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 6 s apart): play a short soft listening clip; not a reply, no state change. Only with `GENITA_BACKCHANNEL=1` |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
 | `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
 | `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |

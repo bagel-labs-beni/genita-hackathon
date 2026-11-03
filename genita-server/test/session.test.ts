@@ -844,3 +844,33 @@ test("D21 (Codex P2): a greeting the window could not deliver (companion busy) i
   assert.equal(asksGreeting(sparkCalls), 0);
   session.close();
 });
+
+test("GENITA_BACKCHANNEL=1: a long user turn that pauses mid-sentence gets one backchannel event, never a reply", async () => {
+  process.env.GENITA_BACKCHANNEL = "1";
+  let clock = 0;
+  const { asr, client, session, sparkCalls } = setup({ deps: { now: () => clock } });
+  try {
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    clock += 4000;
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+    const bc = await client.waitFor((m) => m.type === "backchannel", 3000);
+    assert.equal(bc.kind, "mm");
+    assert.equal(sparkCalls.length, 0, "no reply was started");
+  } finally {
+    delete process.env.GENITA_BACKCHANNEL;
+    session.close();
+  }
+});
+
+test("backchannel is off by default: the same pause sends nothing", async () => {
+  let clock = 0;
+  const { asr, client, session } = setup({ deps: { now: () => clock } });
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  clock += 4000;
+  asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!client.json.some((m) => m.type === "backchannel"));
+  session.close();
+});

@@ -54,7 +54,8 @@ import { mightBeCorrection } from "../personalize/corrections.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -287,6 +288,14 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
+  private backchannel: Backchannel | null = backchannelOn()
+    ? new Backchannel({
+        now: () => this.now(),
+        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
+        send: (kind) => { this.client.sendJson({ type: "backchannel", kind }); this.log("convo.backchannel", { kind }); },
+      })
+    : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
   private perceptionUnsub: (() => void) | null = null;
@@ -868,6 +877,7 @@ export class Session {
     }
     this.interp?.stop();
     this.perceptionCtl?.close();
+    this.backchannel?.stop();
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
@@ -904,19 +914,23 @@ export class Session {
     switch (e.type) {
       case "speechStart":
         this.metrics = {};
+        this.backchannel?.start();
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.metrics.lastPartialAt = t;
+        this.backchannel?.partial(e.text);
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
+        this.backchannel?.stop();
         this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
+        this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
         // exactly one final transcript goes out either way
