@@ -40,6 +40,74 @@ for (const asOf of [LATEST, FRESH]) {
   });
 }
 
+for (const asOf of [OLDER, undefined]) {
+  test(`#368 P2: an older explicit duplicate promotes evidence without lowering at (${asOf ? "asOf" : "fallback at"})`, () => {
+    const card = profile();
+    card.sections.likes[0].label = "observed";
+    const result = mergeUpdates(card, [{
+      field: "likes", text: "Dislikes cilantro.", replaces: [], label: "explicit", ...(asOf ? { asOf } : {}),
+    }], asOf ? FRESH : OLDER);
+    assert.deepEqual(result.card.sections.likes, [finding("Dislikes cilantro.", LATEST)]);
+    assert.equal(result.applied.length, 1);
+    assert.equal(result.applied[0].label, "explicit");
+    assert.deepEqual(result.card.sections.interests, card.sections.interests);
+
+    const observed = mergeUpdates(result.card, [{
+      field: "likes", text: "Loves cilantro.", replaces: ["Dislikes cilantro."], label: "observed", asOf: FRESH,
+    }], FRESH);
+    assert.deepEqual(observed.card, result.card);
+    assert.deepEqual(observed.applied, []);
+  });
+}
+
+test("#368 P2: an older duplicate still cannot replace a newer different finding", () => {
+  const card = profile();
+  card.sections.likes[0].label = "observed";
+  card.sections.likes.push(finding("Enjoys parsley.", FRESH));
+  const result = mergeUpdates(card, [{
+    field: "likes", text: "Dislikes cilantro.", replaces: ["Enjoys parsley."], label: "explicit", asOf: OLDER,
+  }], FRESH);
+  assert.deepEqual(result.card, card);
+  assert.deepEqual(result.applied, []);
+});
+
+test("#368 P2: delayed explicit call evidence promotes a noteShorter observation", { timeout: 5000 }, async () => {
+  const styles = new Map([["u1", profile()], ["u2", profile()]]);
+  const untouched = structuredClone(styles.get("u2"));
+  const short = "Short replies, one or two sentences.";
+  let finishAnalysis!: (value: unknown) => void;
+  let ready!: () => void;
+  const analysisStarted = new Promise<void>((resolve) => { ready = resolve; });
+  let now = LATEST;
+  const p = new Personalize({
+    store: {
+      getStyle: async (id) => structuredClone(styles.get(id) ?? null),
+      putStyle: async (id, card) => { styles.set(id, structuredClone(card)); },
+      getCompanion: async () => null,
+    },
+    now: () => new Date(now),
+    json: (async (req) => {
+      assert.equal(req.schemaName, "call_profile_updates");
+      if (now === FRESH) return { updates: [{ field: "response", text: "Long replies with detailed explanations.", replaces: [short], label: "observed", times: 2 }] };
+      return new Promise<unknown>((resolve) => { finishAnalysis = resolve; ready(); });
+    }) as JsonFn,
+  });
+  const turns = [{ role: "user" as const, text: "Please keep replies short." }, { role: "user" as const, text: "One or two sentences is enough." }];
+  const delayed = p.endCall("u1", turns, null, OLDER);
+  await analysisStarted;
+  assert.ok(await p.noteShorter("u1"));
+  assert.equal(styles.get("u1")!.sections.response[0].label, "observed");
+
+  finishAnalysis({ updates: [{ field: "response", text: short, replaces: [], label: "explicit", times: 2 }] });
+  assert.equal(await delayed, 1);
+  assert.deepEqual(styles.get("u1")!.sections.response, [finding(short, LATEST)]);
+
+  now = FRESH;
+  assert.equal(await p.endCall("u1", turns, null, FRESH), 0);
+  assert.deepEqual(styles.get("u1")!.sections.response, [finding(short, LATEST)]);
+  assert.deepEqual(styles.get("u2"), untouched);
+});
+
 // Real Personalize service + in-memory store; only the structured analysis is faked.
 for (const duplicate of [false, true]) {
   test(`#368: delayed call analyses preserve a later voice correction (${duplicate ? "duplicate" : "control"})`, { timeout: 5000 }, async () => {
