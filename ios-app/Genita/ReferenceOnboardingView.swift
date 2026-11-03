@@ -289,7 +289,12 @@ import UniformTypeIdentifiers
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
                 if let data = model.setup.imageData, let image = UIImage(data: data) {
-                    Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 12))
+                    // the whole photo, never cropped; the bands beside a portrait photo are the photo itself, soft
+                    // (UI sweep 11/3: a portrait sat in wide white bands inside the white card)
+                    ZStack {
+                        Image(uiImage: image).resizable().scaledToFill().frame(width: width - 48, height: 289).clipped().blur(radius: 24).opacity(0.55)
+                        Image(uiImage: image).resizable().scaledToFit()
+                    }.frame(width: width - 48, height: 289).clipShape(RoundedRectangle(cornerRadius: 12))
                 } else {
                     let icon = nodes.first { $0.name == "Subtract" }!
                     let label = texts.first { $0.characters == "Upload Image" }!
