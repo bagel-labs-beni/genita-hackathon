@@ -65,8 +65,13 @@ struct ImageCheckView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var result: ImageCheck? { model.imageCheck }
-    private var analyzing: Bool { result == nil && model.imageCheckError == nil }
-    private var passed: Bool { result?.passed == true }
+    /// photo polish: the server polishes this upload and V02-T confirms the polished picture
+    private var polishFlow: Bool { result?.polish == true }
+    private var analyzing: Bool { model.imageCheckError == nil && (result == nil || (polishFlow && model.polishing)) }
+    /// V02-T: the upload passed (today) or the polished picture passed its check (polish flow)
+    private var passed: Bool { polishFlow ? model.polished?.passed == true : result?.passed == true }
+    /// "Try again" on the polished picture (two at most)
+    private var canRetry: Bool { polishFlow && model.polishRetriesLeft > 0 }
 
     var body: some View {
         if analyzing { analyzingPage } else { resultPage }
@@ -74,7 +79,7 @@ struct ImageCheckView: View {
 
     /// V03 "Finding the details that make them recognizable." — a scan line over the photo and the real wait.
     private var analyzingPage: some View {
-        WirePage(title: "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
+        WirePage(title: polishFlow ? "Getting your photo\nready for the call." : "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 240)
                 .overlay(alignment: .top) {
                     Rectangle().fill(Color(red: 0, green: 0.635, blue: 1)).frame(height: 2).shadow(color: Color(red: 0, green: 0.635, blue: 1).opacity(0.6), radius: 6)
@@ -91,24 +96,39 @@ struct ImageCheckView: View {
                 .accessibilityIdentifier("imageCheckProgress")
         }
         .task {
+            progress = 0.08   // a "Try again" starts the bar over
             if !reduceMotion { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { scan = 1 } }
             // The check takes 2–5 s (PREP_API.md); the bar eases toward 90 % and the answer finishes it.
+            // Photo polish adds ~15–20 s (Muse Image edit + the same check): the bar slows down so it doesn't sit at 90 %.
             while analyzing && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
-                withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * 0.05) }
+                let rate = polishFlow ? 0.012 : 0.05
+                withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * rate) }
             }
         }
     }
 
     /// V02-T (type chips, three green checks, rights line, Use this image) or V02-F (the failed rows, Choose another image).
     private var resultPage: some View {
-        WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F", subtitle: "One clear front-facing image works best.", back: { model.returnTo(.image) },
-                 primary: passed ? "Use this image" : "Choose another image", primaryBusy: model.creatingCompanion,
-                 action: { if passed { model.useCheckedImage() } else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) } }) { width, top, _ in
+        WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F",
+                 subtitle: polishFlow && passed ? "We tidied it up for the call." : "One clear front-facing image works best.", back: { model.returnTo(.image) },
+                 primary: passed ? "Use this image" : canRetry ? "Try again" : "Choose another image", primaryBusy: model.creatingCompanion,
+                 action: {
+                     if passed { model.useCheckedImage() }
+                     else if canRetry { model.retryPolish() }
+                     else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) }
+                 }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 289)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topLeading) { if passed { typeChips.padding(12) } }
                 .position(x: width / 2, y: 226 + 144.5 + top)
+            if passed && canRetry {
+                // V02-T: the polished picture can be made again (same text-link style as NM01 "Use Jin")
+                Button { model.retryPolish() } label: {
+                    Text("Try again (\(model.polishRetriesLeft) left)").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.ink).frame(height: 44)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 646 + top)
+                    .accessibilityIdentifier("polishTryAgain")
+            }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(rows, id: \.0) { row in
                     HStack(spacing: 8) {
@@ -126,7 +146,15 @@ struct ImageCheckView: View {
     /// The three V02 rows; a failed check shows the server's own reason text (V02-F).
     private var rows: [(String, Bool)] {
         if let error = model.imageCheckError { return [(error, false)] }
+        if let error = model.polishError { return [(error, false)] }
         guard let r = result else { return [] }
+        // Chelsea 11/4: a photo without any face gets one plain line
+        if r.reasons.contains(where: { $0.code == "no_face" }) && r.polish != true { return [(Self.noFace, false)] }
+        if polishFlow, let p = model.polished {
+            if !p.passed { return p.reasons.prefix(2).map { ($0.label, false) } }
+            let c = p.checks
+            return [("One face, front-facing", c?.oneFaceFrontFacing ?? true), ("Sharp and well lit", c?.sharpAndLit ?? true), ("No text on the image", c?.noText ?? true)]
+        }
         // D26: a well-known person is refused whatever the photo quality; one red row with the server's reason
         if let famous = publicFigure { return [(famous, false)] }
         let reason = { (codes: [String], fallback: String) in r.reasons.first { codes.contains($0.code) }?.label ?? fallback }
@@ -138,8 +166,11 @@ struct ImageCheckView: View {
         ]
     }
     private var publicFigure: String? { result?.reasons.first { $0.code == "public_figure" }?.label }
+    static let noFace = "We couldn't find a clear face. Try another photo."
     private var note: String {
         if passed { return "Use an image you have the right to use." }
+        if model.polishError == nil, result?.reasons.contains(where: { $0.code == "no_face" }) == true { return "" }
+        if polishFlow && canRetry { return "Polishing again often fixes this." }
         // PRD v12 D26 V02-F: "This looks like a well-known person. Genita can't bring public figures to life."
         return publicFigure != nil ? "Genita can't bring public figures to life." : "Try one taken in good light, facing the camera."
     }
@@ -159,7 +190,10 @@ struct ImageCheckView: View {
     }
 
     @ViewBuilder private func photo(width: CGFloat) -> some View {
-        if let data = model.setup.imageData, let image = UIImage(data: data) {
+        if !analyzing, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
+            // the whole polished 9:16 picture, as the call will show it
+            ZStack { Color(white: 0.93); Image(uiImage: image).resizable().scaledToFit() }.accessibilityIdentifier("polishedImage")
+        } else if let data = model.setup.imageData, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFill()
         } else { Color(white: 0.93) }
     }
