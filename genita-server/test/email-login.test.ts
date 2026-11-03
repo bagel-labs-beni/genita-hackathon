@@ -39,7 +39,7 @@ async function boot(t: import("node:test").TestContext, o: { mail?: MailSender |
   const call = async (method: string, path: string, body?: unknown, headers: Record<string, string> = {}) => {
     const r = await fetch(base + path, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await r.text();
-    return { status: r.status, json: (text ? JSON.parse(text) : null) as Record<string, any> };
+    return { status: r.status, json: (text ? JSON.parse(text) : null) as Record<string, any>, retryAfter: r.headers.get("retry-after") };
   };
   const start = (email: string, headers?: Record<string, string>) => call("POST", "/auth/email/start", { email }, headers);
   const verify = (email: string, code: string, headers?: Record<string, string>) => call("POST", "/auth/email/verify", { email, code }, headers);
@@ -195,9 +195,10 @@ test("email login: parallel starts for one address → one code (cooldown holds 
 
 test("email login: parallel sends from one IP can't pass the per-IP cap", async (t) => {
   const s = await boot(t, { trustProxy: true });
-  const rs = await Promise.all(Array.from({ length: 30 }, (_, i) => s.start(`burst${i}@example.com`, { "x-forwarded-for": "198.51.100.9" })));
-  assert.equal(rs.filter((r) => r.status === 200).length, 20);
-  assert.equal(s.sent.length, 20);
+  // the global 60 / min send cap is lower than the per-IP one: lift the IP cap test past it with two minutes' worth
+  const rs = await Promise.all(Array.from({ length: 70 }, (_, i) => s.start(`burst${i}@example.com`, { "x-forwarded-for": "198.51.100.9" })));
+  assert.equal(rs.filter((r) => r.status === 200).length, 60, "the global per-minute cap holds under a burst");
+  assert.equal(s.sent.length, 60);
 });
 
 test("email login: an email account, once made, stays the one this address signs into", async (t) => {
@@ -218,23 +219,46 @@ test("email login: an email account, once made, stays the one this address signs
 
 test("email login: the IP is CloudFront's (last X-Forwarded-For entry), a spoofed first entry doesn't reset limits", async (t) => {
   const s = await boot(t, { trustProxy: true });
-  for (let i = 0; i < 20; i++) assert.equal((await s.start(`spoof${i}@example.com`, { "x-forwarded-for": `10.9.${i}.1, 198.51.100.4` })).status, 200);
-  assert.equal((await s.start("spoof20@example.com", { "x-forwarded-for": "10.9.99.1, 198.51.100.4" })).status, 429);
+  // one address, many spoofed first entries: still one viewer IP → the per-IP wrong-code count holds
+  await s.start("spoof@example.com", { "x-forwarded-for": "10.9.0.1, 198.51.100.4" });
+  const code = s.sent[0].code;
+  for (let i = 0; i < 4; i++) await s.verify("spoof@example.com", wrong(code), { "x-forwarded-for": `10.9.${i}.1, 198.51.100.4` });
+  const ev = s.events.filter((e) => e.event === "auth.failed");
+  assert.ok(ev.length >= 4);
+  assert.equal((await s.verify("spoof@example.com", code, { "x-forwarded-for": "10.9.99.1, 198.51.100.4" })).status, 200, "the 5th try is still the code's own");
 });
 
-test("email login: per-IP limits on sends and on wrong codes", async (t) => {
+test("email login 11/4: a shared NAT (venue, judges' office) — 50 people sign in from one IP; limits are per address, IP limits are wide", async (t) => {
   const s = await boot(t, { trustProxy: true });
   const ip = { "x-forwarded-for": "203.0.113.7" };
-  for (let i = 0; i < 20; i++) assert.equal((await s.start(`p${i}@example.com`, ip)).status, 200, `send ${i + 1}`);
-  const over = await s.start("p20@example.com", ip);
-  assert.equal(over.status, 429);
-  assert.equal((await s.start("p20@example.com", { "x-forwarded-for": "203.0.113.8" })).status, 200, "another IP is not affected");
+  for (let i = 0; i < 50; i++) assert.equal((await s.start(`p${i}@example.com`, ip)).status, 200, `send ${i + 1}`);
+  // a few typos each from the same IP don't lock the room out
+  for (let i = 0; i < 50; i++) await s.verify(`p${i}@example.com`, wrong(s.sent[i].code), ip);
+  for (let i = 0; i < 50; i++) assert.equal((await s.verify(`p${i}@example.com`, s.sent[i].code, ip)).status, 200, `verify ${i + 1}`);
+});
 
-  // 20 wrong codes from one IP across many emails → the IP is paused even for a right code
-  for (let i = 0; i < 20; i++) await s.verify(`p${i}@example.com`, wrong(s.sent[i].code), ip);
-  const paused = await s.verify("p20@example.com", s.sent[20].code, ip);
-  assert.equal(paused.status, 429);
-  assert.equal((await s.verify("p20@example.com", s.sent[20].code, { "x-forwarded-for": "203.0.113.8" })).status, 200);
+test("email login 11/4: per-address limits — resend cooldown and wrong codes across resends; 429 carries Retry-After and 'Try again in N min'", async (t) => {
+  const s = await boot(t, { trustProxy: true });
+  const ip = { "x-forwarded-for": "203.0.113.9" };
+  await s.start("a@example.com", ip);
+  const soon = await s.call("POST", "/auth/email/start", { email: "a@example.com" }, ip);
+  assert.equal(soon.status, 429);
+  assert.ok(soon.json.retryAfterSec >= 1 && soon.json.retryAfterSec <= 60);
+  assert.match(soon.json.message, /^Too many tries\. Try again in \d+ min\.$/);
+  assert.equal(soon.retryAfter, String(soon.json.retryAfterSec), "Retry-After header");
+  // 10 wrong codes for one address in 10 min (two codes of 5) → that address waits, others don't
+  for (let round = 0; round < 2; round++) {
+    await s.age("a@example.com", 120);
+    await s.start("a@example.com", ip);
+    for (let i = 0; i < 5; i++) await s.verify("a@example.com", "000000" === s.sent.at(-1)!.code ? "000001" : "000000", ip);
+  }
+  await s.age("a@example.com", 120);
+  await s.start("a@example.com", ip);
+  const locked = await s.verify("a@example.com", s.sent.at(-1)!.code, ip);
+  assert.equal(locked.status, 429, "11th try for the address in 10 min");
+  assert.match(locked.json.message, /Try again in \d+ min/);
+  await s.start("b@example.com", ip);
+  assert.equal((await s.verify("b@example.com", s.sent.at(-1)!.code, ip)).status, 200, "another address on the same IP is fine");
 });
 
 test("email login: a failed send returns 502 and does not burn the cooldown", async (t) => {

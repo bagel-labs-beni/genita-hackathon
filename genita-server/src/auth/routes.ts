@@ -43,8 +43,12 @@ const BODY_LIMIT = 64 * 1024;
 export const REPORT_REASONS = ["inappropriate_image", "harmful_answer", "someone_elses_photo", "other"] as const;
 const REPORT_SURFACES = new Set(["call", "card", "settings", "mac"]);
 const REPORTS_PER_USER_HOUR = 10;
-const EMAIL_SENDS_PER_IP_HOUR = 20;
-const EMAIL_FAILS_PER_IP_10MIN = 20;
+// shared NATs (a hackathon venue, a judges' office, company Wi-Fi) sign in from one IP (11/4): the per-email limits
+// (60 s resend, 5 / hour, 10 / day, 5 tries per code, EMAIL_FAILS_PER_EMAIL_10MIN) carry the abuse protection
+export const EMAIL_SENDS_PER_IP_HOUR = 200;
+export const EMAIL_FAILS_PER_IP_10MIN = 200;
+/** wrong codes per address in 10 min, across resends (each code also burns after MAX_ATTEMPTS) */
+export const EMAIL_FAILS_PER_EMAIL_10MIN = 10;
 /** all addresses together: caps what any number of IPs can make the mail provider send */
 const EMAIL_SENDS_PER_MIN = 60;
 
@@ -71,6 +75,11 @@ function windowCounter(limit: number, windowMs: number) {
       this.add(k);
       return true;
     },
+    /** seconds until `k` has a free slot again (0 = now) */
+    retryAfterSec(k: string): number {
+      const h = live(k);
+      return h && h.n >= limit ? Math.max(1, Math.ceil((h.reset - Date.now()) / 1000)) : 0;
+    },
     /** hand a taken slot back (nothing was sent) */
     give(k: string) {
       const h = live(k);
@@ -94,6 +103,14 @@ class HttpError extends Error {
 function send(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
   res.end(JSON.stringify(body));
+}
+
+/** 429 with Retry-After and a line the app can show ("Too many tries. Try again in 3 min.") */
+function tooMany(res: ServerResponse, retryAfterSec: number, error = "rate_limited") {
+  const sec = Math.max(1, Math.ceil(retryAfterSec));
+  const min = Math.max(1, Math.ceil(sec / 60));
+  res.writeHead(429, { "content-type": "application/json", "cache-control": "no-store", "retry-after": String(sec) });
+  res.end(JSON.stringify({ error, retryAfterSec: sec, message: `Too many tries. Try again in ${min} min.` }));
 }
 
 function redirect(res: ServerResponse, location: string) {
@@ -184,6 +201,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   const { accounts, apple, blobs, log } = core;
   const emailSends = windowCounter(EMAIL_SENDS_PER_IP_HOUR, 60 * 60_000);
   const emailFails = windowCounter(EMAIL_FAILS_PER_IP_10MIN, 10 * 60_000);
+  const emailFailsByEmail = windowCounter(EMAIL_FAILS_PER_EMAIL_10MIN, 10 * 60_000);
   const emailSendsAll = windowCounter(EMAIL_SENDS_PER_MIN, 60_000);
   const reports = windowCounter(REPORTS_PER_USER_HOUR, 60 * 60_000);
   const hits = new Map<string, { n: number; reset: number }>();
@@ -214,7 +232,10 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
     const m = req.method ?? "GET";
     const p = url.pathname.replace(/\/+$/, "").replace(/^\/v1(?=\/auth\/email\/)/, "");
 
-    if (p.startsWith("/auth/") && limited(clientIp(req, core.trustProxy))) throw new HttpError(429, "rate_limited");
+    if (p.startsWith("/auth/") && limited(clientIp(req, core.trustProxy))) {
+      const h = hits.get(clientIp(req, core.trustProxy));
+      return tooMany(res, h ? (h.reset - Date.now()) / 1000 : 60);
+    }
 
     // ── iPhone: native Sign in with Apple ──
     if (m === "POST" && p === "/auth/apple") {
@@ -333,12 +354,12 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       }
       if (!emailSends.take(ip)) {
         log("auth.failed", { provider: "email", reason: "ip_send_limit" });
-        return send(res, 429, { error: "rate_limited" });
+        return tooMany(res, emailSends.retryAfterSec(ip));
       }
       if (!emailSendsAll.take("all")) {
         emailSends.give(ip);
         log("auth.failed", { provider: "email", reason: "global_send_limit" });
-        return send(res, 429, { error: "rate_limited" });
+        return tooMany(res, emailSendsAll.retryAfterSec("all"));
       }
       const giveBack = () => {
         emailSends.give(ip);
@@ -351,7 +372,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       if (!issued.ok) {
         giveBack();
         log("auth.failed", { provider: "email", reason: "email_send_limit" });
-        return send(res, 429, { error: "rate_limited", retryAfterSec: issued.retryAfterSec });
+        return tooMany(res, issued.retryAfterSec);
       }
       try {
         await core.mail.send(email, issued.code, CODE_TTL_SEC / 60);
@@ -371,17 +392,27 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const email = normalizeEmail(b.email);
       const code = typeof b.code === "string" ? b.code.trim() : "";
       if (!email || !/^\d{6}$/.test(code)) throw new HttpError(400, "bad_request");
-      // every try holds a "wrong code" slot until it turns out right, so parallel guesses can't overshoot
-      if (!emailFails.take(ip)) {
-        log("auth.failed", { provider: "email", reason: "ip_fail_limit" });
-        return send(res, 429, { error: "rate_limited" });
+      // every try holds a "wrong code" slot (per address and per IP) until it turns out right, so parallel guesses
+      // can't overshoot; the address is the real limit, the IP one is wide for shared NATs (11/4)
+      if (!emailFailsByEmail.take(email)) {
+        log("auth.failed", { provider: "email", reason: "email_fail_limit" });
+        return tooMany(res, emailFailsByEmail.retryAfterSec(email));
       }
+      if (!emailFails.take(ip)) {
+        emailFailsByEmail.give(email);
+        log("auth.failed", { provider: "email", reason: "ip_fail_limit" });
+        return tooMany(res, emailFails.retryAfterSec(ip));
+      }
+      const giveBack = () => {
+        emailFails.give(ip);
+        emailFailsByEmail.give(email);
+      };
       const device: Device = b.device === "mac" ? "mac" : "iphone";
       const r = await core.emailCodes.check(email, code).catch((e) => {
-        emailFails.give(ip);
+        giveBack();
         throw e;
       });
-      if (r === "ok") emailFails.give(ip);
+      if (r === "ok") giveBack();
       else {
         if (r === "too_many") {
           log("auth.failed", { provider: "email", reason: "too_many_attempts" });
