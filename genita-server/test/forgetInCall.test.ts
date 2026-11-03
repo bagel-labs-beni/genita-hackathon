@@ -37,3 +37,10 @@ test("Codex #547 P1: a summarized memory of the forgotten line is caught by its 
   assert.ok(mentionsAvoided("Likes jasmine tea.", keys));
   assert.ok(!mentionsAvoided("Likes spicy ramen.", keys));
 });
+
+test("Codex #547 r2: a negated or quoted forget keeps its turn (either detector)", () => {
+  for (const t of ["she said forget it", "I can't forget what I said."]) {
+    const h = [u("hey"), a("yo"), u(t), a("Huh.")];
+    assert.equal(forgetInCall(h).length, 4, t);
+  }
+});

@@ -36,7 +36,8 @@ export const TOOL_BUDGET_MS = 1500;
 /** the whole memory part of a call start (open + handoff seeding) */
 export const MEMORY_START_BUDGET_MS = 1500;
 export { within } from "../util/within.ts";
-export type ThreadState = { threadId: string; covered: number; pairs: Turn[] };
+/** removed: what was forgotten in the call so far (Codex #547 P1: the next device keeps it out too) */
+export type ThreadState = { threadId: string; covered: number; pairs: Turn[]; removed?: Removed[] };
 export type SparkSource = (req: SparkRequest, signal: AbortSignal) => AsyncIterable<SparkStreamEvent>;
 /** Per-turn continuation, shared with a speculative hit and its empty-answer retry. */
 export type MemoryRetryState = { request?: SparkRequest };
@@ -75,8 +76,10 @@ export class MemoryCall {
   private avoid: AvoidKey[] = [];
   /** personalize (session.ts): the removed lines so far; called again after a "forget that…" in this call */
   setAvoid(removed: Removed[]): void {
+    this.removed = [...removed];
     this.avoid = avoidKeys(removed);
   }
+  private removed: Removed[] = [];
   private clearOf<T extends { text: string }>(items: T[]): T[] {
     return this.avoid.length ? items.filter((m) => !mentionsAvoided(m.text, this.avoid)) : items;
   }
@@ -116,7 +119,7 @@ export class MemoryCall {
   }
   threadState(): ThreadState {
     // Codex #547 P1: the next device never gets what was forgotten in this call (forget turns, their targets)
-    return { threadId: this.threadId, covered: this.covered, pairs: this.keptPairs().map((t) => ({ ...t })) };
+    return { threadId: this.threadId, covered: this.covered, pairs: this.keptPairs().map((t) => ({ ...t })), ...(this.removed.length ? { removed: [...this.removed] } : {}) };
   }
   /**
    * Handoff: this call continues another device's conversation — the same thread, not a second call.
@@ -125,6 +128,8 @@ export class MemoryCall {
    */
   continueThread(thread: ThreadState | null, history: Array<{ role: "user" | "assistant"; text: string }>): void {
     if (thread) this.threadId = thread.threadId;
+    // Codex #547 P1: what the other device was asked to forget stays out here too
+    if (thread?.removed?.length) this.setAvoid([...this.removed, ...thread.removed]);
     this.service.claimThread(this.userId, this.threadId, this.sessionId);
     let pairs: Turn[] = thread?.pairs ?? [];
     if (!thread) {

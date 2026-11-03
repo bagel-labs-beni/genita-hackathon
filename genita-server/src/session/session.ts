@@ -813,7 +813,10 @@ export class Session {
           // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
           if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
-          this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
+          const prior = server?.length ? this.deps.priorThread?.(revision) ?? null : null;
+          // Codex #547 P1: the other device's forgotten lines keep this call's input, memory and notes clear of them too
+          if (prior?.removed?.length) this.removedLines = [...this.removedLines, ...prior.removed].slice(-40);
+          this.memoryCall?.continueThread(prior, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
@@ -854,8 +857,9 @@ export class Session {
         if (p?.nod) this.nod = p.nod;
         // what they removed from their profile stays out of memory, notes and the handed-off turns
         if (p?.removed?.length) {
-          this.removedLines = p.removed;
-          this.memoryCall?.setAvoid(p.removed);
+          // keep what a handed-off call already forgot (Codex #547 P1) alongside the profile's removed lines
+          this.removedLines = [...p.removed, ...this.removedLines.filter((r) => !p.removed!.includes(r))].slice(-40);
+          this.memoryCall?.setAvoid(this.removedLines);
           this.history = scrubHistory(this.history, avoidKeys(p.removed));
         }
         if (p?.calls) this.callNumber = p.calls;
@@ -1631,7 +1635,7 @@ export class Session {
   /** This call's turns (copy) — for the account's next device after a handoff. */
   historySnapshot(): HistoryItem[] {
     // the next device never gets a "forget that…" turn or what it removed (QA post-deploy 11/3)
-    return scrubHistory(this.history, avoidKeys(this.removedLines)).map((h) => ({ ...h }));
+    return forgetInCall(this.history, this.removedLines).map((h) => ({ ...h }));
   }
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
