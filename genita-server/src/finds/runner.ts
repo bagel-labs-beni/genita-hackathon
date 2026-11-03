@@ -306,12 +306,15 @@ export class FindsRunner {
       // the "goes with" search starts as soon as the spoken pick is out (~4 s), not after the card (~8 s):
       // Spark search takes 15–30 s, every second of head start shows on camera
       let prefetching = false;
+      // made from the taste of this moment: after a "Forget all of this" it never starts a search (Codex #583 r10)
+      const turnAt = new Date().toISOString();
+      const forgotSince = () => this.tasteForgottenAt !== null && turnAt <= this.tasteForgottenAt;
       void t.replyText.then((said) => {
-        if (said && !abort.signal.aborted) { prefetching = true; this.startPrefetch(null, said, t); }
+        if (said && !abort.signal.aborted && !forgotSince()) { prefetching = true; this.startPrefetch(null, said, t); }
       }).catch(() => {});
       run = async (c) => {
         const r = await runOutfit(c);
-        if (r.card && !prefetching && !c.signal.aborted) this.startPrefetch(r.card, r.card.say ?? null, t);
+        if (r.card && !prefetching && !c.signal.aborted && !forgotSince()) this.startPrefetch(r.card, r.card.say ?? null, t);
         return r;
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
