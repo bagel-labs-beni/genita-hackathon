@@ -373,7 +373,8 @@ const SHEET_RAW = {
 if (parts.has("sheet")) {
   // S1 "That's not me" on the profile sheet: time to the answer (toast) and to the reworded card
   const rows: Record<string, unknown>[] = [];
-  for (const [name, text] of Object.entries(PROFILES)) {
+  const sheetRuns = Number(arg("runs", "1"));
+  for (const [name, text] of Object.entries(PROFILES).flatMap(([n, t]) => Array.from({ length: sheetRuns }, (_, k) => [`${n}${k}`, t] as const))) {
     const user = `u-sheet-${name}`;
     // the import parse is not what is measured here: a fixed card when the vendor times out on the long paste
     await importStyle(d, user, text).catch(() => store.putStyle(user, toStyleCard(SHEET_RAW, "import")));
@@ -389,7 +390,8 @@ if (parts.has("sheet")) {
     const after = (await p.story(user)).cards.find((c) => c.id === taste.id);
     rows.push({ profile: name, card: taste.id, answer_ms: answerMs, reword_ms: rewordMs, changed: r.changed, interim_headline: r.card?.headline, reworded_headline: after?.headline });
   }
-  report.sheet = { rows, answer_p50_ms: p50(rows.map((r) => r.answer_ms as number)), reword_p50_ms: p50(rows.map((r) => r.reword_ms as number)) };
+  const p95 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(xs.length * 0.95) - 1)];
+  report.sheet = { n: rows.length, rows, answer_p50_ms: p50(rows.map((r) => r.answer_ms as number)), answer_p95_ms: p95(rows.map((r) => r.answer_ms as number)), reword_p50_ms: p50(rows.map((r) => r.reword_ms as number)) };
 }
 
 report.failures = logs.filter(([e]) => e.endsWith("failed")).map(([e, d]) => ({ e, ...d }));
