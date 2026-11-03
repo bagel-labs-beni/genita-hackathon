@@ -1066,7 +1066,8 @@ export class Session {
     // they asked for long answers themselves: two cut-offs don't override that (the server checks the labels too)
     if (/\b(?:long|longer|detailed|thorough|in[- ]depth|whole story)\b[^.\n]{0,30}\b(?:answers?|repl(?:y|ies)|explanations?)\b/i.test(this.user?.profile ?? "")) return;
     // set now so the very next reply says it; cleared if the server doesn't save it
-    const line = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    // silent adaptation (main 11/3 P0): just get shorter — never mention the interruptions or the change (meta + guilt on camera)
+    const line = "Keep this reply, and the rest of the call, to one short sentence. Never mention that they interrupted you or that you're keeping it short.";
     this.shorterLine = line;
     void p.noteShorter(this.deps.userId).then(
       (r) => {

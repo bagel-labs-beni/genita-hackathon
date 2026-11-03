@@ -701,3 +701,16 @@ test("bug-fix a6df112 outfit 3/8: subject-less gerund openers and 'incoming' pro
     assert.ok([...j.push(keep).speak, ...j.push("Ok.").speak, ...j.finish().speak].join(" ").includes(keep), keep);
   }
 });
+
+test("hard fail (demo lane 11/3): a line about being interrupted is never said", { skip: !v1 }, async () => {
+  for (const line of ["You cut me off twice, so one line from now on.", "Okay, you keep cutting me off.", "You talked over me there.", "I'll keep it short from now on.", "Since you interrupted me, quick version."]) {
+    assert.equal(guardSentence(line, none), "interruption", line);
+  }
+  for (const keep of ["Cut the onions first.", "Short and sweet: go black."]) assert.equal(guardSentence(keep, none), null, keep);
+  const { client, session } = setup(["<happy> You cut me off twice, so one line from now on. Go with the trench."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "which one" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Go with the trench.");
+  session.close();
+});
