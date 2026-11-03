@@ -541,6 +541,8 @@ extension AppState {
         let previous = insightAnswersTask
         insightAnswersTask = Task {
             await previous?.value
+            // the account may have changed while it waited: never send A's answers with B's session (settings lane Codex P1)
+            guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
             do {
                 try await onboarding.insightAnswers(answers)
                 if ownsOnboardingResponse(request) { insightAnswersSent = key }

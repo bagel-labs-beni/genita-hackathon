@@ -286,6 +286,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     private func invalidateOnboardingWork() {
         onboardingSession.invalidate()
         importTask?.cancel(); importTask = nil
+        // SUM insight report: queued answers / verdicts belong to the old session
+        insightAnswersTask?.cancel(); insightAnswersTask = nil; insightAnswersSent = nil
+        insightVerdictTask?.cancel(); insightVerdictTask = nil
         companionTask?.cancel(); companionTask = nil
         imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
         importing = false; creatingCompanion = false; checkingImage = false; polishing = false
