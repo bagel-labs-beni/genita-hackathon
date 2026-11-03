@@ -66,6 +66,8 @@ export type TurnHintInput = {
   mood?: string | null;
   /** the call has memories or notes from earlier calls */
   remembers: boolean;
+  /** K-test 11/3: this call already brought up one personal thing on its own (MENTION_RULE budget) */
+  mentionSpent?: boolean;
 };
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
@@ -88,5 +90,27 @@ export function turnHints(t: TurnHintInput): string | null {
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
   // a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
   if (/\?[\s—–…-]*$/.test(last)) out.push("End on a statement this time.");
+  if (t.mentionSpent) out.push("Don't bring up their tastes or personal details on your own; only if they do.");
   return out.length ? `This turn: ${out.join(" ")}` : null;
+}
+
+/**
+ * K-test 11/3: a reply that brings up one of the user's own profile tastes ("camel and black together always wins"
+ * from "minimal monochrome fashion") when the user's line didn't go there. Content words of the profile's taste /
+ * interest lines (≥ 5 letters) are matched in the reply and must be absent from the user's line.
+ */
+const STOP = new Set(["about", "their", "there", "these", "those", "things", "really", "short", "answers", "direct", "casual", "witty", "teasing", "welcome", "prefers", "small", "talk", "being", "lectured", "advice", "unsolicited", "challenged", "little", "opinionated", "humor"]);
+const TASTE_LINE = /^\s*-?\s*(?:taste|interests?|into|likes?|loves?|hobbies|favou?rites?|style)\s*:/i;
+export function mentionsProfile(reply: string, profile: string | undefined, userText: string): boolean {
+  if (!profile) return false;
+  const words = new Set<string>();
+  for (const line of profile.split("\n")) {
+    if (!TASTE_LINE.test(line)) continue;
+    for (const w of line.toLowerCase().replace(/^[^:]*:/, "").match(/[a-z][a-z'-]{4,}/g) ?? []) if (!STOP.has(w)) words.add(w);
+  }
+  const said = (text: string) => new Set(text.toLowerCase().match(/[a-z][a-z'-]{4,}/g) ?? []);
+  const r = said(plain(reply));
+  const u = said(userText);
+  for (const w of words) if (r.has(w) && !u.has(w)) return true;
+  return false;
 }

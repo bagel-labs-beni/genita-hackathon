@@ -59,7 +59,7 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
-import { moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
+import { mentionsProfile, moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -340,6 +340,9 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** K-test 11/3: personal things this call brought up unprompted (opener hook, a follow-up, the GK-1 question, a
+   *  profile taste said without the user going there); MENTION_RULE's budget is one per call */
+  private personalUsed = 0;
   /** this call's number for the account (personalize growth.calls), for the engine's closeness line (P1) */
   private callNumber: number | undefined;
   /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
@@ -1308,6 +1311,7 @@ export class Session {
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
       opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
+      if (hook || o.hasItem) this.personalUsed++;
     }
     let perception: string | undefined;
     let perceptionHint: string | undefined;
@@ -1325,6 +1329,7 @@ export class Session {
         userText,
         mood: moodLine(moodFrom(userLines)),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
+        mentionSpent: this.personalUsed > 0,
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1461,7 +1466,8 @@ export class Session {
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
       // never while watching together (the question would land on top of the show)
-      ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      // K-test 11/3: the question is this call's one unprompted personal thing, unless the opener already spent it
+      ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS && !(this.v1 && this.personalUsed > 0) ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
       nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,
@@ -2175,6 +2181,9 @@ export class Session {
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
     // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
     if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
+    if (this.v1 && full && !interpret && !self && !greeting && !cue) {
+      if (mentionsProfile(full, this.user?.profile, text)) { this.personalUsed++; this.log("convo.personal_mention", { utteranceId, used: this.personalUsed }); }
+    }
     // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
     if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
       this.ask.asked = true;

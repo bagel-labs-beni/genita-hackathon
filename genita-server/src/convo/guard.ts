@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -149,6 +149,17 @@ const SAVE_TALK = [
   /\bso i (?:keep|get|have) [^.!?]{0,40}\bstraight\b/i,
 ];
 
+/** K-test 11/3: what they're wearing / how they look, said with no camera ("you're in something all black right now") */
+const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight|looks?|is)\b)/i;
+const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|hair|makeup|look(?:s|ing)? like)\b/i;
+/**
+ * K-test 11/3 [P2]: sensitive details said back ("eighty five K, you're doing solid"): an income / salary amount, or a
+ * health detail, is never repeated unless the user's own line this turn says it. Product prices stay ("one twenty nine").
+ */
+const NUM_WORD = "(?:\\d[\\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)";
+const INCOME = new RegExp(String.raw`\b${NUM_WORD}(?:[\s-]+${NUM_WORD})*\s?(?:k|grand)\b|\b(?:your|you) (?:salary|income|pay|paycheck)\b|\byou (?:make|earn|pull in|bring in)\s+(?:like\s+)?\$?${NUM_WORD}`, "i");
+const HEALTH = /\b(?:diagnos\w*|medication|meds|therapy|depress\w*|anxiety|adhd|diabet\w*|pregnan\w*|surgery|chemo|cancer|blood pressure|insulin)\b/i;
+
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
@@ -158,6 +169,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (!ctx.camera && WEARING_NOW.test(sentence) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
+  if ((INCOME.test(sentence) && !INCOME.test(ctx.userText) && !/\b(?:salary|income|make|earn|paid|k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
   for (const [cls, re] of CLASSES) {
     if (!re.test(sentence)) continue;
     if (cls === "unseen" && ctx.camera) continue;
@@ -176,7 +189,7 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration" || cls === "interruption" || cls === "label";
+  return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {

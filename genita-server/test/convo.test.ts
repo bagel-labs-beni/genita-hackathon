@@ -962,3 +962,35 @@ test("session v1: a first-call opener that only labels the user is retried, neve
   assert.match(calls[0].instructions!, /Talk about the thing, never about what kind of person they are\./);
   session.close();
 });
+
+test("K-test 11/3 guard: no clothes / looks talk with the camera off unless they brought it up; income and health are never said back", () => {
+  assert.equal(guardSentence("Okay I'm calling it, you're in something all black and minimal right now, aren't you?", none), "unseen");
+  assert.equal(guardSentence("That dress sounds cute, you're in red?", { camera: false, userText: "I'm wearing a red dress" }), null);
+  assert.equal(guardSentence("You're in the black blazer, go with it.", { camera: true, userText: "which one?" }), null);
+  assert.equal(guardSentence("Eighty five K, you're doing solid.", none), "sensitive");
+  assert.equal(guardSentence("How's the therapy going?", none), "sensitive");
+  assert.equal(guardSentence("Eighty five K is solid.", { camera: false, userText: "I make 85k now" }), null);
+  assert.equal(guardSentence("Those black Chelsea boots, one twenty nine.", none), null, "a product price stays");
+});
+
+test("K-test 11/3: mentionsProfile — a profile taste the user didn't bring up counts; one they did doesn't", async () => {
+  const { mentionsProfile } = await import("../src/convo/rhythm.ts");
+  const profile = "How they talk: casual, witty.\nInto: cooking Korean-Western fusion, minimal monochrome fashion, aespa.";
+  assert.equal(mentionsProfile("<happy> Honestly your monochrome thing would kill with that.", profile, "what should I cook"), true);
+  assert.equal(mentionsProfile("<happy> Monochrome forever.", profile, "I love monochrome"), false);
+  assert.equal(mentionsProfile("<happy> Black boots, easy.", profile, "help"), false);
+  assert.equal(mentionsProfile("<happy> casual and witty, love it", profile, "hi"), false, "how-they-talk lines are not tastes");
+});
+
+test("session v1 (K-test): after the opener spends the one personal mention, later turns are told not to volunteer tastes and the GK question waits", { skip: !v1 }, async () => {
+  const personalize = { startCall: async () => ({ taste: [], calls: 1, profile: "Into: minimal monochrome fashion, aespa.", ask: "Ask what size they wear.", askItem: "size", askTopic: { item: "size", field: "likes" } }), voiceCorrection: async () => null, endCall: async () => 0 };
+  const { client, session, calls } = setup(["<teasing> Aespa on loop tonight, no notes.", "<happy> Fair."], { personalize: personalize as never, userId: "u1" });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer" } }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  await session.onClientText(JSON.stringify({ type: "text", text: "lol maybe" }));
+  await client.waitFor((m) => m.type === "reply" && m !== first);
+  const second = calls.at(-1)!.instructions!;
+  assert.match(second, /Don't bring up their tastes or personal details on your own; only if they do\./);
+  assert.doesNotMatch(second, /Ask what size they wear/);
+  session.close();
+});
