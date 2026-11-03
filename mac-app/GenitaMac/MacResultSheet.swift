@@ -232,8 +232,10 @@ struct MacProductCard: View {
     let open: () -> Void
     @State private var hover = false
 
-    /// Mac v2: both cards' Open in browser look the same (outlined, ink on hover) — one action, one style.
-    private var filled: Bool { (primary && !MacDesignV2.enabled) || hover }
+    /// Dyno's demo video (2:22): the first card's Open in browser is filled ink, the other is white with a light blue
+    /// outline; hover fills it.
+    private var filled: Bool { primary || hover }
+    private static let outlineBlue = Color(red: 156.0 / 255, green: 211.0 / 255, blue: 245.0 / 255)
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -241,14 +243,17 @@ struct MacProductCard: View {
             Text(pick.brandLine).font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineLimit(1).minimumScaleFactor(0.8).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
                 // blue = from the import (taste), grey = from what they said (situation) — PF-1's chips
-                if !pick.taste.isEmpty { chip(pick.taste, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).accessibilityIdentifier("macProductTaste") }
+                if !pick.taste.isEmpty { chip(pick.taste, fg: MacSheetInk.chipBlueText, bg: MacSheetInk.chipBlue).overlay(Capsule().strokeBorder(Self.outlineBlue, lineWidth: 1)).accessibilityIdentifier("macProductTaste") }
                 if !pick.situation.isEmpty { chip(pick.situation, fg: MacSheetInk.ink, bg: MacSheetInk.chip).accessibilityIdentifier("macProductSituation") }
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
             Button(action: open) {
                 Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
                     .foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
-                    .frame(width: 151, height: 34).contentShape(RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(MacGlassButtonStyle(kind: filled ? .prominent : .regular)).onHover { hover = $0 }.padding(.top, 6)
+                    .frame(width: 151, height: 34)
+                    .background { if filled { GlassCTA(color: MacSheetInk.ink, radius: 6) } else { RoundedRectangle(cornerRadius: 6).fill(Color.white) } }
+                    .overlay { if !filled { RoundedRectangle(cornerRadius: 6).strokeBorder(Self.outlineBlue, lineWidth: 1) } }
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 6)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
     }
@@ -276,8 +281,9 @@ struct MacProductCard: View {
 struct MacLinkPrompt: View {
     let share: () -> Void
     let notNow: () -> Void
-    var body: some View {
-        if MacDesignV2.enabled { v2Body } else { v1Body }
+    /// Dyno's demo video (2:16–2:20) shows this layout: the spoken line as a pill at the top, one white "Share this
+    /// window" button at the bottom of the face (no sheet). Lead 11/4: match the video.
+    var body: some View { v1Body }
     }
     /// MAC-LINK v2: the spoken line stays a one-line pill (#211, drawn by the call view); the ask is the same white
     /// sheet as MS-1 (handle, serif title, ink button, Not now).
@@ -308,7 +314,7 @@ struct MacLinkPrompt: View {
                 .padding(.horizontal, 12).padding(.vertical, 9)
                 .frame(width: 350, alignment: .leading)
                 .background(MacSheetInk.pill, in: RoundedRectangle(cornerRadius: 14))
-                .position(x: 195, y: 124 + 28)
+                .position(x: 195, y: MacDesignV2.enabled ? 87 : 124 + 28)   // v2: no fake status bar, top of the window
                 .accessibilityIdentifier("macLinkPrompt")
             VStack(spacing: 6) {
                 Button(action: share) {
