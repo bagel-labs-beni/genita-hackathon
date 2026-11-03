@@ -93,6 +93,8 @@ export type SessionDeps = {
   now?: () => number;
   /** open the vendor HTTPS connections ahead of the first answer (keepalive.ts warmUp); fire and forget */
   prewarm?: (o: { voice: boolean }) => void;
+  /** Chelsea 11/4 greeting (a): the name opener first (server.ts sets it from GENITA_GREET_OPENER, default on) */
+  greetOpener?: boolean;
   /** Test-only clock seam for the delayed first greeting. Returns a cancellation function. */
   greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
@@ -317,14 +319,21 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
 /**
- * Greeting option (a), waiting on Chelsea (11/4, GENITA_GREET_OPENER=1, off by default): the call's first words are
+ * Greeting option (a), Chelsea 11/4 (GENITA_GREET_OPENER=0 turns it off): the call's first words are
  * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
  * instead of Spark's first token, ~2.3 s on prod).
  */
 export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.GENITA_GREET_OPENER === "1";
+  return env.GENITA_GREET_OPENER !== "0";
 }
-const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!"];
+/** Chelsea 11/4: 3–4 variants, never the same every time; "Hey!" family without a name */
+export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
+export const GREET_OPENERS_NO_NAME = ["Hey!", "Hi!", "Oh hey!", "Hey there!"];
+export function pickGreetOpener(name: string | undefined, rand: () => number = Math.random): string {
+  const first = (name ?? "").trim().split(/\s+/)[0]?.slice(0, 40) ?? "";
+  const pool = first ? GREET_OPENERS : GREET_OPENERS_NO_NAME;
+  return pool[Math.floor(rand() * pool.length) % pool.length].replace("{name}", first);
+}
 /** a leading "Hey…," / "Hi Summer!" the model still wrote after the opener was said */
 const LEADING_HELLO = /^(\s*(?:<[^>]*>\s*)?)(?:oh,?\s+)?(?:hey|hi+|hello|heya|hiya)\b(?:\s+(?:there|you))?(?:,?\s+[\p{L}'-]+)?\s*[,!.]+\s*/iu;
 const MAX_GREET_AFTER_MS = 3000;
@@ -803,6 +812,12 @@ export class Session {
     if (this.continued) return; // handoff: the conversation goes on, no greeting of either kind
     if (greetAfterMs === null) {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
+      return;
+    }
+    // Chelsea 11/4 (a): the name opener goes out as soon as the call is ready, the first call too (no D21 wait)
+    if (this.deps.greetOpener === true && startMode === "chat") {
+      this.greeting ??= { item: null };
+      if (!this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
       return;
     }
     // D21: also without the memory dependency, the plain greeting
@@ -1552,10 +1567,9 @@ export class Session {
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
-    if (greeting && !interpret && greetOpenerOn() && this.user?.name) {
-      const name = this.user.name.split(/\s+/)[0].slice(0, 40);
-      this.greetOpener = GREET_OPENERS[Math.floor(Math.random() * GREET_OPENERS.length)].replace("{name}", name);
-      finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again and do not say their name again.\n`;
+    if (greeting && !interpret && this.deps.greetOpener === true) {
+      this.greetOpener = pickGreetOpener(this.user?.name);
+      finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again (no hey / hi / hello) and do not say their name again.\n`;
     }
     return {
       interpret,
@@ -1749,7 +1763,7 @@ export class Session {
     } else preGreet?.abort.abort();
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
-    const greetLine = greeting && !self && greetOpenerOn() ? this.greetOpener : null;
+    const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;
     this.greetOpener = null;
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
