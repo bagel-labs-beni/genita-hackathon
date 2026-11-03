@@ -485,7 +485,84 @@ export type FaceManifest = {
   ms: { total: number; edits: number; sam: number };
 };
 
-export function faceManifest(s: FaceState, urlFor: (key: "neutral" | "person" | FaceKey) => string, flowUrl: (asset: string) => string = (a) => a): FaceManifest {
+/**
+ * 11/3 18:46 (Chelsea, on app v60b in build 4 / TF 161: "it looks synthetic when the mouth opens — the old one was
+ * better"): put the v9.3 mouth back for every face, already prepped ones included, without an app build.
+ * v60b's opening magnifier, painted mouth inside and brightened upper teeth only run when the lip map has NO
+ * `perioral` block (the app then uses its release block, openMag 1). Sending the v57c release values with
+ * openMag 0 renders exactly the v9.3 mouth on every app build (older builds ignore the unknown key).
+ * `alive.lockY` stays true: the person never bobs against the locked background (Chelsea asked for that).
+ * Only human faces on the lip rig, and only when prep sent no perioral block of its own.
+ * Switch: GENITA_FACE_V93_MOUTH, default on; "0" / "false" / "off" serves the map as prepped.
+ */
+export const V93_PERIORAL = Object.freeze({
+  follow: 0.2, philtrumPx: 1.6, spreadPx: 5, roundInPx: 3, jawDropPx: 0, roundBulgePx: 1.2,
+  mbpChinPx: 1.1, lpfMs: 150, microPx: 0, lipThin: 0.8, lipThinPx: 0.014, openMag: 0,
+});
+
+export function v93MouthOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.GENITA_FACE_V93_MOUTH ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * 11/3 19:5x (Chelsea: "the eyes move", "under the eyes still moves"): only the mouth and jaw may move. Measured on
+ * 8 faces (4 people, clay 3D, 2D anime, dog, cat): with the head still (no sway / roll / nod / drift), no brow lift and
+ * the cheek coupling off, the eye band's frame-to-frame motion drops from 0.6–2.8 to 0.01–0.05 grey levels and the
+ * face outside the mouth+jaw to background level. Every kind.
+ */
+export const STILL_FACE = Object.freeze({
+  alive: { headX: 0, headRoll: 0, nodPx: 0, browPx: 0, lockY: true },
+  brow: { px: 0 },
+  cheek: { spread: 0, pull: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 },
+});
+
+/** People on the lip rig: the prepped Muse keys chosen per vowel class (shape contrast, nothing drawn), lips meet
+ *  between syllables, a 1 px jaw follow. Read by app builds after build 4 (`preset` / `ladders`); build 4 ignores them. */
+export const V93_MOTION = Object.freeze({
+  preset: "v93", weakShape: 0.9, shapeTauMs: 60, idle: 0.05, consonantDip: 0.05, spreadNeutral: 0,
+  stressedJawGain: 1.6, unstressedJawGain: 0.9,
+  ladders: { round: [["U", 0], ["OH", 0.35]], spread: [["EI", 0], ["EH", 0.2]], neutral: [["AH", 0], ["AH2", 0.45]] },
+});
+
+const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
+
+/** The served lip map (see V93_PERIORAL, STILL_FACE, V93_MOTION); the stored prep state is never changed. */
+export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
+  if (!on) return map;
+  const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
+  // always sent: without a block the app falls back to its own moving cheek rules (codex P2)
+  out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
+  if (kind === "human") {
+    if (!isRecord(map.rig) || map.perioral !== undefined) return out;   // not a rig face, or prep sent its own block: still head only
+    return { ...out, perioral: { ...V93_PERIORAL, jawDropPx: 1 }, motionV2: { ...rec(map.motionV2), ...V93_MOTION } };
+  }
+  if (map.drive === "open") {
+    // animals / toys: the mouth closes between syllables (a held open key read as panting)
+    const jaw = rec(map.jaw);
+    return { ...out, shownFloor: 0, minHold: 2, ...(map.jaw ? { jaw: { floor: 0, ...jaw, vowel: { ...rec(jaw.vowel), other: 0.1 } } } : {}) };
+  }
+  if (map.drive === "snap") {
+    // 2D: bigger shapes sooner (anime convention), on the same drawings
+    const snap = rec(map.snap);
+    const rules = Array.isArray(snap.rules)
+      ? snap.rules.map((r) => (Array.isArray(r) && r[2] === "WD" ? [r[0], Math.min(Number(r[1]) || 0.5, 0.5), "WD", 2] : Array.isArray(r) && r[2] === "EE" ? [r[0], Math.min(Number(r[1]) || 0.4, 0.4), "EE", ...r.slice(3)] : r))
+      : snap.rules;
+    return { ...out, lookaheadMs: 60, snap: { ...snap, hold: 1, minHold: 2, closedBelow: 0.08, ...(rules ? { rules } : {}) } };
+  }
+  // 3D characters: quicker open/close (the opening is already at the key's own maximum: a higher gain only
+  // saturates, codex P2 — measured, no change)
+  return { ...out, minHold: 1, slew: 0.4, smoothing: { fps: 25, ...rec(map.smoothing), attack: 0.9, release: 0.7 } };
+}
+
+export function faceManifest(
+  s: FaceState,
+  urlFor: (key: "neutral" | "person" | FaceKey) => string,
+  flowUrl: (asset: string) => string = (a) => a,
+  opts: { v93Mouth?: boolean } = {},
+): FaceManifest {
   const images: FaceManifest["images"] = { neutral: urlFor("neutral"), ...(s.person ? { person: urlFor("person") } : {}) };
   const visemes: FaceManifest["visemes"] = {};
   const mouthKeys: FaceManifest["mouthKeys"] = {};
@@ -506,6 +583,7 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | "person" | 
   const flow = s.flow
     ? {
         ...s.flow,
+        map: withV93Mouth(s.flow.map, s.flow.kind, opts.v93Mouth ?? v93MouthOn()),
         files: Object.fromEntries(
           Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}), ...(f.lip ? { lip: flowUrl(f.lip) } : {}), ...(f.interior ? { interior: flowUrl(f.interior) } : {}) }]),
         ),
