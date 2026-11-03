@@ -206,7 +206,14 @@ struct ConversationView: View {
             }
         }
         .onDisappear { if !connecting { call.end() } }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: call.sceneActivityChanged(.active)
+            case .inactive: call.sceneActivityChanged(.inactive)
+            case .background: call.sceneActivityChanged(.background)
+            @unknown default: call.sceneActivityChanged(.background)
+            }
+        }
         // #2: the conversation moved to the Mac (R1 waiting sheet): this iPhone stops listening and showing
         .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
