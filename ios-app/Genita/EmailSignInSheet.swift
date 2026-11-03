@@ -33,7 +33,7 @@ struct EmailSignInSheet: View {
             Text(step == .address ? "Continue with email" : "Check your email").font(TypeStyle.title(28)).foregroundStyle(CallInk.ink).padding(.top, 32)
                 .accessibilityAddTraits(.isHeader).accessibilityIdentifier("emailSheetTitle")
             Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
-                .font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                .font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {
                     TextField("Email address", text: $email)
@@ -50,21 +50,21 @@ struct EmailSignInSheet: View {
                         .accessibilityIdentifier("emailCodeField")
                 }
             }
-            .focused($focused).disabled(sending).font(TypeStyle.body(16)).foregroundStyle(CallInk.ink)
-            .padding(.horizontal, 16).frame(height: 50)
+            .focused($focused).disabled(sending).font(TypeStyle.text(16)).foregroundStyle(CallInk.ink)
+            .padding(.horizontal, 16).frame(minHeight: 50)
             .background(CallInk.field, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(message == nil ? .clear : CallInk.ink, lineWidth: 1))
             .padding(.top, 24).onSubmit { step == .address ? sendCode() : verify() }
             if let message {
-                Text(message).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).padding(.top, 12)
+                Text(message).font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("emailError")
             }
             Spacer(minLength: 24)
             Button { step == .address ? sendCode() : verify() } label: {
                 ZStack {
                     if sending { ProgressView().tint(CallInk.onInk) } else { Text(step == .address ? "Send code" : "Continue") }
-                }.font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50)
+                }.font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)
+                    .frame(maxWidth: .infinity).frame(minHeight: 50)
                     .background(GlassCTA(color: CallInk.ink))
             }.buttonStyle(.plain).disabled(sending || !canContinue).accessibilityIdentifier("emailContinue")
             if step == .code {
@@ -74,10 +74,10 @@ struct EmailSignInSheet: View {
                     Button(resendLeft > 0 ? "Resend in \(resendLeft)s" : "Resend code") { sendCode() }
                         .disabled(sending || resendLeft > 0).accessibilityIdentifier("emailResend")
                 }
-                .font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(height: 44).padding(.top, 4)
+                .font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.ink).frame(minHeight: 44).padding(.top, 4)
             } else {
                 Button("Cancel") { dismiss() }
-                    .font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 50)
+                    .font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(minHeight: 50)
                     .disabled(sending).accessibilityIdentifier("emailCancel")
             }
             Spacer().frame(height: 8)
@@ -85,6 +85,7 @@ struct EmailSignInSheet: View {
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CallInk.sheet.ignoresSafeArea())
+        .dynamicTypeSize(TextScale.sheet)
         .preferredColorScheme(.light)
         .presentationDetents([.medium, .large])
         // a request in flight finishes on this sheet: a late answer must not sign in after it closed

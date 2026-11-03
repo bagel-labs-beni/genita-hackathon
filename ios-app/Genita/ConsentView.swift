@@ -17,15 +17,18 @@ struct ConsentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Dynamic Type: the copy scrolls above the two buttons once it outgrows the screen (fits as before at the default size)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
             Text("Before we start.").font(TypeStyle.title(35)).foregroundStyle(CallInk.ink).padding(.top, 54)
                 .accessibilityAddTraits(.isHeader)
             Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
-                .font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
+                .font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 20) {
                 ForEach(rows, id: \.0) { row in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(row.0).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                        Text(row.1).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true)
+                        Text(row.0).font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink)
+                        Text(row.1).font(TypeStyle.text(14)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true)
                     }.accessibilityElement(children: .combine)
                 }
             }.padding(.top, 32)
@@ -33,22 +36,26 @@ struct ConsentView: View {
                 // PRD v12 D16: Genita's own pages
                 Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
                 Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
-            }.font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
-            Spacer(minLength: 24)
+            }.font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
+            }
+            .scrollBounceBehavior(.basedOnSize)
             Button { agree() } label: {
                 ZStack {
                     if sending { ProgressView().tint(CallInk.onInk) } else { Text("Agree and continue") }
-                }.font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
+                }.font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)
+                    .frame(maxWidth: .infinity).frame(minHeight: 50).background(GlassCTA(color: CallInk.ink))
             }.buttonStyle(.plain).disabled(sending).accessibilityIdentifier("consentAgree")
             Button("Not now") { notNow() }
-                .font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 50)
+                .font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(minHeight: 50)
                 .disabled(sending).accessibilityIdentifier("consentNotNow")
                 .padding(.bottom, 8)
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(CallInk.sheet.ignoresSafeArea())
+        .dynamicTypeSize(TextScale.screen)
         .alert("Couldn’t save that. Try again.", isPresented: $failed) { Button("OK", role: .cancel) {} }
     }
 

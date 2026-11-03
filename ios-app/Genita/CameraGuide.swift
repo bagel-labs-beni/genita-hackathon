@@ -33,13 +33,13 @@ struct CameraGuideSheet: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Turn on the camera to show me things.")
                     Text("I look while it’s on and don’t keep the video.")
-                }.font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
+                }.font(TypeStyle.text(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
                 Button(action: turnOn) {
-                    Text("Turn on camera").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
+                    Text("Turn on camera").font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)
+                        .frame(maxWidth: .infinity).frame(minHeight: 50).background(GlassCTA(color: CallInk.ink))
                 }.buttonStyle(PressScale()).padding(.top, 32).accessibilityIdentifier("cameraGuideTurnOn")
                 Button(action: notNow) {
-                    Text("Not now").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                    Text("Not now").font(TypeStyle.text(15, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale()).padding(.top, 4).accessibilityIdentifier("cameraGuideNotNow")
             }
             .padding(.horizontal, 38).padding(.top, 28).padding(.bottom, 48 + bottomInset)
@@ -48,6 +48,7 @@ struct CameraGuideSheet: View {
                 .shadow(color: CallInk.ink.opacity(0.18), radius: 12).ignoresSafeArea(edges: .bottom))
             .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal).accessibilityIdentifier("cameraGuide")
         }
+        .dynamicTypeSize(TextScale.sheet)
     }
 }
 
