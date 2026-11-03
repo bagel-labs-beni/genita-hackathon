@@ -1189,3 +1189,37 @@ test("greeting (a), Chelsea 11/4: 'Hey, Summer!' at once (also without a name: '
     session.close();
   }
 });
+
+test("greeting (a) Codex #461: a tagged or split hello is not said again; an empty greeting still retries", { skip: !v1 }, async () => {
+  for (const deltas of [["[laughs] Hey Summer! How did the interview go?"], ["<happy> Hey,", " Summer! How did the interview go?"]]) {
+    const client = new Client();
+    const session = new Session("go2", client, {
+      config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+      async *spark(): AsyncGenerator<SparkStreamEvent> {
+        for (const d of deltas) yield { type: "text", delta: d };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer! How did the interview go\?$/, JSON.stringify(deltas));
+    session.close();
+  }
+  let calls = 0;
+  const client = new Client();
+  const session = new Session("go3", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      calls++;
+      if (calls > 1) yield { type: "text", delta: "<happy> How was your day?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(calls, 2, "the empty first answer was retried");
+  assert.match(String(reply.text), /How was your day\?$/);
+  session.close();
+});

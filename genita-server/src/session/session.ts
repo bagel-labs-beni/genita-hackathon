@@ -335,7 +335,7 @@ export function pickGreetOpener(name: string | undefined, rand: () => number = M
   return pool[Math.floor(rand() * pool.length) % pool.length].replace("{name}", first);
 }
 /** a leading "Hey…," / "Hi Summer!" the model still wrote after the opener was said */
-const LEADING_HELLO = /^(\s*(?:<[^>]*>\s*)?)(?:oh,?\s+)?(?:hey|hi+|hello|heya|hiya)\b(?:\s+(?:there|you))?(?:,?\s+[\p{L}'-]+)?\s*[,!.]+\s*/iu;
+const LEADING_HELLO = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)(?:oh,?\s+)?(?:hey|hi+|hello|heya|hiya)\b(?:\s+(?:there|you))?(?:,?\s+[\p{L}'-]+)?\s*[,!.]+\s*/iu;
 const MAX_GREET_AFTER_MS = 3000;
 
 function str(v: unknown, max = 4000): string | undefined {
@@ -1756,6 +1756,8 @@ export class Session {
     this.preGreet = null;
     if (preGreet && !preGreet.abort.signal.aborted && !pre) {
       preGreet.confirm();
+      // barge-in, mode switch, Forget or close stop the adopted stream too (Codex P1 #461)
+      signal.addEventListener("abort", () => preGreet.abort.abort(), { once: true });
       built = preGreet.built;
       pre = preGreet.stream;
       memoryRetry = preGreet.memoryRetry;
@@ -1830,7 +1832,7 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true; opener?: true }[] = [];
     // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
     // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
     const ends = (d: string) => LOOKS_FINAL.test(d.trim());
@@ -1870,7 +1872,8 @@ export class Session {
       return false;
     };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
-    const said = () => sentences.filter((x) => !x.beat && !x.drop);
+    /** the name opener (greeting a) is said, but is not the model's answer: an empty greeting still retries (Codex #461) */
+    const said = () => sentences.filter((x) => !x.beat && !x.drop && !x.opener);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1900,7 +1903,11 @@ export class Session {
         let tts = p.ttsText;
         // option (a): the opener already greeted them — the model's own "Hey Summer!" is not said again
         if (greetLine && !keepOpener && sentences.length === 1) {
-          const cut = tts.replace(LEADING_HELLO, "$1");
+          // a hello split at its comma by the server voice ("Hey," + "Summer! How…"): the name piece goes too
+          const first = this.user?.name?.trim().split(/\s+/)[0];
+          const nameLead = first ? new RegExp(`^(\\s*(?:(?:<[^>]*>|\\[[^\\]]*\\])\\s*)*)${first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[,!.]+\\s*`, "iu") : null;
+          let cut = tts.replace(LEADING_HELLO, "$1");
+          if (nameLead) cut = cut.replace(nameLead, "$1");
           if (cut !== tts && parseTaggedSentence(cut).displayText) tts = cut.replace(/^(\s*(?:<[^>]*>\s*)?)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
           else if (cut !== tts) continue;
         }
@@ -2070,7 +2077,9 @@ export class Session {
         // option (a): the opener is said at once, Spark's greeting follows it
         if (greeting && greetLine) {
           m.firstTokenAt = this.now();
+          const at = sentences.length;
           enqueueSentences([`<happy> ${greetLine}`], true);
+          for (let i = at; i < sentences.length; i++) sentences[i].opener = true;
           this.log("call.greet_opener", { utteranceId });
         }
         // Retry any answer with no usable content, even with no tools, after
