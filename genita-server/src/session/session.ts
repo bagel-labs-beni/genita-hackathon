@@ -1738,6 +1738,7 @@ export class Session {
     // (read from the request itself: it was built before this turn was counted)
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
+    let beatEcho: string | null = null;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1745,6 +1746,19 @@ export class Session {
         // Delivery/emotion tags alone cannot be displayed or spoken. Do not
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
+        // the model opens with the hold beat's own words ("Ooh, okay." / "Ooh," + "okay." after the cap's "Ooh, okay."):
+        // compared before any opener rewrite, clause by clause; the beat counts as the model's start (Codex P2 ×2 #427)
+        if (this.v1 && !interpret && !self && !keepOpener && beatEcho !== "" && (beatEcho !== null || (sentences.length > 0 && sentences.every((x) => x.beat)))) {
+          const clause = normTranscript(p.displayText);
+          beatEcho ??= normTranscript(sentences.map((x) => x.display).join(" "));
+          if (clause && (beatEcho === clause || beatEcho.startsWith(`${clause} `))) {
+            beatEcho = beatEcho.slice(clause.length).trim();
+            for (const x of sentences) delete x.beat;
+            this.log("convo.beat_was_answer", { utteranceId });
+            continue;
+          }
+          beatEcho = ""; // the model said something else: no more echo checks this reply
+        }
         let tts = p.ttsText;
         // a hold beat is not the reply's first sentence (Codex P2 #427): the model's first one still gets these checks
         const modelFirst = !sentences.some((x) => !x.beat);
@@ -1757,13 +1771,6 @@ export class Session {
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
         const prevSaid = sentences.at(-1)?.display;
-        // the model said exactly the hold beat ("Ooh, okay." after the cap's "Ooh, okay."): the beat was the answer's
-        // start, not said twice, and it counts as the model's (Codex P2 #427)
-        if (this.v1 && tts && prevSaid && sentences.at(-1)?.beat && normTranscript(parseTaggedSentence(tts).displayText) === normTranscript(prevSaid)) {
-          delete sentences.at(-1)!.beat;
-          this.log("convo.beat_was_answer", { utteranceId });
-          continue;
-        }
         // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
         const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
         const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();

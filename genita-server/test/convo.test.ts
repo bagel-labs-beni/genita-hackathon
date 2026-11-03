@@ -983,5 +983,14 @@ test("first-sound cap (Codex P2 #427): after the beat, narration is still droppe
   const r2 = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
   assert.equal(r2.type, "reply", "no spark_unavailable");
   assert.match(String(r2.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/);
+  // round 2: the same echo right after a reply that opened with it (the opener rewrite must not split it)
+  for (let turn = 0; turn < 3; turn++) {
+    client.json.length = 0;
+    await new Promise((r) => setTimeout(r, 200));
+    await session.onClientText(JSON.stringify({ type: "text", text: `and then ${turn}` }));
+    const r = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
+    assert.equal(r.type, "reply");
+    assert.match(String(r.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/, String(r.text));
+  }
   session.close();
 });
