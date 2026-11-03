@@ -2525,7 +2525,16 @@ export class Session {
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
             noteFirstAudio();
+          } else if (held && !heard) {
+            // the reply itself after the hold line and a wait: the user may have started talking meanwhile (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
+            if (stillAsked()) { skipped = true; break; }
           }
+          // the app's player went idle in a gap (a wait for the GPU after the hold line): the reply's playback clock
+          // restarts now, so the done timer covers the audio still to play (Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
           if (s.emotion !== sentEmotion) {
             sentEmotion = s.emotion;
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: s.emotion ?? "neutral" });

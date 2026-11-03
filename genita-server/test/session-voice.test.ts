@@ -251,6 +251,23 @@ test("voice identity (handover b9-6): cold GPU on the first reply → 'One sec.'
   session.close();
 });
 
+test("voice identity (Codex P1): after the hold line and a GPU wait, the reply stays 'speaking' while its own audio plays", async () => {
+  const { client, session } = setup({ failCalls: [0, 1], cached: [HOLD_LINE, RECOVER_LINE] });
+  const at = new Map<Record<string, unknown>, number>();
+  const send = client.sendJson.bind(client);
+  client.sendJson = (m) => { at.set(m, Date.now()); send(m); };
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply", 6000);
+  const audio = client.of("audio");
+  assert.equal(audio.length, 4, "hold line + three clauses");
+  const firstReplyAudio = at.get(audio[1])!;
+  const done = await client.waitFor((m) => m.type === "state" && m.state === "listening" && (at.get(m) ?? 0) > firstReplyAudio, 3000);
+  // three 100 ms clauses start playing when they arrive (the player sat idle during the wait): not before ~300 ms
+  assert.ok(at.get(done)! - firstReplyAudio >= 250, `listening ${at.get(done)! - firstReplyAudio} ms after the reply's audio started`);
+  session.close();
+});
+
 test("voice identity: nothing cached and the voice service down → no sound, tts_unavailable once, never say", async () => {
   const { client, session, calls } = setup({ failAt: 0 });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));

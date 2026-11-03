@@ -216,6 +216,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const e = (raw ?? "").toLowerCase();
     return (VOICE_EMOTIONS as readonly string[]).includes(e) && !NEUTRAL_FILLERS.has(`${text}|${e}`) ? e : "";
   };
+  // a kept clip is only good for the same model and post chain (Codex P2: a GENITA_VOICE_POST or model change re-renders)
+  const diskKey = (k: string) => `v1|${modelName}|${cfg.post === false ? "raw" : "post"}|${k}`;
   const remember = (k: string, chunks: TtsChunk[]) => {
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
     cache.set(k, chunks);
@@ -238,7 +240,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     let hit = cache.get(k);
     if (!hit && KEPT.has(req.text) && opts.clips) {
       // a clip a previous run kept on disk (the cold-GPU lines): no service call needed
-      const pcm = (() => { try { return opts.clips!.load(k); } catch { return null; } })();
+      const pcm = (() => { try { return opts.clips!.load(diskKey(k)); } catch { return null; } })();
       if (pcm?.length) { hit = [{ audio: pcm, alignment: null, model: modelName }]; remember(k, hit); }
     }
     if (hit) {
@@ -280,7 +282,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     }
     if ((text.length <= CACHE_MAX_CHARS || KEPT.has(req.text)) && got.length) remember(k, got);
     if (KEPT.has(req.text) && got.length && opts.clips) {
-      try { opts.clips.save(k, Buffer.concat(got.map((c) => c.audio))); } catch { /* the in-memory copy still serves this run */ }
+      try { opts.clips.save(diskKey(k), Buffer.concat(got.map((c) => c.audio))); } catch { /* the in-memory copy still serves this run */ }
     }
   }
 

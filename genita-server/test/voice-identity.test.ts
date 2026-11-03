@@ -183,6 +183,9 @@ test("cold-GPU lines are kept on disk: a new client (restart) plays them cachedO
     }
     assert.equal(asked, 0, "never asks the cold service");
     await assert.rejects(async () => { for await (const _ of b.speak({ voiceId: "seamless:26", text: RECOVER_LINE, emotion: null, model: "seamless-m4t-v2", lang: "en-US", cachedOnly: true })) void _; }, /not_cached/, "per speaker");
+    // Codex P2: a kept clip is only reused with the same model and post chain
+    const post = createSeamless(loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t", GENITA_VOICE_POST: "1" }).voice!, { fetch: down, clips: fileClips(dir) });
+    await assert.rejects(async () => { for await (const _ of post.speak({ voiceId: "seamless:19", text: RECOVER_LINE, emotion: null, model: "seamless-m4t-v2", lang: "en-US", cachedOnly: true })) void _; }, /not_cached/, "post chain on: the raw clip is not reused");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
