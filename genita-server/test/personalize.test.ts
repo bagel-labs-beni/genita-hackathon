@@ -427,6 +427,11 @@ test("01: the recipe prompt asks for the 'left out' line only when there's a pro
   const { recipePrompt } = await import("../src/finds/pipeline.ts");
   assert.match(recipePrompt("What can I make?", "- Taste: Dislikes seafood."), /left the shrimp out/);
   assert.doesNotMatch(recipePrompt("What can I make?"), /left the shrimp out/);
+  // sweep 11/3 [P2]: the recipe's own "left the X out" line rides on the spoken fridge line (it was dropped 3/3)
+  const { leftOutLine } = await import("../src/finds/pipeline.ts");
+  assert.equal(leftOutLine("Tacos with salsa — and I left the cilantro out."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Found pico de gallo, I've left out the cilantro."), " And I left the cilantro out.");
+  assert.equal(leftOutLine("Here's a great pho recipe."), "");
   // sweep 11/3 [P2]: a named dish is the dish ("pho" came back as the fridge's kimchi soup)
   assert.match(recipePrompt("Can you help me make pho?"), /If they name a dish they want to make.*that is the dish/);
   assert.match(recipePrompt("Can you help me make pho?"), /Pick one simple dish .* unless they named one/);

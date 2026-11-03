@@ -91,6 +91,12 @@ function firstStepLine(step: string | undefined): string {
   return ` First, ${keep ? t : t.charAt(0).toLowerCase() + t.slice(1)}.`;
 }
 
+/** " And I left the cilantro out." from the recipe's own line (a dislike it skipped), or "". */
+export function leftOutLine(say: string): string {
+  const m = /\bI(?: have|'ve)? left (?:the |out the )?([\p{L}][\p{L} '-]{0,30}?) out\b/iu.exec(say) ?? /\bI(?:'ve| have)? left out (?:the )?([\p{L}][\p{L} '-]{0,30}?)(?=[.!,]|$)/iu.exec(say) ?? /\b(?:no|without|skipped the|minus the) ([\p{L}][\p{L} '-]{0,30}?),? (?:since|because|as) you (?:don't|do not|hate|dislike)/iu.exec(say);
+  return m ? ` And I left the ${m[1].trim().toLowerCase()} out.` : "";
+}
+
 export function fridgeLine(items: FindItem[], dish: string | null, firstStep?: string): string {
   const have = items.filter((i) => i.tier === "have").map((i) => i.name).slice(0, 4);
   const d = dish ? dish.toLowerCase() : "";
@@ -415,7 +421,8 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
     await Promise.race([allChecks, new Promise((r) => setTimeout(r, SPEAK_WAIT_MS))]);
     if (ctx.signal.aborted) return { card, timings };
     const wire = toWire(cands.all());
-    card.say = fridgeLine(wire, dish, steps[0]);
+    // Knows-Me 01: the recipe's own "…and I left the cilantro out." rides along (sweep 11/3: dropped 3/3)
+    card.say = fridgeLine(wire, dish, steps[0]) + leftOutLine(str(r?.say, 160));
     // the pill shows a short line; the full sentence is only spoken (≤ 28 chars, one line on both devices)
     card.pill = fridgePill(wire);
     ctx.emit({ type: "find.items", findId: ctx.findId, items: wire, checking: true, subtitle: card.subtitle, ...(card.status ? { status: card.status } : {}), pill: card.pill });
