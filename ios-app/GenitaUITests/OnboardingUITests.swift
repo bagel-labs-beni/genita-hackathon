@@ -72,6 +72,15 @@ final class OnboardingUITests: XCTestCase {
         // V01 (fixture photo) → V03 → V02-T
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         capture("V01")
+        // SUB-8 (#125) / D26: the rights line is on screen and "Use this image" stays off until it is on
+        let rights = app.buttons["rightsAck"]
+        XCTAssertTrue(rights.exists, "V01 shows the rights line")
+        XCTAssertEqual(rights.value as? String, "Off")
+        XCTAssertFalse(primary.isEnabled, "no check without the rights line")
+        rights.tap()
+        XCTAssertEqual(rights.value as? String, "On")
+        XCTAssertTrue(primary.isEnabled)
+        capture("V01-rights-on")
         primary.tap()
         XCTAssertTrue(element("V03").waitForExistence(timeout: 3), "V03 while the check runs")
         capture("V03")
@@ -92,7 +101,7 @@ final class OnboardingUITests: XCTestCase {
         waitForExpectations(timeout: 10)
         XCTAssertFalse(primary.isEnabled, "V04-P: Continue waits for the clip")
         capture("V04-P")
-        // when the 1.6 s clip ends the card stays picked
+        // when the 4 s stub clip ends the card stays picked
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"])
         waitForExpectations(timeout: 10)
         XCTAssertTrue(primary.isEnabled)
@@ -263,7 +272,8 @@ final class OnboardingUITests: XCTestCase {
         if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
         let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
         XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5))
+        // Safari in front is the proof the app left; Genita's own reported state lags on CI (it stayed
+        // .runningForeground for 5 s after Safari came up), so it is not asserted
         app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
@@ -292,6 +302,8 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
         XCTAssertTrue(app.buttons["play1"].waitForExistence(timeout: 10)); app.buttons["play1"].tap()
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"]); waitForExpectations(timeout: 15)
+        // Continue waits for the clip (V04-P): tap it once it is on, not while the preview still plays
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: primary); waitForExpectations(timeout: 15)
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
@@ -330,6 +342,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15))
         primary.tap()
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        app.buttons["rightsAck"].tap() // SUB-8: "Use this image" stays off until the rights line is on
         primary.tap()
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15))
         primary.tap()
