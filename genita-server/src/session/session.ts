@@ -316,6 +316,17 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
+/**
+ * Greeting option (a), waiting on Chelsea (11/4, GENITA_GREET_OPENER=1, off by default): the call's first words are
+ * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
+ * instead of Spark's first token, ~2.3 s on prod).
+ */
+export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GENITA_GREET_OPENER === "1";
+}
+const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!"];
+/** a leading "Hey…," / "Hi Summer!" the model still wrote after the opener was said */
+const LEADING_HELLO = /^(\s*(?:<[^>]*>\s*)?)(?:oh,?\s+)?(?:hey|hi+|hello|heya|hiya)\b(?:\s+(?:there|you))?(?:,?\s+[\p{L}'-]+)?\s*[,!.]+\s*/iu;
 const MAX_GREET_AFTER_MS = 3000;
 
 function str(v: unknown, max = 4000): string | undefined {
@@ -352,6 +363,8 @@ export class Session {
   private memories: string[] = [];
   private memoryCall: MemoryCall | null = null;
   private greeting: { item: Memory | null } | null = null;
+  /** option (a): the opener said before this call's greeting (set when the greeting request is built) */
+  private greetOpener: string | null = null;
   /** conversation engine v1 (GENITA_CONVO_V1, read once per call) */
   private readonly v1 = convoV1();
   /** ms of the user's last message in an earlier call (memory state); null = never; undefined = unknown */
@@ -1538,6 +1551,12 @@ export class Session {
     const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
+    let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
+    if (greeting && !interpret && greetOpenerOn() && this.user?.name) {
+      const name = this.user.name.split(/\s+/)[0].slice(0, 40);
+      this.greetOpener = GREET_OPENERS[Math.floor(Math.random() * GREET_OPENERS.length)].replace("{name}", name);
+      finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again and do not say their name again.\n`;
+    }
     return {
       interpret,
       detected: null,
@@ -1546,7 +1565,7 @@ export class Session {
       lang: this.language,
       suggestMac,
       req: {
-        instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
+        instructions: finalInstructions,
         input,
         maxOutputTokens: 800,
         // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
@@ -1730,6 +1749,8 @@ export class Session {
     } else preGreet?.abort.abort();
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
+    const greetLine = greeting && !self && greetOpenerOn() ? this.greetOpener : null;
+    this.greetOpener = null;
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!synthetic && !self) this.memoryCall?.userMessage();
@@ -1863,6 +1884,12 @@ export class Session {
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
         let tts = p.ttsText;
+        // option (a): the opener already greeted them — the model's own "Hey Summer!" is not said again
+        if (greetLine && !keepOpener && sentences.length === 1) {
+          const cut = tts.replace(LEADING_HELLO, "$1");
+          if (cut !== tts && parseTaggedSentence(cut).displayText) tts = cut.replace(/^(\s*(?:<[^>]*>\s*)?)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+          else if (cut !== tts) continue;
+        }
         if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
@@ -2025,6 +2052,12 @@ export class Session {
           pushSentences(splitter.push(self === "card" ? `<warm> ${text}` : text));
           pushSentences(splitter.flush());
           return;
+        }
+        // option (a): the opener is said at once, Spark's greeting follows it
+        if (greeting && greetLine) {
+          m.firstTokenAt = this.now();
+          enqueueSentences([`<happy> ${greetLine}`], true);
+          this.log("call.greet_opener", { utteranceId });
         }
         // Retry any answer with no usable content, even with no tools, after
         // an empty speculative hit, or after a pre-text upstream failure.

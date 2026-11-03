@@ -1158,3 +1158,28 @@ test("AI sweep V5/C1: 'how do I look' is not permission to rate the face; 'glad 
   assert.equal((String(reply.text).match(/glad you told me/g) ?? []).length, 1, String(reply.text));
   session.close();
 });
+
+test("greeting option (a), GENITA_GREET_OPENER=1: 'Hey, Summer!' at once, then Spark's greeting without a second hello", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_GREET_OPENER;
+  process.env.GENITA_GREET_OPENER = "1";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_GREET_OPENER; else process.env.GENITA_GREET_OPENER = prev; });
+  const seen: string[] = [];
+  const client = new Client();
+  const session = new Session("go", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(req: SparkRequest): AsyncGenerator<SparkStreamEvent> {
+      seen.push(req.instructions ?? "");
+      await new Promise((r) => setTimeout(r, 300));
+      yield { type: "text", delta: "<happy> Hey Summer! How did the interview go?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer Lee" }, greetAfterMs: 0 }));
+  const firstSay = await client.waitFor((m) => m.type === "say", 3000);
+  assert.match(String(firstSay.text), /^(?:Hey|Hi|Oh hey), Summer!$/, "the opener, before Spark answered");
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey), Summer! How did the interview go\?$/);
+  assert.match(seen[0], /You already said "(?:Hey|Hi|Oh hey), Summer!" out loud/);
+  session.close();
+});
