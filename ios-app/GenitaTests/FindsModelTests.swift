@@ -347,4 +347,13 @@ import XCTest
         m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"r","items":[],"checking":false}"#))
         XCTAssertEqual(m.pillText, "Egg, tofu +2", "a later update without a pill keeps it")
     }
+
+    /// UI sweep 11/3: in the half sheet (scrolling off) a two-line recipe title cut the ingredient chips in half.
+    /// The picture gives way: title row + picture ≤ 192 pt, so the 44 pt chip row ends inside the 344 pt page.
+    func testHalfSheetPictureLeavesRoomForTheChips() {
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 132, "one-line title: r03 picture, unchanged")
+        let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
+        XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + 44, 344, "chips whole")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 88, "never smaller than 88")
+    }
 }
