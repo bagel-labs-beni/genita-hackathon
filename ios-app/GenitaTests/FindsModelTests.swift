@@ -78,6 +78,10 @@ import XCTest
             FindCardPage.reopenedSubtitle("About 15 min · You have 4, nothing to buy"),
             "About 15 min · You had 4, nothing to buy"
         )
+        // #215 short line
+        XCTAssertEqual(FindCardPage.reopenedSubtitle("15 min · Have 6 · Need soy sauce"), "15 min · Had 6 · Needed soy sauce")
+        XCTAssertEqual(FindCardPage.reopenedSubtitle("15 min · Need gochujang and scallions"), "15 min · Needed gochujang and scallions")
+        XCTAssertEqual(FindCardPage.reopenedSubtitle("Have 2 · Nothing to buy"), "Had 2 · Nothing to buy")
     }
 
     func testConfirmStopAndAskSendTheRightMessages() {
