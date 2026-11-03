@@ -96,6 +96,8 @@ export type SessionDeps = {
   now?: () => number;
   /** open the vendor HTTPS connections ahead of the first answer (keepalive.ts warmUp); fire and forget */
   prewarm?: (o: { voice: boolean }) => void;
+  /** Chelsea 11/4 greeting (a): the name opener first (server.ts sets it from GENITA_GREET_OPENER, default on) */
+  greetOpener?: boolean;
   /** Test-only clock seam for the delayed first greeting. Returns a cancellation function. */
   greetScheduler?: (fn: () => void, ms: number) => () => void;
   /** Server voice (Seamless): cache a speaker's filler clauses when a call starts with it */
@@ -330,6 +332,24 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
+/**
+ * Greeting option (a), Chelsea 11/4 (GENITA_GREET_OPENER=0 turns it off): the call's first words are
+ * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
+ * instead of Spark's first token, ~2.3 s on prod).
+ */
+export function greetOpenerOn(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GENITA_GREET_OPENER !== "0";
+}
+/** Chelsea 11/4: 3–4 variants, never the same every time; "Hey!" family without a name */
+export const GREET_OPENERS = ["Hey, {name}!", "Hi, {name}!", "Oh hey, {name}!", "Hey hey, {name}!"];
+export const GREET_OPENERS_NO_NAME = ["Hey!", "Hi!", "Oh hey!", "Hey there!"];
+export function pickGreetOpener(name: string | undefined, rand: () => number = Math.random): string {
+  const first = (name ?? "").trim().split(/\s+/)[0]?.slice(0, 40) ?? "";
+  const pool = first ? GREET_OPENERS : GREET_OPENERS_NO_NAME;
+  return pool[Math.floor(rand() * pool.length) % pool.length].replace("{name}", first);
+}
+/** a leading "Hey…," / "Hi Summer!" the model still wrote after the opener was said */
+const LEADING_HELLO = /^(\s*(?:(?:<[^>]*>|\[[^\]]*\])\s*)*)(?:oh,?\s+)?(?:hey|hi+|hello|heya|hiya)\b(?:\s+(?:there|you))?(?:,?\s+[\p{L}'-]+)?\s*[,!.]+\s*/iu;
 const MAX_GREET_AFTER_MS = 3000;
 
 function str(v: unknown, max = 4000): string | undefined {
@@ -366,6 +386,8 @@ export class Session {
   private memories: string[] = [];
   private memoryCall: MemoryCall | null = null;
   private greeting: { item: Memory | null } | null = null;
+  /** option (a): the opener said before this call's greeting (set when the greeting request is built) */
+  private greetOpener: string | null = null;
   /** conversation engine v1 (GENITA_CONVO_V1, read once per call) */
   private readonly v1 = convoV1();
   /** ms of the user's last message in an earlier call (memory state); null = never; undefined = unknown */
@@ -437,6 +459,8 @@ export class Session {
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
+  /** first call after onboarding (D21 greetAfterMs): the greeting's Spark answer starts at once, played when the window ends */
+  private preGreet: { built: Built; stream: Eager<SparkStreamEvent>; abort: AbortController; confirm: () => void; memoryRetry: MemoryRetryState } | null = null;
   private watch: WatchController | null = null;
   private specTimer: NodeJS.Timeout | null = null;
   private specCheck = 0;
@@ -826,19 +850,45 @@ export class Session {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
       return;
     }
+    // Chelsea 11/4 (a): the name opener goes out as soon as the call is ready, the first call too (no D21 wait)
+    if (this.deps.greetOpener === true && startMode === "chat") {
+      this.greeting ??= { item: null };
+      if (!this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
+      return;
+    }
     // D21: also without the memory dependency, the plain greeting
     if (startMode === "chat" && !this.greeting) this.greeting = { item: null };
     if (!this.greeting || this.closed) return;
+    // the greeting's Spark answer (≈2.3 s to its first token on prod) runs during the wait, not after it (11/3)
+    if (greetAfterMs > 0) this.startPreGreet();
     this.greetTimer = (this.deps.greetScheduler ?? schedule)(() => {
       this.greetTimer = null;
       if (!this.greeting || this.closed) return;
       if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
         // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
         this.greeting = null;
+        this.dropPreGreet();
         return this.log("call.greet_skipped", { by: "busy" });
       }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
+  }
+
+  private startPreGreet(): void {
+    if (!this.greeting || this.closed || this.preGreet) return;
+    const built = this.buildRequest(GREET_PROMPT, undefined, { greeting: this.greeting, cue: null });
+    const abort = new AbortController();
+    let confirm!: () => void;
+    const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
+    abort.signal.addEventListener("abort", confirm, { once: true });
+    const memoryRetry: MemoryRetryState = {};
+    const source = this.sparkSource(built.req, abort.signal, this.greeting.item, true, confirmed, undefined, memoryRetry);
+    this.preGreet = { built, stream: new Eager(source), abort, confirm, memoryRetry };
+  }
+
+  private dropPreGreet(): void {
+    this.preGreet?.abort.abort();
+    this.preGreet = null;
   }
 
   /** D21: the user spoke or typed first inside the greetAfterMs window → no greeting, just answer them. */
@@ -847,6 +897,7 @@ export class Session {
     this.greetTimer();
     this.greetTimer = null;
     this.greeting = null;
+    this.dropPreGreet();
     this.log("call.greet_skipped", { by });
   }
 
@@ -1022,6 +1073,7 @@ export class Session {
     if (this.tts === "server" && this.deps.config.voice) this.deps.voiceSeats?.release(this.id);
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
     if (this.greetTimer) this.greetTimer();
+    this.dropPreGreet();
     if (this.initiativeTimer) clearInterval(this.initiativeTimer);
     this.perceptionUnsub?.();
     this.dropSpeculation();
@@ -1576,6 +1628,11 @@ export class Session {
     const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
+    let finalInstructions = watch ? `${instructions}\n${watch.instructions}\n` : instructions;
+    if (greeting && !interpret && this.deps.greetOpener === true) {
+      this.greetOpener = pickGreetOpener(this.user?.name);
+      finalInstructions += `\nYou already said "${this.greetOpener}" out loud as your first words. Continue right after it: do not greet them again (no hey / hi / hello) and do not say their name again.\n`;
+    }
     return {
       interpret,
       detected: null,
@@ -1584,7 +1641,7 @@ export class Session {
       lang: this.language,
       suggestMac,
       req: {
-        instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
+        instructions: finalInstructions,
         input,
         maxOutputTokens: 800,
         // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
@@ -1758,8 +1815,23 @@ export class Session {
       }
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
+    // the greeting started during the D21 wait: its stream is already running (or done)
+    const preGreet = greeting && !self && text === GREET_PROMPT ? this.preGreet : null;
+    // a card / watch line spoken during the wait keeps the pre-started greeting (Codex r2 #461); any other turn ends it
+    if (!self) this.preGreet = null;
+    if (preGreet && !preGreet.abort.signal.aborted && !pre) {
+      preGreet.confirm();
+      // barge-in, mode switch, Forget or close stop the adopted stream too (Codex P1 #461)
+      signal.addEventListener("abort", () => preGreet.abort.abort(), { once: true });
+      built = preGreet.built;
+      pre = preGreet.stream;
+      memoryRetry = preGreet.memoryRetry;
+      this.log("call.greet_prestarted", { utteranceId });
+    } else preGreet?.abort.abort();
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
+    const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;
+    this.greetOpener = null;
     const { req, interpret, lang } = built;
     if (built.detected) this.client.sendJson({ type: "interpret.detected", ...built.detected });
     if (!synthetic && !self) this.memoryCall?.userMessage();
@@ -1826,7 +1898,7 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true; opener?: true }[] = [];
     // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
     // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
     const ends = (d: string) => LOOKS_FINAL.test(d.trim());
@@ -1866,7 +1938,8 @@ export class Session {
       return false;
     };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
-    const said = () => sentences.filter((x) => !x.beat && !x.drop);
+    /** the name opener (greeting a) is said, but is not the model's answer: an empty greeting still retries (Codex #461) */
+    const said = () => sentences.filter((x) => !x.beat && !x.drop && !x.opener);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1896,8 +1969,18 @@ export class Session {
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
         let tts = p.ttsText;
+        // option (a): the opener already greeted them — the model's own "Hey Summer!" is not said again
+        if (greetLine && !keepOpener && sentences.length === 1) {
+          // a hello split at its comma by the server voice ("Hey," + "Summer! How…"): the name piece goes too
+          const first = this.user?.name?.trim().split(/\s+/)[0];
+          const nameLead = first ? new RegExp(`^(\\s*(?:(?:<[^>]*>|\\[[^\\]]*\\])\\s*)*)${first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[,!.]+\\s*`, "iu") : null;
+          let cut = tts.replace(LEADING_HELLO, "$1");
+          if (nameLead) cut = cut.replace(nameLead, "$1");
+          if (cut !== tts && parseTaggedSentence(cut).displayText) tts = cut.replace(/^(\s*(?:<[^>]*>\s*)?)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+          else if (cut !== tts) continue;
+        }
         // a hold beat is not the reply's first sentence (Codex P2 #427): the model's first one still gets these checks
-        const modelFirst = !sentences.some((x) => !x.beat);
+        const modelFirst = !sentences.some((x) => !x.beat && !x.opener);
         if (!keepOpener && modelFirst && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
@@ -2089,6 +2172,14 @@ export class Session {
           pushSentences(splitter.push(self === "card" ? `<warm> ${text}` : text));
           pushSentences(splitter.flush());
           return;
+        }
+        // option (a): the opener is said at once, Spark's greeting follows it
+        if (greeting && greetLine) {
+          m.firstTokenAt = this.now();
+          const at = sentences.length;
+          enqueueSentences([`<happy> ${greetLine}`], true);
+          for (let i = at; i < sentences.length; i++) sentences[i].opener = true;
+          this.log("call.greet_opener", { utteranceId });
         }
         // Retry any answer with no usable content, even with no tools, after
         // an empty speculative hit, or after a pre-text upstream failure.

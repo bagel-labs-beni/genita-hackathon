@@ -55,6 +55,8 @@ export type ImageRecord = {
   bytes: number;
   check: ImageCheck;
   headBox: SamBox | null;
+  /** every head SAM found, for the upload answer only (group photo → pick someone else); not kept by the DB store */
+  heads?: SamBox[];
   rightsAck: boolean;
   createdAt: string;
   ms: { check: number; sam: number | null };

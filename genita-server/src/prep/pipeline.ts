@@ -29,6 +29,8 @@ export type PrepDeps = {
   media?: MediaApi;
   /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
   python?: string | null;
+  /** GENITA_PHOTO_POLISH (prep/polish.ts): the polish + confirm step before prep; unset/false = off */
+  photoPolish?: boolean;
   /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
   personalize?: Personalize;
 };
@@ -86,6 +88,7 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     bytes: bytes.length,
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
+    heads: head?.boxes ?? [],
     rightsAck,
     // This is captured after the upload body is read, before any model check.
     createdAt,

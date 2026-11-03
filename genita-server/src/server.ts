@@ -22,7 +22,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { Config } from "./config.ts";
-import { Session, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
+import { Session, greetOpenerOn, type ClientSink, type HistoryItem, type SessionDeps } from "./session/session.ts";
 import { TranscribeStream } from "./meta/transcribe.ts";
 import { sparkStream } from "./meta/spark.ts";
 import { META_BASE, metaHeaders } from "./meta/http.ts";
@@ -73,6 +73,7 @@ export function defaultDeps(config: Config, log: LogFn): SessionDeps {
     spark: (req, opts) => sparkStream(config.metaKey, req, opts),
     tts: voice ? (req) => voice.speak(req) : serverTtsOff,
     voicePrefetch: voice ? (speaker) => voice.prefetch(speaker) : undefined,
+    greetOpener: greetOpenerOn(),
     // one socket per hedged Spark lane, one to the voice service (kept open by installKeepAlive)
     prewarm: makePrewarm({ metaUrl: META_BASE + "/models", metaHeaders: metaHeaders(config.metaKey, false), lanes: config.sparkHedge, voiceUrl: config.voice ? config.voice.url + "/healthz" : undefined }),
     // Construct once with the process's voice client; all sessions share these seats.

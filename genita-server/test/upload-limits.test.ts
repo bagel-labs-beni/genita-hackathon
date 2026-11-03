@@ -76,7 +76,8 @@ async function fixture(t: TestContext, persistent = false) {
     const response = await fetch(base + "/v1/companion/image?rights=1", {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "x-genita-user": headerUser, "content-type": "image/jpeg" },
-      body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      // a readable JPEG header (APP0 + SOF0 800×600): the photo-polish input check reads the frame size
+      body: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x02, 0x58, 0x03, 0x20, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xd9]),
     });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
   }

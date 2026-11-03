@@ -1322,6 +1322,71 @@ test("AI sweep V5/C1: 'how do I look' is not permission to rate the face; 'glad 
   session.close();
 });
 
+test("greeting (a), Chelsea 11/4: 'Hey, Summer!' at once (also without a name: 'Hey!'), then Spark's greeting without a second hello", { skip: !v1 }, async () => {
+  const { pickGreetOpener, GREET_OPENERS, GREET_OPENERS_NO_NAME } = await import("../src/session/session.ts");
+  assert.equal(GREET_OPENERS.length, 4);
+  assert.equal(new Set([0, 0.3, 0.6, 0.9].map((r) => pickGreetOpener("Summer Lee", () => r))).size, 4, "varied");
+  assert.ok(GREET_OPENERS_NO_NAME.includes(pickGreetOpener(undefined)), "no name: the Hey! family");
+  for (const [name, re] of [["Summer Lee", /^(?:Hey|Hi|Oh hey|Hey hey), Summer!$/], [undefined, /^(?:Hey|Hi|Oh hey|Hey there)!$/]] as const) {
+    const seen: string[] = [];
+    const client = new Client();
+    const session = new Session("go", client, {
+      config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+      async *spark(req: SparkRequest): AsyncGenerator<SparkStreamEvent> {
+        seen.push(req.instructions ?? "");
+        await new Promise((r) => setTimeout(r, 300));
+        yield { type: "text", delta: "<happy> Hey Summer! How did the interview go?" };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    const t0 = Date.now();
+    // greetAfterMs 2000: the first call after onboarding — the opener still goes out at once (Chelsea 11/4)
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", ...(name ? { user: { name } } : {}), greetAfterMs: 2000 }));
+    const firstSay = await client.waitFor((m) => m.type === "say", 3000);
+    assert.ok(Date.now() - t0 < 250, `opener at ready (${Date.now() - t0} ms)`);
+    assert.match(String(firstSay.text), re, "the opener, before Spark answered");
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.match(String(reply.text), new RegExp(`^${re.source.slice(1, -1)} How did the interview go\\?$`));
+    assert.match(seen[0], /You already said ".+" out loud/);
+    session.close();
+  }
+});
+
+test("greeting (a) Codex #461: a tagged or split hello is not said again; an empty greeting still retries", { skip: !v1 }, async () => {
+  for (const deltas of [["[laughs] Hey Summer! How did the interview go?"], ["<happy> Hey,", " Summer! How did the interview go?"]]) {
+    const client = new Client();
+    const session = new Session("go2", client, {
+      config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+      async *spark(): AsyncGenerator<SparkStreamEvent> {
+        for (const d of deltas) yield { type: "text", delta: d };
+        yield { type: "done", responseId: "r", text: "", status: "completed" };
+      },
+      async *tts() {},
+    });
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer! How did the interview go\?$/, JSON.stringify(deltas));
+    session.close();
+  }
+  let calls = 0;
+  const client = new Client();
+  const session = new Session("go3", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      calls++;
+      if (calls > 1) yield { type: "text", delta: "<happy> How was your day?" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.equal(calls, 2, "the empty first answer was retried");
+  assert.match(String(reply.text), /How was your day\?$/);
+  session.close();
+});
+
 test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greeting is a question; 'you always look' with the camera off is unseen", { skip: !v1 }, async () => {
   assert.equal(guardSentence("Black, no contest, you always look lethal in black.", none), "unseen");
   const { client, session } = setup(["<teasing> Okay Summer, when am I finally getting a taste of that kimchi grilled cheese."]);
