@@ -10,6 +10,10 @@ import CoreMedia
     @Published var noticeVisible = false
     /// "Sharing Safari": the shared app's name, nil for a whole display.
     @Published var sourceName: String?
+    /// The shared window's title (a browser tab: "<video title> - YouTube"), polled every 2 s while sharing.
+    private var titleTask: Task<Void, Never>?
+    private var pickedFilter: SCContentFilter?
+    private var lastTitle: String?
     /// MS-3: the shared window captures (almost) black.
     @Published var blank = false
     /// MS-2: the companion reacted first; shown 1.5 s.
@@ -75,6 +79,7 @@ import CoreMedia
         SCContentSharingPicker.shared.isActive = false
         if let old { Task { try? await old.stopCapture() } }
         uplink?.stop(); uplink = nil
+        titleTask?.cancel(); titleTask = nil; pickedFilter = nil; lastTitle = nil
         blank = false; reacting = false; speakerName = nil; sourceName = nil
         let capture = capture
         queue.async { capture.reset() }
@@ -84,6 +89,7 @@ import CoreMedia
             do {
                 let filter = await Self.excludingGenita(picked)
                 let name = Self.sourceName(of: picked)
+                pickedFilter = picked
                 let config = Self.configuration(for: picked)
                 if let stream {
                     // re-picked mid-call (another window or the whole screen): same stream, the new picture's size,
@@ -101,6 +107,7 @@ import CoreMedia
                 try await newStream.startCapture()
                 stream = newStream; isSharing = true; permissionRequired = false; sourceName = name
                 connectUplink(source: name)
+                startTitlePolling()
             } catch { self.error = error.localizedDescription; isSharing = false }
         }
     }
@@ -161,6 +168,38 @@ import CoreMedia
               let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return filter }
         let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
         return SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
+    }
+    private func startTitlePolling() {
+        titleTask?.cancel()
+        titleTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let self, let filter = self.pickedFilter {
+                    let title = await Self.windowTitle(of: filter)
+                    if title != self.lastTitle {
+                        self.lastTitle = title
+                        self.uplink?.sendTitle(title)
+                    }
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+    /// What the page or video is called, as plain text: the shared window's title, or for a whole-display share the
+    /// frontmost app's frontmost window on that display. ScreenCaptureKit gives it with the Screen Recording
+    /// permission the share already has; no Accessibility permission, no OCR.
+    private static func windowTitle(of filter: SCContentFilter) async -> String? {
+        guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else { return nil }
+        let mine = ProcessInfo.processInfo.processIdentifier
+        let usable = content.windows.filter { $0.windowLayer == 0 && $0.owningApplication?.processID != mine && !($0.title ?? "").isEmpty }
+        if #available(macOS 15.2, *), filter.style == .window, let id = filter.includedWindows.first?.windowID {
+            let t: String? = content.windows.first(where: { $0.windowID == id })?.title
+            return (t ?? "").isEmpty ? nil : t
+        }
+        guard #available(macOS 15.2, *), let display = filter.includedDisplays.first else { return nil }
+        let onDisplay = usable.filter { $0.frame.intersects(display.frame) }
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let window = onDisplay.first(where: { $0.owningApplication?.processID == front }) ?? onDisplay.first
+        return window?.title
     }
     private static func sourceName(of filter: SCContentFilter) -> String? {
         guard #available(macOS 15.2, *) else { return nil }

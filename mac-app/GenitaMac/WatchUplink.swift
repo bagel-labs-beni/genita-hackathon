@@ -52,7 +52,7 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         super.init()
     }
 
-    func connect(source: String?) {
+    func connect(source: String?, title: String? = nil) {
         guard let url = config.watchURL else { return }
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let task = session.webSocketTask(with: url)
@@ -61,6 +61,7 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         task.resume()
         var start: [String: Any] = ["type": "start"]
         if let source { start["source"] = source }
+        if let title { start["title"] = title }
         sendJSON(start)
         receive(task)
     }
@@ -70,6 +71,11 @@ final class WatchUplink: NSObject, URLSessionWebSocketDelegate, @unchecked Senda
         var start: [String: Any] = ["type": "start"]
         if let source { start["source"] = source }
         sendJSON(start)
+    }
+
+    /// The shared window's title changed (another YouTube video, another page). Plain text from ScreenCaptureKit, no OCR.
+    func sendTitle(_ title: String?) {
+        sendJSON(["type": "context", "title": title ?? ""])
     }
 
     func stop() {
