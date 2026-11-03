@@ -81,7 +81,9 @@ for (const u of USERS.filter((x) => !only || only.includes(x.id))) {
   try {
     while (tries < 2) {
       tries++;
-      const raw = await sparkJson<{ observations?: Array<{ claim?: string }> }>(metaKey, buildInsightRequest(inputs));
+      // as the service: a malformed reply / 5xx is tried once more
+      const ask = () => sparkJson<{ observations?: Array<{ claim?: string }> }>(metaKey, buildInsightRequest(inputs));
+      const raw = await ask().catch(() => ask());
       const r = toReport(raw, inputs, { at: new Date().toISOString(), from: u.skip ? "skip" : "import", settings: settingsFrom(u.answers) });
       rawObs += raw.observations?.length ?? 0;
       rawGeneric += (raw.observations ?? []).filter((o) => o.claim && (genericHit(o.claim) || insightProblem(o.claim) === "generic")).length;
@@ -100,7 +102,8 @@ for (const u of USERS.filter((x) => !only || only.includes(x.id))) {
   const fmt = (ls: string[]) => ls.map((l, i) => `${i + 1}. ${l}`).join("\n");
   let g: { A: Graded; B: Graded };
   try {
-    g = await sparkJson<{ A: Graded; B: Graded }>(metaKey, { instructions: JUDGE, input: `<source>\n${sourceText(u, inputs)}\n</source>\n\n<report_A>\n${fmt(A)}\n</report_A>\n\n<report_B>\n${fmt(B)}\n</report_B>`, effort: "low", maxOutputTokens: 8000, schemaName: "judge", schema: JUDGE_SCHEMA });
+    const judge = () => sparkJson<{ A: Graded; B: Graded }>(metaKey, { instructions: JUDGE, input: `<source>\n${sourceText(u, inputs)}\n</source>\n\n<report_A>\n${fmt(A)}\n</report_A>\n\n<report_B>\n${fmt(B)}\n</report_B>`, effort: "low", maxOutputTokens: 8000, schemaName: "judge", schema: JUDGE_SCHEMA });
+    g = await judge().catch(() => judge());
   } catch (err) {
     console.log(`FAIL judge ${u.id}: ${String(err).slice(0, 200)}`);
     continue;
@@ -126,5 +129,10 @@ console.log("\nSUMMARY " + JSON.stringify(summary));
 const file = join(outDir, `eval-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.json`);
 writeFileSync(file, JSON.stringify({ summary, rows }, null, 1));
 console.log(`wrote ${file}`);
-const gate = summary.after.creepy === 0 && summary.after.wow > summary.before.wow;
+// Codex P2: every user graded, creepy 0, unsupported ≤ 10 %, generic ≤ 10 %, and more wow than the old SUM
+const planned = USERS.filter((x) => !only || only.includes(x.id)).length;
+const nAfter = lines(rows, "after");
+const gate = rows.length === planned && summary.after.creepy === 0 && summary.after.wow > summary.before.wow
+  && (nAfter - sum(rows, "after", "supported")) <= nAfter * 0.1 && sum(rows, "after", "generic") <= nAfter * 0.1;
+console.log(`GATE ${gate ? "PASS" : "FAIL"} (graded ${rows.length}/${planned})`);
 process.exitCode = gate ? 0 : 1;

@@ -130,10 +130,12 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     else if (s === "late") d.personalize.trackLate(userId, storyJob);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
-  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  let importedAt: string | undefined;
+  if (d.personalize) importedAt = await d.personalize.replaceStyle(userId, card);
   else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
-  insightJob?.commit();
+  if (importedAt) insightJob?.commit(importedAt);
+  else insightJob?.cancel();
   return card;
   } catch (err) {
     insightJob?.cancel();
