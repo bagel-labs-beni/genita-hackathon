@@ -334,3 +334,45 @@ test("per-category key sets: a kind generates only its listed mouth keys; prompt
     delete MOUTH_PROMPT_BY_KIND.animal;
   }
 });
+
+// ---------- v9.3 mouth on serve (11/3 18:46) ----------
+
+test("withV93Mouth: human rig faces without a perioral block get the v57c block with openMag 0 and lockY; nothing else changes", async () => {
+  const { V93_PERIORAL, withV93Mouth, v93MouthOn } = await import("../src/prep/face.ts");
+  const map = { rig: { chinLpHz: 2 }, alive: { headX: 3, nodPx: 5 }, motionV2: { amp: 0.35 } };
+  const out = withV93Mouth(map, "human", true);
+  assert.deepEqual(out.perioral, { ...V93_PERIORAL });
+  assert.equal((out.perioral as Record<string, number>).openMag, 0);
+  assert.deepEqual(out.alive, { headX: 3, nodPx: 5, lockY: true });
+  assert.deepEqual(out.motionV2, { amp: 0.35 });
+  assert.equal(map.alive.nodPx, 5);
+  assert.equal((map as Record<string, unknown>).perioral, undefined, "the stored map is not mutated");
+  // left alone: switch off, non-human kinds, no rig, a prep perioral block of its own
+  assert.equal(withV93Mouth(map, "human", false), map);
+  assert.equal(withV93Mouth(map, "character3d", true), map);
+  assert.equal(withV93Mouth(map, "animal", true), map);
+  const noRig = { alive: {} };
+  assert.equal(withV93Mouth(noRig, "human", true), noRig);
+  const own = { rig: {}, perioral: { lipThin: 0.5 } };
+  assert.equal(withV93Mouth(own, "human", true), own);
+  // switch: default on
+  assert.equal(v93MouthOn({}), true);
+  assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: "1" }), true);
+  for (const v of ["0", "false", "off", " OFF "]) assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: v }), false);
+});
+
+test("faceManifest: the served flow map carries the v9.3 mouth; the switch off serves the prepped map", () => {
+  const st = {
+    size: [1000, 2000],
+    ref: { face: [0.3, 0.2, 0.7, 0.45], mouth: [0.42, 0.38, 0.58, 0.41] },
+    items: {},
+    keys: [],
+    ms: { total: 0, edits: 0, sam: 0 },
+    flow: { version: 1, roi: [0, 0, 1, 1], size: [10, 10], flowSize: [5, 5], keys: [], files: {}, mask: "m.png", neutralRoi: "n.jpg", lockY: 0.5, lockSource: "x", kind: "human", map: { rig: {}, alive: { nodPx: 5 } } },
+  } as unknown as Parameters<typeof faceManifest>[0];
+  const on = faceManifest(st, urlFor, (a) => a, { v93Mouth: true });
+  assert.equal((on.flow!.map.perioral as Record<string, number>).openMag, 0);
+  assert.equal((on.flow!.map.alive as Record<string, unknown>).lockY, true);
+  const off = faceManifest(st, urlFor, (a) => a, { v93Mouth: false });
+  assert.equal(off.flow!.map.perioral, undefined);
+});

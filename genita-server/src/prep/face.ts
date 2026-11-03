@@ -485,7 +485,40 @@ export type FaceManifest = {
   ms: { total: number; edits: number; sam: number };
 };
 
-export function faceManifest(s: FaceState, urlFor: (key: "neutral" | "person" | FaceKey) => string, flowUrl: (asset: string) => string = (a) => a): FaceManifest {
+/**
+ * 11/3 18:46 (Chelsea, on app v60b in build 4 / TF 161: "it looks synthetic when the mouth opens — the old one was
+ * better"): put the v9.3 mouth back for every face, already prepped ones included, without an app build.
+ * v60b's opening magnifier, painted mouth inside and brightened upper teeth only run when the lip map has NO
+ * `perioral` block (the app then uses its release block, openMag 1). Sending the v57c release values with
+ * openMag 0 renders exactly the v9.3 mouth on every app build (older builds ignore the unknown key).
+ * `alive.lockY` stays true: the person never bobs against the locked background (Chelsea asked for that).
+ * Only human faces on the lip rig, and only when prep sent no perioral block of its own.
+ * Switch: GENITA_FACE_V93_MOUTH, default on; "0" / "false" / "off" serves the map as prepped.
+ */
+export const V93_PERIORAL = Object.freeze({
+  follow: 0.2, philtrumPx: 1.6, spreadPx: 5, roundInPx: 3, jawDropPx: 0, roundBulgePx: 1.2,
+  mbpChinPx: 1.1, lpfMs: 150, microPx: 0, lipThin: 0.8, lipThinPx: 0.014, openMag: 0,
+});
+
+export function v93MouthOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.GENITA_FACE_V93_MOUTH ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The served lip map with the v9.3 mouth (see V93_PERIORAL); the stored prep state is never changed. */
+export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
+  if (!on || kind !== "human" || !isRecord(map.rig) || map.perioral !== undefined) return map;
+  return { ...map, perioral: { ...V93_PERIORAL }, alive: { ...(isRecord(map.alive) ? map.alive : {}), lockY: true } };
+}
+
+export function faceManifest(
+  s: FaceState,
+  urlFor: (key: "neutral" | "person" | FaceKey) => string,
+  flowUrl: (asset: string) => string = (a) => a,
+  opts: { v93Mouth?: boolean } = {},
+): FaceManifest {
   const images: FaceManifest["images"] = { neutral: urlFor("neutral"), ...(s.person ? { person: urlFor("person") } : {}) };
   const visemes: FaceManifest["visemes"] = {};
   const mouthKeys: FaceManifest["mouthKeys"] = {};
@@ -506,6 +539,7 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | "person" | 
   const flow = s.flow
     ? {
         ...s.flow,
+        map: withV93Mouth(s.flow.map, s.flow.kind, opts.v93Mouth ?? v93MouthOn()),
         files: Object.fromEntries(
           Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}), ...(f.lip ? { lip: flowUrl(f.lip) } : {}), ...(f.interior ? { interior: flowUrl(f.interior) } : {}) }]),
         ),
