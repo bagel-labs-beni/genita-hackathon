@@ -75,7 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || RESOURCE_PROMISE.test(s)) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -107,10 +107,13 @@ function isNarrationClause(clause: string): boolean {
  * progress ("Got it — trying to remember that concert we mentioned"). Both are the lookup itself, never its result:
  * "My search came up empty, I've never heard of it" (a result) and "trying to remember the last time I…" (a story) stay.
  */
+/** D13 run (crisis turns use web_search for the local hotline): "I'm going to find the right support resources for you",
+ * "let me find support resources you can reach right now" — a promise of the lookup, never the help itself */
+const RESOURCE_PROMISE = /(?:^|,? and )(?:i'?m going to|i'?m gonna|let me|i'?ll|i will)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:support|crisis|help)? ?(?:resources|options|numbers?|lines?|hotlines?)\b(?![^.!?]*\b(?:is|are|call|text|dial)\b)/;
 const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query)|dig (?:deeper|around|more)|look (?:again|harder|deeper))\b/;
 /** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
  * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
-const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options))\b/;
+const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options)|getting you (?:[\w,'-]+ ){0,3}(?:support|options|resources|numbers?|help lines?))\b/;
 // a predicate keeps it: "Searching for a job takes time", "Trying to remember what you ate can be hard" (Codex #415 P2)
 const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|takes|took|makes|costs|means|sucks|helps|works|gets|feels|seems|can|could|will|would|should|might|must)\b|\d/;
 /** "I've got that note about your sister" said before the recall result, nothing in it: the memory store, never the
@@ -134,7 +137,7 @@ const searchRetry = (s: string) => {
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || RESOURCE_PROMISE.test(s)) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);

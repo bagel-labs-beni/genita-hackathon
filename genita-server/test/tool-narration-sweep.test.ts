@@ -26,6 +26,10 @@ const leaked: [string, string][] = [
   ["Trying to remember which concert that was.", "remember which"],
   ["Looking at today's weather now.", "today's weather"],
   ["First search came up empty, so I'll dig deeper on Zorblax Pod.", "dig deeper"],
+  // D13 crisis turns (Spark searches for the local hotline first)
+  ["This matters more than anything else — getting you fast, accurate support options.", "getting you"],
+  ["I'm really glad you told me — I care about you, and I'm going to find the right support resources for you.", "find the right"],
+  ["I'm here, and I care about you — let me find support resources you can reach right now.", "find support"],
   // round 2 on the fix branch (n=18)
   ["Got you, hunting down late-night ramen near Hongdae.", "hunting down"],
   ["Love that, late-night ramen run — finding you the Hongdae spots now.", "finding you"],
@@ -57,6 +61,8 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "Let me get you the number: call one oh nine right now.",
+  "I'll find you the crisis line, it's one oh nine, call it now.",
   "Let me look again at the tag because it says hand wash only.",
   "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
   "Trying to remember what you ate can be hard after a long day.",
