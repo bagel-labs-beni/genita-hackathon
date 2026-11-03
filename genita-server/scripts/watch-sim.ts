@@ -679,8 +679,10 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => `${l.why}:${l.reaction}`),
       shareStartedLogged: !!startLog,
     };
-    rows.push(row);
+    // pass per the clip's expect (scorecard 11/4: a quiet clip's silence is the right answer, not "correct: false")
     const ok = expect === "quiet" ? !react : expect === "optional" ? !react || !verdict.invented : expect === "page" ? !!react && !verdict.invented : !!react && verdict.correct && !verdict.invented && !row.lineOpen;
+    Object.assign(row, { pass: ok });
+    rows.push(row);
     console.log(`${ok ? "✓" : "✗"} #${run} ${clip.id} (${clip.kind}, ${expect}) ${react ? `"${react.line}" ${delaySec}s after the moment, first audio +${firstAudioSec}s${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} blocked=${JSON.stringify(row.blocked)} ${react ? JSON.stringify(verdict) : ""}`);
     call.close();
     await sleep(500);
@@ -688,7 +690,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   const per = (xs: Record<string, unknown>[]) => {
     const r = xs.filter((x) => x.reacted);
     const audio = r.map((x) => x.firstAudioSec as number | null).filter((x): x is number => x !== null).sort((a, b) => a - b);
-    return { n: xs.length, reacted: r.length, correct: r.filter((x) => x.correct).length, invented: r.filter((x) => x.invented).length, overDialogue: r.filter((x) => x.lineOpen).length, firstAudioP50Sec: audio.length ? median(audio) : null };
+    return { n: xs.length, pass: xs.filter((x) => x.pass).length, reacted: r.length, correct: r.filter((x) => x.correct).length, invented: r.filter((x) => x.invented).length, overDialogue: r.filter((x) => x.lineOpen).length, firstAudioP50Sec: audio.length ? median(audio) : null };
   };
   const byClip = Object.fromEntries(clips.map((c) => [c.id, { expect: c.expect ?? "react", ...per(rows.filter((r) => r.clip === c.id)) }]));
   const salient = rows.filter((r) => r.expect === "react");
