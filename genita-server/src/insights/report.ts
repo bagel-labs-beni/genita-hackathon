@@ -18,7 +18,6 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { isSensitiveDetail } from "../personalize/sensitive.ts";
 import { storyTextProblem } from "../personalize/story.ts";
 import { looksLikeInjection, redactSensitive } from "../prep/importProfile.ts";
-import { avoidKeys, mentionsAvoided } from "../personalize/forgotten.ts";
 import type { InsightCategory, InsightChip, InsightEvidence, InsightReport, InsightSettings, InsightSource, Observation, InsightType, InsightMix, InsightStrength, InsightWatchout, InsightChain } from "./profile.ts";
 
 export type InsightPick = { question: string; label: string };
@@ -164,6 +163,23 @@ export function withoutObservations<R extends InsightReport>(r: R, ids: string[]
     strengths: r.strengths.filter((s) => !gone.has(s.basis)),
     watchouts: r.watchouts.filter((w) => !gone.has(w.basis)),
   };
+}
+
+// the same matching as personalize/forgotten.ts (avoidKeys / mentionsAvoided), kept here so personalize/merge.ts can
+// import this file without the forgotten → corrections → merge import cycle (CI 41704254586)
+const AVOID_STOP = new Set("the and you your with for that this from into like likes love loves about very really user users their them they she her his him its just also".split(" "));
+const AVOID_GENERIC = new Set(["thing", "thin", "stuff", "said", "told", "saying", "about", "whole", "anyth", "somet", "every", "earli", "befor", "again", "pleas", "actua", "okay", "remem", "forge", "mention", "menti"].map((w) => w.slice(0, 5)));
+const avoidWords = (s: string): string[] => [...new Set((s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !AVOID_STOP.has(w)).map((w) => w.slice(0, 5)))];
+type AvoidKey = { keys: string[]; loose: boolean };
+function avoidKeys(removed: Array<{ text: string; forget: boolean }>): AvoidKey[] {
+  return removed
+    .map((r) => ({ keys: r.forget ? avoidWords(r.text).filter((k) => k.length >= 4 && !AVOID_GENERIC.has(k)) : avoidWords(r.text), loose: r.forget }))
+    .filter((k) => k.keys.length > 0);
+}
+/** strict (a corrected line): every content word; loose (a forget request): any of them */
+function mentionsAvoided(text: string, keys: AvoidKey[]): boolean {
+  const w = new Set(avoidWords(text));
+  return keys.some((k) => (k.loose ? k.keys.some((x) => w.has(x)) : k.keys.every((x) => w.has(x))));
 }
 
 /** "forget that …" / corrected-away lines (card.removed): traits that cite or say them go, with what was built on them (Codex P1) */
