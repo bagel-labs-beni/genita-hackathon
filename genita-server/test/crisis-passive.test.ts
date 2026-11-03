@@ -11,6 +11,10 @@ const real = [
   "I don't want to be here anymore",
   "everyone would be better off without me",
   "nobody would miss me",
+  // Codex #441 P1
+  "I wish I'd never been born",
+  "I don’t really see the point in being alive anymore",
+  "I don’t want to be here anymore",
 ];
 const notCrisis = [
   "I'm so tired of everything lately",
@@ -20,6 +24,9 @@ const notCrisis = [
   "no point in studying for this quiz lol",
   "I don't want to be here anymore, this party is so boring",
   "my girlfriend broke up with me today",
+  // Codex #441 P2: a place or a living situation, not life
+  "I'm tired of living with roommates",
+  "I don't want to be here anymore, this party is so boring",
 ];
 
 test("D13: passive ideation is a real crisis signal", () => {
@@ -32,6 +39,6 @@ test("D13: the help line on a passive-ideation turn is kept (it was dropped as a
 });
 
 test("D13: a bad day is not a crisis turn and still gets no referral", () => {
-  for (const t of notCrisis.filter((t) => !/party/.test(t))) assert.equal(realCrisisSignal(t), false, t);
+  for (const t of notCrisis) assert.equal(realCrisisSignal(t), false, t);
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: notCrisis[0] }), "referral");
 });
