@@ -146,6 +146,13 @@ struct FaceMeshTests {
         #expect(mesh.bounds.height > 0.2, "the net spans the head-box face, not the goggle band (\(mesh.bounds.height))")
     }
 
+    @Test func aRealFaceInsideABigHeadBoxIsKept() throws {
+        // PH-06 p5: the head box took in the hands and the mug; the face (taller than wide) is 16 % of it
+        let face = (0..<32).map { k -> [Double] in let a = Double(k) / 32 * 2 * .pi; return [0.6 + 0.124 * cos(a), 0.35 + 0.193 * sin(a)] }
+        let mesh = try #require(FaceMesh.make(outline: face, points: nil, headBox: ImageHeadBox(nx1: 0.213, ny1: 0, nx2: 0.824, ny2: 0.947)))
+        #expect(mesh.bounds.maxY < 0.56, "the net stays on the face (\(mesh.bounds.maxY))")
+    }
+
     @Test func mapsImageFractionsLikeScaledToFill() {
         // a 941 × 1672 photo in a 342 × 240 frame: width fills, the middle band shows
         let view = CGSize(width: 342, height: 240), image = CGSize(width: 941, height: 1672)

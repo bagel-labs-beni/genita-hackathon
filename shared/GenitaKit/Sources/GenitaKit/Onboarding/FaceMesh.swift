@@ -132,10 +132,13 @@ public struct FaceMesh: Equatable, Sendable {
 
         var cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat
         var outline = convexHull(pts(raw))
-        // a "face" far smaller than its head (PH-06 c4 figure: SAM's face = the goggles) is not the face: use the head box
-        if outline.count >= 8, let b = headBox, let x1 = b.nx1, let y1 = b.ny1, let x2 = b.nx2, let y2 = b.ny2 {
+        // a flat band (PH-06 c4 figure: SAM's face = the goggles) or a speck in its head is not the face: use the head box
+        // (the server applies the same rule, faceGeometry.ts faceRim)
+        if outline.count >= 8 {
             let w = outline.map(\.x).max()! - outline.map(\.x).min()!, h = outline.map(\.y).max()! - outline.map(\.y).min()!
-            if w * h < 0.2 * (x2 - x1) * (y2 - y1) { outline = [] }
+            var tiny = false
+            if let b = headBox, let x1 = b.nx1, let y1 = b.ny1, let x2 = b.nx2, let y2 = b.ny2 { tiny = w * h < 0.08 * (x2 - x1) * (y2 - y1) }
+            if h < 0.55 * w || tiny { outline = [] }
         }
         if outline.count >= 8 {
             var top = outline.map(\.y).min()!

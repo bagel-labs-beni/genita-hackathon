@@ -166,15 +166,24 @@ function ellipse(b: NBox, n = 32): FacePoint[] {
  * the head box. A "face" under 20 % of its head box (PH-06 c4: a figure's goggles) is not the face.
  * null only when SAM found neither a face nor a head.
  */
-export function faceRim(faceBoxes: SamBox[], head: SamBox | null): FacePoint[] | null {
+export function faceRim(faceBoxes: SamBox[], head: SamBox | null, eyeBoxes: SamBox[] = []): FacePoint[] | null {
   const h = head ? norm(head) : null;
-  const big = (b: NBox) => !h || area(b) >= 0.2 * area(h);
+  // a face is roughly as tall as it is wide: a flat band (PH-06 c4: a figure's goggles) or a speck in its head is not one.
+  // (Area alone misfired on PH-06 p5: the head box took in the hands and the mug, the real face was 16 % of it.)
+  const big = (b: NBox) => (b.y2 - b.y1) >= 0.55 * (b.x2 - b.x1) && (!h || area(b) >= 0.08 * area(h));
   const traced = outlineFromSam(faceBoxes);
   if (traced) {
     const xs = traced.map((p) => p[0]), ys = traced.map((p) => p[1]);
     if (big({ x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) })) return traced;
   }
-  const box = faceBoxes.map(norm).filter((b): b is NBox => !!b).sort((a, b) => area(b) - area(a))[0];
+  let box = faceBoxes.map(norm).filter((b): b is NBox => !!b).sort((a, b) => area(b) - area(a))[0];
+  // no mask: a face box can take in what covers the face (a mug held up). The eyes sit ~38 % down a face, so the box
+  // is cut at eye line + 1.6 × (eye line − top) when SAM found eyes inside it.
+  const eyes = eyeBoxes.map(norm).filter((e): e is NBox => !!e && !!box && cx(e) >= box.x1 && cx(e) <= box.x2 && cy(e) >= box.y1 && cy(e) <= box.y2);
+  if (box && eyes.length) {
+    const eyeY = eyes.reduce((s, e) => s + cy(e), 0) / eyes.length;
+    box = { ...box, y2: Math.min(box.y2, eyeY + 1.6 * (eyeY - box.y1)) };
+  }
   if (box && big(box)) return ellipse(box);
   if (h) {
     const w = h.x2 - h.x1, hh = h.y2 - h.y1, cx = (h.x1 + h.x2) / 2, cy = h.y1 + hh * 0.6;

@@ -227,3 +227,15 @@ test("checkImage: a failed animal photo asks SAM for an animal face and head for
   assert.deepEqual(rec.faceOutline![0], [0.5, 0.25]);
   assert.equal(rec.headBox, null, "the stored head box is untouched on a failed check");
 });
+
+test("face rim (PH-06 p5, a mug held up): a real face inside a big head box is kept; a mask-less box is cut below the eyes", () => {
+  // live SAM 11/4: face [0.481,0.157,0.728,0.543] (masked), head [0.213,0,0.824,0.947] (hair, hands and the mug)
+  const head = box(213, 0, 824, 947);
+  const traced = faceRim([disc(481, 157, 728, 543, 1000, 1000)], head)!;
+  const ys = traced.map((p) => p[1]);
+  assert.ok(Math.max(...ys) < 0.56, "the net stays on the face, not down the mug");
+  // a box without a mask that runs down over the mug (to 0.95), eyes at ~0.37: cut at 0.37 + 1.6 × (0.37 − 0.16)
+  const cut = faceRim([box(481, 160, 728, 950)], head, [box(590, 351, 673, 387)])!;
+  const bottom = Math.max(...cut.map((p) => p[1]));
+  assert.ok(Math.abs(bottom - (0.369 + 1.6 * (0.369 - 0.16))) < 0.01, `bottom ${bottom}`);
+});
