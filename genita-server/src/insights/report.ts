@@ -103,7 +103,7 @@ export function insightProblem(s: string): "generic" | "sensitive" | "creepy" | 
   if (isSensitiveDetail(s)) return "sensitive";
   const story = storyTextProblem(s);
   if (story === "label" || story === "flattery" || story === "unsafe" || story === "too_long") return story;
-  if (MINOR.test(s)) return "minor";
+  if (MINOR.test(s) || MINOR_AGE.test(s.replace(/[‘’ʼ`]/g, "'"))) return "minor"; // "You're 15 and…" (Codex r7)
   if (CREEPY.test(s)) return "creepy";
   if (genericHit(s) || FORTUNE.test(s)) return "generic";
   return null;
@@ -138,7 +138,7 @@ const copied = (s: string) => EXAMPLE_LINES.some((e) => sameish(e, s));
 
 /** sensitive, creepy or a minor's detail — never stored as a correction or shown as a quote */
 /** an age under 18 said about oneself ("I'm 15", "15 yo") */
-const MINOR_AGE = /\b(?:i'?m|i am|im|age|aged)\s+(?:1[0-7]|[1-9])\b|\b(?:1[0-7]|[1-9])\s*(?:yo|y\/o|yrs?|years?)\b/i;
+const MINOR_AGE = /\b(?:i'?m|i am|im|you'?re|you are|youre|is|age|aged|turned?|turning)\s+(?:only\s+|just\s+)?(?:1[0-7]|[1-9])\b|\b(?:1[0-7]|[1-9])\s*(?:yo|y\/o|yrs?|years?)\b|\b(?:1[0-7]|[1-9])-year-old\b/i;
 
 export function privateDetail(s: string): boolean {
   const t = s.replace(/[‘’ʼ`]/g, "'"); // "I’m 15" (Codex r3)

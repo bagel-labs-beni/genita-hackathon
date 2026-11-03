@@ -81,9 +81,12 @@ export class Insights {
     this.texts.set(userId, { text, at: now });
   }
 
-  private textOf(userId: string): string | undefined {
+  /** the kept paste, unless the user has since asked to forget something (Codex r7: it would be sent again) */
+  private textOf(userId: string, card?: StyleCard | null): string | undefined {
     const t = this.texts.get(userId);
-    return t && Date.now() - t.at <= TEXT_TTL_MS ? t.text : undefined;
+    if (!t || Date.now() - t.at > TEXT_TTL_MS) return undefined;
+    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.texts.delete(userId); return undefined; }
+    return t.text;
   }
 
   /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
@@ -170,7 +173,7 @@ export class Insights {
     this.start(userId, "answers", (card) => {
       if (!card) return null;
       return {
-        text: card.source === "import" ? this.textOf(userId) : undefined,
+        text: card.source === "import" ? this.textOf(userId, card) : undefined,
         findings: cardFindings(card),
         picks: [...(card.picks ?? []), ...answerPicks],
         source: card.source,
@@ -190,7 +193,7 @@ export class Insights {
       if (card.insights) return { status: "ready", report: publicReport(card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
-      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
+      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
       job = this.jobs.get(userId);
     }
     if (job && waitMs > 0) {

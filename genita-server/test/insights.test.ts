@@ -483,3 +483,19 @@ test("codex r6: forgetting a fact only the report holds removes it from the repo
   assert.ok(!JSON.stringify(card.insights).toLowerCase().includes("fountain"), JSON.stringify(card.insights?.observations.map((o) => o.claim)));
   assert.ok(!insightProfileLines(card).join(" ").toLowerCase().includes("fountain"), "not in the call profile's noticed block");
 });
+
+test("codex r7: a minor's age never shows ('You're 15 and …'); a forget stops the kept paste from being sent again", async (t) => {
+  for (const claim of ["You're 15 and redraw the map every night.", "You’re 16 and plan around practice.", "You're a 14-year-old night planner."]) assert.equal(insightProblem(claim), "minor", claim);
+  assert.equal(insightProblem("You keep 2 options open."), null);
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000);
+  await h.p.patchStyle("u1", (c) => ({ ...c, removed: [...(c.removed ?? []), { text: "cheaper lol", at: new Date().toISOString(), forget: true as const }] }));
+  const n = h.calls.length;
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000);
+  const sent = h.calls.slice(n).map((c) => String(c.input)).join("\n");
+  assert.ok(!sent.includes("which one is cheaper lol"), "the paste is no longer sent after a forget");
+});
