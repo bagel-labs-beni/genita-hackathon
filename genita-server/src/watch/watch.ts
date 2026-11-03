@@ -82,6 +82,16 @@ const SEEN_KEEP_MS = 60_000;
 const MAX_SEEN = 6;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
+const SEEN_TWIN_MS = 1_000;
+const momentWords = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length >= 4));
+/** one event seen twice (quick look + memo): the same kind close in time with a shared word, or ≤1 s apart */
+function sameMoment(a: { at: number; moment: string; line: string }, b: { at: number; moment: string; line: string }): boolean {
+  const dt = Math.abs(a.at - b.at);
+  if (dt <= SEEN_TWIN_MS) return true;
+  if (dt > SEEN_SAME_MS || a.moment !== b.moment) return false;
+  const wa = momentWords(a.line);
+  return [...momentWords(b.line)].some((w) => wa.has(w));
+}
 /** the turn's own frames cover ~1.4 s; a moment older than this gets its frame attached */
 const SEEN_FRAME_AFTER_MS = 2_500;
 /**
@@ -643,7 +653,7 @@ export class WatchController {
     if (moment === "none" || !text || !this.sharing) return;
     const now = this.deps.now();
     this.seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
-    if (this.seen.some((m) => Math.abs(m.at - at) <= SEEN_SAME_MS)) return;
+    if (this.seen.some((m) => sameMoment(m, { at, moment, line: text }))) return;
     this.seen.push({ at, moment, line: text, frame });
     this.seen.sort((a, b) => a.at - b.at);
     this.seen = this.seen.slice(-MAX_SEEN);
@@ -709,8 +719,8 @@ export class WatchController {
 
   /** Watch context for the user's question, or null when nothing has been watched. */
   questionContext(): QuestionContext | null {
-    if (!this.sharing && !this.memo.length) return null;
     const now = this.deps.now();
+    if (!this.sharing && !this.memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
     const frames = this.sharing ? pickFrames(this.frames, QUESTION_FRAMES, QUESTION_FRAME_SPACING_MS).map((f) => f.url) : [];
     const seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
     // "did you see that dunk?" a few seconds later: the newest moment's own frame, when the "now" frames have moved on

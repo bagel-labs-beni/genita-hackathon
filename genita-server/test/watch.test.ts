@@ -1209,3 +1209,28 @@ test("moment recall: moments expire after a minute; no moment frame is kept past
   assert.doesNotMatch(late.instructions, /What a dunk!/, "older than a minute");
   assert.deepEqual(late.images, [`${frame}late`]);
 });
+
+test("moment recall (Codex P2): two different moments 3 s apart are both kept; after the share ends the words still answer", async () => {
+  const lines = ["What a dunk!", "Oof, he fell hard"];
+  const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick"
+    ? JSON.stringify({ react: true, moment: "surprising", line: lines.shift() ?? "", talkOver: false }) : memoNone));
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  q.at(7_000);
+  q.c.onMessage({ type: "frame", image: `${frame}a`, motion: 0.4 });
+  q.at(7_330);
+  q.c.onMessage({ type: "frame", image: `${frame}b`, motion: 0.05 });
+  await wait(5);
+  // the 25 s gap stops more quick looks; a memo verdict reports the second moment
+  (q.c as unknown as { noteMoment: (m: string, l: string, at: number, f: string | null) => void }).noteMoment("surprising", "Oof, he fell hard", 10_000, `${frame}fall`);
+  q.at(14_000);
+  q.c.onMessage({ type: "frame", image: `${frame}now`, motion: 0.01 });
+  const ctx = q.c.questionContext()!;
+  assert.match(ctx.instructions, /What a dunk!/);
+  assert.match(ctx.instructions, /he fell hard/);
+  assert.equal(ctx.images[0], `${frame}fall`, "the newest moment's frame first");
+  q.c.onMessage({ type: "stop" });
+  const after = q.c.questionContext();
+  assert.ok(after, "seen moments alone keep the context after the share");
+  assert.match(after!.instructions, /What a dunk!/);
+  assert.deepEqual(after!.images, [], "no frames after the share");
+});
