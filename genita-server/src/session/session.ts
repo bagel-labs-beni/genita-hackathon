@@ -279,6 +279,7 @@ function lastSafeHook(recent: string[], removed: Removed[]): string | null {
 }
 /** AU-44: notes-based follow-up greetings, like the memory opener (memory/service.ts revisitGapHours) */
 const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
+const NOTES_CALLBACK_MS = 10 * 60_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
@@ -1762,7 +1763,8 @@ export class Session {
       // AU-44: notes are a thread to pick up only after the same 6 h gap as a memory opener (or right after a hang-up,
       // lastCall); otherwise every call with notes was a "followup" on the same open thread, call after call
       const notes = this.memoryCall?.visibleSummaries?.() ?? [];
-      const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs >= NOTES_OPENER_GAP_MS);
+      // a call-back within minutes of the hang-up is the same conversation picking up (P1 FILM 11/3): still due
+      const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs < NOTES_CALLBACK_MS || sinceLastMs >= NOTES_OPENER_GAP_MS);
       const o = { hasProfile: !!this.user?.profile, sinceLastMs, hasItem: !!turn.greeting.item || notesDue || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
