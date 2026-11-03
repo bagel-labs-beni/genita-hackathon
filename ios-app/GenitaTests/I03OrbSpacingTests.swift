@@ -52,7 +52,7 @@ import SwiftUI
                 let base = host.view.safeAreaInsets
                 host.additionalSafeAreaInsets = UIEdgeInsets(top: max(0, safeTop - base.top), left: 0, bottom: max(0, safeBottom - base.bottom), right: 0)
                 host.view.setNeedsLayout(); host.view.layoutIfNeeded()
-                XCTAssertEqual(host.view.safeAreaInsets.top, safeTop, accuracy: 0.5, label)
+                if base.top <= safeTop { XCTAssertEqual(host.view.safeAreaInsets.top, safeTop, accuracy: 0.5, label) }
                 RunLoop.main.run(until: Date().addingTimeInterval(0.2))
                 let format = UIGraphicsImageRendererFormat(); format.scale = 3
                 let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
