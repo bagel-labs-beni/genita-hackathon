@@ -132,9 +132,57 @@ function deniesAi(sentence: string, userText: string): boolean {
   return false;
 }
 
+/**
+ * Means and imminence said on their own (coordinator 11/4, after Codex #502: "I'm about to swallow all these pills"
+ * was not a crisis line by itself): a quantity of pills about to go down, a ledge / railing / edge or a jump off a
+ * height, a blade, rope or gun at the body. First person, concrete, now. Everyday lines stay out (crisis-guard
+ * rule 11/1): "these pills are huge lol", "the bridge was packed", a rooftop bar, a knife for the onions.
+ */
+// a quantity no routine dose comes in ("all my meds" alone is a routine; see the "all" lines below)
+const QTY = String.raw`(?:a bunch of|a handful of|a whole (?:bottle|pack|box|strip) of|the whole (?:bottle|pack|box|strip)(?: of)?|the rest of|too many|way too many|so many|all of|\d{2,}|twenty|thirty|forty|fifty|a hundred)`;
+/** "gonna take all my meds before bed" is a routine, not a crisis */
+const ROUTINE = String.raw`(?![^.!?]*\b(?:before bed|at night|with (?:food|breakfast|lunch|dinner|water)|this morning|in the morning|for the day|on time|like (?:a good|i'?m supposed)|prescribed|my doctor|the doctor|refill|pharmacy|vitamins?)\b)`;
+const PILLS = String.raw`(?:(?:these|those|the|my|his|her)\s+)?(?:(?:mom|dad|mother|father|grandma|grandpa|roommate|sister|brother)'?s\s+)?(?:sleeping\s+)?(?:pills|tablets|meds|medication|medicine|painkillers|tylenol|advil|xanax|ambien|benadryl)`;
+const CRISIS_MEANS = new RegExp([
+  // pills: about to / going to / just took — a quantity, or the whole bottle
+  String.raw`\b(?:swallow(?:ed|ing)?|take|took|taking|down(?:ed|ing)?)\s+${QTY}\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
+  String.raw`\b(?:about to|going to|gonna|ready to|trying to|want to|wanna)\s+(?:swallow|take|down)\s+all\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
+  String.raw`\bswallow(?:ed|ing)?\s+all\s+(?:of\s+)?(?:these|those|the)\s+(?:sleeping\s+)?(?:pills|tablets|meds|painkillers)\b${ROUTINE}`,
+  String.raw`\b(?:swallow(?:ed|ing)?|took|downed)\s+(?:a|the)\s+whole\s+(?:bottle|pack|box|strip)\b`,
+  String.raw`\b(?:i'?ve|i have|i'?ve got|i got)\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\s+(?:ready|lined up|counted(?: out)?|in my hand)\b`,
+  String.raw`\bcount(?:ed|ing)\s+out\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\b`,
+  // heights: a ledge / railing / edge, or a jump off a height
+  String.raw`\b(?:i'?m|i am)\s+(?:standing|sitting|leaning|hanging)\s+(?:on|over|at|off)\s+(?:the|a|this)\s+(?:edge|ledge|railing|rail)\b`,
+  String.raw`\b(?:i'?m|i am)\s+(?:right\s+)?(?:on|at|by|over|standing on|sitting on|standing at)\s+the\s+(?:edge|ledge|railing|rail)\s+of\s+(?:the|a|this|my)\s+(?:bridge|roof|rooftop|building|cliff|balcony|overpass|parking garage)\b`,
+  String.raw`\b(?:climb(?:ed|ing)?|got|getting)\s+(?:over|onto|on)\s+(?:the|a)\s+(?:railing|rail|ledge)\b`,
+  String.raw`\b(?:i'?m|i am)\s+(?:about to|going to|gonna|ready to|trying to)\s+jump\s+(?:off|from)\s+(?:the|a|this|my)\s+(?:bridge|roof|rooftop|building|balcony|cliff|ledge|overpass|window|parking garage)\b`,
+  String.raw`\b(?:i'?m|i am)\s+(?:standing|sitting)\s+on\s+(?:the|a|this)\s+(?:bridge|roof|rooftop)\b[^.!?]{0,30}\b(?:looking down|thinking about jumping|ready to jump|about to jump|one last time|saying goodbye)\b`,
+  // a blade, rope or gun at the body
+  String.raw`\b(?:knife|blade|razor|gun|pistol)\s+(?:is\s+|was\s+|'s\s+)?(?:to|against|on|at)\s+my\s+(?:wrists?|arms?|throat|neck|skin|head|chest|temple)\b`,
+  String.raw`\b(?:rope|cord|belt)\s+(?:around|round)\s+my\s+neck\b`,
+  String.raw`\bnoose\b`,
+  String.raw`\b(?:tied|tying|made|making|hung|hanging)\s+(?:up\s+)?(?:a|the)\s+rope\b(?![^.!?]*\b(?:swing|hammock|boat|tent|tarp|clothesline|laundry|climb\w*|knot practice)\b)`,
+  String.raw`\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade|razor|gun|pistol|rope)\b`,
+  String.raw`\bloaded\s+(?:the|my|his|her|a)\s+(?:(?:dad|father|mom|mother|grandpa|brother)'?s\s+)?(?:gun|pistol|rifle|revolver)\b`,
+].join("|"), "i");
+
+/** food prep / a cake: "I'm holding a knife, chopping onions" is a kitchen, not a crisis (11/1 rule) */
+const KITCHEN_KNIFE = /\b(?:chop|dic(?:e|ing)|slic|minc|peel|cut|carv|spread|butter)\w*\b[^.!?]{0,40}\b(?:onions?|garlic|veg\w*|carrots?|potato\w*|tomato\w*|steak|meat|chicken|bread|fruit|apples?|herbs|peppers?|cucumbers?|cabbage|kimchi|tofu|cake|pizza|cheese|toast|bagel|avocado|lemon|lime|mango|watermelon|pumpkin)\b|\b(?:butter|bread|steak|chef'?s|paring|kitchen|cake)\s+knife\b/i;
+const WEAPON_AT_ME = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten|\bpulled\b|\b(?:he|she|they|someone|a guy|a man|this guy)\b/i;
+
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
-  return REAL_CRISIS.test(text.replace(/[\u2018\u2019\u02BC]/g, "'"));
+  const t = text.replace(/[\u2018\u2019\u02BC]/g, "'");
+  // "I'm holding a knife, dicing onions" alone is a kitchen; any other means in the line still counts
+  const kitchen = KITCHEN_KNIFE.test(t) && !/\b(?:wrists?|throat|neck|skin|arms?)\b/i.test(t);
+  if (CRISIS_MEANS.test(kitchen ? t.replace(/\b(?:i'?m|i am)\s+(?:holding|gripping)\s+(?:a|the|my|his|her)\s+(?:knife|blade)\b/gi, " ") : t)) return true;
+  if (!REAL_CRISIS.test(t)) return false;
+  // "I'm dicing onions with a knife": the weapon alternation alone, in a kitchen, with nobody aiming it (11/4)
+  const weaponOnly = !REAL_CRISIS.test(t.replace(/\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi, " "));
+  if (!weaponOnly) return true;
+  // the weapon alternation alone, in a kitchen with nobody aiming it, or on a screen ("in the movie"): not this user's danger
+  if (/\bknife\b/i.test(t) && KITCHEN_KNIFE.test(t) && !WEAPON_AT_ME.test(t)) return false;
+  return WEAPON_AT_ME.test(t.replace(/\b(?:he|she|they|someone|a guy|a man|this guy)\b/gi, " ")) || !/\b(?:in|on) (?:the|a|this|that) (?:movie|film|show|series|episode|game|video|trailer|anime|book|scene)\b(?!\s+theat(?:er|re))/i.test(t);
 }
 
 /** emergency help in the reply itself is never dropped, whatever the user's line said (Codex round 2 P1) */

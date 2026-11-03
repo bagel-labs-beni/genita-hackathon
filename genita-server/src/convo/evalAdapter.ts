@@ -17,6 +17,8 @@ import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initi
 import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import { holdsSteady, personaBaseline } from "./moodState.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
+// its own line, so it never collides with the guard import above (#509 adds realCrisisSignal there)
+import { realCrisisSignal as crisisLine } from "./guard.ts";
 
 type Turn = { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
 type Scenario = {
@@ -72,7 +74,8 @@ export const adapter = {
       callNumber: s.callNumber,
       lastReply: ctx.history.filter((h) => h.role === "assistant").at(-1)?.text,
       userText: t.text,
-      mood: moodLine(moodFrom(userLines, personaBaseline(s.persona), personaBaseline(s.persona)), { steady: holdsSteady(s.persona) }),
+      // as the session: no mood hint on a crisis turn or after one in the call (Codex #490 / #502)
+      mood: userLines.some(crisisLine) ? null : moodLine(moodFrom(userLines, personaBaseline(s.persona), personaBaseline(s.persona)), { steady: holdsSteady(s.persona) }),
       remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
     }) ?? undefined;
     const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
