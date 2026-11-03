@@ -21,6 +21,7 @@ import { openDb, type Db } from "../db/index.ts";
 import { migrateUp } from "../db/migrate.ts";
 import { blobStoreFromEnv, type BlobStore } from "../storage/blob.ts";
 import { PgPrepStore } from "../prep/pgStore.ts";
+import { DEMO_TEMPLATE_SUB, seedDemoCompanion } from "../prep/demo.ts";
 import { AppleAuth, appleConfigFromEnv } from "./apple.ts";
 import { EmailCodes, mailSenderFromEnv, type MailSender } from "./email.ts";
 import { Accounts, DEVICES, type Device } from "./accounts.ts";
@@ -57,6 +58,8 @@ export type AccountsCore = {
   authRatePerMin: number;
   /** D41 Judge access codes (GENITA_JUDGE_CODES); disabled when none are set */
   judge: JudgeAccess;
+  /** D41: give a judge account with no companion the ready-made demo one (src/prep/demo.ts). Never throws. */
+  seedDemo?: (userId: string) => Promise<void>;
   /** D41 per-code daily turn cap (GENITA_JUDGE_DAILY_TURNS) */
   judgeTurns: JudgeDailyTurns;
   log: Log;
@@ -94,6 +97,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
   const accounts = new Accounts(db);
   const mail = opts.mail !== undefined ? opts.mail : mailSenderFromEnv(env, log, { loopback: opts.loopback });
   const publicUrl = (env.GENITA_PUBLIC_URL || "https://genita-api.thebeni.ai").replace(/\/+$/, "");
+  const prepStore = new PgPrepStore(db, blobs);
 
   const core: AccountsCore = {
     db,
@@ -109,6 +113,11 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     judge: new JudgeAccess(env.GENITA_JUDGE_CODES),
     judgeTurns: JudgeDailyTurns.fromEnv(env.GENITA_JUDGE_DAILY_TURNS),
     log,
+    seedDemo: async (userId) => {
+      await seedDemoCompanion({ store: prepStore, blobs, templateUserId: () => accounts.findUserId("dev", DEMO_TEMPLATE_SUB), log }, userId).catch((e) =>
+        log("demo.failed", { message: String(e).slice(0, 200) }),
+      );
+    },
     signSession: (userId, sid, device, expiresAt) =>
       signHs256({ iss: SESSION_ISSUER, sub: userId, sid, dev: device, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt.getTime() / 1000) }, jwtSecret),
   };
@@ -117,7 +126,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
 
   return Object.assign(core, {
     routes: createAccountRoutes(core),
-    prepStore: new PgPrepStore(db, blobs),
+    prepStore,
     async verifyToken(token: string): Promise<Principal | null> {
       if (!looksLikeJwt(token)) return null;
       const c = verifyHs256(token, jwtSecret, { iss: SESSION_ISSUER });

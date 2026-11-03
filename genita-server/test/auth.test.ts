@@ -159,12 +159,13 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   // ── F1-L5 /me snapshot ──
   const me = await call("GET", "/me", { token });
   assert.equal(me.status, 200);
-  assert.deepEqual(Object.keys(me.json).sort(), ["consented", "conversation", "hasCompanion", "prepStatus", "user"]);
+  assert.deepEqual(Object.keys(me.json).sort(), ["companionDemo", "consented", "conversation", "hasCompanion", "prepStatus", "user"]);
   assert.deepEqual({ ...me.json, user: { ...me.json.user, id: "<id>", createdAt: "<t>" } }, {
     user: { id: "<id>", provider: "apple", email: "chel@privaterelay.appleid.com", displayName: "Chelsea Lee", aiConsentAt: null, createdAt: "<t>" },
     consented: false,
     hasCompanion: false,
     prepStatus: "none",
+    companionDemo: false,
     conversation: null,
   });
 
