@@ -242,6 +242,17 @@ export const CAMERA_LINE =
  * each web search round is ~5–7 s. One product search (GENITA_PRODUCT_ONE_SEARCH, default on) + 3 raced calls
  * (GENITA_PRODUCT_HEDGE default 3) measured p50 12.2 s / max 16.5 s, 2 links 5/5, invented 0 (n=5, 11/3 19:07).
  */
+const HOUSE_SHOES = /\b(slippers?|sandals?|slides?|flip[- ]?flops?|mules?|clogs?|crocs|house ?shoes?)\b/i;
+/** a house / summer shoe the ask never mentioned (they asked for "shoes" to go with an outfit) */
+const SHOE_ASK = /\b(shoes?|footwear|sneakers?|boots?|loafers?|heels?|flats)\b/i;
+const NOT_SHOE = /\b(belts?|bags?|totes?|wallets?|watch(?:es)?|hats?|caps?|scarf|scarves|jackets?|coats?|socks?)\b/i;
+export function offOccasion(product: string, asked: string): boolean {
+  const name = product.replace(/[-_/]+/g, " ");
+  // only a shoe ask and a shoe product ("Leather slide buckle belt" is a belt, Codex P2)
+  if (!SHOE_ASK.test(asked) || NOT_SHOE.test(name)) return false;
+  return HOUSE_SHOES.test(name) && !HOUSE_SHOES.test(asked);
+}
+
 export function productPrompt(o: { question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; oneSearch?: boolean }): string {
   return [
     `The user asked out loud: "${o.question.slice(0, 300)}"`,
@@ -253,7 +264,7 @@ export function productPrompt(o: { question: string; recent: string[]; taste: st
       : "You know nothing about their taste; pick clean, widely liked options.",
     `Today is ${o.today}.${o.city ? ` They are in ${o.city}.` : ""}`,
     `Shop for them:
-1. Search the web for ${PRODUCT_COUNT} products that fit what they asked and their taste. Prefer ${o.region} online stores with English pages.
+1. Search the web for ${PRODUCT_COUNT} products that fit what they asked and their taste. Prefer ${o.region} online stores with English pages. Fit the occasion and the season: shoes for an outfit (a coat, a trench, a blazer) are closed shoes like boots, loafers or sneakers, never slippers, sandals, slides, flip-flops or mules unless they asked for those.
 2. Open each candidate's own product page with open_page — a page for ONE product you can buy. Never a category, collection, search, list, review or blog page. Open ${PRODUCT_COUNT + 1} candidates so ${PRODUCT_COUNT} survive.
 3. Only if they named a day or a trip ("this weekend", "next week"), search once for the forecast${o.city ? ` in ${o.city}` : ""}.
 ${o.oneSearch ? "Be quick: one product search, then open the pages." : "Be quick: at most 2 product searches, then open the pages."}`,
@@ -304,7 +315,8 @@ function provenCount(r: SearchResult): number {
  * if none does, the best one (most opened pages listed, then most opens) is used.
  */
 export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = []): Promise<SearchResult | null> {
-  const runs = Array.from({ length: Math.max(1, Math.min(3, n)) }, () => new AbortController());
+  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3)
+  const runs = Array.from({ length: Math.max(1, Math.min(6, n)) }, () => new AbortController());
   const stopAll = () => runs.forEach((a) => a.abort());
   signal.addEventListener("abort", stopAll, { once: true });
   const done: SearchResult[] = [];
@@ -377,7 +389,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const raw = (Array.isArray(j?.items) ? (j!.items as ItemJson[]) : []).slice(0, 4);
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
-  const dropped = { notOpened: 0, notProduct: 0 };
+  const dropped: { notOpened: number; notProduct: number; offOccasion?: number } = { notOpened: 0, notProduct: 0 };
   for (const item of raw) {
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
@@ -386,6 +398,11 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     if (!url || !k || seen.has(k)) continue;
     if (hardList(url)) {
       dropped.notProduct++;
+      continue;
+    }
+    // QA 11/3: a trench outfit's shoes came back as slippers / sandals / mules (3/8): never unless asked for
+    if (offOccasion(`${str(item?.name, 200)} ${url}`, `${ctx.question} ${ctx.previous ?? ""}`)) {
+      dropped.offOccasion = (dropped.offOccasion ?? 0) + 1;
       continue;
     }
     seen.add(k);
