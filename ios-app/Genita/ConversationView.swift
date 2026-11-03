@@ -162,7 +162,8 @@ struct ConversationView: View {
                             ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
-                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine))
+                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine,
+                                                                                         fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth))
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
                         if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {

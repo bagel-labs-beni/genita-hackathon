@@ -64,9 +64,11 @@ struct CallHUDGrid: Equatable {
         status == .none ? rowY : statusY(status) + CallPillMetrics.height / 2 + 6 + CallPillMetrics.prepHeight / 2
     }
     /// The "Getting to know you" / "Noted" chip (30 tall) sits 6 pt under the lowest line above it.
-    func chipCenterY(status: StatusLine, prepLine: Bool) -> CGFloat {
-        // nothing above: where it would sit under a pill (never on the menu row, where a wide chip would cover the button)
-        let above = prepLine ? prepLineCenterY(status: status) + CallPillMetrics.prepHeight / 2 : statusY(status == .none ? .row : status) + CallPillMetrics.height / 2
+    /// Alone (no pill, no prep line) it follows the pill's rule: on the row when it fits between the menu button and
+    /// its mirror (`fitsRow`), else on the second line (top at safe top + 54), never across the menu button.
+    func chipCenterY(status: StatusLine, prepLine: Bool, fitsRow: Bool = false) -> CGFloat {
+        if status == .none && !prepLine { return fitsRow ? rowY : secondLineY - CallPillMetrics.height / 2 + 15 }
+        let above = prepLine ? prepLineCenterY(status: status) + CallPillMetrics.prepHeight / 2 : statusY(status) + CallPillMetrics.height / 2
         return above + 6 + 15
     }
 

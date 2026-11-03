@@ -213,6 +213,11 @@ struct ProfileChipView: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
     }
+    /// 14 + icon ≤ 13 + 6 + text (13 medium) + 14.
+    static func width(_ text: String, soft: Bool) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 13) ?? .systemFont(ofSize: 13, weight: .medium)
+        return 14 + 13 + 6 + ceil((text as NSString).size(withAttributes: [.font: font]).width) + 14
+    }
 }
 
 private struct CueDot: View {
