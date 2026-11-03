@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
+import { EYES_PROMPT, MOUTH_PROMPT, facePointsFromSam, facePrompt, outlineFromSam } from "./faceGeometry.ts";
 import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
@@ -70,17 +71,31 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     (b) => ({ boxes: b, ms: since(t0) }),
     () => null,
   );
+  // V03 face scan (11/4): face silhouette + eye and mouth boxes for the app's mesh, all SAM in parallel with the
+  // Spark check (no extra wait); a failed call only means no mesh
+  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) =>
+    samDetect(d.metaKey, url, facePrompt(kind), undefined, { masks: true }).then((b) => outlineFromSam(b), () => null);
+  const samBoxes = (prompt: string) => samDetect(d.metaKey, url, prompt).catch(() => []);
+  const samFace = samFaceOf("human");
+  const samEyes = samBoxes(EYES_PROMPT);
+  const samMouth = samBoxes(MOUTH_PROMPT);
   const raw = await sparkJson<ClassifyRaw>(d.metaKey, buildClassifyRequest(url));
   const checkMs = since(t0);
   const check = interpretCheck(raw);
   let head = await samPerson;
+  let faceOutline = await samFace;
   if (check.passed && check.type && check.type !== "human") {
     const t1 = performance.now();
-    head = await samDetect(d.metaKey, url, headPrompt(check.type)).then(
-      (b) => ({ boxes: b, ms: checkMs + since(t1) }),
-      () => null,
-    );
+    const kind = check.type;
+    [head, faceOutline] = await Promise.all([
+      samDetect(d.metaKey, url, headPrompt(kind)).then(
+        (b) => ({ boxes: b, ms: checkMs + since(t1) }),
+        () => null,
+      ),
+      samFaceOf(kind),
+    ]);
   }
+  const [eyes, mouth] = await Promise.all([samEyes, samMouth]);
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,
@@ -89,13 +104,16 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     heads: head?.boxes ?? [],
+    // only on a passed check: a failed photo goes to V02-F, nothing to draw
+    faceOutline: check.passed ? faceOutline : null,
+    facePoints: check.passed ? facePointsFromSam(eyes, mouth, faceOutline) : null,
     rightsAck,
     // This is captured after the upload body is read, before any model check.
     createdAt,
     ms: { check: checkMs, sam: head?.ms ?? null },
   };
   await d.store.putImage(rec, bytes);
-  d.log("face.checked", { passed: check.passed, reasons: check.reasons.map((r) => r.code), type: check.type, ms: since(t0) });
+  d.log("face.checked", { passed: check.passed, reasons: check.reasons.map((r) => r.code), type: check.type, ms: since(t0), outline: rec.faceOutline?.length ?? 0, points: !!rec.facePoints });
   return rec;
 }
 
