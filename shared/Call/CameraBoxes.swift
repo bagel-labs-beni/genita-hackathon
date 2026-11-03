@@ -56,6 +56,23 @@ struct LiveBox: Identifiable, Equatable {
 
     /// CameraStage space: the menu button (ConversationView: 47 pt at (47.5, 86.5 + top)), padded 6 pt.
     static func menuRect(top: CGFloat) -> CGRect { CGRect(x: 24 - 6, y: 63 + top - 6, width: 47 + 12, height: 47 + 12) }
+    /// The status line pill ("Listening", "Jin is talking": 36 pt tall, centred at y 142 + top, up to ~240 pt wide), padded 4 pt.
+    /// A box label under it read as one pill over another ("Green onion" behind "Listening", UI sweep 11/3).
+    static func statusRect(view: CGSize, top: CGFloat) -> CGRect { CGRect(x: view.width / 2 - 120 - 4, y: 142 + top - 18 - 4, width: 240 + 8, height: 36 + 8) }
+    /// How far the right-hand control rail (camera, mic, more) moves up with the Finds sheet (ConversationView reads it too).
+    static func railShift(_ s: SheetState) -> CGFloat {
+        switch s {
+        case .half, .rising, .full: -440
+        case .peek, .searching: -122
+        default: 0
+        }
+    }
+    /// The control rail: three 50 pt glass buttons centred at x = width − 56, y 665 / 724 / 783 (+ the screen's extra
+    /// height below 844, + the sheet shift), padded 4 pt. A label under it can't be read ("Whole milk", UI sweep 11/3).
+    static func railRect(view: CGSize, sheet: SheetState) -> CGRect {
+        let y = 665 + (view.height - 844) + railShift(sheet)
+        return CGRect(x: view.width - 56 - 25 - 4, y: y - 25 - 4, width: 50 + 8, height: 783 - 665 + 50 + 8)
+    }
     /// The self-view PiP (96 × 128 at y 184 + top; right edge 20 pt, or left while the sheet is half up), padded 6 pt.
     static func pipRect(view: CGSize, top: CGFloat, sheetHalf: Bool) -> CGRect {
         let midX = sheetHalf ? 68 : view.width - 68
@@ -79,6 +96,19 @@ struct LiveBox: Identifiable, Equatable {
             }
         }
         return CGPoint(x: max(0, rect.minX), y: rect.minY + labelOffsetY(rect, topInset: topInset))
+    }
+
+    /// Every label's origin, placed one after another: a placed pill (padded 4 pt) becomes an obstacle for the next,
+    /// so two pills never sit on each other ("Green onion" over "Whole milk", UI sweep 11/3 after the status fix).
+    static func labelOrigins(_ drawn: [(id: String, rect: CGRect, label: CGSize)], view: CGSize, topInset: CGFloat, obstacles: [CGRect]) -> [String: CGPoint] {
+        var placed = obstacles
+        var out: [String: CGPoint] = [:]
+        for d in drawn {
+            let o = labelOrigin(d.rect, label: d.label, view: view, topInset: topInset, obstacles: placed)
+            out[d.id] = o
+            placed.append(CGRect(origin: o, size: d.label).insetBy(dx: -4, dy: -4))
+        }
+        return out
     }
 
     /// One label pill per label: on its largest match among those actually drawn (a hidden one can't own it).

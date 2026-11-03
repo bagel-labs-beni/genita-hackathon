@@ -111,3 +111,37 @@ class Overload(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GpuQueue(unittest.TestCase):
+    """D27 capacity: a request that cannot get the GPU in QUEUE_WAIT_MS answers busy instead of queueing past the
+    server's first-byte timeout."""
+
+    def engine(self):
+        import threading
+        e = object.__new__(va.Engine)
+        e.lock = threading.Lock()
+        e._synth = lambda *a: ("wav", None, 1.0)
+        return e
+
+    def test_free_gpu_synthesizes(self):
+        self.assertEqual(self.engine().synth("hi", "eng", 0)[0], "wav")
+
+    def test_held_gpu_raises_busy_after_the_queue_wait(self):
+        e = self.engine()
+        old = va.QUEUE_WAIT_MS
+        va.QUEUE_WAIT_MS = 50
+        try:
+            e.lock.acquire()
+            t0 = time.perf_counter()
+            with self.assertRaises(va.Busy):
+                e.synth("hi", "eng", 0)
+            self.assertLess(time.perf_counter() - t0, 0.5)
+        finally:
+            va.QUEUE_WAIT_MS = old
+            e.lock.release()
+        self.assertEqual(e.synth("hi", "eng", 0)[0], "wav", "the lock is free again after a busy answer")
+
+    def test_queue_wait_is_below_the_server_timeout(self):
+        self.assertLess(va.QUEUE_WAIT_MS + 500, 4000)
+        self.assertGreaterEqual(va.MAX_INPUTS, va.TARGET_INPUTS)

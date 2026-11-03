@@ -227,10 +227,13 @@ test("makeFaceSet: rejects an edit whose aspect ratio differs from the scene", a
   await assert.rejects(() => makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820" }), /every edit failed|size_mismatch/);
 });
 
-test("makeFaceSet: at most 6 edits in flight; resume skips settled keys", async () => {
+test("makeFaceSet: every key in flight at once by default (6 when asked); resume skips settled keys", async () => {
+  const six = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
+  await makeFaceSet({ metaKey: "k", media: six.media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6 });
+  assert.equal(six.calls.maxInFlight, 6);
   const a = fakeMedia({ keyOf: keyOf("human"), delayMs: 15 });
   const first = await makeFaceSet({ metaKey: "k", media: a.media, scene: scene(), kind: "human", size: "1024x1820" });
-  assert.equal(a.calls.maxInFlight, 6);
+  assert.equal(a.calls.maxInFlight, 18, "one wave (11/3: prep 96–126 s → 64–94 s)");
 
   // keep 5 settled items (one of them a rejection), drop the rest: a rerun edits only the 8 missing
   const keep = new Set<FaceKey>(["blink", "smile", "MBP", "FV", "TH"]);
@@ -271,7 +274,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   });
   let settled = false;
   const late: string[] = [];
-  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", onItem: async (k) => void (settled && late.push(k)) });
+  const st = await makeFaceSet({ metaKey: "k", media, scene: scene(), kind: "human", size: "1024x1820", concurrency: 6, onItem: async (k) => void (settled && late.push(k)) });
   settled = true;
   assert.deepEqual(faceManifest(st, urlFor).rejected, [{ key: "L", reason: "edit_failed", retried: true }]);
   assert.equal(Object.keys(st.items).length, 18);
@@ -283,6 +286,7 @@ test("makeFaceSet (codex P1): a SAM error on one edit is an edit_failed retry, a
   await assert.rejects(
     () =>
       makeFaceSet({
+        concurrency: 6, // fewer lanes than keys: the "no new edit after a failure" path
         metaKey: "k",
         media: b.media,
         scene: scene(),
@@ -333,4 +337,71 @@ test("per-category key sets: a kind generates only its listed mouth keys; prompt
     MOUTH_KEYS_BY_KIND.animal = saved;
     delete MOUTH_PROMPT_BY_KIND.animal;
   }
+});
+
+// ---------- v9.3 mouth on serve (11/3 18:46) ----------
+
+test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), the v93 motion and a still face", async () => {
+  const { V93_PERIORAL, STILL_FACE, withV93Mouth, v93MouthOn } = await import("../src/prep/face.ts");
+  const map = { rig: { chinLpHz: 2 }, alive: { headX: 3, nodPx: 5 }, motionV2: { amp: 0.35 }, cheek: { spread: 0.8, lift: 3, delayFrames: 1 }, brow: { px: 2.5 } };
+  const out = withV93Mouth(map, "human", true);
+  assert.deepEqual(out.perioral, { ...V93_PERIORAL, jawDropPx: 1 });
+  assert.equal((out.perioral as Record<string, number>).openMag, 0);
+  assert.deepEqual(out.alive, { ...STILL_FACE.alive });
+  assert.deepEqual(out.brow, { px: 0 });
+  assert.deepEqual(out.cheek, { ...STILL_FACE.cheek, delayFrames: 1 });
+  const mv = out.motionV2 as Record<string, unknown>;
+  assert.equal(mv.amp, 0.35);
+  assert.equal(mv.preset, "v93");
+  assert.deepEqual((mv.ladders as Record<string, unknown>).spread, [["EI", 0], ["EH", 0.2]]);
+  assert.equal(map.alive.nodPx, 5, "the stored map is not mutated");
+  assert.equal((map as Record<string, unknown>).perioral, undefined);
+  // switch off: the map as prepped
+  assert.equal(withV93Mouth(map, "human", false), map);
+  // no rig / own perioral: still face only
+  const noRig = withV93Mouth({ alive: { headX: 3 } }, "human", true);
+  assert.equal(noRig.perioral, undefined);
+  assert.deepEqual(noRig.alive, { ...STILL_FACE.alive });
+  const own = withV93Mouth({ rig: {}, perioral: { lipThin: 0.5 } }, "human", true);
+  assert.deepEqual(own.perioral, { lipThin: 0.5 });
+  // switch: default on
+  assert.equal(v93MouthOn({}), true);
+  assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: "1" }), true);
+  for (const v of ["0", "false", "off", " OFF "]) assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: v }), false);
+});
+
+test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D quicker — all with a still head; no human block", async () => {
+  const { withV93Mouth } = await import("../src/prep/face.ts");
+  const animal = withV93Mouth({ drive: "open", shownFloor: 0.6, minHold: 3, jaw: { gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.35 } } }, "animal", true);
+  assert.equal(animal.shownFloor, 0);
+  assert.equal(animal.minHold, 2);
+  assert.deepEqual(animal.jaw, { floor: 0, gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.1 } });
+  assert.equal(animal.perioral, undefined);
+  assert.equal((animal.alive as Record<string, number>).headX, 0);
+  const twoD = withV93Mouth({ drive: "snap", snap: { hold: 2, minHold: 4, closedBelow: 0.18, rules: [[["A"], 0.75, "WD", 4], [["O"], 0, "OO"], [["EI"], 0.55, "EE"]] } }, "character2d", true);
+  const snap = twoD.snap as Record<string, unknown>;
+  assert.deepEqual([snap.hold, snap.minHold, snap.closedBelow], [1, 2, 0.08]);
+  assert.deepEqual(snap.rules, [[["A"], 0.5, "WD", 2], [["O"], 0, "OO"], [["EI"], 0.4, "EE"]]);
+  const threeD = withV93Mouth({ gain: 1.8, smoothing: { fps: 25, attack: 0.75, release: 0.5 } }, "character3d", true);
+  assert.equal(threeD.gain, 1.8, "gain untouched (it only saturates)");
+  assert.deepEqual(threeD.smoothing, { fps: 25, attack: 0.9, release: 0.7 });
+  assert.equal(threeD.minHold, 1);
+  // a map without a cheek block still gets the still one (the app's default cheek rules move)
+  assert.deepEqual(withV93Mouth({ drive: "open" }, "animal", true).cheek, { spread: 0, pull: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 });
+});
+
+test("faceManifest: the served flow map carries the v9.3 mouth; the switch off serves the prepped map", () => {
+  const st = {
+    size: [1000, 2000],
+    ref: { face: [0.3, 0.2, 0.7, 0.45], mouth: [0.42, 0.38, 0.58, 0.41] },
+    items: {},
+    keys: [],
+    ms: { total: 0, edits: 0, sam: 0 },
+    flow: { version: 1, roi: [0, 0, 1, 1], size: [10, 10], flowSize: [5, 5], keys: [], files: {}, mask: "m.png", neutralRoi: "n.jpg", lockY: 0.5, lockSource: "x", kind: "human", map: { rig: {}, alive: { nodPx: 5 } } },
+  } as unknown as Parameters<typeof faceManifest>[0];
+  const on = faceManifest(st, urlFor, (a) => a, { v93Mouth: true });
+  assert.equal((on.flow!.map.perioral as Record<string, number>).openMag, 0);
+  assert.equal((on.flow!.map.alive as Record<string, unknown>).lockY, true);
+  const off = faceManifest(st, urlFor, (a) => a, { v93Mouth: false });
+  assert.equal(off.flow!.map.perioral, undefined);
 });

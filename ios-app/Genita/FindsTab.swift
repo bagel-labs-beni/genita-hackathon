@@ -77,7 +77,7 @@ struct FindsTabView: View {
             Spacer(minLength: 0)
             Button(action: close) {
                 Text("Back to our call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
-                    .background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                    .background(GlassCTA(color: CallInk.ink))
             }.buttonStyle(PressScale()).accessibilityIdentifier("findsBackToCall").padding(.bottom, 62)
         }.padding(.horizontal, 38).frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityElement(children: .contain).accessibilityIdentifier("findsEmpty")

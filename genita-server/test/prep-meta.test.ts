@@ -56,6 +56,14 @@ function noNetwork(t: { after: (fn: () => void) => void }) {
   return seen;
 }
 
+
+/** These tests stop a face step midway: with fewer lanes than keys, no new edit may start after the stop. */
+function sixLanes(t: { after: (fn: () => void) => void }) {
+  const prev = process.env.GENITA_FACE_CONCURRENCY;
+  process.env.GENITA_FACE_CONCURRENCY = "6";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_FACE_CONCURRENCY; else process.env.GENITA_FACE_CONCURRENCY = prev; });
+}
+
 test("progress (Meta-only): scene + 18 face images; legacy clips and lips are skipped", () => {
   const p = newPrepState();
   assert.equal(p.steps.videos.neutral.status, "skipped");
@@ -264,6 +272,7 @@ test("createPrep: config selects Meta voice or device descriptors", async (t) =>
 
 test("runner (codex P1): companion deleted mid face step → stops, and the face images it wrote are removed", async (t) => {
   noNetwork(t);
+  sixLanes(t);
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-del-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FileStore(dir);
@@ -290,6 +299,7 @@ test("runner (codex P1): companion deleted mid face step → stops, and the face
 
 test("runner.cancel stops a face step without marking it failed", async (t) => {
   noNetwork(t);
+  sixLanes(t);
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-cancel-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FileStore(dir);

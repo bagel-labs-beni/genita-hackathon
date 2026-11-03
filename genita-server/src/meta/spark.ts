@@ -36,6 +36,8 @@ export type SparkStreamEvent =
   | { type: "text"; delta: string }
   | FunctionCall
   | { type: "tool"; name: string; status: string }
+  /** one finished web search: its query and the result pages it returned (not opened) */
+  | { type: "sources"; query: string; urls: string[] }
   | { type: "done"; responseId: string | null; text: string; status: string };
 
 function body(req: SparkRequest, stream: boolean) {
@@ -48,7 +50,20 @@ function body(req: SparkRequest, stream: boolean) {
     ...(req.tools?.length ? { tools: req.tools } : {}),
     ...(req.maxOutputTokens ? { max_output_tokens: req.maxOutputTokens } : {}),
     ...(req.text ? { text: req.text } : {}),
+    // a search's result URLs (11/3 probe: without this the search action has only the query)
+    ...(req.tools?.some((t) => t.type === "web_search") ? { include: ["web_search_call.action.sources"] } : {}),
   };
+}
+
+type WebSearchItem = { type: "web_search_call"; id?: string; action?: { type?: string; query?: string; queries?: string[]; sources?: Array<{ type?: string; url?: string }> } };
+
+/** A finished search's result pages, or null (an open_page action, or no sources). */
+export function searchSources(item: WebSearchItem): { type: "sources"; query: string; urls: string[] } | null {
+  const a = item.action;
+  if (!a || (a.type && a.type !== "search")) return null;
+  const urls = [...new Set((a.sources ?? []).map((s) => s?.url ?? "").filter((u) => /^https?:\/\//i.test(u)))];
+  if (!urls.length) return null;
+  return { type: "sources", query: String(a.query ?? a.queries?.[0] ?? "").slice(0, 200), urls };
 }
 
 /**
@@ -72,10 +87,11 @@ export async function* sparkStream(
     let text = "";
     let responseId: string | null = null;
     const calls = new Set<string>();
+    const searches = new Set<string>();
     for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
       for (const ev of parser.feed(dec.decode(chunk, { stream: true }))) {
         if (ev.data === "[DONE]") continue;
-        let e: { type?: string; delta?: string; item?: FunctionCall; response?: { id?: string; status?: string; output?: Array<FunctionCall | { type: "message"; content?: Array<{ type: string; text?: string }> }>; error?: { message?: string } | null } };
+        let e: { type?: string; delta?: string; item?: FunctionCall | WebSearchItem; response?: { id?: string; status?: string; output?: Array<FunctionCall | WebSearchItem | { type: "message"; content?: Array<{ type: string; text?: string }> }>; error?: { message?: string } | null } };
         try {
           e = JSON.parse(ev.data);
         } catch {
@@ -90,6 +106,9 @@ export async function* sparkStream(
         } else if (type === "response.output_item.done" && e.item?.type === "function_call") {
           clearTimeout(timer);
           if (!calls.has(e.item.call_id)) { calls.add(e.item.call_id); yield e.item; }
+        } else if (type === "response.output_item.done" && e.item?.type === "web_search_call") {
+          const found = searchSources(e.item);
+          if (found && !searches.has(e.item.id ?? found.query)) { searches.add(e.item.id ?? found.query); yield found; }
         } else if (type.startsWith("response.web_search_call.")) {
           clearTimeout(timer);
           yield { type: "tool", name: "web_search", status: type.split(".").pop() ?? "" };
@@ -106,6 +125,10 @@ export async function* sparkStream(
           }
           for (const item of e.response?.output ?? []) {
             if (item.type === "function_call" && !calls.has(item.call_id)) { calls.add(item.call_id); yield item; }
+            if (item.type === "web_search_call") {
+              const found = searchSources(item);
+              if (found && !searches.has(item.id ?? found.query)) { searches.add(item.id ?? found.query); yield found; }
+            }
           }
           yield { type: "done", responseId: e.response?.id ?? responseId, text, status: e.response?.status ?? type.split(".")[1] };
           return;
@@ -133,18 +156,21 @@ export async function sparkText(key: string, req: SparkRequest, signal?: AbortSi
   return outputText(await metaJson<ResponseObject>(key, "/responses", body(req, false), signal));
 }
 
+/** pause before the one json_schema retry */
+export const JSON_RETRY_MS = 600;
+const retryable = (err: unknown) => err instanceof UpstreamError && (err.status === null || err.status >= 500 || err.status === 429);
+
 /** Structured output via text.format json_schema; returns the parsed object. */
 export async function museJson<T>(
   key: string,
   req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> },
   signal?: AbortSignal,
+  /** read by sparkJson only (the one retry); museJson itself is always a single call */
+  _opts: { retry?: boolean } = {},
 ): Promise<T> {
   const { schemaName, schema, ...rest } = req;
-  const raw = await sparkText(
-    key,
-    { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } },
-    signal,
-  );
+  const call = () => sparkText(key, { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } }, signal);
+  const raw = await call();
   const m = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
   if (!m) throw new UpstreamError("meta", null, `spark json: no JSON in reply: ${raw.slice(0, 120)}`);
   return JSON.parse(m[0]) as T;
@@ -157,12 +183,19 @@ export async function museJson<T>(
  * is what sparkOpen.ts falls back to, so the two never bounce.
  */
 export async function sparkJson<T>(...args: Parameters<typeof museJson>): Promise<T> {
-  const [, req, signal] = args;
+  const [key, req, signal, opts = {}] = args;
   try {
-    return await museJson<T>(...args);
+    return await museJson<T>(key, req, signal, { retry: false });
   } catch (err) {
     const open = openFallbackFor(err, req, signal);
-    if (!open) throw err;
+    // no Spark Open hop for this call: the Muse Spark API once more after a short pause (11/3 outage), unless the
+    // caller retries itself ({ retry: false })
+    if (!open) {
+      if (opts.retry === false || !retryable(err) || signal?.aborted) throw err;
+      await new Promise((r) => setTimeout(r, JSON_RETRY_MS));
+      if (signal?.aborted) throw err;
+      return museJson<T>(key, req, signal, { retry: false });
+    }
     logLlm("llm.fallback", { from: SPARK_MODEL, to: open.name, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
     // its own budget even when the caller passed none (Codex P2): an outage must still end in the original error
     const budget = AbortSignal.timeout(openHopTimeoutMs());

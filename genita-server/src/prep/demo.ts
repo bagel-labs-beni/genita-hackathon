@@ -77,6 +77,7 @@ async function seed(d: DemoSeedDeps, userId: string, limits: { maxFiles?: number
   const maxFiles = limits.maxFiles ?? DEMO_MAX_FILES;
   const maxBytes = limits.maxBytes ?? DEMO_MAX_BYTES;
   if (keys.length > maxFiles) return skip("template_too_big", { files: keys.length });
+  if (!keys.length) return skip("template_empty"); // never a ready companion without a face
 
   let bytes = img.bytes.length;
   let imageId: string | null = null;
@@ -91,6 +92,8 @@ async function seed(d: DemoSeedDeps, userId: string, limits: { maxFiles?: number
       }
       await d.blobs.put(to + key.slice(from.length), b, sniffImage(b) ?? "application/octet-stream");
     }
+    // the template must still be the one we copied (a vanished template leaves a copy without its files)
+    if ((await d.store.getCompanion(tplUser))?.id !== tpl.id) throw new Error("template replaced during copy");
     imageId = newId();
     await d.store.putImage({ ...img.rec, id: imageId, userId, createdAt: new Date().toISOString() }, img.bytes);
     const copy: CompanionRecord = {
