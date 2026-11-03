@@ -627,3 +627,17 @@ test("Codex #538 r3: two saves of one line never take its neighbor; a chip leave
   const twice = withPendingRemoved({ ...lines, pendingCorrections: [1, 2].map((n) => ({ cardId: "lines", items: ["Ask before suggesting outfits."], text: "", asOf: String(n) })) });
   assert.deepEqual(row(twice, "boundaries"), ["Ask before buying outfits."]);
 });
+
+test("Codex #538 r4: two chips of one list in one save both go; a 'Not for you' chip takes its dislike, never a like", async () => {
+  const { withoutMarked } = await import("../src/personalize/service.ts");
+  const { skipStyleCard } = await import("../src/prep/importProfile.ts");
+  const r = skipStyleCard({ interests: [], replies: null, avoid: [], n3: { clothes: { like: ["Minimal", "Comfy"], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } } });
+  assert.ok(r.ok);
+  const row = (c: typeof r.card, key: string) => c.display.find((d) => d.key === key)?.items.map((i) => i.text) ?? [];
+  assert.doesNotMatch(row(withoutMarked(r.card, ["Minimal", "Comfy"], "taste"), "likes").join(" "), /minimal|comfy/i);
+  const card = { ...r.card, sections: { ...r.card.sections, likes: [...r.card.sections.likes, { text: "Dislikes seafood.", label: "explicit", scope: "any" }, { text: "Food: seafood.", label: "explicit", scope: "any" }] } } as typeof r.card;
+  card.display = card.display.map((d) => (d.key === "likes" ? { ...d, items: card.sections.likes.map((f) => ({ text: f.text, label: "explicit" })) } : d)) as typeof card.display;
+  const after = row(withoutMarked(card, ["Not for you: seafood"], "taste"), "likes");
+  assert.ok(!after.includes("Dislikes seafood."), JSON.stringify(after));
+  assert.ok(after.includes("Food: seafood."), "the like stays");
+});

@@ -51,33 +51,41 @@ type Edit = { drop: boolean; to?: string };
 function markedEdits(card: StyleCard, items: string[], cardId?: StoryId): Map<string, Edit> {
   // a finding's own label ("Style: Minimal.", "Media: …") is not part of what the user marked (Codex #538 r2)
   const label = (t: string) => t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
-  const bare = (t: string) => t.slice(label(t).length);
+  // a dislike: the finding "Dislikes seafood." and its chip "Not for you: seafood" (Codex #538 r4)
+  const DISLIKE = /^\s*(dislikes|not for (you|them|me))\b:?\s*/i;
+  const negative = (t: string) => DISLIKE.test(t);
+  const bare = (t: string) => t.replace(DISLIKE, "").slice(DISLIKE.test(t) ? 0 : label(t).length);
   const list = (t: string) => bare(t).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
   const words = (t: string) => new Set(list(t));
   /** what the line is about: its last content word ("… outfits." vs "… recipes."), 5-letter stem */
   const subject = (t: string) => list(t).at(-1)?.slice(0, 5) ?? "";
   const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
   const edits = new Map<string, Edit>();
-  const marked = items.map((t) => ({ raw: t, w: words(t), subj: subject(t) })).filter((m) => m.w.size);
+  const marked = items.map((t) => ({ raw: bare(t), neg: negative(t), w: words(t), subj: subject(t) })).filter((m) => m.w.size);
   if (!marked.length) return edits;
   const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
   const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
   const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
+  /** a list finding's items as they stand after this save's earlier chips */
+  const now = (t: string) => { const e = edits.get(t); return e?.drop ? "" : e?.to ?? t; };
+  const items_ = (t: string) => bare(now(t)).replace(/\.\s*$/, "").split(/\s*,\s*/).filter(Boolean);
   for (const m of marked) {
-    // a chip inside a list finding ("Style: Minimal, Comfy."): only that chip goes
+    const pool = candidates.filter((t) => negative(t) === m.neg);   // a dislike chip only for a dislike, a like for a like
+    // a chip inside a list finding ("Style: Minimal, Comfy."): only that chip goes; several chips of one save add up
     const chip = norm(m.raw);
-    const listHit = candidates.find((t) => {
-      const parts = bare(t).replace(/\.\s*$/, "").split(/\s*,\s*/);
-      return parts.length > 1 && parts.some((x) => norm(x) === chip);
+    const listHit = pool.find((t) => {
+      const parts = items_(t);
+      return (parts.length > 1 || edits.has(t)) && parts.some((x) => norm(x) === chip);
     });
     if (listHit) {
-      const parts = bare(listHit).replace(/\.\s*$/, "").split(/\s*,\s*/).filter((x) => norm(x) !== chip);
-      edits.set(listHit, { drop: false, to: `${label(listHit)}${parts.join(", ")}.` });
+      const parts = items_(listHit).filter((x) => norm(x) !== chip);
+      const head = negative(listHit) ? (listHit.match(DISLIKE)?.[0] ?? "") : label(listHit);
+      edits.set(listHit, parts.length ? { drop: false, to: `${head}${parts.join(", ")}.` } : { drop: true });
       continue;
     }
     // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, better than any other
     // line), about the same thing — "Ask before … outfits." never takes "… recipes." (Codex P1 #538, r2)
-    const scored = candidates.filter((t) => subject(t) === m.subj).map((t) => ({ t, s: overlap(words(t), m.w) })).sort((a, b) => b.s - a.s);
+    const scored = pool.filter((t) => subject(t) === m.subj).map((t) => ({ t, s: overlap(words(t), m.w) })).sort((a, b) => b.s - a.s);
     if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) edits.set(scored[0].t, { drop: true });
   }
   return edits;
@@ -106,21 +114,16 @@ export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId
  * Unknowns answers are not removals.
  */
 export function withPendingRemoved(card: StyleCard): StyleCard {
-  const edits = new Map<string, Edit>();
+  // all saves of one card as one set of marked lines (the same line twice is once), chosen on the stored card
+  const byCard = new Map<string, Set<string>>();
   for (const p of card.pendingCorrections ?? []) {
     if (p.cardId === "unknowns") continue;
-    for (const [t, e] of markedEdits(card, p.items, p.cardId as StoryId)) {
-      const had = edits.get(t);
-      // two chips of one list finding: both go
-      if (had && !had.drop && !e.drop) {
-        const keep = (x: string) => new Set(x.replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "").replace(/\.\s*$/, "").split(/\s*,\s*/));
-        const a = keep(had.to!), b = keep(e.to!);
-        const both = [...a].filter((x) => b.has(x));
-        const lbl = t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
-        edits.set(t, both.length ? { drop: false, to: `${lbl}${both.join(", ")}.` } : { drop: true });
-      } else edits.set(t, had?.drop ? had : e);
-    }
+    const set = byCard.get(p.cardId) ?? new Set<string>();
+    for (const i of p.items) set.add(i);
+    byCard.set(p.cardId, set);
   }
+  const edits = new Map<string, Edit>();
+  for (const [cardId, items] of byCard) for (const [t, e] of markedEdits(card, [...items], cardId as StoryId)) edits.set(t, e);
   return applyEdits(card, edits);
 }
 const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
