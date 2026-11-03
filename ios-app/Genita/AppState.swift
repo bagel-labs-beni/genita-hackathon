@@ -149,19 +149,21 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
         }
     }
-    /// account | companion (its image id) | scene URL: a scene never outlives its companion (handover b9-6: another
-    /// phone on the account opened its next call on a deleted companion's cached scene).
     var sceneKey: String? { prep?.sceneURL.map { "\(sceneOwner)\($0.absoluteString)" } }
-    var sceneOwner: String { "\(setup.accountId ?? "-")|\(setup.imageId ?? "-")|" }
-    /// This launch asked the server which companion the account has and it is the one on this phone (or the phone
-    /// now holds the server's). Until then a saved scene isn't shown: the server may have replaced the companion.
+    var sceneOwner: String { "\(setup.accountId ?? "-")|" }
+    /// A scene on this phone only counts once it's known to be the account's current companion (handover b9-6:
+    /// another phone deleted and remade the companion, and this one opened its call on the old cached scene; the
+    /// scene URL is the same for every companion, so the key alone can't tell). Either this launch asked the server
+    /// and it's the same companion (`sceneCompanionConfirmed`), or the scene was downloaded in this launch (`sceneFresh`).
     @ObservationIgnored var sceneCompanionConfirmed = false
-    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account and this companion,
-    /// once the server confirmed the companion.
+    @ObservationIgnored var sceneFresh = false
+    var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
     var sceneImageData: Data? {
-        sceneImage.flatMap { saved in
+        guard sceneTrusted else { return nil }
+        return sceneImage.flatMap { saved in
             if let key = sceneKey { return saved.key == key ? saved.data : nil }
-            return sceneCompanionConfirmed && saved.key.hasPrefix(sceneOwner) ? saved.data : nil
+            return saved.key.hasPrefix(sceneOwner) ? saved.data : nil
         }
     }
     var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }

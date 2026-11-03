@@ -100,7 +100,8 @@ extension AppState {
     /// device) drops this phone's scene and picture before anything draws them; the same one confirms the cache.
     func adoptServerCompanion(imageId: String?) {
         if let mine = setup.imageId, mine != imageId {
-            sceneImage = nil
+            // a scene downloaded in this launch is already the server's current one; a cached one isn't
+            if !sceneFresh { sceneImage = nil }
             setup.imageData = nil
         }
         sceneCompanionConfirmed = true
@@ -159,15 +160,16 @@ extension AppState {
     func loadScene(for upcoming: PrepProgress? = nil) async {
         let p = upcoming ?? prep
         guard serverWired, let url = p?.sceneURL else { return }
-        // keyed by account and companion, like `sceneKey` (Codex P1: one key format for save and lookup)
+        // same key format as `sceneKey` (Codex P1); a cached copy under the same key is reused only once trusted
         let owner = sceneOwner, key = "\(owner)\(url.absoluteString)"
-        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+        guard !(sceneImage?.key == key && sceneTrusted), let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
               !Task.isCancelled else { return }
         // the account or companion may have changed while the image was on its way: keep it only for the same
         // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
         // applied by the caller right after this, so its scene always wins)
         guard sceneOwner == owner, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
         sceneImage = (key, data)
+        sceneFresh = true
     }
 
     /// `loadScene`, given up after `seconds` (a slow or hanging image download never holds a screen).

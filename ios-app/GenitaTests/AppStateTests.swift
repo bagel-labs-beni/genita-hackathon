@@ -510,7 +510,7 @@ import UIKit
         let photo = dir.appending(path: "companion.jpg")
         let model = AppState(storage: store, imageURL: photo)
         model.setup.accountId = "a"; model.setup.imageId = "c1"
-        model.sceneImage = ("a|c1|https://x/scene.jpg", Data([1, 2, 3]))
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         let relaunched = AppState(storage: store, imageURL: photo)
         relaunched.setup.accountId = "a"; relaunched.setup.imageId = "c1"
         XCTAssertNil(relaunched.sceneImageData, "not before the server confirmed the companion")
@@ -532,7 +532,7 @@ import UIKit
         XCTAssertNil(model.companionFaceData, "no scene yet: a placeholder, not the upload")
         model.setup.accountId = "a"; model.setup.imageId = "c1"; model.adoptServerCompanion(imageId: "c1")
         model.setup.imageData = Data([9, 9, 9])
-        model.sceneImage = ("a|c1|https://x/scene.jpg", Data([1, 2, 3]))
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         XCTAssertEqual(model.companionFaceData, Data([1, 2, 3]), "the generated scene")
         model.setup.accountId = "b"
         XCTAssertNil(model.companionFaceData, "another account's scene never shows, and still not the upload")
@@ -545,7 +545,7 @@ import UIKit
         let model = AppState(storage: store, imageURL: photo)
         model.setup.accountId = "a"; model.setup.imageId = "old"
         model.setup.imageData = Data([9])
-        model.sceneImage = ("a|old|https://x/scene.jpg", Data([1, 2, 3]))
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
         XCTAssertNil(model.sceneImageData, "unconfirmed at launch: not shown")
         model.adoptServerCompanion(imageId: "new")   // the server has another companion now
         XCTAssertNil(model.sceneImage, "the old companion's scene is dropped (memory and disk)")
@@ -553,7 +553,13 @@ import UIKit
         model.setup.imageId = "new"
         XCTAssertNil(model.sceneImageData)
         XCTAssertNil(AppState(storage: store, imageURL: photo).sceneImage, "gone after a relaunch too")
-        model.sceneImage = ("a|old|https://x/scene.jpg", Data([1]))
-        XCTAssertNil(model.sceneImageData, "a scene keyed to another companion never counts")
+        let other = AppState(storage: store, imageURL: photo)
+        other.setup.accountId = "a"; other.setup.imageId = "new"
+        other.sceneImage = ("a|https://x/scene.jpg", Data([7]))      // cached by whichever companion, same URL
+        let next = AppState(storage: store, imageURL: photo)
+        next.setup.accountId = "a"; next.setup.imageId = "new"
+        XCTAssertNil(next.sceneImageData, "a cached scene waits for the server's word, even with the same key")
+        next.adoptServerCompanion(imageId: "new")
+        XCTAssertEqual(next.sceneImageData, Data([7]), "same companion confirmed: the cache counts")
     }
 }
