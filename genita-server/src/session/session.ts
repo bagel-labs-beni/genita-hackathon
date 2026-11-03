@@ -143,6 +143,13 @@ export type SessionDeps = {
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
    */
   companionVoiceId?: () => Promise<string | null | undefined>;
+  /**
+   * AU-53: the name saved on this account's companion (prep store; a voice rename writes it there). It wins over
+   * start.persona.name, so a device with a cached older name still calls the companion by its current one.
+   */
+  companionName?: () => Promise<string | null | undefined>;
+  /** AU-42: the account's own name (users.display_name), used only when start.user.name is missing (the Mac sends none) */
+  accountName?: () => Promise<string | null | undefined>;
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
@@ -476,6 +483,9 @@ export class Session {
   private voiceOverflow = false;
   /** the account's saved companion voice (same presence), looked up as the socket opens */
   private readonly ownedVoice: Promise<string | null>;
+  /** AU-53 / AU-42: the stored companion name and the account's name, looked up as the socket opens (bounded) */
+  private readonly ownedName: Promise<string | null>;
+  private readonly accountName: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -553,6 +563,8 @@ export class Session {
     this.voiceId = deps.config.defaultVoiceId;
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
+    this.ownedName = this.boundedLookup(deps.companionName, 80);
+    this.accountName = this.boundedLookup(deps.accountName, 80);
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
@@ -601,6 +613,19 @@ export class Session {
       const lookup = this.deps.companionVoiceId;
       const id = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
       return typeof id === "string" && id.trim() ? id.trim().slice(0, 64) : null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** A start lookup that never holds the call up: null when unset, failed, blank, or slower than COMPANION_VOICE_WAIT_MS. */
+  private async boundedLookup(lookup: (() => Promise<string | null | undefined>) | undefined, max: number): Promise<string | null> {
+    if (!lookup) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
+    try {
+      const v = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
+      return str(v, max) ?? null;
     } finally {
       clearTimeout(timer);
     }
@@ -834,6 +859,20 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
+    const [ownedName, accountName] = await Promise.all([this.ownedName, this.accountName]);
+    if (this.closed) return;
+    // AU-42: the Mac never sends start.user.name; the account's name fills it (a name the app sent always wins)
+    if (!this.user?.name && accountName) this.user = { ...this.user, name: accountName };
+    // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
+    // Same rule as the voice: not once something already started speaking under the old name.
+    let nameSynced = false;
+    if (ownedName && ownedName !== this.persona!.name) {
+      if (this.turn.utteranceId === 0 && !this.reply) {
+        this.log("companion.name_synced", { chars: [...ownedName].length });
+        this.persona = { ...this.persona!, name: ownedName };
+        nameSynced = true;
+      } else this.log("companion.name_late", {});
+    }
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
@@ -885,6 +924,8 @@ export class Session {
       ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    // AU-53: the app's labels (and its reconnect start) follow the stored name, the same event as a voice rename
+    if (nameSynced) this.client.sendJson({ type: "companion.named", name: this.persona!.name });
     this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
