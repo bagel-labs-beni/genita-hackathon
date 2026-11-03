@@ -95,7 +95,7 @@ struct InsightReportView: View {
         .background(InsightInk.canvas.ignoresSafeArea())
         .sheet(item: $fixing) { o in
             InsightFixSheet(model: model, observation: o) { fixing = nil }
-                .presentationDetents([.height(420)]).presentationCornerRadius(24)
+                .presentationDetents([.height(440), .large]).presentationCornerRadius(24)
         }
         .task {
             if model.insightReport == nil || model.insightReport?.settings == nil { await model.loadInsights() }
@@ -314,7 +314,7 @@ struct InsightMixRow: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(mix.left) or \(mix.right.lowercased()): closer to \(mix.position <= 2 ? mix.left.lowercased() : mix.right.lowercased()).\(mix.evidence.map { " You picked \($0.quote)." } ?? "")")
+        .accessibilityLabel("\(mix.left) or \(mix.right.lowercased()): \(mix.position == 2 ? "in the middle" : "closer to " + (mix.position < 2 ? mix.left.lowercased() : mix.right.lowercased())).\(mix.evidence.map { " You picked \($0.quote)." } ?? "")")
     }
 }
 
@@ -484,6 +484,10 @@ struct InsightFixSheet: View {
     private static let quick = ["Sometimes", "Not really me", "It’s the opposite"]
 
     var body: some View {
+        ScrollView(.vertical, showsIndicators: false) { content }.scrollBounceBehavior(.basedOnSize).background(InsightInk.canvas)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             HISYTitle(text: "What’s off?", size: 28, line: 32).padding(.top, 28)
             Text("Pick one, or tell me what’s right.").insightText(15, line: 22, color: InsightInk.mute)
@@ -510,9 +514,8 @@ struct InsightFixSheet: View {
             }
             .buttonStyle(.plain).accessibilityIdentifier("insightRemove")
         }
-        .padding(.horizontal, 24)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(InsightInk.canvas)
+        .padding(.horizontal, 24).padding(.bottom, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var correction: String {

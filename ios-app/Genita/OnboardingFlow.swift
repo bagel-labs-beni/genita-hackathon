@@ -458,39 +458,53 @@ extension AppState {
     var useInsightReport: Bool { insightsEnabled && !insightUnavailable && (serverWired || insightReport != nil) }
 
     /// P-last (and SUM) opens: the answers so far go to the server, which rewrites the report in the background.
+    /// Recorded as sent only after the server took them (a failed POST is sent again next time).
     func sendInsightAnswers() {
         guard serverWired, insightsEnabled else { return }
         let answers = prefsAnswers
         let key = (try? JSONSerialization.data(withJSONObject: answers, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) }
         guard key != insightAnswersSent else { return }
-        insightAnswersSent = key
         insightUnavailable = false
-        Task { try? await onboarding.insightAnswers(answers) }
+        let request = onboardingSnapshot()
+        let previous = insightAnswersTask
+        insightAnswersTask = Task {
+            await previous?.value
+            do {
+                try await onboarding.insightAnswers(answers)
+                if ownsOnboardingResponse(request) { insightAnswersSent = key }
+            } catch {}
+        }
     }
 
     /// SUM: the report; the server holds each ask up to 6 s while it writes (`pending` may carry the earlier one,
-    /// shown meanwhile). Three tries; nothing → the old SUM.
+    /// shown meanwhile). Waits for the answers POST first. Three tries; nothing → the old SUM.
     func loadInsights() async {
         guard serverWired, insightsEnabled, !insightLoading else { return }
         insightLoading = true
         defer { insightLoading = false }
+        await insightAnswersTask?.value
+        let request = onboardingSnapshot()
         for _ in 0..<3 {
             do {
                 let r = try await onboarding.insights(wait: 6)
-                if let report = r.report, !report.observations.isEmpty || r.status == .ready { insightReport = report }
+                guard ownsOnboardingResponse(request), !Task.isCancelled else { return }
+                if let report = r.report, insightVerdictTask == nil { insightReport = report }
                 if r.status == .ready { return }
                 if r.status == .none || r.status == .failed { break }
             } catch {
-                route(error); break
+                if ownsOnboardingResponse(request) { route(error) }
+                break
             }
         }
-        if insightReport == nil { insightUnavailable = true }
+        if insightReport == nil, ownsOnboardingResponse(request) { insightUnavailable = true }
     }
 
-    /// "That's me" (right) / "Not quite" Save or Remove (not_me). Optimistic for right; not_me takes the server's
-    /// report (the trait and what was built on it go). Returns an error line for the sheet (nil = done).
+    /// "That's me" (right) / "Not quite" Save or Remove (not_me), one after another. right is shown at once and
+    /// undone if the server didn't take it; not_me takes the server's report (the trait and what was built on it go).
+    /// Returns an error line (nil = done).
     @discardableResult
     func insightVerdict(id: String, verdict: String, correction: String? = nil) async -> String? {
+        let before = insightReport?.observations.first { $0.id == id }
         if verdict == "right", var r = insightReport, let i = r.observations.firstIndex(where: { $0.id == id }) {
             r.observations[i].verdict = "right"; r.observations[i].confidence = "high"; insightReport = r
         }
@@ -498,13 +512,28 @@ extension AppState {
             if verdict == "not_me", var r = insightReport { r.observations.removeAll { $0.id == id }; insightReport = r }
             return nil
         }
-        do {
-            insightReport = try await onboarding.insightVerdict(id: id, verdict: verdict, correction: correction)
-            return nil
-        } catch {
-            route(error)
-            return Self.errorLine(error)
+        let request = onboardingSnapshot()
+        let previous = insightVerdictTask
+        let task = Task<String?, Never> {
+            _ = await previous?.value
+            do {
+                let r = try await onboarding.insightVerdict(id: id, verdict: verdict, correction: correction)
+                if ownsOnboardingResponse(request) { insightReport = r }
+                return nil
+            } catch {
+                guard ownsOnboardingResponse(request) else { return nil }
+                route(error)
+                // undo the optimistic "That's me"
+                if verdict == "right", let before, var r = insightReport, let i = r.observations.firstIndex(where: { $0.id == id }) {
+                    r.observations[i] = before; insightReport = r
+                }
+                return Self.errorLine(error)
+            }
         }
+        insightVerdictTask = task
+        let out = await task.value
+        if insightVerdictTask == task { insightVerdictTask = nil }
+        return out
     }
 
     // MARK: SUM → PREP-1 (F4, D38)
