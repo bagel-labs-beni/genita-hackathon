@@ -7,6 +7,7 @@
 import { META_BASE, UpstreamError, metaHeaders, metaJson } from "./http.ts";
 import { getOps } from "../ops/limits.ts";
 import { SseParser } from "./sse.ts";
+import { openHopTimeoutMs, logLlm, openFallbackFor, sparkOpenJson } from "./sparkOpen.ts";
 
 export const SPARK_MODEL = "muse-spark-1.3";
 
@@ -137,7 +138,7 @@ export const JSON_RETRY_MS = 600;
 const retryable = (err: unknown) => err instanceof UpstreamError && (err.status === null || err.status >= 500 || err.status === 429);
 
 /** Structured output via text.format json_schema; returns the parsed object. */
-export async function sparkJson<T>(
+export async function museJson<T>(
   key: string,
   req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> },
   signal?: AbortSignal,
@@ -159,4 +160,24 @@ export async function sparkJson<T>(
   const m = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
   if (!m) throw new UpstreamError("meta", null, `spark json: no JSON in reply: ${raw.slice(0, 120)}`);
   return JSON.parse(m[0]) as T;
+}
+
+/**
+ * sparkJson = museJson (the Muse Spark API json_schema call above) + one Muse Spark Open hop: a Muse Spark
+ * API 5xx/504 (or network failure) on a text-only call tries Muse Spark Open on Baseten once when it is
+ * configured (meta/sparkOpen.ts); if that fails too, the original error is thrown. museJson alone (no hop)
+ * is what sparkOpen.ts falls back to, so the two never bounce.
+ */
+export async function sparkJson<T>(...args: Parameters<typeof museJson>): Promise<T> {
+  const [, req, signal] = args;
+  try {
+    return await museJson<T>(...args);
+  } catch (err) {
+    const open = openFallbackFor(err, req, signal);
+    if (!open) throw err;
+    logLlm("llm.fallback", { from: SPARK_MODEL, to: open.name, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
+    // its own budget even when the caller passed none (Codex P2): an outage must still end in the original error
+    const budget = AbortSignal.timeout(openHopTimeoutMs());
+    return sparkOpenJson<T>(open, req, signal ? AbortSignal.any([signal, budget]) : budget).catch(() => { throw err; });
+  }
 }

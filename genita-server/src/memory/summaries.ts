@@ -9,7 +9,8 @@
  * thread (server.ts passes the thread id with the handed-off turns), so the iPhone and the Mac
  * write the same row and the fuller version wins. Forget (one item or all) drops every summary.
  */
-import { sparkJson } from "../meta/spark.ts";
+import { museJson } from "../meta/spark.ts";
+import { backgroundJson } from "../meta/sparkOpen.ts";
 import { safeMemoryText, type StructuredClient, type Turn } from "./extract.ts";
 
 export type CallSummary = {
@@ -138,10 +139,11 @@ export function createSummarizer(client: StructuredClient, safety?: LineSafety):
 }
 
 export const metaSummarizer = (key: string): Summarizer => {
-  // background only, so one retry on an empty/invalid vendor answer costs no reply latency
+  // background only: Muse Spark Open on Baseten first, then the Muse Spark API (meta/sparkOpen.ts),
+  // plus one more Muse try on an empty/invalid answer — no reply latency either way
   const client: StructuredClient = <T,>(req: Parameters<StructuredClient>[0]) =>
-    // this already retries every failure once: no second, inner 5xx retry on top (Codex: 2 → 4 calls in an outage)
-    sparkJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }).catch(() => sparkJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }));
+    // backgroundJson has its own fallback; the last resort is one plain call, no inner 5xx retry on top (Codex: 2 → 4 calls)
+    backgroundJson<T>(key, req, { timeoutMs: 30_000 }).catch(() => museJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }));
   return createSummarizer(client, createLineSafety(client));
 };
 

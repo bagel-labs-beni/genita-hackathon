@@ -160,12 +160,12 @@ struct MacConversationView: View {
         }
         .onChange(of: macCall.isSignedIn) { _, signedIn in if !signedIn { sharing.stop(); sharing.watchConfig = nil } }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
-        .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
+        .sheet(isPresented: $settingsOpen) { MacSettingsSheet(compact: true) }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
             Button("OK") { interpret.stage = .idle }
         } message: { if case let .failed(message) = interpret.stage { Text(message) } }
         .onDisappear { if interpret.isLive { interpret.stop() } }
-        .alert("Screen sharing could not start", isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
+        .alert(sharing.errorTitle, isPresented: Binding(get: { sharing.error != nil }, set: { if !$0 { sharing.error = nil } })) { Button("OK") { sharing.error = nil } } message: { Text(sharing.error ?? "") }
     }
     /// INT-M0 · pick the call app, then Start interpreting.
     private var interpretSheet: some View {
