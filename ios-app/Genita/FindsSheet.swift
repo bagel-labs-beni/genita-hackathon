@@ -342,6 +342,15 @@ struct FindsSheet: View {
         }.frame(width: size.width - 76).padding(.horizontal, 38)
     }
 
+    static func newFindLabel(_ kind: FindKind?) -> String {
+        switch kind {
+        case .recipe: "New recipe"
+        case .outfit: "New outfit"
+        case .product: "New pick"
+        default: "New find"
+        }
+    }
+
     static func cta(_ kind: FindKind) -> String {
         switch kind {
         case .recipe: "Walk me through it"
@@ -354,14 +363,17 @@ struct FindsSheet: View {
 
     // r03 #11: a new result waits above the card you're reading.
     private var newFindBanner: some View {
-        let title = finds.entries.first { $0.id == finds.newFind }?.card?.title ?? ""
+        let card = finds.entries.first { $0.id == finds.newFind }?.card
+        // the kind only, never a cut title ("New: Wear the tren…", pixel QA 11/4); the title is in the VoiceOver label
+        let label = Self.newFindLabel(card?.kind)
         return Button { withAnimation(.drawer) { finds.viewNewFind() } } label: {
             HStack(spacing: 8) {
                 FindsTalkWave(color: CallInk.onInk)
-                (Text("New: ") + Text(title).fontWeight(.semibold)).font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                Text(label).font(TypeStyle.body(14, .semibold)).foregroundStyle(CallInk.onInk).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Text("View").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
-            }.padding(.horizontal, 12).frame(width: 228, height: 44).background(GlassCTA(color: CallInk.ink))
+            }.padding(.leading, 14).padding(.trailing, 12).frame(width: 228, height: 44).background(GlassCTA(color: CallInk.ink))
         }
+        .accessibilityLabel(card.map { "\(label): \($0.title). View" } ?? "\(label). View")
         .buttonStyle(PressScale())
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 38).padding(.top, finds.state == .full ? 72 : 40)
         .transition(.opacity.combined(with: .offset(y: -8)))
