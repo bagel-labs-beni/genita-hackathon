@@ -243,7 +243,7 @@ test("QA P2 (S4 1/4): Spark ignores the move-to-Mac ask and gives outfit advice 
       yield { type: "done", responseId: "r", text: "", status: "completed" };
     };
     const s = new Session(`qa${i}`, sink, deps);
-    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Peter" }, mic: false }));
+    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
     for (let k = 0; k < i; k++) await s.onClientText(JSON.stringify({ type: "text", text: "hi" })); // rotate utterance ids
     const before = replies(events);
     await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
