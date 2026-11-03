@@ -148,6 +148,7 @@ enum SoulOrbLook {
     static let spread: Float = 0.02, swirl: Float = 2, dotSize: Float = 1.2, density: Float = 2, softness: Float = 0.71
     /// PerspectiveCamera(35°, …, 0.1, 30) at z 6.8, zoom 2.65
     static let fov = 35.0, zoom = 2.65, near = 0.1, far = 30.0, cameraZ = 6.8
+    static let maxPixelRatio: CGFloat = 1.5
 
     /// three.js Color.set(hex) under ColorManagement: sRGB → linear
     static func linear(_ hex: Int) -> SIMD4<Float> {
@@ -354,7 +355,13 @@ final class SoulOrbMTKView: MTKView {
     required init(coder: NSCoder) { fatalError("init(coder:) is not used") }
     deinit { for o in observers { NotificationCenter.default.removeObserver(o) } }
 
-    override func didMoveToWindow() { super.didMoveToWindow(); updatePaused() }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // entry.js: renderer.setPixelRatio(min(devicePixelRatio, 1.5)) — drawn at 1.5× and scaled up, which is what
+        // gives Dyno's dots their soft edge (and costs a quarter of the 3× pixels)
+        if let window { contentScaleFactor = min(window.screen.scale, SoulOrbLook.maxPixelRatio) }
+        updatePaused()
+    }
 
     private func updatePaused() {
         let pause = window == nil || background
