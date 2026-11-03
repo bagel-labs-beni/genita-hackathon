@@ -151,4 +151,48 @@ struct ScreenSharingRequestTests {
         #expect(!request.isCurrent(previous))
         #expect(!request.isCurrent(latest))
     }
+
+    // #318 review P1: A's picker answers late, after logout and after B opened a picker.
+    @Test func aStalePickerSelectionCannotConsumeTheNextAccountsRequest() {
+        var request = ScreenSharingRequest()
+        request.begin()                      // A opens the picker
+        request.invalidate()                 // A signs out while it is still on screen
+        #expect(request.stalePicker)
+        let b = request.begin()              // B opens a picker
+        #expect(request.beginCapture() == nil)   // A's late selection: dropped
+        #expect(request.isCurrent(b))            // B's request is untouched
+        #expect(request.beginCapture() == b)     // B's own selection starts B's capture
+        #expect(!request.stalePicker)
+    }
+
+    @Test func aStalePickerCancelDoesNotCancelTheNextPicker() {
+        var request = ScreenSharingRequest()
+        request.begin()
+        request.invalidate()
+        let b = request.begin()
+        #expect(request.cancelPicker() == false)  // A's cancel: dropped
+        #expect(request.isCurrent(b))
+        #expect(request.cancelPicker() == true)   // B's own cancel
+        #expect(request.current == nil)
+    }
+
+    @Test func afterTheWaitTheNextCallbackBelongsToTheNewPicker() {
+        var request = ScreenSharingRequest()
+        request.begin()
+        request.invalidate()
+        request.clearStalePicker()               // the app waited; A's picker never answered
+        let b = request.begin()
+        #expect(request.beginCapture() == b)
+    }
+
+    @Test func stopWithoutAnOpenPickerLeavesNothingStale() {
+        var request = ScreenSharingRequest()
+        request.begin()
+        let active = request.beginCapture()!
+        #expect(request.completeCapture(active))
+        request.invalidate()
+        #expect(!request.stalePicker)
+        let b = request.begin()
+        #expect(request.beginCapture() == b)
+    }
 }

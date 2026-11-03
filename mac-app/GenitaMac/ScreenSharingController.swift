@@ -77,12 +77,31 @@ import CoreMedia
         showPicker()
     }
     func showPicker() {
-        captureRequest.begin()
+        let request = captureRequest.begin()
         stopStartingCapture()
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = [.singleDisplay, .singleWindow]
         if let id = Bundle.main.bundleIdentifier { configuration.excludedBundleIDs = [id] }
         SCContentSharingPicker.shared.defaultConfiguration = configuration
+        // #318 review P1: a picker opened before the last stop/logout may still answer, and the shared picker's
+        // callbacks don't say which presentation they belong to. Close it, and present this one only after its
+        // answer (dropped by ScreenSharingRequest) or a short wait, so the next answer is this picker's.
+        guard captureRequest.stalePicker else { return presentPicker() }
+        SCContentSharingPicker.shared.isActive = false
+        staleWait?.cancel()
+        staleWait = Task { @MainActor [weak self] in
+            for _ in 0..<15 {   // ≤ 1.5 s
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
+                if !self.captureRequest.stalePicker { break }
+            }
+            guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
+            self.captureRequest.clearStalePicker()
+            self.presentPicker()
+        }
+    }
+    private var staleWait: Task<Void, Never>?
+    private func presentPicker() {
         SCContentSharingPicker.shared.isActive = true
         SCContentSharingPicker.shared.present()
     }
@@ -90,6 +109,7 @@ import CoreMedia
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
     }
     func stop() {
+        staleWait?.cancel(); staleWait = nil
         captureRequest.invalidate()
         stopStartingCapture()
         let old = activeCapture; activeCapture = nil; isSharing = false

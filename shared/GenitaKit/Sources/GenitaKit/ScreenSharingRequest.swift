@@ -1,10 +1,20 @@
 /// Picker, starting and active captures have separate lifetimes. Opening or cancelling
 /// a picker leaves active media authorized; stop/logout invalidates all three.
+///
+/// The system picker (`SCContentSharingPicker.shared`) is one shared UI whose callbacks carry no presentation id.
+/// If stop/logout happens while a picker is still open, its late callback must not be taken as the next picker's
+/// answer (#318 review P1: A's selection consumed B's request and A's screen reached B's session). `invalidate()`
+/// marks that presentation stale; the next picker callback is dropped as A's, and the app waits for that (or a
+/// short timeout, `clearStalePicker()`) before presenting B's picker.
 public struct ScreenSharingRequest: Sendable {
     private var generation: UInt64 = 0
     public private(set) var current: UInt64?
     private var starting: UInt64?
     private var active: UInt64?
+    /// A picker presentation is on screen (begin() without a callback yet).
+    private var pickerOpen = false
+    /// A presentation from before the last stop/logout may still answer.
+    public private(set) var stalePicker = false
 
     public init() {}
 
@@ -12,14 +22,27 @@ public struct ScreenSharingRequest: Sendable {
         generation &+= 1
         current = generation
         starting = nil
+        pickerOpen = true
         return generation
     }
 
-    public mutating func cancelPicker() { current = nil }
+    /// The picker was cancelled. False = it was the stale presentation's answer (dropped, the current request stays).
+    @discardableResult public mutating func cancelPicker() -> Bool {
+        if stalePicker { stalePicker = false; return false }
+        current = nil
+        pickerOpen = false
+        return true
+    }
 
-    /// Consume a picker selection once, before any asynchronous work starts.
+    /// The stale presentation is assumed gone (no callback within the app's wait); the next callback is current's.
+    public mutating func clearStalePicker() { stalePicker = false }
+
+    /// Consume a picker selection once, before any asynchronous work starts. A stale presentation's selection is
+    /// consumed here and dropped (nil), leaving the current request untouched.
     public mutating func beginCapture() -> UInt64? {
+        if stalePicker { stalePicker = false; return nil }
         guard let current else { return nil }
+        pickerOpen = false
         self.current = nil
         starting = current
         return current
@@ -36,7 +59,11 @@ public struct ScreenSharingRequest: Sendable {
         if isStarting(request) { starting = nil }
     }
 
-    public mutating func invalidate() { current = nil; starting = nil; active = nil }
+    public mutating func invalidate() {
+        if pickerOpen { stalePicker = true }
+        pickerOpen = false
+        current = nil; starting = nil; active = nil
+    }
 
     public func isCurrent(_ request: UInt64) -> Bool { current == request }
     public func isStarting(_ request: UInt64) -> Bool { starting == request }
