@@ -356,6 +356,17 @@ export async function startServer(
     }
     return null;
   }
+  /**
+   * Personalize (P1 11/3, demo S4): this call continues the account's conversation from the OTHER device — a live
+   * call there, or one that ended there < 10 min ago. Independent of memory (off or slow) and of `start.handoff`.
+   */
+  function continuesOtherDevice(userId: string, self: string, device: string): boolean {
+    for (const [sid, u] of sessionUsers) {
+      if (u === userId && sid !== self && sessionDevices.get(sid) !== device) return true;
+    }
+    const cached = lastTurns.get(userId);
+    return !!cached && cached.device !== device && Date.now() - cached.at < 10 * 60_000;
+  }
   function priorThread(self: string): ThreadState | null {
     const t = handedThread.get(self) ?? null;
     handedThread.delete(self);
@@ -421,6 +432,7 @@ export async function startServer(
     const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId,
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
+      continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
       onHistoryChange: (role) => {
         const p = progress.get(id) ?? zero;
         progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });

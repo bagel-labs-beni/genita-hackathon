@@ -293,3 +293,134 @@ test("Knows-Me × v1: no second personal mention — the nod stays out, the loca
   assert.match(s.sparkCalls[0].instructions!, /for the user\. Use it only for timing/);
   s.session.close();
 });
+
+// ---------- P1 11/3 (demo S4): no getting-to-know-you question on a handoff or while watching together ----------
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FileStore } from "../src/prep/store.ts";
+import { Personalize } from "../src/personalize/service.ts";
+import { toStyleCard } from "../src/prep/importProfile.ts";
+
+const f1 = (text: string) => ({ text, label: "explicit" as const, scope: "any" });
+function realPersonalize(t: { after: (fn: () => void) => void }) {
+  const dir = mkdtempSync(join(tmpdir(), "p1-handoff-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const p = new Personalize({ store, json: (async () => ({ updates: [], answered: { field: "", text: "", chip: "" } })) as never });
+  return { store, p };
+}
+const RAW = {
+  sections: { tendencies: [], communication: [f1("Warm and direct.")], response: [f1("Short answers first.")], help: [], support: [], interests: [], likes: [f1("Style: Clean, minimal clothes.")], boundaries: [], approach: [] },
+  rules: [],
+  to_confirm: ["Reminder frequency", "Favorite shows", "Weekend rhythm"],
+};
+async function call(p: Personalize, start: Record<string, unknown>) {
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("h", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, ...start }));
+  for (let i = 1; i <= 3; i++) {
+    await session.onClientText(JSON.stringify({ type: "text", text: `Turn ${i}, hello.` }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length === i);
+    await sleep(20);
+  }
+  return { session, calls, asks: calls.filter((c) => /ask one casual question to learn about/.test(c.instructions!)).length };
+}
+
+test("P1 S4: phone call → Mac handoff: the Mac call never asks and isn't counted; calls 1–3 still ask one each", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const phone = await call(p, {});
+  assert.ok(phone.asks > 0, "call 1 asks its question");
+  phone.session.close();
+  const mac = await call(p, { handoff: true, history: [{ role: "user", text: "Find a jacket for Friday." }] });
+  assert.equal(mac.asks, 0, "the continued call on the Mac asks nothing");
+  mac.session.close();
+  assert.equal((await store.getStyle("u1"))!.growth!.calls, 1, "a handoff is not a new call");
+  // the next real calls are calls 2 and 3: one question each, then none
+  for (const want of [true, true, false]) {
+    const c = await call(p, {});
+    assert.equal(c.asks > 0, want);
+    c.session.close();
+  }
+  assert.equal((await store.getStyle("u1"))!.growth!.calls, 4);
+});
+
+test("P1: watch together attached before the question → no question, the call count and topic are given back", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("w", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Ha." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  assert.ok(session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  await session.onClientText(JSON.stringify({ type: "text", text: "This show is wild." }));
+  await client.waitFor(() => client.json.some((m) => m.type === "reply"));
+  assert.doesNotMatch(calls[0].instructions!, /ask one casual question to learn about/);
+  await sleep(30);
+  const g = (await store.getStyle("u1"))!.growth!;
+  assert.equal(g.calls, 0);
+  assert.ok(!g.asked.some((a) => a.item === "Reminder frequency"), "the topic is free for the next call");
+  session.close();
+});
+
+test("Codex P1 #1: a handoff the server sees (other device) is a continuation even with memory off and no start.handoff", async (t) => {
+  const { store, p } = realPersonalize(t);
+  await store.putStyle("u1", toStyleCard(RAW, "import"));
+  const client = new Client();
+  const calls: SparkRequest[] = [];
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const session = new Session("m", client, {
+    config,
+    openAsr: () => asr,
+    async *spark(req) { calls.push(req); yield { type: "text", delta: "<happy> Sure." }; yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+    userId: "u1",
+    personalize: p,
+    continuesCall: () => true,
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a jacket for Friday." }));
+  await client.waitFor(() => client.json.some((m) => m.type === "reply"));
+  assert.doesNotMatch(calls[0].instructions!, /ask one casual question to learn about/);
+  assert.equal((await store.getStyle("u1"))!.growth?.calls ?? 0, 0);
+  session.close();
+});
+
+test("Codex P1 #2: a reply already asking the question when watch together attaches drops that sentence", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  // a slow reply that asks the planned question ("Weekend rhythm" / "Busy or slow?")
+  (s.session as unknown as { deps: SessionDeps }).deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Fun. Are your weekends busy, or slow?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Fun.");
+  assert.ok(!s.client.json.some((m) => m.type === "profile.asking"));
+  s.session.close();
+});
