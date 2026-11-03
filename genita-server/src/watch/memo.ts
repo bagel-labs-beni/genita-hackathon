@@ -81,7 +81,7 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
   const who = m.companion.traits.length ? `${m.companion.name} (${m.companion.traits.slice(0, 4).join(", ")})` : m.companion.name;
   const instructions = [
     `You keep a running memo while ${who} watches the user's shared screen with them. It can be anything: a show, a game, a website, a document.`,
-    "memo: one or two short lines on what is NEW in these frames and lines (who or what is on screen, what happened, what was said). Don't repeat the memo so far. If the frames are black, write \"Screen is black.\"",
+    "memo: one or two short lines on what is NEW in these frames and lines (who or what is on screen, who comes in or leaves, what happened, what was said). Don't repeat the memo so far. If the frames are black, write \"Screen is black.\"",
     "The frames are a short sequence since the last memo (0.6–1 s apart), oldest first: read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline, the page or video title).",
     "The window title tells you what the page or video is (a YouTube video's title, a site); use it to understand the content, but only the frames and lines say what is happening right now.",
     `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and for code, menus or scrolling the same page). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
@@ -269,7 +269,7 @@ export function buildQuestionContext(c: {
   // AI sweep 11/3 (recall with the moment frame): "white twenty two went up", "Twenty eight went way up" — the visible
   // jersey was 25; small blurry numbers get misread
   // convo-intel eval 11/4: "why does he keep taking it off the heat?" got the caption read back, never the reason
-  out.push("If the user asks about it, answer in one short sentence. What's on screen: only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign). If they ask why or how, give the reason too: what the video said, or else common knowledge (\"so the eggs stay creamy\"), not the caption read back.");
+  out.push("If the user asks about it, answer in one short sentence. What's on screen: only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign). A comment or joke is fine, but it never adds an event, object or line that isn't in the frames or lines (nothing off screen or afterwards), and a quoted line stays exact. If they ask why or how, give the reason too: what the video said, or else common knowledge (\"so the eggs stay creamy\"), not the caption read back.");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }

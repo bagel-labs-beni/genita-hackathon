@@ -267,7 +267,7 @@ async function judgeVideo(truth: string, key: string | undefined, q: string, a: 
   for (let i = 0; i < 3; i++) {
     try {
       const g = await sparkText(config.metaKey, {
-        input: `A friend watched a short video with the user and answered the user's question about it.\nWhat the video shows (checked frame by frame by a person): ${truth}${key ? `\nExpected answer for this question: ${key}` : ""}\nQuestion: ${q}\nAnswer given: ${a}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the answer gets the question right per the video (casual wording, extra chat and jokes are fine); invented = it states a concrete detail the video does not show or contradicts (a person, object, event, quote, number). A figure of speech about something that is there invents nothing. why = 3 to 10 words.`,
+        input: `A friend watched a short video with the user and answered the user's question about it.\nWhat the video shows (checked frame by frame by a person): ${truth}${key ? `\nExpected answer for this question: ${key}` : ""}\nQuestion: ${q}\nAnswer given: ${a}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the answer gets the question right per the video (casual wording, extra chat and jokes are fine); invented = it states a concrete detail the video does not show or contradicts (a person, object, event, quote, number). A figure of speech about something that is there invents nothing, and the user is called Chelsea (saying her name is fine). why = 3 to 10 words.`,
         effort: "low",
       });
       const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;

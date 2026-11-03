@@ -59,3 +59,12 @@ test("camera turns (both prompt styles) say: name only actions seen in the frame
     assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style } as never), /Name only actions you can see/, `${style} without camera`);
   }
 });
+
+// CW-03 11/4: "closed the doors on her", "right in the doorway" — answers added what the frames never showed
+test("question context: a joke never adds an event, object or line; the memo notes who comes in", async () => {
+  const { buildQuestionContext } = await import("../src/watch/memo.ts");
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines: [], names: new Map(), frames: ["data:image/jpeg;base64,AA"], blank: false });
+  assert.match(q.instructions, /never adds an event, object or line that isn't in the frames or lines/);
+  const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
+  assert.match(String(memo.instructions), /who comes in or leaves/);
+});
