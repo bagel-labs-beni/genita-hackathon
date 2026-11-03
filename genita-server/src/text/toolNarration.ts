@@ -74,7 +74,9 @@ function isNarrationClause(clause: string): boolean {
   if (!s) return false;
   if (isNarrowNarration(s)) return true;
   if (META.test(s)) return metaIsUser && !META_GUARD.test(s);
-  if (WAIT_TO.test(s) || CHOOSE_PLAN.test(s)) return true;
+  if (WAIT_TO.test(s)) return true;
+  // a plan to choose — unless the choice is in the same clause ("I'll pick one for you and it's the trench", "I'll pick one: the trench", Codex r17)
+  if (CHOOSE_PLAN.test(s) && !/[:]|\b(?:it'?s|is|are|was|and (?:it|that|this)|the winner is)\b/.test(s)) return true;
   // "…for that but tofu works": a turn in the clause keeps it
   // "between the trench and denim" / "… and choose tonight" are part of the announcement, not a second statement
   const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "");
@@ -159,7 +161,7 @@ const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|th
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
-const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b|a favou?rite|the winner|a winner|something|for you)|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
+const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you)|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
 const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
 /** An eager first clause cut at a dash ("City Hall from here —") waits for the rest of its sentence. */
 const DASH_END = /[—–]\s*$/;

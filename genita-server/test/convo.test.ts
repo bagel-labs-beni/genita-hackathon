@@ -625,3 +625,11 @@ test("bug-fix 5784953 outfit 3/6: a choice promised with nothing chosen is an an
   }
   assert.ok(!isToolNarration("I'll pick the trench for you."));
 });
+
+test("Codex r17: a plan with the choice in it stays ('… and it's the trench', 'I'll pick one: the trench')", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  assert.ok(!isToolNarration("I'll pick one for you and it's the trench."));
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick one: the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /the trench/);
+});
