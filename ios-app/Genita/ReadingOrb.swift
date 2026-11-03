@@ -40,7 +40,7 @@ struct ReadingOrb: View {
     }
 
     /// #508's motion on the PNG: the fallback when the live orb is off (GENITA_LIVE_ORB=0) or Metal is missing
-    private var stillOrb: some View {
+    @ViewBuilder private var stillOrb: some View {
         let transform = node.paintsRaw?.first?.imageTransform
         let sx = transform?[0][0] ?? 1, sy = transform?[1][1] ?? 1
         let tx = transform?[0][2] ?? 0, ty = transform?[1][2] ?? 0
