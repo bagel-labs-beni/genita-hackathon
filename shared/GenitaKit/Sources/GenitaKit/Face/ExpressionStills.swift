@@ -3,7 +3,7 @@
 // weight, so plain speech keeps the still-face gates. Pure value type: same calls in the same order → same weights.
 //
 //   event  ─ lead ─┬── clause (startMs…endMs) ──┬── rest of the reply ──┬ audio ends ┬ 2 s ┐
-//   weight   0 ↗ fade in (smoothstep, 0.3 s) → hold level ………………………………………………………………… ↘ fade out (0.5 s) → 0
+//   weight   0 ↗ fade in (smoothstep, 0.3 s; surprise 0.45 s) → hold level ………………………………………………………………… ↘ fade out (0.5 s) → 0
 //   mouth     talking (lip layer; eyes/brows at the still's talk share)          │ the still's own smile joins
 //
 // The hold level follows the server intensity (a warm 0.45 is a soft look, an excited 0.9 the full still). A later
@@ -14,8 +14,10 @@
 import Foundation
 
 struct ExpressionStills {
-    /// Fade in, starting `lead` before the clause's first word (s).
+    /// Fade in, starting `lead` before the clause's first word (s). Surprise is the biggest change on the face (brows
+    /// and lids): 0.45 s keeps its single-frame step under the gate (clay 3.82 grey levels at 0.3 s, 3.07 at 0.4 s).
     static let fadeIn = 0.3, lead = 0.15
+    static func fadeIn(_ e: FaceExpression) -> Double { e == .surprised ? 0.45 : fadeIn }
     /// Fade out after the mood hold (s).
     static let fadeOut = 0.5
     /// The feeling lingers this long after the clause's last word (s), and at least through the rest of the reply
@@ -98,7 +100,7 @@ struct ExpressionStills {
         if let target { keys.insert(target) }
         for k in keys {
             let p = presence[k] ?? 0
-            presence[k] = k == target ? min(1, p + dt / Self.fadeIn) : max(0, p - dt / Self.fadeOut)
+            presence[k] = k == target ? min(1, p + dt / Self.fadeIn(k)) : max(0, p - dt / Self.fadeOut)
         }
         presence = presence.filter { $0.value > 0 }
         if target == nil && presence.isEmpty { level = [:] }

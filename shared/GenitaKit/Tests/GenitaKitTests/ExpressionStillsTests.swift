@@ -76,6 +76,8 @@ struct ExpressionStillsTests {
         for (a, b) in zip(f, f.dropFirst()) { maxStep = max(maxStep, abs((b.w[.warm] ?? 0) - (a.w[.warm] ?? 0))) }
         #expect(maxStep < 0.17 * level, "max frame-to-frame change \(maxStep)")
         #expect(f.allSatisfy { $0.w[.smile] == nil }, "a warm 0.45 is the soft look")
+        // surprise, the biggest change on the face, comes in over 0.45 s (gate: single-frame eye-band step ≤ 3.0)
+        #expect(ExpressionStills.fadeIn(.surprised) == 0.45 && ExpressionStills.fadeIn(.smile) == 0.3)
         // a short reply lets go 2 s after its audio
         var c = ExpressionStills()
         c.add(FaceExpressionEvent(tag: "concerned", intensity: 0.6, startMs: 0, endMs: 500), utterance: 1)
