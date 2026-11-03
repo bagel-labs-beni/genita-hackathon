@@ -203,8 +203,10 @@ import UniformTypeIdentifiers
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
             let readerHeight = max(1, card.y + card.h - body.y - 20)
-            ReferenceEditor(text: .constant(AppState.prompt), node: body, editable: false, placeholder: "", identifier: "promptReader")
+            // ui-deferred: the prompt fades out at the card's scroll edge (no hard cut); the inset lets its last line clear the fade
+            ReferenceEditor(text: .constant(AppState.prompt), node: body, editable: false, placeholder: "", identifier: "promptReader", bottomInset: ScrollEdgeFade.height)
                 .frame(width: body.w + width - 390, height: readerHeight)
+                .bottomScrollFade()
                 .position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + readerHeight / 2)
             Button { UIPasteboard.general.string = AppState.prompt; copied = true } label: {
                 Group { if copied { Image(systemName: "checkmark").foregroundStyle(Color("Ink")) } else { Image(resource: "copy").resizable().frame(width: 19.4526, height: 20.4) } }.frame(width: 44, height: 44)
@@ -491,9 +493,11 @@ struct ReferenceEditor: UIViewRepresentable {
     var editable: Bool
     var placeholder: String
     var identifier: String? = nil
+    /// Room under the last line (a read-only card whose bottom edge fades, see `bottomScrollFade`).
+    var bottomInset: CGFloat = 0
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView(); view.backgroundColor = .clear; view.delegate = context.coordinator
-        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
+        view.textContainerInset = UIEdgeInsets(top: 0, left: 0, bottom: bottomInset, right: 0); view.textContainer.lineFragmentPadding = 0
         view.isEditable = editable; view.isSelectable = true
         view.typingAttributes = node.attributed(" ").attributes(at: 0, effectiveRange: nil)
         let hint = UILabel(); hint.tag = 19; hint.numberOfLines = 0
