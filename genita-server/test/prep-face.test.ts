@@ -366,7 +366,7 @@ test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), 
   for (const v of ["0", "false", "off", " OFF "]) assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: v }), false);
 });
 
-test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D 1.4x — all with a still head; no human block", async () => {
+test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D quicker — all with a still head; no human block", async () => {
   const { withV93Mouth } = await import("../src/prep/face.ts");
   const animal = withV93Mouth({ drive: "open", shownFloor: 0.6, minHold: 3, jaw: { gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.35 } } }, "animal", true);
   assert.equal(animal.shownFloor, 0);
@@ -379,9 +379,11 @@ test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D 1.4x �
   assert.deepEqual([snap.hold, snap.minHold, snap.closedBelow], [1, 2, 0.08]);
   assert.deepEqual(snap.rules, [[["A"], 0.5, "WD", 2], [["O"], 0, "OO"], [["EI"], 0.4, "EE"]]);
   const threeD = withV93Mouth({ gain: 1.8, smoothing: { fps: 25, attack: 0.75, release: 0.5 } }, "character3d", true);
-  assert.equal(threeD.gain, 1.8 * 1.4);
+  assert.equal(threeD.gain, 1.8, "gain untouched (it only saturates)");
   assert.deepEqual(threeD.smoothing, { fps: 25, attack: 0.9, release: 0.7 });
-  assert.equal(withV93Mouth({ gain: 2.5 }, "character3d", true).gain, 3, "capped");
+  assert.equal(threeD.minHold, 1);
+  // a map without a cheek block still gets the still one (the app's default cheek rules move)
+  assert.deepEqual(withV93Mouth({ drive: "open" }, "animal", true).cheek, { spread: 0, pull: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 });
 });
 
 test("faceManifest: the served flow map carries the v9.3 mouth; the switch off serves the prepped map", () => {

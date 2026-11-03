@@ -516,7 +516,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export const STILL_FACE = Object.freeze({
   alive: { headX: 0, headRoll: 0, nodPx: 0, browPx: 0, lockY: true },
   brow: { px: 0 },
-  cheek: { spread: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 },
+  cheek: { spread: 0, pull: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 },
 });
 
 /** People on the lip rig: the prepped Muse keys chosen per vowel class (shape contrast, nothing drawn), lips meet
@@ -533,7 +533,8 @@ const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
 export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
   if (!on) return map;
   const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
-  if (map.cheek !== undefined) out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
+  // always sent: without a block the app falls back to its own moving cheek rules (codex P2)
+  out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
   if (kind === "human") {
     if (!isRecord(map.rig) || map.perioral !== undefined) return out;   // not a rig face, or prep sent its own block: still head only
     return { ...out, perioral: { ...V93_PERIORAL, jawDropPx: 1 }, motionV2: { ...rec(map.motionV2), ...V93_MOTION } };
@@ -551,9 +552,9 @@ export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boo
       : snap.rules;
     return { ...out, lookaheadMs: 60, snap: { ...snap, hold: 1, minHold: 2, closedBelow: 0.08, ...(rules ? { rules } : {}) } };
   }
-  // 3D characters: 1.4x opening (capped), quicker
-  const gain = typeof map.gain === "number" ? Math.min(3, map.gain * 1.4) : undefined;
-  return { ...out, ...(gain !== undefined ? { gain } : {}), minHold: 1, slew: 0.4, smoothing: { fps: 25, ...rec(map.smoothing), attack: 0.9, release: 0.7 } };
+  // 3D characters: quicker open/close (the opening is already at the key's own maximum: a higher gain only
+  // saturates, codex P2 — measured, no change)
+  return { ...out, minHold: 1, slew: 0.4, smoothing: { fps: 25, ...rec(map.smoothing), attack: 0.9, release: 0.7 } };
 }
 
 export function faceManifest(
