@@ -223,7 +223,7 @@ import XCTest
     private func productStarted(_ id: String) -> ServerEvent {
         try! ServerEvent.decode(#"{"type":"find.started","findId":"\#(id)","utteranceId":1,"kind":"product","title":"Finding 2 for your style…","detail":"Jacket"}"#)
     }
-    private let noMatch = #"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
+    private let noMatch = #"{"type":"find.failed","findId":"a","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price."}"#
 
     func testNoMatchFailureSplitsTitleAndBodyAndRetryAsksTheSameQuestion() throws {
         let m = FindsModel()
@@ -235,7 +235,7 @@ import XCTest
         m.apply(try ServerEvent.decode(noMatch))
         let lines = try XCTUnwrap(m.current?.failureLines)
         XCTAssertEqual(lines.title, "Couldn’t find a good match")
-        XCTAssertEqual(lines.body, "Try a color or a price, or ask me again.")
+        XCTAssertEqual(lines.body, "Try a color or a price.")
         XCTAssertEqual(m.state, .searching, "stays the collapsed sheet")
         XCTAssertTrue(m.current?.canRetry == true)
         m.retry()

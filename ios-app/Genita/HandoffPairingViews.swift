@@ -86,7 +86,7 @@ struct PhonePairingView: View {
         VStack(alignment: .leading, spacing: 0) {
             title("Paired with your Mac.").padding(.top, 12)
             Text(handoff.proximitySupported
-                 ? "You can also move by touching your Mac’s screen edge. Show this iPhone your Mac’s screen once to set it up."
+                 ? "You can also move by touching your Mac’s\u{00A0}screen edge. Show this iPhone your Mac’s\u{00A0}screen once to set it up."   // "Mac’s / screen" never splits (pixel QA)
                  : "Use Move to Mac in the menu to move the conversation.")
                 .font(.custom("PretendardVariable-Regular", fixedSize: 16)).foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).padding(.top, 16)
             if handoff.proximitySupported {
