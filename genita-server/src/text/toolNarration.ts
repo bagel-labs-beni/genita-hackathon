@@ -47,7 +47,8 @@ const LOOKUP_INTENT = new RegExp(`^(?:(?:${WAIT})${SEPARATOR})?(?:i'll|i will|le
 /** Web/maps promises ("I'll pull up the best route to City Hall for you", smoke 11/3). */
 const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?: (?:just|quickly|quick|go|now|first))* (?:pull up|look up|find|check|map out|get|grab) (?:you )?(?:the )?(?:best |fastest |quickest |easiest )?(?:route|directions|way there|options|a few (?:options|picks|spots))\\b${TAIL}$`);
 /** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
-const LOOKING_NOW = new RegExp(`^(?:now |so )?i'm (?:pulling|checking|digging|searching|looking)(?: up| through| into| for)? (?:your|my|what (?:i|you))\\b${TAIL}$`);
+// the subject may be dropped after a dash: "I'll pick a favorite — pulling up what I remember" (bug-fix 1c63d32 outfit 1/6)
+const LOOKING_NOW = new RegExp(`^(?:now |so )?(?:i'm )?(?:pulling|checking|digging|searching|looking)(?: up| through| into| for)? (?:your|my|what (?:i|you))\\b${TAIL}$`);
 /** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
  * A bare "Let me think" stays (it is how people start an answer). */
 const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
