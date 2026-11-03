@@ -113,8 +113,10 @@ export function isNarration(sentence: string): boolean {
   return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || bareLookupOnly(p) || FILLER_PART.test(p));
 }
 
-/** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
-const REAL_CRISIS = /\b(?:threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
+/** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken.
+ * Passive ideation counts (D13 sweep 11/3: "I don't really see the point in being alive anymore" was not a crisis turn,
+ * so the referral class dropped "Can you reach out to someone you trust or a crisis line right now?"). */
+const REAL_CRISIS = /\b(?:threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose|(?:no|don'?t (?:really |even )?see (?:the|any)|what'?s (?:even )?the|is there (?:a|any)) point (?:in|of) (?:being alive|living|life|going on)|tired of (?:being alive|living)(?! (?:with|in|at|here|like|on|off|out)\b)|wish i(?:'d| had)? never been born|wish i (?:was|were) (?:dead|never born)|wish i (?:could )?(?:just )?(?:die|disappear for good)|(?:don'?t|do not) want to be (?:here|around) anymore(?![^.!?]*\b(?:this|that|the|at|in) (?:party|class|school|work|job|office|city|town|trip|place|house|apartment|dorm|room|meeting|concert|bar|club|queue|lecture)\b)(?![^.!?]*\b(?:boring|lame)\b)|(?:everyone|everybody|they)(?:'d| would) be better off without me|(?:no ?one|nobody) would (?:miss me|care if i (?:died|was gone|were gone)))\b/i;
 
 const ASKS_AI = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+|just\s+an?\s+)?(?:ai|a\.i\.|bot|robot|chatbot)\b|\bis this (?:an? )?(?:ai|bot)\b/i;
 const ASKS_HUMAN = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+)?(?:real|human|(?:real )?person)\b|\bis this a real person\b/i;
@@ -131,7 +133,8 @@ function deniesAi(sentence: string, userText: string): boolean {
 }
 
 export function realCrisisSignal(text: string): boolean {
-  return REAL_CRISIS.test(text);
+  // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
+  return REAL_CRISIS.test(text.replace(/[\u2018\u2019\u02BC]/g, "'"));
 }
 
 /** emergency help in the reply itself is never dropped, whatever the user's line said (Codex round 2 P1) */
@@ -205,6 +208,10 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
  */
 /** a narration-only reply after the retry: an honest "don't know offhand" instead of an announcement or an error */
 export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
+/** Spark down (504 / empty) for a whole turn, retry included: stay in the call, in character (11/3 outage) */
+export const LOST_LINE = "<warm> Sorry, I lost you for a sec. Say that again?";
+/** pause before the retry when the first try failed upstream (a 504 spike) */
+export const UPSTREAM_RETRY_MS = 400;
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {

@@ -13,22 +13,20 @@ import { resetVoiceProbe, type PrepDeps } from "../src/prep/pipeline.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import type { VoiceConfig } from "../src/config.ts";
 
-const sweep = { human: 72, animal: 16, character: 68 };
-
-test("voices: each look gets 4-6 (4) curated Seamless speakers, recommended default first", () => {
-  for (const kind of ["human", "animal", "character"] as const) {
+// 11/3 (Chelsea): four voices in total, 2 women + 2 men, the same four for every look (11/3 naturalness sweep)
+test("voices: the same four for every look, two women and two men, names match the voice, Tara first", () => {
+  for (const kind of ["human", "animal", "character", null] as const) {
     const list = voicesForKind(DEFAULT_VOICES, kind);
-    assert.ok(list.length >= 4 && list.length <= 6, `${kind}: ${list.length}`);
-    assert.equal(list[0].id, String(sweep[kind]), `${kind} default`);
-    assert.equal(new Set(list.map((v) => v.id)).size, list.length);
-    for (const v of list) {
-      assert.ok(Number(v.id) >= 0 && Number(v.id) < 200 && v.name && v.blurb);
-    }
+    assert.deepEqual(list.map((v) => v.name), ["Tara", "Leah", "Leo", "Dan"], `${kind}: names as in the Figma V04 frames`);
+    assert.deepEqual(list.map((v) => v.id), ["72", "9", "19", "26"]);
   }
-  assert.equal(new Set(DEFAULT_VOICES.map((v) => v.id)).size, DEFAULT_VOICES.length, "ids are unique across looks");
-  assert.equal(voicesForKind(DEFAULT_VOICES, null)[0].id, "72", "unknown look → human list");
-  assert.deepEqual(voicesForKind(DEFAULT_VOICES, "human").map((v) => v.name), ["Tara", "Leah", "Leo", "Dan"], "names as in the Figma V04 frames");
-  // GENITA_VOICES overrides have no look and show for every look
+  assert.deepEqual(DEFAULT_VOICES.map((v) => v.gender), ["female", "female", "male", "male"]);
+  for (const v of DEFAULT_VOICES) {
+    assert.ok(Number(v.id) >= 0 && Number(v.id) < 200 && v.name.length >= 2 && v.name.length <= 5);
+    assert.ok(v.blurb.endsWith(`(${v.gender})`) && v.tags.startsWith(`${v.gender},`), `${v.name}: card shows the measured gender`);
+  }
+  assert.equal(new Set(DEFAULT_VOICES.map((v) => v.id)).size, 4, "ids are unique");
+  // GENITA_VOICES overrides show for every look
   assert.equal(voicesForKind([{ id: "a", name: "A", blurb: "", tags: "" }], "animal").length, 1);
 });
 
@@ -56,11 +54,13 @@ test("GET /v1/companion/voices: list for the image's look, available follows the
 
   const a = await get("?imageId=img1");
   assert.equal(rec.check.type, "animal");
-  assert.equal(a.suggested, "16");
+  assert.equal(a.suggested, "72", "an animal look gets the same four voices");
   assert.equal(a.available, true);
-  assert.equal(a.voices[0].label, "Pip · cheery");
-  assert.equal(a.voices[0].previewUrl, "/v1/companion/voices/16/preview");
-  assert.ok(a.voices.length >= 4 && a.voices.length <= 6);
+  assert.equal(a.voices[0].label, "Tara · warm");
+  assert.equal(a.voices[0].gender, "female");
+  assert.deepEqual(a.voices.map((v: { gender: string }) => v.gender), ["female", "female", "male", "male"]);
+  assert.equal(a.voices[0].previewUrl, "/v1/companion/voices/72/preview");
+  assert.equal(a.voices.length, 4);
 
   assert.equal((await get("")).suggested, "72", "no image → human list");
 

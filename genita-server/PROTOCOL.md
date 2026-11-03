@@ -50,6 +50,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | PERC-1 perception (#319): new app message `perception.frame {image}` and optional `ready.perception: true` (sent only when the server runs `GENITA_PERCEPTION=1`). The app sends face crops only when it sees `ready.perception`. No server event; the companion just reacts more like a person. Additive: off by default, old apps send nothing and see nothing new. |
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
+| 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
 
 ```
 wss://<host>/v1/session

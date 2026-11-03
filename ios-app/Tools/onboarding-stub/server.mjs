@@ -74,7 +74,7 @@ const ACK = "Got it. I'll remember that.";
 // V04: the server's four voices for the look, the preview clip (WAV, 4 s tone: long enough that a loaded CI simulator still sees "Playing") and the saved pick.
 // POST /__voice {down:true|false} flips the voice service so the UI test can show the greyed list.
 let voiceDown = false;
-const VOICES = [["72", "Tara", "Warm, bright"], ["120", "Leah", "Soft, steady"], ["36", "Leo", "Calm, low"], ["24", "Dan", "Easygoing"]]
+const VOICES = [["72", "Tara", "Warm, bright (female)"], ["9", "Leah", "Soft, easygoing (female)"], ["19", "Leo", "Calm, deep (male)"], ["26", "Dan", "Friendly, relaxed (male)"]]
   .map(([id, name, blurb]) => ({ id, name, blurb, label: `${name} · ${blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${id}/preview` }));
 function previewWav() {
   const rate = 24000, n = Math.floor(rate * 4), pcm = Buffer.alloc(n * 2);

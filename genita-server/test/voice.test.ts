@@ -217,6 +217,45 @@ test("client: a body that stalls after the headers still times out (idle timeout
   assert.equal(v.isDown(), true);
 });
 
+// D27 capacity: the voice GPU answers 503 {"error":"busy"} when its queue is full (deploy/modal-voice QUEUE_WAIT_MS).
+// That sentence goes to the device voice, but the voice is parked only briefly, not 30 s for every call.
+test("client: a busy GPU (503 busy) parks the voice for 2 s only, then server voice resumes", async () => {
+  let n = 0;
+  let t = 1000;
+  let busy = true;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => (n++, busy ? new Response('{"error":"busy"}', { status: 503 }) : ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  await assert.rejects(run, /voice 503/);
+  assert.equal(v.isDown(), true);
+  await assert.rejects(run, /voice_down/);
+  assert.equal(n, 1);
+  t += 2_001;
+  busy = false;
+  await run();
+  assert.equal(n, 2, "back on the server voice after 2 s");
+});
+
+test("client: a busy answer after an outage does not shorten the 30 s window (Codex P2)", async () => {
+  let t = 1000;
+  const answers = [new Response("boom", { status: 500 }), new Response('{"error":"busy"}', { status: 503 })];
+  let gate!: () => void;
+  const held = new Promise<void>((r) => (gate = r));
+  let n = 0;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => { const k = n++; if (k === 1) await held; return answers[k]; }) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  const a = run(); // will 500
+  const b = run(); // in flight, answers busy after the outage started
+  await assert.rejects(a, /voice 500/);
+  gate();
+  await assert.rejects(b, /voice 503/);
+  t += 2_001;
+  assert.equal(v.isDown(), true, "still inside the 30 s outage window");
+});
+
 test("client: a 400 (bad input) fails that sentence but does not take the voice down for everyone", async () => {
   let n = 0;
   const v = createSeamless(cfg, { fetch: (async () => (n++, new Response('{"error":"bad_request"}', { status: 400 }))) as typeof fetch });
@@ -313,6 +352,22 @@ test("normalize: texting slang is spoken as words; RN / FR in caps and words con
   assert.equal(normalizeEnglish("omg btw imo that's iconic"), "oh my god by the way in my opinion that's iconic");
   assert.equal(normalizeEnglish("She's an RN in FR."), "She's an RN in FR.");
   assert.equal(normalizeEnglish("Turn left at the frontier, then burn it."), "Turn left at the frontier, then burn it.");
+});
+
+// 11/3 voice-naturalness pass: Seamless spells ALL-CAPS words letter by letter ("SO" -> "S O"), drags stretched
+// letters ("sooo") and reads "!!!" / "?!" flat; say them the way a person would. Captions keep the written form.
+test("normalize: shouted caps are said as words, known acronyms stay; OK is okay; stretched letters and repeated marks collapse", () => {
+  assert.equal(normalizeEnglish("That is SO GOOD, I LOVE it!!!"), "That is so good, I love it!");
+  assert.equal(normalizeEnglish("NO WAY. You did WHAT?!"), "no way. You did what?");
+  assert.equal(normalizeEnglish("The TV at NASA and the FBI in the USA, I'm OK."), "The TV at NASA and the FBI in the USA, I'm okay.");
+  assert.equal(normalizeEnglish("ok ok, Ok."), "okay okay, okay.");
+  assert.equal(normalizeEnglish("Sooo cute, yesss! Hmmmm, ahhh."), "So cute, yes! Hmm, ah.");
+  assert.equal(normalizeEnglish("Good, cool, coffee, bookkeeper, 2000."), "Good, cool, coffee, bookkeeper, two thousand.");
+  assert.equal(normalizeEnglish("hahahaha that's u, and ur cat"), "haha that's you, and your cat");
+  assert.equal(normalizeEnglish("Really?? Wow!!"), "Really? Wow!");
+  // Codex P2: a stretch inside a word keeps the double letter, upper-case runs (numerals) are left alone
+  assert.equal(normalizeEnglish("That looks goooood, cooool."), "That looks good, cool.");
+  assert.equal(normalizeEnglish("World War III, Super Bowl XXX. You DID it."), "World War III, Super Bowl XXX. You did it.");
 });
 
 test("pauses: casual gaps — a comma barely stops, a sentence end is shorter than before, '...' still the longest", () => {

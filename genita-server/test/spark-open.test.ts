@@ -179,15 +179,15 @@ test("sparkJson: no Spark Open retry on 4xx, image input, tools, without the key
   const five = () => new Response("down", { status: 503 });
   f = fake(t, { meta: five });
   await assert.rejects(sparkJson("test-meta", { ...REQ, input: [{ role: "user", content: [{ type: "input_image", image_url: "data:x" }] }] }));
-  assert.deepEqual(f.hosts(), ["api.meta.ai"]);
+  assert.deepEqual(f.hosts(), ["api.meta.ai", "api.meta.ai"], "no Spark Open hop: one Muse retry after a short pause (#403, 11/3 outage)");
 
   f = fake(t, { meta: five });
   await assert.rejects(sparkJson("test-meta", { ...REQ, tools: [{ type: "web_search" }] }));
-  assert.deepEqual(f.hosts(), ["api.meta.ai"]);
+  assert.deepEqual(f.hosts(), ["api.meta.ai", "api.meta.ai"], "no Spark Open hop: one Muse retry after a short pause (#403, 11/3 outage)");
 
   f = fake(t, { meta: five, key: null });
   await assert.rejects(sparkJson("test-meta", REQ));
-  assert.deepEqual(f.hosts(), ["api.meta.ai"]);
+  assert.deepEqual(f.hosts(), ["api.meta.ai", "api.meta.ai"], "no Spark Open hop: one Muse retry after a short pause (#403, 11/3 outage)");
 
   f = fake(t, { meta: five, open: () => new Response("also down", { status: 502 }) });
   await assert.rejects(sparkJson("test-meta", REQ), (e: unknown) => e instanceof UpstreamError && e.vendor === "meta" && e.status === 503);
@@ -291,7 +291,7 @@ test("availability gate: configured but not_listed / not probed yet → Muse Spa
     assert.deepEqual(f.hosts(), ["api.meta.ai"]);
     const g = fake(t, { state, meta: () => new Response("down", { status: 504 }) });
     await assert.rejects(sparkJson("test-meta", REQ));
-    assert.deepEqual(g.hosts(), ["api.meta.ai"]);
+    assert.deepEqual(g.hosts(), ["api.meta.ai", "api.meta.ai"], "never Spark Open; the one Muse retry (#403)");
   }
 });
 

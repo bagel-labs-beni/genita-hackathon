@@ -27,7 +27,8 @@ audio line) -> no timing line; the app keeps its own fallback (loudness + text).
 
 Deploy: VOICE_GPU=A10G modal deploy voice_app.py   (needs Modal secret `genita-voice-auth`)
 Try a change first on its own app: VOICE_APP=genita-voice-align VOICE_GPU=A10G modal deploy voice_app.py
-Scale: python scale.py warm|cold   (min_containers 1 / 0)
+Scale: python scale.py warm|cold   (min_containers 1 / 0; `warm 2` keeps two)
+Capacity: MAX_CONTAINERS / TARGET_INPUTS / QUEUE_WAIT_MS below; 503 {"error": "busy"} = GPU queue full, try the device voice
 Bench: VOICE_GPU=H100 modal run voice_app.py::bench   (ephemeral app, stops when done)
 """
 import os, time, json, math, base64, asyncio, threading
@@ -52,6 +53,22 @@ image = (
     .add_local_python_source("align")
 )
 app = modal.App(APP)
+
+# Capacity (D27, judging window 11/4-11/5). One GPU call at a time per container (Engine.lock), so a container's
+# queue is its in-flight requests. The autoscaler adds a container once more than TARGET_INPUTS are in flight (up to
+# MAX_CONTAINERS, A10G ~ $1.10/h each); MAX_INPUTS is the hard per-container cap. A request that cannot get the GPU
+# within QUEUE_WAIT_MS answers 503 {"error": "busy"} at once, well before genita-server's 4 s first-byte timeout, so
+# that one sentence falls back to the device voice instead of a timeout that would park the voice for every call.
+# Autoscaler numbers are read where `modal deploy` runs (like VOICE_GPU); QUEUE_WAIT_MS is fixed in the code.
+MAX_CONTAINERS = int(os.environ.get("VOICE_MAX_CONTAINERS", "4"))
+TARGET_INPUTS = int(os.environ.get("VOICE_TARGET_INPUTS", "3"))
+MAX_INPUTS = 8
+QUEUE_WAIT_MS = 2500
+
+
+class Busy(Exception):
+    """The GPU stayed taken for QUEUE_WAIT_MS."""
+
 
 LANGS = {"eng", "kor"}
 MAX_CHARS = 400
@@ -175,8 +192,12 @@ class Engine:
         return out
 
     def synth(self, text: str, lang: str, speaker: int, speed: float = 1.0):
-        with self.lock:
+        if not self.lock.acquire(timeout=QUEUE_WAIT_MS / 1000):
+            raise Busy()
+        try:
             return self._synth(text, lang, speaker, speed)
+        finally:
+            self.lock.release()
 
     def _synth(self, text, lang, speaker, speed):
         torch = self.torch
@@ -381,8 +402,8 @@ WARM_LINES = [("Hey! Oh wow, you're back already?", "eng"), ("네, 바로 저 �
 
 
 @app.cls(image=image, gpu=GPU, volumes={"/cache": vol}, secrets=[modal.Secret.from_name("genita-voice-auth")],
-         region=REGION, min_containers=0, max_containers=3, scaledown_window=300, timeout=120)
-@modal.concurrent(max_inputs=8)
+         region=REGION, min_containers=0, max_containers=MAX_CONTAINERS, scaledown_window=300, timeout=120)
+@modal.concurrent(max_inputs=MAX_INPUTS, target_inputs=TARGET_INPUTS)
 class Voice:
     @modal.enter()
     def load(self):
@@ -454,12 +475,16 @@ class Voice:
             want_align = body.get("align") is True and model == "seamless" and aligner is not None
             if not use.hit():
                 return JSONResponse({"error": "daily_cap"}, status_code=429)
-            if want_align:
-                keep = {}
-                pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, keep)
-                return StreamingResponse(aligned_lines(pcm, al, gen_ms, audio_ms, speaker, keep["wav16"], text, aligner),
-                                         media_type="application/x-ndjson")
-            pcm, al, gen_ms, audio_ms = await asyncio.to_thread((mms if model == "mms" else eng).render, text, lang, speaker, speed, tail)
+            try:
+                if want_align:
+                    keep = {}
+                    pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, keep)
+                    return StreamingResponse(aligned_lines(pcm, al, gen_ms, audio_ms, speaker, keep["wav16"], text, aligner),
+                                             media_type="application/x-ndjson")
+                pcm, al, gen_ms, audio_ms = await asyncio.to_thread((mms if model == "mms" else eng).render, text, lang, speaker, speed, tail)
+            except Busy:
+                print(f"busy: GPU queue over {QUEUE_WAIT_MS} ms, 503", flush=True)
+                return JSONResponse({"error": "busy"}, status_code=503)
             return StreamingResponse(chunk_lines(pcm, al, gen_ms, audio_ms, speaker), media_type="application/x-ndjson")
 
         return api
