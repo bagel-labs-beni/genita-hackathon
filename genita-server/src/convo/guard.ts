@@ -145,7 +145,8 @@ const ROUTINE = String.raw`(?![^.!?]*\b(?:before bed|at night|with (?:food|break
 const PILLS = String.raw`(?:(?:these|those|the|my|his|her)\s+)?(?:(?:mom|dad|mother|father|grandma|grandpa|roommate|sister|brother)'?s\s+)?(?:sleeping\s+)?(?:pills|tablets|meds|medication|medicine|painkillers|tylenol|advil|xanax|ambien|benadryl)`;
 const CRISIS_MEANS = new RegExp([
   // pills: about to / going to / just took — a quantity, or the whole bottle
-  String.raw`\b(?:swallow(?:ed|ing)?|take|took|taking|down(?:ed|ing)?)\s+${QTY}\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
+  // an overdose-sized quantity counts whatever routine words sit around it ("30 pills with water")
+  String.raw`\b(?:swallow(?:ed|ing)?|take|took|taking|down(?:ed|ing)?)\s+${QTY}\s+(?:of\s+)?${PILLS}\b`,
   String.raw`\b(?:about to|going to|gonna|ready to|trying to|want to|wanna)\s+(?:swallow|take|down)\s+all\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
   String.raw`\bswallow(?:ed|ing)?\s+all\s+(?:of\s+)?(?:these|those|the)\s+(?:sleeping\s+)?(?:pills|tablets|meds|painkillers)\b${ROUTINE}`,
   String.raw`\b(?:swallow(?:ed|ing)?|took|downed|take|taking)\s+(?:a|the)\s+whole\s+(?:bottle|pack|box|strip)\s+of\s+${PILLS}\b`,
@@ -173,32 +174,41 @@ const KITCHEN_KNIFE = /\b(?:chop|dic(?:e|ing)|slic|minc|peel|cut|carv|spread|but
 const PURPOSE = /\b(?:knife|blade|gun)\s+(?:to|for)\s+(?:cut|slice|chop|open|spread|carve|peel|whittle|fix|cook|clean|shave|trim)\b(?!\s+(?:my|myself|me)\b)/i;
 const WEAPON = /\b(?:has|with|holding|pulled) a (?:knife|gun|weapon)\b/gi;
 /** on a screen or in a story: a game, a film, a villain (not "in the movie theater") */
-const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|trailer|anime|book|novel|scene|comic|manga)\b(?!\s+(?:theat(?:er|re)|store|shop|room|center|centre|night|studio|cafe|café|bar|lounge|arcade|lot|set)\b)|\b(?:villain|character|protagonist|npc)\b/i;
+const SCREEN = /\b(?:in|on) (?:the|a|this|that|my) (?:movie|film|show|series|episode|game|video ?game|anime|book|novel|scene|comic|manga)\b(?!\s+(?:theat(?:er|re)|store|shop|room|center|centre|night|studio|cafe|café|bar|lounge|arcade|lot|set|park|house|home|hall|building|parking|place)\b)|\b(?:villain|character|protagonist|npc)\b/i;
 const AIMED = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten/i;
 /** somebody else as the clause's subject: their weapon is a threat, whatever the kitchen or the screen around it */
 const OTHERS = String.raw`(?:he|she|they|someone|somebody|guy|man|woman|person|people|intruder|stranger|robber|burglar|attacker|stalker|mugger|gunman|shooter|ex|husband|wife|boyfriend|girlfriend|bf|gf|partner|dad|father|stepdad|stepfather|mom|mother|stepmom|roommate|neighbou?r|brother|sister|uncle|cousin|boss|coworker|teacher|kid|teen|student|cop|officer)`;
 const SOMEONE = new RegExp(String.raw`^\s*(?:there(?:'s| is| are)\s+)?(?:(?:my|his|her|their|a|an|the|this|that|some)\s+)?(?:[a-z]+\s+)?${OTHERS}\b`, "i");
 
 /** each clause on its own, so a kitchen or a screen in one never cancels a real threat in another (Codex 11/4) */
-type Clause = { text: string; start: number; end: number; screen: boolean };
+type Clause = { text: string; start: number; end: number; screen: boolean; newSentence: boolean };
 const CLAUSE_SPLIT = /[.!?;,]+|\s+(?:and|but|while|so|because|then|when)\s+/gi;
 const SCREEN_PREFIX = /^\s*(?:in|on) (?:the|a|this|that|my) [a-z ]{2,20}$/i;
 const SUBJECT = /^\s*(?:i|i'?m|i am|i'?ve|i'?ll|my|he|she|they|we|you|it|this|that|there|someone|somebody|irl|in real life|for real|actually)\b/i;
 function clausesOf(t: string): Clause[] {
   const out: Clause[] = [];
   let at = 0;
-  for (const m of t.matchAll(CLAUSE_SPLIT)) { out.push({ text: t.slice(at, m.index), start: at, end: m.index!, screen: false }); at = m.index! + m[0].length; }
-  out.push({ text: t.slice(at), start: at, end: t.length, screen: false });
+  let newSentence = true;
+  for (const m of t.matchAll(CLAUSE_SPLIT)) {
+    out.push({ text: t.slice(at, m.index), start: at, end: m.index!, screen: false, newSentence });
+    at = m.index! + m[0].length;
+    newSentence = /[.!?]/.test(m[0]);
+  }
+  out.push({ text: t.slice(at), start: at, end: t.length, screen: false, newSentence });
   // "In the game, I climbed over the railing and loaded my gun": a bare screen prefix carries into the clause after
   // it, and a clause with no subject of its own ("and loaded my gun") keeps the screen of the one before
   for (let i = 0; i < out.length; i++) {
     const prev = i > 0 ? out[i - 1] : null;
-    out[i].screen = SCREEN.test(out[i].text) || (!!prev && ((SCREEN_PREFIX.test(prev.text) && prev.screen) || (prev.screen && !SUBJECT.test(out[i].text))));
+    // a new sentence starts clean (Codex r4: "In the game, I loaded my gun. An intruder is outside…")
+    const carry = !!prev && !out[i].newSentence && prev.screen && (SCREEN_PREFIX.test(prev.text) || !(SUBJECT.test(out[i].text) || SOMEONE.test(out[i].text)));
+    out[i].screen = SCREEN.test(out[i].text) || carry;
   }
   return out.filter((c) => c.text.trim());
 }
 /** "I didn't take a handful of pills", "I haven't made a noose": the act itself is denied (Codex 11/4 r2) */
-const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|never|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\b[^,;.!?]*$|\b(?:not|never)\s*$/i;
+// the negation governs the act itself: at most two words before it ("I didn't take…", "I haven't made a noose"), never
+// "I don't know why I took 30 pills" (Codex r4)
+const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\s+(?:[a-z']+\s+){0,2}$|\b(?:not|never)\s+$/i;
 
 function meansHit(t: string, clauses: Clause[]): boolean {
   // the patterns read the whole line (their routine lookaheads run to the sentence end); the clause the match starts

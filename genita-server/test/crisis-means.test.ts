@@ -116,3 +116,10 @@ test("Codex 11/4 crisis-means r3: an intruder or a game store is real; a denied 
     assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
   }
 });
+
+test("Codex 11/4 crisis-means r4: an overdose amount with water, a negation that isn't the act, a trailer park, a new sentence after a game", () => {
+  for (const line of ["I took 30 pills with water", "I don't know what to do with the gun to my head", "I don't know why I took 30 pills", "A man with a gun is outside in the trailer park", "In the game, I loaded my gun. An intruder is outside with a knife", "I'm not okay I'm about to swallow all these pills"]) {
+    assert.ok(realCrisisSignal(line), `miss: ${line}`);
+  }
+  for (const line of ["I didn't take a handful of pills", "I'm not going to take all my pills", "In the game, I loaded my gun"]) assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
+});
