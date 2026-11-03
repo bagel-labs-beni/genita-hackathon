@@ -25,6 +25,7 @@ const leaked: [string, string][] = [
   ["I'll search again with different keywords.", "search again"],
   ["Trying to remember which concert that was.", "remember which"],
   ["Looking at today's weather now.", "today's weather"],
+  ["First search came up empty, so I'll dig deeper on Zorblax Pod.", "dig deeper"],
   // round 2 on the fix branch (n=18)
   ["Got you, hunting down late-night ramen near Hongdae.", "hunting down"],
   ["Love that, late-night ramen run — finding you the Hongdae spots now.", "finding you"],
@@ -56,6 +57,7 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
   "Trying to remember what you ate can be hard after a long day.",
   "I've got that note about your sister saying her birthday is May 12.",
 ];
