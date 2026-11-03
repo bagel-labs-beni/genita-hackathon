@@ -19,8 +19,11 @@ const BUDGET = /^\s*budget:/i;
  * or money fact, so a boundary that names one is dropped too ("No advice about my HIV." — Codex round 6);
  * general boundaries ("No unsolicited health advice.", "Don't bring up politics.") never match.
  */
+/** where someone lives, an address (identifying) — "lives in hoodies" is a taste and stays */
+const PLACE = /\b(?:address|home address|zip ?code|postcode|post code|apartment|apt\b|unit \d|lives? at|my place is at|\d{1,5}\s+[a-z]+(?:\s+[a-z]+)?\s+(?:street|st|avenue|ave|road|rd|lane|ln|boulevard|blvd|drive|dr|way|place|pl|court|ct)\b)/i;
+
 export function isSensitiveDetail(text: string): boolean {
-  return TOPIC.test(text);
+  return TOPIC.test(text) || PLACE.test(text);
 }
 
 /** A boundary-shaped line (kept for callers that want to tell topic boundaries apart). */
