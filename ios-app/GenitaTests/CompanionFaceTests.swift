@@ -140,6 +140,22 @@ import XCTest
         XCTAssertNil(call.face, "B must not see A's face, not even until B's own loads")
     }
 
+    /// Same presence (Mac): a face set that loads before the conversation arrives (prepareFace) draws nothing
+    /// until the call screen shows it, then animates the same set.
+    func testAFaceLoadedBeforeTheScreenAnimatesOnlyOnceShown() async throws {
+        let call = CallController()
+        // what prepareFace's load ends in, off screen (the loader itself needs the server; covered by the loader tests)
+        call.useFace(try Self.fixtureSet(), key: "prepared", reduceMotion: true)
+        let face = try XCTUnwrap(call.face)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(face.frame, "no frames while the conversation is still on the iPhone")
+        // shown: the same prepared set stays (no second set, no reset); the loader is cancelled at once, like the
+        // account test above, so no network answer can swap it
+        call.showFace(reduceMotion: true, animate: false)
+        call.hideFace()
+        XCTAssertTrue(call.face === face, "showFace keeps the prepared set")
+    }
+
     func testNoFaceSetKeepsTheStill() {
         let call = CallController()
         call.playbackSink = { _, _ in }
