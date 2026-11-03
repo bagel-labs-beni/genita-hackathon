@@ -563,11 +563,12 @@ struct FindCardPage: View {
     }
 
     private func chip(_ item: FindItem) -> some View {
-        let pressed = finds.selectedItem == item.id
-        // MO-05: "+" = add it to the recipe's shopping list; ✓ only once it is added, a second tap takes it off
-        let buy = item.tier == .buy
-        let added = buy && finds.isAdded(item.id, in: entry.id)
-        let miss = buy && !added
+        // MO-05: "+" = add it to the recipe's shopping list; ✓ only once it is added, a second tap takes it off.
+        // Rides the `motionDetails` flag: off → the old tap (select it, "Not on your camera").
+        let addable = item.tier == .buy && MotionDetails.enabled
+        let pressed = finds.selectedItem == item.id && !addable
+        let added = addable && finds.isAdded(item.id, in: entry.id)
+        let miss = item.tier == .buy && !added
         let icon = miss ? "plus" : item.tier == .maybe ? "questionmark" : "checkmark"
         let fg: Color = pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.ink
         let bg: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.white
@@ -575,7 +576,7 @@ struct FindCardPage: View {
         // motion card 5: background/colors 200 ms (.fade), press 0.96 on a spring, the icon swaps with the replace effect
         return Button {
             chipTaps += 1
-            withAnimation(.fade) { if buy { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
+            withAnimation(.fade) { if addable { finds.toggleAdded(item.id, in: entry.id) } else { finds.tapItem(item) } }
         } label: {
             HStack(spacing: 6) {
                 // one 16 pt box for every glyph, centered: + / ✓ / ? / spinner sit in the same spot and the text never shifts
@@ -594,7 +595,7 @@ struct FindCardPage: View {
         }
         .buttonStyle(FindsChipPress())
         .accessibilityLabel(chipLabel(item, added: added))
-        .accessibilityHint(buy ? (added ? "Takes it off your list" : "Adds it to your list") : "")
+        .accessibilityHint(addable ? (added ? "Takes it off your list" : "Adds it to your list") : "")
         .accessibilityAddTraits(pressed || added ? .isSelected : [])
         .accessibilityIdentifier("chip-\(item.name)")
     }

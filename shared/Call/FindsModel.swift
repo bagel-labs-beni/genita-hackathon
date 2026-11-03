@@ -411,6 +411,7 @@ struct FindEntry: Identifiable, Equatable {
         page = 0
         selectedItem = nil
         doneSteps = [:]
+        addedItems = [:]
         pendingItems = [:]
         latestFrames = []
     }

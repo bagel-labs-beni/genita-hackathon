@@ -36,6 +36,9 @@ import XCTest
         XCTAssertNil(m.selectedItem, "adding is not selecting: the camera boxes stay as they are")
         m.toggleAdded("soy", in: "a")
         XCTAssertFalse(m.isAdded("soy", in: "a"))
+        m.toggleAdded("soy", in: "a")
+        m.reset()
+        XCTAssertFalse(m.isAdded("soy", in: "a"), "a reset (sign-out, fixtures) forgets the list")
     }
 
     func testFoldAndCloseRules() {
