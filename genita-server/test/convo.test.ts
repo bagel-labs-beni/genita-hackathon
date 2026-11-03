@@ -648,3 +648,10 @@ test("bug-fix 1c63d32 outfit 1/6: 'I'll pick a favorite — pulling up what I re
   assert.equal(out.join(" "), "Go with the trench.");
   assert.equal(guardSentence("Pulling up what I remember about your style.", none), "narration");
 });
+
+test("Codex r20: 'Checking your calendar shows dinner is on Thursday.' is the answer", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Checking your calendar shows dinner is on Thursday.").speak, ...j.push("Have a great time.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /Thursday/);
+});

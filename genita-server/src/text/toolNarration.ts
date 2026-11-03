@@ -81,6 +81,8 @@ function isNarrationClause(clause: string): boolean {
   // "…for that but tofu works": a turn in the clause keeps it
   // "between the trench and denim" / "… and choose tonight" are part of the announcement, not a second statement
   const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "");
+  // a clause that already states its result ("Checking your calendar shows dinner is on Thursday", Codex r20) is the answer
+  if (/\b(?:shows|says|is|are|was|were|confirms|suggests|has|it'?s|that'?s|takes|costs)\b|\d/.test(s)) return false;
   return !/\b(?:and|but|because|then)\b/.test(guard) && (LOOKUP_INTENT.test(s) || WEB_INTENT.test(s) || THINK_INTENT.test(s) || LOOKING_NOW.test(s));
 }
 
