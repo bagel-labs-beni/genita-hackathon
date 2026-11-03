@@ -177,7 +177,10 @@ actor FixtureFindsAPI: FindsAPI {
             m.load(recorded: run.events, frames: run.frames)
             guard var c = m.entries.first?.card else { return }
             let original = c.id
-            c.createdAt = iso.string(from: now.addingTimeInterval(-hoursAgo * 3600))
+            // anchored at noon today, not "now": a run just after midnight put the "today" cards on yesterday and the
+            // "yesterday" one two days back (testFindsListFrame failed every CI run 00:00–03:00 UTC)
+            let noon = Calendar.current.startOfDay(for: now).addingTimeInterval(12 * 3600)
+            c.createdAt = iso.string(from: noon.addingTimeInterval(-hoursAgo * 3600))
             change(&c)
             if cards.contains(where: { $0.id == c.id }) { c.id = UUID().uuidString.lowercased() }
             cards.append(c)
