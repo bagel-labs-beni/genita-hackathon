@@ -21,6 +21,7 @@ import CoreText
             // #118/#121 states drive the shared call + Finds model from wire events; watch states use GENITA_MAC_REVIEW
             var override: String? = nil
             call.finds.reset()
+            MacHandoff.shared.resumeOffered = state == "mac-4-resume"
             switch state {
             case "thinking":
                 feed(call, #"{"type":"ready","protocol":1,"sessionId":"review","mode":"chat","audio":{"in":"pcm_s16le_24000_mono","out":"pcm_s16le_24000_mono","frameHeaderBytes":8},"lip":{"requested":"none","active":"none"},"voiceId":"v","bargeIn":{"minMs":400,"minWords":2}}"#)
@@ -33,7 +34,7 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings", "settings-call": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-4-resume", "mac-offline", "launch", "settings", "settings-call": break
             case _ where state.hasPrefix("splash-"): break
             case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
@@ -53,6 +54,8 @@ import CoreText
             // Mac v2: MAC-3 for an iPhone that is already paired (no code)
             case "mac-3-paired": MacHandoff.shared.link.connected = true; page = AnyView(MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared))
             case "mac-4": MacHandoff.shared.reviewCanMove = true; MacHandoff.shared.link.connected = true; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
+            // MC-01: MAC-4 after a cold launch, the call waiting for "Continue here"
+            case "mac-4-resume": MacHandoff.shared.reviewCanMove = false; MacHandoff.shared.link.connected = false; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
             case "mac-4-unpaired": MacHandoff.shared.reviewCanMove = false; MacHandoff.shared.link.connected = false; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
             case "mac-offline": page = AnyView(MacHomeView(kind: .offline("Check your connection and try again."), name: "Mina", handoff: MacHandoff.shared))
             case "launch": page = AnyView(MacLaunchBlank())

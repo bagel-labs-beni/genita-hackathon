@@ -87,8 +87,9 @@ function latch() {
   return { promise, open };
 }
 
-async function setup(t: TestContext, max = 2, productionGate = false) {
-  const config = loadConfig({ MODEL_API_KEY: "fake", GENITA_VOICE_URL: "https://voice.invalid", GENITA_VOICE_TOKEN: "fake", GENITA_VOICE_MAX_CALLS: String(max), GENITA_SPARK_HEDGE: "1", GENITA_SPECULATE: "0" });
+async function setup(t: TestContext, max = 2, productionGate = false, deviceFallback = true) {
+  // the seat-overflow → `say` tests below are the GENITA_VOICE_DEVICE_FALLBACK=1 path (off by default since 11/4)
+  const config = loadConfig({ MODEL_API_KEY: "fake", GENITA_VOICE_URL: "https://voice.invalid", GENITA_VOICE_TOKEN: "fake", GENITA_VOICE_MAX_CALLS: String(max), GENITA_SPARK_HEDGE: "1", GENITA_SPECULATE: "0", ...(deviceFallback ? { GENITA_VOICE_DEVICE_FALLBACK: "1" } : {}) });
   // defaultDeps constructs clients only; the harness replaces all vendor methods with fakes.
   const gate = productionGate ? defaultDeps(config, () => {}).voiceSeats! : await seats(max);
   assert.ok(gate);
@@ -246,4 +247,21 @@ test("voice capacity sessions: voice outage plus overflow stays on device withou
   assert.equal(overflow.calls.length, 0);
   assert.equal(overflow.client.of("say").length, 2);
   assert.equal(overflow.client.of("error").length, 0);
+});
+
+// 11/4 (Chelsea, build 7: "왜 여자 + 기계식"): by default a full GPU never hands the call to the phone's voice
+test("voice capacity default (no device fallback): the third call keeps the companion's server voice, no say, one capacity_over log", async (t) => {
+  const { gate, call, logs } = await setup(t, 2, false, false);
+  const one = await call("one"), two = await call("two"), three = await call("three");
+  for (const c of [one, two, three]) { await c.reply(); await c.client.waitFor("turn.metrics"); }
+  for (const c of [one, two, three]) {
+    assert.equal(c.client.of("say").length, 0, "no system voice");
+    assert.ok(c.calls.length > 0 && c.client.of("audio").length > 0 && c.client.bin.length > 0, "server voice");
+    assert.equal(c.client.of("turn.metrics")[0].ttsModel, "seamless-m4t-v2");
+  }
+  assert.ok(three.prefetched.length > 0, "fillers are prefetched for the over-cap call too");
+  assert.equal(gate.holders(), 2);
+  assert.equal(logs.filter((e) => e.event === "voice.capacity_fallback").length, 0);
+  await three.reply(); await three.client.waitFor("turn.metrics", 2);
+  assert.deepEqual(logs.filter((e) => e.event === "voice.capacity_over").map((e) => e.data.sessionId), ["three"], "logged once per stretch");
 });

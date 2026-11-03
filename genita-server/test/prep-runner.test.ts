@@ -157,3 +157,14 @@ function imageRec() {
     ms: { check: 1, sam: 1 },
   };
 }
+
+test("AU-29 PP-01 step 6: the face step says how many expressions settled, apart from the mouth keys", () => {
+  const p = newPrepState();
+  // eight keys settled, but only one of them an expression (the lanes run all keys at once)
+  const items = Object.fromEntries(["blink", "MBP", "FV", "TH", "L", "WQ", "MID", "AH"].map((k) => [k, { status: "done" }]));
+  p.steps.face = { status: "running", attempts: 1, face: { items } } as any;
+  const face = prepView({ ...companion(), prep: p }).steps.face as any;
+  assert.equal(face.settled, 8);
+  assert.equal(face.expressionsSettled, 1);
+  assert.ok(face.expressionsTotal >= 3, "every expression key this prep makes");
+});
