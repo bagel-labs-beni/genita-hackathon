@@ -97,7 +97,9 @@ import QuartzCore
                 if !self.captureRequest.stalePicker { break }
             }
             guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
-            self.captureRequest.clearStalePicker(presentingAt: CACurrentMediaTime())
+            // The old picker answered (and was dropped): the next answer is this picker's, no guard. Otherwise
+            // answers in the new picker's first second are still treated as the old one's (see start(_:replacing:)).
+            if self.captureRequest.stalePicker { self.captureRequest.clearStalePicker(presentingAt: CACurrentMediaTime()) }
             self.presentPicker()
         }
     }
@@ -147,7 +149,12 @@ import QuartzCore
             captureRequest.begin()
             stopStartingCapture()
         }
-        guard let request = captureRequest.beginCapture(now: CACurrentMediaTime()) else { return }
+        guard let request = captureRequest.beginCapture(now: CACurrentMediaTime()) else {
+            // A dropped answer (the old picker's) while this account still asked for one: show the picker again, so a
+            // person who really picked that fast just picks once more instead of seeing nothing happen.
+            if stream == nil, captureRequest.current != nil { presentPicker() }
+            return
+        }
         Task {
             do {
                 guard captureRequest.isStarting(request) else { return }
