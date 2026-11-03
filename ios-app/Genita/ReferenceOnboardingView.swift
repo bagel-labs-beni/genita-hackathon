@@ -132,7 +132,13 @@ import UniformTypeIdentifiers
                     .buttonStyle(.plain).position(x: back.x + 3.5, y: back.y + top + 7).accessibilityLabel("Back").accessibilityIdentifier("back")
             }
             switch stage {
-            case .name: nameInput(width: width, top: bodyTop)
+            case .name:
+                nameInput(width: width, top: bodyTop)
+                // A03 has no back: a way out to another account, in the page's secondary-link style (QA build 5)
+                Button { nameFocused = false; Task { await model.signOutFromName() } } label: {
+                    Text("Not you? Sign out").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .trailing).position(x: width / 2, y: 74 + top)
+                    .accessibilityIdentifier("nameSignOut")
             case .prompt, .paste, .preferences:
                 profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
                     .onChange(of: scenePhase) { _, phase in
@@ -173,7 +179,10 @@ import UniformTypeIdentifiers
     }
     func advance() {
         switch stage {
-        case .name: model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.saveDisplayName(); model.go(.prompt)
+        case .name:
+            // the session went away while A03 was up: A02 first, not the whole of onboarding (QA build 5)
+            if model.needsSignInFirst { nameFocused = false; model.signedOut(); return }
+            model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.saveDisplayName(); model.go(.prompt)
         case .prompt: model.go(.paste)
         case .paste: UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); model.go(.preparing); model.startImport()
         // "Continue in the background": the import keeps running and fills I04 when it lands
@@ -256,6 +265,7 @@ import UniformTypeIdentifiers
             // one tap: copy the prompt, say so, open the AI app (or its site); coming back opens I02
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
+            model.setup.importAI = title == "Open ChatGPT" ? "ChatGPT" : "Claude"
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
             Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }

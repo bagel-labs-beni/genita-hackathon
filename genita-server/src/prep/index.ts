@@ -9,6 +9,7 @@ import { createPrepRoutes, type PrepRoutes } from "./routes.ts";
 import { DEVICE_VOICES, voicesFromEnv } from "./voices.ts";
 import type { PrepDeps, PrepLog } from "./pipeline.ts";
 import { Personalize } from "../personalize/service.ts";
+import { Insights } from "../insights/service.ts";
 
 export type Prep = { routes: PrepRoutes; runner: PrepRunner; deps: PrepDeps };
 
@@ -26,6 +27,8 @@ export function createPrep(config: Config, log: PrepLog, env: NodeJS.ProcessEnv 
   };
   // lane 개인화: HISY story, corrections, first-call asks, call growth (same store; the server hands it to calls)
   deps.personalize = new Personalize({ store: deps.store, metaKey: config.metaKey, log });
+  // SUM insight report (Chelsea 11/4); GENITA_INSIGHTS=0 turns it off (the app keeps the old SUM)
+  deps.insights = new Insights({ personalize: deps.personalize, store: deps.store, metaKey: config.metaKey, log, enabled: env.GENITA_INSIGHTS !== "0" });
   const runner = new PrepRunner(deps);
   if (!getOps().isPaused("prep.resume")) void runner.resumeAll().catch((err) => log("prep.resume_failed", { message: String(err).slice(0, 200) }));
   return { routes: createPrepRoutes(deps, runner), runner, deps };

@@ -1,0 +1,224 @@
+/**
+ * SUM insight report service: one per server (prep/index.ts), written in the background so SUM opens with it.
+ *
+ *   begin(user, text)   import: Spark starts on the redacted paste at once (parallel with the parse);
+ *                       saved only after the import's card is (commit), never if the import failed (cancel)
+ *   fromSkip(user, …)   N1–N3: from the picks, right after the skip card is saved
+ *   fromAnswers(user, a) setup answers (the app sends them when P-last opens): rewritten with the picks + settings
+ *   get(user, waitMs)   GET /v1/profile/insights — waits for a running write up to waitMs
+ *   verdict(user, id, …) "That's right" (kept, high) / "Not me" (removed → still learning; told to the next write
+ *                       and to the call profile as not true)
+ *
+ * Stored in the style card (user_styles.style_json.insights) under Personalize's lock. The pasted reply itself is
+ * kept in memory only (2 h, so the answers rewrite can still quote it) and never stored or logged.
+ * GENITA_INSIGHTS=0: no Spark call, GET → none, the app keeps the old SUM.
+ */
+import type { SparkRequest } from "../meta/spark.ts";
+import { sparkJson } from "../meta/spark.ts";
+import type { Personalize } from "../personalize/service.ts";
+import { isSensitiveDetail } from "../personalize/sensitive.ts";
+import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
+import type { PrepStore } from "../prep/store.ts";
+import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, settingsFrom, toReport, type InsightInputs } from "./report.ts";
+import type { InsightReport, StoredInsights } from "./profile.ts";
+export { insightProfileLines } from "./profile.ts";
+
+type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
+
+export class InsightsError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message = code) { super(message); this.status = status; this.code = code; }
+}
+
+export type InsightsStatus = "ready" | "pending" | "failed" | "none";
+export const CORRECTION_MAX = 200;
+const TEXT_TTL_MS = 2 * 60 * 60_000;
+const TEXT_MAX_USERS = 2000;
+const SPARK_TIMEOUT_MS = 30_000;
+const FAIL_BACKOFF_MS = 60_000;
+const DENIED_MAX = 20;
+
+type Job = { promise: Promise<void>; startedAt: number };
+
+/** what the app gets: no denied list, no internals */
+export function publicReport(s: StoredInsights | undefined | null): InsightReport | null {
+  if (!s) return null;
+  const { denied: _denied, ...r } = s;
+  return r;
+}
+
+function cardFindings(card: StyleCard): string[] {
+  return Object.values(card.sections ?? {}).flatMap((list) => (Array.isArray(list) ? list.map((f) => f.text) : [])).slice(0, 60);
+}
+
+export class Insights {
+  private readonly json: JsonFn;
+  private readonly personalize: Personalize;
+  private readonly store: Pick<PrepStore, "getStyle">;
+  private readonly log: (event: string, data: Record<string, unknown>) => void;
+  private readonly now: () => Date;
+  readonly enabled: boolean;
+  private readonly jobs = new Map<string, Job>();
+  private readonly texts = new Map<string, { text: string; at: number }>();
+  private readonly failedAt = new Map<string, number>();
+
+  constructor(o: { personalize: Personalize; store: Pick<PrepStore, "getStyle">; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date; enabled?: boolean }) {
+    this.personalize = o.personalize;
+    this.store = o.store;
+    this.json = o.json ?? (<T>(req: Parameters<JsonFn>[0], signal?: AbortSignal) => sparkJson<T>(o.metaKey ?? "", req, signal));
+    this.log = o.log ?? (() => {});
+    this.now = o.now ?? (() => new Date());
+    this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
+  }
+
+  private rememberText(userId: string, text: string) {
+    const now = Date.now();
+    for (const [k, v] of this.texts) if (now - v.at > TEXT_TTL_MS) this.texts.delete(k);
+    if (this.texts.size >= TEXT_MAX_USERS) this.texts.delete(this.texts.keys().next().value!);
+    this.texts.set(userId, { text, at: now });
+  }
+
+  private textOf(userId: string): string | undefined {
+    const t = this.texts.get(userId);
+    return t && Date.now() - t.at <= TEXT_TTL_MS ? t.text : undefined;
+  }
+
+  /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
+  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"]): Promise<InsightReport> {
+    const t0 = performance.now();
+    const once = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    let r = await once();
+    if (r.observations.length < OBS_MIN) {
+      const again = await once().catch(() => null);
+      if (again && again.observations.length > r.observations.length) r = again;
+    }
+    r.ms = Math.round(performance.now() - t0);
+    this.log("insights.written", { from, observations: r.observations.length, learning: r.learning.length, ms: r.ms });
+    return r;
+  }
+
+  /**
+   * Start a write. `inputsOf` reads the latest card; `gate` (import) holds the save until the import's card is
+   * stored. The result is saved only if no newer card / report landed meanwhile; verdicts carry over by id.
+   */
+  private start(userId: string, from: InsightReport["from"], inputsOf: (card: StyleCard | null) => InsightInputs | null, opts: { gate?: Promise<boolean>; settings?: InsightReport["settings"] } = {}) {
+    if (!this.enabled) return;
+    const startedAt = Date.now();
+    const promise = (async () => {
+      // import: the card isn't there yet — the paste is the source
+      const card = opts.gate ? null : await this.store.getStyle(userId);
+      const inputs = inputsOf(card);
+      if (!inputs) return;
+      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null);
+      if (opts.gate && !(await opts.gate)) return;
+      await this.personalize.patchStyle(userId, (c) => {
+        // a newer import replaced the card, or a newer report landed: this one is stale
+        if (!opts.gate && c.importedAt && Date.parse(c.importedAt) > startedAt) return null;
+        if (opts.gate && (!c.importedAt || Date.parse(c.importedAt) < startedAt)) return null;
+        if (c.insights && Date.parse(c.insights.at) > Date.parse(report.at)) return null;
+        const old = opts.gate ? undefined : c.insights;
+        const right = new Set((old?.observations ?? []).filter((o) => o.verdict === "right").map((o) => o.id));
+        const observations = report.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
+        return { ...c, insights: { ...report, observations, ...(old?.denied?.length ? { denied: old.denied } : {}) } };
+      });
+      this.failedAt.delete(userId);
+    })()
+      .catch((err) => {
+        this.failedAt.set(userId, Date.now());
+        this.log("insights.failed", { from, message: String(err).slice(0, 160) });
+      })
+      .finally(() => { if (this.jobs.get(userId)?.promise === promise) this.jobs.delete(userId); });
+    this.jobs.set(userId, { promise, startedAt });
+  }
+
+  /** Import: the report starts on the redacted paste now; commit() after the card is saved, cancel() if the import failed. */
+  begin(userId: string, redactedText: string): { commit(): void; cancel(): void } {
+    let settle!: (ok: boolean) => void;
+    const gate = new Promise<boolean>((r) => (settle = r));
+    if (this.enabled) {
+      this.rememberText(userId, redactedText);
+      this.start(userId, "import", () => ({ text: redactedText, findings: [], picks: [], source: "import" }), { gate });
+    }
+    return { commit: () => settle(true), cancel: () => settle(false) };
+  }
+
+  /** N1–N3: the skip card is saved; the report comes from the picks. */
+  fromSkip(userId: string): void {
+    this.texts.delete(userId);
+    this.start(userId, "skip", (card) => (card ? { findings: cardFindings(card), picks: card.picks ?? [], source: "skip", unknowns: card.toConfirm } : null));
+  }
+
+  /** Setup answers (server keys; partial is fine — the app sends them before the last pick). */
+  async fromAnswers(userId: string, answers: unknown): Promise<void> {
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)) throw new InsightsError(400, "bad_answers", "answers must be an object");
+    const a = answers as Record<string, unknown>;
+    const settings = settingsFrom(a);
+    const answerPicks = picksFromAnswers(a);
+    this.start(userId, "answers", (card) => {
+      if (!card) return null;
+      return {
+        text: card.source === "import" ? this.textOf(userId) : undefined,
+        findings: cardFindings(card),
+        picks: [...(card.picks ?? []), ...answerPicks],
+        source: card.source,
+        denied: (card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })),
+        unknowns: card.toConfirm,
+      };
+    }, { settings });
+  }
+
+  /** GET: the stored report, after waiting up to waitMs for one being written. No report and no write → one starts from the card. */
+  async get(userId: string, waitMs: number): Promise<{ status: InsightsStatus; report: InsightReport | null }> {
+    if (!this.enabled) return { status: "none", report: null };
+    let job = this.jobs.get(userId);
+    if (!job) {
+      const card = await this.store.getStyle(userId);
+      if (!card) return { status: "none", report: null };
+      if (card.insights) return { status: "ready", report: publicReport(card.insights) };
+      const failed = this.failedAt.get(userId);
+      if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
+      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
+      job = this.jobs.get(userId);
+    }
+    if (job && waitMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([job.promise, new Promise<void>((r) => { timer = setTimeout(r, waitMs); })]);
+      clearTimeout(timer);
+    }
+    const card = await this.store.getStyle(userId);
+    const report = publicReport(card?.insights);
+    if (this.jobs.has(userId)) return { status: "pending", report };
+    if (report) return { status: "ready", report };
+    return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
+  }
+
+  /** "That's right" / "Not me" (+ what's right, ≤ 200 chars). */
+  async verdict(userId: string, id: string, body: unknown): Promise<InsightReport> {
+    const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+    if (b.verdict !== "right" && b.verdict !== "not_me") throw new InsightsError(400, "bad_verdict", "verdict must be right or not_me");
+    let correction: string | undefined;
+    if (b.correction !== undefined && b.correction !== null) {
+      if (typeof b.correction !== "string" || b.correction.length > CORRECTION_MAX) throw new InsightsError(400, "bad_correction", `correction: up to ${CORRECTION_MAX} characters`);
+      const t = b.correction.replace(/[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g, " ").replace(/\s+/g, " ").trim();
+      // kept only when it's safe to put in the call profile
+      if (t && !looksLikeInjection(t) && !isSensitiveDetail(t) && redactSensitive(t) === t) correction = t;
+    }
+    let found = false;
+    const next = await this.personalize.patchStyle(userId, (c) => {
+      const ins = c.insights;
+      const o = ins?.observations.find((x) => x.id === id);
+      if (!ins || !o) return null;
+      found = true;
+      if (b.verdict === "right") {
+        return { ...c, insights: { ...ins, observations: ins.observations.map((x) => (x.id === id ? { ...x, verdict: "right" as const, confidence: "high" as const } : x)) } };
+      }
+      const learning = ins.learning.some((l) => l.id === o.category) ? ins.learning : [...ins.learning, { id: o.category, label: LEARN_LABEL[o.category] }];
+      const denied = [...(ins.denied ?? []), { id, claim: o.claim, category: o.category, ...(correction ? { correction } : {}), at: this.now().toISOString() }].slice(-DENIED_MAX);
+      return { ...c, insights: { ...ins, observations: ins.observations.filter((x) => x.id !== id), learning: learning.slice(0, 5), denied } };
+    });
+    if (!found || !next?.insights) throw new InsightsError(404, "not_found", "no such insight");
+    this.log("insights.verdict", { verdict: b.verdict, corrected: !!correction });
+    return publicReport(next.insights)!;
+  }
+}

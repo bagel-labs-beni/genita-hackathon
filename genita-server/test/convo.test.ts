@@ -865,9 +865,9 @@ test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what l
   assert.match(turnHints({ userText: "hahaha stop", lastReply: "<teasing> Your cat filed a complaint.", remembers: false })!, /landed/);
   assert.match(turnHints({ userText: "I GOT THE JOB", remembers: true })!, /name that thing specifically/);
   assert.doesNotMatch(turnHints({ userText: "I GOT THE JOB", remembers: false }) ?? "", /remember/);
-  assert.equal(moodLine(moodFrom(["ugh today was so bad"])), "Your mood right now is quieter, matching theirs.");
-  assert.equal(moodLine(moodFrom(["I got the job!!"])), "Your mood right now is upbeat and playful.");
-  assert.equal(moodLine(moodFrom(["ugh today was so bad", "ok", "ok", "ok", "ok", "ok"])), null, "decays back to baseline");
+  assert.match(moodLine(moodFrom(["ugh today was so bad"])) ?? "", /^Your mood right now is quieter, matching theirs/);
+  assert.match(moodLine(moodFrom(["I got the job!!"])) ?? "", /^Your mood right now is upbeat and playful/);
+  assert.equal(moodLine(moodFrom(["ugh today was so bad", "so anyway", "anyway", "so", "anyway so", "so yeah anyway"])), null, "decays back to baseline");
   assert.equal(moodLine(moodFrom(["my grandma's dog is dead"])), null, "'dead' alone is not a laugh");
 });
 
@@ -908,10 +908,10 @@ test("P1 opener: last call's mood carries into a returning call's first line, ne
 
 test("P1 turnHints (Codex review): negated news, serious 'dead', bad news + lol, and words that look like interjections", async () => {
   const { turnHints, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(moodLine(moodFrom(["I got the worst news of my life"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["I got the worst news of my life"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.equal(moodLine(moodFrom(["Please stop!!"])), null);
   assert.equal(moodLine(moodFrom(["I am not sad anymore"])), null);
-  assert.equal(moodLine(moodFrom(["so... I didn't get the job"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["so... I didn't get the job"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.doesNotMatch(turnHints({ userText: "I'm dead serious, stop joking", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.doesNotMatch(turnHints({ userText: "I got fired lol", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.equal(moodLine(moodFrom(["It is official.", "It is official!!"])), null, "punctuation alone is not news (speculation reuse)");
@@ -1132,7 +1132,7 @@ test("K-test 11/3 guard: no clothes / looks talk with the camera off unless they
   assert.equal(guardSentence("You're in the black blazer, go with it.", { camera: true, userText: "which one?" }), null);
   assert.equal(guardSentence("Eighty five K, you're doing solid.", none), "sensitive");
   assert.equal(guardSentence("How's the therapy going?", none), "sensitive");
-  assert.equal(guardSentence("Eighty five K is solid.", { camera: false, userText: "I make 85k now" }), null);
+  assert.equal(guardSentence("Eighty five K is solid.", { camera: false, userText: "I make 85k now" }), "sensitive", "r3 11/4: never said back, even when they just said it");
   assert.equal(guardSentence("Those black Chelsea boots, one twenty nine.", none), null, "a product price stays");
 });
 
@@ -1393,5 +1393,135 @@ test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greetin
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
   const greet = await client.waitFor((m) => m.type === "reply");
   assert.equal(greet.text, "Okay Summer, when am I finally getting a taste of that kimchi grilled cheese?");
+  session.close();
+});
+
+test("r3 sweep 11/4: money / health / address numbers they said are never said back; clothes are no opener topic; a plain lower-case start is capitalised", { skip: !v1 }, async () => {
+  const u = "guess what, I got a raise, I make 85k now";
+  assert.equal(guardSentence("No way, eighty five k is huge, congrats!", { camera: false, userText: u }), "sensitive");
+  assert.equal(guardSentence("That raise is huge, congrats!", { camera: false, userText: u }), null);
+  assert.equal(guardSentence("please call your doctor about that one fifty over ninety five soon.", { camera: false, userText: "my blood pressure was 150 over 95 today" }), "sensitive");
+  assert.equal(guardSentence("Oh nice, fourteen twenty three Maple, a fresh start!", { camera: false, userText: "the new place is 1423 Maple Street" }), "sensitive");
+  assert.equal(guardSentence("Those boots are one twenty nine.", { camera: false, userText: "find me boots under 150" }), null, "a shopping turn keeps prices");
+  assert.equal(guardSentence("That dark brown leather jacket of yours, you better be rocking it tonight.", { camera: false, userText: "" }), "unseen");
+  const { profileHooks } = await import("../src/convo/opener.ts");
+  assert.deepEqual(profileHooks("Taste: dark brown leather jackets\nTaste: minimal monochrome fashion\nInto: aespa, late-night ramen"), ["aespa", "late-night ramen"]);
+  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never say their salary, money amounts, address or health numbers back/);
+  const { client, session } = setup(["<happy> finally, you actually did it."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I moved!" }));
+  const r = await client.waitFor((m) => m.type === "reply");
+  assert.equal(r.text, "Finally, you actually did it.");
+  session.close();
+});
+
+test("Codex #506 gate: cooking amounts, oven temperatures, minutes and a shopping budget are not sensitive numbers", () => {
+  const c = (sentence: string, userText: string) => guardSentence(sentence, { camera: false, userText });
+  assert.equal(c("Use 100 grams of sugar.", "Can I make cookies with 100 grams of sugar?"), null);
+  assert.equal(c("Bake it at 180 degrees.", "Can I make this at 180 degrees?"), null);
+  assert.equal(c("Simmer it for twenty minutes.", "Can we make soup in 20 minutes?"), null);
+  assert.equal(c("These boots are $150.", "I can pay $150 for boots."), null);
+  assert.equal(c("Twenty cookies need 100 grams of sugar.", "Can I make 20 cookies with 100 grams of sugar?"), null);
+  assert.equal(c("Yes, raise it to 180 degrees.", "Should I raise the oven to 180 degrees?"), null);
+  assert.equal(c("No way, eighty five k is huge!", "guess what, I got a raise, I make 85k now"), "sensitive");
+  assert.equal(c("That one fifty over ninety five is scary.", "my blood pressure was 150 over 95 today"), "sensitive");
+  assert.equal(c("Fourteen twenty three Maple, nice!", "the new place is 1423 Maple Street"), "sensitive");
+});
+
+test("팔월이 P3 (first greeting): a sentence after '!' or '?' starts upper case, device and server voice", { skip: !v1 }, async () => {
+  for (const serverVoice of [false, true]) {
+    const { client, session } = setup(["<happy> Hey hey, Summer! did you finally try the kimchi pasta? or are we still waiting."], serverVoice ? { config: { ...config, voice: { url: "http://voice.invalid", token: "x", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless" } as never, serverTts: true } } : {});
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, ...(serverVoice ? {} : { tts: "device" }), greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
+    const greet = await client.waitFor((m) => m.type === "reply");
+    assert.equal(greet.text, "Hey hey, Summer! Did you finally try the kimchi pasta? Or are we still waiting.", `serverVoice=${serverVoice}`);
+    session.close();
+  }
+});
+
+// ───────────── #345 what landed, read from their face ─────────────
+test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
+  const { turnHints } = await import("../src/convo/rhythm.ts");
+  const line = turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "ok fine", remembers: false, faceLanded: "smiled" });
+  assert.match(line ?? "", /landed \(they smiled at it\): stay in that lane, and don't mention their face/);
+  assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "ugh today was so bad", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "bad news wins");
+  assert.equal(turnHints({ userText: "ok fine", remembers: false, faceLanded: "smiled" }), null, "no last reply, nothing landed");
+  assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "I want to kill myself.", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "a crisis line never keeps the joke lane");
+});
+
+test("#345 session: a perception smile at the reply reaches the next turn once, within 20 s", { skip: !v1 }, async () => {
+  const { client, session, calls, tick } = setup(["<teasing> Bet you burnt the rice again.", "<teasing> Called it.", "<happy> Sure."]);
+  let cb: ((t: { kind: string; at: number; confidence: number }) => void) | null = null;
+  (session as unknown as { perception: unknown }).perception = { contextLine: () => null, pendingHint: () => null, onTrigger: (f: typeof cb) => { cb = f; return () => {}; } };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what's for dinner" }));
+  await client.waitFor((m) => m.type === "reply");
+  cb!({ kind: "smiled_at_reply", at: 0, confidence: 0.9 });
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok fine" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.match(calls[1].instructions!, /they smiled at it/);
+  tick(1000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 3);
+  assert.doesNotMatch(calls[2].instructions!, /they smiled at it/, "consumed once");
+  session.close();
+});
+
+// ───────────── #344 mood carried across calls, faces follow it ─────────────
+test("#344: the last call's mood carries (12 h half-life), a Forget voids it, faces scale with energy", async () => {
+  const { carriedMood, moodScaledIntensity } = await import("../src/convo/callMood.ts");
+  const H = 3_600_000;
+  const state = { revision: 2, call_mood: { valence: 0.8, energy: 0.6, at: 0, rev: 2 } };
+  assert.deepEqual(carriedMood(state, 0), { valence: 0.8, energy: 0.6 });
+  const half = carriedMood(state, 12 * H);
+  assert.ok(Math.abs(half.valence - 0.4) < 1e-9 && Math.abs(half.energy - 0.3) < 1e-9);
+  assert.deepEqual(carriedMood(state, 96 * H), { valence: 0, energy: 0 }, "faded out after days");
+  assert.deepEqual(carriedMood({ ...state, revision: 3 }, 0), { valence: 0, energy: 0 }, "a Forget voids it");
+  assert.deepEqual(carriedMood(null, 0), { valence: 0, energy: 0 });
+  assert.equal(moodScaledIntensity(0.6, { valence: 0.5, energy: 1 }), 0.78);
+  assert.equal(moodScaledIntensity(0.6, { valence: 0, energy: 0 }), 0.6);
+  assert.equal(moodScaledIntensity(0.6, { valence: -0.5, energy: -1 }), 0.42);
+  const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  assert.match(moodLine(moodFrom(["hey"], { valence: 0.8, energy: 0.6 })) ?? "", /^Your mood right now is upbeat and playful/);
+  assert.equal(moodLine(moodFrom(["hey"])), null);
+});
+
+test("#344 session: a call that starts after an upbeat call carries it into the first turn and the face", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> So what's the plan tonight."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hey" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.match(calls[0].instructions!, /upbeat and playful/);
+  session.close();
+});
+
+test("Codex #477: a mood computed before a Forget is never saved after it; no carried smile on a crisis turn or an explicit [neutral]", { skip: !v1 }, async () => {
+  const { saveCallMood } = await import("../src/convo/callMood.ts");
+  let state: Record<string, unknown> = { revision: 2 };
+  const memory = { serial: async (_u: string, fn: () => Promise<unknown>) => fn(), state: { getState: async () => ({ ...state }), putState: async (_u: string, s: Record<string, unknown>) => { state = s; } } } as never;
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(state.call_mood, undefined, "revision moved on: dropped");
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 2);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(state.call_mood);
+  for (const [userText, sparkText] of [["I want to kill myself.", "<neutral> Please call 988 right now."], ["hey", "[neutral] So what's up."]]) {
+    const { client, session } = setup([sparkText]);
+    (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: userText }));
+    await client.waitFor((m) => m.type === "reply");
+    assert.ok(!client.json.some((m) => m.type === "expression" && m.tag === "smile"), userText);
+    session.close();
+  }
+});
+
+test("Codex #490: a carried upbeat mood never reaches a crisis turn's instructions", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> Please call 988 right now."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.doesNotMatch(calls[0].instructions!, /Your mood right now is (?:upbeat|playful)/);
   session.close();
 });

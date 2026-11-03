@@ -63,6 +63,8 @@ struct SavedSetup: Codable {
     var skipLikes: [String]?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
+    /// I01: which AI the prompt went to ("ChatGPT" / "Claude"), for the SUM report's "· ChatGPT" source line
+    var importAI: String?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
     var serverPersona: ClientMessage.Persona?
     /// The account this setup belongs to (`/me` user id). Another account on this phone starts clean.
@@ -140,6 +142,13 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var storyChanged: [String: [String]] = [:]
     /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
     var hisyPage = 0
+    /// SUM insight report (Chelsea 11/4, 춘식이 r02 R1): what Genita noticed. Transient, read again with GET /v1/profile/insights.
+    var insightReport: InsightReport?
+    var insightLoading = false
+    /// no report could be had (flag off, failed, none): SUM shows the old four lines
+    var insightUnavailable = false
+    /// the answers last sent with POST /v1/profile/insights (sent again only when they change)
+    @ObservationIgnored var insightAnswersSent: String?
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
@@ -211,6 +220,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if setup.stage == .preparing { if stage != .preferences { history.append(.preferences) } }
         else { history.append(setup.stage) }
         setup.stage = stage
+        // the last P screen opens: the server rewrites the SUM report with the answers so far, while the user picks
+        if stage == .presence || stage == .summary { sendInsightAnswers() }
     }
     func back() {
         if let previous = history.popLast() { setup.stage = previous; return }
@@ -282,7 +293,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             setup = fresh
             history = []
-            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
             prep = nil; sceneImage = nil
         }
         setup.accountId = id
@@ -304,7 +315,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
-        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         prep = nil; sceneImage = nil
     }
     /// M02 "Make a new companion" (server `POST /v1/companion/reset` done, or its 4410 call close): this phone drops the
@@ -375,6 +386,12 @@ extension AppState {
             setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
             setup.boundaries = ["Message anyone for me"]
             setup.presence = ["Calm"]
+        }
+        // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
+        if reviewStage == .summary, variant.hasPrefix("insight") {
+            insightReport = InsightFixture.report(empty: variant == "insight-empty")
+            setup.importAI = "ChatGPT"
+            setup.name = "Summer"
         }
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }

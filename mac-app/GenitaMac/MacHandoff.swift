@@ -26,6 +26,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     let server = ServerOwnershipLink(device:.mac)
     private var fanout: OwnershipFanout?
     @Published var status = "Waiting for your iPhone"
+    /// Older-server fallback for "Talking on your iPhone": the iPhone take this Mac watched happen (PhoneCallLatch).
+    @Published private(set) var phoneCallSeen = PhoneCallLatch()
     @Published fileprivate(set) var surface = HandoffSurface.active
     @Published private(set) var companionVisible = false
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
@@ -99,7 +101,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
         sharing.stop();sharing.permissionRequired=false;media.stopAll()
         companion?.orderOut(nil);companionVisible=false;sharingStopped=false;closeRegistration()
-        ownership.useAccount(accountID)
+        ownership.useAccount(accountID);phoneCallSeen.reset()
         status="Waiting for your iPhone"
         refreshSurface()
         guard let accountID else{return}
@@ -178,22 +180,29 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
+            let trigger=server.lastOwnershipTrigger
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
             if pending != nil || motion != nil {
                 let generation=accountScope.generation
                 DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
                     guard let self,self.accountScope.accepts(generation) else{return}
-                    self.ownership.receive(claim)
+                    self.receiveServerClaim(claim,trigger:trigger)
                 }
-            } else {ownership.receive(claim)}
+            } else {receiveServerClaim(claim,trigger:trigger)}
         case .moveRequested:
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
         case .moveFailed:
             status="Your iPhone isn’t available. Still on this Mac."
-        case .peerChanged: refreshSurface()
+        case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
         }
     }
+    /// The trigger of the server claim being applied now (`current`/`sync` on connect are not a watched take).
+    private var applyingTrigger:String?
+    private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
+        applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
+    }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
+        phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
             sharingStopped=false;showCompanion()
             MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
@@ -419,7 +428,7 @@ struct MacHomeView:View {
         #if DEBUG
         if let review=handoff.reviewPhoneInCall {return review}
         #endif
-        return PhoneCallPresence.live(owner:handoff.ownership.state.owner,epoch:handoff.ownership.state.epoch,peerActive:handoff.server.peerActive,peerInCall:handoff.server.peerInCall)
+        return PhoneCallPresence.live(owner:handoff.ownership.state.owner,epoch:handoff.ownership.state.epoch,peerActive:handoff.server.peerActive,peerInCall:handoff.server.peerInCall,seen:handoff.phoneCallSeen)
     }
     private func v2Para(_ text:String)->some View {
         Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)

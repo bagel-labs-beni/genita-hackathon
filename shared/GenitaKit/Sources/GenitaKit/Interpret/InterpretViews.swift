@@ -86,6 +86,7 @@ struct TalkWave: View {
 public struct InterpretBarView: View {
     var board: InterpretBoard
     var onClose: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public init(board: InterpretBoard, onClose: @escaping () -> Void) {
         self.board = board
         self.onClose = onClose
@@ -95,11 +96,24 @@ public struct InterpretBarView: View {
         HStack(spacing: 12) {
             HStack(spacing: 12) {
                 InterpretIcon(kind: .globe)
+                // ui-deferred: each line swaps in its own clipped box (old words leave up, new ones rise),
+                // like the S09 status line. A plain crossfade drew the old and new labels over each other.
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(bar.title).font(InterpretInk.sans(14, .medium)).lineSpacing(6).lineLimit(1).minimumScaleFactor(0.85)
-                    Text(bar.subtitle).font(InterpretInk.sans(12)).foregroundStyle(InterpretInk.onInkSoft).lineLimit(2)
+                    ZStack(alignment: .leading) {
+                        Text(bar.title).font(InterpretInk.sans(14, .medium)).lineSpacing(6).lineLimit(1).minimumScaleFactor(0.85)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .genitaStatusLine(bar.title)
+                    }.clipped()
+                    ZStack(alignment: .leading) {
+                        Text(bar.subtitle).font(InterpretInk.sans(12)).foregroundStyle(InterpretInk.onInkSoft).lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .genitaStatusLine(bar.subtitle)
+                    }.clipped()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Reduce Motion / review stills: swap with no animation at all, so two labels never share a frame
+                .animation(Self.swap(reduceMotion: reduceMotion), value: bar)
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
@@ -118,6 +132,12 @@ public struct InterpretBarView: View {
         .overlay {
             if bar.warn { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(InterpretInk.blueOnInk, lineWidth: 1) }
         }
+    }
+
+    /// The bar's line swap: the S09 status-line spring, or nothing (instant) under Reduce Motion and review stills.
+    /// Never a fade, because a fade is exactly the 0.3 s window where both labels are drawn.
+    static func swap(reduceMotion: Bool) -> Animation? {
+        reduceMotion || GenitaMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0)
     }
 }
 

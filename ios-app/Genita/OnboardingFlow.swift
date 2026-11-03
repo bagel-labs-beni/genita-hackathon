@@ -25,6 +25,9 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        // no session but the phone remembers a later screen (a cleared/expired token, a sign-out that didn't reach
+        // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
+        if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
         let state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
@@ -112,6 +115,16 @@ extension AppState {
 
     // MARK: A03
 
+    /// Screens that work without an account: A01 and A02. Everything after needs a session on a wired build.
+    static let beforeSignIn: Set<Stage> = [.welcome, .signIn]
+    var needsSignInFirst: Bool { serverWired && onboarding.auth.token == nil && !Self.beforeSignIn.contains(stage) }
+
+    /// A03 "Not you? Sign out": back to A02 to use another account.
+    func signOutFromName() async {
+        await onboarding.auth.logout()
+        signedOut()
+    }
+
     func saveDisplayName() {
         let name = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard serverWired, !name.isEmpty else { return }
@@ -125,7 +138,7 @@ extension AppState {
         importTask?.cancel()
         importError = nil
         let text = setup.response
-        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0; insightReport = nil; insightUnavailable = false; insightAnswersSent = nil
         guard serverWired else { importing = false; return }
         let request = onboardingSnapshot()
         importing = true
@@ -232,7 +245,7 @@ extension AppState {
     }
 
     static func importErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(let status, _) = error, status == 400 || status == 422 {
+        if case GenitaAuthError.server(let status, _, _) = error, status == 400 || status == 422 {
             return "I couldn’t read this one. Paste the whole reply, or try again."
         }
         return errorLine(error)
@@ -318,10 +331,10 @@ extension AppState {
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
             switch error as? GenitaAuthError {
             // a refusal comes back the same for this photo: choose another one
-            case .server(422, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
-            case .server(429, "polish_limit")?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
+            case .server(422, _, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
+            case .server(429, "polish_limit", _)?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
             // the failed attempt counts on the server too: three per upload
-            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
+            case .server(502, _, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
             default: polishError = Self.errorLine(error); route(error)
             }
         }
@@ -356,7 +369,7 @@ extension AppState {
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
     static func imageErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(422, "unreadable_image")? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
+        if case GenitaAuthError.server(422, "unreadable_image", _)? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
         return errorLine(error)
     }
 
@@ -373,7 +386,7 @@ extension AppState {
                 let c = try await onboarding.createCompanion(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
-            } catch GenitaAuthError.server(409, _) {
+            } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
@@ -430,9 +443,67 @@ extension AppState {
                     setup.companionCreated = true
                 }
                 go(.depth)
-            } catch GenitaAuthError.server(400, _) {
+            } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
             } catch { nameError = Self.errorLine(error); route(error) }
+        }
+    }
+
+    // MARK: SUM insight report (Chelsea 11/4, 춘식이 r02 R1)
+
+    /// Server flag (app-config `insightReport`, default on): off = SUM keeps the old four lines.
+    var insightsEnabled: Bool { GenitaAppConfigStore.shared.config.flag("insightReport", default: true) }
+
+    /// SUM draws the report (or its loading state) unless it is off or couldn't be had.
+    var useInsightReport: Bool { insightsEnabled && !insightUnavailable && (serverWired || insightReport != nil) }
+
+    /// P-last (and SUM) opens: the answers so far go to the server, which rewrites the report in the background.
+    func sendInsightAnswers() {
+        guard serverWired, insightsEnabled else { return }
+        let answers = prefsAnswers
+        let key = (try? JSONSerialization.data(withJSONObject: answers, options: [.sortedKeys])).map { String(decoding: $0, as: UTF8.self) }
+        guard key != insightAnswersSent else { return }
+        insightAnswersSent = key
+        insightUnavailable = false
+        Task { try? await onboarding.insightAnswers(answers) }
+    }
+
+    /// SUM: the report; the server holds each ask up to 6 s while it writes (`pending` may carry the earlier one,
+    /// shown meanwhile). Three tries; nothing → the old SUM.
+    func loadInsights() async {
+        guard serverWired, insightsEnabled, !insightLoading else { return }
+        insightLoading = true
+        defer { insightLoading = false }
+        for _ in 0..<3 {
+            do {
+                let r = try await onboarding.insights(wait: 6)
+                if let report = r.report, !report.observations.isEmpty || r.status == .ready { insightReport = report }
+                if r.status == .ready { return }
+                if r.status == .none || r.status == .failed { break }
+            } catch {
+                route(error); break
+            }
+        }
+        if insightReport == nil { insightUnavailable = true }
+    }
+
+    /// "That's me" (right) / "Not quite" Save or Remove (not_me). Optimistic for right; not_me takes the server's
+    /// report (the trait and what was built on it go). Returns an error line for the sheet (nil = done).
+    @discardableResult
+    func insightVerdict(id: String, verdict: String, correction: String? = nil) async -> String? {
+        if verdict == "right", var r = insightReport, let i = r.observations.firstIndex(where: { $0.id == id }) {
+            r.observations[i].verdict = "right"; r.observations[i].confidence = "high"; insightReport = r
+        }
+        guard serverWired else {
+            if verdict == "not_me", var r = insightReport { r.observations.removeAll { $0.id == id }; insightReport = r }
+            return nil
+        }
+        do {
+            insightReport = try await onboarding.insightVerdict(id: id, verdict: verdict, correction: correction)
+            return nil
+        } catch {
+            route(error)
+            return Self.errorLine(error)
         }
     }
 
@@ -475,7 +546,7 @@ extension AppState {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
-            } catch GenitaAuthError.server(404, _) {
+            } catch GenitaAuthError.server(404, _, _) {
                 return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
             try? await Task.sleep(for: .seconds(seconds))

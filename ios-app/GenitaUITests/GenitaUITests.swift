@@ -94,6 +94,20 @@ final class GenitaUITests: XCTestCase {
         app.buttons["settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5)); capture("33-설정-상단")
         app.swipeUp(); capture("34-설정-하단"); app.terminate()
+        // QA build 5: A03's way out to another account, N3 on the title's left edge (exported as preview-*)
+        func shot(_ name: String) {
+            Thread.sleep(forTimeInterval: 0.8)
+            let a = XCTAttachment(screenshot: app.screenshot()); a.name = "preview-" + name; a.lifetime = .keepAlways; add(a)
+        }
+        open("name")
+        XCTAssertTrue(app.buttons["nameSignOut"].waitForExistence(timeout: 10), "A03: Not you? Sign out")
+        shot("qa5-a03-sign-out"); app.terminate()
+        open("skipAvoid")
+        let title = app.descendants(matching: .any)["skipAvoid"]
+        let chip = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'skipChip-'")).firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 10))
+        if title.exists { XCTAssertEqual(chip.frame.minX, title.frame.minX, accuracy: 1.5, "N3 chips start at the title's left edge") }
+        shot("qa5-n3-taste"); app.terminate()
     }
     func testCaptureReviewTransientScreens() {
         let app = XCUIApplication()

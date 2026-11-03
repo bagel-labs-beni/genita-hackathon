@@ -195,10 +195,11 @@ struct ImageCheckView: View {
     @ViewBuilder private func photo(width: CGFloat) -> some View {
         if !analyzing, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
             // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
-            ZStack {
-                Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55)
-                Image(uiImage: image).resizable().scaledToFit()
-            }.clipped().accessibilityIdentifier("polishedImage")
+            // the fitted picture sets the size; the blurred copy is only a background (it must not grow the frame)
+            Image(uiImage: image).resizable().scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55) }
+                .clipped().accessibilityIdentifier("polishedImage")
         } else if let data = model.setup.imageData, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFill()
         } else { Color(white: 0.93) }
@@ -430,24 +431,28 @@ struct SkipImportView: View {
         let like = Set(model.setup.skipLikes ?? []), no = Set(model.setup.skipAvoid ?? [])
         func state(_ v: String) -> TasteState { like.contains(v) ? .on : no.contains(v) ? .skipped : .off }
         return ZStack(alignment: .topLeading) {
+            // one left edge with the title (x 31) and the same margin on the right (QA build 5: labels and chips sat at 24)
+            let w = Self.tasteColumn(width)
             Text("Tap once if you like it, twice if it\u{2019}s a no.").font(TypeStyle.body(14)).foregroundStyle(SkipInk.mute)
-                .frame(width: 342, height: 20, alignment: .leading).position(x: 31 + 171, y: 186 + 10 + top)
-            group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, state: state)
-            group("Food", Self.foods, columns: 3, y: 376, top: top, state: state)
-            group("In our chats", Self.chats, columns: 2, y: 524, top: top, state: state)
+                .frame(width: w, height: 20, alignment: .leading).position(x: 31 + w / 2, y: 186 + 10 + top)
+            group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, width: w, state: state)
+            group("Food", Self.foods, columns: 3, y: 376, top: top, width: w, state: state)
+            group("In our chats", Self.chats, columns: 2, y: 524, top: top, width: w, state: state)
             if let e = model.flowError {   // the import failed (offline / 5xx): say so, Continue retries
                 Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
-                    .frame(width: 342, alignment: .leading).position(x: 24 + 171, y: 690 + top).accessibilityIdentifier("skipError")
+                    .frame(width: w, alignment: .leading).position(x: 31 + w / 2, y: 690 + top).accessibilityIdentifier("skipError")
             }
         }
     }
-    private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, state: @escaping (String) -> TasteState) -> some View {
+    /// N3's column: the title's left edge (31) to the same margin on the right
+    static func tasteColumn(_ width: CGFloat) -> CGFloat { width - 62 }
+    private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, width: CGFloat, state: @escaping (String) -> TasteState) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label).font(TypeStyle.body(14, .semibold)).foregroundStyle(CallInk.ink).frame(height: 20).padding(.bottom, 0)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: columns == 3 ? 7.5 : 8), count: columns), spacing: 8) {
                 ForEach(items, id: \.self) { tasteChip($0, state: state($0)) { cycleTaste($0) } }
             }.padding(.top, 0)
-        }.frame(width: 342, height: 124, alignment: .topLeading).position(x: 24 + 171, y: y + 62 + top)
+        }.frame(width: width, height: 124, alignment: .topLeading).position(x: 31 + width / 2, y: y + 62 + top)
     }
     private enum TasteState { case off, on, skipped }
     private func tasteChip(_ item: String, state: TasteState, action: @escaping (String) -> Void) -> some View {
