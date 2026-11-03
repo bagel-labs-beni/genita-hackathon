@@ -228,7 +228,7 @@ export type ServerEvent =
    * (aligner timing when on, else the clause's audio span). Sent after the clause's audio. */
   | { type: "expression"; utteranceId: number; sentence: number; tag: ExpressionTag; intensity: number; startMs: number; endMs: number }
   /** P1 #345 (GENITA_BACKCHANNEL=1, off by default): play a soft listening sound now, mid user turn; never a reply */
-  | { type: "backchannel"; kind: "mm" | "yeah" }
+  | { type: "backchannel"; kind: "mm" | "yeah"; audio?: string }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -296,7 +296,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
-  backchannel: { required: ["kind"], optional: [] },
+  backchannel: { required: ["kind"], optional: ["audio"] },
   transcript: { required: ["text", "final"], optional: ["turnId", "source"] },
   "interpret.detected": { required: ["from", "to"], optional: [] },
   "interpret.pair": { required: ["user", "other", "source", "by"], optional: ["app"] },

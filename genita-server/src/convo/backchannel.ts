@@ -4,11 +4,11 @@
  * (device-side, no Spark, no voice GPU, never a reply). Off unless GENITA_BACKCHANNEL=1 (off for the demo).
  *
  * Rules: the user is mid-turn (speech started, not ended) and has said ≥ 12 words; no new partial for 1.2 s;
- * at most 2 per turn and ≥ 6 s apart; never in the first 3 s of a turn. A turn end or a new turn clears the timer.
+ * at most 2 per turn and ≥ 20 s apart (11/4: not too often in one call); never in the first 3 s of a turn. A turn end or a new turn clears the timer.
  */
 export type BackchannelKind = "mm" | "yeah";
 
-export const BACKCHANNEL = { pauseMs: 1200, minWords: 12, gapMs: 6000, maxPerTurn: 2, notBeforeMs: 3000 } as const;
+export const BACKCHANNEL = { pauseMs: 1200, minWords: 12, gapMs: 20_000, maxPerTurn: 2, notBeforeMs: 3000 } as const;
 
 export type BackchannelDeps = {
   now: () => number;

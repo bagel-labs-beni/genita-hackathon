@@ -142,7 +142,13 @@ import UniformTypeIdentifiers
                     .buttonStyle(.plain).position(x: back.x + 3.5, y: back.y + top + 7).accessibilityLabel("Back").accessibilityIdentifier("back")
             }
             switch stage {
-            case .name: nameInput(width: width, top: bodyTop)
+            case .name:
+                nameInput(width: width, top: bodyTop)
+                // A03 has no back: a way out to another account, in the page's secondary-link style (QA build 5)
+                Button { nameFocused = false; Task { await model.signOutFromName() } } label: {
+                    Text("Not you? Sign out").font(TypeStyle.body(14)).underline().foregroundStyle(CallInk.mute).frame(height: 44)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .trailing).position(x: width / 2, y: 74 + top)
+                    .accessibilityIdentifier("nameSignOut")
             case .prompt, .paste, .preferences:
                 profileContent(width: width, top: bodyTop, contentBottom: contentBottom)
                     .onChange(of: scenePhase) { _, phase in
@@ -183,7 +189,10 @@ import UniformTypeIdentifiers
     }
     func advance() {
         switch stage {
-        case .name: model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.saveDisplayName(); model.go(.prompt)
+        case .name:
+            // the session went away while A03 was up: A02 first, not the whole of onboarding (QA build 5)
+            if model.needsSignInFirst { nameFocused = false; model.signedOut(); return }
+            model.setup.name = model.setup.name.trimmingCharacters(in: .whitespacesAndNewlines); nameFocused = false; model.saveDisplayName(); model.go(.prompt)
         case .prompt: model.go(.paste)
         case .paste: UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil); model.go(.preparing); model.startImport()
         // "Continue in the background": the import keeps running and fills I04 when it lands
@@ -212,10 +221,22 @@ import UniformTypeIdentifiers
         }
         let body = texts.first { $0.y == 319 }!
         if stage == .prompt {
-            let readerHeight = max(1, card.y + card.h - body.y - 20)
-            ReferenceEditor(text: .constant(AppState.prompt), node: body, editable: false, placeholder: "", identifier: "promptReader")
+            // ui-deferred: the prompt fades at both scroll edges (20 pt under the header, 32 pt at the bottom), never a hard cut.
+            // The reader starts 20 pt above the first line (inset, so the text sits where it did), and the card's 44 pt
+            // header is opaque over it, so a scrolled line never shows through next to "Your prompt" / the copy icon.
+            let fadeTop = ScrollEdgeFade.top
+            let readerTop = body.y - fadeTop
+            let readerHeight = max(1, card.y + card.h - readerTop - 20)
+            ReferenceEditor(text: .constant(AppState.prompt), node: body, editable: false, placeholder: "", identifier: "promptReader", topInset: fadeTop, bottomInset: ScrollEdgeFade.height)
                 .frame(width: body.w + width - 390, height: readerHeight)
-                .position(x: body.x + (body.w + width - 390) / 2, y: body.y + top + readerHeight / 2)
+                .scrollEdgeFade(top: fadeTop)
+                .position(x: body.x + (body.w + width - 390) / 2, y: readerTop + top + readerHeight / 2)
+            let header = ScrollEdgeFade.header
+            UnevenRoundedRectangle(topLeadingRadius: (card.radius ?? 16) - 1, topTrailingRadius: (card.radius ?? 16) - 1).fill(card.fill?.color ?? .white)
+                .frame(width: card.w + width - 390 - 2, height: header - 1)
+                .position(x: card.x + (card.w + width - 390) / 2, y: card.y + top + 1 + (header - 1) / 2)
+                .allowsHitTesting(false).accessibilityHidden(true)
+            if let label = texts.first(where: { $0.characters == "Your prompt" }) { DesignText(node: label).designSlot(label, width: width, top: top).accessibilityHidden(true) }
             Button { UIPasteboard.general.string = AppState.prompt; copied = true } label: {
                 Group { if copied { Image(systemName: "checkmark").foregroundStyle(Color("Ink")) } else { Image(resource: "copy").resizable().frame(width: 19.4526, height: 20.4) } }.frame(width: 44, height: 44)
             }.buttonStyle(.plain).position(x: width - 65.8737, y: 296.4 + top).accessibilityLabel(copied ? "Prompt copied" : "Copy prompt").accessibilityIdentifier("copyPrompt")
@@ -501,9 +522,12 @@ struct ReferenceEditor: UIViewRepresentable {
     var editable: Bool
     var placeholder: String
     var identifier: String? = nil
+    /// Room above the first / under the last line (a read-only card whose edges fade, see `scrollEdgeFade`).
+    var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView(); view.backgroundColor = .clear; view.delegate = context.coordinator
-        view.textContainerInset = .zero; view.textContainer.lineFragmentPadding = 0
+        view.textContainerInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0); view.textContainer.lineFragmentPadding = 0
         view.isEditable = editable; view.isSelectable = true
         view.typingAttributes = node.attributed(" ").attributes(at: 0, effectiveRange: nil)
         let hint = UILabel(); hint.tag = 19; hint.numberOfLines = 0
