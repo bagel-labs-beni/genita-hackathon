@@ -129,6 +129,9 @@ export class InMemoryMemoryRepository implements MemoryRepository, CallStateRepo
   deleteSummaries(userId: string): Promise<void> {
     return this.run(true, (data) => { bucket(data, userId).summaries = []; });
   }
+  deleteSummary(userId: string, threadId: string): Promise<void> {
+    return this.run(true, (data) => { const b = bucket(data, userId); b.summaries = (b.summaries ?? []).filter((x) => x.thread_id !== threadId); });
+  }
 }
 
 export class JsonMemoryRepository extends InMemoryMemoryRepository {
