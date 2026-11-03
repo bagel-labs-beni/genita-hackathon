@@ -502,3 +502,54 @@ test("#387 follow-up: a held clause that turns out not to be the question is sti
   assert.equal(reply.text, "Weekends are for this, honestly. Good pick.");
   s.session.close();
 });
+
+test("#387 follow-up (Codex r1): a dropped question's queued first clause never swallows the next question", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Weekends for you, " };
+    await gate;
+    yield { type: "text", delta: "are they packed or lazy? What should we watch first?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(30);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  await s.client.waitFor((m) => m.type === "reply");
+  assert.ok(!said.some((t) => /packed or lazy/.test(t)), `question rest not voiced: ${JSON.stringify(said)}`);
+  assert.ok(said.some((t) => /What should we watch first\?/.test(t)), `the next question is said: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up (Codex r1): a hold beat never releases or splits a held question", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends for you, " };
+    await sleep(1_700); // longer than the 1.5 s hold beat
+    yield { type: "text", delta: "are they packed or lazy? Either way, I'm in." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply", 5_000);
+  assert.ok(!said.some((t) => /Weekends for you|packed or lazy/.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  assert.match(String(reply.text), /Either way, I'm in\.$/);
+  s.session.close();
+});

@@ -1595,10 +1595,13 @@ export class Session {
     const ends = (d: string) => LOOKS_FINAL.test(d.trim());
     let askHold: string[] = [];
     let askReleasing = false;
+    /** a hold beat goes out on its own: it never releases or joins a held question clause (Codex r1 P2) */
+    let beating = false;
     /** the queued, not-yet-ended clauses of the sentence in progress (before the next one) */
     const openClauses = (): number[] => {
       const out: number[] = [];
-      for (let k = sentences.length - 1; k >= 0 && !sentences[k].beat && !ends(sentences[k].display); k--) out.unshift(k);
+      // a dropped clause is a boundary: the dropped question never joins the next sentence (Codex r1 P2)
+      for (let k = sentences.length - 1; k >= 0 && !sentences[k].beat && !sentences[k].drop && !ends(sentences[k].display); k--) out.unshift(k);
       return out;
     };
     /** Consumer side: clause i is part of a whole queued sentence that asks the dropped question → drop all of it. */
@@ -1606,8 +1609,9 @@ export class Session {
       if (!this.askDropped || interpret || self || sentences[i]?.beat) return false;
       if (sentences[i].drop) return true;
       let a = i, b = i;
-      while (a > 0 && !sentences[a - 1].beat && !ends(sentences[a - 1].display)) a--;
-      while (b < sentences.length && !ends(sentences[b].display)) b++;
+      while (a > 0 && !sentences[a - 1].beat && !sentences[a - 1].drop && !ends(sentences[a - 1].display)) a--;
+      while (b < sentences.length && !sentences[b].drop && !ends(sentences[b].display)) b++;
+      if (b < sentences.length && sentences[b].drop) return false;
       if (b >= sentences.length) return false; // the sentence isn't finished yet: its end is judged on enqueue
       const full = sentences.slice(a, b + 1).map((x) => x.display).join(" ");
       if (!/\?\s*$/.test(sentences[b].display) || !replyAsks(full, this.askDropped)) return false;
@@ -1616,7 +1620,7 @@ export class Session {
       return true;
     };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
-    const said = () => sentences.filter((x) => !x.beat);
+    const said = () => sentences.filter((x) => !x.beat && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1659,7 +1663,7 @@ export class Session {
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         // watch together took this call's question back: a reply already asking it (built before) drops that sentence
-        if (this.askDropped && !interpret && !self && !askReleasing) {
+        if (this.askDropped && !interpret && !self && !askReleasing && !beating) {
           const shown = parseTaggedSentence(tts).displayText;
           // a clause that may start the question waits for the rest of its sentence
           if (!ends(shown) && (askHold.length || replyAsks(`${shown.replace(/[\s,;:—-]+$/u, "")}?`, this.askDropped))) {
@@ -1749,7 +1753,8 @@ export class Session {
       beatTimer = setTimeout(() => {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
-        enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true);
+        beating = true;
+        try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
       }, HOLD_BEAT_MS);
