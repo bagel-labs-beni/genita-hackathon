@@ -7,7 +7,6 @@
 
 import CoreGraphics
 import CoreImage
-import Vision
 import Foundation
 import ImageIO
 
@@ -98,30 +97,10 @@ public final class FaceSet: @unchecked Sendable {
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
-    /// Person (subject) mask from prep (`images.person`, SAM): head / body motion stays inside it so the
-    /// background never moves. Absent → the head / body ellipses alone.
+    /// Person (subject) mask from prep (`images.person`, SAM 3.1): head / body motion stays inside it so
+    /// the background never moves. Absent → a fixed head-and-shoulders ellipse lock (no on-device ML:
+    /// runtime AI is Meta-only).
     public let personMask: CGImage?
-    /// Segment the person on device when prep sent no mask (people only). The apps turn it on; off in
-    /// unit tests (the command-line test runner can stall in Vision).
-    nonisolated(unsafe) public static var onDevicePersonMask = false
-
-    /// Vision person segmentation, at most `timeout` s (no mask rather than a stuck face load).
-    static func segmentPerson(_ img: CGImage, timeout: Double = 3) -> CGImage? {
-        final class Box: @unchecked Sendable { var pb: CVPixelBuffer? }
-        let box = Box(), done = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            let req = VNGeneratePersonSegmentationRequest()
-            req.qualityLevel = .balanced
-            req.outputPixelFormat = kCVPixelFormatType_OneComponent8
-            if (try? VNImageRequestHandler(cgImage: img).perform([req])) != nil { box.pb = req.results?.first?.pixelBuffer }
-            done.signal()
-        }
-        guard done.wait(timeout: .now() + timeout) == .success, let pb = box.pb else { return nil }
-        var m = CIImage(cvPixelBuffer: pb)
-        m = m.transformed(by: CGAffineTransform(scaleX: CGFloat(img.width) / m.extent.width, y: CGFloat(img.height) / m.extent.height))
-        return CIContext(options: [.cacheIntermediates: false])
-            .createCGImage(m, from: CGRect(x: 0, y: 0, width: img.width, height: img.height), format: .L8, colorSpace: CGColorSpaceCreateDeviceGray())
-    }
     /// What each shape draws after fallbacks (nil = the expression's own mouth).
     public let resolved: [LipViseme: LipViseme?]
     /// Load decisions worth logging (rejections, fallbacks, shifts).
@@ -238,14 +217,9 @@ public final class FaceSet: @unchecked Sendable {
             do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { notes.append("flow: \(error) → key patches") }
         }
         self.flow = flowData
-        var person: CGImage?
+        var person: CGImage?   // prep only
         if let ref = manifest.images["person"] {
             do { person = try Self.decode(try load(ref), name: "person") } catch { notes.append("person: \(error) → ellipse layers") }
-        }
-        // People without a prep mask: on-device person segmentation of the neutral still.
-        if person == nil, Self.onDevicePersonMask, min(w, h) >= 256, (flowData?.kind ?? "human") == "human" {
-            person = Self.segmentPerson(neutral)
-            if person == nil { notes.append("person: on-device segmentation failed → ellipse layers") }
         }
         personMask = person
         let resolved = Self.resolve(available: Set(patches.keys))

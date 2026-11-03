@@ -35,10 +35,27 @@ enum CompanionFace {
 struct FaceFrameView: View {
     @ObservedObject var driver: FaceDriver
     var still: CGImage?
+    /// The fps line shows on TestFlight builds (sandbox receipt) or with GENITA_SHOW_FPS=1; never on the
+    /// App Store build. Turn off for demo filming with GENITA_SHOW_FPS=0 or the user default below.
+    static let showFPS: Bool = {
+        let env = ProcessInfo.processInfo.environment["GENITA_SHOW_FPS"]
+        if let env { return env == "1" }
+        if UserDefaults.standard.object(forKey: "genita.showFaceFPS") != nil { return UserDefaults.standard.bool(forKey: "genita.showFaceFPS") }
+        return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
+    }()
     var body: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             if let image = still ?? driver.frame {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
+            }
+            if Self.showFPS, still == nil, driver.liveFPS > 0 {
+                // device QA (TestFlight): the face's real frame rate, one small line
+                Text(String(format: "face %.1f fps", driver.liveFPS))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 4).padding(.vertical, 2)
+                    .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 3))
+                    .padding(.top, 60).padding(.leading, 8)
             }
         }
         .allowsHitTesting(false)
@@ -129,8 +146,7 @@ struct CompanionFaceLoader: Sendable {
         if !flowNames.isEmpty, flowNames.contains(where: { refs[$0].map { images[$0] == nil } ?? true }) { useManifest.flow = nil }
         let finalManifest = useManifest
         let set = try await Task.detached(priority: .userInitiated) {
-            FaceSet.onDevicePersonMask = true   // still background: only the person moves (no prep mask → Vision)
-            return try FaceSet(manifest: finalManifest) { ref in
+            try FaceSet(manifest: finalManifest) { ref in
                 guard let data = images[ref] else { throw FaceSetError.undecodable(ref) }
                 return data
             }
