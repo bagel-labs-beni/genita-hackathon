@@ -425,6 +425,8 @@ struct FindCardPage: View {
     private var finds: FindsModel { call.finds }
     /// The title row's measured height (title, subtitle, reason chips): the half sheet sizes the camera picture from it.
     @State private var titleRowHeight: CGFloat = 0
+    /// The ingredient chip row is scrolled to its end (no right-edge fade then).
+    @State private var chipsAtEnd = false
     /// Motion card 5: one selection haptic per chip tap.
     @State private var chipTaps = 0
     /// Motion card 6: counts saves (not unsaves) — the bookmark pops, a shine crosses the card, one success haptic.
@@ -575,7 +577,16 @@ struct FindCardPage: View {
             }.padding(.horizontal, 38)
         }
         .scrollIndicators(.hidden)
+        .onScrollGeometryChange(for: Bool.self) { g in g.contentOffset.x + g.containerSize.width >= g.contentSize.width - 1 } action: { _, end in chipsAtEnd = end }
         .padding(.horizontal, -38)
+        // the row runs off the sheet's edge: a 24 pt fade says "more", not a hard cut ("✓ Green or", design review 11/4);
+        // none once scrolled to the end
+        .mask {
+            HStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .black.opacity(chipsAtEnd ? 1 : 0)], startPoint: .leading, endPoint: .trailing).frame(width: 24)
+            }
+        }
         .findsHaptic(.selection, trigger: chipTaps) // motion card 5: one selection tick per tap
         .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
     }
