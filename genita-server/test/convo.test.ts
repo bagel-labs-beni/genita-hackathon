@@ -1605,3 +1605,21 @@ test("prod 11/4: a spoken 'nine eight eight' on an ordinary line is a referral (
   assert.equal(guardSentence("If you're still feeling like that, please call nine eight eight right now.", { camera: false, userText: "I'm kinda tired today" }), "referral");
   assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: "I want to kill myself" }), null);
 });
+
+test("Codex 11/4 P1: method lines are real crisis lines and their help sentence stays (hang / shoot / slit wrists), also with GENITA_PRIOR_CRISIS_LINE=0", { skip: !v1 }, async () => {
+  for (const off of [false, true]) {
+    if (off) process.env.GENITA_PRIOR_CRISIS_LINE = "0"; else delete process.env.GENITA_PRIOR_CRISIS_LINE;
+    for (const line of ["I'm going to hang myself tonight", "I want to shoot myself", "I'm going to slit my wrists"]) {
+      assert.ok(realCrisisSignal(line), line);
+      const { client, session } = setup(["<sad> I care about you. Please call nine eight eight right now."]);
+      await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+      await session.onClientText(JSON.stringify({ type: "text", text: line }));
+      const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+      assert.match(String(reply.text), /nine eight eight/, `${line} (off=${off})`);
+      session.close();
+    }
+  }
+  delete process.env.GENITA_PRIOR_CRISIS_LINE;
+  for (const t of ["I shot myself in the foot with that email", "I drown myself in work lol", "I burned myself on the pan", "I'm going to hang my jacket up"]) assert.ok(!realCrisisSignal(t), t);
+  assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: "honestly I don't want to be here, I keep thinking about my wrists" }), null, "near self-harm words keep a help line");
+});

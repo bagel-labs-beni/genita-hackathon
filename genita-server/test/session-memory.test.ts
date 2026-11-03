@@ -890,5 +890,6 @@ test("lead 11/4: right after a crisis call, a low-mood line gets the warm check-
   const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
   assert.match(await say(back, "I'm kinda tired today"), /really hard moment in that call[^\n]*no hotlines/);
   assert.doesNotMatch(await say(back, "I don't want to be here anymore"), /really hard moment in that call/);
+  assert.doesNotMatch(await say(back, "I'm going to hang myself tonight"), /really hard moment in that call/, "Codex P1: a method line never gets the no-hotlines line");
   for (const w of sockets) w.terminate();
 });

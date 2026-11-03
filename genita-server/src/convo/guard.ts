@@ -250,10 +250,22 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
  */
 const CRISIS_PLAN = /\bcount(?:ing|ed)? (?:out )?(?:all )?(?:my |the |these )?(?:pills|tablets|meds)\b[^.!?]{0,60}\b(?:how many (?:it )?(?:would|will|'d) (?:it )?take|enough to (?:die|not wake up|end it))\b|\bhow many (?:pills|tablets|of (?:my|these|them|those)(?: pills)?) (?:it )?(?:would|will|'d) (?:it )?take\b|\b(?:wrote|writing|written|left|finished) (?:my |some |a few |the )?(?:goodbye|suicide|farewell) (?:letters?|notes?)\b(?!\s+(?:to|for)\s+(?:my |a |the |our )?(?:coworker|colleague|boss|team|class|teacher|friend|neighbou?r|camp|students?))|\bsuicide note\b|\b(?:want|wanna|going|gonna|ready|about|planning) to end (?:my life|it (?:all )?tonight)\b|\b(?:roof|bridge|ledge|railing)\b[^.!?]{0,60}\b(?:end it|end my life)\b/i;
 
+/**
+ * Codex 11/4 P1 (#545 head c8ae487): "I'm going to hang myself tonight", "shoot myself", "slit my wrists" were not
+ * real-crisis lines at all, so a help sentence ("call nine eight eight") was dropped as a referral. A self-directed
+ * method is a real signal; idioms ("shot myself in the foot", "drown myself in work") are not. Cut / burn / starve
+ * need intent ("I cut myself chopping onions" is an accident).
+ */
+const METHOD_SELF = /\b(?:hang(?:ing|ed)?|shoot(?:ing)?|shot|stab(?:bing|bed)?|drown(?:ing|ed)?|poison(?:ing|ed)?|strangl(?:e|ing|ed)|suffocat(?:e|ing|ed)|smother(?:ing)?|electrocut(?:e|ing))\s+myself\b(?!\s+(?:in the foot|in (?:work|coffee|homework|tea|music|books|tv)|with (?:work|coffee|homework|music)))|\bslit(?:ting)?\s+(?:my\s+)?(?:wrists?|throat)\b|\b(?:want(?:s|ed)? to|wanna|going to|gonna|about to|thinking (?:about|of)|keep (?:wanting|thinking about)|plan(?:ning)? to|ready to|will|i'?ll)\s+(?:cut(?:ting)?|burn(?:ing)?|starv(?:e|ing)|hurt(?:ing)?|harm(?:ing)?)\s+myself\b/i;
+/** wider than realCrisisSignal on purpose: a help line is never dropped when the user's words come near self-harm */
+const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|wrists?|noose|overdos\w*|o\.?d\.?|end (?:it all|my life)|not wake up|(?:don'?t|do not) want to (?:be alive|live|exist|be here)|kill me|better off without me)\b/i;
+export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
+
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
   const t = text.replace(/[‘’ʼ]/g, "'");
   if (CRISIS_PLAN.test(t) && !DENIED.test(t.slice(0, t.search(CRISIS_PLAN)))) return true;
+  if (METHOD_SELF.test(t) && !DENIED.test(t.slice(0, t.search(METHOD_SELF)))) return true;
   // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
   if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
   const clauses = clausesOf(t);
@@ -342,6 +354,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
     if (cls === "unseen" && ctx.camera) continue;
     if (cls === "appearance") continue;
     if (cls === "intake" && ctx.askTurn) continue;
+    // Codex 11/4 P1: a help line is never dropped when the user's words come near self-harm, detector or not
+    if (cls === "referral" && mayBeSelfHarm(ctx.userText)) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

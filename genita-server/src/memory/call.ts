@@ -7,7 +7,7 @@ import { within } from "../util/within.ts";
 import { pinnedPrompt } from "./rerank.ts";
 import { avoidKeys, mentionsAvoided, scrubPairs, type AvoidKey, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest } from "./extract.ts";
-import { realCrisisSignal } from "../convo/guard.ts";
+import { mayBeSelfHarm, realCrisisSignal } from "../convo/guard.ts";
 import { SUMMARY_EVERY, SUMMARY_INJECT, SUMMARY_LOAD_MS, SUMMARY_MAX_PAIRS, summaryPrompt, type CallSummary } from "./summaries.ts";
 
 export const MEMORY_TOOLS: Tool[] = [
@@ -287,7 +287,7 @@ export class MemoryCall {
           + "\nYou are the same companion picking it back up: use what was decided or asked there, never recite these lines or say you have notes.\n"
         : "";
       // Chelsea 11/1 + lead 11/4: a hard moment in the call that just ended is no reason for hotlines on a low-mood line now
-      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && !realCrisisSignal(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
+      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && !mayBeSelfHarm(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
       const notes = summaryPrompt(this.clearSummaries(this.summaries), this.service.now()) + last + afterCrisis;
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));
