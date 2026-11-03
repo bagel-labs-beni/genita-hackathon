@@ -262,15 +262,34 @@ export class WatchController {
   private setTitle(raw: unknown): void {
     const t = cleanTitle(raw);
     if (t === this.title) return;
+    // another video or page (a tab's unread count "(3) …" is the same one)
+    const bare = (x: string | null) => (x ?? "").replace(/^\(\d+\)\s*/, "");
+    if (this.title !== null && t !== null && bare(t) !== bare(this.title)) this.resetClip("title");
     this.title = t;
     // the text itself can be private (a document, a mail subject): only its length is logged
     this.log("watch.title", { chars: t?.length ?? 0 });
   }
 
+  /**
+   * QA prod 11/3 (after deploy 1): a dance clip got "That dunk though" — the last clip's moments and memo rode into
+   * the next video. Moments, memo, speaker names and a held reaction belong to one video: a new share, another
+   * window, or another title starts clean. A stopped share keeps them (asking right after stopping still works).
+   */
+  private resetClip(why: string): void {
+    if (!this.seen.length && !this.memo.length && !this.held) return;
+    this.seen = [];
+    this.memo = [];
+    this.names.clear();
+    this.held = null;
+    this.log("watch.clip_reset", { why });
+  }
+
   private start(source: string | null): void {
+    if (!this.sharing) this.resetClip("new_share");
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
       if (source !== null && source !== this.source) this.protectedPending = false;
+      if (source !== null && source !== this.source) this.resetClip("source");
       this.source = source ?? this.source;
       return this.emitState();
     }
@@ -603,22 +622,26 @@ export class WatchController {
 
   /** A spike with one frame after it (or 0.4 s of stillness) gets a quick look right away — no memo wait. */
   private maybeQuick(): void {
-    if (!QUICK_ON || this.deps.quick === false || this.deps.reactions === false || !this.sharing || this.closed) return;
+    if (!QUICK_ON || this.deps.quick === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
+    // 11/3 21:3x (lead's call): when a reaction couldn't go out (reactions off, the user or companion talking, inside
+    // the 25 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
+    // dunk?" right after a reaction or mid-conversation is answerable (#400). Never spoken from here.
+    const remember = this.deps.reactions === false || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS);
+    const slow = remember ? 2 : 1;
     let spike = this.quickSpikeAt;
     const after = spike !== null && (this.frames.some((f) => f.at > spike! + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400);
     const newest = this.frames.at(-1)?.at ?? -Infinity;
     // the cadence needs a motion-aware Mac (frames carry `motion`, ≤3 fps); older builds get spikes only
-    const cadence = !after && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS);
-    if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
+    const cadence = !after && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS) * slow;
+    if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS * slow) return;
     spike = after ? spike : newest;
     this.quickSpikeAt = null;
-    // no point looking when a reaction couldn't go out anyway
-    if (this.blank || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS)) return;
-    void this.runQuick(spike!);
+    if (this.blank) return;
+    void this.runQuick(spike!, remember);
   }
 
-  async runQuick(spikeAt: number): Promise<void> {
+  async runQuick(spikeAt: number, rememberOnly = false): Promise<void> {
     const at = this.deps.now();
     this.lastQuickAt = at;
     const frames = pickFrames(this.frames.filter((f) => f.at >= Math.min(spikeAt, (this.frames.at(-1)?.at ?? spikeAt)) - 900), QUICK_FRAMES, 300).map((f) => f.url);
@@ -640,10 +663,10 @@ export class WatchController {
     }
     if (abort.signal.aborted || !this.sharing) return;
     const q = parseQuick(raw);
-    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
+    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), rememberOnly, react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
     if (q) {
       this.noteMoment(q.moment, q.line, spikeAt, frames.at(-1) ?? null);
-      this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
+      if (!rememberOnly) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
     }
   }
 

@@ -950,11 +950,12 @@ test("Codex P2: a held protected line never speaks over the video's dialogue, an
 
 // ───────────────────────── quick look (visual moments ≤5 s) ─────────────────────────
 
-function quickController(reply: (req: SparkRequest) => string, hostOpts: { quiet?: boolean } = {}) {
+function quickController(reply: (req: SparkRequest) => string, hostOpts: { quiet?: boolean } = {}, extra: Partial<WatchDeps> = {}) {
   const calls: SparkRequest[] = [];
   const ctl = controller([], hostOpts, {
     quick: true,
     quickEveryMs: 60_000, // spikes only here; the cadence has its own test
+    ...extra,
     async *spark(req): AsyncGenerator<SparkStreamEvent> {
       calls.push(req);
       const text = reply(req);
@@ -1006,7 +1007,7 @@ test("quick look: commentary/crowd (talkOver) may be reacted over; a scene's dia
   }
 });
 
-test("quick look: none while the user talks or inside the 25 s gap", async () => {
+test("quick look while the user talks: it still looks, says nothing, and remembers the moment (11/3 lead call)", async () => {
   const quiet = { quiet: false };
   const q = quickController(() => quickYes(false), quiet);
   q.c.onMessage({ type: "start", source: "YouTube" });
@@ -1015,7 +1016,71 @@ test("quick look: none while the user talks or inside the 25 s gap", async () =>
   q.at(7_330);
   q.c.onMessage({ type: "frame", image: `${frame}b` });
   await wait(5);
-  assert.equal(q.calls.filter(q.isQuick).length, 0, "conversation: no quick look");
+  assert.equal(q.calls.filter(q.isQuick).length, 1, "conversation: the quick look still runs");
+  q.c.tick();
+  assert.deepEqual(q.reacted, [], "…but never speaks");
+  assert.match(q.c.questionContext()!.instructions, /What a dunk!/, "…and the moment is askable");
+});
+
+test("reactions off: the quick look still remembers the dunk for 'did you see that?' and never speaks (11/3 lead call)", async () => {
+  const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? quickYes(true) : memoNone), {}, { reactions: false });
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  q.at(7_000);
+  q.c.onMessage({ type: "frame", image: `${frame}a`, motion: 0.4 });
+  q.at(7_330);
+  q.c.onMessage({ type: "frame", image: `${frame}b`, motion: 0.05 });
+  await wait(5);
+  assert.equal(q.calls.filter(q.isQuick).length, 1);
+  q.c.tick();
+  assert.deepEqual(q.reacted, []);
+  assert.match(q.c.questionContext()!.instructions, /What a dunk!/);
+});
+
+test("remember-only quick looks (reactions off / talking / 25 s gap) run at half the cadence", async () => {
+  const count = async (extra: Partial<WatchDeps>) => {
+    const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? JSON.stringify({ react: false, moment: "none", line: "", talkOver: true }) : memoNone), {}, { quickEveryMs: 1_000, ...extra });
+    q.c.onMessage({ type: "start", source: "YouTube" });
+    for (let ms = 7_000; ms <= 15_000; ms += 330) {
+      q.at(ms);
+      q.c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.02 });
+      await wait(1);
+    }
+    return q.calls.filter(q.isQuick).length;
+  };
+  const on = await count({});
+  const off = await count({ reactions: false });
+  assert.ok(on >= 6, `normal cadence ~1/s (got ${on})`);
+  assert.ok(off >= 3 && off <= Math.ceil(on / 2) + 1, `remember-only ~half (got ${off} vs ${on})`);
+});
+
+test("moments belong to one video: a new share or another title starts clean, an unread count does not (QA prod 11/3)", async () => {
+  const seeDunk = async (q: ReturnType<typeof quickController>, t0: number) => {
+    q.at(t0);
+    q.c.onMessage({ type: "frame", image: `${frame}${t0}`, motion: 0.4 });
+    q.at(t0 + 330);
+    q.c.onMessage({ type: "frame", image: `${frame}${t0 + 330}`, motion: 0.05 });
+    await wait(5);
+  };
+  const ctx = (q: ReturnType<typeof quickController>) => q.c.questionContext()?.instructions ?? "";
+  const yes = (r: SparkRequest) => ((r.text?.format as { name?: string }).name === "watch_quick" ? quickYes(true) : memoNone);
+
+  const a = quickController(yes);
+  a.c.onMessage({ type: "start", source: "YouTube", title: "Dunk highlights - YouTube" });
+  await seeDunk(a, 7_000);
+  assert.match(ctx(a), /What a dunk!/);
+  a.c.onMessage({ type: "context", title: "(1) Dunk highlights - YouTube" });
+  assert.match(ctx(a), /What a dunk!/, "an unread count is the same video");
+  a.c.onMessage({ type: "context", title: "Jumpstyle dance compilation - YouTube" });
+  assert.doesNotMatch(ctx(a), /dunk/i, "another video: the dunk is gone");
+
+  const b = quickController(yes);
+  b.c.onMessage({ type: "start", source: "YouTube" });
+  await seeDunk(b, 7_000);
+  b.c.onMessage({ type: "stop" });
+  assert.match(ctx(b), /What a dunk!/, "right after stopping it is still askable");
+  b.at(20_000);
+  b.c.onMessage({ type: "start", source: "YouTube" });
+  assert.doesNotMatch(ctx(b), /dunk/i, "a new share starts clean");
 });
 
 test("crowd noise / a stray word is not dialogue: it never holds a reaction (the dunk case)", async () => {
