@@ -436,3 +436,33 @@ test("Codex b9-6 P2: an echo check running at the handoff never completes a turn
   assert.equal(h.at(thinking).length, 0);
   assert.equal(h.sparkCalls.length, 0);
 });
+
+test("Codex b9-6 r2: the sound comes back to this device mid-segment → the final after the return is answered", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  h.asr.fire({ type: "speechStart", turnId: 0 });
+  h.session.stopForHandoff(); // moved away mid-segment…
+  h.session.onClientAudio(Buffer.alloc(3840)); // …and back: the mic is fed again
+  h.asr.fire({ type: "speechEnd", turnId: 0 });
+  h.asr.fire({ type: "speechComplete", turnId: 0, text: "Can you hear me again?" });
+  await sleep(100);
+  assert.equal(h.at(thinking).length, 1, h.types().join(","));
+});
+
+test("Codex b9-6 r2: a handoff ends the cue-echo filter — the user's 'Mm-hm.' after the return is kept", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  (h.session as unknown as { cuedTurn: boolean }).cuedTurn = true;
+  h.session.stopForHandoff();
+  h.session.onClientAudio(Buffer.alloc(3840));
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "Mm-hm." });
+  await sleep(100);
+  const finals = h.sent.filter((x) => x.m.type === "transcript" && x.m.final === true).map((x) => x.m.text);
+  assert.deepEqual(finals, ["Mm-hm."]);
+});

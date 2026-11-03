@@ -486,6 +486,8 @@ export class Session {
   private dropLateFinal = false;
   /** bumped on a proximity handoff: an echo check that started before it never completes a turn */
   private asrEpoch = 0;
+  /** set by stopForHandoff; the server feeds this call's mic again only once it owns the sound (mayPlay) */
+  private handedOff = false;
   private echoPending = 0;
   private lastAsrAt = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
@@ -685,6 +687,9 @@ export class Session {
     if (this.segmentOpen) this.dropLateFinal = true;
     this.segmentOpen = false;
     this.asrEpoch++;
+    // the dropped turn's cue-echo filter goes with it (Codex b9-6 r2)
+    this.cuedTurn = false;
+    this.handedOff = true;
     this.bcGen++;
     this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
@@ -776,6 +781,12 @@ export class Session {
 
   onClientAudio(frame: Buffer): void {
     if (!this.started) return;
+    if (this.handedOff) {
+      // the sound came back to this device: what the user says now is theirs, even inside the segment the move cut
+      // (no new speechStart) — its final is answered (Codex b9-6 r2)
+      this.handedOff = false;
+      this.dropLateFinal = false;
+    }
     let pcm = frame;
     // F8 Mac call mode: frames carry a "GA" header saying mic (3) or call sound (4)
     if (frame.length > FRAME_HEADER_BYTES && frame[0] === 0x47 && frame[1] === 0x41 && frame[3] === 0 && (frame[2] === CLIENT_FRAME_KIND_MIC || frame[2] === CLIENT_FRAME_KIND_CALL)) {
