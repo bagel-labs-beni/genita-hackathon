@@ -11,6 +11,7 @@ final class ServerOwnershipTests: XCTestCase {
         XCTAssertEqual(PresenceEvent(["type": "ownership", "owner": NSNull(), "epoch": 4]), .ownership(owner: nil, epoch: 4, trigger: ""))
         XCTAssertEqual(PresenceEvent(["type": "claim.result", "accepted": false, "owner": "iphone", "epoch": 2]), .claimResult(accepted: false, owner: .phone, epoch: 2))
         XCTAssertEqual(PresenceEvent(["type": "peer", "device": "iphone", "online": true, "active": false]), .peer(device: .phone, online: true, active: false))
+        XCTAssertEqual(PresenceEvent(["type": "peer", "device": "iphone", "online": true, "active": false, "inCall": true]), .peer(device: .phone, online: true, active: false, inCall: true))
         XCTAssertEqual(PresenceEvent(["type": "move.request", "from": "iphone"]), .moveRequest(from: .phone))
         XCTAssertEqual(PresenceEvent(["type": "move.failed", "to": "mac", "reason": "peer_offline"]), .moveFailed(reason: "peer_offline"))
         XCTAssertEqual(PresenceEvent(["type": "pong", "t": 1]), .other("pong"))
@@ -30,6 +31,24 @@ final class ServerOwnershipTests: XCTestCase {
         XCTAssertEqual(PresenceState.reduce(&state, .moveRequest(from: .mac), me: .phone), [.moveRequested(from: .mac)])
         XCTAssertEqual(PresenceState.reduce(&state, .moveRequest(from: .phone), me: .phone), [])
         XCTAssertEqual(PresenceState.reduce(&state, .moveFailed(reason: "peer_inactive"), me: .phone), [.moveFailed(reason: "peer_inactive")])
+    }
+
+    /// QA 171: the Mac home said "Talking on your iPhone" with no call (the default owner is the phone at epoch 0).
+    func testPhoneCallPresenceNeedsARealCall() {
+        var state = PresenceState(connected: true)
+        XCTAssertEqual(PresenceState.reduce(&state, .peer(device: .phone, online: true, active: true, inCall: false), me: .mac), [.peerChanged])
+        XCTAssertEqual(state.peerInCall, false)
+        XCTAssertEqual(PresenceState.reduce(&state, .peer(device: .phone, online: true, active: false, inCall: true), me: .mac), [.peerChanged], "a call start alone refreshes the home")
+        XCTAssertEqual(state.peerInCall, true)
+        // a server that reports calls is the truth
+        XCTAssertFalse(PhoneCallPresence.live(owner: .phone, epoch: 0, peerActive: true, peerInCall: false), "fresh account, iPhone open, no call")
+        XCTAssertFalse(PhoneCallPresence.live(owner: .phone, epoch: 4, peerActive: true, peerInCall: false), "the call ended on the iPhone")
+        XCTAssertTrue(PhoneCallPresence.live(owner: .phone, epoch: 4, peerActive: false, peerInCall: true), "locked iPhone mid-call still talks")
+        XCTAssertFalse(PhoneCallPresence.live(owner: .mac, epoch: 5, peerActive: true, peerInCall: true), "the conversation is on this Mac")
+        // an older server (no inCall): the iPhone took the conversation and is in front
+        XCTAssertFalse(PhoneCallPresence.live(owner: .phone, epoch: 0, peerActive: true, peerInCall: nil), "the default owner is not a call")
+        XCTAssertFalse(PhoneCallPresence.live(owner: .phone, epoch: 3, peerActive: false, peerInCall: nil), "iPhone not in front")
+        XCTAssertTrue(PhoneCallPresence.live(owner: .phone, epoch: 3, peerActive: true, peerInCall: nil))
     }
 
     func testOwnClaimIsAClaimAndALearnedOneIsAHello() {

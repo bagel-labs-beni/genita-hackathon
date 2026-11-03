@@ -33,7 +33,8 @@
     "eval:perception": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/perception-eval.ts",
     "demo:template": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/demo-template.ts",
     "watch-sim": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/watch-sim.ts",
-    "funnel:report": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/funnel-report.ts"
+    "funnel:report": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/funnel-report.ts",
+    "reflow:masks": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/reflow-masks.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

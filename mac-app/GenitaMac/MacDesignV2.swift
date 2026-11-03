@@ -137,6 +137,7 @@ private struct MacGlassButtonBody<Label: View>: View {
     let tint: Color
     let pressed: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlActiveState) private var activeState
     @State private var hover = false
     var body: some View {
         surface
@@ -151,8 +152,11 @@ private struct MacGlassButtonBody<Label: View>: View {
             label.opacity(pressed ? 0.6 : 1).background(Capsule().fill(MacSheetInk.ink.opacity(hover && isEnabled ? 0.05 : 0)))
         case .prominent, .regular:
             if #available(macOS 26.0, *) {
-                label.glassEffect(glass, in: shape)
+                // prominent = ink in glass, the iPhone GlassCTA (#414) structure; MacInkGlass holds the ink in non-key windows
+                label.background { if kind == .prominent && isEnabled { shape.fill(tint.opacity(MacInkGlass.fillOpacity(activeState))) } }
+                    .glassEffect(glass, in: shape)
                     .brightness(hover && isEnabled && kind == .prominent ? 0.08 : 0)
+                    .animation(.easeOut(duration: 0.2), value: activeState)
             } else {
                 label.background {
                     if kind == .prominent && isEnabled { shape.fill(tint).brightness(hover ? 0.08 : 0) }
@@ -163,7 +167,7 @@ private struct MacGlassButtonBody<Label: View>: View {
     }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
     @available(macOS 26.0, *) private var glass: Glass {
-        kind == .prominent && isEnabled ? .regular.tint(tint).interactive() : .regular.interactive(isEnabled)
+        kind == .prominent && isEnabled ? .regular.tint(tint).interactive(isEnabled) : .regular.interactive(isEnabled)
     }
 }
 
@@ -229,6 +233,7 @@ struct MacV2CodeField: View {
                         if digits.count == 6 { complete() }
                     }
                     .accessibilityLabel("Six-digit code").accessibilityIdentifier(id)
+                    .macASCIIOnlyInput(focused: focused)
             }
         }
         .onAppear { focused = true }
@@ -253,4 +258,33 @@ struct MacPairingCode: View {
                 .accessibilityIdentifier("macPairingCode")
         }
     }
+}
+
+/// Email, sign-in code and judge code fields take ASCII only (QA 171: with the Korean input source on, the email
+/// field filled with "ㅎㅂㅁㄷ…"). While the field is focused its field editor allows Roman input sources only, so
+/// macOS switches to ABC by itself; the source comes back when focus leaves (the field editor is the sheet's own).
+/// Pasted text is left as is: dropping characters could turn it into someone else's address (Codex review).
+struct MacASCIIOnlyInput: ViewModifier {
+    var focused: Bool
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: focused, initial: true) { _, on in if on { Self.restrict() } }
+    }
+    /// After SwiftUI hands focus to the field editor — that can take a few run-loop turns while a sheet opens, so it
+    /// tries again for about half a second instead of giving up after one (a missed first try left Korean on).
+    static func restrict(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.05)) {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor, let input = editor.inputContext else {
+                if attempt < 10 { restrict(attempt: attempt + 1) }
+                return
+            }
+            if input.allowedInputSourceLocales != [NSAllRomanInputSourcesLocaleIdentifier] {
+                input.discardMarkedText() // a half-typed Hangul syllable must not land in the field
+                input.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
+            }
+        }
+    }
+}
+extension View {
+    func macASCIIOnlyInput(focused: Bool) -> some View { modifier(MacASCIIOnlyInput(focused: focused)) }
 }

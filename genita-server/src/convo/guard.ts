@@ -162,6 +162,21 @@ const SAVE_TALK = [
 const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b[^.!?]{0,30}\b(?:black|white|red|blue|green|grey|gray|beige|camel|navy|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|blazer|coat|pajamas|sweats|minimal|monochrome|something)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight)\b)/i;
 /** AI sweep 11/3: hearing them before they spoke ("your voice sounds super alive right now") */
 const UNHEARD = /\b(?:your voice|you sound(?:s|ing)?\b|i (?:can )?hear (?:you|that|it in your)|sounds like you'?re|the way you sound)/i;
+/**
+ * P2 greet-heard (9A.7): the same claim in the words the hotfix above missed ("I can already hear that grin", "so good
+ * to hear you", "sounds like someone's in a good mood", "you're sounding chipper", "I heard that sigh", "your laugh").
+ * Only a sound they would have made counts after hear/heard: "I heard the new album drops Friday", "good to hear from
+ * you", "hear me out", "I'd love to hear you rant about it" stay.
+ */
+const SOUND = String.raw`(?:sigh|laugh(?:ter)?|yawn|smile|grin|giggle|chuckle|excitement|exhaustion|tiredness|enthusiasm|hype|breath(?:ing)?|voice|sniffle|tone|groan|squeal|smirk)s?`;
+const UNHEARD_MORE = new RegExp(String.raw`\bi\s+(?:can\s+|could\s+)?(?:(?:already|totally|just|so|still)\s+)*hear\s+(?:you|it)\b(?!\s+(?:out|from|about)\b)|\b(?:hear(?:d|ing)?)\s+(?:that|the|your|a|you|some)\s+(?:[\w'-]+\s+)?${SOUND}\b|\b(?:good|nice|great|lovely)\s+(?:to\s+)?hear(?:ing)?\s+you\b(?!\s+(?:out|from)\b)|\b(?:love|loving|missed)\s+hearing\s+you\b|\byou(?:'re|\s+are)\s+sounding\b|\bsounds?\s+like\s+(?:someone|somebody)\b|\byour\s+(?:laugh|sigh|yawn|tone|giggle)\b`, "i");
+/** Codex #495 P2: hearing still to come ("can't wait to hear you laugh") or an explicit recall of earlier in the call
+ * (an initiative turn: "your laugh earlier is still cracking me up") is not a claim to have heard them just now */
+const HEAR_LATER = /\b(?:can'?t wait to|want(?:s)? to|wanna|would love to|'d love to|love to|hope to|gonna|going to|need to|dying to|about to|waiting to)\s+(?:\w+\s+)?hear\b/i;
+const EARLIER = /\b(?:earlier|before|last (?:time|call|night|week)|yesterday|the other day|this morning)\b/i;
+function heardBeforeSpeech(sentence: string): boolean {
+  return UNHEARD_MORE.test(sentence) && !HEAR_LATER.test(sentence) && !EARLIER.test(sentence);
+}
 const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|hair|makeup|look(?:s|ing)? like)\b/i;
 /**
  * K-test 11/3 [P2]: sensitive details said back ("eighty five K, you're doing solid"): an income / salary amount, or a
@@ -194,7 +209,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!ctx.camera && WEARING_NOW.test(sentence) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
-  if (!ctx.userText.trim() && UNHEARD.test(sentence)) return "unseen";
+  if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";
   if ((INCOME.test(sentence) && !/\b(?:salary|income|make|earn|paid|\d+\s?k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
   if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
   if (energyLabel(sentence)) return "label";

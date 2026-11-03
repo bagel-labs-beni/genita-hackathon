@@ -865,9 +865,9 @@ test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what l
   assert.match(turnHints({ userText: "hahaha stop", lastReply: "<teasing> Your cat filed a complaint.", remembers: false })!, /landed/);
   assert.match(turnHints({ userText: "I GOT THE JOB", remembers: true })!, /name that thing specifically/);
   assert.doesNotMatch(turnHints({ userText: "I GOT THE JOB", remembers: false }) ?? "", /remember/);
-  assert.equal(moodLine(moodFrom(["ugh today was so bad"])), "Your mood right now is quieter, matching theirs.");
-  assert.equal(moodLine(moodFrom(["I got the job!!"])), "Your mood right now is upbeat and playful.");
-  assert.equal(moodLine(moodFrom(["ugh today was so bad", "ok", "ok", "ok", "ok", "ok"])), null, "decays back to baseline");
+  assert.match(moodLine(moodFrom(["ugh today was so bad"])) ?? "", /^Your mood right now is quieter, matching theirs/);
+  assert.match(moodLine(moodFrom(["I got the job!!"])) ?? "", /^Your mood right now is upbeat and playful/);
+  assert.equal(moodLine(moodFrom(["ugh today was so bad", "so anyway", "anyway", "so", "anyway so", "so yeah anyway"])), null, "decays back to baseline");
   assert.equal(moodLine(moodFrom(["my grandma's dog is dead"])), null, "'dead' alone is not a laugh");
 });
 
@@ -908,10 +908,10 @@ test("P1 opener: last call's mood carries into a returning call's first line, ne
 
 test("P1 turnHints (Codex review): negated news, serious 'dead', bad news + lol, and words that look like interjections", async () => {
   const { turnHints, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(moodLine(moodFrom(["I got the worst news of my life"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["I got the worst news of my life"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.equal(moodLine(moodFrom(["Please stop!!"])), null);
   assert.equal(moodLine(moodFrom(["I am not sad anymore"])), null);
-  assert.equal(moodLine(moodFrom(["so... I didn't get the job"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["so... I didn't get the job"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.doesNotMatch(turnHints({ userText: "I'm dead serious, stop joking", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.doesNotMatch(turnHints({ userText: "I got fired lol", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.equal(moodLine(moodFrom(["It is official.", "It is official!!"])), null, "punctuation alone is not news (speculation reuse)");
@@ -1421,5 +1421,65 @@ test("#345 session: a perception smile at the reply reaches the next turn once, 
   await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
   await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 3);
   assert.doesNotMatch(calls[2].instructions!, /they smiled at it/, "consumed once");
+  session.close();
+});
+
+// ───────────── #344 mood carried across calls, faces follow it ─────────────
+test("#344: the last call's mood carries (12 h half-life), a Forget voids it, faces scale with energy", async () => {
+  const { carriedMood, moodScaledIntensity } = await import("../src/convo/callMood.ts");
+  const H = 3_600_000;
+  const state = { revision: 2, call_mood: { valence: 0.8, energy: 0.6, at: 0, rev: 2 } };
+  assert.deepEqual(carriedMood(state, 0), { valence: 0.8, energy: 0.6 });
+  const half = carriedMood(state, 12 * H);
+  assert.ok(Math.abs(half.valence - 0.4) < 1e-9 && Math.abs(half.energy - 0.3) < 1e-9);
+  assert.deepEqual(carriedMood(state, 96 * H), { valence: 0, energy: 0 }, "faded out after days");
+  assert.deepEqual(carriedMood({ ...state, revision: 3 }, 0), { valence: 0, energy: 0 }, "a Forget voids it");
+  assert.deepEqual(carriedMood(null, 0), { valence: 0, energy: 0 });
+  assert.equal(moodScaledIntensity(0.6, { valence: 0.5, energy: 1 }), 0.78);
+  assert.equal(moodScaledIntensity(0.6, { valence: 0, energy: 0 }), 0.6);
+  assert.equal(moodScaledIntensity(0.6, { valence: -0.5, energy: -1 }), 0.42);
+  const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  assert.match(moodLine(moodFrom(["hey"], { valence: 0.8, energy: 0.6 })) ?? "", /^Your mood right now is upbeat and playful/);
+  assert.equal(moodLine(moodFrom(["hey"])), null);
+});
+
+test("#344 session: a call that starts after an upbeat call carries it into the first turn and the face", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> So what's the plan tonight."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hey" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.match(calls[0].instructions!, /upbeat and playful/);
+  session.close();
+});
+
+test("Codex #477: a mood computed before a Forget is never saved after it; no carried smile on a crisis turn or an explicit [neutral]", { skip: !v1 }, async () => {
+  const { saveCallMood } = await import("../src/convo/callMood.ts");
+  let state: Record<string, unknown> = { revision: 2 };
+  const memory = { serial: async (_u: string, fn: () => Promise<unknown>) => fn(), state: { getState: async () => ({ ...state }), putState: async (_u: string, s: Record<string, unknown>) => { state = s; } } } as never;
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 1);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(state.call_mood, undefined, "revision moved on: dropped");
+  saveCallMood(memory, "u", { valence: 1, energy: 1 }, 0, 2);
+  await new Promise((r) => setTimeout(r, 5));
+  assert.ok(state.call_mood);
+  for (const [userText, sparkText] of [["I want to kill myself.", "<neutral> Please call 988 right now."], ["hey", "[neutral] So what's up."]]) {
+    const { client, session } = setup([sparkText]);
+    (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    await session.onClientText(JSON.stringify({ type: "text", text: userText }));
+    await client.waitFor((m) => m.type === "reply");
+    assert.ok(!client.json.some((m) => m.type === "expression" && m.tag === "smile"), userText);
+    session.close();
+  }
+});
+
+test("Codex #490: a carried upbeat mood never reaches a crisis turn's instructions", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> Please call 988 right now."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.doesNotMatch(calls[0].instructions!, /Your mood right now is (?:upbeat|playful)/);
   session.close();
 });

@@ -97,6 +97,14 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
     var imageCheckError: String?
+    /// Photo polish (V03 → V02-T confirm): the polished result, its bytes, the wait, and an error line. Transient.
+    var polished: PolishedImage?
+    var polishedImage: Data?
+    var polishing = false
+    var polishError: String?
+    /// "Try again" left for this upload (server: first polish + two retries); polishAttempts = polish calls made for it
+    var polishRetriesLeft = 0
+    var polishAttempts = 0
     var creatingCompanion = false
     var suggestingName = false
     var savingName = false
@@ -226,7 +234,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         importTask?.cancel(); importTask = nil
         companionTask?.cancel(); companionTask = nil
         imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
-        importing = false; creatingCompanion = false; checkingImage = false
+        importing = false; creatingCompanion = false; checkingImage = false; polishing = false
     }
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
@@ -349,12 +357,20 @@ extension AppState {
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }
+        // photo polish review: GENITA_REVIEW_VARIANT=polished shows V02-T confirming the polished picture (two "Try again" left)
+        if reviewStage == .imageCheck, variant == "polished" || variant == "polished-last" {
+            if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url); polishedImage = setup.imageData }
+            let left = variant == "polished" ? 2 : 0
+            imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(#"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":false,"sharpAndLit":true,"noText":true},"reasons":[{"code":"side_view","label":"Side view"}],"polish":true}"#.utf8))
+            polished = try? JSONDecoder().decode(PolishedImage.self, from: Data(#"{"imageId":"review-p","sourceImageId":"review","passed":true,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":true,"noText":true},"reasons":[],"attempt":\#(3 - left),"retriesLeft":\#(left)}"#.utf8))
+            polishRetriesLeft = left
+        }
         // V02-F review (D26): GENITA_REVIEW_VARIANT=fail-public_figure shows the well-known-person refusal
         if reviewStage == .imageCheck, variant.hasPrefix("fail-") {
             if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
             let code = String(variant.dropFirst("fail-".count))
-            let label = code == "public_figure" ? "This looks like a well-known person" : "Too blurry to make a face from"
-            let json = #"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":\#(code == "too_blurry" ? "false" : "true"),"noText":true},"reasons":[{"code":"\#(code)","label":"\#(label)"}]}"#
+            let label = code == "public_figure" ? "This looks like a well-known person" : code == "no_face" ? "No face found" : "Too blurry to make a face from"
+            let json = #"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":\#(code == "no_face" ? "false" : "true"),"sharpAndLit":\#(code == "too_blurry" ? "false" : "true"),"noText":true},"reasons":[{"code":"\#(code)","label":"\#(label)"}]}"#
             imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(json.utf8))
         }
         setup.stage = reviewStage
