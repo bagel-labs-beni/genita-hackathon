@@ -171,7 +171,7 @@ const ACTION = "(?:holding|wearing|standing|showing|smiling|trying|sitting|posin
 const TAGS = String.raw`(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)`;
 const SIMPLE: Record<string, string> = { looks: "look", seems: "seem", wants: "want", needs: "need" };
 const OTHER_PERSON = /\b(?:she|he|her|him|his|they|them|sister|brother|mom|mum|dad|mother|father|friend|boyfriend|girlfriend|partner|wife|husband|son|daughter|kid|kids|baby|coworker|boss|roommate|cousin|aunt|uncle|grandma|grandpa|neighbou?r|model|guy|girl|man|woman|someone|somebody|person)\b/i;
-const CLAUSE_END = /,|;|\s(?:while|and|but|because|so|whereas|though)\s/i;
+const CLAUSE_END = /,|;|\s[—–-]\s|\s(?:while|and|but|because|so|whereas|though)\s/i;
 
 function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
   const name = userName ? `|${userName.replace(/[^\p{L}\p{N} '-]/gu, "").trim()}` : "";
@@ -183,8 +183,15 @@ function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
 
 export type AddressContext = { camera: boolean; first: boolean; userText: string; userName?: string };
 
+/** the user's own line is about themselves ("…better on me", "my outfit", "should I…"), the only evidence that "she" is them (Codex r10) */
+const SELF_REF = /\b(?:me|my|mine|myself|i|i'm|i'?ve|i'?d)\b/i;
+/** a person named in the user's line (Taylor's outfit, a photo of Alice) is someone else */
+const NAMED = /(?:^|[^.!?]\s)([A-Z][a-z]{1,20})\b/;
+
 export function thirdPersonAboutUser(sentence: string, ctx: AddressContext): boolean {
-  if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText)) return false;
+  if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText) || !SELF_REF.test(ctx.userText)) return false;
+  const named = ctx.userText.match(NAMED)?.[1];
+  if (named && named.toLowerCase() !== (ctx.userName ?? "").toLowerCase() && !/^(?:I|Is|Are|Do|Does|Can|Could|Should|Would|Which|What|How|Who|Hey|Ok|Okay)$/.test(named)) return false;
   const { cont, simple } = subjectRe(ctx.userName);
   return cont.test(sentence) || simple.test(sentence);
 }
@@ -199,5 +206,7 @@ export function addressUser(sentence: string, ctx: AddressContext): string {
   const cut = out.search(CLAUSE_END);
   const head = cut < 0 ? out : out.slice(0, cut);
   const tail = cut < 0 ? "" : out.slice(cut);
+  // another named person in the clause ("a photo of Alice in her wedding dress"): whose "her" is unclear, leave it
+  if (/\s[A-Z][a-z]+/.test(head.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/^\s*(?:You're|You)\s/, " "))) return head + tail;
   return head.replace(/\b(in|with|on|at|from|over|under|around|across|against|into|onto|near|by|to)\s+(?:her|his)\b(?=\s+\p{L})/giu, "$1 your") + tail;
 }

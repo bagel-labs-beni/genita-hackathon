@@ -529,6 +529,22 @@ test("session v1 (S4 outfit with camera): the reply addresses her as you", { ski
   await session.onClientText(JSON.stringify({ type: "frames", images: ["aGVsbG8="] }));
   await session.onClientText(JSON.stringify({ type: "text", text: "Which one looks better on me, the white one or the black one?" }));
   const reply = await client.waitFor((m) => m.type === "reply");
-  assert.equal(reply.text, "You're holding up the trench and the black blazer. I'd go black, it's sharper.");
+  // the third-person frame description is either dropped (bug-fix lane's pre-tool judge) or turned to "you"; never "She's"
+  assert.doesNotMatch(String(reply.text), /\bshe'?s\b/i);
+  assert.match(String(reply.text), /I'd go black, it's sharper\./);
   session.close();
+});
+
+test("third person (Codex r10): only when the user's line is about themselves; a named person or their things stay", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const base = { camera: true, first: true, userName: "Summer" };
+  assert.equal(addressUser("She's wearing a red dress.", { ...base, userText: "What do you think of Taylor's outfit?" }), "She's wearing a red dress.");
+  assert.equal(addressUser("The user is holding a photo of Alice in her wedding dress.", { ...base, userText: "What do you think of my photo?" }), "You're holding a photo of Alice in her wedding dress.");
+  assert.equal(addressUser("She's holding up two jackets.", { ...base, userText: "Which one should I wear?" }), "You're holding up two jackets.");
+});
+
+test("third person (bug-fix lane #354): 'get her a pick' after a dash is never 'get your a pick'", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const out = addressUser("She's holding up the options — I'll get her a pick for tonight.", { camera: true, first: true, userText: "which one should I wear tonight?", userName: "Summer" });
+  assert.doesNotMatch(out, /your a pick/);
 });
