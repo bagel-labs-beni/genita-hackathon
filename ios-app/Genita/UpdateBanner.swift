@@ -57,7 +57,7 @@ struct UpdateBanner: View {
                 .tint(.black)
                 .accessibilityIdentifier("updateBannerAction")
             if !v.required {
-                Button { dismissedBuild = v.build } label: { Image(systemName: "xmark").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary).padding(10).contentShape(Rectangle()) }
+                Button { dismissedBuild = v.build } label: { Image(systemName: "xmark").font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary).frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Dismiss")
                     .accessibilityIdentifier("updateBannerDismiss")

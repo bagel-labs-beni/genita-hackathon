@@ -25,7 +25,7 @@ jobs:
   apple:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       # The apps use no Git LFS files, so LFS objects are not downloaded.
       - uses: actions/checkout@v4
@@ -89,10 +89,23 @@ jobs:
           xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | tail -n 60
           exit "${PIPESTATUS[0]}"
 
+      - name: Mac app is Genita.app (names, bundle id, launch rename)
+        run: |
+          APP=ios-app/build/Debug/Genita.app
+          ls -d ios-app/build/Debug/*.app
+          test ! -e ios-app/build/Debug/GenitaMac.app || { echo "::error::GenitaMac.app was built"; exit 1; }
+          ls "$APP/Contents/MacOS"
+          plutil -p "$APP/Contents/Info.plist" | grep -E '"CF(BundleName|BundleDisplayName|BundleExecutable|BundleIdentifier)"'
+          for k in CFBundleName CFBundleDisplayName CFBundleExecutable; do
+            test "$(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Contents/Info.plist")" = Genita || { echo "::error::$k is not Genita"; exit 1; }
+          done
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = ai.thebeni.genita.mac
+          mac-app/Tools/bundle-name/check.sh
+
       - name: Capture Mac waiting screens
         continue-on-error: true
         run: |
-          GENITA_MAC_REVIEW_OUT="$PWD/build-output/screens" ios-app/build/Debug/GenitaMac.app/Contents/MacOS/GenitaMac &
+          GENITA_MAC_REVIEW_OUT="$PWD/build-output/screens" ios-app/build/Debug/Genita.app/Contents/MacOS/Genita &
           APP=$!
           for _ in $(seq 1 30); do kill -0 "$APP" 2>/dev/null || break; sleep 2; done
           kill "$APP" 2>/dev/null || true

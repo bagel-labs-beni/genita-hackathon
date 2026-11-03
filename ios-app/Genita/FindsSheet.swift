@@ -52,6 +52,8 @@ struct FindPicture: View {
     var quietGlyph: String?
     @State private var attempt = 0
     var body: some View {
+        // motion card 4: the picture replaces its placeholder in a 250 ms fade (flag off / UI tests: as before)
+        let fades = MotionFinds.fades
         ZStack {
             FindsInk.skip
             if let image {
@@ -60,9 +62,9 @@ struct FindPicture: View {
                 case .failed: failed
                 case .ready:
                     if let url = image.url, url.hasPrefix("bundle:"), let pic = BundlePicture.image(String(url.dropFirst(7))) {
-                        pic.resizable().scaledToFill()
+                        pic.resizable().scaledToFill().transition(fades ? .opacity : .identity)
                     } else if let url = image.url.flatMap(resolve) {
-                        AsyncImage(url: url, transaction: Transaction(animation: .fade)) { phase in
+                        AsyncImage(url: url, transaction: Transaction(animation: fades ? MotionFinds.photoIn : .fade)) { phase in
                             switch phase {
                             case let .success(pic): pic.resizable().scaledToFill()
                             case .failure: failed
@@ -72,7 +74,9 @@ struct FindPicture: View {
                     } else { failed }
                 }
             } else if quietGlyph != nil { failed }
-        }.clipped()
+        }
+        .findsPhotoFade(image?.status)
+        .clipped()
     }
     @ViewBuilder private var failed: some View {
         if let quietGlyph {
@@ -97,10 +101,11 @@ enum BundlePicture {
 }
 
 /// r03 `.skel`: a 1.4 s shimmer; still under Reduce Motion.
+/// Motion card 4 (flag `motionDetails` on): a white band sweeps left → right every 1.2 s, and the loop stops in UI tests.
 struct Shimmer: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        if reduceMotion { FindsInk.skip } else {
+        if MotionDetails.enabled { FindsShimmer(base: FindsInk.skip) } else if reduceMotion { FindsInk.skip } else {
             TimelineView(.animation) { context in
                 let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.4) / 1.4
                 LinearGradient(stops: [.init(color: FindsInk.skip, location: 0.3), .init(color: CallInk.sheet, location: 0.5), .init(color: FindsInk.skip, location: 0.7)],
@@ -163,7 +168,11 @@ struct FindsSheet: View {
     var openFinds: (() -> Void)?
     @State private var dragY: CGFloat = 0
     @State private var scrolledPage: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var finds: FindsModel { call.finds }
+    /// Motion card 4: the sheet rises on a spring. Full stays on the drawer curve: the 728 pt sheet is exactly the
+    /// screen there, so an overshoot would open a gap under it. Flag off, Reduce Motion, UI tests: the drawer curve.
+    private var sheetMotion: Animation { MotionDetails.live(reduceMotion: reduceMotion) && finds.state != .full ? MotionFinds.sheetRise : .drawer }
     private var offline: Bool { call.link == .reconnecting || call.finds.offline }
     /// Figma F2 (138:2): a card reopened from Finds is 520 tall (picture 196, CTA 58 above the bottom), not the call's 468.
     static let reopenedHeight: CGFloat = 520
@@ -186,7 +195,7 @@ struct FindsSheet: View {
         .frame(width: size.width, height: 728)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30))
         .offset(y: size.height - visible + max(-120, dragY))
-        .animation(.drawer, value: finds.state)
+        .animation(sheetMotion, value: finds.state)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Finds from this call")
         .accessibilityIdentifier("findsSheet")
@@ -320,7 +329,8 @@ struct FindsSheet: View {
             } else {
                 if finds.state == .full {
                     Button { call.toggleMic() } label: {
-                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
+                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 22, weight: .medium))   // ~50 % of the 50 pt circle (18 pt read as shrunken, icon sweep 11/4)
+                            .foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
                 let reopened = finds.current?.reopened == true
@@ -416,22 +426,27 @@ struct FindCardPage: View {
     private var finds: FindsModel { call.finds }
     /// The title row's measured height (title, subtitle, reason chips): the half sheet sizes the camera picture from it.
     @State private var titleRowHeight: CGFloat = 0
+    /// Motion card 5: one selection haptic per chip tap.
+    @State private var chipTaps = 0
+    /// Motion card 6: counts saves (not unsaves) — the bookmark pops, a shine crosses the card, one success haptic.
+    @State private var saveTick = 0
 
     var body: some View {
         ScrollViewReader { reader in
         ScrollView(.vertical) {
+            // motion card 4: blocks lift in one after another (header, title → info → photo → the rest), 40 ms apart
             VStack(alignment: .leading, spacing: 8) {
-                header
+                header.findsRise(0)
                 titleRow.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleRowHeight = $0 }
                 switch card.kind {
                 case .recipe: recipe
-                case .outfit: outfit
-                case .product: product
-                case .link, .unknown: link
+                case .outfit: outfit.findsRise(3)
+                case .product: product.findsRise(3)
+                case .link, .unknown: link.findsRise(3)
                 }
-                if !card.ask.isEmpty { askSection.id("ask") }
-                if !card.sources.isEmpty, card.kind != .product { sourcesSection.id("sources") }
-                if !card.how.isEmpty { howSection.id("how") }
+                if !card.ask.isEmpty { askSection.findsRise(4).id("ask") }
+                if !card.sources.isEmpty, card.kind != .product { sourcesSection.findsRise(4).id("sources") }
+                if !card.how.isEmpty { howSection.findsRise(4).id("how") }
                 Color.clear.frame(height: full ? 96 : 24)
             }
             // PF-1b (Figma 179:68): the product card starts 14 pt higher so "How I found this" clears the CTA (#214)
@@ -444,6 +459,10 @@ struct FindCardPage: View {
         }
         .scrollDisabled(!full)
         .scrollIndicators(.hidden)
+        // motion card 6: saving (bookmark or Save to Finds) sends one blue shine across the card + a success haptic
+        .onChange(of: finds.savePulse) { _, _ in if finds.current?.id == entry.id { saveTick += 1 } }
+        .findsShine(saveTick, color: FindsInk.blue.opacity(0.16))
+        .findsHaptic(.success, trigger: saveTick)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Find \(index + 1) of \(finds.cardCount): \(card.title)")
         .accessibilityIdentifier("findPage\(index)")
@@ -471,7 +490,9 @@ struct FindCardPage: View {
             Spacer()
             HStack(spacing: 0) {
                 Button { finds.toggleSave() } label: {
-                    Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink).frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: entry.saved ? "bookmark.fill" : "bookmark").font(.system(size: 17, weight: .medium)).foregroundStyle(entry.saved ? FindsInk.blueText : CallInk.ink)
+                        .findsBounce(saveTick) // motion card 6: pops as it fills
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel(entry.saved ? "Saved to Finds" : "Save to Finds").accessibilityIdentifier("findSave")
                 // Figma F2: the X is there on a reopened card too (it goes back to the list)
                 Button { withAnimation(.drawer) { finds.close() } } label: {
@@ -487,16 +508,19 @@ struct FindCardPage: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(card.title).font(TypeStyle.title(28)).tracking(-0.28).foregroundStyle(CallInk.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
+                    .findsRise(1)
                 if !card.subtitle.isEmpty {
                     Text(entry.reopened ? Self.reopenedSubtitle(card.subtitle) : card.subtitle)
                         .font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1).truncationMode(.tail)
+                        .findsRise(2)
                 }
                 // D48 ③: why this fits you — 1–2 chips from the user's own taste lines (not on link cards)
-                if card.kind != .link, let reasons = card.reasons, !reasons.isEmpty { FindReasonChips(reasons: Array(reasons.prefix(2))).padding(.top, 8) }
+                if card.kind != .link, let reasons = card.reasons, !reasons.isEmpty { FindReasonChips(reasons: Array(reasons.prefix(2))).padding(.top, 8).findsRise(2) }
             }.frame(maxWidth: .infinity, alignment: .leading)
             if card.kind != .link, let hero = card.hero {
                 FindPicture(image: hero, resolve: call.findsURL, showFailText: false).frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Illustration of \(card.title)")
+                    .findsRise(3)
             }
         }
     }
@@ -525,10 +549,11 @@ struct FindCardPage: View {
         if let cam = card.camera {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
                         checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight))
+                .findsRise(3)
         }
-        chipRow
+        chipRow.findsRise(4)
         if let sel = card.items.first(where: { $0.id == finds.selectedItem }), sel.tier == .maybe { confirmRow(sel) }
-        if !card.steps.isEmpty { stepsSection }
+        if !card.steps.isEmpty { stepsSection.findsRise(4) }
     }
 
     /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient chips show whole under a
@@ -546,6 +571,7 @@ struct FindCardPage: View {
         }
         .scrollIndicators(.hidden)
         .padding(.horizontal, -38)
+        .findsHaptic(.selection, trigger: chipTaps) // motion card 5: one selection tick per tap
         .accessibilityElement(children: .contain).accessibilityLabel("Ingredients")
     }
 
@@ -556,10 +582,11 @@ struct FindCardPage: View {
         let fg: Color = pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.ink
         let bg: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.white
         let border: Color = pressed ? CallInk.ink : miss ? FindsInk.blueSoft : FindsInk.line
-        return Button { withAnimation(.fade) { finds.tapItem(item) } } label: {
+        // motion card 5: background/colors 200 ms (.fade), press 0.96 on a spring, the icon swaps with the replace effect
+        return Button { chipTaps += 1; withAnimation(.fade) { finds.tapItem(item) } } label: {
             HStack(spacing: 6) {
                 if item.tier == .checking { ProgressView().controlSize(.mini).tint(CallInk.mute) }
-                else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute) }
+                else { Image(systemName: icon).font(.system(size: 13, weight: .semibold)).foregroundStyle(pressed ? CallInk.onInk : miss ? FindsInk.blueText : CallInk.mute).findsSymbolReplace(icon) }
                 Text(item.name.capitalizedFirst).font(TypeStyle.body(14, .medium))
                 if item.optional == true { Text("optional").font(TypeStyle.body(12)) }
             }
@@ -568,7 +595,7 @@ struct FindCardPage: View {
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(border, lineWidth: 1))
             .opacity(item.tier == .maybe && !pressed ? 0.55 : item.tier == .checking ? 0.5 : 1)
         }
-        .buttonStyle(PressScale())
+        .buttonStyle(FindsChipPress())
         .accessibilityLabel(chipLabel(item))
         .accessibilityAddTraits(pressed ? .isSelected : [])
         .accessibilityIdentifier("chip-\(item.name)")

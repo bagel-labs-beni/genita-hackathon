@@ -47,6 +47,30 @@ final class RestoreStub: URLProtocol, @unchecked Sendable {
         XCTAssertTrue(storage.bool(forKey: AppState.signedOutKey), "a restart stays on A02")
     }
 
+    /// 11/4 voice lane (build 7 Appetize: picked Leah, Settings said "Default"): another phone or a reinstall gets the
+    /// companion's saved voice back from the server, so Settings names it.
+    func testCompanionRestoreBringsBackTheSavedVoice() async {
+        let storage = UserDefaults(suiteName: UUID().uuidString)!
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RestoreStub.self]
+        let me = self.me
+        RestoreStub.handler = { req in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/v1/companion") { return (200, Data(#"{"id":"c1","name":"Lou","type":"human","imageId":"img1","voiceId":"9"}"#.utf8)) }
+            if path.hasSuffix("/me") { return (200, me) }
+            return (404, Data())
+        }
+        let model = AppState(storage: storage)
+        model.routeAfterSignIn = {}
+        model.onboarding = OnboardingClient(auth: GenitaAuthClient(baseURL: URL(string: "https://restore.stub")!, store: InMemoryTokenStore("token-a"), session: URLSession(configuration: config)))
+        XCTAssertNil(model.setup.voiceName)
+        await model.restoreCompanion()
+        XCTAssertEqual(model.setup.voiceId, "9")
+        XCTAssertEqual(model.setup.voiceName, "Leah")
+        XCTAssertEqual(VoicePlayer.name(forVoiceId: "19"), "Leo")
+        XCTAssertNil(VoicePlayer.name(forVoiceId: "nope"))
+    }
+
     func testCompanionRestoreFailingOtherwiseKeepsTheSession() async {
         let (model, storage, tokens) = makeModel(companionStatus: 500)
         await model.routeOnLaunch()
