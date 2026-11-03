@@ -552,6 +552,20 @@ export function aliveSway(env: Record<string, string | undefined> = process.env)
   return Number.isFinite(v) ? Math.min(2, Math.max(0, v)) : 1;
 }
 
+/**
+ * 11/4 (Chelsea, build 6 Listening: "something like teeth inside the mouth looks off"): the mouth inside. Rig people
+ * get `rig.interior: 1` (apps after build 6: lips together while listening, teeth lit like the face, #mouth-interior)
+ * and `motion.idleJaw` 0.05 — build 6 reads that, so its idle drift stays under the teeth layer's threshold
+ * (teethMin 0.08) and the white band at rest goes away without an app build. Switch: GENITA_FACE_MOUTH_INTERIOR,
+ * default on; "0" / "false" / "off" sends `interior: 0` and leaves the idle as prepped (the build 6 mouth).
+ */
+export const MOUTH_REST = Object.freeze({ restOpen: 0.05, idleJaw: 0.05 });
+
+export function mouthInteriorOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.GENITA_FACE_MOUTH_INTERIOR ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
+}
+
 export function v93MouthOn(env: Record<string, string | undefined> = process.env): boolean {
   const v = (env.GENITA_FACE_V93_MOUTH ?? "").trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off");
@@ -582,11 +596,16 @@ export const V93_MOTION = Object.freeze({
 const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
 
 /** The served lip map (see V93_PERIORAL, STILL_FACE, V93_MOTION); the stored prep state is never changed. */
-export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
+export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean, interior: boolean = mouthInteriorOn()): Record<string, unknown> {
   if (!on) return map;
   const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive, sway: aliveSway() }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
   // always sent: without a block the app falls back to its own moving cheek rules (codex P2)
   out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
+  if (kind === "human" && isRecord(map.rig)) {
+    out.rig = interior ? { ...map.rig, interior: 1, restOpen: MOUTH_REST.restOpen } : { ...map.rig, interior: 0 };
+    // only where the app already runs the default motion (a person with no drive): a motion block elsewhere would switch it on
+    if (interior && map.drive === undefined) out.motion = { ...rec(map.motion), idleJaw: MOUTH_REST.idleJaw };
+  }
   if (kind === "human") {
     if (!isRecord(map.rig) || map.perioral !== undefined) return out;   // not a rig face, or prep sent its own block: still head only
     return { ...out, perioral: { ...V93_PERIORAL, jawDropPx: 1 }, motionV2: { ...rec(map.motionV2), ...V93_MOTION } };

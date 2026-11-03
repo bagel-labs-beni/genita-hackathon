@@ -286,6 +286,8 @@ function withTimeout<T>(p: Promise<T>, ms: number, signal: AbortSignal): Promise
 }
 
 export type ProductCtx = PipelineCtx & {
+  /** a cache warm-up nobody waits for: it yields search slots to calls */
+  background?: boolean;
   /** I04 "Likes & dislikes" lines for this account (server-side style card), if any */
   likes?: string[];
   /** the last few lines of this conversation (refine on the Mac: "match my style") */
@@ -314,9 +316,55 @@ function provenCount(r: SearchResult): number {
  * identical calls race: the first that lists ${PRODUCT_COUNT} opened pages wins and the rest are aborted;
  * if none does, the best one (most opened pages listed, then most opens) is used.
  */
-export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = []): Promise<SearchResult | null> {
-  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3)
-  const runs = Array.from({ length: Math.max(1, Math.min(6, n)) }, () => new AbortController());
+/**
+ * Spark web searches in flight across the server (11/4: 10–13 at once slowed every one of them, S5 16–27 s).
+ * A search's first lane waits for a slot; extra hedge lanes only start when a slot is free; background (cache
+ * warm-up) searches yield to everything else. GENITA_SPARK_SEARCH_MAX (default 8).
+ */
+export function sparkSearchMax(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_SPARK_SEARCH_MAX);
+  return Number.isInteger(n) && n >= 1 && n <= 64 ? n : 8;
+}
+const slots = { used: 0, fg: [] as Array<() => void>, bg: [] as Array<() => void> };
+/** slots background searches may use: all but two; 1 with a limit of 2; none with a limit of 1 (Codex #522 r4) */
+const backgroundMax = () => { const n = sparkSearchMax(); return n <= 1 ? 0 : n === 2 ? 1 : n - 2; };
+function tryTake(background: boolean): boolean {
+  // a background search leaves slots for the people in calls
+  if (slots.used < (background ? backgroundMax() : sparkSearchMax())) { slots.used++; return true; }
+  return false;
+}
+function take(background: boolean, signal: AbortSignal): Promise<boolean> {
+  if (tryTake(background)) return Promise.resolve(true);
+  // no background slot at this limit: give up at once rather than wait forever (Codex #522 r3)
+  if (background && backgroundMax() === 0) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const q = background ? slots.bg : slots.fg;
+    const go = () => { signal.removeEventListener("abort", stop); resolve(true); };
+    const stop = () => { const i = q.indexOf(go); if (i >= 0) q.splice(i, 1); resolve(false); };
+    signal.addEventListener("abort", stop, { once: true });
+    q.push(go);
+  });
+}
+function give(): void {
+  // hand the slot straight to the next waiter (calls first), else free it
+  const next = slots.fg.shift() ?? (slots.used <= backgroundMax() ? slots.bg.shift() : undefined);
+  if (next) next();
+  else slots.used = Math.max(0, slots.used - 1);
+}
+/** For tests: slots in use right now. */
+export const searchSlotsUsed = () => slots.used;
+
+export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = [], opts: { background?: boolean } = {}): Promise<SearchResult | null> {
+  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3); the first one
+  // waits for a search slot, the others run only if one is free right now
+  // a free slot is taken synchronously (the calls start in this tick); only a full server waits
+  if (!tryTake(!!opts.background) && !(await take(!!opts.background, signal))) return null;
+  let extra = 0;
+  while (extra < Math.max(1, Math.min(6, n)) - 1 && tryTake(!!opts.background)) extra++;
+  const held = 1 + extra;
+  let released = 0;
+  const release = () => { if (released < held) { released++; give(); } };
+  const runs = Array.from({ length: held }, () => new AbortController());
   const stopAll = () => runs.forEach((a) => a.abort());
   signal.addEventListener("abort", stopAll, { once: true });
   const done: SearchResult[] = [];
@@ -341,6 +389,8 @@ export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: num
   } finally {
     stopAll();
     signal.removeEventListener("abort", stopAll);
+    // every lane is stopped here: its slot is free again
+    while (released < held) release();
   }
 }
 
@@ -363,7 +413,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const look = ctx.allFrames ? ctx.frames.slice(-3) : ctx.frames.length ? [ctx.frames[ctx.frames.length - 1]] : [];
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0, oneSearch: process.env.GENITA_PRODUCT_ONE_SEARCH !== "0" });
 
-  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look);
+  const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look, { background: ctx.background });
   timings.searchMs = ms();
   if (ctx.signal.aborted) return { card: null, timings };
   let j = res ? lastJsonObject<ProductJson>(res.text) : null;
@@ -457,7 +507,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   ctx.log("product.kept", { findId: ctx.findId, kept: products.length, ...dropped, serverOpened, pageRead: facts.filter(Boolean).length });
 
   if (!products.length) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "Couldn’t find a good match. Try a color or a price, or ask me again." });
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "Couldn’t find a good match. Try a color or a price." });
     return { card: null, timings, label };
   }
 

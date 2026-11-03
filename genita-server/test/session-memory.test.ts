@@ -814,3 +814,55 @@ test("Codex 11/4 (hotfix merge): a 'forget that …' said in the call-back clear
   assert.match(inst, /Black it is/, "the rest of the last call stays");
   c.close(); await memory.drain();
 });
+
+test("Codex #502 P1 r3: a crisis line travels with the conversation to the other device (no take nudge after the move)", { timeout: 30_000 }, async (t) => {
+  for (const first of ["I want to kill myself.", "Long day."]) {
+    const { deps, requests } = setup();
+    const logs: string[] = [];
+    const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+    t.after(() => new Promise<void>((r) => server.close(() => r())));
+    const addr = server.address(); assert.ok(addr && typeof addr === "object");
+    const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+    const sockets: WebSocket[] = [];
+    const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+      sockets.push(ws);
+      let n = 0; let ok = false;
+      ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+      ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+    });
+    const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+    const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+    const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+    await say(phone, first);
+    for (let i = 0; i < 8; i++) await say(phone, "ok"); // the first line is now outside the kept 16
+    const mac = await open("mac"); start(mac); await waitFor(mac.ready);
+    requests.length = 0;
+    // an ordinary line on the Mac (#533 made "I'm about to swallow all these pills" a crisis line itself, so the
+    // control's nudge was blocked too): only the moved conversation's early line may decide
+    await say(mac, "anyway what should I eat tonight");
+    const inst = requests.map((r) => r.instructions ?? "").join("\n");
+    if (first === "Long day.") assert.match(inst, /own take/, "control: no crisis in the conversation, the nudge fires");
+    else assert.doesNotMatch(inst, /own take/);
+    for (const w of sockets) w.terminate();
+  }
+});
+
+test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 keeps its early crisis line's flag", { timeout: 30_000 }, async (t) => {
+  const { deps, requests } = setup();
+  const server = await startServer({ ...config, sessionToken: "test-token" }, () => {}, { ...deps, log: () => {} }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=mac`, { headers: { authorization: "Bearer test-token", "x-genita-user": "acct-r5" } });
+  let n = 0; let ok = false;
+  ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+  await new Promise((r, j) => { ws.once("open", r); ws.once("error", j); });
+  const history = [{ role: "user", text: "I want to kill myself." }, { role: "assistant", text: "Please call 988 right now." },
+    ...Array.from({ length: 18 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: i % 2 ? "Okay." : "ok" }))];
+  ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false, handoff: true, history }));
+  await waitFor(() => ok);
+  requests.length = 0;
+  const before = n; ws.send(JSON.stringify({ type: "text", text: "Yes, I have the pills beside me" })); await waitFor(() => n > before);
+  assert.doesNotMatch(requests.map((r) => r.instructions ?? "").join("\n"), /own take/);
+  ws.terminate();
+});

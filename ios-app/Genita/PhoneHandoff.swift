@@ -61,6 +61,8 @@ import ARKit
     private var subscriptions = Set<AnyCancellable>()
     private var accountScope = HandoffAccountScope()
     private let accountResolver = HandoffAccountResolver()
+    /// a first /me is in flight (set when resolving starts; cleared on adopt, expiry and any setAccount)
+    private var resolving=false
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
@@ -98,8 +100,17 @@ import ARKit
     /// Verified sign-in /me and logout switch the local link and ownership together.
     func setAccount(_ accountID: String?) {
         // Logout must cancel /me even when no scope has been resolved yet.
+        let wasResolving=resolving;resolving=false
         accountResolver.invalidate()
-        guard accountScope.select(accountID) else { return }
+        // P01's digits typed while this sign-in's /me was pending belong to it: the first verified scope keeps them,
+        // whichever path verified it (routeOnLaunch or the resolver). An account switch or logout drops them.
+        let carry=HandoffPairingInput.carries(from:accountScope.accountID,to:accountID) ? (code:code,settings:settings) : nil
+        guard accountScope.select(accountID) else {
+            // logout before /me verified anything: still drop what was typed
+            // only a logout that cancels a pending /me: a plain "no account" call at launch must not close P01
+            if accountID == nil,wasResolving {pairingAttempt+=1;pairingFailed=false;code="";settings=false}
+            return
+        }
         server.stop();link.autoReconnect=false;link.useAccount(accountID)
         generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
         pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
@@ -108,31 +119,31 @@ import ARKit
         trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
         media.stopAll()
         ownership.useAccount(accountID)
+        if let carry {code=carry.code;settings=carry.settings}
         refreshSurface()
         link.autoReconnect=accountID != nil && sceneActive
         if accountID != nil,model != nil {startConnections()}
+        if carry?.code.count == 6 {connect()}
     }
     private func startConnections() {
         guard sceneActive else { return }
         guard accountScope.accountID != nil else { resolveAccount();return }
         let args=ProcessInfo.processInfo.arguments
         if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
-        if !link.connected {link.reconnect()}
+        // a recovered call never swaps a code pairing in progress for the remembered Mac
+        if HandoffPairingInput.mayReconnectRemembered(sheetOpen:settings,code:link.pairedWithCode ? "" : code,linkConnected:link.connected) {link.reconnect()}
     }
     private func resolveAccount() {
         guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
               !model.storage.bool(forKey:AppState.signedOutKey) else { return }
         let auth=model.onboarding.auth
+        resolving=true
         accountResolver.resolve(snapshot:model.launchAuthSnapshot,current:{ model.launchAuthSnapshot },
             fetch:{ await auth.sessionState() },adopt:{ [weak self,weak model] accountID in
-                guard let self,let model else { return }
-                // Verification resets the account's transports. Keep the code entered while /me
-                // was pending, then join only after the verified scope has been installed.
-                let code=self.code,settings=self.settings
-                model.adopt(accountId:accountID)
-                self.code=code;self.settings=settings
-                if code.count == 6 {self.connect()}
-            },expired:{ [weak model] in model?.signedOut() })
+                self?.resolving=false
+                // setAccount keeps the code entered while /me was pending and joins once the scope is installed
+                model?.adopt(accountId:accountID)
+            },expired:{ [weak model] in model?.signedOut() })  // setAccount(nil) clears `resolving` after it drops the typed digits
     }
     func attach(_ model: AppState) {
         self.model=model
@@ -193,7 +204,7 @@ import ARKit
     func forgetMac() { registering=false;trackingURL=nil;updateTracking();link.forgetMac();code="";refreshSurface() }
     func snapshotCall() {
         guard let model else { return }
-        let renderer=ImageRenderer(content: ConversationView(model:model,handoffEnabled:false).frame(width:390,height:844).environment(\.colorScheme,.light))
+        let renderer=ImageRenderer(content: ConversationView(model:model,handoffEnabled:false).frame(width:390,height:844).environment(\.colorScheme,.light).environment(\.genitaStillRender,true))
         renderer.scale=2
         snapshot=renderer.uiImage?.pngData()?.base64EncodedString() ?? ""
     }

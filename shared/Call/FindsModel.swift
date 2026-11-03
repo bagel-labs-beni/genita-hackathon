@@ -64,6 +64,8 @@ struct FindEntry: Identifiable, Equatable {
     var page = 0
     /// Ingredient chip the user tapped (its camera box lights up; r03 #4/#5).
     var selectedItem: String?
+    /// Motion card 6: +1 each time the user saves the shown card (not on unsave, not when a failed unsave restores it).
+    private(set) var savePulse = 0
     /// Step marked done, per find.
     var doneSteps: [String: Set<Int>] = [:]
     /// r03 #11: a result arrived while the user reads another one.
@@ -309,6 +311,7 @@ struct FindEntry: Identifiable, Equatable {
         let id = f.id
         let want = !f.saved
         update(id) { $0.saved = want }
+        if want { savePulse += 1 }
         Task { @MainActor in
             // server first-class: if the save didn't land, the bookmark goes back
             if !(await saveRemote(id, want)) { update(id) { $0.saved = !want } }
