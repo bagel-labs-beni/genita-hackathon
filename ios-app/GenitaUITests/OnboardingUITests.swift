@@ -31,6 +31,22 @@ final class OnboardingUITests: XCTestCase {
         shot.name = "onb-V02-F-public-figure"; shot.lifetime = .keepAlways; add(shot)
     }
 
+    /// V03 face scan (dyno Figma 526:15314): the scan held at 0 / 55 / 100 % over the review photo with its live SAM net.
+    func testV03FaceScanStates() throws {
+        for pct in [0, 55, 100] {
+            let app = XCUIApplication()
+            app.launchArguments = ["--uitesting"]
+            app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "scan-\(pct)", "GENITA_REVIEW_STILL": "1"]
+            app.launch()
+            XCTAssertTrue(app.descendants(matching: .any)["V03"].waitForExistence(timeout: 10), "V03 at \(pct) %")
+            XCTAssertEqual(app.descendants(matching: .any)["imageCheckProgress"].label, "\(pct)%")
+            Thread.sleep(forTimeInterval: 0.6)
+            let shot = XCTAttachment(screenshot: app.screenshot())
+            shot.name = "onb-V03-scan-\(pct)"; shot.lifetime = .keepAlways; add(shot)
+            app.terminate()
+        }
+    }
+
     /// Photo polish (11/4): V02-T confirms the polished picture with "Use this image" and "Try again (2 left)", no "Use my original".
     func testV02TConfirmsThePolishedPhoto() throws {
         let app = XCUIApplication()

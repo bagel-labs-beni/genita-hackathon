@@ -123,7 +123,7 @@ struct ImageCheckView: View {
                 .overlay {
                     // V03 face scan: the line follows the bar; the net comes with the check answer
                     FaceScanOverlay(progress: reduceMotion && reveal > 0 ? 1 : progress, reveal: reveal, overlayOpacity: overlayOpacity,
-                                    mesh: mesh, imageSize: photoSize, reduceMotion: reduceMotion)
+                                    mesh: mesh, imageSize: photoSize, reduceMotion: reduceMotion || model.reviewScan != nil)
                         .accessibilityIdentifier("faceScan")
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -143,6 +143,7 @@ struct ImageCheckView: View {
             // Photo polish adds ~15–20 s (Muse Image edit + the same check): the bar slows down so it doesn't sit at 90 %.
             while analyzing && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
+                guard analyzing, !Task.isCancelled else { break }   // the answer came in during the sleep: finish() owns the bar now
                 let rate = polishFlow ? 0.012 : 0.05
                 withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * rate) }
             }
@@ -232,7 +233,8 @@ struct ImageCheckView: View {
     }
 
     @ViewBuilder private func photo(width: CGFloat) -> some View {
-        if !analyzing, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
+        // the polished picture only on V02-T: V03's finish keeps the original under its face net
+        if !analyzing, finished, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
             // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
             // the fitted picture sets the size; the blurred copy is only a background (it must not grow the frame)
             Image(uiImage: image).resizable().scaledToFit()

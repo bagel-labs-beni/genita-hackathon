@@ -1,5 +1,4 @@
 import SwiftUI
-import GenitaKit
 
 /// V03 face scan (dyno Figma V03 526:15314, Chelsea 11/4 02:31; spec ./_qa-scripts/genita-dyno-video/spec).
 /// A #00A2FF line crosses the photo with the check's progress. Once the answer brings SAM's face points, the

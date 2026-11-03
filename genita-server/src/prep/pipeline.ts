@@ -53,6 +53,16 @@ export class PrepError extends Error {
 }
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** V03 face scan SAM calls: hard cap, and how long the check answer waits for them once Spark and the head box are in */
+export const FACE_SCAN_TIMEOUT_MS = 15_000;
+export const FACE_SCAN_GRACE_MS = 1_500;
+
+/** `p`, or `fallback` if it hasn't settled `ms` from now (the timer never keeps the process alive) */
+function within<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); timer.unref?.(); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 
 const dataUrl = (bytes: Buffer, mime: string) => `data:${mime};base64,${bytes.toString("base64")}`;
 const since = (t0: number) => Math.round(performance.now() - t0);
@@ -71,31 +81,36 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     (b) => ({ boxes: b, ms: since(t0) }),
     () => null,
   );
+  // The check itself goes first, so its Meta budget is reserved before the optional face-scan calls below.
+  const sparkCheck = sparkJson<ClassifyRaw>(d.metaKey, buildClassifyRequest(url));
   // V03 face scan (11/4): face silhouette + eye and mouth boxes for the app's mesh, all SAM in parallel with the
-  // Spark check (no extra wait); a failed call only means no mesh
+  // Spark check. Optional: a failure, an exhausted budget or a slow answer only means no mesh, never a slower check.
+  const optional = AbortSignal.timeout(FACE_SCAN_TIMEOUT_MS);
   const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) =>
-    samDetect(d.metaKey, url, facePrompt(kind), undefined, { masks: true }).then((b) => outlineFromSam(b), () => null);
-  const samBoxes = (prompt: string) => samDetect(d.metaKey, url, prompt).catch(() => []);
+    samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).then((b) => outlineFromSam(b), () => null);
+  const samBoxes = (prompt: string) => samDetect(d.metaKey, url, prompt, optional).catch(() => [] as Awaited<ReturnType<typeof samDetect>>);
   const samFace = samFaceOf("human");
-  const samEyes = samBoxes(EYES_PROMPT);
-  const samMouth = samBoxes(MOUTH_PROMPT);
-  const raw = await sparkJson<ClassifyRaw>(d.metaKey, buildClassifyRequest(url));
+  const samFeatures = Promise.all([samBoxes(EYES_PROMPT), samBoxes(MOUTH_PROMPT)]);
+  const raw = await sparkCheck;
   const checkMs = since(t0);
   const check = interpretCheck(raw);
   let head = await samPerson;
-  let faceOutline = await samFace;
+  let faceOutline: Awaited<typeof samFace>;
   if (check.passed && check.type && check.type !== "human") {
     const t1 = performance.now();
     const kind = check.type;
-    [head, faceOutline] = await Promise.all([
-      samDetect(d.metaKey, url, headPrompt(kind)).then(
-        (b) => ({ boxes: b, ms: checkMs + since(t1) }),
-        () => null,
-      ),
-      samFaceOf(kind),
-    ]);
+    // the head box first (it gates prep), then the face for this kind
+    const samHead = samDetect(d.metaKey, url, headPrompt(kind)).then(
+      (b) => ({ boxes: b, ms: checkMs + since(t1) }),
+      () => null,
+    );
+    const samKindFace = samFaceOf(kind);
+    head = await samHead;
+    faceOutline = await within(samKindFace, FACE_SCAN_GRACE_MS, null);
+  } else {
+    faceOutline = await within(samFace, FACE_SCAN_GRACE_MS, null);
   }
-  const [eyes, mouth] = await Promise.all([samEyes, samMouth]);
+  const [eyes, mouth] = await within(samFeatures, FACE_SCAN_GRACE_MS, [[], []]);
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,
