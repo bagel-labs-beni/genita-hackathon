@@ -17,7 +17,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import { RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
@@ -138,6 +138,8 @@ export type SessionDeps = {
   personalize?: SessionPersonalize;
   /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
   continuesCall?: () => boolean;
+  /** resolves true once this call's device may play sound (handoff owner, lease over), false if it won't soon */
+  untilPlayable?: () => Promise<boolean>;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -167,6 +169,8 @@ const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
+/** waits before each retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s; a cold one takes longer) */
+const TTS_RETRY_MS = [400, 1500];
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
 export const SUGGEST_MAC_LINE =
@@ -187,6 +191,12 @@ type Reply = {
   spoken: string[];
   firstAudioAt: number | null;
   audioMs: number;
+  /**
+   * AU-49: when the app's queued speech ends, on the server clock. The app plays each clip at
+   * max(its queue end, arrival), so a gap between clips (a line, a web search, then the answer)
+   * pushes the end out; audioMs alone does not count the gap.
+   */
+  playEnd: number;
   doneTimer: NodeJS.Timeout | null;
   /** device mode: characters sent in `say` (drives the speaking estimate) */
   chars: number;
@@ -214,6 +224,8 @@ const MAX_FRAMES = 2;
 const MAX_FRAME_BYTES = 1_500_000;
 const FRAMES_TTL_MS = 15_000;
 const PLAYBACK_SLACK_MS = 250;
+/** AU-49: the gap-aware playback end never holds a reply in "speaking" longer than this from now */
+const PLAYBACK_MAX_WAIT_MS = 60_000;
 /** longest a ready reply waits for the user to stop talking before its first sound (ASR lost a speechEnd) */
 const HOLD_MAX_MS = 3000;
 /** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
@@ -338,6 +350,8 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
+/** the call came back after a drop (same device, or the other device after a gap): no full greeting, one short line */
+export const RECONNECT_LINE = "Sorry, we got cut off — where were we?";
 /**
  * Greeting option (a), Chelsea 11/4 (GENITA_GREET_OPENER=0 turns it off): the call's first words are
  * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
@@ -474,6 +488,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** over the seat cap with the device fallback off: logged once per stretch, the call keeps the server voice */
+  private seatsOver = false;
   /** the account's saved companion voice (same presence), looked up as the socket opens */
   private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
@@ -761,6 +777,10 @@ export class Session {
     const g = msg.greetAfterMs;
     const greetAfterMs = typeof g === "number" && Number.isFinite(g) ? Math.round(Math.min(MAX_GREET_AFTER_MS, Math.max(0, g))) : null;
     this.started = true;
+    // first sound on connect (Chelsea 05:04, p50 ≤ 1 s): where start → ready goes, per stage
+    const spanT0 = this.now();
+    const spans: Record<string, number> = {};
+    const span = (k: string, from: number) => { spans[k] = Math.round(this.now() - from); };
     this.warm();
     (this.deps.ops ?? getOps()).prime(this.limitUserId());
     if (this.deps.memory && this.deps.userId) {
@@ -819,7 +839,9 @@ export class Session {
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
       };
+      const memT0 = this.now();
       const outcome = await within(init().then(() => "ok" as const, () => "error" as const), MEMORY_START_BUDGET_MS, "slow" as const);
+      span("memoryMs", memT0);
       if (outcome === "error") { this.log("memory.unavailable", {}); memoryCall.close(); this.memoryCall = null; this.historyRevision = null; }
       else if (outcome === "slow") {
         abandoned = true;
@@ -829,7 +851,9 @@ export class Session {
       }
     }
     if (this.closed) return;
+    const voiceT0 = this.now();
     const owned = await this.ownedVoice;
+    span("voiceMs", voiceT0);
     if (this.closed) return;
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
@@ -843,10 +867,12 @@ export class Session {
         let continuation = this.continued || msg.handoff === true;
         try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
+        const profileT0 = this.now();
         const p = await Promise.race([
           this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
           new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
+        span("profileMs", profileT0);
         this.callStartedAt = new Date().toISOString();
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
@@ -869,9 +895,13 @@ export class Session {
     this.timeZone = str(u.timeZone, 40);
     this.finds?.configure({ owner: this.deps.userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
     if (this.micOn) {
+      const asrT0 = this.now();
       await this.ensureAsr();
+      span("asrMs", asrT0);
     }
     if (this.closed) return;
+    span("totalMs", spanT0);
+    this.log("call.start_spans", spans);
     this.client.sendJson({
       type: "ready",
       protocol: PROTOCOL_VERSION,
@@ -889,7 +919,12 @@ export class Session {
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
-    if (this.continued) return; // handoff: the conversation goes on, no greeting of either kind
+    if (this.continued) {
+      // handoff: the conversation goes on, no greeting of either kind. A drop coming back (same device, or a gap)
+      // says one short line so the user isn't met by silence (coordinator 11/4 WT-06 follow-up)
+      if (this.reconnected && startMode === "chat") void this.sayReconnectLine();
+      return;
+    }
     if (greetAfterMs === null) {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
       return;
@@ -916,6 +951,21 @@ export class Session {
       }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
+  }
+
+  /**
+   * The reconnect line, once this device may play (the start claim and a switch's short lease: said into a closed
+   * gate it was lost — Codex #555), and only if nothing happened meanwhile: no user turn yet, still a chat (not
+   * interpretation), no reply under way (Codex #555 P2s).
+   */
+  private async sayReconnectLine(): Promise<void> {
+    const playable = (await this.deps.untilPlayable?.().catch(() => false)) ?? true;
+    if (!playable || this.closed || this.reply || this.mode !== "chat" || this.turn.utteranceId !== 0) {
+      this.log("call.reconnect_skipped", { playable, busy: !!this.reply, mode: this.mode, turns: this.turn.utteranceId });
+      return;
+    }
+    this.log("call.reconnect_line", {});
+    this.dispatch({ type: "self_speak", text: RECONNECT_LINE, origin: "card" });
   }
 
   private startPreGreet(): void {
@@ -1637,6 +1687,8 @@ export class Session {
   /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
+  /** set by the server when this call picked up a dropped one (same device, or > RECONNECT_GAP_MS later): RECONNECT_LINE */
+  reconnected = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
@@ -1811,6 +1863,14 @@ export class Session {
     if (this.closed || this.tts === "device") return true;
     const seats = this.deps.config.voice ? this.deps.voiceSeats : undefined;
     if (!seats) return false;
+    // 11/4: a full GPU no longer hands the call to the phone's voice (another, robotic voice): the call keeps the
+    // companion's own voice and waits its turn on the autoscaling GPU. The seat is still taken (holders = live load).
+    if (!this.deps.config.voice?.deviceFallback) {
+      const over = !seats.tryTake(this.id);
+      if (over && !this.seatsOver) this.log("voice.capacity_over", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
+      this.seatsOver = over;
+      return false;
+    }
     const overflow = !seats.tryTake(this.id);
     if (overflow && !this.voiceOverflow) this.log("voice.capacity_fallback", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
     if (!overflow && this.voiceOverflow) this.log("voice.capacity_restored", { sessionId: this.id });
@@ -1833,7 +1893,7 @@ export class Session {
     if (!self) this.lastWarmAt = this.now();
     // F2-L26: "Call yourself Max" — the new name applies from this reply on (chat only, never a greeting)
     const newName = !self && !synthetic && this.mode === "chat" ? detectRename(text) : null;
-    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
+    const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, playEnd: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
     // D41 daily cap: real user turns were charged in admitTurn(); the greeting and an initiative cue only run
@@ -2370,10 +2430,8 @@ export class Session {
 
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
-    const startJob = (i: number) => {
-      if (jobs[i] || !sentences[i] || askedAt(i)) return;
-      const s = sentences[i];
-      jobs[i] = new Eager(
+    const ttsJob = (s: (typeof sentences)[number], force?: true) =>
+      new Eager(
         this.deps.tts({
           voiceId: this.voiceId,
           text: s.tts,
@@ -2382,10 +2440,18 @@ export class Session {
 
           signal,
           lang: speechLang(s.display || s.tts, lang),
+          ...(force ? { force } : {}),
         }),
       );
+    const startJob = (i: number) => {
+      if (jobs[i] || !sentences[i] || askedAt(i)) return;
+      jobs[i] = ttsJob(sentences[i]);
     };
     let ttsFailed = false;
+    // 11/4 (no device voice): retries per reply for a clause the voice service failed before any of its audio went
+    // out, then once the cached recovery line
+    let retries = 0;
+    let recovered = false;
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
@@ -2405,6 +2471,7 @@ export class Session {
       }
       this.client.sendJson({ type: "say", utteranceId, sentence: i, text: s.display, emotion: s.emotion ?? "neutral", lang: speechLang(s.display, lang) });
       reply.chars += s.display.length;
+      reply.playEnd = Math.max(reply.playEnd, this.now()) + s.display.length * DEVICE_MS_PER_CHAR;
     };
     for (let i = 0; ; i++) {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
@@ -2497,6 +2564,7 @@ export class Session {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
           }
           reply.audioMs += durationMs;
+          reply.playEnd = Math.max(reply.playEnd, this.now()) + durationMs;
         }
         if (skipped) {
           this.log("profile.ask_dropped", { utteranceId, midTts: true, replaced });
@@ -2515,12 +2583,70 @@ export class Session {
         }
       } catch (err) {
         if (signal.aborted) break;
+        const ttsOff = err instanceof Error && err.message === "tts_off";
+        const ownVoiceOnly = !ttsOff && !!this.deps.config.voice && !this.deps.config.voice.deviceFallback;
+        const reason = err instanceof Error ? err.message.slice(0, 120) : "unknown";
+        if (ownVoiceOnly && !sentAudio && retries < TTS_RETRY_MS.length) {
+          // the companion's own voice, never the phone's (11/4): wait for the voice service and ask again for this
+          // clause, even while it is parked as down (a cold or busy GPU usually answers within a few seconds)
+          const waitMs = TTS_RETRY_MS[retries++];
+          this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, attempt: retries, reason });
+          await new Promise<void>((r) => { const t = setTimeout(r, waitMs); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
+          if (signal.aborted) break;
+          // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
+          // the loop head judges it again (Codex review P2)
+          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true) : (undefined as never);
+          i--;
+          continue;
+        }
+        if (ownVoiceOnly && !sentAudio && reply.firstAudioAt === null && !recovered) {
+          // nothing of this reply was heard and the voice service stayed down: say the short recovery line in the
+          // companion's own voice from the cache (prefetched with the fillers), so the call is never just silent
+          // (the call screen shows no captions, Codex review P1). The reply's words still go to the history.
+          recovered = true;
+          ttsFailed = true;
+          const taken = askedAt(i) || !!sentences[i]?.drop;
+          if (!taken && !sentences[i]?.beat) reply.spoken.push(sentences[i].display);
+          let voiced = false;
+          const recoverOffset = reply.audioMs; // the line's alignment is from its own start (Codex re-review P2)
+          try {
+            for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text: RECOVER_LINE, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
+              if (signal.aborted || !chunk.audio.length) continue;
+              if (reply.firstAudioAt === null) {
+                await this.untilUserQuiet(signal);
+                if (signal.aborted) break;
+                reply.firstAudioAt = this.now();
+                m.firstAudioAt = reply.firstAudioAt;
+                this.dispatch({ type: "first_audio", utteranceId });
+                noteFirstAudio();
+                this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
+              }
+              const seq = ++this.seq;
+              const durationMs = pcmDurationMs(chunk.audio.length);
+              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, recoverOffset) });
+              this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
+              reply.audioMs += durationMs;
+              ttsModelUsed = chunk.model;
+              voiced = true;
+            }
+          } catch { /* not cached for this speaker: nothing to play */ }
+          if (signal.aborted) break;
+          this.log("tts.recover_line", { sessionId: this.id, userId: this.deps.userId, utteranceId, voiced, reason });
+          if (!voiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
+          continue;
+        }
         ttsFailed = true;
-        if (!(err instanceof Error && err.message === "tts_off")) {
+        if (!ttsOff) {
           // tts_off = no server voice configured (the app speaks on-device): text-only is the normal path
           this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-          if (this.deps.config.voice) {
+          if (ownVoiceOnly) {
+            // no other voice stands in for the companion: the rest of the reply goes to the history only
+            this.log("tts.text_only", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason });
+            // a question watch together took back is not recorded either (Codex review P2)
+            if (askedAt(i) || sentences[i]?.drop) continue;
+            if (!sentAudio && sentences[i] !== s) { if (!sentences[i].beat) reply.spoken.push(sentences[i].display); continue; }
+          } else if (this.deps.config.voice) {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
             this.log("tts.fallback_device", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
@@ -2623,7 +2749,10 @@ export class Session {
     // "speaking" (so barge-in still works) until playback should be over or
     // the app says playback_done. Device mode: audioMs is already the estimate
     // (70 ms/char + 1.5 s, ≤ 60 s) counted from the first `say`.
-    const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
+    // AU-49: never before the app's queue ends (gaps between clips included), bounded from now.
+    const estimate = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
+    const queued = reply.firstAudioAt === null ? 0 : reply.playEnd + (device || reply.chars ? DEVICE_SLACK_MS : PLAYBACK_SLACK_MS);
+    const playEnd = Math.max(estimate, Math.min(queued, this.now() + PLAYBACK_MAX_WAIT_MS));
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
     // speech first, sheet after: the sources card when the answer has played (finishReply: playback_done or the estimate)
