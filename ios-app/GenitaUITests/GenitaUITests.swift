@@ -94,6 +94,17 @@ final class GenitaUITests: XCTestCase {
         app.buttons["settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5)); capture("33-설정-상단")
         app.swipeUp(); capture("34-설정-하단"); app.terminate()
+        // I03 orb in motion (Chelsea 11/4): six shots ~0.5 s apart, exported as preview-*
+        open("preparing")
+        XCTAssertTrue(app.descendants(matching: .any)["primaryCTA"].waitForExistence(timeout: 10))
+        let start = Date()
+        for i in 0..<6 {
+            let due = start.addingTimeInterval(0.5 * Double(i))
+            if due > Date() { Thread.sleep(until: due) }
+            let a = XCTAttachment(screenshot: app.screenshot())
+            a.name = String(format: "preview-i03-orb-%d-%04dms", i, Int(Date().timeIntervalSince(start) * 1000)); a.lifetime = .keepAlways; add(a)
+        }
+        app.terminate()
     }
     func testCaptureReviewTransientScreens() {
         let app = XCUIApplication()

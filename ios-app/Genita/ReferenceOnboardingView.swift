@@ -92,7 +92,7 @@ import UniformTypeIdentifiers
                 // I03: Spark takes 4–8 s; the bar eases toward 90 % and the answer (AppState.startImport) moves on
                 while !Task.isCancelled && model.stage == .preparing {
                     do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-                    progress = min(0.9, progress + (0.92 - progress) * 0.03)
+                    if !model.readingDone { progress = min(0.9, progress + (0.92 - progress) * 0.03) }
                 }
                 return
             }
@@ -100,8 +100,12 @@ import UniformTypeIdentifiers
                 do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
                 progress = Double(step) / 20
             }
+            // 100 %: the orb's short pulse, then the next screen
+            do { try await Task.sleep(for: .milliseconds(AppState.readingPulseMs)) } catch { return }
             if model.stage == .preparing { model.go(.preferences) }
         }
+        // I03: the answer is in: the bar fills to 100 % while the orb pulses
+        .onChange(of: model.readingDone) { _, done in if done { withAnimation(.easeOut(duration: 0.2)) { progress = 1 } } }
         .sheet(isPresented: $pickingPhoto) {
             ReferencePhotoPicker(isPresented: $pickingPhoto) { data in if let data { accept(data) } else { imageError = "This image could not be opened." } }
         }
@@ -115,7 +119,13 @@ import UniformTypeIdentifiers
         let bodyTop = top + extra
         ZStack(alignment: .topLeading) {
             if let orb {
-                DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round").designSlot(orb, width: width, top: bodyTop)
+                let resource = orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round"
+                if stage == .preparing {
+                    // I03: the orb moves while the profile is read (Chelsea 11/4)
+                    ReadingOrb(node: orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(orb, width: width, top: bodyTop)
+                } else {
+                    DesignImage(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
+                }
             }
             ZStack {
                 DesignText(node: title, text: stage == .image ? "Bring an image" : nil)

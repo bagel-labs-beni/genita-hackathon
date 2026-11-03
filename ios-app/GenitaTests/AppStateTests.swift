@@ -342,4 +342,15 @@ import UIKit
         XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
+
+    /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.
+    func testReadingOrbMotion() {
+        XCTAssertEqual(1 / ReadingOrb.turnRate(0), 11, accuracy: 0.01)
+        XCTAssertGreaterThan(ReadingOrb.turnRate(1), ReadingOrb.turnRate(0.5))
+        XCTAssertGreaterThanOrEqual(1 / ReadingOrb.turnRate(1), 7)
+        XCTAssertEqual(ReadingOrb.breath(0), 1, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(1.5), 1.04, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(3), 1, accuracy: 0.0001)
+        XCTAssertGreaterThan(AppState.readingPulseMs, 250, "the pulse is seen before I04")
+    }
 }
