@@ -1620,7 +1620,8 @@ export class Session {
 
   /** CV-01: anything from before this call reached the model (memories, notes, last call, recall, the other device's turns) */
   private hasPast(): boolean {
-    return this.continued || this.memories.length > 0 || !!this.memoryCall?.pastShown;
+    // a handoff's turns count only while they're still here (Codex #536 P2: a Forget clears them, the flag stayed)
+    return (this.continued && this.history.length > 0) || this.memories.length > 0 || !!this.memoryCall?.pastShown;
   }
 
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */
@@ -2079,7 +2080,7 @@ export class Session {
         }
         // CV-01 (eval v2 11/4): no past in this call → no habit "again" / "like usual", no claimed earlier talk (convo/pastGuard.ts)
         if (this.v1 && tts && !interpret && !self) {
-          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText });
+          const kept = unbackedPast(tts, { past: this.hasPast(), userText: guardCtx.userText, callText: this.history.filter((h) => h.role === "user").map((h) => h.text).join(" ") });
           if (kept !== tts) { tts = kept; this.log("convo.unbacked_past", { utteranceId, dropped: !kept }); }
         }
         // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply

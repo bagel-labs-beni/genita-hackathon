@@ -101,7 +101,7 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
-      if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText });
+      if (tts) tts = unbackedPast(tts, { past: hasPast(ctx.scenario), userText, callText: ctx.history.filter((h) => h.role === "user").map((h) => h.text).join(" ") });
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
       const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });

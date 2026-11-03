@@ -41,3 +41,9 @@ test("'still' with a plain fact stays (session test: 'You still have that interv
   assert.equal(unbackedPast("You still have that interview tomorrow.", none()), "You still have that interview tomorrow.");
   assert.equal(unbackedPast("Are you still making that kimchi thing?", none()), "Are you making that kimchi thing?");
 });
+
+test("Codex #536 P2: said in this call → kept; a question about their own past → kept", () => {
+  assert.equal(unbackedPast("You told me that your interview is tomorrow.", { past: false, userText: "What is tomorrow?", callText: "My interview is tomorrow." }), "You told me that your interview is tomorrow.");
+  assert.equal(unbackedPast("When was the last time you cooked ramen?", none("I feel like ramen tonight.")), "When was the last time you cooked ramen?");
+  assert.equal(unbackedPast("You told me about your ex last week.", { past: false, userText: "do you remember?", callText: "hey" }), "");
+});

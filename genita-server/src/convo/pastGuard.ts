@@ -10,13 +10,14 @@
  *     "I remember the vibe…") is dropped (the caller never empties a reply).
  * Whatever the user's own line says is fair to echo ("rejected again?" after "got rejected again"). Pure.
  */
-export type PastContext = { past: boolean; userText: string };
+export type PastContext = { past: boolean; userText: string; /** this call's user lines so far (what was really said) */ callText?: string };
 
 const HABIT = /,?\s*\b(?:all over )?(?:again|as usual|like usual|like always|as always|per usual)\b(?=\s*[,.!?…]|\s*$)/giu;
 // "say that again", "do it again", "try again": a request or a retry, not a claimed habit
 const RETRY_BEFORE = /\b(?:say|said|try|tried|do|did|ask|asked|play|hear|run|start|repeat|read|explain|watch|show)(?:\s+(?:it|that|this|me|them))?\s*$/iu;
 const CLAIMED_RECALL = new RegExp([
-  String.raw`\b(?:like |just like )?last time\b`,
+  // a shared past claimed ("like last time", "last time we…"), not a question about their own life ("when was the last time you cooked?")
+  String.raw`\b(?:like|just like|same as|unlike|remember) last time\b|\blast time (?:we|i|you told me|you said|you were here)\b`,
   String.raw`\bremember when\b`,
   String.raw`\bthe other (?:day|night) (?:you|we)\b`,
   String.raw`\byou (?:told|showed) me (?:about|that|how|when)\b`,
@@ -25,6 +26,12 @@ const CLAIMED_RECALL = new RegExp([
   String.raw`\byou were (?:so |super |really |kinda |pretty )?(?:vague|cagey|mysterious)\b`,
 ].join("|"), "iu");
 
+const STOPW = new Set("about that this with your you told said remember when time last were what have just like really then they them there their from been tonight today".split(" "));
+/** a content word of the sentence (≥4 letters) the user really said in this call */
+function groundedInCall(sentence: string, callText: string): boolean {
+  const said = new Set((callText.toLowerCase().match(/[a-z']{4,}/g) ?? []));
+  return (sentence.toLowerCase().match(/[a-z']{4,}/g) ?? []).some((w) => !STOPW.has(w) && said.has(w));
+}
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 
 // a habit no memory ever backs ("like usual", "as always"): cut even when the call has a past (eval v2 r2, 3/14 with memories)
@@ -46,7 +53,8 @@ export function unbackedPast(sentence: string, ctx: PastContext): string {
     return /[\p{L}\p{N}]/u.test(out.replace(/<[^>]*>|\[[^\]]*\]/g, "")) ? out : sentence;
   }
   if (!said(STILL, user)) { STILL.lastIndex = 0; sentence = sentence.replace(STILL, "$1 "); }
-  if (CLAIMED_RECALL.test(sentence) && !CLAIMED_RECALL.test(user)) return "";
+  // Codex #536 P2: "You told me your interview is tomorrow" after they said it in THIS call is real, not invented
+  if (CLAIMED_RECALL.test(sentence) && !CLAIMED_RECALL.test(user) && !groundedInCall(sentence, `${ctx.callText ?? ""} ${user}`)) return "";
   if (USER_HABIT.test(user)) return sentence;
   HABIT.lastIndex = 0;
   const out = sentence.replace(HABIT, (m, offset: number, whole: string) => (RETRY_BEFORE.test(whole.slice(0, offset)) ? m : ""));
