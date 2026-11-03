@@ -454,6 +454,11 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         log("report.failed", { message: String(e).slice(0, 120) });
         throw new HttpError(502, "report_failed", "Couldn't send that. Try again.");
       }
+      // an account deleted while this was being written leaves nothing behind (Codex P2)
+      if (!(await accounts.meView(who.userId))) {
+        await blobs.deletePrefix(key).catch(() => 0);
+        throw new HttpError(401, "unauthorized");
+      }
       log("report.received", { reason, surface, device: who.device, note: record.note.length > 0 });
       return send(res, 200, { ok: true, message: "Thanks, noted" });
     }
