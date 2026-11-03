@@ -337,28 +337,51 @@ test("per-category key sets: a kind generates only its listed mouth keys; prompt
 
 // ---------- v9.3 mouth on serve (11/3 18:46) ----------
 
-test("withV93Mouth: human rig faces without a perioral block get the v57c block with openMag 0 and lockY; nothing else changes", async () => {
-  const { V93_PERIORAL, withV93Mouth, v93MouthOn } = await import("../src/prep/face.ts");
-  const map = { rig: { chinLpHz: 2 }, alive: { headX: 3, nodPx: 5 }, motionV2: { amp: 0.35 } };
+test("withV93Mouth: people on the rig get the v57c block (openMag 0, jaw 1 px), the v93 motion and a still face", async () => {
+  const { V93_PERIORAL, STILL_FACE, withV93Mouth, v93MouthOn } = await import("../src/prep/face.ts");
+  const map = { rig: { chinLpHz: 2 }, alive: { headX: 3, nodPx: 5 }, motionV2: { amp: 0.35 }, cheek: { spread: 0.8, lift: 3, delayFrames: 1 }, brow: { px: 2.5 } };
   const out = withV93Mouth(map, "human", true);
-  assert.deepEqual(out.perioral, { ...V93_PERIORAL });
+  assert.deepEqual(out.perioral, { ...V93_PERIORAL, jawDropPx: 1 });
   assert.equal((out.perioral as Record<string, number>).openMag, 0);
-  assert.deepEqual(out.alive, { headX: 3, nodPx: 5, lockY: true });
-  assert.deepEqual(out.motionV2, { amp: 0.35, preset: "v93" });
-  assert.equal(map.alive.nodPx, 5);
-  assert.equal((map as Record<string, unknown>).perioral, undefined, "the stored map is not mutated");
-  // left alone: switch off, non-human kinds, no rig, a prep perioral block of its own
+  assert.deepEqual(out.alive, { ...STILL_FACE.alive });
+  assert.deepEqual(out.brow, { px: 0 });
+  assert.deepEqual(out.cheek, { ...STILL_FACE.cheek, delayFrames: 1 });
+  const mv = out.motionV2 as Record<string, unknown>;
+  assert.equal(mv.amp, 0.35);
+  assert.equal(mv.preset, "v93");
+  assert.deepEqual((mv.ladders as Record<string, unknown>).spread, [["EI", 0], ["EH", 0.2]]);
+  assert.equal(map.alive.nodPx, 5, "the stored map is not mutated");
+  assert.equal((map as Record<string, unknown>).perioral, undefined);
+  // switch off: the map as prepped
   assert.equal(withV93Mouth(map, "human", false), map);
-  assert.equal(withV93Mouth(map, "character3d", true), map);
-  assert.equal(withV93Mouth(map, "animal", true), map);
-  const noRig = { alive: {} };
-  assert.equal(withV93Mouth(noRig, "human", true), noRig);
-  const own = { rig: {}, perioral: { lipThin: 0.5 } };
-  assert.equal(withV93Mouth(own, "human", true), own);
+  // no rig / own perioral: still face only
+  const noRig = withV93Mouth({ alive: { headX: 3 } }, "human", true);
+  assert.equal(noRig.perioral, undefined);
+  assert.deepEqual(noRig.alive, { ...STILL_FACE.alive });
+  const own = withV93Mouth({ rig: {}, perioral: { lipThin: 0.5 } }, "human", true);
+  assert.deepEqual(own.perioral, { lipThin: 0.5 });
   // switch: default on
   assert.equal(v93MouthOn({}), true);
   assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: "1" }), true);
   for (const v of ["0", "false", "off", " OFF "]) assert.equal(v93MouthOn({ GENITA_FACE_V93_MOUTH: v }), false);
+});
+
+test("withV93Mouth: animals close between syllables, 2D opens sooner, 3D 1.4x — all with a still head; no human block", async () => {
+  const { withV93Mouth } = await import("../src/prep/face.ts");
+  const animal = withV93Mouth({ drive: "open", shownFloor: 0.6, minHold: 3, jaw: { gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.35 } } }, "animal", true);
+  assert.equal(animal.shownFloor, 0);
+  assert.equal(animal.minHold, 2);
+  assert.deepEqual(animal.jaw, { floor: 0, gain: 1.4, steps: [["AH2", 0.9]], vowel: { A: 1, other: 0.1 } });
+  assert.equal(animal.perioral, undefined);
+  assert.equal((animal.alive as Record<string, number>).headX, 0);
+  const twoD = withV93Mouth({ drive: "snap", snap: { hold: 2, minHold: 4, closedBelow: 0.18, rules: [[["A"], 0.75, "WD", 4], [["O"], 0, "OO"], [["EI"], 0.55, "EE"]] } }, "character2d", true);
+  const snap = twoD.snap as Record<string, unknown>;
+  assert.deepEqual([snap.hold, snap.minHold, snap.closedBelow], [1, 2, 0.08]);
+  assert.deepEqual(snap.rules, [[["A"], 0.5, "WD", 2], [["O"], 0, "OO"], [["EI"], 0.4, "EE"]]);
+  const threeD = withV93Mouth({ gain: 1.8, smoothing: { fps: 25, attack: 0.75, release: 0.5 } }, "character3d", true);
+  assert.equal(threeD.gain, 1.8 * 1.4);
+  assert.deepEqual(threeD.smoothing, { fps: 25, attack: 0.9, release: 0.7 });
+  assert.equal(withV93Mouth({ gain: 2.5 }, "character3d", true).gain, 3, "capped");
 });
 
 test("faceManifest: the served flow map carries the v9.3 mouth; the switch off serves the prepped map", () => {

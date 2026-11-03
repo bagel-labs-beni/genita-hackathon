@@ -507,13 +507,53 @@ export function v93MouthOn(env: Record<string, string | undefined> = process.env
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The served lip map with the v9.3 mouth (see V93_PERIORAL); the stored prep state is never changed. */
+/**
+ * 11/3 19:5x (Chelsea: "the eyes move", "under the eyes still moves"): only the mouth and jaw may move. Measured on
+ * 8 faces (4 people, clay 3D, 2D anime, dog, cat): with the head still (no sway / roll / nod / drift), no brow lift and
+ * the cheek coupling off, the eye band's frame-to-frame motion drops from 0.6–2.8 to 0.01–0.05 grey levels and the
+ * face outside the mouth+jaw to background level. Every kind.
+ */
+export const STILL_FACE = Object.freeze({
+  alive: { headX: 0, headRoll: 0, nodPx: 0, browPx: 0, lockY: true },
+  brow: { px: 0 },
+  cheek: { spread: 0, lift: 0, cheek: 0, cheekW: 0, naso: 0, nasoW: 0 },
+});
+
+/** People on the lip rig: the prepped Muse keys chosen per vowel class (shape contrast, nothing drawn), lips meet
+ *  between syllables, a 1 px jaw follow. Read by app builds after build 4 (`preset` / `ladders`); build 4 ignores them. */
+export const V93_MOTION = Object.freeze({
+  preset: "v93", weakShape: 0.9, shapeTauMs: 60, idle: 0.05, consonantDip: 0.05, spreadNeutral: 0,
+  stressedJawGain: 1.6, unstressedJawGain: 0.9,
+  ladders: { round: [["U", 0], ["OH", 0.35]], spread: [["EI", 0], ["EH", 0.2]], neutral: [["AH", 0], ["AH2", 0.45]] },
+});
+
+const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
+
+/** The served lip map (see V93_PERIORAL, STILL_FACE, V93_MOTION); the stored prep state is never changed. */
 export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
-  if (!on || kind !== "human" || !isRecord(map.rig) || map.perioral !== undefined) return map;
-  // motionV2.preset "v93": app builds after build 4 then skip their v59 motion over-ride and v60 ladders too
-  // (build 4 ignores the key; there v59/v60 only act when phoneme timings arrive, and pick original key images)
-  const motionV2 = { ...(isRecord(map.motionV2) ? map.motionV2 : {}), preset: "v93" };
-  return { ...map, perioral: { ...V93_PERIORAL }, alive: { ...(isRecord(map.alive) ? map.alive : {}), lockY: true }, motionV2 };
+  if (!on) return map;
+  const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
+  if (map.cheek !== undefined) out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
+  if (kind === "human") {
+    if (!isRecord(map.rig) || map.perioral !== undefined) return out;   // not a rig face, or prep sent its own block: still head only
+    return { ...out, perioral: { ...V93_PERIORAL, jawDropPx: 1 }, motionV2: { ...rec(map.motionV2), ...V93_MOTION } };
+  }
+  if (map.drive === "open") {
+    // animals / toys: the mouth closes between syllables (a held open key read as panting)
+    const jaw = rec(map.jaw);
+    return { ...out, shownFloor: 0, minHold: 2, ...(map.jaw ? { jaw: { floor: 0, ...jaw, vowel: { ...rec(jaw.vowel), other: 0.1 } } } : {}) };
+  }
+  if (map.drive === "snap") {
+    // 2D: bigger shapes sooner (anime convention), on the same drawings
+    const snap = rec(map.snap);
+    const rules = Array.isArray(snap.rules)
+      ? snap.rules.map((r) => (Array.isArray(r) && r[2] === "WD" ? [r[0], Math.min(Number(r[1]) || 0.5, 0.5), "WD", 2] : Array.isArray(r) && r[2] === "EE" ? [r[0], Math.min(Number(r[1]) || 0.4, 0.4), "EE", ...r.slice(3)] : r))
+      : snap.rules;
+    return { ...out, lookaheadMs: 60, snap: { ...snap, hold: 1, minHold: 2, closedBelow: 0.08, ...(rules ? { rules } : {}) } };
+  }
+  // 3D characters: 1.4x opening (capped), quicker
+  const gain = typeof map.gain === "number" ? Math.min(3, map.gain * 1.4) : undefined;
+  return { ...out, ...(gain !== undefined ? { gain } : {}), minHold: 1, slew: 0.4, smoothing: { fps: 25, ...rec(map.smoothing), attack: 0.9, release: 0.7 } };
 }
 
 export function faceManifest(
