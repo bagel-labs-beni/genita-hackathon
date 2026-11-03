@@ -131,6 +131,7 @@ import os
         guard fire, let token = tokens[id] else { return }
         pendingToken = token
         log.info("proximity held close, reporting")
+        handoff.expectLiveMove()  // MC-01: the server's move that follows opens the call (not a cold-launch sync)
         handoff.server.send(["type": "proximity.seen", "token": token])
     }
 
@@ -144,6 +145,7 @@ import os
             // Only a successful move keeps the leave-range latch. Briefly exclude an unknown token so
             // another account's nearby phone cannot keep retrying ahead of this account's phone.
             if !accepted {
+                handoff?.cancelLiveMove()
                 detector.reject(token: token, reason: reason, at: Date().timeIntervalSince1970)
                 tokens = [:]
             }

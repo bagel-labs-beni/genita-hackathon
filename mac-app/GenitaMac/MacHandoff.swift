@@ -36,6 +36,11 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// set while this Mac claims the conversation itself (a live move), read by ownerChanged
     private var claimingLive = false
     private func claimLive() { claimingLive=true;ownership.claimHere();claimingLive=false }
+    /// A move the server makes for this Mac (proximity): its `claim.result` arrives without a trigger, so the report
+    /// itself marks the next few seconds as a live move (Codex P1).
+    private var liveMoveUntil = 0.0
+    func expectLiveMove() { liveMoveUntil=Date().timeIntervalSince1970+5 }
+    func cancelLiveMove() { liveMoveUntil=0 }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -221,7 +226,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
-            if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
+            let expected=Date().timeIntervalSince1970<liveMoveUntil;liveMoveUntil=0
+            if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive || expected,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
                 MacCall.shared.conversationArrived()
             } else {resumeOffered=true}
@@ -531,6 +537,8 @@ struct MacHomeView:View {
             case .here:
                 // MAC-4 (89:2). Only what works right now is shown — no greyed-out buttons (Chelsea 11/3).
                 statusRow(paired ? "Paired with your iPhone" : "Signed in on this Mac",live:true)
+                // MC-01: the call waits for this tap after a cold launch (v1 too — Codex P2)
+                if handoff.resumeOffered { button("Continue here",filled:true,id:"macResumeHere") { handoff.resumeHere() } }
                 if handoff.canMoveToPhone || paired {
                     HStack(spacing:8) {
                         if handoff.canMoveToPhone { button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() } }
