@@ -2019,6 +2019,8 @@ export class Session {
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
     /** the name opener (greeting a) is said, but is not the model's answer: an empty greeting still retries (Codex #461) */
     const said = () => sentences.filter((x) => !x.beat && !x.drop && !x.opener);
+    /** AU-45: the greeting's "Hey, Summer!" opener went out — a whole greeting on its own when Spark adds nothing */
+    const openerSpoken = () => greeting && sentences.some((x) => x.opener && !x.drop);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -2339,7 +2341,9 @@ export class Session {
           m.firstTokenAt = undefined;
         }
         // both tries came back empty or failed: the call goes on — one line in character, never the error card
-        if (!signal.aborted && !hasAnswer() && !interpret && !self) {
+        // AU-45: a greeting whose "Hey, Summer!" opener already went out is a fine greeting on its own — never followed by
+        // "Sorry, I lost you… say that again?" before the user said anything
+        if (!signal.aborted && !hasAnswer() && !interpret && !self && !openerSpoken()) {
           // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
           enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
           lostLine = true;
@@ -2549,7 +2553,7 @@ export class Session {
     await producer;
     if (signal.aborted || this.reply !== reply) return;
 
-    if (!reply.spoken.join(" ").trim() || !hasAnswer()) {
+    if (!reply.spoken.join(" ").trim() || (!hasAnswer() && !openerSpoken())) {
       resolveSaid(null);
       this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.empty", { utteranceId, cause: self ? "self_filtered_only_content" : emptyCause ?? "upstream_error_before_text" });
@@ -2558,7 +2562,7 @@ export class Session {
     }
     if (sparkError) {
       // the lost-you line already covered it: no error card over a call that goes on
-      if (!lostLine) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
+      if (!lostLine && !openerSpoken()) this.error("spark_unavailable", "The companion could not answer. Try again.", true);
       this.log("spark.error", { message: sparkError instanceof Error ? sparkError.message.slice(0, 200) : "unknown" });
     }
     if (device) {

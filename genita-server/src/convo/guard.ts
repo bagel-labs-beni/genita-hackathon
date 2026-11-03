@@ -456,5 +456,6 @@ function spokenForms(n: number): string[] {
 export function echoesSensitiveNumber(sentence: string, userText: string): boolean {
   if (!SENSITIVE_CONTEXT.test(userText)) return false;
   const nums = [...userText.matchAll(/\d[\d,]*/g)].map((m) => Number(m[0].replace(/,/g, ""))).filter((x) => Number.isFinite(x) && x >= 10);
-  return nums.some((x) => spokenForms(x).some((f) => new RegExp(`\\b${f}\\b`, "i").test(sentence)));
+  // AU-40: the digit form is bounded by digits only ("85k", "$85K", "85-k" match; "185" / "8.5" don't); words keep \b
+  return nums.some((x) => spokenForms(x).some((f, i) => new RegExp(i === 0 ? `(?<![\\d.,])${f}(?![\\d])` : `\\b${f}\\b`, "i").test(sentence)));
 }

@@ -1577,3 +1577,33 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("AU-40: '85k' / '$85K' said back after a salary line is caught (the digit form is bounded by digits, not \\b)", async () => {
+  const { echoesSensitiveNumber } = await import("../src/convo/guard.ts");
+  const u = "What's my salary again? I told you 85k";
+  for (const s of ["You told me 85k.", "$85K, right?", "Yep, 85k!", "eighty five K, flex"]) assert.ok(echoesSensitiveNumber(s, u), s);
+  for (const s of ["You owe me 185 bucks.", "That 8.5 was wild."]) assert.ok(!echoesSensitiveNumber(s, u), s);
+});
+
+test("AU-41: tease, tease, ok, yeah → the low-key mood (two flat replies end the tease's lift)", async () => {
+  const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  const lines = ["nice try, you're such a nerd", "yeah right, says the AI", "ok", "yeah"];
+  assert.match(moodLine(moodFrom(lines)) ?? "", /low-key/);
+  const b = { valence: 0.15, energy: 0.2 };
+  assert.match(moodLine(moodFrom(lines, b, b)) ?? "", /low-key/);
+});
+
+test("AU-45: a greeting whose opener went out never gets 'lost you, say that again' when Spark comes back empty", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("au45", client, {
+    config, openAsr: () => { throw new Error("no asr"); }, greetOpener: true,
+    async *spark(): AsyncGenerator<SparkStreamEvent> { yield { type: "done", responseId: "r", text: "", status: "completed" }; },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" }, greetAfterMs: 0 }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true, 8000);
+  assert.match(String(reply.text), /^(?:Hey|Hi|Oh hey|Hey hey), Summer!$/);
+  assert.doesNotMatch(String(reply.text), /lost you|say that again/i);
+  assert.ok(!client.json.some((m) => m.type === "error"), "no error card under a greeting that was said");
+  session.close();
+});
