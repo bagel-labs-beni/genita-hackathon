@@ -340,12 +340,12 @@ test("server: hanging up (stop) and calling again is a return visit — a greeti
   first.ws.send(JSON.stringify({ type: "stop" }));
   await waitFor(() => logs.includes("session.close"));
   await waitFor(() => fake.calls.length === 1); await memory.drain();
-  assert.ok(logs.includes("history.not_cached"));
   requests.length = 0;
   const back = await open();
   back.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
   await waitFor(() => back.replies() >= 1);
   assert.ok(!logs.includes("history.seeded"), "not a handoff continuation");
+  assert.ok(logs.includes("history.not_seeded"));
   assert.match(inst(requests[0]), /Your notes from your last calls/);
   assert.match(inst(requests[0]), /picking up where you left off/);
   back.ws.close();
@@ -375,7 +375,7 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
   mac.ws.send(JSON.stringify({ type: "stop" }));
   await waitFor(() => logs.includes("session.close"));
   await memory.drain();
-  assert.ok(!logs.includes("history.not_cached"), "a move is not a hang-up");
+  assert.ok(!logs.includes("history.not_seeded"), "a move is not a hang-up");
   requests.length = 0;
   const phone = await open("iphone");
   phone.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
@@ -384,4 +384,49 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
   await waitFor(() => requests.some((r) => /Still with me on the phone/.test(JSON.stringify(r.input))));
   assert.match(JSON.stringify(requests.find((r) => /Still with me on the phone/.test(JSON.stringify(r.input)))!.input), /navy jacket, size medium/);
   phone.ws.close();
+});
+
+test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {
+  const { memory, deps, requests } = setup(fakeSummarizer().fn);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, deps, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const closes = () => logs.filter((e) => e === "session.close").length;
+  // 1) stop first, claim later: the next call on the OTHER device continues
+  const mac = await open("mac");
+  mac.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => mac.replies() >= 1);
+  mac.ws.send(JSON.stringify({ type: "text", text: "The navy jacket, size medium." }));
+  await waitFor(() => mac.replies() >= 2);
+  mac.ws.send(JSON.stringify({ type: "stop" }));
+  await waitFor(() => closes() === 1); await memory.drain();
+  requests.length = 0;
+  const phone = await open("iphone");
+  phone.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(phone.ready);
+  phone.ws.send(JSON.stringify({ type: "text", text: "Still with me on the phone?" }));
+  await waitFor(() => requests.some((r) => /Still with me on the phone/.test(JSON.stringify(r.input))));
+  assert.match(JSON.stringify(requests.find((r) => /Still with me on the phone/.test(JSON.stringify(r.input)))!.input), /navy jacket, size medium/);
+  await waitFor(() => phone.replies() >= 1);
+  phone.ws.send(JSON.stringify({ type: "text", text: "Black it is, final answer." }));
+  await waitFor(() => phone.replies() >= 2);
+  phone.ws.send(JSON.stringify({ type: "stop" }));
+  await waitFor(() => closes() === 2); await memory.drain();
+  // 2) back on the Mac (the other device): continues with the phone's fuller turns, decision included
+  requests.length = 0;
+  const mac2 = await open("mac");
+  mac2.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(mac2.ready);
+  mac2.ws.send(JSON.stringify({ type: "text", text: "And now the Mac again." }));
+  await waitFor(() => requests.some((r) => /And now the Mac again/.test(JSON.stringify(r.input))));
+  assert.match(JSON.stringify(requests.find((r) => /And now the Mac again/.test(JSON.stringify(r.input)))!.input), /Black it is, final answer/);
+  mac2.ws.close();
 });

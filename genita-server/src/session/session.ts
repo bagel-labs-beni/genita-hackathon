@@ -335,8 +335,6 @@ export class Session {
    * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
    */
   stopForHandoff(): void {
-    // a move, not a hang-up: the app's following `stop` must still hand the turns over (Codex 11/3)
-    this.movedAway = true;
     // the other device has the sound now: this call never speaks first again (Codex 11/3 P2)
     this.stopInitiative();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
@@ -1084,8 +1082,6 @@ export class Session {
   get historyForgetRevision(): number | null { return this.historyRevision; }
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
-  /** the other device took the conversation (handoff claim) before this call ended */
-  movedAway = false;
 
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });

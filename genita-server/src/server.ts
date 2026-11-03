@@ -289,14 +289,15 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; at: number; unsubscribe?: () => void }>();
+  // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; at: number; device: string; hungUp: boolean; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
   }
   // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
   const handedThread = new Map<string, ThreadState | null>();
-  function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
+  function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
     let thread: ThreadState | null = null;
     for (const [sid, u] of sessionUsers) {
@@ -307,6 +308,9 @@ export async function startServer(
     }
     if (best) { handedThread.set(self, thread); return best; }
     const c = lastTurns.get(userId);
+    // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
+    // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
+    if (c && c.hungUp && c.device === device) { log("history.not_seeded", { session: self, by: "hang_up" }); return null; }
     if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) { handedThread.set(self, c.thread); return c.turns; }
     dropLastTurns(userId);
     return null;
@@ -316,24 +320,21 @@ export async function startServer(
     handedThread.delete(self);
     return t;
   }
-  async function cacheTurns(userId: string, session: Session, openedAt = 0): Promise<void> {
+  async function cacheTurns(userId: string, session: Session, device: string): Promise<void> {
     const turns = session.historySnapshot();
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
     if (!turns.length || deletedUsers.has(userId)) return;
-    // She hung up: calling again is a return visit (greeting + last call's notes), not a handoff to continue.
-    // A move also ends with the app's `stop` (MacCall.conversationLeft → end), so a call the hub already stopped
-    // for the other device's claim (Session.movedAway) still caches; dropped sockets never send stop.
-    if (session.endedByUser && !session.movedAway) {
-      // an older call's turns (cached before this call opened) must not come back either; a newer call's stay
-      if ((lastTurns.get(userId)?.at ?? Infinity) < openedAt) dropLastTurns(userId);
-      log("history.not_cached", { session: session.id, by: "hang_up" });
-      return;
-    }
     const save = () => {
+      // a stale copy of the same conversation (the old device closing late) never replaces the fuller one (Codex 11/3)
+      const cur = lastTurns.get(userId);
+      if (cur?.thread && thread && cur.thread.threadId === thread.threadId && cur.thread.covered > thread.covered) {
+        log("history.not_cached", { session: session.id, by: "stale_copy" });
+        return;
+      }
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, at: Date.now(), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, at: Date.now(), device, hungUp: session.endedByUser, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -347,7 +348,8 @@ export async function startServer(
 
   function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
     const id = randomUUID();
-    const openedAt = Date.now();
+    // the device this call is on (a gated call names it; else the principal's)
+    const callDevice = device ?? who.device;
     const raw: ClientSink = {
       sendJson: (m) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(m)),
       sendBinary: (b) => ws.readyState === ws.OPEN && ws.send(b, { binary: true }),
@@ -362,7 +364,7 @@ export async function startServer(
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
     const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id) });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id) });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -402,7 +404,7 @@ export async function startServer(
       sessionUsers.delete(id);
       handedThread.delete(id);
       touches.delete(id);
-      void cacheTurns(who.userId, session, openedAt)
+      void cacheTurns(who.userId, session, callDevice)
         .catch(() => log("history.unavailable", { session: id }))
         .finally(() => log("session.close", { session: id, sessions: sessions.size }));
     });
