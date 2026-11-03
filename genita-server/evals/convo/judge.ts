@@ -37,6 +37,8 @@ export function judgePrompt(s: Scenario, transcript: string): string {
     `SCENARIO: ${s.title}`,
     `Call number: ${s.callNumber}${s.gapHours != null ? `, ${s.gapHours}h since last call` : ""}`,
     // the companion is given the user's name: saying it is not an invented fact (judge flagged "invents the name Summer" 11/3)
+    s.localTime ? `Local time for the user (given to the companion): ${s.localTime}` : null,
+    s.onScreen ? `Card on the user's screen (given to the companion): ${s.onScreen}` : null,
     `User's name (given to the companion): ${s.user.name ?? "(none)"}`,
     `User profile:\n${s.user.profile ?? "(none)"}`,
     `Stored memories: ${JSON.stringify(s.memories ?? [])}`,
@@ -44,7 +46,7 @@ export function judgePrompt(s: Scenario, transcript: string): string {
     `Previous call summaries: ${JSON.stringify(s.summaries ?? [])}`,
     `Expectations: ${JSON.stringify(s.expect)}`,
     `TRANSCRIPT:\n${transcript}`,
-  ];
+  ].filter((x): x is string => !!x);
   return parts.join("\n\n");
 }
 
