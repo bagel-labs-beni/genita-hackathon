@@ -42,19 +42,32 @@ function isNarrowNarration(s: string): boolean {
 // the tail never crosses a clause separator ("let me check my memory， tofu works" stays real content)
 const TAIL = `[^${CLAUSE_SEPARATORS}.!?…。！？]*`;
 const MEMORY_TARGET = `(?:what (?:i|you|we)\\b${TAIL}|(?:my|our) (?:notes|memory)\\b${TAIL}|everything (?:i|you)\\b${TAIL})`;
-const LOOKUP_INTENT = new RegExp(`^(?:(?:${WAIT})${SEPARATOR})?(?:i'll|i will|let me|i'm going to|i'm gonna|i am going to)(?: (?:just|quickly|quick|go|now|first))* (?:(?:check|pull up|pull|recall|search|look up|dig up|go through) ${MEMORY_TARGET}|(?:note|jot down|save) (?:that|this|it)\\b${TAIL})$`);
+const LOOKUP_INTENT = new RegExp(`^(?:(?:${WAIT})${SEPARATOR})?(?:i'll|i will|let me|i'm going to|i'm gonna|i am going to)(?: (?:just|quickly|quick|go|now|first))* (?:(?:check|pull up|pull|recall|(?:try to )?remember|search|look up|dig up|go through) ${MEMORY_TARGET}|(?:note|jot down|save) (?:that|this|it)(?: (?:win|one|down|for (?:later|next time)|to (?:my )?memory))?)$`);
+/** Web/maps promises ("I'll pull up the best route to City Hall for you", smoke 11/3). */
+const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?: (?:just|quickly|quick|go|now|first))* (?:pull up|look up|find|check|map out|get|grab) (?:you )?(?:the )?(?:best |fastest |quickest |easiest )?(?:route|directions|way there|options|a few (?:options|picks|spots))\\b${TAIL}$`);
+/** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
+const LOOKING_NOW = new RegExp(`^(?:now |so )?i'm (?:pulling|checking|digging|searching|looking)(?: up| through| into| for)? (?:your|my|what (?:i|you))\\b${TAIL}$`);
+/** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
+ * A bare "Let me think" stays (it is how people start an answer). */
+const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
+/** "Trying to map your route — give me just a moment": only with a wait in the same sentence ("Trying to find a job is exhausting" is content). */
 const TRYING = /^(?:i'm )?trying to (?:map|find|look up|pull up|check|search)\b/;
 const WAIT_ONLY = new RegExp(`^(?:${WAIT}|${KOREAN_WAIT})$`);
 /** The planning voice leaking into speech: the user in the third person ("She's holding up the trench and denim"). */
-const META = /^(?:she|he)(?:'s| is) (?:holding up|showing (?:me|us)|asking me|wondering (?:which|what|if|whether))\b|^(?:she|he) (?:wants|asked) me to\b/;
+const META = /^(?:she|he)(?:'s| is) (?:holding up|showing (?:me|us)|asking me to (?:pick|choose|help (?:pick|choose)))\b/;
+// a third person with a turn ("…, but the blue one") or speaking to "you" is real talk about someone
+const META_GUARD = /\b(?:but|because|then|so|you|your)\b/;
 const CLAUSE_SPLIT = /\s*(?:—|–|;| - )\s*/;
 
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (isNarrowNarration(s) || META.test(s)) return true;
+  if (isNarrowNarration(s)) return true;
+  if (META.test(s)) return !META_GUARD.test(s);
   // "…for that but tofu works": a turn in the clause keeps it
-  return !/\b(?:and|but|because|then)\b/.test(s) && (LOOKUP_INTENT.test(s) || TRYING.test(s));
+  // "between the trench and denim" / "… and choose tonight" are part of the announcement, not a second statement
+  const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "");
+  return !/\b(?:and|but|because|then)\b/.test(guard) && (LOOKUP_INTENT.test(s) || WEB_INTENT.test(s) || THINK_INTENT.test(s) || LOOKING_NOW.test(s));
 }
 
 export function isToolNarration(sentence: string): boolean {
@@ -64,7 +77,8 @@ export function isToolNarration(sentence: string): boolean {
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);
   if (clauses.length <= 1) return isNarrationClause(s);
   // every clause announces, waits or narrates the user; any real clause keeps the sentence
-  return clauses.every((c) => isNarrationClause(c) || WAIT_ONLY.test(c)) && clauses.some((c) => isNarrationClause(c));
+  const narrates = (c: string) => isNarrationClause(c) || (TRYING.test(c) && clauses.some((w) => WAIT_ONLY.test(w)));
+  return clauses.every((c) => narrates(c) || WAIT_ONLY.test(c)) && clauses.some(narrates);
 }
 
 /**
@@ -84,7 +98,9 @@ export function stripNarrationClauses(raw: string): string {
   if (!announces.some(Boolean) || !keep.some(Boolean)) return raw;
   const end = body.trim().match(/[.!?…。！？]+$/)?.[0] ?? ".";
   const text = clauses.filter((_, i) => keep[i]).map((c) => c.trim().replace(/[.!?…。！？,;:—–]+$/u, "")).join(" — ");
-  return lead + text.charAt(0).toUpperCase() + text.slice(1) + end;
+  // the reply's <emotion> stays; face/delivery tags in front belong to the first clause and go with it
+  const head = keep[0] ? lead : (lead.match(/<[^<>\n]{1,24}>/g) ?? []).join(" ") + (lead.trim() ? " " : "");
+  return head + text.charAt(0).toUpperCase() + text.slice(1) + end;
 }
 
 /** Hold a wait or interjection until the following clause can be judged. */
@@ -118,8 +134,20 @@ export type NarrationDecision = {
  * Dropping a candidate never disables judging the next sentence. Tool use
  * persists across retries, so fillers cannot satisfy a tool's answer.
  */
+/**
+ * #354: Spark's pre-tool line comes in endless wordings ("I'll get you pointed the right way", "I'm on it — deciding
+ * between…"). A first-person plan or a third-person line is only *held*; the stream decides: a tool call right after
+ * it makes it the preamble (dropped once the answer arrives), a following sentence releases it.
+ */
+const SUSPECT = /\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it|pulling|checking|looking|digging|deciding|picking|choosing|thinking)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
+const isSuspect = (text: string) => SUSPECT.test(normalize(text));
+/** An eager first clause cut at a dash ("City Hall from here —") waits for the rest of its sentence. */
+const DASH_END = /[—–]\s*$/;
+
 export class NarrationJudge {
-  private pending: { raw: string; kind: "lead" | "announcement" | "filler" }[] = [];
+  private pending: { raw: string; kind: "lead" | "announcement" | "filler" | "clause" | "suspect" }[] = [];
+  /** held lines that a tool call followed: dropped when the answer comes, spoken at EOF if none does */
+  private preTool: string[] = [];
   private usedTool = false;
   private readonly enabled: boolean;
 
@@ -127,21 +155,28 @@ export class NarrationJudge {
 
   push(raw: string): NarrationDecision {
     if (!this.enabled || !parseTaggedSentence(raw).displayText) return this.result([raw]);
-    raw = stripNarrationClauses(raw);
     // Judge the tail independently before a wait prefix can hide its intent.
     const announcement = isToolNarration(parseTaggedSentence(raw).displayText);
-    if (this.pending.at(-1)?.kind === "lead") raw = this.pending.pop()!.raw + " " + raw;
+    const prev = this.pending.at(-1)?.kind;
+    if (prev === "lead" || prev === "clause") raw = this.pending.pop()!.raw + " " + raw;
+    raw = stripNarrationClauses(raw);
     const text = parseTaggedSentence(raw).displayText;
     if (announcement || isToolNarration(text)) {
       this.pending.push({ raw, kind: "announcement" });
     } else if (isToolNarrationLead(text)) {
       this.pending.push({ raw, kind: "lead" });
+    } else if (!this.usedTool && DASH_END.test(text)) {
+      this.pending.push({ raw, kind: "clause" });
     } else if (isFillerOnly(text)) {
       if (!this.pending.length) return this.result([raw]);
       this.pending.push({ raw, kind: "filler" });
+    } else if (!this.usedTool && isSuspect(text)) {
+      this.pending.push({ raw, kind: "suspect" });
     } else {
+      const preamble = this.preTool;
+      this.preTool = [];
       const { speak, dropped } = this.flush(true);
-      return this.result([...speak, raw], dropped);
+      return this.result([...speak, raw], [...preamble, ...dropped]);
     }
     return this.result();
   }
@@ -150,6 +185,9 @@ export class NarrationJudge {
     if (!this.enabled) return this.result();
     this.usedTool = true;
     const lead = this.pending.at(-1)?.kind === "lead" ? this.pending.pop() : undefined;
+    // held plans/clauses right before the tool are its preamble: kept aside until the answer shows up
+    this.preTool.push(...this.pending.filter(({ kind }) => kind === "suspect" || kind === "clause").map(({ raw }) => raw));
+    this.pending = this.pending.filter(({ kind }) => kind !== "suspect" && kind !== "clause");
     const { speak, dropped } = this.flush(true);
     if (lead) this.pending.push(lead);
     return this.result(speak, dropped);
@@ -157,7 +195,11 @@ export class NarrationJudge {
 
   /** EOF of an attempt: preserve lone no-tool replies; suppress tool narration. */
   finish(): NarrationDecision {
-    return this.flush(this.usedTool);
+    // no answer came after the tool: the held line is the answer after all (never leave the turn empty)
+    const preamble = this.preTool;
+    this.preTool = [];
+    const { speak, dropped } = this.flush(this.usedTool);
+    return this.result([...preamble, ...speak], dropped);
   }
 
   /** Use the delivered display text, after opener rewriting, to decide retry. */
