@@ -343,6 +343,8 @@ export async function startServer(
     return c;
   }
   const sessionGens = new Map<string, number>();
+  /** a seeded call that opens later than this after the last one dropped is a reconnect (it says RECONNECT_LINE) */
+  const RECONNECT_GAP_MS = 10_000;
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
     sessionGens.set(self, ++nextGen);
@@ -356,6 +358,10 @@ export async function startServer(
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
+    // where the winning turns came from and how long ago: a drop coming back gets the reconnect line
+    let fromDevice = cached?.device ?? null;
+    let gapMs = cached ? Date.now() - cached.at : 0;
+    let hungUp = !!cached?.hungUp;
     let forgetAsked = !!cached?.forgetAsked;
     let crisisInCall = !!cached?.crisisInCall;
     let bestGen = cached?.gen ?? 0;
@@ -372,6 +378,7 @@ export async function startServer(
         // on this same device is a return visit, exactly like its cached copy will be.
         best = t; thread = session.threadInfo(); bestProgress = p; bestGen = g;
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
+        fromDevice = sessionDevices.get(sid) ?? null; gapMs = 0; hungUp = session.isClosed && session.endedByUser;
         forgetAsked = session.forgetAsked;
         crisisInCall = session.crisisInCall;
       }
@@ -391,6 +398,14 @@ export async function startServer(
     if (best) {
       // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
       if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
+      // same device (a dropped call: a hang-up there never seeds) or a drop on the other device longer than
+      // RECONNECT_GAP_MS ago: "Sorry, we got cut off — where were we?". A move to the other device (live, within the
+      // gap, or after hanging up there) goes on silently: that's the handoff.
+      if (fromDevice === device || (!hungUp && gapMs > RECONNECT_GAP_MS)) {
+        const me = sessions.get(self);
+        if (me) me.reconnected = true;
+        log("history.reconnect", { session: self, sameDevice: fromDevice === device, gapMs: Math.round(gapMs) });
+      }
       progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
       handedThread.set(self, thread);
       return best;
