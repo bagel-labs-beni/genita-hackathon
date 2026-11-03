@@ -538,7 +538,10 @@ extension AppState {
                 let c = try await onboarding.createCompanion(imageId: imageId, voiceId: voiceId, name: name)
                 try stillOurs()
                 return c
-            } catch GenitaAuthError.server(409, "reset_in_progress", _) where tries < resetRetries {
+            } catch {
+                // an error for the account before (its 401, say) is not this account's: no A02 bounce (Codex r2 P2)
+                try stillOurs()
+                guard case .server(409, "reset_in_progress"?, _)? = error as? GenitaAuthError, tries < resetRetries else { throw error }
                 tries += 1
                 try await Task.sleep(for: resetRetryDelay)
             }
