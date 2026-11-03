@@ -14,3 +14,7 @@ test("no hint with the camera on, or for lines that aren't about seeing them", (
     assert.equal(cameraOffHint(t, false), null, t);
   }
 });
+
+test("Codex #541 P2: figures of speech are not asks to be seen", () => {
+  for (const t of ["can you see what I mean?", "do I look like I care lol", "look it up"]) assert.equal(cameraOffHint(t, false), null, t);
+});

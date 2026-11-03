@@ -1533,7 +1533,8 @@ export class Session {
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
     // intel eval 11/4: "do I look ok?" with the camera off got an empty reply (the unseen guard dropped "You look great")
-    if (!turn.greeting && !turn.cue && userText) perceptionHint ??= cameraOffHint(userText, cameraFrames > 0 || !!perception) ?? undefined;
+    // Codex #541 P2: an explicit "do I look ok?" beats a lingering face hint, and shared-screen images count as seeing
+    if (!turn.greeting && !turn.cue && userText) { const off = cameraOffHint(userText, cameraFrames > 0 || !!perception); if (off) perceptionHint = off; }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
@@ -1683,7 +1684,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn, text, camera.length) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text, images.length) : {};
     const base = buildInstructions({
       persona,
       user: this.user,
