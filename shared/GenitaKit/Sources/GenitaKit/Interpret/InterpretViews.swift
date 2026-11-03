@@ -161,7 +161,7 @@ struct InterpretBubbleView: View {
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(maxWidth: 320, alignment: .leading)
         .background(me ? InterpretInk.onInk : InterpretInk.pill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { if !me { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(InterpretInk.onInkFaint, lineWidth: 1) } }
+        // D3 (Chelsea 04:53): the partner's bubble is fill only — with a border it read as a text field to type into
         .opacity(faint ? 0.6 : 1)
         .frame(maxWidth: .infinity, alignment: me ? .trailing : .leading)
         .accessibilityElement(children: .combine)

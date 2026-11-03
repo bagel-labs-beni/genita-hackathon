@@ -357,7 +357,7 @@ import UniformTypeIdentifiers
                 RoundedRectangle(cornerRadius: 12).fill(selected ? Color(red: 0.8431, green: 0.9451, blue: 1) : .white)
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? Color.clear : Color(white: 0.8902), lineWidth: 1))
                 ForEach(Array(labels.enumerated()), id: \.element.id) { i, n in
-                    DesignText(node: n, color: selected ? UIColor(red: i == 0 ? 0 : 0.3294, green: i == 0 ? 0.6353 : 0.7569, blue: 1, alpha: 1) : i == 0 ? UIColor(white: 0.067, alpha: 1) : UIColor(white: 0.7176, alpha: 1))
+                    DesignText(node: n, color: selected ? UIColor(red: i == 0 ? 0 : 0.3294, green: i == 0 ? 0.6353 : 0.7569, blue: 1, alpha: 1) : i == 0 ? UIColor(white: 0.067, alpha: 1) : Palette.secondaryUI)
                         .frame(width: n.w, height: n.h).position(x: n.x - frame.x + n.w / 2, y: n.y - frame.y + n.h / 2)
                 }
                 if selected { SelectionMark().frame(width: 26, height: 26).position(x: width - 36, y: 34) }
@@ -398,7 +398,7 @@ import UniformTypeIdentifiers
         let playing = player.playing == v.id
         let picked = model.setup.voice == i
         let detail = playing ? "Playing · \(v.blurb)" : picked ? "Selected · \(v.blurb)" : v.blurb
-        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
+        let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : Palette.secondary // D1: picked and idle both #737373
         return ZStack {
             RoundedRectangle(cornerRadius: 12).fill(.white)
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
