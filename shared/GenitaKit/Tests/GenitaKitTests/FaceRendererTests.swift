@@ -389,7 +389,39 @@ struct MouthQualityTests {
             lo = min(lo, y); hi = max(hi, y)
         }
         print(String(format: "vertical: eyes p2p %.2f px", hi - lo))
-        #expect(hi - lo < 0.5)     // was ~16 px on T9 with nod + drift + breathing
+        // 11/4: the rigid speech sway may move the whole head up to ±1.5 px (was ~16 px on T9 with nod + drift + breathing)
+        #expect(hi - lo <= 3.2)
+    }
+
+    /// 11/4 ("the face is frozen"): the head moves as one rigid piece with the speech, within ±1.5 px, ±0.6°, ±0.4 %;
+    /// map alive.sway 0 brings back the still head.
+    @Test func theRigidSpeechSwayStaysWithinItsCaps() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let out: CGFloat = 540, k = out / animalSet.pixelSize.width
+        var on = AliveMotion(seed: 4), off = AliveMotion(seed: 4)
+        on.headGain = 0; on.rollGain = 0; on.nodGain = 0          // the served still-face map: only the sway moves
+        off.headGain = 0; off.rollGain = 0; off.nodGain = 0; off.swayGain = 0
+        let p0 = CGPoint(x: face.midX, y: face.midY)
+        var maxD: CGFloat = 0, maxDeg = 0.0, maxScale = 0.0, moved = false, offMax: CGFloat = 0
+        for i in 0..<500 {
+            let t = Double(i) / 25
+            let open = (i / 100) % 2 == 0 ? ((i % 12) < 4 ? 0.9 : 0.1) : 0.0   // 4 s talk, 4 s quiet
+            let ta = on.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let tb = off.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let a = ta.head.concatenating(ta.camera), b = tb.head.concatenating(tb.camera)
+            let pa = p0.applying(a), pb = p0.applying(b)
+            maxD = max(maxD, max(abs(pa.x - p0.x), abs(pa.y - p0.y)) * k)
+            offMax = max(offMax, hypot(pb.x - p0.x, pb.y - p0.y) * k)
+            maxDeg = max(maxDeg, abs(atan2(Double(a.b), Double(a.a))) * 180 / .pi)
+            maxScale = max(maxScale, abs((Double(a.a * a.a + a.b * a.b)).squareRoot() - 1))
+            if hypot(pa.x - p0.x, pa.y - p0.y) * k > 0.3 { moved = true }
+        }
+        print(String(format: "sway: max %.2f px, %.2f deg, scale %.4f; off %.3f px", maxD, maxDeg, maxScale, offMax))
+        #expect(moved)
+        #expect(maxD <= 3.2)          // ±1.5 px translation plus the roll/scale about the neck at the face centre
+        #expect(maxDeg <= AliveMotion.swayMaxDeg + 1e-6)
+        #expect(maxScale <= AliveMotion.swayMaxScale + 1e-6)
+        #expect(offMax < 0.05)
     }
 
     @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
