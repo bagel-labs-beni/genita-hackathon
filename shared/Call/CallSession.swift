@@ -165,6 +165,7 @@ enum CallStop: Equatable {
     @ObservationIgnored private var holdTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var userEnded = true
+    @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
     @ObservationIgnored let log = Logger(subsystem: "ai.thebeni.genita", category: "call")
     #if DEBUG
@@ -196,6 +197,13 @@ enum CallStop: Equatable {
     @ObservationIgnored private var facePending: [(utterance: Int, apply: (FaceDriver) -> Void)] = []
     /// One rendered frame when the face doesn't animate (UI review stills); rendered off the main thread.
     private(set) var faceStill: CGImage?
+    /// Same presence (Mac): the face set's own rest frame, drawn under the live face so the very first frame on
+    /// arrival is this face in this crop (not the prep still, then a jump). Drawn per face set and reduce-motion setting.
+    private(set) var facePoster: CGImage?
+    /// The live face's seed and the reduce-motion setting its poster was drawn with.
+    @ObservationIgnored private var faceSeed: UInt64 = 1
+    @ObservationIgnored private var posterReduceMotion: Bool?
+    @ObservationIgnored private var faceSetForPoster: FaceSet?
 
     convenience init() {
         self.init(audio: CallAudio(), voice: DeviceVoice(), makeSocket: { CallSocket() })
@@ -311,6 +319,7 @@ enum CallStop: Equatable {
     var historySnapshot: [ClientMessage.HistoryItem] { history }
 
     func end() {
+        capturePermissions.invalidate()
         userEnded = true
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel()
         socket?.close()
@@ -332,6 +341,19 @@ enum CallStop: Equatable {
 
     /// Background, screen off, or a phone call: stop the sound and close the mic and camera.
     func suspend() {
+        capturePermissions.invalidate()
+        suspendCapture()
+    }
+
+    /// A system permission alert is inactive, but not backgrounded. Keep its answer until active;
+    /// a real background transition still invalidates it, as do end(), handoff and audio interruption.
+    func sceneActivityChanged(_ activity: CapturePermissionRequests.Activity) {
+        let answers = capturePermissions.updateActivity(activity, callEnded: userEnded, isOwner: ownsConversation)
+        if activity != .active { suspendCapture() }
+        for answer in answers { applyCapturePermission(answer) }
+    }
+
+    private func suspendCapture() {
         guard !userEnded else { return }
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
@@ -343,15 +365,24 @@ enum CallStop: Equatable {
 
     // MARK: user actions
 
+    private var ownsConversation: Bool {
+        #if os(iOS)
+        PhoneHandoff.shared.ownership.isOwner
+        #else
+        MacHandoff.shared.ownership.isOwner
+        #endif
+    }
+
     func toggleMic() {
         if micOn { setMic(false); Self.micWasOn = false; return }
+        guard !userEnded, ownsConversation else { return }
         micDenied = false
         #if DEBUG
         if fixture != nil { setMic(true); Self.micWasOn = true; return }
         #endif
+        let generation = capturePermissions.generation
         Self.requestMicrophone { [weak self] granted in
-            guard let self else { return }
-            if granted { self.setMic(true); Self.micWasOn = true } else { self.micDenied = true }
+            self?.receiveCapturePermission(.microphone, granted: granted, generation: generation)
         }
     }
 
@@ -373,23 +404,41 @@ enum CallStop: Equatable {
 
     func toggleCamera() {
         if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
+        guard !userEnded, ownsConversation else { return }
         cameraDenied = false
-        let go = { [weak self] in
-            guard let self, self.camera.available else { return }
-            self.beforeCameraStart?()
-            self.camera.start()
-            self.cameraFront = self.camera.front
-            self.cameraOn = true
-            self.onCameraChange?()
+        let generation = capturePermissions.generation
+        let apply: @MainActor @Sendable (Bool) -> Void = { [weak self] granted in
+            self?.receiveCapturePermission(.camera, granted: granted, generation: generation)
         }
         #if DEBUG
-        if camera.fixture != nil { go(); return }
+        if camera.fixture != nil { apply(true); return }
         #endif
         switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized: go()
+        case .authorized: apply(true)
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { MainActor.assumeIsolated { if ok { go() } else { self.cameraDenied = true } } } }
-        default: cameraDenied = true
+            AVCaptureDevice.requestAccess(for: .video) { ok in DispatchQueue.main.async { MainActor.assumeIsolated { apply(ok) } } }
+        default: apply(false)
+        }
+    }
+
+    private func receiveCapturePermission(_ media: CapturePermissionRequests.Media, granted: Bool, generation: UInt64) {
+        guard let answer = capturePermissions.resolve(media, granted: granted, generation: generation,
+                                                     callEnded: userEnded, isOwner: ownsConversation) else { return }
+        applyCapturePermission(answer)
+    }
+
+    private func applyCapturePermission(_ answer: CapturePermissionRequests.Answer) {
+        switch answer.media {
+        case .microphone:
+            if answer.granted { setMic(true); Self.micWasOn = true } else { micDenied = true }
+        case .camera:
+            guard answer.granted else { cameraDenied = true; return }
+            guard camera.available else { return }
+            beforeCameraStart?()
+            camera.start()
+            cameraFront = camera.front
+            cameraOn = true
+            onCameraChange?()
         }
     }
 
@@ -756,6 +805,9 @@ enum CallStop: Equatable {
             break
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
+        case .profileUpdated, .profileAsking:
+            // lane 개인화 chips (CC-1, GK-1): drawn by the app PR (#195)
+            break
         }
     }
 
@@ -854,9 +906,15 @@ enum CallStop: Equatable {
         faceAudio = [:]
         facePending = []
         faceStill = nil
+        facePoster = nil
+        faceSetForPoster = set
         guard let set else { face = nil; return }
         let size = CompanionFace.outputSize(for: set)
-        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion)
+        // one seed for the live face and its poster: same overscan and motion, so the poster → live step doesn't jump
+        let seed = UInt64.random(in: 1...UInt64.max)
+        faceSeed = seed
+        posterReduceMotion = nil
+        let driver = FaceDriver(faceSet: set, outputSize: size, reduceMotion: reduceMotion, seed: seed)
         driver.playbackClock = { [weak self, weak driver] in
             guard let self, let driver else { return nil }
             self.flushFacePending()
@@ -866,6 +924,31 @@ enum CallStop: Equatable {
         face = driver
         if faceOnScreen && faceAnimates { driver.start() }
         if !faceAnimates { renderFaceStill(set, size: size, for: driver) }
+        #if os(macOS)
+        renderFacePoster(set, size: size, seed: seed, reduceMotion: reduceMotion, for: driver)
+        #endif
+    }
+
+    /// The live renderer's settings (seed, reduce motion → same overscan and motion), at rest, off the main thread.
+    private func renderFacePoster(_ set: FaceSet, size: CGSize, seed: UInt64, reduceMotion: Bool, for driver: FaceDriver) {
+        posterReduceMotion = reduceMotion
+        Task { [weak self] in
+            let image = await Task.detached(priority: .utility) {
+                FaceRenderer(faceSet: set, outputSize: size, seed: seed, reduceMotion: reduceMotion).render(at: 0, lip: .rest)
+            }.value
+            // a newer draw (reduce motion changed meanwhile) wins
+            guard let self, self.face === driver, self.posterReduceMotion == reduceMotion else { return }
+            self.facePoster = image
+        }
+    }
+
+    /// Same presence (Mac, 11/3): load the companion's face set while the conversation is still on the iPhone, so
+    /// the face that arrives here already moves on its first frame. Nothing animates until `showFace`.
+    func prepareFace(reduceMotion: Bool) {
+        guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
+        faceReduceMotion = reduceMotion
+        faceLoad?.cancel()
+        faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
     private func renderFaceStill(_ set: FaceSet, size: CGSize, for driver: FaceDriver) {
@@ -947,6 +1030,7 @@ enum CallStop: Equatable {
         faceAnimates = animate
         faceReduceMotion = reduceMotion
         face?.reduceMotion = reduceMotion
+        refreshFacePoster()
         if animate { face?.start() }
         guard !CompanionFace.clipLoopFace else { return }
         faceLoad?.cancel()
@@ -963,6 +1047,15 @@ enum CallStop: Equatable {
     func setFaceReduceMotion(_ on: Bool) {
         faceReduceMotion = on
         face?.reduceMotion = on
+        refreshFacePoster()
+    }
+
+    /// Reduce motion changed since the poster was drawn (it sets the overscan): draw it again to match (Codex P2).
+    private func refreshFacePoster() {
+        #if os(macOS)
+        guard let face, let set = faceSetForPoster, let drawn = posterReduceMotion, drawn != faceReduceMotion else { return }
+        renderFacePoster(set, size: CompanionFace.outputSize(for: set), seed: faceSeed, reduceMotion: faceReduceMotion, for: face)
+        #endif
     }
 
     private func loadFace() async {

@@ -14,7 +14,10 @@ import CoreText
         }
         let call = CallController.shared
         call.companionName = "Mina"
-        for state in CommandLine.arguments.dropFirst(3) {
+        for arg in CommandLine.arguments.dropFirst(3) {
+            // "<state>@v2" renders the to-be design (MacDesignV2) for Chelsea's OK
+            let state = arg.hasSuffix("@v2") ? String(arg.dropLast(3)) : arg
+            MacDesignV2.reviewOverride = arg.hasSuffix("@v2")
             // #118/#121 states drive the shared call + Finds model from wire events; watch states use GENITA_MAC_REVIEW
             var override: String? = nil
             call.finds.reset()
@@ -30,7 +33,7 @@ import CoreText
             case "mac-rs-half": MacResultFixture.load(.results, into: call.finds, state: .half); override = ""
             case "mac-rs-failed": MacResultFixture.load(.failed, into: call.finds, state: .searching); override = ""
             case "mac-link": MacResultFixture.load(.results, into: call.finds, state: .half); override = "link"
-            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings": break
+            case "a02", "a02-j", "a02-m", "a02-m2", "a02-m2-error", "cs01", "mac-2", "mac-3", "mac-3-paired", "mac-4", "mac-4-unpaired", "mac-offline", "launch", "settings": break
             case "c01": override = ""
             case "mc-m": MacHandoff.shared.reviewCanMove = true; override = "menu"
             default: setenv("GENITA_MAC_REVIEW", state, 1)
@@ -40,17 +43,19 @@ import CoreText
             case "a02": page = AnyView(MacSignInView())
             case "a02-j": page = AnyView(MacJudgeCodeSheet())
             case "a02-m": page = AnyView(MacEmailSheet())
-            case "a02-m2": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com"))
+            case "a02-m2": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com", code: MacDesignV2.enabled ? "482" : ""))
             case "a02-m2-error": page = AnyView(MacEmailSheet(step: .code, email: "you@example.com", message: "That code didn’t work. Check it and try again."))
             case "cs01": page = AnyView(MacConsentView())
             // #78: MAC-2 / MAC-3 / MAC-4 home windows (Figma 87:2 / 88:2 / 89:2)
             case "mac-2": page = AnyView(MacHomeView(kind: .noCompanion, name: "Mina", handoff: MacHandoff.shared))
             case "mac-3": page = AnyView(MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared))
+            // Mac v2: MAC-3 for an iPhone that is already paired (no code)
+            case "mac-3-paired": MacHandoff.shared.link.connected = true; page = AnyView(MacHomeView(kind: .onPhone, name: "Mina", handoff: MacHandoff.shared))
             case "mac-4": MacHandoff.shared.reviewCanMove = true; MacHandoff.shared.link.connected = true; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
             case "mac-4-unpaired": MacHandoff.shared.reviewCanMove = false; MacHandoff.shared.link.connected = false; page = AnyView(MacHomeView(kind: .here, name: "Mina", handoff: MacHandoff.shared))
             case "mac-offline": page = AnyView(MacHomeView(kind: .offline("Check your connection and try again."), name: "Mina", handoff: MacHandoff.shared))
             case "launch": page = AnyView(MacLaunchBlank())
-            case "settings": page = AnyView(MacSettingsSheet())
+            case "settings": MacCall.shared.reviewAccountLabel("mina@example.com"); page = AnyView(MacSettingsSheet())
             default: page = AnyView(MacConversationView(reviewOverride: override).frame(width: 390, height: 844))
             }
             let view = page.environment(\.colorScheme, .light)
@@ -58,7 +63,7 @@ import CoreText
             r.scale = 2
             guard let img = r.cgImage else { print("no image", state); continue }
             let rep = NSBitmapImageRep(cgImage: img)
-            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("mac-\(state).png"))
+            try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("mac-\(arg.replacingOccurrences(of: "@", with: "-")).png"))
             print("wrote", state)
         }
     }
