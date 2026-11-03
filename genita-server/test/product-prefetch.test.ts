@@ -175,6 +175,11 @@ test("11/3 S5: the prefetch searches from what was said (no frames, 5 lanes); GE
     assert.ok(searches[0].includes("V0hJVEU="), "frames kept when the pick is not named");
   }
   {
+    const { namesPick } = await import("../src/finds/runner.ts");
+    assert.equal(namesPick("The first one. Dark brown shoes would look great."), false, "the shoes' color is not the pick (Codex P2)");
+    assert.equal(namesPick("Black, for sure. Dark brown shoes or leather accessories."), true);
+  }
+  {
     const { v, searches } = vendors(10);
     const { r } = runner(v);
     r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve(said) });

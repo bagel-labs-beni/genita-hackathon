@@ -47,7 +47,10 @@ export function prefetchHedge(productHedge = 2, env: NodeJS.ProcessEnv = process
 }
 /** the companion's line names the pick by color ("Black, for sure…"): the search can go by what was said (Codex P2: "the first one" can't) */
 export function namesPick(said: string): boolean {
-  return [...said.toLowerCase().matchAll(/[a-z]+/g)].some((m) => COLOR.test(m[0]));
+  const words = [...said.toLowerCase().matchAll(/[a-z]+/g)].map((m) => m[0]);
+  // a color of what it recommends ("dark brown shoes", "black leather belt") is not the pick (Codex P2)
+  const goesWith = /^(shoes?|boots?|loafers?|sneakers?|heels?|flats|sandals?|bags?|belts?|watch|scarf|hat|accessories|leather|suede|jewelry|socks)$/;
+  return words.some((w, i) => COLOR.test(w) && !words.slice(i + 1, i + 4).some((n) => goesWith.test(n)));
 }
 export function prefetchFrames(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_PREFETCH_FRAMES === "1";

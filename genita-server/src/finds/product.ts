@@ -244,9 +244,13 @@ export const CAMERA_LINE =
  */
 const HOUSE_SHOES = /\b(slippers?|sandals?|slides?|flip[- ]?flops?|mules?|clogs?|crocs|house ?shoes?)\b/i;
 /** a house / summer shoe the ask never mentioned (they asked for "shoes" to go with an outfit) */
+const SHOE_ASK = /\b(shoes?|footwear|sneakers?|boots?|loafers?|heels?|flats)\b/i;
+const NOT_SHOE = /\b(belts?|bags?|totes?|wallets?|watch(?:es)?|hats?|caps?|scarf|scarves|jackets?|coats?|socks?)\b/i;
 export function offOccasion(product: string, asked: string): boolean {
-  const m = HOUSE_SHOES.exec(product.replace(/[-_/]+/g, " "));
-  return !!m && !HOUSE_SHOES.test(asked);
+  const name = product.replace(/[-_/]+/g, " ");
+  // only a shoe ask and a shoe product ("Leather slide buckle belt" is a belt, Codex P2)
+  if (!SHOE_ASK.test(asked) || NOT_SHOE.test(name)) return false;
+  return HOUSE_SHOES.test(name) && !HOUSE_SHOES.test(asked);
 }
 
 export function productPrompt(o: { question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; oneSearch?: boolean }): string {
