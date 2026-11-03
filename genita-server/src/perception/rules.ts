@@ -5,7 +5,10 @@
  */
 import type { Expression, Gaze, PerceptionSample, PerceptionState, PerceptionTrigger, TriggerKind } from "./types.ts";
 
+/** expression reads below this are unsure: they set no state and fire no expression trigger */
 export const MIN_CONFIDENCE = 0.6;
+/** gaze and engagement still count from here (a face turned away makes the expression unsure, not the gaze) */
+export const GAZE_MIN_CONFIDENCE = 0.4;
 export const STALE_MS = 8_000;
 export const COOLDOWN_MS = 60_000;
 export const SMILE_CONF = 0.7;
@@ -22,8 +25,6 @@ export const TIRED_CONF = 0.75;
 export const TIRED_MIN_MS = 6_000;
 export const TIRED_SILENCE_MS = 8_000;
 export const AWAY_MIN_MS = 10_000;
-/** "down" counts as away only when attention is low: on an iPhone, reading the screen looks down (eval 11/3) */
-export const DOWN_AWAY_ENGAGEMENT = 0.5;
 export const LOW_ENGAGEMENT = 0.35;
 export const ENGAGEMENT_REARM = 0.5;
 export const LOW_ENGAGEMENT_MIN_MS = 20_000;
@@ -44,12 +45,14 @@ export type Tracker = {
   tired: Run;
   away: Run;
   low: Run;
+  /** last read that counted at all (≥ GAZE_MIN_CONFIDENCE) */
+  lastAt: number | null;
 };
 
 const NO_RUN: Run = { since: null, fired: false };
 
 export function initialTracker(): Tracker {
-  return { kept: [], state: null, lastFired: {}, tired: NO_RUN, away: NO_RUN, low: NO_RUN };
+  return { kept: [], state: null, lastFired: {}, tired: NO_RUN, away: NO_RUN, low: NO_RUN, lastAt: null };
 }
 
 function majority<T>(xs: T[]): T | null {
@@ -63,27 +66,34 @@ const ema = (prev: number | undefined, x: number) => (prev === undefined ? x : p
 const within = (at: number, ref: number | null, ms: number) => ref !== null && at >= ref && at - ref <= ms;
 
 export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): { tracker: Tracker; triggers: PerceptionTrigger[] } {
-  const prevAt = t.kept.at(-1)?.at ?? null;
-  // low confidence, or a read about a face older than the last kept one: says nothing about now
-  if (s.confidence < MIN_CONFIDENCE || (prevAt !== null && at < prevAt)) return { tracker: t, triggers: [] };
+  const prevAt = t.lastAt;
+  // no face (very low confidence), or a read about a face older than the last one: says nothing about now
+  if (s.confidence < GAZE_MIN_CONFIDENCE || (prevAt !== null && at < prevAt)) return { tracker: t, triggers: [] };
   // a gap (camera off, no face, failed reads): earlier samples and runs say nothing about now
   const fresh = prevAt === null || at - prevAt > STALE_MS;
-  const base: Tracker = fresh ? { ...t, kept: [], state: null, tired: NO_RUN, away: NO_RUN, low: NO_RUN } : t;
-  const kept = [...base.kept, { at, s }].slice(-3);
+  const reset = { kept: [], state: null, tired: NO_RUN, away: NO_RUN, low: NO_RUN };
+  const base: Tracker = fresh ? { ...t, ...reset } : t;
+  const sure = s.confidence >= MIN_CONFIDENCE;
+  // expression smoothing only from sure reads, and only from recent ones
+  const recent = base.kept.filter((k) => at - k.at <= STALE_MS);
+  const kept = sure ? [...recent, { at, s }].slice(-3) : recent;
 
-  const prev = base.state;
-  const expression: Expression = majority(kept.map((k) => k.s.expression)) ?? prev?.expression ?? s.expression;
-  const gaze: Gaze = majority(kept.map((k) => k.s.gaze)) ?? prev?.gaze ?? s.gaze;
-  const state: PerceptionState = {
-    expression,
-    intensity: ema(prev?.intensity, s.intensity),
-    gaze,
-    engagement: ema(prev?.engagement, s.engagement),
-    notable: s.notable,
-    confidence: kept.reduce((a, k) => a + k.s.confidence, 0) / kept.length,
-    at,
-    since: prev && prev.expression === expression ? prev.since : at,
-  };
+  const prev = base.state && at - base.state.at <= STALE_MS ? base.state : null;
+  let state: PerceptionState | null = prev;
+  if (sure) {
+    const expression: Expression = majority(kept.map((k) => k.s.expression)) ?? prev?.expression ?? s.expression;
+    const gaze: Gaze = majority(kept.map((k) => k.s.gaze)) ?? prev?.gaze ?? s.gaze;
+    state = {
+      expression,
+      intensity: ema(prev?.intensity, s.intensity),
+      gaze,
+      engagement: ema(prev?.engagement, s.engagement),
+      notable: s.notable,
+      confidence: kept.reduce((a, k) => a + k.s.confidence, 0) / kept.length,
+      at,
+      since: prev && prev.expression === expression ? prev.since : at,
+    };
+  }
 
   const lastFired = { ...base.lastFired };
   const triggers: PerceptionTrigger[] = [];
@@ -98,6 +108,7 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
   // fast, single-sample moments (a smile lasts a second or two); a reaction is a change from the resting face
   const resting = (e: Expression) => !!prev && prev.expression === e && at - prev.since >= BASELINE_MS;
   const positive =
+    sure &&
     (s.expression === "smile" || s.expression === "laugh") && s.confidence >= SMILE_CONF && s.intensity >= SMILE_MIN_INTENSITY &&
     // a laugh from a resting smile is still a reaction; a smile from a resting smile is not
     !resting("laugh") && (s.expression === "laugh" || !resting("smile"));
@@ -106,26 +117,30 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
     else if (c.userSpeaking || within(at, c.lastUserSpeechAt, OWN_JOKE_WINDOW_MS)) fire("smiled_at_own_joke");
     else if (s.expression === "laugh" && s.intensity >= LAUGH_INTENSITY) fire("laughed");
   }
-  if (s.expression === "confused" && s.confidence >= CONFUSED_CONF && !resting("confused") && (c.companionSpeaking || within(at, c.lastReplyEndAt, CONFUSED_WINDOW_MS))) {
+  if (sure && s.expression === "confused" && s.confidence >= CONFUSED_CONF && !resting("confused") && (c.companionSpeaking || within(at, c.lastReplyEndAt, CONFUSED_WINDOW_MS))) {
     fire("looks_confused");
   }
 
   // sustained states: one trigger per continuous run
-  let tired: Run = s.expression === "tired" && s.confidence >= TIRED_CONF ? { since: base.tired.since ?? at, fired: base.tired.fired } : NO_RUN;
+  // an unsure read neither extends nor breaks a tired run
+  let tired: Run = !sure ? base.tired : s.expression === "tired" && s.confidence >= TIRED_CONF ? { since: base.tired.since ?? at, fired: base.tired.fired } : NO_RUN;
   const silent = !c.userSpeaking && (c.lastUserSpeechAt === null || at - c.lastUserSpeechAt >= TIRED_SILENCE_MS);
   if (tired.since !== null && !tired.fired && at - tired.since >= TIRED_MIN_MS && silent && fire("looks_tired")) tired = { ...tired, fired: true };
 
-  const looksAway = s.gaze === "away" || (s.gaze === "down" && s.engagement < DOWN_AWAY_ENGAGEMENT);
+  // only "away" (to the side): looking down at the screen and at a phone read the same on a selfie crop (eval 11/3),
+  // so "down" never counts as looking away or as low engagement: it ends those runs like looking at the screen
+  const looksAway = s.gaze === "away";
   let away: Run = looksAway ? { since: base.away.since ?? at, fired: base.away.fired } : NO_RUN;
   if (away.since !== null && !away.fired && at - away.since >= AWAY_MIN_MS && !c.userSpeaking && fire("looked_away")) away = { ...away, fired: true };
 
   let low: Run;
-  if (s.engagement < LOW_ENGAGEMENT) low = { since: base.low.since ?? at, fired: base.low.fired };
+  if (s.gaze === "down") low = NO_RUN;
+  else if (s.engagement < LOW_ENGAGEMENT) low = { since: base.low.since ?? at, fired: base.low.fired };
   else if (s.engagement >= ENGAGEMENT_REARM) low = NO_RUN;
   else low = { since: null, fired: base.low.fired };
   if (low.since !== null && !low.fired && at - low.since >= LOW_ENGAGEMENT_MIN_MS && fire("engagement_drop")) low = { ...low, fired: true };
 
-  return { tracker: { kept, state, lastFired, tired, away, low }, triggers };
+  return { tracker: { kept, state, lastFired, tired, away, low, lastAt: at }, triggers };
 }
 
 export function stateOf(t: Tracker, now: number): PerceptionState | null {

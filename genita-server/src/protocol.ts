@@ -89,7 +89,7 @@ export type ClientMessage =
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
-  /** PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception; send only when `ready.perception` is true */
+  /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
   | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }

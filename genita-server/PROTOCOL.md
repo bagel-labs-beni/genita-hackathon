@@ -80,7 +80,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `audio_start` | — | mic on (default after `start` unless `mic:false`) |
 | `audio_stop` | — | mic off; server pads 0.8 s silence so a cut sentence still ends |
 | `text` | `text`, optional `frames` | typed message (S08). Cancels any reply in progress, starts a new one. |
-| `perception.frame` | `image: jpeg` | PERC-1: one face crop (base64 JPEG ≤ 256 px, < 300 k chars) for perception. Only when `ready.perception` is true, camera on, chat mode; on face change (≥ 1 s apart) or every 2.5 s. Ignored otherwise; never stored. See **Perception**. |
+| `perception.frame` | `image: jpeg` | PERC-1: one fixed upper-centre crop of the front-camera frame (the selfie face region, no face detection on device), base64 JPEG 256–384 px, < 300 k chars, for perception. Only when `ready.perception` is true, camera on, chat mode; on face change (≥ 1 s apart) or every 2.5 s. Ignored otherwise; never stored. See **Perception**. |
 | `frames` | `images: [jpeg]` (≤2) | camera frames for the **next** user turn (voice or text), valid 15 s. Base64 JPEG or `data:image/jpeg;base64,…`, each < 1.5 MB. Two frames measured 2.1 s first token vs 6.5 s for a video upload. |
 | `barge_in` | — | user tapped to interrupt; cancels immediately |
 | `playback_done` | `utteranceId` | app finished playing the reply; ends `speaking` earlier than the server's estimate |
@@ -355,7 +355,7 @@ token from SSM, constant-time compare, 400-char text cap, max 3 GPU containers, 
 ## Perception (PERC-1, camera reactions)
 
 Off unless the server runs `GENITA_PERCEPTION=1`; then `ready.perception: true`. While the camera is on in chat mode the app
-sends `perception.frame` (face crop) at most every second, normally every 2.5 s or when the face changes. The server reads one
+sends `perception.frame` (a fixed upper-centre crop of the front-camera frame; no on-device AI, runtime AI is Meta-only) at most every second, normally every 2.5 s or when the face changes. The server reads one
 crop at a time with Muse Spark (strict JSON: expression, intensity, gaze, engagement, notable, confidence), smooths the reads
 and keeps only that in memory for the call; the crop is dropped right after the read. Nothing comes back on the socket: the
 conversation engine uses the state to react (a smile at its joke, a laugh, confusion, tiredness, looking away) at most once a

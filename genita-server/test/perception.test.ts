@@ -166,7 +166,7 @@ test("looks_confused: confused conf ≥ 0.65 during or ≤ 6 s after the reply",
 test("looked_away: away/down ≥ 10 s, not while the user speaks; re-arms only after looking back", () => {
   const away = S({ gaze: "away" });
   assert.deepEqual(run(series(0, 8000, 2000, away)).kinds, []);
-  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "down", engagement: 0.3 }))).kinds, ["looked_away"]);
+  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "away", engagement: 0.3 }))).kinds, ["looked_away"]);
   assert.deepEqual(run(series(0, 12_000, 2000, away, { ...QUIET, userSpeaking: true })).kinds, [], "talking while looking away is normal");
   const long = run(series(0, 200_000, 2000, away));
   assert.deepEqual(long.kinds, ["looked_away"], "one continuous look-away = one trigger");
@@ -174,9 +174,16 @@ test("looked_away: away/down ≥ 10 s, not while the user speaks; re-arms only a
   assert.deepEqual(back.kinds, ["looked_away", "looked_away"]);
 });
 
-test("looking down while engaged is reading the screen, not looking away (eval 11/3: 6/8 reading stills read 'down')", () => {
-  assert.deepEqual(run(series(0, 20_000, 2000, S({ gaze: "down", engagement: 0.8 }))).kinds, []);
-  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "down", engagement: 0.3 }))).kinds, ["looked_away"], "down at a phone");
+test("looking down never counts as away or as low engagement: reading the screen and a phone look the same (eval 11/3)", () => {
+  assert.deepEqual(run(series(0, 30_000, 2000, S({ gaze: "down", engagement: 0.8 }))).kinds, []);
+  assert.deepEqual(run(series(0, 30_000, 2000, S({ gaze: "down", engagement: 0.3 }))).kinds, [], "selfie-crop reading stills read down / 0.3");
+  assert.deepEqual(run(series(0, 22_000, 2000, S({ gaze: "away", engagement: 0.2 }))).kinds, ["looked_away", "engagement_drop"]);
+});
+
+test("gaze counts from conf ≥ 0.4: a turned-away face makes the expression unsure, not the gaze (eval 11/3 selfie crop)", () => {
+  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "away", confidence: 0.5 }))).kinds, ["looked_away"]);
+  const r = run([[0, S({ expression: "smile", gaze: "away", confidence: 0.5 })]]);
+  assert.equal(stateOf(r.tracker, 0), null, "an unsure read does not set the expression state");
 });
 
 test("engagement_drop: engagement < 0.35 for ≥ 20 s", () => {
@@ -216,8 +223,10 @@ test("reactions are changes: a face that has read confused (or smiling) for ≥ 
 test("false-comment guard: 5 minutes of a neutral or focused face fire nothing", () => {
   assert.deepEqual(run(series(0, 300_000, 2500, S())).kinds, []);
   assert.deepEqual(run(series(0, 300_000, 2500, S({ expression: "focused", engagement: 0.6 }))).kinds, []);
-  // a low-confidence tired / away read never counts
-  assert.deepEqual(run(series(0, 300_000, 2500, S({ expression: "tired", gaze: "away", engagement: 0.1, confidence: 0.5 }))).kinds, []);
+  // a very unsure read (no face in the crop, conf < 0.4) never counts, not even for gaze
+  assert.deepEqual(run(series(0, 300_000, 2500, S({ expression: "tired", gaze: "away", engagement: 0.1, confidence: 0.3 }))).kinds, []);
+  // an unsure expression (0.4–0.6) never fires an expression trigger
+  assert.deepEqual(run(series(0, 300_000, 2500, S({ expression: "tired", engagement: 0.7, confidence: 0.5 }))).kinds, []);
 });
 
 test("hints are short, kind, about the moment, never about looks; tired is a soft observation", () => {
