@@ -490,3 +490,13 @@ test("Codex r5: a forget target is only kept when the stored profile speaks abou
   await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
   assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["leather accessories"]);
 });
+
+test("Codex r6: only the stored profile's own words are kept ('asthma when running' with 'Likes running.' keeps 'running')", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes running.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!);
+  assert.ok(!stored.includes("asthma"));
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["running"]);
+});
