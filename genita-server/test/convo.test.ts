@@ -1412,3 +1412,16 @@ test("Codex #502 P1: a crisis line early in the call still blocks the take nudge
     session.close();
   }
 });
+
+test("Codex #502 P1 r4: a crisis line in a handed-over start.history stays with the call after the history trim", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  const history = [{ role: "user", text: "I want to kill myself." }, { role: "assistant", text: "<sad> Please call 988 right now. I'm right here." }];
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", handoff: true, history }));
+  const lines = [...Array(9).fill("ok"), "Yes, I have the pills beside me"];
+  for (let i = 0; i < lines.length; i++) {
+    await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length >= i + 1);
+  }
+  assert.doesNotMatch(calls.at(-1)!.instructions!, /own take/);
+  session.close();
+});

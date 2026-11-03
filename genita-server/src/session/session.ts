@@ -690,6 +690,7 @@ export class Session {
         if (text && (item.role === "user" || item.role === "assistant")) this.history.push({ role: item.role, text });
       }
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
+      if (this.history.some((h) => h.role === "user" && realCrisisSignal(h.text))) this.crisisInCall = true;
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
@@ -758,6 +759,8 @@ export class Session {
           if (!seed.length) return;
           // a "forget that…" turn and the reply to it are never carried to the next device (QA post-deploy 11/3)
           this.history = scrubHistory(seed, []).slice(-MAX_HISTORY);
+          // a crisis anywhere in the handed-over turns (server or client-claimed) stays with the call (Codex #502 P1 r4)
+          if (seed.some((h) => h.role === "user" && realCrisisSignal(h.text))) this.crisisInCall = true;
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
