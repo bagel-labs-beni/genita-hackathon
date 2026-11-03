@@ -838,7 +838,9 @@ test("Codex #502 P1 r3: a crisis line travels with the conversation to the other
     for (let i = 0; i < 8; i++) await say(phone, "ok"); // the first line is now outside the kept 16
     const mac = await open("mac"); start(mac); await waitFor(mac.ready);
     requests.length = 0;
-    await say(mac, "I'm about to swallow all these pills");
+    // an ordinary line on the Mac (#533 made "I'm about to swallow all these pills" a crisis line itself, so the
+    // control's nudge was blocked too): only the moved conversation's early line may decide
+    await say(mac, "anyway what should I eat tonight");
     const inst = requests.map((r) => r.instructions ?? "").join("\n");
     if (first === "Long day.") assert.match(inst, /own take/, "control: no crisis in the conversation, the nudge fires");
     else assert.doesNotMatch(inst, /own take/);
