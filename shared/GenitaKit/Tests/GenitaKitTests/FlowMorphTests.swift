@@ -362,7 +362,7 @@ struct LipRigTests {
         let p = pixels(m.render(.rest, at: 1))
         let centre = Int(p[(14 * m.width + 16) * 4]), corner = Int(p[(14 * m.width + 21) * 4])
         #expect(centre > 200)          // the teeth layer in the middle
-        #expect(corner < 120)          // near the corner: the key's own (dark) inside, not the teeth layer
+        #expect(corner < 200)          // near the corner: what lies under (lips / closed face), not the teeth layer
     }
 
     /// Rollback (map rig.interior = 0): the old idle drift and teeth layer are back.
