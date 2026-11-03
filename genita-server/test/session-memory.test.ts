@@ -589,3 +589,37 @@ for (const which of ["iPhone inherits, then hangs up after the Mac's close", "bo
     for (const w of sockets) w.terminate();
   });
 }
+
+test("server (Codex 11/3 r8): join order, not socket order — a Mac whose first memory read was slow inherits the iPhone and its own hang-up counts", { timeout: 20_000 }, async (t) => {
+  const { memory, deps, repo } = setup(fakeSummarizer().fn);
+  const logs: string[] = [];
+  let slow = true; let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+  const getState = repo.getState.bind(repo);
+  repo.getState = async (u) => { if (slow) { slow = false; await gate; } return getState(u); };
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const closes = () => logs.filter((e) => e === "session.close").length;
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const mac = await open("mac"); start(mac); // its first memory read stalls (under the 1.5 s start budget)
+  await new Promise((r) => setTimeout(r, 50));
+  const phone = await open("iphone"); start(phone); await waitFor(phone.ready);
+  const n = phone.replies(); phone.ws.send(JSON.stringify({ type: "text", text: "Black it is." })); await waitFor(() => phone.replies() > n);
+  release(); await waitFor(mac.ready); // the Mac joins now and inherits the iPhone's live turns
+  assert.ok(logs.includes("history.seeded"));
+  phone.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => closes() === 1); await memory.drain();
+  mac.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => closes() === 2); await memory.drain();
+  const before = logs.filter((e) => e === "history.seeded").length;
+  const back = await open("mac"); start(back); await waitFor(() => back.replies() >= 1);
+  assert.equal(logs.filter((e) => e === "history.seeded").length, before, "she hung up on the Mac last: a return visit there");
+  for (const w of sockets) w.terminate();
+});

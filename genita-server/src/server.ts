@@ -307,10 +307,13 @@ export async function startServer(
   // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
   const handedThread = new Map<string, ThreadState | null>();
   const sessionDevices = new Map<string, string>(); // ws session id → the device the call is on
-  // Open order: at equal progress the later call is the one that inherited the conversation (Codex 11/3 r7)
+  // Join order: when a call took up the conversation (its memory start ran priorTurns), not when its socket opened.
+  // At equal progress the later joiner is the one that inherited the conversation (Codex 11/3 r7/r8).
   let nextGen = 0;
   const sessionGens = new Map<string, number>();
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
+    // this call joins the conversation now (a slow first memory read can make it join after a later socket)
+    sessionGens.set(self, ++nextGen);
     let cached = lastTurns.get(userId);
     if (cached && (cached.revision !== revision || Date.now() - cached.at >= 10 * 60_000)) {
       dropLastTurns(userId);
@@ -461,10 +464,11 @@ export async function startServer(
       sessions.delete(id);
       sessionUsers.delete(id);
       sessionDevices.delete(id);
+      const joined = sessionGens.get(id) ?? gen;
       sessionGens.delete(id);
       handedThread.delete(id);
       touches.delete(id);
-      void cacheTurns(who.userId, session, callDevice, gen)
+      void cacheTurns(who.userId, session, callDevice, joined)
         .catch(() => log("history.unavailable", { session: id }))
         .finally(() => log("session.close", { session: id, sessions: sessions.size }));
       progress.delete(id); // cacheTurns captured its immutable progress before its first await

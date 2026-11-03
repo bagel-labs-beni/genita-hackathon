@@ -1169,7 +1169,8 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item };
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length };
+      // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
