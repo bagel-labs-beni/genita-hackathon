@@ -724,3 +724,34 @@ test("bug-fix a27831b outfit 1/9: 'I'll pick the one that fits tonight best' is 
   assert.doesNotMatch(out, /I'll pick the one/);
   assert.match(out, /Go with the trench\./);
 });
+
+test("Codex r24: 'I'm picking the trench for you.' is the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'm picking the trench for you.").speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak].join(" ");
+  assert.match(out, /picking the trench/);
+});
+
+test("bug-fix 95acde0 smoke 2/10: 'Your dinner idea is coming — picking something good.' and 'You got it — thinking back on what you shared…' are never voiced", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(first).speak, ...j.push("Try kimchi carbonara.").speak, ...j.finish().speak].join(" ");
+    assert.match(out, /^(?:You got it\. )?Try kimchi carbonara\.$/, first);
+  }
+});
+
+test("hard fail (main 11/3, smoke 95acde0): ack + dash + subject-less process '-ing' — dropped; the ack stays only with real content after", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const withContent = new NarrationJudge(true);
+    const a = [...withContent.push(first).speak, ...withContent.push("Try kimchi carbonara.").speak, ...withContent.finish().speak].join(" ");
+    assert.doesNotMatch(a, /picking something|thinking back/i, first);
+    assert.match(a, /Try kimchi carbonara\./);
+    const alone = new NarrationJudge(true);
+    assert.deepEqual([...alone.push(first).speak, ...alone.finish().speak], [], `${first} alone: nothing spoken (the turn retries)`);
+  }
+  // an ack + a real -ing answer stays
+  const j = new NarrationJudge(true);
+  assert.ok([...j.push("Got it — taking the 2 line is fastest.").speak, ...j.finish().speak].join(" ").includes("2 line"));
+});
