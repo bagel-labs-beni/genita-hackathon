@@ -23,14 +23,35 @@ export type CachedProducts = {
 };
 
 const COLOR_WORD = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|silver|gold)$/;
-const SHOES = /\b(shoes?|sneakers?|boots?|booties|loafers?|heels?|flats|oxfords?|derbys?|footwear)\b/i;
-const BAGS = /\b(bags?|totes?|backpacks?|purses?|clutch)\b/i;
+const KINDS: Array<[string, RegExp]> = [
+  ["boots", /\b(boots?|booties)\b/i],
+  ["sneakers", /\b(sneakers?|trainers?)\b/i],
+  ["loafers", /\b(loafers?)\b/i],
+  ["heels", /\b(heels?|pumps?)\b/i],
+  ["flats", /\b(flats|ballet)\b/i],
+  ["bags", /\b(bags?|totes?|backpacks?|purses?|clutch)\b/i],
+  ["shoes", /\b(shoes?|oxfords?|derbys?|footwear)\b/i],
+];
+const SHOE_KINDS = new Set(["boots", "sneakers", "loafers", "heels", "flats", "shoes"]);
 
-/** "shoes" | "bags" | null — what a cached card can stand in for */
-export function categoryOf(text: string): "shoes" | "bags" | null {
-  if (SHOES.test(text)) return "shoes";
-  if (BAGS.test(text)) return "bags";
-  return null;
+/**
+ * The one kind of thing an ask is for ("boots", "sneakers", "shoes" …), or null when it names none or several
+ * ("black shoes and a bag" is never served from or stored in the cache — Codex P1 #522).
+ */
+export function categoryOf(text: string): string | null {
+  const hits = KINDS.filter(([, re]) => re.test(text)).map(([k]) => k);
+  if (hits.length !== 1) return hits.length === 2 && hits.includes("shoes") && hits.every((k) => SHOE_KINDS.has(k)) ? hits.find((k) => k !== "shoes")! : null;
+  return hits[0];
+}
+
+/** every product is the kind asked for: a "shoes" ask takes any shoe, "boots" only boots, never a bag */
+export function cardIsKind(card: FindCard, kind: string): boolean {
+  const products = card.products ?? [];
+  return products.length > 0 && products.every((p) => {
+    const k = KINDS.find(([, re]) => re.test(p.name))?.[0];
+    if (!k) return kind !== "bags" ? SHOE_KINDS.has(kind) && kind === "shoes" : false;
+    return kind === "shoes" ? SHOE_KINDS.has(k) : k === kind;
+  });
 }
 
 /** base color words of an ask ("dark brown" → brown) */
@@ -84,8 +105,9 @@ export function cardFitsColors(card: FindCard, colors: string[]): boolean {
   const products = card.products ?? [];
   if (!products.length) return false;
   if (!colors.length) return true;
+  // the product's own name only: a taste chip ("Brown palette") never vouches for a "Black Boot" (Codex P1 #522)
   return products.every((x) => {
-    const w = colorsOf(`${x.name} ${x.taste} ${x.situation}`);
+    const w = colorsOf(x.name);
     return !w.length || w.some((c) => colors.includes(c));
   });
 }

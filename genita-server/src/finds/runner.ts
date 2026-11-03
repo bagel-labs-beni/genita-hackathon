@@ -12,7 +12,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
-import { cacheGet, cacheKey, cachePut, cardFitsColors, categoryOf, claimWarm, colorsOf, releaseWarm, type CachedProducts } from "./productCache.ts";
+import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorsOf, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
 
@@ -184,20 +184,24 @@ export class FindsRunner {
     if (this.deps.productCache === true) void this.warmProducts();
   }
 
-  /** the taste text a cached card is shared under (identical imports only) */
+  /**
+   * What a cached card is shared under: the exact taste text (identical imports, e.g. demo accounts), or this account
+   * alone when it has none (Codex P1 #522: every account without a profile shared one cache).
+   */
   private tasteText(): string {
-    return this.profile ?? "";
+    const t = (this.profile ?? "").trim();
+    return t ? t : `account:${this.owner ?? "none"}`;
   }
 
   private async warmProducts(): Promise<void> {
+    if (!(this.profile ?? "").trim() || this.closed) return;
     const taste = this.tasteText();
-    if (!taste.trim() || this.closed) return;
     // all colors at once: background searches yield to calls, and the ask comes ~20 s after the call starts
     await Promise.all(warmColors(taste).map(async (phrase) => {
       const key = cacheKey("shoes", colorsOf(phrase), taste);
       if (cacheGet(key, Date.now()) || !claimWarm(key, Date.now())) return;
       const card = await this.searchInBackground(`Find ${phrase} shoes that match their style.`, `warm-${randomUUID()}`).catch(() => null);
-      if (card && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
+      if (card && cardIsKind(card.card, "shoes") && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
       else releaseWarm(key);
     }));
   }
@@ -323,9 +327,9 @@ export class FindsRunner {
       if (r.card) await this.persist(r.card);
       // a real search's card answers the same ask next time at once (same taste only)
       if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {
-        const cat = categoryOf(t.text) ?? categoryOf(r.card.products?.map((x) => x.name).join(" ") ?? "");
+        const cat = categoryOf(t.text);
         const colors = colorsOf(t.text);
-        if (cat && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colors, this.tasteText()), { at: Date.now(), card: r.card, sourceFindId: findId });
+        if (cat && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colors, this.tasteText()), { at: Date.now(), card: r.card, sourceFindId: findId });
       }
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       return r;
@@ -412,7 +416,7 @@ export class FindsRunner {
     if (EXCLUDE.test(lower) || named.some((w) => MATERIAL.test(w)) || /\$\s?\d|\bunder \d|\bcheap|\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower) || brandsIn(text).length) return null;
     const colors = colorsOf(text);
     const hit = cacheGet(cacheKey(cat, colors, this.tasteText()), Date.now());
-    return hit && cardFitsColors(hit.card, colors) ? hit : null;
+    return hit && cardIsKind(hit.card, cat) && cardFitsColors(hit.card, colors) ? hit : null;
   }
 
   /**
@@ -435,16 +439,24 @@ export class FindsRunner {
       }
       products.push(q);
     }
+    // only the public product facts and the shared taste line travel; the words of the call they were found in
+    // (title, subtitle, say, reason chips) are rebuilt for this one (Codex P1 #522)
+    const n = products.length;
     const card: FindCard = {
       ...entry.card, id: c.findId, createdAt: new Date().toISOString(), products, saved: false,
+      title: n === 1 ? `One ${shortLabel(label).toLowerCase()} pick` : `${n} ${shortLabel(label).toLowerCase()} picks`,
+      subtitle: `${shortLabel(label)}, matched to your style.`,
+      reasons: undefined, say: undefined,
       ...(entry.card.evidence ? { evidence: { ...entry.card.evidence, situation: "" } } : {}),
     };
+    delete card.reasons; delete card.say;
     if (c.signal.aborted) return { card: null, timings: {} };
     c.emit({ type: "find.created", findId: c.findId, card });
     const cardMs = Math.round(c.now() - t0);
     // refresh behind it (yields to calls), for the next ask
-    const key = cacheKey(categoryOf(t.text) ?? "shoes", colorsOf(t.text), this.tasteText());
-    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
+    const kind = categoryOf(t.text) ?? "shoes";
+    const key = cacheKey(kind, colorsOf(t.text), this.tasteText());
+    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
     return { card, timings: { cardMs, cached: 1 } };
   }
 

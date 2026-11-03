@@ -123,3 +123,26 @@ test("cardFitsColors: a plain name stands for the color it was searched for; ano
   assert.equal(cardFitsColors(card(["Black Chelsea Boot", "Brown Loafer"]), ["brown"]), false);
   assert.equal(cardFitsColors(card([]), ["brown"]), false);
 });
+
+test("Codex P1s #522: one kind per ask (a bag never answers shoes, boots never answer sneakers); colors from the product's own name; no profile = this account only", async () => {
+  const { categoryOf, cardIsKind, cardFitsColors } = await import("../src/finds/productCache.ts");
+  assert.equal(categoryOf("Find black shoes and a black bag"), null, "two kinds: never cached or served");
+  assert.equal(categoryOf("Find me black boots"), "boots");
+  assert.equal(categoryOf("Can you find me some dark brown shoes?"), "shoes");
+  const card = (names: string[], taste = "") => ({ products: names.map((name) => ({ name, taste, situation: "" })) }) as unknown as FindCard;
+  assert.equal(cardIsKind(card(["Black Chelsea Boot", "Leather Tote Bag"]), "shoes"), false);
+  assert.equal(cardIsKind(card(["Black Chelsea Boot", "Penny Loafer"]), "sneakers"), false);
+  assert.equal(cardIsKind(card(["Black Chelsea Boot", "Penny Loafer"]), "shoes"), true);
+  assert.equal(cardFitsColors(card(["Black Boot", "Penny Loafer"], "Brown palette"), ["brown"]), false, "the chip never vouches for a black boot");
+  clearProductCache();
+  const { v } = vendors(10);
+  const a = runner(v, "no-profile-a", "");
+  a.r.onTurn({ text: "Find me some black shoes", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
+  await a.r.settle();
+  const b = runner(v, "no-profile-b", "");
+  const s = b.r.onTurn({ text: "Find me some black shoes", frames: [], utteranceId: 1, replyText: Promise.resolve(null) });
+  await sleep(5);
+  assert.ok(!b.events.some((e) => e.type === "find.created" && e.findId === s!.findId), "accounts without a profile never share");
+  await b.r.settle();
+  a.r.close(); b.r.close();
+});
