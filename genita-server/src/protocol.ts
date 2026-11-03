@@ -15,6 +15,8 @@ export type LipMode = "atlas" | "none";
 export type TtsMode = "server" | "device";
 export type Mode = "chat" | "interpret";
 export type Phase = "listening" | "thinking" | "speaking" | "interrupted";
+/** Face expression of a reply clause (`expression` event). Neutral is never sent. */
+export type ExpressionTag = "smile" | "smileopen" | "laugh" | "surprised" | "concerned";
 export type CancelReason = "barge_in" | "text" | "client";
 export type Viseme = "X" | "A" | "E" | "O" | "U" | "M" | "F" | "L" | "S";
 export type MouthCue = { t: number; v: Viseme };
@@ -103,6 +105,12 @@ export type FindKind = "recipe" | "outfit" | "link" | "product";
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */
 export type NormBox = { x1: number; y1: number; x2: number; y2: number };
+/**
+ * SAM pixel mask over an item's box (GENITA_SAM_MASKS=1): a w x h grid stretched
+ * over `box`, row-major run lengths alternating 0s then 1s (first run may be 0).
+ * sum(rle) === w * h. Long side at most 96 cells.
+ */
+export type NormMask = { w: number; h: number; rle: number[] };
 export type FindItem = {
   id: string;
   name: string;
@@ -211,6 +219,10 @@ export type ServerEvent =
   /** server voice, GENITA_VOICE_ALIGN: forced-aligner word + phoneme timing of one clause, after its audio.
    * seq = the clause's first `audio` seq; ms on the reply's audio timeline (like audio.words). */
   | { type: "audio.timing"; utteranceId: number; sentence: number; seq: number; words: WordTiming[]; phonemes: PhonemeTiming[] }
+  /** server voice: the face expression of one clause (expression layer, 11/3), at most one per clause, none for neutral.
+   * startMs/endMs on the reply's audio timeline (like audio.offsetMs): the clause's first word start → last word end
+   * (aligner timing when on, else the clause's audio span). Sent after the clause's audio. */
+  | { type: "expression"; utteranceId: number; sentence: number; tag: ExpressionTag; intensity: number; startMs: number; endMs: number }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -242,7 +254,7 @@ export type ServerEvent =
   | { type: "find.progress"; findId: string; detail: string; evidence?: FindEvidence }
   /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
   | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
-  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
+  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox; mask?: NormMask }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
   | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
@@ -285,6 +297,7 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   speaking: { required: ["on", "utteranceId"], optional: ["emotion"] },
   audio: { required: ["utteranceId", "seq", "sentence", "offsetMs", "durationMs", "sampleRate", "model", "words"], optional: ["mouth"] },
   "audio.timing": { required: ["utteranceId", "sentence", "seq", "words", "phonemes"], optional: [] },
+  expression: { required: ["utteranceId", "sentence", "tag", "intensity", "startMs", "endMs"], optional: [] },
   say: { required: ["utteranceId", "sentence", "text", "emotion", "lang"], optional: [] },
   reply: { required: ["utteranceId", "text", "emotion", "interpret", "final"], optional: [] },
   "utterance.cancelled": { required: ["utteranceId", "reason"], optional: [] },

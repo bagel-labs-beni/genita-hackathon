@@ -225,7 +225,10 @@ test("security #4: small talk doesn't use up the per-call correction budget", as
   s.session.close();
 });
 
-test("Knows-Me: the local time rides every turn; call 1's nod only the greeting", async () => {
+test("Knows-Me: the local time rides every turn; call 1's nod only the greeting (legacy prompt; v1 opens with its own first_known line)", async (t) => {
+  const prev = process.env.GENITA_CONVO_V1;
+  process.env.GENITA_CONVO_V1 = "0";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_CONVO_V1; else process.env.GENITA_CONVO_V1 = prev; });
   const s = setup({ async startCall() { return { profile: "- Taste: Clean, minimal.", nod: "NOD-LINE", taste: [] }; } });
   await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { timeZone: "Asia/Seoul" }, greetAfterMs: 0 }));
   await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply").length === 1);
@@ -278,4 +281,13 @@ test("Codex round 6: short replies cut off don't count; 'forget' can empty the t
   }
   assert.ok(!l.sparkCalls.some((c) => /cut you off twice/.test(c.instructions!)));
   l.session.close();
+});
+
+test("Knows-Me × v1: no second personal mention — the nod stays out, the local time still rides", async () => {
+  const s = setup({ async startCall() { return { profile: "- Taste: Clean, minimal.", nod: "NOD-LINE", taste: [] }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, user: { timeZone: "Asia/Seoul" }, greetAfterMs: 0 }));
+  await s.client.waitFor(() => s.client.json.filter((m) => m.type === "reply").length === 1);
+  assert.doesNotMatch(s.sparkCalls[0].instructions!, /NOD-LINE/);
+  assert.match(s.sparkCalls[0].instructions!, /for the user\. Use it only for timing/);
+  s.session.close();
 });
