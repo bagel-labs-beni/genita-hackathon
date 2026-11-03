@@ -652,19 +652,21 @@ final class FlowMorph: @unchecked Sendable {
         }
         maskW = mw
         order = data.keys
+        let lit = data.kind == "human" && data.map.rig != nil && (FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false)
+        var mx: (cx: Float, hw: Float)? = nil
+        if lit, let mouth, data.roi.width > 0 {
+            let kxs = Double(width) / Double(data.roi.width)
+            mx = (Float((Double(mouth.midX) - Double(data.roi.minX)) * kxs), Float(Double(mouth.width) / 2 * kxs))
+        }
         if let tone = data.map.rig?.teethTone {
-            let lit = data.kind == "human" && (FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false)
-            var mx: (cx: Float, hw: Float)? = nil
-            if let mouth, data.roi.width > 0 {
-                let kxs = Double(width) / Double(data.roi.width)
-                mx = (Float((Double(mouth.midX) - Double(data.roi.minX)) * kxs), Float(Double(mouth.width) / 2 * kxs))
-            }
             for (k, inn) in ip { if let p = keyPix[k] {
                 if lit {
                     let r = Self.toneTeethLitW(p, interior: inn, width: width, height: height, tone: tone, mouthX: mx)
                     teethTex[k] = r.tex; teethIn[k] = r.inside
                 } else { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) }
             } }
+        } else if lit {
+            for (k, inn) in ip { teethIn[k] = Self.insideWeight(inn, width: width, height: height, mouthX: mx) }
         }
         if let rg = data.map.rig, rg.lipTone > 0, data.neutralROI != nil, let closedLip = lm["MBP"] {
             // the photo's own lip tone (prep's colour fix greyed the lips toward lilac, v8.8 review)
@@ -1649,6 +1651,39 @@ final class FlowMorph: @unchecked Sendable {
         toneTeethLitW(p, interior: interior, width: w, height: h, tone: tone, mouthX: mouthX).tex
     }
 
+    /// Distance in px (capped at 3) from the inside mask's rim, 0 outside: the rim holds lip / skin pixels the mask caught.
+    static func rimDistance(_ interior: [Float], width w: Int, height h: Int, box: (Int, Int, Int, Int)) -> [Float] {
+        let (x0, y0, x1, y1) = box
+        var ed = [Float](repeating: 0, count: w * h)
+        for y in y0...y1 { for x in x0...x1 where interior[y * w + x] > 0.5 { ed[y * w + x] = 3 } }
+        for _ in 0..<3 {
+            var nx = ed
+            for y in y0...y1 { for x in x0...x1 where ed[y * w + x] > 0 {
+                let l = x > 0 ? ed[y * w + x - 1] : 0, r = x + 1 < w ? ed[y * w + x + 1] : 0
+                let u = y > 0 ? ed[(y - 1) * w + x] : 0, d = y + 1 < h ? ed[(y + 1) * w + x] : 0
+                nx[y * w + x] = min(ed[y * w + x], min(l, r, u, d) + 1)
+            } }
+            ed = nx
+        }
+        return ed
+    }
+
+    /// Codex P2 (no `teethTop.tone`): the narrow-gap shade still needs to know what is inside the mouth — rim and
+    /// past-the-corner pixels weigh 0 (no colour test without the tone pass).
+    static func insideWeight(_ interior: [Float], width w: Int, height h: Int, mouthX: (cx: Float, hw: Float)?) -> [Float] {
+        var xs0 = w, xs1 = -1, ys0 = h, ys1 = -1
+        for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 { xs0 = min(xs0, x); xs1 = max(xs1, x); ys0 = min(ys0, y); ys1 = max(ys1, y) } }
+        var o = [Float](repeating: 0, count: w * h)
+        guard xs1 >= xs0, ys1 >= ys0 else { return o }
+        let ed = rimDistance(interior, width: w, height: h, box: (xs0, ys0, xs1, ys1))
+        for y in ys0...ys1 { for x in xs0...xs1 {
+            var e = min(1, max(0, (ed[y * w + x] - 1) / 2))
+            if let m = mouthX { let u = min(1, max(0, (abs(Float(x) - m.cx) / max(1, m.hw) - 1) / 0.15)); e *= 1 - u * u * (3 - 2 * u) }
+            o[y * w + x] = e
+        } }
+        return o
+    }
+
     /// `toneTeethLit` plus each pixel's "really inside the mouth" weight (0 on the mask's rim and past the mouth's
     /// corners, where a prep mask can leak onto the cheek) — the narrow-gap shade uses it too.
     static func toneTeethLitW(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone, mouthX: (cx: Float, hw: Float)? = nil) -> (tex: [Float], inside: [Float]) {
@@ -1672,18 +1707,7 @@ final class FlowMorph: @unchecked Sendable {
         if sn > 0 { let m = (sr + sg + sb) / (3 * sn); skin = (sr / sn, sg / sn, sb / sn); if m > 1 { tint = (sr / sn / m, sg / sn / m, sb / sn / m) } }
         // corners: the mouth box's (a mask leaking past a corner must not move the falloff), else the inside's extent
         let cx = mouthX?.cx ?? Float(x0 + x1) / 2, hw = max(1, mouthX?.hw ?? Float(x1 - x0) / 2), split = Float(tone.split), dark = Float(min(1, max(0, tone.cavityDark)))
-        // edge weight: 0 on the inside mask's rim → 1 two px in (the rim holds lip / skin pixels the mask caught)
-        var ed = [Float](repeating: 0, count: w * h)
-        for y in y0...y1 { for x in x0...x1 where interior[y * w + x] > 0.5 { ed[y * w + x] = 3 } }
-        for _ in 0..<3 {
-            var nx = ed
-            for y in y0...y1 { for x in x0...x1 where ed[y * w + x] > 0 {
-                let l = x > 0 ? ed[y * w + x - 1] : 0, r = x + 1 < w ? ed[y * w + x + 1] : 0
-                let u = y > 0 ? ed[(y - 1) * w + x] : 0, d = y + 1 < h ? ed[(y + 1) * w + x] : 0
-                nx[y * w + x] = min(ed[y * w + x], min(l, r, u, d) + 1)
-            } }
-            ed = nx
-        }
+        let ed = Self.rimDistance(interior, width: w, height: h, box: (x0, y0, x1, y1))
         var o = p
         for x in x0...x1 {
             // this column's inside: top row (under the upper lip) and height
