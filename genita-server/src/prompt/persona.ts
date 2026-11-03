@@ -110,13 +110,19 @@ export function dropRepeatedName(sentence: string, name: string | undefined, sai
   const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const said = new RegExp(`\\b${esc}\\b`, "i");
   if (!saidBefore.some((r) => said.test(r))) return sentence;
+  // leading [face] / <emotion> tags (the eval adapter passes raw text; the session passes ttsText with [tags] only)
+  const LEAD = String.raw`(?:\s*(?:\[[^\]]*\]|<[^<>]*>))*\s*`;
   // the server voice cuts the first clause at its comma, so "Summer," can be a whole piece: drop it (caller skips "")
-  if (new RegExp(`^(?:\\s*\\[[^\\]]*\\])*\\s*${esc}[,!.…]*\\s*$`, "u").test(sentence) && /,\s*$/.test(sentence)) return "";
+  if (new RegExp(`^${LEAD}${esc},\\s*$`, "u").test(sentence)) return "";
   let out = sentence
-    .replace(new RegExp(`^((?:\\s*\\[[^\\]]*\\])*\\s*)${esc},\\s*(\\p{L})`, "u"), (_, lead, c) => lead + c.toUpperCase())
-    .replace(new RegExp(`^((?:\\s*\\[[^\\]]*\\])*\\s*(?:hey|hi|hello|okay|ok|yo|oh|aw|wait|so|yes|no|girl)) ${esc}\\b`, "iu"), "$1")
-    .replace(new RegExp(`,\\s*${esc}(?=\\s*[.!?,…]|\\s*$)`, "u"), "");
-  if (!/[\p{L}\p{N}]/u.test(out.replace(/\[[^\]]*\]/g, ""))) out = sentence;
+    // "Summer, you…" → "You…" (a lower-case word after it: "May, June and July" is a list, kept — Codex P2)
+    .replace(new RegExp(`^(${LEAD})${esc},\\s*(\\p{Ll})`, "u"), (_, lead, c) => lead + c.toUpperCase())
+    // "Hey Summer, …" / "Hey Summer!" → "Hey, …" / "Hey!" ("Oh Summer Walker is…" is a name, kept — Codex P2)
+    .replace(new RegExp(`^(${LEAD}(?:hey|hi|hello|okay|ok|yo|oh|aw|wait|so|yes|no|girl)) ${esc}(?=\\s*[,!.?…]|\\s*$)`, "iu"), "$1")
+    // "…, Summer." → "…." and "…, Summer, then…" → "…, then…" (not "…, May, June")
+    .replace(new RegExp(`,\\s*${esc}(?=\\s*[.!?…]|\\s*$)`, "u"), "")
+    .replace(new RegExp(`,\\s*${esc},(?=\\s+\\p{Ll})`, "u"), ",");
+  if (!/[\p{L}\p{N}]/u.test(out.replace(/\[[^\]]*\]|<[^<>]*>/g, ""))) out = sentence;
   return out;
 }
 

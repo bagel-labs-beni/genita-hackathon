@@ -744,3 +744,12 @@ test("session v1: the second reply in a row drops the vocative name (the first k
   assert.ok(logs.some(([e]) => e === "convo.name_dropped"));
   session.close();
 });
+
+test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotion tags lead like face tags", async () => {
+  const { dropRepeatedName: d } = await import("../src/prompt/persona.ts");
+  assert.equal(d("Oh Summer Walker is amazing.", "Summer", ["Hi Summer."]), "Oh Summer Walker is amazing.");
+  assert.equal(d("May, June and July are the best months.", "May", ["Hey May."]), "May, June and July are the best months.");
+  assert.equal(d("Pick January, May, June or July.", "May", ["Hey May."]), "Pick January, May, June or July.");
+  assert.equal(d("<excited> Summer, you earned it.", "Summer", ["Nice one, Summer."]), "<excited> You earned it.");
+  assert.equal(d("<excited> [smile] Summer,", "Summer", ["Nice one, Summer."]), "");
+});
