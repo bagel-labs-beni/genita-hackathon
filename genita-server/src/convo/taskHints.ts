@@ -46,7 +46,7 @@ export function constraintFrom(userText: string, history: Line[]): string | null
   return null;
 }
 
-export function taskHint(userText: string, history: Line[], crisisInCall = history.some((h) => h.role === "user" && realCrisisSignal(h.text))): string | null {
+export function taskHint(userText: string, history: Line[], crisisInCall = history.some((h) => h.role === "user" && realCrisisSignal(h.text)), kind: "human" | "animal" | "character" = "human"): string | null {
   const out: string[] = [];
   const t = userText.trim();
   // Codex #546 P1: after a crisis line anywhere in the call, "how long would it take?" is never homework
@@ -57,7 +57,8 @@ export function taskHint(userText: string, history: Line[], crisisInCall = histo
   if (LOSS.test(t)) out.push("They just told you about someone they lost: name that person and the moment they mentioned, warmly, in your own words; no advice.");
   const need = constraintFrom(t, history);
   if (need) out.push(`They said "${need}" earlier: whatever you pick has to fit that, every ingredient.`);
-  if (WORK.test(t)) out.push("Work it out for real: the actual numbers, times or steps, in your own voice and character (up to four short sentences).");
+  // r3b: an animal / character companion answered like an assistant (animal-train 80→20%): its own kind shows too
+  if (WORK.test(t)) out.push(`Work it out for real: the actual numbers, times or steps, in your own voice (up to four short sentences).${kind === "animal" ? " You're a talking animal: let that show in a word or two." : kind === "character" ? " Stay fully in character while you do it." : ""}`);
   // Codex #546 P2: "My boyfriend Jake forgot… should I text him?" names him in this very line
   // Codex #546 r2: anywhere in this line ("Should I text him? Jake from work…"), minus the ask's own him/her
   const rest = t.replace(PRONOUN_ASK, " ");

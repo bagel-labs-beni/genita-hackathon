@@ -82,7 +82,7 @@ export const adapter = {
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
       crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
-    const instructions = buildInstructions({ ...base, turn, task: taskHint(t.text, ctx.history) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    const instructions = buildInstructions({ ...base, turn, task: taskHint(t.text, ctx.history, undefined, s.persona.kind) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 
