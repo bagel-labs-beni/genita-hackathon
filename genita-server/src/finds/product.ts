@@ -268,18 +268,38 @@ const COLOR_FAMILY: Record<string, string> = {
   yellow: "yellow", mustard: "yellow", orange: "orange", silver: "silver", gold: "gold", copper: "gold", bronze: "gold",
 };
 const families = (text: string) => new Set(colorsOf(text).map((c) => COLOR_FAMILY[c] ?? c));
-/** The colors asked for: this turn's, else the search it refines ("find a couple that match my style" keeps "dark brown"). */
+const GOODS = /^(?:boots?|shoes?|sneakers?|loafers?|sandals?|heels?|flats|mules|jackets?|coats?|blazers?|parkas?|dress(?:es)?|shirts?|overshirts?|tees?|t-shirts?|tops?|sweaters?|cardigans?|hoodies?|skirts?|pants|trousers|jeans|shorts|bags?|totes?|backpacks?|belts?|hats?|caps?|scarf|scarves|watch(?:es)?|wallets?|socks|gloves|ones?)$/;
+/**
+ * The color the thing to buy is asked in, in the order said: "dark brown boots", "black leather loafers", "another
+ * one in brown". Not a color they rule out ("no black ones") or one of what they own ("my brown trench", Codex r1).
+ */
+function colorAsks(text: string): string[] {
+  const w = text.toLowerCase().match(/[a-z]+(?:-[a-z]+)?/g) ?? [];
+  const out: string[] = [];
+  w.forEach((x, i) => {
+    if (!colorsOf(x).length) return;
+    const before = w.slice(Math.max(0, i - 3), i);
+    if (before.some((b) => /^(no|not|without|except|than|my|your|his|her|their|our)$/.test(b))) return;
+    const after = w.slice(i + 1, i + 4);
+    const names = after.some((a) => GOODS.test(a)) || /^(in|colou?r)$/.test(w[i - 1] ?? "");
+    if (names) out.push(x);
+  });
+  return out;
+}
+/** The color asked for: this turn's, else the latest one in the search it refines ("black…", "in brown instead" → brown). */
 export function askedColors(question: string, previous?: string): Set<string> {
-  const now = families(question);
-  return now.size ? now : families(previous ?? "");
+  const now = colorAsks(question);
+  if (now.length) return families(now.join(" "));
+  const before = colorAsks(previous ?? "");
+  return before.length ? families(before[before.length - 1]) : new Set();
 }
 /**
- * FD-02 "color request match 100%" (AU-78): a product whose name or URL names only other colors than the one asked
- * for ("Black Chelsea Boot" for "dark brown boots"). A name with no color word is kept (the page may still be it).
+ * FD-02 "color request match 100%" (AU-78): a product whose own name names only other colors than the one asked
+ * for ("Black Chelsea Boot" for "dark brown boots"). A name with no color word is not off-color.
  */
-export function offColor(product: string, asked: Set<string>): boolean {
+export function offColor(name: string, asked: Set<string>): boolean {
   if (!asked.size) return false;
-  const has = families(product.replace(/[-_/]+/g, " "));
+  const has = families(name);
   return has.size > 0 && ![...has].some((c) => asked.has(c));
 }
 
@@ -486,13 +506,15 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
       dropped.offOccasion = (dropped.offOccasion ?? 0) + 1;
       continue;
     }
-    // FD-02: never a black boot for "dark brown boots" (prod 11/3 S5), on every search, not only the prefetch
-    if (offColor(`${str(item?.name, 200)} ${new URL(url).pathname}`, colors)) {
-      dropped.offColor = (dropped.offColor ?? 0) + 1;
-      continue;
-    }
     seen.add(k);
     cands.push({ item, url, inTrace: !!hit });
+  }
+  // FD-02: a black boot for "dark brown boots" (prod 11/3 S5) only fills a slot no candidate in the asked color can,
+  // on every search, not only the prefetch; a brand like "Red Wing" can't sink a card (Codex r1: reorder, not drop)
+  const off = cands.filter((c) => offColor(str(c.item?.name, 200), colors));
+  if (off.length) {
+    dropped.offColor = off.length;
+    cands.sort((a, b) => Number(off.includes(a)) - Number(off.includes(b)));
   }
   const styleLine = groundStyle(str(j?.style_line, 200), taste);
   const situationLine = str(j?.situation_line, 120);
