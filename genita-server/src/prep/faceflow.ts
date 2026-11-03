@@ -84,6 +84,9 @@ export type FaceflowInput = {
   /** 11/4: the subject's face silhouette on the scene (SAM mask, 8-bit grey PNG at the scene size); the mouth blend never
    *  leaves it (no see-through jaw line over the neck). null / absent = the old mask. */
   silhouette?: () => Promise<Buffer | null>;
+  /** 11/4: suffix for every stored flow asset name (re-flow writes a new generation, e.g. "_g2", next to the old one,
+   *  so the old manifest keeps working until the new block is swapped in, and apps refetch on the new URLs) */
+  assetSuffix?: string;
   /** character2d: eye boxes on the scene (SAM) for the clean-plate blink, normalised */
   eyes?: () => Promise<Array<readonly [number, number, number, number]>>;
   signal?: AbortSignal;
@@ -158,17 +161,19 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     const res = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { ok?: boolean };
     if (!res.ok) throw new Error("faceflow: no ok line");
     const raw = JSON.parse(await readFile(join(out, "flow.json"), "utf8")) as FaceFlow;
+    const suffix = o.assetSuffix && /^_[a-z0-9]{1,4}$/.test(o.assetSuffix) ? o.assetSuffix : "";
     const rename = (file: string) => {
       const a = flowAssetName(file);
       if (!a) throw new Error(`faceflow: unexpected file ${file}`);
-      return a;
+      return a + suffix;
     };
     const files: FaceFlow["files"] = {};
     for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}), ...(f.lip ? { lip: rename(f.lip) } : {}), ...(f.interior ? { interior: rename(f.interior) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
-      const a = flowAssetName(file);
-      if (!a) continue;
+      const a0 = flowAssetName(file);
+      if (!a0) continue;
+      const a = a0 + suffix;
       const bytes = await readFile(join(out, file));
       o.signal?.throwIfAborted(); // after the read: a cancel during it must not start an upload
       await o.put(a, bytes);

@@ -1,8 +1,9 @@
 /**
  * 11/4 one-off: re-run only the flow step of already-prepped faces whose blend mask predates the SAM face silhouette
  * (flow.maskVersion < 2) — Chelsea saw a see-through double jaw line under the chin on those. The face set keys
- * (Muse images) are kept; faceflow.py rebuilds flows + mask from the stored scene and keys and overwrites the flow
- * assets; the companion's flow block is swapped in one patch. Run by scripts/reflow-masks.ts (dry-run by default).
+ * (Muse images) are kept; faceflow.py rebuilds flows + mask from the stored scene and keys into NEW asset names
+ * (`_g2`), and the companion's flow block is swapped in one patch. Run in-process by the prep runner when a face is
+ * loaded (runner.reflowMask), so DELETE /me cancels and waits for it like any prep job.
  */
 import { makeFaceFlow } from "./faceflow.ts";
 import { imageSize, normBox, samPrompt, type FaceKey } from "./face.ts";
@@ -42,6 +43,9 @@ export async function reflowFace(d: PrepDeps, c: CompanionRecord, signal?: Abort
     kind: c.type,
     image: (k: FaceKey) => d.store.getAsset(c.userId, c.id, k),
     put: (asset, bytes) => d.store.putAsset(c.userId, c.id, asset, bytes),
+    // codex P1: a new asset generation next to the old one — the live manifest never points at half-written files,
+    // and apps that cache by asset URL fetch the new mask (the old files stay until the companion is deleted)
+    assetSuffix: "_g2",
     nose: async () => {
       const boxes = await media.samDetect(d.metaKey, url, samPrompt(c.type, "nose"), signal);
       return size && boxes[0] ? normBox(boxes[0], size) : null;

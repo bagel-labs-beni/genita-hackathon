@@ -84,6 +84,10 @@ test("reflowFace: rebuilds the flow with the SAM face silhouette and swaps it in
     const flow = (await store.getCompanion("u1"))!.prep.steps.face!.face!.flow!;
     assert.equal(flow.maskVersion, 2);
     assert.equal(flow.silhouette, true);
+    // codex P1: a new asset generation (the old manifest never points at half-written files; apps refetch new URLs)
+    assert.equal(flow.mask, "flow_mask_g2");
+    assert.ok(await store.getAsset("u1", "c1", "flow_mask_g2"), "new generation stored");
+    assert.ok(Object.values(flow.files).every((f) => f.key.endsWith("_g2")));
     assert.ok(flow.roi[3] <= fy2 / H + 0.03, `ROI ends at the face outline (${flow.roi[3]})`);
     assert.ok(prompts.includes("the person's face"));
     assert.equal(needsReflow((await store.getCompanion("u1"))!), false, "a second run skips it");
