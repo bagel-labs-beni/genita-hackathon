@@ -71,6 +71,7 @@ const answers = [
   // Codex #450 r2 P1: an instruction before ", and I'll find you help" keeps the sentence
   "Please put the pills down, and I want to get you help right now.",
   "Please put the pills down, and I'll find you support resources.",
+  "Finding what's open nearby, but put the pills down now.",
   // Codex #450 P1
   "I'm here with you — I want to get you help: move away from anything you could use to hurt yourself and stay with someone you trust.",
   "Checking the score is my whole personality during finals.",

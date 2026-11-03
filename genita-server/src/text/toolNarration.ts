@@ -124,7 +124,8 @@ const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:abou
 /** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
  * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
 const HELP_ACTION = /\b(?:call|text|dial|police|emergency|someone you trust|stay with (?:someone|a friend|me)|move away from|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
-const progressClause = (c: string) => !HELP_ACTION.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
+// a turn to something else ("…, but put the pills down now") is real content: kept (Codex #450 r3 P1)
+const progressClause = (c: string) => !HELP_ACTION.test(c) && !/\b(?:but|because|so|then|and)\b/.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
 // "which concert that was" is the thing being recalled, not a predicate
 const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
 const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
