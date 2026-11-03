@@ -55,7 +55,7 @@ const EMOTION_TAG = /<\s*[A-Za-z][A-Za-z_-]{0,23}\s*>/g;
  * near misses, things flying off, what's about to happen. Better silent than invented; the memo's next verdict can
  * still react. A fall or fail that happened ("he fell", "he slipped and fell", "total wipeout") is not a guess and stays (Codex P2).
  */
-const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
+const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|there goes (?:his|her|their) (?:shoe|hat|cap|shirt|pants|wig|glasses)|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
 export function isGuessLine(words: string): boolean {
   return GUESS.test(words);
 }
