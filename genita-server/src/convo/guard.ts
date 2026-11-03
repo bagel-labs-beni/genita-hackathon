@@ -148,7 +148,8 @@ const CRISIS_MEANS = new RegExp([
   // an overdose-sized quantity counts whatever routine words sit around it ("30 pills with water")
   String.raw`\b(?:swallow(?:ed|ing)?|take|took|taking|down(?:ed|ing)?)\s+${QTY}\s+(?:of\s+)?${PILLS}\b`,
   String.raw`\b(?:about to|going to|gonna|ready to|trying to|want to|wanna)\s+(?:swallow|take|down)\s+all\s+(?:of\s+)?${PILLS}\b${ROUTINE}`,
-  String.raw`\bswallow(?:ed|ing)?\s+all\s+(?:of\s+)?(?:these|those|the)\s+(?:sleeping\s+)?(?:pills|tablets|meds|painkillers)\b${ROUTINE}`,
+  // swallowing all of them is never a routine, however it went down ("with water", Codex r5)
+  String.raw`\bswallow(?:ed|ing)?\s+all\s+(?:of\s+)?(?:these|those|the|my|his|her)\s+(?:sleeping\s+)?(?:pills|tablets|meds|painkillers)\b`,
   String.raw`\b(?:swallow(?:ed|ing)?|took|downed|take|taking)\s+(?:a|the)\s+whole\s+(?:bottle|pack|box|strip)\s+of\s+${PILLS}\b`,
   String.raw`\b(?:i'?ve|i have|i'?ve got|i got)\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\s+(?:ready|lined up|counted(?: out)?|in my hand)\b${ROUTINE}`,
   String.raw`\bcount(?:ed|ing)\s+out\s+(?:all\s+)?(?:the|my)\s+(?:pills|tablets|meds)\b${ROUTINE}`,
@@ -208,7 +209,7 @@ function clausesOf(t: string): Clause[] {
 /** "I didn't take a handful of pills", "I haven't made a noose": the act itself is denied (Codex 11/4 r2) */
 // the negation governs the act itself: at most two words before it ("I didn't take…", "I haven't made a noose"), never
 // "I don't know why I took 30 pills" (Codex r4)
-const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\s+(?:[a-z']+\s+){0,2}$|\b(?:not|never)\s+$/i;
+const DENIED = /\b(?:didn'?t|did not|don'?t|do not|haven'?t|have not|hasn'?t|won'?t|will not|wouldn'?t|not going to|not gonna|no longer|stopped)\s+(?:(?!(?:i|i'm|i've|he|she|they|we|you|realize|realise|know|knew|notice|remember|think|mean|care|understand|see|why|how|what|that|if|even)\b)[a-z']+\s+){0,2}$|\b(?:not|never)\s+$/i;
 
 function meansHit(t: string, clauses: Clause[]): boolean {
   // the patterns read the whole line (their routine lookaheads run to the sentence end); the clause the match starts

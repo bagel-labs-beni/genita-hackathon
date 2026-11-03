@@ -123,3 +123,7 @@ test("Codex 11/4 crisis-means r4: an overdose amount with water, a negation that
   }
   for (const line of ["I didn't take a handful of pills", "I'm not going to take all my pills", "In the game, I loaded my gun"]) assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
 });
+
+test("Codex 11/4 crisis-means r5: a negation of knowing, not of the act; swallowing all of them, with water or not", () => {
+  for (const line of ["I didn't realize I took 30 pills", "I just swallowed all my sleeping pills", "I swallowed all these sleeping pills with water"]) assert.ok(realCrisisSignal(line), `miss: ${line}`);
+});
