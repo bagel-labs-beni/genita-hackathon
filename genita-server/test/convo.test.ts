@@ -655,3 +655,12 @@ test("Codex r20: 'Checking your calendar shows dinner is on Thursday.' is the an
   const out = [...j.push("Checking your calendar shows dinner is on Thursday.").speak, ...j.push("Have a great time.").speak, ...j.finish().speak];
   assert.match(out.join(" "), /Thursday/);
 });
+
+test("bug-fix e1e3608: 'Just plotting your fastest route — one sec.' and '— pulling up what I remember to break the tie' are never voiced; 'let me walk you through' is content", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (first: string) => { const j = new NarrationJudge(true); return [...j.push(first).speak, ...j.push("Take the 2 line.").speak, ...j.finish().speak].join(" "); };
+  assert.equal(run("Just plotting your fastest route to City Hall — one sec."), "Take the 2 line.");
+  assert.doesNotMatch(run("You want me to choose tonight — pulling up what I remember to break the tie."), /pulling up/i);
+  const j = new NarrationJudge(true);
+  assert.deepEqual(j.push("Let me walk you through all of them slowly.").speak, ["Let me walk you through all of them slowly."]);
+});
