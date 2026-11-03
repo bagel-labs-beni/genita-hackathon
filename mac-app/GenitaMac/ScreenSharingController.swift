@@ -97,6 +97,7 @@ import CoreMedia
                     try await stream.updateContentFilter(filter)
                     try? await stream.updateConfiguration(config)
                     sourceName = name
+                    lastTitle = nil // the next poll (≤2 s) sends the new window's title; the server drops the old one meanwhile
                     uplink?.updateSource(name)
                     return
                 }
@@ -144,7 +145,7 @@ import CoreMedia
             Task { @MainActor in self?.handle(event) }
         }
         uplink = link
-        link.connect(source: source)
+        link.connect(source: source, title: lastTitle)
     }
     private func handle(_ event: WatchUplink.Event) {
         switch event {

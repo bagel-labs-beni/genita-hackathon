@@ -185,6 +185,8 @@ export class WatchController {
     switch (msg.type) {
       case "start":
         if ("title" in msg) this.setTitle(msg.title);
+        // another window or display: the old window's title must not ride along with the new picture
+        else if (this.sharing && typeof msg.source === "string" && msg.source.slice(0, 60) !== this.source) this.title = null;
         return this.start(typeof msg.source === "string" ? msg.source.slice(0, 60) : null);
       case "context":
         return this.setTitle(msg.title);
@@ -211,7 +213,8 @@ export class WatchController {
     const t = cleanTitle(raw);
     if (t === this.title) return;
     this.title = t;
-    this.log("watch.title", { title: t?.slice(0, 80) ?? null });
+    // the text itself can be private (a document, a mail subject): only its length is logged
+    this.log("watch.title", { chars: t?.length ?? 0 });
   }
 
   private start(source: string | null): void {
