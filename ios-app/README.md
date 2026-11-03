@@ -29,7 +29,7 @@ Current design measurements are in `DesignReference/`. `Tools/sync-design-metric
 
 ## Review corrections and native Mac window
 
-The Xcode project includes the **GenitaMac** macOS target (macOS 15+, native glass on 26+). Mac sources live in `../mac-app/GenitaMac`. Build from this directory with `xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx`; local build output is `build/Debug/GenitaMac.app`. Select a signing team for a distributed app. It shares fonts, imagery, the AppState model type and SettingsView with iOS, and implements the conversation/menu/screen-sharing UI. Its system sharing picker/SCStream controller is local; no screen frames are stored or transmitted to an AI service.
+The Xcode project includes the **GenitaMac** macOS target (macOS 15+, native glass on 26+). Mac sources live in `../mac-app/GenitaMac`. Build from this directory with `xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx`; local build output is `build/Debug/Genita.app` (the target is GenitaMac, the app is Genita). Select a signing team for a distributed app. It shares fonts, imagery, the AppState model type and SettingsView with iOS, and implements the conversation/menu/screen-sharing UI. Its system sharing picker/SCStream controller is local; no screen frames are stored or transmitted to an AI service.
 
 **The actual conversation does not exist yet.** Handoff moves which device presents the conversation screen, with a rendered snapshot and the companion image. There is no server, account, voice, video or conversation sync. iPhone and Mac keep separate local preference stores.
 

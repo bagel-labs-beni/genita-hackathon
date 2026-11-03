@@ -19,6 +19,11 @@ import type { CompanionRecord, PrepState, Step } from "./store.ts";
 export const MAX_PREP_ATTEMPTS = 3;
 
 /** Storage outages stop a pass without changing its last persisted state. */
+/** a companion reset (or account deletion) for this account is already running */
+export class ResetBusy extends Error {
+  constructor() { super("companion reset or account deletion in progress"); }
+}
+
 class PrepStoreError extends Error {
   readonly companion?: string;
   constructor(cause: unknown, companion?: string) {
@@ -114,8 +119,31 @@ export class PrepRunner {
   private running = new Map<string, Promise<void>>();
   private aborts = new Map<string, AbortController>();
   private deleting = new Set<string>();
+  /** POST /v1/companion/reset in progress: no prep, top-up or reflow starts (kept apart from `deleting`, which never clears) */
+  private resetting = new Set<string>();
+  private blocked(userId: string) {
+    return this.deleting.has(userId) || this.resetting.has(userId);
+  }
   private d: PrepDeps;
   constructor(d: PrepDeps) { this.d = d; }
+
+  /**
+   * POST /v1/companion runs inside this: rejected with `ResetBusy` while a reset runs, and a reset that starts
+   * meanwhile waits for it. Check and registration are one synchronous step, so the two never interleave.
+   */
+  creating<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+    if (this.resetting.has(userId)) return Promise.reject(new ResetBusy());
+    const p = fn();
+    const set = this.creates.get(userId) ?? new Set<Promise<unknown>>();
+    set.add(p);
+    this.creates.set(userId, set);
+    void p.catch(() => {}).finally(() => {
+      set.delete(p);
+      if (!set.size && this.creates.get(userId) === set) this.creates.delete(userId);
+    });
+    return p;
+  }
+  private creates = new Map<string, Set<Promise<unknown>>>();
 
   isRunning(userId: string) {
     return this.running.has(userId);
@@ -125,7 +153,7 @@ export class PrepRunner {
   run(userId: string): Promise<void> {
     const existing = this.running.get(userId);
     if (existing) return existing;
-    if (this.deleting.has(userId)) return Promise.resolve();
+    if (this.blocked(userId)) return Promise.resolve();
     this.topUpJobs.get(userId)?.ac.abort(new Error("prep started"));   // a new prep supersedes a face top-up
     const ac = new AbortController();
     this.aborts.set(userId, ac);
@@ -175,6 +203,26 @@ export class PrepRunner {
   }
 
   /**
+   * Companion reset (POST /v1/companion/reset): the same stop as `forgetUser` (cancel prep and a face
+   * top-up / reflow, wait for their in-flight writes), then `erase` runs while no new prep can start.
+   * Unlike account deletion the block lifts afterwards, so the account can make a new companion.
+   * Throws `ResetBusy` when a reset or an account deletion is already under way.
+   */
+  async resetCompanion<T>(userId: string, erase: () => Promise<T>): Promise<T> {
+    if (this.blocked(userId)) throw new ResetBusy();
+    this.resetting.add(userId);
+    try {
+      await Promise.allSettled([...(this.creates.get(userId) ?? [])]);   // a create already under way lands first
+      this.cancel(userId);
+      await this.running.get(userId)?.catch(() => {});
+      await this.topUpJobs.get(userId)?.p;   // its in-flight image writes land before `erase` removes them
+      return await erase();
+    } finally {
+      this.resetting.delete(userId);
+    }
+  }
+
+  /**
    * Expression keys (11/3 night): a companion prepped before surprised / concerned existed gets them in the
    * background when its face is loaded (GET /v1/companion/prep). In-process like `run`, so DELETE /me's
    * `forgetUser` stops it, waits for its in-flight writes and then erases the images. Idempotent; once per
@@ -182,7 +230,7 @@ export class PrepRunner {
    * logs (the face keeps working with the keys it has). At most `TOPUP_MAX` at once.
    */
   topUpFace(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
-    if (!topUpOn(env) || this.running.has(userId) || this.topUpJobs.has(userId) || this.deleting.has(userId) || this.topUps >= TOPUP_MAX) return false;
+    if (!topUpOn(env) || this.running.has(userId) || this.topUpJobs.has(userId) || this.blocked(userId) || this.topUps >= TOPUP_MAX) return false;
     if (getOps().isPaused("face.topup")) return false;   // ops pause: no paid generation starts (Codex P1)
     const f = c.prep.steps.face;
     if (f?.status !== "done" || !f.face || !missingFaceKeys(c, env).length) return false;
@@ -211,7 +259,7 @@ export class PrepRunner {
    */
   reflowMask(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
     if ((env.GENITA_FACE_REFLOW ?? "").trim() === "0" || !this.d.python) return false;
-    if (this.running.has(userId) || this.topUpJobs.has(userId) || this.deleting.has(userId) || this.reflows >= 1) return false;
+    if (this.running.has(userId) || this.topUpJobs.has(userId) || this.blocked(userId) || this.reflows >= 1) return false;
     if (getOps().isPaused("face.reflow")) return false;
     if (!needsReflow(c)) return false;
     const last = this.reflowAt.get(userId);
@@ -258,8 +306,10 @@ export class PrepRunner {
 
   async retry(userId: string): Promise<CompanionRecord> {
     if (this.deleting.has(userId)) throw new Error("account deletion in progress");
+    if (this.resetting.has(userId)) throw new Error("companion reset in progress");
     const c = await this.d.store.getCompanion(userId);
     if (this.deleting.has(userId)) throw new Error("account deletion in progress");
+    if (this.resetting.has(userId)) throw new Error("companion reset in progress");
     if (!c) throw new Error("no companion");
     if (c.prep.status === "running" && this.isRunning(userId)) return c;
     const steps = c.prep.steps;

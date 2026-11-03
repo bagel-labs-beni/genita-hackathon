@@ -35,7 +35,7 @@ struct JudgeAccessAlert: ViewModifier {
                     .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Enter the code from the submission form. No Apple ID needed.")
+                Text("Enter the code from the submission form. No Apple\u{00A0}ID\u{00A0}needed.")
             }
             .alert(failure?.title ?? "", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } }), presenting: failure) { _ in
                 Button("Try Again") { isPresented = true }

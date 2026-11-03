@@ -183,7 +183,7 @@ struct ReferenceSignInView: View {
             defer { signingIn = false }
             do {
                 let r = try await AppleSignInFlow().signIn()
-                model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+                model.signedIn(userId: r.me.user.id, consented: r.me.consented, qaSamplePhotos: r.me.qaSamplePhotos == true)
                 model.adopt(accountId: r.me.user.id)   // #163: the saved setup's style/companion belong to this account
             } catch GenitaAuthError.cancelled {
                 // cancel stays quietly on A02

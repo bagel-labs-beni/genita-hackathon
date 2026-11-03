@@ -261,12 +261,100 @@ import XCTest
         let running = Data(#"{"status":"running","face":null,"sceneUrl":null}"#.utf8)
         let (fetch, seen) = stubServer(prep: running)
         let endpoint = CallEndpoint(url: URL(string: "wss://api.genita.test/v1/session")!, token: "tok")
-        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: fetch).load(currentKey: nil) else { return XCTFail() }
+        guard case .pending = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: fetch).load(currentKey: nil) else { return XCTFail() }
         XCTAssertEqual(seen.value.count, 1)
 
         let signedOut = CallEndpoint(url: URL(string: "wss://api.genita.test/v1/session")!, token: nil)
         guard case .none = try await CompanionFaceLoader(endpoint: signedOut, cacheRoot: tempDir(), fetch: fetch).load(currentKey: nil) else { return XCTFail() }
         XCTAssertEqual(seen.value.count, 1, "no request without a token")
+    }
+
+    /// AU-25 · PP-02 step 2 (S09-P, D28): a call that starts while prep is still running gets the moving face
+    /// in that same call once the face set is made, and polling stops when the call screen goes away.
+    func testAFaceMadeMidCallArrivesInThatCall() async throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        CallEndpoint.userToken = { "tok" }
+        let (_, ready) = try serverManifest()
+        let running = Data(#"{"status":"running","face":null,"sceneUrl":"/v1/companion/scene"}"#.utf8)
+        let (readyFetch, _) = stubServer(prep: ready)
+        let (runningFetch, _) = stubServer(prep: running)
+        let made = Box(false)
+        let prepCalls = Box(0)
+        let fetch: CompanionFaceLoader.Fetch = { req in
+            if req.url?.path == "/v1/companion/prep" { prepCalls.value += 1 }
+            return try await (made.value ? readyFetch : runningFetch)(req)
+        }
+        let cache = tempDir()
+        let call = CallController()
+        call.faceRetryInterval = .milliseconds(50)
+        call.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+
+        call.showFace(reduceMotion: true, animate: false)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(call.face, "prep still running: the still stays")
+        XCTAssertGreaterThan(prepCalls.value, 1, "the call screen keeps asking while the face is being made")
+
+        made.value = true   // prep finished mid-call
+        // building the fixture face set takes 17–48 s on the CI simulator (the loader tests): wait for it, ≤ 180 s
+        for _ in 0..<1800 where call.face == nil { try await Task.sleep(for: .milliseconds(100)) }
+        XCTAssertNotNil(call.face, "the moving face arrives in the same call")
+
+        // the call screen goes away before a face exists: no more asking
+        let other = CallController()
+        other.faceRetryInterval = .milliseconds(50)
+        made.value = false
+        other.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+        other.showFace(reduceMotion: true, animate: false)
+        try await Task.sleep(for: .milliseconds(200))
+        other.hideFace()
+        try await Task.sleep(for: .milliseconds(100))
+        let after = prepCalls.value
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(prepCalls.value, after, "hidden: polling stops")
+        call.hideFace()
+    }
+
+    /// AU-25 × #524: hide → show while a load is in flight (app backgrounded and back, handoff) starts a new load
+    /// at once; the cancelled one must not leave `faceLoading` set and the screen with no load at all.
+    func testHideThenShowDuringALoadStartsANewLoad() async throws {
+        let saved = CallEndpoint.userToken
+        defer { CallEndpoint.userToken = saved }
+        CallEndpoint.userToken = { "tok" }
+        let running = Data(#"{"status":"running","face":null}"#.utf8)
+        let (runningFetch, _) = stubServer(prep: running)
+        let prepCalls = Box(0)
+        let fetch: CompanionFaceLoader.Fetch = { req in
+            if req.url?.path == "/v1/companion/prep" {
+                prepCalls.value += 1
+                if prepCalls.value == 1 { try await Task.sleep(for: .seconds(3)) }   // the first load is slow
+            }
+            return try await runningFetch(req)
+        }
+        let cache = tempDir()
+        let call = CallController()
+        call.faceRetryInterval = .seconds(30)
+        call.faceLoaderOverride = { CompanionFaceLoader(endpoint: $0, cacheRoot: cache, fetch: fetch) }
+        call.showFace(reduceMotion: true, animate: false)
+        for _ in 0..<100 where prepCalls.value == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        call.hideFace()
+        call.showFace(reduceMotion: true, animate: false)
+        for _ in 0..<100 where prepCalls.value < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(prepCalls.value, 2, "shown again: a new load starts right away")
+        call.hideFace()
+    }
+
+    func testLoaderSaysPendingWhileTheFaceIsBeingMade() async throws {
+        let running = Data(#"{"status":"running","face":null,"sceneUrl":null}"#.utf8)
+        let (fetch, _) = stubServer(prep: running)
+        let endpoint = CallEndpoint(url: URL(string: "wss://api.genita.test/v1/session")!, token: "tok")
+        guard case .pending = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: fetch).load(currentKey: nil) else { return XCTFail() }
+        let unreadable = Data(#"{"status":"ready","face":{"bogus":1}}"#.utf8)
+        let (bad, _) = stubServer(prep: unreadable)
+        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: bad).load(currentKey: nil) else { return XCTFail("an unreadable face is no face") }
+        let failed = Data(#"{"status":"failed","face":null}"#.utf8)
+        let (gaveUp, _) = stubServer(prep: failed)
+        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: stop asking") }
     }
 
     func testLoaderNeverSendsTheTokenToAnotherHost() async throws {

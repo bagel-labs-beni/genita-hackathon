@@ -174,7 +174,7 @@ export async function polishImage(
     ]), left);
     checkMs = since(t1);
     // species and character style stay the upload's (the face profile is chosen from them) once they're known to match
-    const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style };
+    const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style, voice_fit: orig.check.raw.voice_fit ?? raw.voice_fit };
     let check: ImageCheck = interpretCheck(merged);
     if (check.type !== orig.check.type || changedLook(orig.check.raw, raw)) {
       check = { ...check, type: orig.check.type, passed: false, reasons: [{ code: "style_changed", label: FAIL_REASONS.style_changed }] };
