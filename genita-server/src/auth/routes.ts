@@ -326,13 +326,19 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       const b = await readJson(req);
       // no await from here to the verdict: concurrent requests from one IP can't all slip past the limit
       const code = str(b.code, 128).trim();
-      const wait = core.judge.retryAfterSec(ip, code);
-      if (wait > 0) {
+      const ipWait = core.judge.ipRetryAfterSec(ip);
+      if (ipWait > 0) {
         log("auth.judge", { ok: false, reason: "rate_limited", ip });
-        return tooMany(res, wait);
+        return tooMany(res, ipWait);
       }
       const device: Device = b.device === "mac" ? "mac" : "iphone";
+      // AU-04: the prefix backoff holds only a wrong code (judges share the code and the venue IP)
+      const prefixWait = code ? core.judge.prefixRetryAfterSec(ip, code) : 0;
       const label = code ? core.judge.check(ip, code) : null;
+      if (!label && prefixWait > 0) {
+        log("auth.judge", { ok: false, reason: "rate_limited", ip });
+        return tooMany(res, prefixWait);
+      }
       if (!label) {
         log("auth.judge", { ok: false, reason: code ? "wrong_code" : "missing_code", ip });
         throw fail("judge", code ? "wrong_code" : "missing_code", code ? 401 : 400);

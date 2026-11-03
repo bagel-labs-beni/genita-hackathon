@@ -294,9 +294,13 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     }
     /// CS01 agreed: back to the call if the account is set up, else on to A03 (name).
     func consentAccepted() {
+        consentRecorded()
+        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+    }
+    /// CS01 agreed on the server: a restart no longer shows CS01 (or A02).
+    func consentRecorded() {
         storage.removeObject(forKey: Self.signedOutKey)
         storage.removeObject(forKey: Self.needsConsentKey)
-        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
     }
     /// M02 account deleted: nothing of it stays on this iPhone.
     func accountDeleted() {

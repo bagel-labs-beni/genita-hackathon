@@ -41,7 +41,17 @@ extension AppState {
         }
         guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
-        if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
+        var state = state
+        if case .active(var m) = state {
+            // AU-05 (LG-03): A03's name never reached the server (offline at Next) but this account already has its
+            // companion: send the name this phone kept again and go on to the call, never back to A03
+            let kept = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (m.user.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, m.hasCompanion, !kept.isEmpty {
+                if let saved = try? await onboarding.auth.setName(kept) { m = saved } else { m.user.displayName = kept }
+                state = .active(m)
+            }
+            me = m; adopt(accountId: m.user.id)
+        }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
@@ -58,10 +68,20 @@ extension AppState {
     }
 
     /// CS01 "Agree and continue", after the server recorded the consent.
+    /// AU-03 (JG-01): right after a sign-in, `/me` picks the next screen while CS01's button spins. A judge's
+    /// ready-made companion goes straight to the call, never through an empty A03 whose Next would start the
+    /// onboarding instead. A new account gets A03 as before; no answer (offline) moves on to A03 too.
     func consentAgreed() async {
-        consentAccepted()
-        // a judge account already has its ready-made companion: /me sends it straight to the call
-        if serverWired { await routeOnLaunch() }
+        let returning = history.contains(.conversation) || setup.hasOnboarded
+        guard serverWired, !returning else {
+            consentAccepted()
+            // a returning account (4403 mid-call) is back in its call; /me still checks where it stands
+            if serverWired { await routeOnLaunch() }
+            return
+        }
+        consentRecorded()
+        await routeOnLaunch(afterSignIn: true)
+        if stage == .consent { consentAccepted() }
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
