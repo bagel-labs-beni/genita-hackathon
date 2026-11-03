@@ -23,16 +23,29 @@ export function attachWatchSocket(ws: WebSocket, session: Session, log: (event: 
   sink.send({ type: "ready", protocol: PROTOCOL_VERSION, sessionId: session.id });
   log("watch.open", { session: session.id });
   ws.on("message", (data, isBinary) => {
-    const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
-    if (isBinary) return watch.onAudio(buf);
-    let msg: unknown;
     try {
-      msg = JSON.parse(buf.toString("utf8"));
+      const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
+      if (isBinary) return watch.onAudio(buf);
+      let msg: unknown;
+      try {
+        msg = JSON.parse(buf.toString("utf8"));
+      } catch {
+        return sink.send({ type: "error", code: "bad_message", message: "Message is not JSON" });
+      }
+      if (!msg || typeof msg !== "object") return sink.send({ type: "error", code: "bad_message", message: "Message must be an object" });
+      watch.onMessage(msg as Record<string, unknown>);
     } catch {
-      return sink.send({ type: "error", code: "bad_message", message: "Message is not JSON" });
+      // A malformed client input must not escape this socket's callback and take down other calls.
+      try {
+        sink.send({ type: "error", code: "bad_message", message: "Invalid watch message" });
+      } catch {
+        try {
+          ws.terminate();
+        } catch {
+          // The socket is already unusable; keep this failure scoped to it.
+        }
+      }
     }
-    if (!msg || typeof msg !== "object") return sink.send({ type: "error", code: "bad_message", message: "Message must be an object" });
-    watch.onMessage(msg as Record<string, unknown>);
   });
   ws.on("close", () => {
     watch.detach(sink);
