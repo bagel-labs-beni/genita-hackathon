@@ -104,6 +104,9 @@ struct CallCueView: View {
     var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
+    /// HUD r01 A: the room on the menu row (between the menu button and its mirror). A "{name} is …" line that would
+    /// not fit there says "Thinking" / "Talking" instead (NM01 allows 20-character names). nil = no limit.
+    var rowWidth: CGFloat? = nil
     var body: some View {
         if let content {
             HStack(spacing: CallPillMetrics.iconSpacing) {
@@ -135,13 +138,27 @@ struct CallCueView: View {
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+
+    /// "{name} is thinking" when the pill (12 + icon ≤ 16 + 7 + text + 14) fits in `rowWidth`, else the short word.
+    static func nameLine(_ name: String, _ verb: String, short: String, rowWidth: CGFloat?) -> String {
+        let full = "\(name) is \(verb)"
+        guard let rowWidth else { return full }
+        return pillWidth(text: full) <= rowWidth ? full : short
+    }
+    static func pillWidth(text: String) -> CGFloat {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
+        let w = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        return CallPillMetrics.leading + 16 + CallPillMetrics.iconSpacing + w + CallPillMetrics.trailing
+    }
+    /// Cues with a button ("Try again", "Settings") are too wide for the menu row: they take the line under it.
+    static func needsOwnLine(_ cue: CallCue) -> Bool { cue == .answerFailed || cue == .micBlocked }
     private var content: Content? {
         if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
         return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
-        case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
-        case .speaking: Content(icon: AnyView(CueWave()), text: "\(name) is talking", action: nil)
+        case .thinking: Content(icon: AnyView(CueSpinner()), text: Self.nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), action: nil)
+        case .speaking: Content(icon: AnyView(CueWave()), text: Self.nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), action: nil)
         case .interrupted: Content(icon: AnyView(CueDot()), text: "Stopped. Go ahead.", action: nil)
         case .reconnecting: Content(icon: AnyView(CueSpinner()), text: "Reconnecting…", action: nil)
         case .answerFailed: Content(icon: AnyView(CueAlert()), text: "Couldn’t get an answer.", action: ("Try again", retry))

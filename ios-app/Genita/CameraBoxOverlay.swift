@@ -24,13 +24,20 @@ struct CameraStage: View {
             }.allowsHitTesting(false)
             CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect,
                              // demo S3 option (c): labels keep clear of the menu button, the status line and the self-view PiP
-                             labelObstacles: [CameraBoxes.menuRect(grid: grid), CameraBoxes.statusRect(grid: grid), CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
+                             labelObstacles: [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
                                               CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
         }
         .frame(width: size.width, height: size.height).clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Your camera")
         .accessibilityIdentifier("cameraStage")
+    }
+
+    /// The status pill where ConversationView draws it: the menu row, or the line under it (PF-1 Finds line at left 24, measured).
+    private var statusRect: CGRect {
+        let finds = call.finds.pillText
+        let line = ConversationView.statusLine(cue: call.cue, findsLine: finds != nil, moveLine: false, shown: true)
+        return CameraBoxes.statusRect(grid: grid, line: line, leadingWidth: finds.map { CallCueView.pillWidth(text: $0) })
     }
 
     /// FT-NOSEE card (24, 124): boxes under it are left out.

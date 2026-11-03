@@ -140,12 +140,14 @@ struct HandoffMoveStatusLine: View {
         .animation(.easeOut(duration: 0.2), value: handoff.moving).animation(.easeOut(duration: 0.2), value: handoff.moveFailed)
     }
     private func pill(icon: AnyView, text: String, id: String) -> some View {
-        HStack(spacing: 8) {
+        // the same pill box as the call cue (HUD r01 A, CallPillMetrics)
+        HStack(spacing: CallPillMetrics.iconSpacing) {
             icon
             Text(text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
         }
-        .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 36)
-        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.leading, CallPillMetrics.leading).padding(.trailing, CallPillMetrics.trailing).padding(.vertical, CallPillMetrics.vertical)
+        .frame(minHeight: CallPillMetrics.height)
+        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently).accessibilityIdentifier(id)
     }
 }

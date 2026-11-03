@@ -135,16 +135,19 @@ struct ConversationView: View {
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
                         let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                        let findsPill = call.finds.pillText
+                        // HUD r01 A: which line the status pill is on, so the prep line and the chip stack under it
+                        let status = Self.statusLine(cue: call.cue, findsLine: findsPill != nil, moveLine: moveLine && !findsTabOpen && !interpreting && !unclear,
+                                                     moveFailed: !handoff.moving && handoff.moveFailed, shown: !findsTabOpen && !connecting && !interpreting && !unclear)
                         if moveLine && !findsTabOpen && !interpreting && !unclear {
                             // MV-1 / MV-E take the call's status line slot
-                            HandoffMoveStatusLine().position(grid.pillCenter)
+                            HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
-                            let findsPill = call.finds.pillText
-                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
+                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
-                                // HUD r01 A: the call cue sits on the top row (centre line = the menu button's). A Finds line
-                                // (PF-1, Figma) keeps its own place: left 24 under the row, or beside the face window when full.
-                                .position(x: sheet == .full ? 16 + 125 : grid.pillCenter.x, y: sheet == .full ? 82 + top : findsPill != nil ? 142 + top : grid.rowY)
+                                // HUD r01 A: the call cue sits on the menu row (same centre line). A Finds line (PF-1, Figma) and a
+                                // cue with a button take the line under it; beside the face window when the sheet is full.
+                                .position(x: sheet == .full ? 16 + 125 : grid.pillCenter.x, y: sheet == .full ? 82 + top : grid.statusY(status))
                                 // and the call cue steps aside once the Finds sheet is half up or more (200 ms)
                                 .opacity(Self.cueHidden(sheet: sheet, findsLine: findsPill != nil, cue: call.cue) ? 0 : 1)
                                 .accessibilityHidden(Self.cueHidden(sheet: sheet, findsLine: findsPill != nil, cue: call.cue))
@@ -155,11 +158,11 @@ struct ConversationView: View {
                             ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
                                 .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
-                                          y: sheet == .full ? 122 + top : grid.chipCenterY(prepLine: model.callPrepIndicator != nil && !interpreting, cueShown: call.cue != .none))
+                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine))
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
                         if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
-                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(cueShown: call.cue != .none)).transition(.opacity)
+                            CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status)).transition(.opacity)
                         }
                         }
                         if connecting {
@@ -309,6 +312,16 @@ struct ConversationView: View {
         case .peek, .searching: -122
         default: 0
         }
+    }
+    /// HUD r01 A: which line the status pill is on (CallHUDGrid.StatusLine), from what it shows.
+    static func statusLine(cue: CallCue, findsLine: Bool, moveLine: Bool, moveFailed: Bool = false, shown: Bool) -> CallHUDGrid.StatusLine {
+        // MV-1 "Moving to your Mac…" fits the row; MV-E "Mac not responding. Still here." doesn't
+        if moveLine { return moveFailed ? .second : .row }
+        guard shown else { return .none }
+        // CallCueView shows the Finds line unless the call is reconnecting or the answer failed
+        if findsLine && cue != .reconnecting && cue != .answerFailed { return .second }
+        if CallCueView.needsOwnLine(cue) { return .second }
+        return cue == .none ? .none : .row
     }
     /// HUD r01 A: the call cue fades out once the sheet is half up or more. A Finds line (PF-1) and the problem cues
     /// (reconnecting, no answer, mic off) stay: they are what the sheet is about, or something to act on.

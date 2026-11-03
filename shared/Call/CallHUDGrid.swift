@@ -34,16 +34,31 @@ struct CallHUDGrid: Equatable {
 
     // MARK: status pill
 
-    var pillCenter: CGPoint { CGPoint(x: size.width / 2, y: rowY) }
-    /// The "Getting to know you" / "Noted" chip (30 tall) sits 6 pt under the lowest line above it: the status pill, or
-    /// the S09-PREP line when that is showing.
-    func chipCenterY(prepLine: Bool, cueShown: Bool) -> CGFloat {
-        let above = prepLine ? prepLineCenterY(cueShown: cueShown) + CallPillMetrics.prepHeight / 2 : rowY + CallPillMetrics.height / 2
-        return above + 6 + 15
+    /// Where the status pill is right now.
+    enum StatusLine: Equatable {
+        /// nothing in the pill's place
+        case none
+        /// the call cue on the menu row (HUD r01 A)
+        case row
+        /// the line under the row (the board's status line, 142 on 390 × 844): a PF-1 Finds line, or a cue with a button
+        case second
     }
-    /// S09-PREP line: in the pill's slot when there is no cue, otherwise 6 pt under it.
-    func prepLineCenterY(cueShown: Bool) -> CGFloat {
-        cueShown ? rowY + CallPillMetrics.height / 2 + 6 + CallPillMetrics.prepHeight / 2 : rowY
+    var pillCenter: CGPoint { CGPoint(x: size.width / 2, y: rowY) }
+    /// The line under the row: the Figma status line (PF-1), 98 under the safe area top.
+    var secondLineY: CGFloat { safeTop + 98 }
+    /// Room for a centred pill on the menu row without touching the menu button or its mirror (8 pt clear).
+    var rowPillWidth: CGFloat { size.width - 2 * (Self.margin + Self.button + 8) }
+    func statusY(_ line: StatusLine) -> CGFloat { line == .second ? secondLineY : rowY }
+
+    /// S09-PREP line (36 tall): in the pill's place when there is no pill, otherwise 6 pt under the pill.
+    func prepLineCenterY(status: StatusLine) -> CGFloat {
+        status == .none ? rowY : statusY(status) + CallPillMetrics.height / 2 + 6 + CallPillMetrics.prepHeight / 2
+    }
+    /// The "Getting to know you" / "Noted" chip (30 tall) sits 6 pt under the lowest line above it.
+    func chipCenterY(status: StatusLine, prepLine: Bool) -> CGFloat {
+        if !prepLine && status == .none { return rowY }
+        let above = prepLine ? prepLineCenterY(status: status) + CallPillMetrics.prepHeight / 2 : statusY(status) + CallPillMetrics.height / 2
+        return above + 6 + 15
     }
 
     // MARK: self view (camera off)

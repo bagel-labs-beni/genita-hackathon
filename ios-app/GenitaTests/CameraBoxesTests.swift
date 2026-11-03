@@ -199,6 +199,20 @@ import XCTest
         XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: 96 + top, obstacles: obstacles), CGPoint(x: 40, y: 388), "free space: unchanged")
     }
 
+    /// Codex P2: during a fridge search the PF-1 Finds line sits on the line under the row (left 24); a box label
+    /// keeps clear of it there, not of the empty row.
+    func testLabelsStayClearOfTheFindsLine() {
+        let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
+        let finds = CameraBoxes.statusRect(grid: grid, line: .second, leadingWidth: 220)
+        XCTAssertEqual(finds.midY, grid.secondLineY)
+        XCTAssertEqual(finds.minX, 20)
+        let box = CGRect(x: 100, y: 170, width: 120, height: 100)
+        let boxRule = CGRect(x: box.minX, y: box.minY - label.height - 4, width: label.width, height: label.height)
+        XCTAssertTrue(boxRule.intersects(finds), "red: above the box lands on the Finds line")
+        let o = CameraBoxes.labelOrigin(box, label: label, view: view, topInset: 96 + top, obstacles: [CameraBoxes.menuRect(grid: grid), finds])
+        XCTAssertFalse(CGRect(origin: o, size: label).intersects(finds), "green: moved off the Finds line")
+    }
+
     /// UI sweep 11/3 (after the status-line fix): a label moved below its box landed on the next box's label.
     func testLabelsDoNotSitOnEachOther() {
         let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
