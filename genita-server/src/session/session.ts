@@ -864,7 +864,9 @@ export class Session {
       this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
         // a turn the end-of-turn hold kept open, and a final still in its echo check, are from before the Forget:
         // never answered (and so never saved) after it (CA-14, #585 Codex P1)
+        // …and so is the segment being spoken at that moment: its late final is dropped (d5c9c86e Codex P1)
         this.dropHeld(); this.asrEpoch++; this.bcGen++; this.backchannel?.stop(); this.cuedTurn = false;
+        if (this.segmentOpen) { this.dropLateFinal = true; this.segmentOpen = false; }
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
         this.historyRevision = revision;
