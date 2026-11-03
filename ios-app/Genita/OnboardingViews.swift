@@ -45,6 +45,11 @@ struct RootView: View {
     private var task: Task<Void, Never>?
     private var endTimer: Task<Void, Never>?
     private var generation = 0
+    /// AU-35: the photo the list was asked for, and the quiet re-ask after a failed preview greyed the list
+    private var listImageId: String?
+    private var recovery: Task<Void, Never>?
+    /// seconds between re-asks after a failed preview (tests shorten it)
+    var recoveryInterval: Duration = .seconds(5)
 
     /// Where a call's device speech reads the silent fallback voice (shared/Call device TTS, lane L4).
     static let deviceFallbackKey = "genita.voice.device"
@@ -68,6 +73,7 @@ struct RootView: View {
     }
 
     func load(client: OnboardingClient, imageId: String?, kind: String?) async {
+        listImageId = imageId
         loading = true
         defer { loading = false }
         do {
@@ -103,7 +109,7 @@ struct RootView: View {
                 let p = try AVAudioPlayer(data: data)
                 p.delegate = self
                 // UI tests run on a simulator with no audio route: play() can say no there, the clip length still drives the state
-                guard p.play() || ProcessInfo.processInfo.arguments.contains("--uitesting") else { fetching = nil; available = false; return }
+                guard p.play() || ProcessInfo.processInfo.arguments.contains("--uitesting") else { fetching = nil; previewFailed(client: client); return }
                 audio = p
                 fetching = nil
                 playing = voice.id
@@ -114,8 +120,24 @@ struct RootView: View {
             } catch {
                 if Task.isCancelled { return }
                 fetching = nil
-                available = false
+                previewFailed(client: client)
             }
+        }
+    }
+
+    /// A preview that failed greys the list ("waking up") and asks again quietly every few seconds for up to a
+    /// minute, so the list comes back by itself (AU-35: it used to stay grey for good).
+    func previewFailed(client: OnboardingClient) {
+        available = false
+        guard recovery == nil else { return }
+        recovery = Task { [weak self] in
+            var waited = Duration.zero
+            while let self, !self.available, waited < .seconds(60), !Task.isCancelled {
+                try? await Task.sleep(for: self.recoveryInterval)
+                waited += self.recoveryInterval
+                await self.refresh(client: client, imageId: self.listImageId)
+            }
+            self?.recovery = nil
         }
     }
     func stop() { generation += 1; endTimer?.cancel(); task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }

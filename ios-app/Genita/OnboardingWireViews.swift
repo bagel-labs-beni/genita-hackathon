@@ -91,6 +91,9 @@ struct ImageCheckView: View {
         polishFlow && model.canRetryPolish && (model.polishRetriesLeft > 0 || (model.polished != nil && model.polishedImage == nil))
     }
 
+    /// AU-26: the check never reached an answer (offline, timeout, server error): the same photo is checked again
+    private var checkAgain: Bool { model.imageCheckError != nil && model.imageCheckRetryable }
+
     var body: some View {
         Group {
             if analyzing || !finished || model.reviewScan != nil { analyzingPage } else { resultPage }
@@ -178,22 +181,27 @@ struct ImageCheckView: View {
     private var resultPage: some View {
         WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F",
                  subtitle: polishFlow && passed ? "We tidied it up for the call." : "One clear front-facing image works best.", back: { model.returnTo(.image) },
-                 primary: passed ? "Use this image" : canRetry ? "Try again" : "Choose another image", primaryBusy: model.creatingCompanion,
+                 primary: passed ? "Use this image" : canRetry || checkAgain ? "Try again" : "Choose another image", primaryBusy: model.creatingCompanion,
                  action: {
                      if passed { model.useCheckedImage() }
+                     else if checkAgain { model.checkImage() }
                      else if canRetry { model.retryPolish() }
                      else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) }
-                 }) { width, top, _ in
-            photo(width: width, height: 289)
+                 }) { width, top, footerY in
+            // AU-33: on a short iPhone (SE 667 pt) the board's rows, link and note ran under the button; the photo
+            // gives up the height they need (never below 120 pt). 390 × 844 and taller are unchanged.
+            let squeeze = Self.resultSqueeze(top: top, footerY: footerY)
+            let photoHeight = 289 - squeeze
+            photo(width: width, height: photoHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 // one polish path, no type: the chips stay on today's V02-T only
                 .overlay(alignment: .topLeading) { if passed && !polishFlow { typeChips.padding(12) } }
-                .position(x: width / 2, y: 226 + 144.5 + top)
+                .position(x: width / 2, y: 226 + photoHeight / 2 + top)
             if passed && canRetry && model.polishRetriesLeft > 0 {
                 // V02-T: the polished picture can be made again (same text-link style as NM01 "Use Jin")
                 Button { model.retryPolish() } label: {
                     Text("Try again (\(model.polishRetriesLeft) left)").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.ink).frame(height: 44)
-                }.buttonStyle(.plain).frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 646 + top)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 646 + top - squeeze)
                     .accessibilityIdentifier("polishTryAgain")
             }
             VStack(alignment: .leading, spacing: 8) {
@@ -207,10 +215,15 @@ struct ImageCheckView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }.accessibilityElement(children: .combine).accessibilityLabel((row.1 ? "Passed: " : "Failed: ") + row.0)
                 }
-            }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 536 + 41 + top)
+            }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 536 + 41 + top - squeeze)
             Text(note).font(TypeStyle.body(13)).foregroundStyle(CallInk.mute).frame(width: width - 62, alignment: .leading)
-                .position(x: 31 + (width - 62) / 2, y: 686 + top).accessibilityIdentifier(passed ? "rightsLine" : "failHint")
+                .position(x: 31 + (width - 62) / 2, y: 686 + top - squeeze).accessibilityIdentifier(passed ? "rightsLine" : "failHint")
         }
+    }
+
+    /// How much V02's photo shrinks so the note (board bottom ≈ 704) stays 12 pt above the button: 0 on 390 × 844.
+    static func resultSqueeze(top: CGFloat, footerY: CGFloat) -> CGFloat {
+        min(289 - 120, max(0, (704 + top) - (footerY - 12)))
     }
 
     /// The three V02 rows; a failed check shows the server's own reason text (V02-F).
@@ -239,6 +252,7 @@ struct ImageCheckView: View {
     static let noFace = "We couldn't find a clear face. Try another photo."
     private var note: String {
         if passed { return "Use an image you have the right to use." }
+        if checkAgain { return "" }   // the red row already says what to do (offline / try again)
         if model.polishError == nil, result?.reasons.contains(where: { $0.code == "no_face" }) == true { return "" }
         if polishFlow && canRetry { return "Polishing again often fixes this." }
         // PRD v12 D26 V02-F: "This looks like a well-known person. Genita can't bring public figures to life."
