@@ -127,7 +127,8 @@ const SEARCH_META = /\b(?:search|query|results?|nothing (?:yet|so far)|came (?:u
 const searchRetry = (s: string) => {
   if (!SEARCH_RETRY.test(s)) return false;
   const parts = s.split(/\s*(?:,|;|—|–| - )\s*(?:so |and |but )?|\s+so\s+/).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => SEARCH_RETRY.test(p) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
+  // a retry part that carries a result is an answer ("Let me look again at the tag because it says hand wash only", Codex #431 P2)
+  return parts.every((p) => (SEARCH_RETRY.test(p) && !/\bbecause\b/.test(p) && !PROGRESS_RESULT.test(p)) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
 };
 
 export function isToolNarration(sentence: string): boolean {

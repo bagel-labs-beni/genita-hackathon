@@ -57,6 +57,7 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "Let me look again at the tag because it says hand wash only.",
   "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
   "Trying to remember what you ate can be hard after a long day.",
   "I've got that note about your sister saying her birthday is May 12.",
