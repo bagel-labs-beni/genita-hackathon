@@ -74,3 +74,6 @@ export function relabelPhonemes(t: ClauseTiming, d: Map<string, string[]> = cmuD
   out.sort((a, b) => a.s - b.s || a.e - b.e);
   return { words: t.words, phonemes: out };
 }
+
+// warm the dictionary off the request path (~0.1–0.2 s parse) so the first reply's timing never waits on it
+if (g2pOn()) setTimeout(() => void cmuDict(), 0).unref?.();
