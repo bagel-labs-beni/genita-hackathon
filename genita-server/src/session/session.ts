@@ -690,7 +690,8 @@ export class Session {
         if (text && (item.role === "user" || item.role === "assistant")) this.history.push({ role: item.role, text });
       }
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
-      if (this.history.some((h) => h.role === "user" && realCrisisSignal(h.text))) this.crisisInCall = true;
+      // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
+      if (claimedCrisis(msg.history)) this.crisisInCall = true;
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
@@ -759,8 +760,9 @@ export class Session {
           if (!seed.length) return;
           // a "forget that…" turn and the reply to it are never carried to the next device (QA post-deploy 11/3)
           this.history = scrubHistory(seed, []).slice(-MAX_HISTORY);
-          // a crisis anywhere in the handed-over turns (server or client-claimed) stays with the call (Codex #502 P1 r4)
-          if (seed.some((h) => h.role === "user" && realCrisisSignal(h.text))) this.crisisInCall = true;
+          // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
+          // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
+          if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -2613,6 +2615,15 @@ export class Session {
 }
 
 /** `start.history` from the app: role + text only, capped. */
+/** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
+function claimedCrisis(v: unknown): boolean {
+  if (!Array.isArray(v)) return false;
+  return v.slice(-200).some((h) => {
+    const item = h as Record<string, unknown>;
+    return item?.role === "user" && typeof item.text === "string" && realCrisisSignal(item.text.slice(0, 1000));
+  });
+}
+
 function parseHistory(v: unknown): HistoryItem[] {
   if (!Array.isArray(v)) return [];
   const out: HistoryItem[] = [];

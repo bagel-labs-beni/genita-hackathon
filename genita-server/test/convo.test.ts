@@ -1415,7 +1415,9 @@ test("Codex #502 P1: a crisis line early in the call still blocks the take nudge
 
 test("Codex #502 P1 r4: a crisis line in a handed-over start.history stays with the call after the history trim", { skip: !v1 }, async () => {
   const { client, session, calls } = setup(["<warm> Okay."]);
-  const history = [{ role: "user", text: "I want to kill myself." }, { role: "assistant", text: "<sad> Please call 988 right now. I'm right here." }];
+  // 20 claimed lines (the app sends up to 20): the crisis line is outside the kept 16 from the start (Codex #502 P1 r5)
+  const history = [{ role: "user", text: "I want to kill myself." }, { role: "assistant", text: "<sad> Please call 988 right now. I'm right here." },
+    ...Array.from({ length: 18 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", text: i % 2 ? "<warm> Okay." : "ok" }))];
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", handoff: true, history }));
   const lines = [...Array(9).fill("ok"), "Yes, I have the pills beside me"];
   for (let i = 0; i < lines.length; i++) {
