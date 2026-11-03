@@ -47,8 +47,13 @@ const keyWords = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? 
  * nearly (Spark may word a card line a little differently: most of its words), only in the card's own sections.
  */
 export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId): StyleCard {
-  const words = (t: string) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
-  const marked = items.map(words).filter((w) => w.size);
+  // a finding's own label ("Style: Minimal.", "Media: …") is not part of what the user marked (Codex #538 r2)
+  const bare = (t: string) => t.replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "");
+  const list = (t: string) => bare(t).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
+  const words = (t: string) => new Set(list(t));
+  /** what the line is about: its last content word ("… outfits." vs "… recipes."), 5-letter stem */
+  const subject = (t: string) => list(t).at(-1)?.slice(0, 5) ?? "";
+  const marked = items.map((t) => ({ w: words(t), subj: subject(t) })).filter((m) => m.w.size);
   if (!marked.length) return card;
   const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
   const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
@@ -57,13 +62,21 @@ export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId
   const drop = new Set<string>();
   const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
   for (const m of marked) {
-    const scored = candidates.map((t) => ({ t, s: overlap(words(t), m) })).sort((a, b) => b.s - a.s);
+    // only a finding about the same thing: a reworded "Ask before recommending outfits." never takes "… recipes." (Codex #538 r2)
+    const scored = candidates.filter((t) => subject(t) === m.subj).map((t) => ({ t, s: overlap(words(t), m.w) })).sort((a, b) => b.s - a.s);
     if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) drop.add(scored[0].t);
   }
   if (!drop.size) return card;
   const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, keys.has(k) && Array.isArray(v) ? v.filter((f) => !drop.has(f.text)) : v])) as StyleCard["sections"];
   const display = (card.display ?? []).map((r) => (keys.has(r.key) ? { ...r, items: r.items.filter((i) => !drop.has(i.text)) } : r));
   return { ...card, sections, display };
+}
+/**
+ * The card with every save still waiting on Spark's merge taken out the same way (the save's answer and the call
+ * start agree; a second correction never brings back the first one's line — Codex #538 r2). Unknowns answers are not removals.
+ */
+export function withPendingRemoved(card: StyleCard): StyleCard {
+  return (card.pendingCorrections ?? []).reduce((c, p) => (p.cardId === "unknowns" ? c : withoutMarked(c, p.items, p.cardId as StoryId)), card);
 }
 const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
 
@@ -344,7 +357,7 @@ export class Personalize {
     // M02 / the call follow the save at once (QA build 6: "That's not me" on "Likes jokes in our chats." stayed in
     // Your preferences — the app keeps these rows, and the merge lands seconds later): the marked lines that are the
     // profile's own words are out of the rows and the profile text now; Spark's merge settles the rest
-    const now = withoutMarked(before, items, cardId);
+    const now = withPendingRemoved({ ...before, pendingCorrections: [...(before.pendingCorrections ?? []).filter((p) => p.asOf !== asOf), { cardId, items, text, asOf }] });
     return { card, ack: ACK, changed, profile: styleProfileText(now), rows: now.display };
   }
 
@@ -482,15 +495,18 @@ export class Personalize {
     const pendingCard = await this.store.getStyle(userId);
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
-      const card = await this.store.getStyle(userId);
+      const stored = await this.store.getStyle(userId);
+      const card = stored ? withPendingRemoved(stored) : null;
       return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), removed: (card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
     }
     return this.update(userId, (card) => {
       const r = beginCall(card, this.now().toISOString());
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
+      // what the call is told: without the lines the user took out whose merge is still running
+      const told = withPendingRemoved(r.card);
       return {
         card: r.card,
-        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
+        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(told, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(told), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
       };
     });
   }

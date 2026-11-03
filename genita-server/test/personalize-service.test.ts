@@ -574,3 +574,31 @@ test("QA build 6 M02: 'That's not me' on a profile line takes it out of the rows
   card.display = card.display.map((d) => (d.key === "boundaries" ? { ...d, items: card.sections.boundaries.map((f) => ({ text: f.text, label: "explicit" })) } : d)) as typeof card.display;
   assert.deepEqual(row(withoutMarked(card, ["Ask before suggesting outfits."], "lines"), "boundaries"), ["Ask before suggesting recipes."]);
 });
+
+test("Codex #538 r2: a reworded line never takes another subject's finding; a picked tag takes its labeled finding; pending saves stack", async () => {
+  const { withoutMarked, withPendingRemoved } = await import("../src/personalize/service.ts");
+  const { skipStyleCard, styleProfileText } = await import("../src/prep/importProfile.ts");
+  const r = skipStyleCard({ interests: [], replies: null, avoid: [], n3: { clothes: { like: ["Minimal"], no: [] }, food: { like: ["Spicy"], no: [] }, chats: { like: ["Jokes"], no: [] } } });
+  assert.ok(r.ok);
+  const row = (c: typeof r.card, key: string) => c.display.find((d) => d.key === key)?.items.map((i) => i.text) ?? [];
+  const withLines = (texts: string[]) => {
+    const c = { ...r.card, sections: { ...r.card.sections, boundaries: texts.map((text) => ({ text, label: "explicit", scope: "any" })) } } as typeof r.card;
+    const has = c.display.some((d) => d.key === "boundaries");
+    const items = texts.map((text) => ({ text, label: "explicit" }));
+    c.display = (has ? c.display.map((d) => (d.key === "boundaries" ? { ...d, items } : d)) : [...c.display, { key: "boundaries", title: "Boundaries", items }]) as typeof c.display;
+    return c;
+  };
+  // ① Spark worded the card line differently: "recipes" never goes for an "outfits" line
+  const card = withLines(["Get my permission before suggesting outfits.", "Ask before recommending recipes."]);
+  assert.ok(row(withoutMarked(card, ["Ask before recommending outfits."], "lines"), "boundaries").includes("Ask before recommending recipes."));
+  // ③ a picked tag ("Minimal", "Spicy") is the labeled finding ("Style: Minimal.", "Food: spicy.")
+  const likes = row(r.card, "likes");
+  assert.ok(likes.length >= 2, JSON.stringify(likes));
+  for (const tag of ["Minimal", "Spicy"]) assert.doesNotMatch(row(withoutMarked(r.card, [tag], "taste"), "likes").join(" "), new RegExp(tag, "i"), tag);
+  // ② two saves still waiting on Spark: the second answer (and the call) keeps the first one out too
+  const pending = { ...r.card, pendingCorrections: [{ cardId: "talk", items: ["Likes jokes in our chats."], text: "", asOf: "1" }, { cardId: "taste", items: ["Minimal"], text: "", asOf: "2" }] };
+  const now = withPendingRemoved(pending);
+  assert.doesNotMatch(styleProfileText(now), /jokes/i);
+  assert.doesNotMatch(row(now, "likes").join(" "), /minimal/i);
+  assert.deepEqual(withPendingRemoved({ ...r.card, pendingCorrections: [{ cardId: "unknowns", items: ["Likes jokes in our chats."], text: "x", asOf: "3" }] }).display, r.card.display, "an unknowns answer removes nothing");
+});
