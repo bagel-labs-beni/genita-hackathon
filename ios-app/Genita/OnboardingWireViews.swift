@@ -60,8 +60,15 @@ struct WirePage<Content: View>: View {
 
 struct ImageCheckView: View {
     @Bindable var model: AppState
-    @State private var scan = 0.0
     @State private var progress = 0.08
+    /// V03 face scan: the low-poly net, laid on top-down over 0.4 s when the check answer brings SAM's face points
+    @State private var mesh: FaceMesh?
+    @State private var reveal = 0.0
+    /// the uploaded photo's size (orientation applied), for mapping the points onto the `scaledToFill` frame
+    @State private var photoSize = CGSize.zero
+    @State private var overlayOpacity = 1.0
+    /// V03 stays up after the answer for the finish (bar to 100 %, hold, fade) before V02-T / V02-F
+    @State private var finished = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var result: ImageCheck? { model.imageCheck }
@@ -76,16 +83,48 @@ struct ImageCheckView: View {
     }
 
     var body: some View {
-        if analyzing { analyzingPage } else { resultPage }
+        Group {
+            if analyzing || !finished || model.reviewScan != nil { analyzingPage } else { resultPage }
+        }
+        .onAppear { if !analyzing { finished = true } }   // reopened on V02 (back, review): no replay
+        .onChange(of: analyzing) { was, now in
+            if !was && now { finished = false; overlayOpacity = 1; reveal = mesh == nil ? 0 : 1 }   // "Try again": scan again (polish keeps the mesh)
+            if was && !now { Task { await finish() } }
+        }
+        .onChange(of: result?.imageId, initial: true) { _, _ in showMesh() }
+    }
+
+    /// The check answer's face points → the net, swept on from the top over 0.4 s.
+    private func showMesh() {
+        guard let r = result else { mesh = nil; reveal = 0; return }
+        mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
+        guard mesh != nil else { return }
+        photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
+        if reduceMotion { reveal = 1 } else { withAnimation(.easeOut(duration: 0.4)) { reveal = 1 } }
+    }
+
+    /// Answer in: the line runs to the bottom (0.4 s), a passed scan holds 1 s, the overlay fades (0.25 s) back to the
+    /// plain photo for 0.3 s, then V02-T / V02-F. An error skips straight to V02-F.
+    private func finish() async {
+        guard model.imageCheckError == nil else { finished = true; return }
+        withAnimation(.easeOut(duration: 0.4)) { progress = 1 }
+        try? await Task.sleep(for: .milliseconds(400))
+        if passed && mesh != nil { try? await Task.sleep(for: .milliseconds(1000)) }
+        withAnimation(.easeOut(duration: 0.25)) { overlayOpacity = 0 }
+        try? await Task.sleep(for: .milliseconds(550))
+        guard !analyzing else { return }
+        finished = true
     }
 
     /// V03 "Finding the details that make them recognizable." — a scan line over the photo and the real wait.
     private var analyzingPage: some View {
         WirePage(title: polishFlow ? "Getting your photo\nready for the call." : "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 240)
-                .overlay(alignment: .top) {
-                    Rectangle().fill(Color(red: 0, green: 0.635, blue: 1)).frame(height: 2).shadow(color: Color(red: 0, green: 0.635, blue: 1).opacity(0.6), radius: 6)
-                        .offset(y: 240 * CGFloat(scan)).opacity(reduceMotion ? 0 : 1)
+                .overlay {
+                    // V03 face scan: the line follows the bar; the net comes with the check answer
+                    FaceScanOverlay(progress: reduceMotion && reveal > 0 ? 1 : progress, reveal: reveal, overlayOpacity: overlayOpacity,
+                                    mesh: mesh, imageSize: photoSize, reduceMotion: reduceMotion)
+                        .accessibilityIdentifier("faceScan")
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
@@ -98,8 +137,8 @@ struct ImageCheckView: View {
                 .accessibilityIdentifier("imageCheckProgress")
         }
         .task {
+            if let held = model.reviewScan { progress = held; reveal = held > 0 ? 1 : 0; return }   // screen review
             progress = 0.08   // a "Try again" starts the bar over
-            if !reduceMotion { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { scan = 1 } }
             // The check takes 2–5 s (PREP_API.md); the bar eases toward 90 % and the answer finishes it.
             // Photo polish adds ~15–20 s (Muse Image edit + the same check): the bar slows down so it doesn't sit at 90 %.
             while analyzing && !Task.isCancelled {

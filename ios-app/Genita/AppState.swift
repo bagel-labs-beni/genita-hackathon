@@ -97,6 +97,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
     var imageCheckError: String?
+    /// Screen review only (GENITA_REVIEW_VARIANT=scan-NN): holds V03 at NN % with the face mesh, no animation
+    var reviewScan: Double?
     /// Photo polish (V03 → V02-T confirm): the polished result, its bytes, the wait, and an error line. Transient.
     var polished: PolishedImage?
     var polishedImage: Data?
@@ -364,6 +366,15 @@ extension AppState {
             imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(#"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":false,"sharpAndLit":true,"noText":true},"reasons":[{"code":"side_view","label":"Side view"}],"polish":true}"#.utf8))
             polished = try? JSONDecoder().decode(PolishedImage.self, from: Data(#"{"imageId":"review-p","sourceImageId":"review","passed":true,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":true,"noText":true},"reasons":[],"attempt":\#(3 - left),"retriesLeft":\#(left)}"#.utf8))
             polishRetriesLeft = left
+        }
+        // V03 face scan review: GENITA_REVIEW_VARIANT=scan-0 / scan-55 / scan-100 holds the scan there over the review
+        // photo, with the live SAM geometry for that photo (11/4)
+        if reviewStage == .imageCheck, variant.hasPrefix("scan-"), let pct = Double(variant.dropFirst("scan-".count)) {
+            if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+            reviewScan = pct / 100
+            if pct > 0 {
+                imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(#"{"imageId":"review","passed":true,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":true,"noText":true},"reasons":[],"faceOutline":[[0.5018,0.2643],[0.542,0.3343],[0.5806,0.3409],[0.6161,0.3516],[0.659,0.3595],[0.7078,0.3705],[0.7326,0.3941],[0.7655,0.4184],[0.7707,0.4479],[0.7546,0.4762],[0.7542,0.5068],[0.7289,0.5333],[0.695,0.5566],[0.6609,0.582],[0.6122,0.598],[0.5588,0.6093],[0.5018,0.6124],[0.4448,0.6093],[0.3945,0.5938],[0.3516,0.5745],[0.3147,0.5533],[0.2946,0.5259],[0.2715,0.5016],[0.2573,0.4753],[0.2526,0.4479],[0.2573,0.4205],[0.2725,0.3944],[0.2999,0.3719],[0.3301,0.3512],[0.3639,0.3317],[0.377,0.2783],[0.4382,0.2678]],"facePoints":{"leftEye":[[0.3613,0.384],[0.3884,0.3756],[0.4245,0.3756],[0.4516,0.384],[0.4245,0.3923],[0.3884,0.3923]],"rightEye":[[0.5845,0.3897],[0.61,0.3804],[0.644,0.3804],[0.6695,0.3897],[0.644,0.3989],[0.61,0.3989]],"leftBrow":[[0.3523,0.358],[0.3884,0.3485],[0.4245,0.3485],[0.4607,0.3566]],"rightBrow":[[0.576,0.3638],[0.61,0.3549],[0.644,0.3549],[0.678,0.3625]],"nose":[[0.5167,0.3868],[0.5167,0.467],[0.4595,0.4559],[0.574,0.4559],[0.5167,0.4759]],"lips":[[0.4219,0.5224],[0.4546,0.5055],[0.4874,0.4982],[0.5037,0.504],[0.5201,0.4982],[0.5528,0.5055],[0.5855,0.5224],[0.5446,0.5467],[0.5037,0.5491],[0.4628,0.5467]]},"headBox":{"nx1":0.16153028692879914,"ny1":0.12858851674641147,"nx2":0.8799149840595112,"ny2":0.6130382775119617}}"#.utf8))
+            }
         }
         // V02-F review (D26): GENITA_REVIEW_VARIANT=fail-public_figure shows the well-known-person refusal
         if reviewStage == .imageCheck, variant.hasPrefix("fail-") {
