@@ -131,7 +131,8 @@ struct EmailSignInSheet: View {
                 resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
                 code = ""
                 step = .code
-                focused = true
+                // the code field is a new TextField: focus it once it exists (QA build 7: the first digit was lost)
+                DispatchQueue.main.async { focused = true }
             } catch {
                 let line = EmailSignInCopy.message(for: error, sendingCode: true)
                 message = line
