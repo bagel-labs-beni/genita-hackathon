@@ -653,3 +653,11 @@ test("server (train review P2): iPhone → Mac, the Mac hangs up, the old iPhone
   assert.equal(logs.filter((e) => e === "history.seeded").length, before, "the Mac hung up last: a return visit there");
   for (const w of sockets) w.terminate();
 });
+
+test("QA 11/3 P2: a forget request never becomes a memory or a note (no 'you told me to forget X')", () => {
+  for (const bad of ["User asked to forget the leather accessories thing", "Asked me not to remember the leather bag", "Wants the companion to erase what they said about leather", "가죽 얘기는 잊어 달라고 함"]) {
+    assert.equal(safeMemoryText(bad), false, bad);
+  }
+  const s = cleanSummary({ topics: ["Leather accessories (asked to forget)", "Jacket shopping"], mood: "relaxed", open_threads: ["User wants Jin to forget the leather thing"], promises: ["Forget the leather accessories"], asks: [] });
+  assert.deepEqual(s, { topics: ["Jacket shopping"], mood: "relaxed", open_threads: [], promises: [], asks: [] });
+});
