@@ -36,11 +36,13 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// set while this Mac claims the conversation itself (a live move), read by ownerChanged
     private var claimingLive = false
     private func claimLive() { claimingLive=true;ownership.claimHere();claimingLive=false }
-    /// A move the server makes for this Mac (proximity): its `claim.result` arrives without a trigger, so the report
-    /// itself marks the next few seconds as a live move (Codex P1).
-    private var liveMoveUntil = 0.0
-    func expectLiveMove() { liveMoveUntil=Date().timeIntervalSince1970+5 }
-    func cancelLiveMove() { liveMoveUntil=0 }
+    /// A move the server makes for this Mac (proximity) can land first as a trigger-less `claim.result` (seen as a
+    /// sync: Continue here offered). Its confirmation — `proximity.result ok`, or the `ownership` with a live trigger
+    /// for the same epoch, which the reducer ignores — then opens the call (Codex P1/P2: no time window).
+    func liveMoveConfirmed() {
+        guard ownership.isOwner,resumeOffered else{return}
+        resumeHere()
+    }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -221,13 +223,14 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var applyingTrigger:String?
     private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
         applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
+        // a live server move for an epoch already applied (claim.result came first): confirm it now
+        if claim.owner == .mac,ResumePolicy.arrival(localClaim:false,serverTrigger:trigger) == .liveMove {liveMoveConfirmed()}
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
             // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
-            let expected=Date().timeIntervalSince1970<liveMoveUntil;liveMoveUntil=0
-            if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive || expected,serverTrigger:applyingTrigger)) {
+            if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
                 resumeOffered=false;sharingStopped=false;showCompanion()
                 MacCall.shared.conversationArrived()
             } else {resumeOffered=true}
