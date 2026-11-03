@@ -133,8 +133,14 @@ struct MacConversationView: View {
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on) }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
-            if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+            sharing.watchConfig = id.map { .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: $0) }
         }
+        .onChange(of: call.link) { _, link in
+            if link == .idle { sharing.stop(); sharing.watchConfig = nil }
+            else if link != .live { sharing.watchConfig = nil }
+            else if let id = call.sessionId { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }
+        }
+        .onChange(of: macCall.isSignedIn) { _, signedIn in if !signedIn { sharing.stop(); sharing.watchConfig = nil } }
         .onChange(of: call.micOn) { _, on in if handoff.ownership.isOwner { MacCall.micRemembered = on } }
         .sheet(isPresented: $settingsOpen) { MacSettingsSheet() }
         .alert("Couldn’t start interpreting", isPresented: Binding(get: { if case .failed = interpret.stage { return true } else { return false } }, set: { if !$0 { interpret.stage = .idle } })) {
@@ -172,6 +178,7 @@ struct MacConversationView: View {
     private var cueText: String? {
         // MC-M (90:2): the face beside the open menu carries nothing
         if linkOpened != nil || menuOpen { return nil }
+        if sharing.isSharing, let message = sharing.connectionMessage { return message }
         // MS-2 "Reacting" and MS-3 black-screen card own that spot while a share is live
         if sharing.isSharing && (sharing.reacting || sharing.blank) { return nil }
         // the server's spoken line for the card (one line in the pill); otherwise the call cue, as on the iPhone —

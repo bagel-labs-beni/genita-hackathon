@@ -8,10 +8,10 @@ struct WatchOverlays: View {
     @ObservedObject var sharing: ScreenSharingController
     var review: String = ""
 
-    private var sharingOn: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(review) }
+    private var sharingOn: Bool { (sharing.isSharing && sharing.connectionMessage == nil) || ["sharing", "reacting", "black", "speaker"].contains(review) }
     private var source: String? { review.isEmpty ? sharing.sourceName : "Safari" }
-    private var reacting: Bool { sharing.reacting || review == "reacting" }
-    private var blank: Bool { (sharing.isSharing && sharing.blank) || review == "black" }
+    private var reacting: Bool { (sharingOn && sharing.reacting) || review == "reacting" }
+    private var blank: Bool { (sharingOn && sharing.blank) || review == "black" }
     private var speaker: String? { review == "speaker" ? "the chef" : (sharing.isSharing ? sharing.speakerName : nil) }
     private var notice: Bool { sharing.noticeVisible || review == "share-notice" }
 

@@ -35,6 +35,9 @@ final class WatchCapture: @unchecked Sendable {
         lastThumb = nil; lastSent = .distantPast; blankRun = 0; blank = false; isBlankSent = false; ring = []; audioBuffer = Data()
     }
 
+    /// Called on the screen queue when a new watch connection needs its first frame.
+    func forceNextFrame() { lastThumb = nil; lastSent = .distantPast }
+
     // MARK: frames
 
     func handleScreen(_ sampleBuffer: CMSampleBuffer, now: Date = Date()) {
