@@ -342,4 +342,16 @@ import UIKit
         XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
+
+    /// QA build 5: "Please sign in again." from the signed-out pass stayed on N3 after signing in.
+    func testSigningInClearsTheLastSessionsError() {
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        model.flowError = "Please sign in again."
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertNil(model.flowError)
+        model.flowError = "Please sign in again."
+        model.signedOut()
+        XCTAssertNil(model.flowError, "A02 starts clean too")
+    }
 }
