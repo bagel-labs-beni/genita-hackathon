@@ -22,7 +22,7 @@ struct CameraStage: View {
             }.allowsHitTesting(false)
             CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect,
                              // demo S3 option (c): labels keep clear of the menu button, the status line and the self-view PiP
-                             labelObstacles: [CameraBoxes.menuRect(top: topInset), CameraBoxes.statusRect(view: size, top: topInset),
+                             labelObstacles: [CameraBoxes.menuRect(top: topInset), CameraBoxes.statusRect(view: size, top: topInset), CameraBoxes.railRect(view: size, sheet: call.finds.state),
                                               CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
         }
         .frame(width: size.width, height: size.height).clipped()

@@ -25,6 +25,14 @@ const leaked: [string, string][] = [
   ["I'll search again with different keywords.", "search again"],
   ["Trying to remember which concert that was.", "remember which"],
   ["Looking at today's weather now.", "today's weather"],
+  ["First search came up empty, so I'll dig deeper on Zorblax Pod.", "dig deeper"],
+  // #413 web answers (QA prod 11/3, 1/3)
+  ["Oh that game was wild — pulling the final score now.", "pulling the final"],
+  ["Grabbing the latest score.", "Grabbing"],
+  // D13 crisis turns (Spark searches for the local hotline first)
+  ["This matters more than anything else — getting you fast, accurate support options.", "getting you"],
+  ["I'm really glad you told me — I care about you, and I'm going to find the right support resources for you.", "find the right"],
+  ["I'm here, and I care about you — let me find support resources you can reach right now.", "find support"],
   // round 2 on the fix branch (n=18)
   ["Got you, hunting down late-night ramen near Hongdae.", "hunting down"],
   ["Love that, late-night ramen run — finding you the Hongdae spots now.", "finding you"],
@@ -56,6 +64,17 @@ const answers = [
   // Codex #415 P2: answers that carry a result next to the same words
   "The last train leaves at 11, so I'll try another search for a later bus.",
   "Searching for a job takes time.",
+  "Checking the score is my whole personality during finals.",
+  "The final score was 4 to 1, Brewers.",
+  "Let me get you the number: call one oh nine right now.",
+  // Codex #431 P1: help in the same sentence is the answer
+  "Let me get you the crisis line: 988.",
+  "Getting you support: call the police right now.",
+  "Call 988 now, and I'll find support resources for you.",
+  "Call the police and I'll look again for support resources.",
+  "I'll find you the crisis line, it's one oh nine, call it now.",
+  "Let me look again at the tag because it says hand wash only.",
+  "The shop closes at nine, so I'll dig deeper into the menu with you tomorrow.",
   "Trying to remember what you ate can be hard after a long day.",
   "I've got that note about your sister saying her birthday is May 12.",
 ];

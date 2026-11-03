@@ -312,6 +312,8 @@ struct SkipImportView: View {
             default: tastePage(width: width, top: top)
             }
         }
+        // the "Add your own" alert's keyboard must not lift Continue over the tiles (UI sweep 11/3: it sat on Design / Food)
+        .ignoresSafeArea(.keyboard)
         .alert("Add your own", isPresented: $customOpen) {
             TextField("Add your own", text: $custom)
             Button("Add") { addCustom() }
