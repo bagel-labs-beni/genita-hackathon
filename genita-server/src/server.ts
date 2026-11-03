@@ -325,6 +325,13 @@ export async function startServer(
   // Join order: when a call took up the conversation (its memory start ran priorTurns), not when its socket opened.
   // At equal progress the later joiner is the one that inherited the conversation (Codex 11/3 r7/r8).
   let nextGen = 0;
+  /** a same-device return visit's view of the call that just ended (taken once by the new call) */
+  const lastCallFor = new Map<string, { turns: HistoryItem[]; threadId: string | null }>();
+  function lastCall(self: string): { turns: HistoryItem[]; threadId: string | null } | null {
+    const c = lastCallFor.get(self) ?? null;
+    lastCallFor.delete(self);
+    return c;
+  }
   const sessionGens = new Map<string, number>();
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
@@ -359,6 +366,9 @@ export async function startServer(
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {
       log("history.not_seeded", { session: self, by: "hang_up" });
+      // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
+      // memories of that call are written in the background and can take longer than a quick call-back
+      lastCallFor.set(self, { turns: best.slice(-8), threadId: thread?.threadId ?? null });
       return null;
     }
     if (best) {
@@ -444,7 +454,7 @@ export async function startServer(
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
     const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
-      priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
+      priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
       onHistoryChange: (role) => {
@@ -496,6 +506,7 @@ export async function startServer(
       const joined = sessionGens.get(id) ?? gen;
       sessionGens.delete(id);
       handedThread.delete(id);
+      lastCallFor.delete(id);
       touches.delete(id);
       void cacheTurns(who.userId, session, callDevice, joined)
         .catch(() => log("history.unavailable", { session: id }))

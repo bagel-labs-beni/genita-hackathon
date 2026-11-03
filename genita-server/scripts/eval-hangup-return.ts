@@ -40,7 +40,11 @@ else {
   let pass = 0, control = 0;
   for (let run = 1; run <= runs; run++) {
     const repo = new InMemoryMemoryRepository();
-    const memory = new MemoryService({ repository: repo, state: repo, extract: metaExtractor(key), summarize: metaSummarizer(key) });
+    // --slow-background: summaries and extraction take 40 s, like Spark Open's reasoning on prod (P1 FILM 11/3)
+    const slow = process.argv.includes("--slow-background");
+    const delay = <T,>(p: Promise<T>) => slow ? new Promise<T>((r, j) => setTimeout(() => p.then(r, j), 40_000)) : p;
+    const summarize = metaSummarizer(key); const extract = metaExtractor(key);
+    const memory = new MemoryService({ repository: repo, state: repo, extract: (t) => delay(extract(t)), summarize: (t, p) => delay(summarize(t, p)) });
     const logs: string[] = [];
     const deps: SessionDeps = { config, memory, log: (e) => { logs.push(e); }, openAsr: () => asr() as never, spark: (req, opts) => sparkStream(key, req, opts), async *tts() {} };
     const server = await startServer(config, (e) => { logs.push(e); }, deps, {}, null);
@@ -60,8 +64,9 @@ else {
       c1.ws.send(JSON.stringify({ type: "stop" }));
       await wait(() => logs.includes("session.close"), 10_000);
       const hungAt = Date.now();
-      await wait(() => false, 12_000); // she calls back 12 s later, same iPhone
-      await memory.drain();
+      const afterS = Number(process.argv.find((a) => a.startsWith("--after="))?.slice(8) ?? 12);
+      await wait(() => false, afterS * 1000); // she calls back on the same iPhone
+      if (!slow) await memory.drain();
       const notes = await memory.summaries(user);
       const c2 = await open("iphone"); start(c2);
       const t0 = Date.now();
@@ -69,6 +74,11 @@ else {
       const greetMs = Date.now() - t0;
       const greeting = c2.replies[0] ?? "";
       const seeded = logs.includes("history.seeded");
+      // the recall question right after the greeting (QA: "which one did I pick?")
+      const nq = c2.replies.length; c2.ws.send(JSON.stringify({ type: "text", text: "Wait, which one did I pick for the party?" }));
+      await wait(() => c2.replies.length > nq, 30_000);
+      const recallReply = c2.replies[nq] ?? "";
+      const recallOk = /black/i.test(recallReply) && !/white one(?! or)/i.test(recallReply.replace(/black/ig, ""));
       c2.ws.send(JSON.stringify({ type: "stop" }));
       await wait(() => logs.filter((e) => e === "session.close").length >= 2, 10_000);
       let j = { picks_up_thread: false, invents: false, reasks_settled: false };
@@ -84,12 +94,12 @@ else {
       await wait(c3.ready, 10_000); await wait(() => false, 300);
       const macContinues = logs.filter((e) => e === "history.seeded").length > before;
       c3.ws.close();
-      const ok = greeted && !seeded && j.picks_up_thread && !j.invents && !j.reasks_settled;
+      const ok = greeted && !seeded && j.picks_up_thread && !j.invents && !j.reasks_settled && recallOk;
       if (ok) pass++; if (macContinues) control++;
-      console.log(JSON.stringify({ run, called_back_after_s: Math.round((t0 - hungAt) / 1000), notes: notes.length, greeted_unprompted: greeted, greet_ms: greetMs, seeded_as_handoff: seeded, greeting, ...j, mac_after_hangup_continues: macContinues }));
+      console.log(JSON.stringify({ run, called_back_after_s: Math.round((t0 - hungAt) / 1000), notes: notes.length, greeted_unprompted: greeted, greet_ms: greetMs, seeded_as_handoff: seeded, greeting, recall: recallReply, recall_ok: recallOk, ...j, mac_after_hangup_continues: macContinues }));
     } catch (err) { console.log(JSON.stringify({ run, error: err instanceof Error ? err.message.slice(0, 80) : "error" })); }
     await new Promise<void>((r) => server.close(() => r()));
   }
-  console.log(`hang-up -> call back (same iPhone, 12 s): pass ${pass}/${runs} · control (Mac after hang-up continues) ${control}/${runs}`);
+  console.log(`hang-up -> call back (same iPhone): pass ${pass}/${runs} · control (Mac after hang-up continues) ${control}/${runs}`);
   if (pass !== runs) process.exitCode = 1;
 }

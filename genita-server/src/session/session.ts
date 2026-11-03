@@ -113,6 +113,8 @@ export type SessionDeps = {
   priorTurns?: (revision: number) => HistoryItem[] | null;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
+  /** same-device return visit: the last lines of the call the user just hung up (server.ts), read right after priorTurns */
+  lastCall?: () => { turns: HistoryItem[]; threadId: string | null } | null;
   /** Server handoff ordering: actual history writes, never socket open/close or a copied seed. */
   onHistoryChange?: (role: HistoryItem["role"]) => void;
   memory?: MemoryService;
@@ -639,6 +641,7 @@ export class Session {
           this.historyRevision = revision;
           if (startMode !== "chat" || this.history.length) return;
           const server = this.deps.priorTurns?.(revision) ?? null;
+          if (!server?.length) { const last = this.deps.lastCall?.(); if (last) this.memoryCall?.setLastCall(last.turns, last.threadId); }
           const claimed = revision === 0 && msg.handoff === true ? parseHistory(msg.history) : [];
           const seed = server?.length ? server : claimed;
           if (!seed.length) return;
@@ -1263,7 +1266,7 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length };
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);

@@ -694,3 +694,37 @@ test("Codex 11/3 (#443): recall keys never carry a forget request, and the recal
   assert.deepEqual(Object.keys(out.memories[0]).sort(), ["id", "text"]);
   call.close(); await memory.drain();
 });
+
+test("P1 FILM 11/3: a quick call-back after a hang-up has the call that just ended even while its summary is still being written", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {}); // the background summary is slow (Spark Open reasoning)
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open("iphone"); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["White or black for the Halloween party?", "Black it is.", "Forget the leather thing.", "Remind me to get dark brown shoes."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open("iphone"); start(back); await waitFor(() => back.replies() >= 1);
+  const inst = requests[0].instructions ?? "";
+  assert.match(inst, /ended moments ago/);
+  assert.match(inst, /Black it is/); assert.match(inst, /dark brown shoes/);
+  assert.doesNotMatch(inst, /leather/, "a forget request never rides along");
+  // the next reply keeps it too (recall question), not just the greeting
+  const n = back.replies(); back.ws.send(JSON.stringify({ type: "text", text: "What did I decide?" })); await waitFor(() => back.replies() > n);
+  assert.match(requests.at(-1)!.instructions ?? "", /Black it is/);
+  for (const w of sockets) w.terminate();
+});
