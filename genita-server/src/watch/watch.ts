@@ -65,7 +65,7 @@ export type WatchDeps = {
   manualTick?: boolean;
 };
 
-type Frame = { at: number; url: string };
+type Frame = { at: number; url: string; motion?: number };
 /** a react-worthy moment a quick look or memo saw (spoken or not), for "did you see that dunk?" a bit later */
 type SeenMoment = { at: number; moment: string; line: string; frame: string | null };
 
@@ -79,6 +79,8 @@ const MAX_LINES = 60;
 const QUESTION_LINES_MS = 90_000;
 /** moments stay askable this long; the moment's own frame rides along while it is older than the "now" frames */
 const SEEN_KEEP_MS = 60_000;
+/** a share that comes back this soon with the same window (and title) is a reconnect, not a new video */
+const RECONNECT_KEEP_MS = 15_000;
 const MAX_SEEN = 6;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
@@ -132,6 +134,8 @@ const QUICK_CONCURRENCY = 2;
 const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
 /** 2 frames (~0.3–0.9 s apart, the newest last): enough for the motion, fewer images = a faster call (11/3 15:30) */
 const QUICK_FRAMES = 2;
+/** a quick look picks its moment from this far back (its verdict can take ~4–5 s) */
+const QUICK_LOOKBACK_MS = 3_000;
 const QUICK_ON = process.env.GENITA_WATCH_QUICK !== "0";
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
@@ -146,6 +150,25 @@ const MAX_FRAME_URL = Math.round(1_500_000 * 1.4);
 const PAD_AFTER_MS = 300;
 const PAD_CHUNK = Buffer.alloc(24_000 * 2 / 10); // 100 ms
 
+/**
+ * The quick look's frames (lead's call 11/3 22:0x, Spark quick looks at p50 ~4.5 s): not just "now" but the moment
+ * with the most motion in the last ~3 s that no look has seen yet, plus the frame right after it (the landing).
+ * A slow verdict then still had the dunk in its frames. A spike's own look keeps its frames around the spike.
+ */
+export function quickFrames<T extends { at: number; motion?: number }>(frames: T[], spikeAt: number | null, lastLookedAt: number): T[] {
+  if (!frames.length) return [];
+  const newest = frames[frames.length - 1].at;
+  // the spike and the frame(s) right after it, even when the look went out late (Codex #445 r2 P2)
+  if (spikeAt !== null && spikeAt < newest - 50) return pickFrames(frames.filter((f) => f.at >= spikeAt - 900 && f.at <= spikeAt + 400), QUICK_FRAMES, 300);
+  const pool = frames.filter((f) => f.at > lastLookedAt && f.at >= newest - QUICK_LOOKBACK_MS);
+  if (!pool.length) return pickFrames(frames, QUICK_FRAMES, 300);
+  let peak = pool[0];
+  for (const f of pool) if ((f.motion ?? 0) > (peak.motion ?? 0)) peak = f;
+  const i = frames.indexOf(peak);
+  const pair = i < frames.length - 1 ? [peak, frames[i + 1]] : i > 0 ? [frames[i - 1], peak] : [peak];
+  return pair.slice(0, QUICK_FRAMES);
+}
+
 export class WatchController {
   private readonly deps: WatchDeps;
   private readonly host: WatchHost;
@@ -159,6 +182,12 @@ export class WatchController {
   private blankSpoken = false;
   private frames: Frame[] = [];
   private seen: SeenMoment[] = [];
+  /** bumped when the video changes: a look that started on the old one is dropped */
+  private clipGen = 0;
+  /** the last share, so a reconnect of the same video keeps its moments (Codex #445 P2) */
+  private lastShare: { source: string | null; title: string | null; at: number } | null = null;
+  /** a reconnect whose title hasn't arrived yet: the last share's title, to compare when it does */
+  private reconnectTitle: string | null = null;
   private lastMemoAt = 0;
   private memo: MemoEntry[] = [];
   private lines: DialogueLine[] = [];
@@ -181,6 +210,8 @@ export class WatchController {
   private quickSpikeAt: number | null = null;
   private quickInFlight = new Set<AbortController>();
   private lastQuickAt = -Infinity;
+  /** the newest frame the last quick look saw: the next one picks from what came after */
+  private lastLookedAt = -Infinity;
   private motionAware = false;
   private protectedSpoken = false;
   private protectedPending = false;
@@ -262,15 +293,57 @@ export class WatchController {
   private setTitle(raw: unknown): void {
     const t = cleanTitle(raw);
     if (t === this.title) return;
+    // another video or page (a tab's unread count "(3) …" is the same one)
+    const bare = (x: string | null) => (x ?? "").replace(/^\(\d+\)\s*/, "");
+    const was = this.title ?? this.reconnectTitle;
+    this.reconnectTitle = null;
+    if (was !== null && t !== null && bare(t) !== bare(was)) this.resetClip("title");
     this.title = t;
     // the text itself can be private (a document, a mail subject): only its length is logged
     this.log("watch.title", { chars: t?.length ?? 0 });
   }
 
+  /**
+   * QA prod 11/3 (after deploy 1): a dance clip got "That dunk though" — the last clip's moments and memo rode into
+   * the next video. Moments, memo, speaker names and a held reaction belong to one video: a new share, another
+   * window, or another title starts clean. A stopped share keeps them (asking right after stopping still works).
+   */
+  private resetClip(why: string): void {
+    // results of looks started on the old video must not land in the new one (Codex #445 P2)
+    this.clipGen++;
+    for (const m of this.memosInFlight) m.abort();
+    this.memosInFlight.clear();
+    for (const q of this.quickInFlight) q.abort();
+    this.quickInFlight.clear();
+    this.quickSpikeAt = null;
+    if (why === "title" || why === "source") {
+      // the old video's frames and lines are not the new one's (Codex #445 P2); the newest frame stays: the title
+      // arrives after the page changed, so it is already the new picture (and a paused screen sends no more)
+      this.frames = this.frames.slice(-1);
+      this.lines = [];
+      this.openLine = "";
+    }
+    if (!this.seen.length && !this.memo.length && !this.held) return;
+    this.seen = [];
+    this.memo = [];
+    this.names.clear();
+    this.held = null;
+    this.log("watch.clip_reset", { why });
+  }
+
   private start(source: string | null): void {
+    if (!this.sharing) {
+      const last = this.lastShare;
+      const reconnect = last !== null && this.deps.now() - last.at <= RECONNECT_KEEP_MS && last.source === source
+        && (last.title === null || this.title === null || last.title === this.title);
+      if (!reconnect) this.resetClip("new_share");
+      // a Mac sends the title after `start`: a different one then means a new video after all (Codex #445 r2 P2)
+      this.reconnectTitle = reconnect && this.title === null ? last?.title ?? null : null;
+    }
     if (this.sharing) {
       // another window or display: an older "protected" verdict was about the old one
       if (source !== null && source !== this.source) this.protectedPending = false;
+      if (source !== null && source !== this.source) this.resetClip("source");
       this.source = source ?? this.source;
       return this.emitState();
     }
@@ -278,7 +351,9 @@ export class WatchController {
     this.source = source;
     this.sharingSince = this.deps.now();
     this.lastMemoAt = this.sharingSince;
-    this.lastQuickAt = this.sharingSince;
+    // the first quick look goes out on the first frame (lead's call 11/3 22:0x), not a cadence step later
+    this.lastQuickAt = -Infinity;
+    this.lastLookedAt = -Infinity;
     this.blank = false;
     this.blankSpoken = false;
     this.protectedSpoken = false;
@@ -327,6 +402,7 @@ export class WatchController {
     this.asr = null;
     this.frames = []; // never kept past the share
     this.seen = this.seen.map((m) => ({ ...m, frame: null }));
+    this.lastShare = { source: this.source, title: this.title, at: this.deps.now() };
     this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
@@ -358,7 +434,7 @@ export class WatchController {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
       }
-      this.frames.push({ at: now, url });
+      this.frames.push({ at: now, url, ...(motion !== null ? { motion } : {}) });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
       this.maybeQuick();
@@ -499,6 +575,7 @@ export class WatchController {
 
   async runMemo(): Promise<MemoVerdict | null> {
     const at = this.deps.now();
+    const gen = this.clipGen;
     const since = this.lastMemoAt;
     const fresh = this.frames.filter((f) => f.at > since);
     // spread over everything new since the last memo (a move between two memos is never skipped), ≥0.6 s apart
@@ -531,6 +608,7 @@ export class WatchController {
       // lanes race, first complete JSON wins; the reaction can go out as soon as the verdict part has streamed
       // (before the memo text is written)
       raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
+        if (gen !== this.clipGen) return;
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
         this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
@@ -542,7 +620,7 @@ export class WatchController {
     } finally {
       this.memosInFlight.delete(abort);
     }
-    if (abort.signal.aborted || !this.sharing) return null;
+    if (abort.signal.aborted || !this.sharing || gen !== this.clipGen) return null;
     const v = parseMemoVerdict(raw);
     const ms = Math.round(this.deps.now() - at);
     this.stats.memos++;
@@ -603,25 +681,33 @@ export class WatchController {
 
   /** A spike with one frame after it (or 0.4 s of stillness) gets a quick look right away — no memo wait. */
   private maybeQuick(): void {
-    if (!QUICK_ON || this.deps.quick === false || this.deps.reactions === false || !this.sharing || this.closed) return;
+    if (!QUICK_ON || this.deps.quick === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
+    // 11/3 21:3x (lead's call): when a reaction couldn't go out (reactions off, the user or companion talking, inside
+    // the 25 s gap) the quick look still runs at half the rate and only remembers the moment, so "did you see that
+    // dunk?" right after a reaction or mid-conversation is answerable (#400). Never spoken from here.
+    const remember = this.deps.reactions === false || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS);
+    const slow = remember ? 2 : 1;
     let spike = this.quickSpikeAt;
     const after = spike !== null && (this.frames.some((f) => f.at > spike! + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400);
     const newest = this.frames.at(-1)?.at ?? -Infinity;
     // the cadence needs a motion-aware Mac (frames carry `motion`, ≤3 fps); older builds get spikes only
-    const cadence = !after && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS);
-    if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
+    // a pending spike gets its own look one frame later; the cadence (and the share's opening look) waits for it
+    const cadence = !after && spike === null && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS) * slow;
+    if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS * slow) return;
     spike = after ? spike : newest;
     this.quickSpikeAt = null;
-    // no point looking when a reaction couldn't go out anyway
-    if (this.blank || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS)) return;
-    void this.runQuick(spike!);
+    if (this.blank) return;
+    void this.runQuick(spike!, remember);
   }
 
-  async runQuick(spikeAt: number): Promise<void> {
+  async runQuick(spikeAt: number, rememberOnly = false): Promise<void> {
     const at = this.deps.now();
+    const gen = this.clipGen;
     this.lastQuickAt = at;
-    const frames = pickFrames(this.frames.filter((f) => f.at >= Math.min(spikeAt, (this.frames.at(-1)?.at ?? spikeAt)) - 900), QUICK_FRAMES, 300).map((f) => f.url);
+    const picked = quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    this.lastLookedAt = picked.at(-1)?.at ?? this.lastLookedAt;
+    const frames = picked.map((f) => f.url);
     const seq = this.speechSeq;
     const heard = [this.dialogueActive ? this.openLine : "", ...this.lines.filter((l) => at - l.at <= 3_000).map((l) => l.text)].filter(Boolean).slice(-2);
     const abort = new AbortController();
@@ -638,12 +724,12 @@ export class WatchController {
     } finally {
       this.quickInFlight.delete(abort);
     }
-    if (abort.signal.aborted || !this.sharing) return;
+    if (abort.signal.aborted || !this.sharing || gen !== this.clipGen) return;
     const q = parseQuick(raw);
-    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
+    this.log("watch.quick", { ms: Math.round(this.deps.now() - at), rememberOnly, react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
     if (q) {
       this.noteMoment(q.moment, q.line, spikeAt, frames.at(-1) ?? null);
-      this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
+      if (!rememberOnly) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
     }
   }
 
