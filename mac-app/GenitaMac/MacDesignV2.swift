@@ -11,7 +11,9 @@ enum MacDesignV2 {
         #if DEBUG
         if let review = reviewOverride { return review }
         #endif
-        return ProcessInfo.processInfo.environment["GENITA_MAC_DESIGN_V2"] == "1" || UserDefaults.standard.bool(forKey: "genita.mac.designV2")
+        // Chelsea 11/3: Mac v2 approved — on by default; GENITA_MAC_DESIGN_V2=0 or the default key = NO turns it off
+        if let v = ProcessInfo.processInfo.environment["GENITA_MAC_DESIGN_V2"] { return v != "0" }
+        return UserDefaults.standard.object(forKey: "genita.mac.designV2") as? Bool ?? true
     }
     /// True only while the watch-shots harness renders review PNGs (ImageRenderer can't draw AppKit views).
     static var reviewRender: Bool {

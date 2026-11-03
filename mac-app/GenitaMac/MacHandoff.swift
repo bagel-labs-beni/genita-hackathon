@@ -2,13 +2,13 @@ import SwiftUI
 import AppKit
 import Combine
 
-/// Same presence (11/3, needs Chelsea OK before it is on by default): the companion fades in on this Mac as the
-/// iPhone hands over by button, and the waiting sheet fades out when the conversation comes back. Off by default;
-/// on with `GENITA_PRESENCE_FADE=1` (launch env) or `defaults write <bundle id> genita.presence.fade -bool YES`.
+/// Same presence (11/3, Chelsea OK: on by default): the companion fades in on this Mac as the
+/// iPhone hands over by button, and the waiting sheet fades out when the conversation comes back. On by default;
+/// off with `GENITA_PRESENCE_FADE=0` (launch env) or `defaults write <bundle id> genita.presence.fade -bool YES`.
 enum MacPresenceFade {
     static var enabled: Bool {
         if let v = ProcessInfo.processInfo.environment["GENITA_PRESENCE_FADE"] { return ["1", "true", "yes", "on"].contains(v.lowercased()) }
-        return UserDefaults.standard.bool(forKey: "genita.presence.fade")
+        return UserDefaults.standard.object(forKey: "genita.presence.fade") as? Bool ?? true // Chelsea 11/3: on by default
     }
     static let seconds = 0.35
 }
