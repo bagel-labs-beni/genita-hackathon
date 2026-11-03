@@ -195,14 +195,18 @@ struct SettingsView: View {
         resetting = true
         // the account this was asked for: a late answer after a sign-out / another sign-in must not touch the new one (Codex P2)
         let asked = model.launchAuthSnapshot
+        let resets = model.companionResets
         Task { @MainActor in
             defer { resetting = false }
             do {
                 try await model.onboarding.resetCompanion()
                 guard asked.accepts(model.launchAuthSnapshot) else { return }
+                // the call's 4410 reset this phone already: the user may have picked a new photo or started a new
+                // call since — this late answer touches nothing, not even the call (Codex #514 r2)
+                guard model.companionResets == resets else { return }
                 CallController.shared.end()
                 dismiss()
-                model.companionReset()
+                model.companionResetAnswered(since: resets)
             } catch GenitaAuthError.unauthorized where asked.generation == model.authGeneration {
                 // this request's 401 cleared the token (same sign-in): A02, as everywhere else
                 dismiss()

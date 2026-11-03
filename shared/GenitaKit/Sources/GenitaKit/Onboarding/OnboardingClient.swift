@@ -57,6 +57,12 @@ public struct ImageCheck: Codable, Equatable, Sendable {
     /// Photo polish (server flag GENITA_PHOTO_POLISH): true = polish this photo and show it for confirmation (V02-T).
     /// nil / false (older server, flag off, public figure, no face) = today's V02-T / V02-F on this check.
     public var polish: Bool? = nil
+    /// V03 face scan (PREP_API.md, 11/4): SAM face contour, 32 [x, y] image fractions; nil = older server / failed check
+    public var faceOutline: [[Double]]? = nil
+    /// V03 face scan: eyes, brows, nose, lips as [x, y] image fractions; nil = no features found
+    public var facePoints: FacePoints? = nil
+    /// SAM head box; the mesh falls back to an oval inside it when there is no outline
+    public var headBox: ImageHeadBox? = nil
 }
 
 /// Photo polish (PREP_API.md "Photo polish"): the polished picture to confirm on V02-T ("Use this image" / "Try again").

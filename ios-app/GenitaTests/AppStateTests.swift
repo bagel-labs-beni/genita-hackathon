@@ -57,6 +57,28 @@ import UIKit
         XCTAssertEqual(SettingsView.resetMessage("Jin"), "Jin, their face, voice and your chats together will be removed. What Genita knows about you stays.")
         XCTAssertTrue(SettingsView.resetMessage(nil).hasPrefix("Your companion, their face"))
     }
+    /// Codex #514 P2 ③: the call's 4410 resets the phone first, the user picks a new photo on V01, then the reset's
+    /// late HTTP answer lands — it must not wipe the new photo.
+    func testLateResetAnswerAfterThe4410CloseKeepsTheNewPhoto() {
+        let url = URL.temporaryDirectory.appending(path: UUID().uuidString + ".jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = AppState(storage: store, imageURL: url)
+        model.setup.name = "Chelsea"; model.setup.companionName = "Jin"; model.setup.imageId = "img1"; model.setup.companionCreated = true
+        model.complete()
+        let asked = model.companionResets            // Settings sends POST /v1/companion/reset
+        model.route(.companionReset)                 // the call closes 4410 first: V01
+        XCTAssertEqual(model.stage, .image)
+        model.setup.imageId = "new-photo"; model.setup.imageData = Data([9])   // a new photo picked
+        model.companionResetAnswered(since: asked)   // the late 200
+        XCTAssertEqual(model.setup.imageId, "new-photo", "the new photo stays")
+        XCTAssertEqual(model.setup.imageData, Data([9]))
+        // no 4410 first (no call open): the answer resets the phone
+        let other = AppState(storage: store, imageURL: url)
+        other.setup.companionName = "Jin"; other.setup.companionCreated = true; other.complete()
+        other.companionResetAnswered(since: other.companionResets)
+        XCTAssertEqual(other.stage, .image)
+        XCTAssertNil(other.setup.companionName)
+    }
     func testCallStopRoutesToSignInAndConsent() {
         let model = AppState(storage: store)
         model.go(.connecting); model.go(.conversation)
@@ -374,6 +396,18 @@ import UIKit
         let lines = SettingsView.styleLines("Communication style\n• Warm, direct.\nBoundaries\n• Ask first.")
         XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
+    }
+
+    /// QA build 5: "Please sign in again." from the signed-out pass stayed on N3 after signing in.
+    func testSigningInClearsTheLastSessionsError() {
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        model.flowError = "Please sign in again."
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertNil(model.flowError)
+        model.flowError = "Please sign in again."
+        model.signedOut()
+        XCTAssertNil(model.flowError, "A02 starts clean too")
     }
 
     /// QA build 5: signed out, the phone reopened on A03 and let N1–N3 run, then bounced to A02 at the end.
