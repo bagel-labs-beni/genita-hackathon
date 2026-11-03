@@ -1525,6 +1525,12 @@ export class Session {
         }
         if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
+        // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
+        // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
+        if (this.v1 && !interpret && !self) {
+          const key = normTranscript(display);
+          if (key && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
+        }
         if (m.firstSentenceAt === undefined) {
           m.firstSentenceAt = this.now();
           m.firstSentenceChars = tts.length;

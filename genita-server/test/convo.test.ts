@@ -664,3 +664,40 @@ test("bug-fix e1e3608: 'Just plotting your fastest route — one sec.' and '— 
   const j = new NarrationJudge(true);
   assert.deepEqual(j.push("Let me walk you through all of them slowly.").speak, ["Let me walk you through all of them slowly."]);
 });
+
+test("Codex r22: a gerund subject with its own verb is an answer", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Scanning your boarding pass opens the gate.").speak, ...j.push("Give it a try.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /opens the gate/);
+});
+
+test("bug-fix smoke 11/3: a memory tool's follow-up repeating the pre-tool sentences is said once", { skip: !v1 }, async () => {
+  const text = (t: string): SparkStreamEvent => ({ type: "text", delta: t });
+  const { client, session } = toolSetup([[
+    text("<happy> I knew you'd crush it, Chelsea. We are absolutely celebrating that. "),
+    { type: "tool", name: "remember", status: "in_progress" },
+    { type: "tool", name: "remember", status: "completed" },
+    text("<happy> I knew you'd crush it, Chelsea. We are absolutely celebrating that."),
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ]]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "my presentation went great" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "I knew you'd crush it, Chelsea. We are absolutely celebrating that.");
+  session.close();
+});
+
+test("bug-fix a6df112 outfit 3/8: subject-less gerund openers and 'incoming' promises are never voiced before the pick", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Checking what I remember about your style and that cozy bedroom backdrop.", "Outfit vote incoming.", "Got it — picking your tonight look from what I can see."]) {
+    assert.ok(isToolNarration(first), first);
+    const j = new NarrationJudge(true);
+    const out = [...j.push(first).speak, ...j.push("Go with the trench.").speak, ...j.finish().speak].join(" ");
+    assert.match(out, /^(?:Got it\. )?Go with the trench\.$/, first);
+  }
+  for (const keep of ["Looking good tonight!", "Loving the trench on you.", "Scanning your boarding pass opens the gate."]) {
+    const j = new NarrationJudge(true);
+    assert.ok([...j.push(keep).speak, ...j.push("Ok.").speak, ...j.finish().speak].join(" ").includes(keep), keep);
+  }
+});
