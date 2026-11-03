@@ -585,3 +585,7 @@ test("structural (#354 repro e128827): an 'I'm …ing' opener is held — droppe
     assert.deepEqual(j.push("Go with the black one.").speak, ["Go with the black one."], opener);
   }
 });
+
+test("narration (Codex r13): '… your notes and you should wear the trench' keeps the advice", () => {
+  assert.equal(guardSentence("Let me check your notes and you should wear the trench.", none), null);
+});
