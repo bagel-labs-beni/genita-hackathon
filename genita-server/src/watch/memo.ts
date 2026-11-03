@@ -253,7 +253,9 @@ export function buildQuestionContext(c: {
   if (moment) out.push(`The first attached image is the shared screen at that last moment, ${moment.agoSec} s ago.`);
   if (c.frames.length) out.push(`The ${moment ? "other " : ""}attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
   if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
-  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
+  // AI sweep 11/3 (recall with the moment frame): "white twenty two went up", "Twenty eight went way up" — the visible
+  // jersey was 25; small blurry numbers get misread
+  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign).");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }

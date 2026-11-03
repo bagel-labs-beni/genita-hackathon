@@ -1053,6 +1053,12 @@ test("remember-only quick looks (reactions off / talking / 25 s gap) run at half
   assert.ok(off >= 3 && off <= Math.ceil(on / 2) + 1, `remember-only ~half (got ${off} vs ${on})`);
 });
 
+test("a question while watching never reads out small text like jersey numbers (AI sweep 11/3)", async () => {
+  const { buildQuestionContext } = await import("../src/watch/memo.ts");
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines: [], names: new Map(), frames: [frame], blank: false });
+  assert.match(q.instructions, /don't read out small text you can't make out for sure \(jersey numbers/);
+});
+
 test("moments belong to one video: a new share or another title starts clean, an unread count does not (QA prod 11/3)", async () => {
   const seeDunk = async (q: ReturnType<typeof quickController>, t0: number) => {
     q.at(t0);
