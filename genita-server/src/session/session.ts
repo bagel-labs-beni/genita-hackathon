@@ -1099,7 +1099,7 @@ export class Session {
     this.asr?.end();
     // #344: the call's ending mood carries into the next call (numbers only; not after an account delete or Forget-less unknown state)
     if (this.v1 && this.deps.memory && this.deps.userId && this.memoryCall && this.historyRevision !== null && reason !== "account_deleted" && this.history.some((h) => h.role === "user")) {
-      saveCallMood(this.deps.memory, this.deps.userId, this.callMood(), (this.deps.memory.now ?? Date.now)(), (e) => this.log("convo.mood_save_failed", { message: String(e).slice(0, 120) }));
+      saveCallMood(this.deps.memory, this.deps.userId, this.callMood(), (this.deps.memory.now ?? Date.now)(), this.historyRevision, (e) => this.log("convo.mood_save_failed", { message: String(e).slice(0, 120) }));
     }
     this.memoryCall?.close();
     this.correcting?.abort();
@@ -1473,7 +1473,8 @@ export class Session {
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
-        mood: moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
+        // never an upbeat / playful mood hint on a real crisis line (Codex #490 P1)
+        mood: realCrisisSignal(userText) ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
       }) ?? undefined;
@@ -2097,7 +2098,8 @@ export class Session {
         // one on its first clause instead of snapping back to neutral
         if (this.v1 && !interpret && !self && replyMood) {
           if (face && face.tag !== "laugh") face = { ...face, intensity: moodScaledIntensity(face.intensity, replyMood) };
-          else if (!face && !sentences.length && !emotion) face = restingFace(replyMood);
+          // never on a crisis turn or after an explicit [neutral] (Codex #477/#490 P1)
+          else if (!face && !sentences.length && !emotion && p.expression !== "neutral" && !realCrisisSignal(guardCtx.userText)) face = restingFace(replyMood);
         }
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;

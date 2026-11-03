@@ -26,9 +26,11 @@ export function carriedMood(state: unknown, now: number, baseline: Mood = NEUTRA
 }
 
 /** keep this call's ending mood (background; errors only logged) */
-export function saveCallMood(memory: MemoryService, userId: string, mood: Mood, now: number, onError?: (e: unknown) => void): void {
+export function saveCallMood(memory: MemoryService, userId: string, mood: Mood, now: number, revision: number, onError?: (e: unknown) => void): void {
   void memory.serial(userId, async () => {
     const s = await memory.state.getState(userId);
+    // a Forget landed after this mood was computed: it belongs to a forgotten conversation (Codex #477 P1)
+    if (s.revision !== revision) return;
     (s as typeof s & { call_mood?: StoredMood }).call_mood = { valence: clamp(mood.valence), energy: clamp(mood.energy), at: now, rev: s.revision };
     await memory.state.putState(userId, s);
   }).catch((e) => onError?.(e));
