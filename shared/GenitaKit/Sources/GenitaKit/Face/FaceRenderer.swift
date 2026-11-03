@@ -91,6 +91,7 @@ public final class FaceRenderer: @unchecked Sendable {
         if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
+            motion.lockVertical = a.lockY
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
