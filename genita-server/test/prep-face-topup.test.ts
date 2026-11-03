@@ -18,7 +18,7 @@ const keyOf = (prompt: string) => {
   throw new Error(`unknown prompt: ${prompt.slice(0, 60)}`);
 };
 const BOX = { face: [0.3, 0.2, 0.7, 0.45], mouth: [0.42, 0.38, 0.58, 0.41] } as const;
-const OLD = FACE_KEYS.filter((k) => k !== "laugh" && k !== "surprised" && k !== "concerned");
+const OLD = FACE_KEYS.filter((k) => k !== "surprised" && k !== "concerned");
 
 /** A companion prepped before the new keys: face done with the 18 old keys, flow data and a person matte. */
 function prepped(): CompanionRecord {
@@ -42,20 +42,20 @@ test("face top-up: only the missing expression keys are edited, saved, and serve
     const { media, calls } = fakeMedia({ keyOf });
     const r = await topUpFaceKeys({ store, media, metaKey: "k", companion: (await store.getCompanion("u1"))!, env: {} });
     assert.equal(r.status, "added");
-    assert.deepEqual([...r.added].sort(), ["concerned", "laugh", "surprised"]);
-    assert.deepEqual(calls.edits.map((e) => e.key).sort(), ["concerned", "laugh", "surprised"], "no old key is redone");
-    for (const k of ["laugh", "surprised", "concerned"]) assert.ok(await store.getAsset("u1", "c1", k), `${k} stored`);
+    assert.deepEqual([...r.added].sort(), ["concerned", "surprised"]);
+    assert.deepEqual(calls.edits.map((e) => e.key).sort(), ["concerned", "surprised"], "no old key is redone");
+    for (const k of ["surprised", "concerned"]) assert.ok(await store.getAsset("u1", "c1", k), `${k} stored`);
     const c = (await store.getCompanion("u1"))!;
     const f = c.prep.steps.face!.face!;
     assert.equal(f.person, true);
     assert.deepEqual(f.flow?.keys, ["AH"]);
     assert.ok(f.keys?.includes("surprised"), "the key plan grows, so the manifest lists them");
     const m = faceManifest(f, (k) => `/v1/companion/face/${k}`);
-    assert.deepEqual(Object.keys(m.images), ["neutral", "person", "blink", "smile", "warm", "laugh", "surprised", "concerned"]);
+    assert.deepEqual(Object.keys(m.images), ["neutral", "person", "blink", "smile", "warm", "surprised", "concerned"]);
     // second run: nothing to do
     const again = await topUpFaceKeys({ store, media, metaKey: "k", companion: c, env: {} });
     assert.equal(again.status, "complete");
-    assert.equal(calls.edits.length, 3);
+    assert.equal(calls.edits.length, 2);
     // the switch off: nothing is made
     const off = prepped();
     const r2 = await topUpFaceKeys({ store, media, metaKey: "k", companion: off, env: { GENITA_FACE_EMOTION_KEYS: "0" } });

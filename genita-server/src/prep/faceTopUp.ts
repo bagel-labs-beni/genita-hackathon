@@ -1,6 +1,6 @@
 /**
  * Face set top-up (11/3 night, expression layer): a companion whose face step is already `done` gets the face keys
- * its set is missing (today: laugh / surprised / concerned) without redoing the rest. It reuses the prep's own
+ * its set is missing (today: surprised / concerned) without redoing the rest. It reuses the prep's own
  * `makeFaceSet` with the saved state as `prev`, so only the missing keys are edited (Muse Image, from the scene,
  * SAM drift-checked, one stricter retry) and every other key, the flow data and the person matte stay as they are.
  * Called by `npm run face:topup` (ops script); the running server picks the new keys up on the next prep fetch

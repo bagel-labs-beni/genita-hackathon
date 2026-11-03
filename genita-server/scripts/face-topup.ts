@@ -1,8 +1,8 @@
 /**
  * npm run face:topup -- (--companion <userId> … | --demo | --all) [--dry-run]
  *
- * Ops-only (11/3 night, expression layer): adds the face keys a prepped companion is missing (laugh / surprised /
- * concerned, Muse Image + SAM, ~3 edits ≈ 30 s and three image edits per companion) without redoing its face set.
+ * Ops-only (11/3 night, expression layer): adds the face keys a prepped companion is missing (surprised /
+ * concerned, Muse Image + SAM, ~30 s and two image edits per companion) without redoing its face set.
  * --demo = the judge demo template (D41) and every demo companion copied from it; --all = every companion whose
  * face step is done. Idempotent: a complete set is left alone. --dry-run only lists what would be made.
  *
