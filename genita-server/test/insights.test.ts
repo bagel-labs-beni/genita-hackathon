@@ -440,3 +440,17 @@ test("codex r2: 'not me' drops a type built on it; a like chip needs a plain men
   assert.equal(after.share, null);
   assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined, "a minor's age is never stored");
 });
+
+test("codex r3: forget also clears the not-me list and stitched lines; a curly-apostrophe age is caught", async (t) => {
+  const r = toReport({ ...RAW, headline: "You want two good options and leather everything." }, INPUTS, { at: "", from: "import" });
+  const stored = { ...r, denied: [{ id: "x", claim: "You let leather do the talking.", category: "taste" as const, at: "t" }] };
+  const scrubbed = scrubRemoved(stored, [{ text: "leather accessories", forget: true }]);
+  assert.ok(!JSON.stringify(scrubbed).toLowerCase().includes("leather"), JSON.stringify(scrubbed).slice(0, 200));
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const rep = (await h.ins.get("u1", 3000)).report!;
+  await h.ins.verdict("u1", rep.observations[0].id, { verdict: "not_me", correction: "I’m 15 and I just like choices." });
+  assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined);
+});

@@ -133,7 +133,8 @@ export const similarClaim = (a: string, b: string) => sameish(a, b);
 const MINOR_AGE = /\b(?:i'?m|i am|im|age|aged)\s+(?:1[0-7]|[1-9])\b|\b(?:1[0-7]|[1-9])\s*(?:yo|y\/o|yrs?|years?)\b/i;
 
 export function privateDetail(s: string): boolean {
-  return isSensitiveDetail(s) || CREEPY.test(s) || MINOR.test(s) || MINOR_AGE.test(s);
+  const t = s.replace(/[‘’ʼ`]/g, "'"); // "I’m 15" (Codex r3)
+  return isSensitiveDetail(t) || CREEPY.test(t) || MINOR.test(t) || MINOR_AGE.test(t);
 }
 
 /** shares at least two content words with one of these claims (a line stitched from a removed trait) */
@@ -190,7 +191,23 @@ export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ tex
     .filter((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].some((t) => mentionsAvoided(t, keys)))
     .map((o) => o.id);
   const out = withoutObservations(r, gone);
-  return { ...out, mix: out.mix.filter((m) => !mentionsAvoided(m.evidence.quote, keys)), learning: out.learning.filter((l) => !mentionsAvoided(l.label, keys)) };
+  const said = (t: string | undefined) => !!t && mentionsAvoided(t, keys);
+  // the lines stitched over all traits, and the "not me" list (Codex r3: it went on to the call profile as "Not true …")
+  const first = out.observations[0];
+  const denied = (out as { denied?: Array<{ claim: string; correction?: string }> }).denied;
+  return {
+    ...out,
+    headline: said(out.headline) ? first?.claim ?? FALLBACK_HEADLINE : out.headline,
+    usage: said(out.usage) ? (first ? `In our calls, ${first.use_in_call}` : FALLBACK_USAGE) : out.usage,
+    chain: out.chain && [out.chain.you_are, out.chain.so_you, out.chain.so_ill].some(said) ? null : out.chain,
+    type: out.type && [out.type.name, out.type.line, ...out.type.signature].some(said) ? null : out.type,
+    share: out.type && [out.type.name, out.type.line, ...out.type.signature].some(said) ? null : out.share,
+    strengths: out.strengths.filter((s) => !said(s.text)),
+    watchouts: out.watchouts.filter((w) => !said(w.text) && !said(w.fix)),
+    mix: out.mix.filter((m) => !said(m.evidence.quote)),
+    learning: out.learning.filter((l) => !said(l.label)),
+    ...(denied ? { denied: denied.filter((d) => !said(d.claim) && !said(d.correction)) } : {}),
+  };
 }
 
 function sameish(a: string, b: string): boolean {
