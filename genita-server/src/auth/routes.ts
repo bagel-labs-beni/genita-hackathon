@@ -325,11 +325,12 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       if (!core.judge.enabled) throw new HttpError(404, "not_found");
       const b = await readJson(req);
       // no await from here to the verdict: concurrent requests from one IP can't all slip past the limit
-      if (core.judge.limited(ip)) {
-        log("auth.judge", { ok: false, reason: "rate_limited", ip });
-        throw new HttpError(429, "rate_limited");
-      }
       const code = str(b.code, 128).trim();
+      const wait = core.judge.retryAfterSec(ip, code);
+      if (wait > 0) {
+        log("auth.judge", { ok: false, reason: "rate_limited", ip });
+        return tooMany(res, wait);
+      }
       const device: Device = b.device === "mac" ? "mac" : "iphone";
       const label = code ? core.judge.check(ip, code) : null;
       if (!label) {
