@@ -10,6 +10,10 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var working = false
     @State private var accountError: String?
+    /// M02 "Make a new companion" (11/4): the same confirm style as M02-D; the account and what Genita knows stay
+    @State private var confirmReset = false
+    @State private var resetting = false
+    @State private var resetError: String?
     /// RP-1 (D37): Report on M02
     @State private var reportOpen = false
     /// model.onboarding.auth (not a fresh GenitaAuthClient) so the --stub-signin UI-test session counts too
@@ -52,6 +56,10 @@ struct SettingsView: View {
                         Text("Demo companion").font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("demoCompanionLabel")
                     }
                     LabeledContent("Voice", value: voiceName)
+                    if signedIn {
+                        Button(resetting ? "Starting over…" : "Make a new companion") { confirmReset = true }
+                            .disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
+                    }
                 }
                 Section("Your preferences") {
                     if !styleText.isEmpty {
@@ -90,6 +98,13 @@ struct SettingsView: View {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
             } message: { Text("This deletes your companion, your conversation, memories and Finds on your iPhone and Mac. It can’t be undone.") }
+            .confirmationDialog("Start over with someone new?", isPresented: $confirmReset, titleVisibility: .visible) {
+                Button("Start over", role: .destructive) { resetCompanion() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(Self.resetMessage(model.setup.companionName)) }
+            .alert("Couldn’t start over", isPresented: Binding(get: { resetError != nil }, set: { if !$0 { resetError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: { Text(resetError ?? "") }
             .alert("Couldn’t delete your account", isPresented: Binding(get: { accountError != nil }, set: { if !$0 { accountError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(accountError ?? "") }
@@ -101,6 +116,30 @@ struct SettingsView: View {
         #endif
     }
 
+    /// "{Name}, their face, voice and your chats together will be removed. What Genita knows about you stays."
+    static func resetMessage(_ companionName: String?) -> String {
+        let n = CompanionName.clean(companionName ?? "")
+        return "\(n.isEmpty ? "Your companion" : n), their face, voice and your chats together will be removed. What Genita knows about you stays."
+    }
+    private func resetCompanion() {
+        resetting = true
+        Task { @MainActor in
+            defer { resetting = false }
+            do {
+                try await model.onboarding.resetCompanion()
+                CallController.shared.end()
+                dismiss()
+                model.companionReset()
+            } catch GenitaAuthError.unauthorized {
+                dismiss()
+                model.signedOut()
+            } catch GenitaAuthError.server(status: 429, _) {
+                resetError = "You’ve started over a lot today. Try again tomorrow."
+            } catch {
+                resetError = "Try again in a moment. Nothing was removed."
+            }
+        }
+    }
     private func signOut() {
         working = true
         Task { @MainActor in

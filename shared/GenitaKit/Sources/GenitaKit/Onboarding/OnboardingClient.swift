@@ -359,6 +359,18 @@ public final class OnboardingClient: @unchecked Sendable {
     /// PREP-1e Try again: the server redoes only the steps that didn't finish (`202` + the new progress).
     public func retryPrep() async throws -> PrepProgress { try await auth.send("POST", "/v1/companion/prep/retry", timeout: 30) }
 
+    public struct ResetResult: Decodable, Sendable, Equatable {
+        public var ok: Bool
+        /// false = there was no companion to remove (the reset is still done)
+        public var removed: Bool
+    }
+
+    /// M02 "Make a new companion": the server removes the companion (face, voice, name, chats and call memory) and
+    /// keeps the account and what Genita knows about the user. Afterwards `/me` has no companion (→ V01).
+    /// `429 rate_limited` after 10 a day; `409` while one is running; `502` = try again.
+    @discardableResult
+    public func resetCompanion() async throws -> ResetResult { try await auth.send("POST", "/v1/companion/reset", json: [:], timeout: 30) }
+
     public struct PrefsResult: Decodable, Sendable {
         public struct Session: Decodable, Sendable { public var persona: ClientMessage.Persona? }
         public var summary: SetupSummary?

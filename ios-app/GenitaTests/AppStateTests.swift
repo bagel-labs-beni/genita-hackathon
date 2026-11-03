@@ -24,6 +24,39 @@ import UIKit
         XCTAssertEqual(reopened.setup.imageData, image)
         XCTAssertEqual(reopened.stage, .conversation)
     }
+    /// M02 "Make a new companion": the companion goes (name, photo, voice, persona, setup answers), the user's name and
+    /// what Genita knows about them (I04 rows / profile) stay, and the app is at V01 — also after a restart.
+    func testCompanionResetGoesToV01AndKeepsWhatGenitaKnows() {
+        let url = URL.temporaryDirectory.appending(path: UUID().uuidString + ".jpg")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let model = AppState(storage: store, imageURL: url)
+        model.setup.name = "Chelsea"; model.setup.accountId = "u1"
+        model.setup.styleProfile = "How the user wants to be treated"; model.setup.styleRows = []
+        model.setup.companionName = "Jin"; model.setup.imageId = "img1"; model.setup.imageType = "human"; model.setup.imageData = Data([1, 2, 3])
+        model.setup.companionCreated = true; model.setup.voiceId = "72"; model.setup.voiceName = "Warm"; model.setup.companionDemo = true
+        model.setup.answers = ["help": "Think with me"]
+        model.complete(); model.settingsOpen = true
+        XCTAssertEqual(model.stage, .conversation)
+        model.companionReset()
+        XCTAssertEqual(model.stage, .image, "V01 Bring an image")
+        XCTAssertFalse(model.settingsOpen)
+        XCTAssertFalse(model.setup.hasOnboarded)
+        XCTAssertNil(model.setup.companionName); XCTAssertNil(model.setup.imageId); XCTAssertNil(model.setup.imageData)
+        XCTAssertNil(model.setup.companionCreated); XCTAssertNil(model.setup.voiceId); XCTAssertNil(model.setup.companionDemo)
+        XCTAssertTrue(model.setup.answers.isEmpty)
+        XCTAssertEqual(model.setup.name, "Chelsea", "the user's name stays")
+        XCTAssertEqual(model.setup.styleProfile, "How the user wants to be treated", "what Genita knows stays")
+        XCTAssertEqual(model.setup.accountId, "u1")
+        XCTAssertEqual(model.companionDisplayName, "your companion")
+        let restarted = AppState(storage: store, imageURL: url)
+        XCTAssertEqual(restarted.stage, .image, "a restart stays at V01, not the old call")
+        XCTAssertNil(restarted.setup.imageData)
+        // the 4410 call close lands here too; twice is harmless
+        model.go(.conversation); model.route(.companionReset)
+        XCTAssertEqual(model.stage, .image)
+        XCTAssertEqual(SettingsView.resetMessage("Jin"), "Jin, their face, voice and your chats together will be removed. What Genita knows about you stays.")
+        XCTAssertTrue(SettingsView.resetMessage(nil).hasPrefix("Your companion, their face"))
+    }
     func testCallStopRoutesToSignInAndConsent() {
         let model = AppState(storage: store)
         model.go(.connecting); model.go(.conversation)
