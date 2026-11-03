@@ -116,10 +116,23 @@ export class PrepRunner {
   private d: PrepDeps;
   constructor(d: PrepDeps) { this.d = d; }
 
-  /** POST /v1/companion/reset is erasing this account's companion (POST /v1/companion answers 409 meanwhile) */
-  isResetting(userId: string) {
-    return this.resetting.has(userId);
+  /**
+   * POST /v1/companion runs inside this: rejected with `ResetBusy` while a reset runs, and a reset that starts
+   * meanwhile waits for it. Check and registration are one synchronous step, so the two never interleave.
+   */
+  creating<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+    if (this.resetting.has(userId)) return Promise.reject(new ResetBusy());
+    const p = fn();
+    const set = this.creates.get(userId) ?? new Set<Promise<unknown>>();
+    set.add(p);
+    this.creates.set(userId, set);
+    void p.catch(() => {}).finally(() => {
+      set.delete(p);
+      if (!set.size && this.creates.get(userId) === set) this.creates.delete(userId);
+    });
+    return p;
   }
+  private creates = new Map<string, Set<Promise<unknown>>>();
 
   isRunning(userId: string) {
     return this.running.has(userId);
@@ -188,6 +201,7 @@ export class PrepRunner {
     if (this.blocked(userId)) throw new ResetBusy();
     this.resetting.add(userId);
     try {
+      await Promise.allSettled([...(this.creates.get(userId) ?? [])]);   // a create already under way lands first
       this.cancel(userId);
       await this.running.get(userId)?.catch(() => {});
       await this.topUpJobs.get(userId)?.p;   // its in-flight image writes land before `erase` removes them
