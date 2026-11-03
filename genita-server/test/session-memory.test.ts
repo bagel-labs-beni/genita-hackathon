@@ -800,3 +800,17 @@ test("Codex 11/3 (#447 r3): a forget request travels with the conversation to th
   assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
   for (const w of sockets) w.terminate();
 });
+
+test("Codex 11/4 (hotfix merge): a 'forget that …' said in the call-back clears the matching line of the call that just ended", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I like leather accessories." }, { role: "assistant", text: "Leather suits you." }, { role: "user", text: "Black it is." }], "t1", 2);
+  c.setAvoid([{ text: "I like leather accessories", forget: true }]);
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "What should I wear?" }, new AbortController().signal, src as never, "What should I wear?", undefined)) { /* drain */ }
+  const inst = reqs[0].instructions ?? "";
+  assert.doesNotMatch(inst, /leather/i);
+  assert.match(inst, /Black it is/, "the rest of the last call stays");
+  c.close(); await memory.drain();
+});
