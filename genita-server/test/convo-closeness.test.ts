@@ -115,3 +115,11 @@ test("#343 session: call 1 user turns carry the giddy line; an initiative after 
   assert.match(calls[2].instructions!, /You speak first now[^\n]*Your last question is still open: don't ask another; end on a statement\./);
   session.close();
 });
+
+test("Codex #505 P1: a real crisis line never gets the closeness line (no 'a little giddy' on call 1, no teasing later)", () => {
+  for (const callNumber of [1, 3, 6]) {
+    const line = turnHints({ callNumber, userText: "I want to kill myself.", remembers: false }) ?? "";
+    assert.doesNotMatch(line, /giddy|teasing|running jokes/, `call ${callNumber}`);
+  }
+  assert.match(turnHints({ callNumber: 1, userText: "hey", remembers: false }) ?? "", /giddy/, "a normal call-1 turn keeps it");
+});
