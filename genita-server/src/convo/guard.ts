@@ -40,8 +40,10 @@ const LOOKUP_VERB = String.raw`(?:pull(?:ing)? (?:up|that up|it up)|bring(?:ing)
 const NARRATION = [
   // "let me / I'll / I'm gonna / one sec while I … pull up / check / map …"
   new RegExp(String.raw`${LEAD}(?:let me|lemme|i'?ll|i will|i'?m (?:gonna|going to|just going to|about to)|gonna|while i)\s+(?:quickly\s+|just\s+|real quick\s+|go\s+)?${LOOKUP_VERB}\b`, "i"),
-  // a process gerund that says what it's doing: "Figuring out where you mean…", "Pulling up what you told me…"
-  new RegExp(String.raw`${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking (?:on|where|what|that|it|this|my|your notes|the (?:map|address|route|location))|searching (?:for (?:it|that|this|the (?:address|route|place|way)|where|what)|my|the web|online|up)|digging (?:up|into|through)|mapping (?:it|that|this|the|out|where|your)|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
+  // a process gerund that says what it's doing ("Figuring out where you mean…", "Pulling up what you told me…"), only
+  // with an announcement marker (for you / now / so I can / what you told me / trailing …) or when it is short:
+  // a gerund subject with a result ("Looking up the route suggests the blue line") is an answer (Codex #356 r7)
+  new RegExp(String.raw`(?=.*(?:\bfor you\b|\bnow\b|\bso i can\b|\bwhere you mean\b|\bwhat (?:you|i) (?:told|said|mentioned)\b|…\s*$|\.\.\.\s*$)|^[^.!?]{0,40}[.!?]?\s*$)${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking (?:on|where|what|that|it|this|my|your notes|the (?:map|address|route|location))|searching (?:for (?:it|that|this|the (?:address|route|place|way)|where|what)|my|the web|online|up)|digging (?:up|into|through)|mapping (?:it|that|this|the|out|where|your)|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
   // memory plumbing said out loud: "let me see what you told me", "searching my memory"
   /\b(?:let me|i'?ll|lemme)\s+(?:see|check|remember)\s+what (?:you (?:told|said to) me|i (?:remember|have|know) about)\b/i,
   /\b(?:searching|checking|scanning) (?:my|our) (?:memory|memories|notes|past (?:chats|conversations))\b/i,
