@@ -598,6 +598,28 @@ final class FlowMorph: @unchecked Sendable {
             let v = Self.rgb(img, crop: CGRect(x: 0, y: 0, width: img.width, height: img.height), width: width, height: height)
             lm[key] = stride(from: 0, to: v.count, by: 3).map { v[$0] / 255 }
         }
+        // 11/4 CA-06 (p9 "OH": a fold on the cheek beside the pursed lips): the round keys' flows do not carry the closed
+        // mouth's corners (and their smile crease) far enough in, so the warped closed face left the crease beside the
+        // lips. People on the rig with the mouth-inside fix: round keys (O, OH, U, WQ) show their own skin over the closed
+        // mouth's corners (soft ellipses, 0.3 × 0.16 mouth widths).
+        if data.kind == "human", data.map.rig != nil, FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false,
+           let mouth, data.roi.width > 0, data.roi.height > 0, mouth.width > 0 {
+            let wd = width, ht = height
+            let kxs = Double(wd) / Double(data.roi.width), kys = Double(ht) / Double(data.roi.height)
+            let mx0 = (Double(mouth.minX) - Double(data.roi.minX)) * kxs, mx1 = (Double(mouth.maxX) - Double(data.roi.minX)) * kxs
+            let my = (Double(mouth.midY) - Double(data.roi.minY)) * kys, mw = mx1 - mx0
+            let rx = 0.3 * mw, ry = max(3, 0.16 * mw)
+            var g = [Float](repeating: 0, count: wd * ht)
+            for y in max(0, Int(my - ry))..<min(ht, Int(my + ry) + 1) { for x in 0..<wd {
+                var v = 0.0
+                for cx in [mx0, mx1] {
+                    let dx = (Double(x) - cx) / rx, dy = (Double(y) - my) / ry, r = (dx * dx + dy * dy).squareRoot()
+                    let u = min(1, max(0, (1 - r) / 0.6)); v = max(v, u * u * (3 - 2 * u))
+                }
+                g[y * wd + x] = Float(v)
+            } }
+            for k in ["O", "OH", "U", "WQ"] { if let v = lm[k] { var o = v; for i in o.indices { o[i] = max(o[i], g[i]) }; lm[k] = o } }
+        }
         lipPix = lm
         // v29 teeth fade: bright, unsaturated pixels inside the lip hull are teeth
         var tm: [String: [Float]] = [:]
