@@ -44,6 +44,10 @@ export function prefetchHedge(productHedge = 2, env: NodeJS.ProcessEnv = process
   // default 5 (11/3 S4→S5, text-only: S5 card 11.1 / 4.9 / 8.0 s with 5 lanes vs 1.3 / 13.5 / 10.6 s with 3)
   return Number.isInteger(n) && n >= 1 && n <= 6 ? n : Math.max(5, productHedge);
 }
+/** the companion's line names the pick by color ("Black, for sure…"): the search can go by what was said (Codex P2: "the first one" can't) */
+export function namesPick(said: string): boolean {
+  return [...said.toLowerCase().matchAll(/[a-z]+/g)].some((m) => COLOR.test(m[0]));
+}
 export function prefetchFrames(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_PREFETCH_FRAMES === "1";
 }
@@ -293,7 +297,7 @@ export class FindsRunner {
     const findId = `prefetch-${randomUUID()}`;
     const ctx: PipelineCtx = {
       // the search follows what was said ("dark brown shoes…"); the frames cost a vision pass on every lane
-      findId, utteranceId: t.utteranceId, kind: "product", question, frames: prefetchFrames() ? t.frames : [], memories: this.memories, profile: this.profile, userName: this.userName,
+      findId, utteranceId: t.utteranceId, kind: "product", question, frames: prefetchFrames() || !namesPick(reply) ? t.frames : [], memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: Promise.resolve(null), timeZone: this.timeZone, vendors: this.deps.vendors, signal: abort.signal, now: this.hooks.now, log: this.hooks.log, images: this.deps.images,
       emit: (e) => { p.events.push(e); for (const l of p.listeners) l(e); },
       putImage: async (slot, bytes) => { p.images.set(slot, bytes); return `prefetch:${slot}`; },

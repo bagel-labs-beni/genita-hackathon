@@ -304,7 +304,8 @@ function provenCount(r: SearchResult): number {
  * if none does, the best one (most opened pages listed, then most opens) is used.
  */
 export async function hedgedSearch(vendors: FindsVendors, prompt: string, n: number, signal: AbortSignal, images: string[] = []): Promise<SearchResult | null> {
-  const runs = Array.from({ length: Math.max(1, Math.min(3, n)) }, () => new AbortController());
+  // up to 6 lanes (the S5 prefetch asks for 5; a normal search for GENITA_PRODUCT_HEDGE, default 3)
+  const runs = Array.from({ length: Math.max(1, Math.min(6, n)) }, () => new AbortController());
   const stopAll = () => runs.forEach((a) => a.abort());
   signal.addEventListener("abort", stopAll, { once: true });
   const done: SearchResult[] = [];

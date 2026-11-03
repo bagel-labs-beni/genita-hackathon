@@ -165,14 +165,23 @@ test("11/3 S5: the prefetch searches from what was said (no frames, 5 lanes); GE
   assert.equal(prefetchFrames({}), false);
   assert.equal(prefetchHedge(3, {}), 5);
   assert.equal(prefetchHedge(3, { GENITA_PREFETCH_HEDGE: "2" }), 2);
-  const said = "The first one, the white top.";
+  const said = "The white top, for sure.";
+  {
+    // "the first one" names nothing the search could go by: frames stay (Codex P2)
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one, this or that?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve("Definitely the first one.") });
+    await r.settle(); await sleep(30);
+    assert.ok(searches[0].includes("V0hJVEU="), "frames kept when the pick is not named");
+  }
   {
     const { v, searches } = vendors(10);
     const { r } = runner(v);
     r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve(said) });
     await r.settle(); await sleep(30);
     assert.ok(!searches[0].includes("V0hJVEU=") && !searches[0].includes("QkxBQ0s="), "no frames by default");
-    assert.ok(searches[0].includes("the white top"), "the pick as said");
+    assert.equal(searches.filter((x) => x.includes("outfit they just picked")).length, 5, "5 lanes really run (Codex P2: the search capped them at 3)");
+    assert.ok(searches[0].includes("white top"), "the pick as said");
   }
   const prev = process.env.GENITA_PREFETCH_FRAMES;
   process.env.GENITA_PREFETCH_FRAMES = "1";
