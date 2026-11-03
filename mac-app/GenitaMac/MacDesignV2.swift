@@ -266,11 +266,18 @@ struct MacASCIIOnlyInput: ViewModifier {
         content
             .onChange(of: focused, initial: true) { _, on in if on { Self.restrict() } }
     }
-    static func restrict() {
-        // after SwiftUI hands focus to the field editor
-        DispatchQueue.main.async {
-            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return }
-            editor.inputContext?.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
+    /// After SwiftUI hands focus to the field editor — that can take a few run-loop turns while a sheet opens, so it
+    /// tries again for about half a second instead of giving up after one (a missed first try left Korean on).
+    static func restrict(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0 : 0.05)) {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor, let input = editor.inputContext else {
+                if attempt < 10 { restrict(attempt: attempt + 1) }
+                return
+            }
+            if input.allowedInputSourceLocales != [NSAllRomanInputSourcesLocaleIdentifier] {
+                input.discardMarkedText() // a half-typed Hangul syllable must not land in the field
+                input.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
+            }
         }
     }
 }
