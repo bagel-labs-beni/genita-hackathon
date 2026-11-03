@@ -60,6 +60,7 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
+import { moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -295,6 +296,8 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** this call's number for the account (personalize growth.calls), for the engine's closeness line (P1) */
+  private callNumber: number | undefined;
   /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
   private backchannel: Backchannel | null = backchannelOn()
     ? new Backchannel({
@@ -677,6 +680,7 @@ export class Session {
         // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
         if (p) this.user = { ...this.user, profile: p.profile || undefined };
         if (p?.nod) this.nod = p.nod;
+        if (p?.calls) this.callNumber = p.calls;
         if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
         this.taste = p?.taste ?? [];
       } catch (err) {
@@ -1069,6 +1073,8 @@ export class Session {
       this.ask = null;
       this.nod = null;
       void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
+      // the stored count goes back one: keep this call's closeness stage the same as the device that takes it over (Codex P2)
+      if (this.callNumber) this.callNumber = Math.max(1, this.callNumber - 1);
     }
     return this.watch;
   }
@@ -1244,7 +1250,7 @@ export class Session {
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
     let opener: string | undefined;
     if (turn.greeting) {
@@ -1258,7 +1264,7 @@ export class Session {
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
-      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null });
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
     }
     let perception: string | undefined;
@@ -1267,7 +1273,19 @@ export class Session {
       perception = this.perception?.contextLine() ?? undefined;
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
-    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint };
+    // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
+    let turnLine: string | undefined;
+    if (!turn.greeting && !turn.cue && userText) {
+      const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
+      turnLine = turnHints({
+        callNumber: this.callNumber,
+        lastReply: this.recentReplies.at(-1),
+        userText,
+        mood: moodLine(moodFrom(userLines)),
+        remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
+      }) ?? undefined;
+    }
+    return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
   }
 
   private stopInitiative(): void {
@@ -1389,7 +1407,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text) : {};
     const base = buildInstructions({
       persona,
       user: this.user,
@@ -1725,6 +1743,16 @@ export class Session {
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
+        // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
+        // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
+        const prevSaid = sentences.at(-1)?.display;
+        // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
+        const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
+        const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
+        if (this.v1 && tts && prevSaid && lead && lead === prevLead && isInterjectionOnly(prevSaid) && !interpret && !self) {
+          const once = avoidRepeatedOpener(tts, [prevSaid]);
+          if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
           onlyOpener ??= raw;
