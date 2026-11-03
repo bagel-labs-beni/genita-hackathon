@@ -121,8 +121,10 @@ import UniformTypeIdentifiers
             if let orb {
                 let resource = orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round"
                 if stage == .preparing {
-                    // I03: the orb moves while the profile is read (Chelsea 11/4)
-                    ReadingOrb(node: orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(orb, width: width, top: bodyTop)
+                    // I03: the orb moves while the profile is read (Chelsea 11/4); it sits 24 pt under the subtitle
+                    // and shrinks on short screens instead of running into the CTA (I03 spacing, Chelsea 11/4)
+                    let fit = Self.readingFit(orb: orb, nodes: nodes, limit: contentBottom - bodyTop)
+                    ReadingOrb(node: fit.orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(fit.orb, width: width, top: bodyTop)
                 } else {
                     SoulOrbSlot(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
                 }
@@ -157,7 +159,7 @@ import UniformTypeIdentifiers
                         if phase == .background { leftApp = true }
                         else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
                     }
-            case .preparing: processing(width: width, top: bodyTop)
+            case .preparing: processing(width: width, top: bodyTop, shift: orb.map { Self.readingFit(orb: $0, nodes: nodes, limit: contentBottom - bodyTop).shift } ?? 0)
             case .image: imageContent(width: width, top: bodyTop)
             case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
             case .summary: summaryContent(width: width, top: bodyTop, stretch: stretch)
@@ -295,16 +297,41 @@ import UniformTypeIdentifiers
                 .background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityIdentifier(title == "Open ChatGPT" ? "openChatGPT" : "openClaude")
     }
-    @ViewBuilder func processing(width: CGFloat, top: CGFloat) -> some View {
+    @ViewBuilder func processing(width: CGFloat, top: CGFloat, shift: CGFloat = 0) -> some View {
+        // the reading block (title, line, bar, %) follows the orb down by `shift`; the heading stays
         ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
-            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top)
+            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
         }
         let track = nodes.first { $0.name == "Rectangle 305" }!
         let fill = nodes.first { $0.name == "Rectangle 306" }!
         let trackWidth = width - 117
-        DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + track.h / 2)
+        DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + shift + track.h / 2)
         let fillWidth = referenceViewport ? fill.w : trackWidth * CGFloat(progress)
-        DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + fill.h / 2)
+        DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + shift + fill.h / 2)
+    }
+
+    /// I03 spacing (Chelsea 11/4, deviates from the Figma soul-orb node): the orb's frame starts 24 pt under the subtitle
+    /// ("Using the profile you chose to share."), the reading block keeps its Figma distance below the orb, and when
+    /// the block would pass `limit` (the content bottom above the CTA, in body coordinates) the orb shrinks evenly
+    /// about its centre line instead of overlapping. Returns the placed orb node and how far the reading block moves.
+    static let orbGapBelowSubtitle: CGFloat = 24
+    static let readingBlockTop: CGFloat = 400
+    nonisolated(unsafe) static var orbSpacing = true
+    static func readingFit(orb: DesignNode, nodes: [DesignNode], limit: CGFloat) -> (orb: DesignNode, shift: CGFloat, scale: CGFloat) {
+        guard orbSpacing,
+              let subtitle = nodes.first(where: { $0.type == "text" && $0.y > 150 && $0.y < orb.y + 40 && $0.fontFamily != "KMU80 TTF" }),
+              let reading = nodes.filter({ $0.type == "text" && $0.y >= readingBlockTop && $0.y < 650 }).min(by: { $0.y < $1.y }),
+              let blockBottom = nodes.filter({ $0.type == "text" && $0.y >= readingBlockTop && $0.y < 650 }).map({ $0.y + $0.h }).max()
+        else { return (orb, 0, 1) }
+        let orbTop = subtitle.y + subtitle.h + orbGapBelowSubtitle
+        let toReading = reading.y - orb.y            // Figma: the reading title sits this far below the orb's top
+        let block = blockBottom - reading.y           // title … % label
+        let scale = max(0.05, min(1, (limit - orbTop - block) / toReading))
+        var placed = orb
+        placed.w = orb.w * scale; placed.h = orb.h * scale
+        placed.x = orb.x + (orb.w - placed.w) / 2
+        placed.y = orbTop
+        return (placed, orbTop + toReading * scale - reading.y, scale)
     }
     func accept(_ data: Data) {
         // B7: one companion, the face can't change once it's made
