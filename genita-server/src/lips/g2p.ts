@@ -7,8 +7,8 @@
  * (first pronunciation, no stress digits), laid over that word's own time span:
  *   - same count as the aligner gave → the aligner's phoneme boundaries, new labels;
  *   - different count → the word span split again, vowels weighted 1.5 against consonants.
- * Unknown words keep the aligner's labels. No model: a static open dictionary (data/cmudict-1st.txt.gz,
- * CMU Pronouncing Dictionary 0.7b, BSD-2 — data/cmudict-LICENSE), loaded once on first use (~126k words).
+ * Unknown words keep the aligner's labels. No model: a static open dictionary (dict/cmudict-1st.txt.gz,
+ * CMU Pronouncing Dictionary 0.7b, BSD-2 — dict/cmudict-LICENSE), loaded once on first use (~126k words).
  * Switch: GENITA_LIPS_G2P, default on; "0" / "false" / "off" keeps the aligner's labels.
  */
 import { readFileSync } from "node:fs";
@@ -22,7 +22,7 @@ export function cmuDict(): Map<string, string[]> {
   if (dict) return dict;
   const m = new Map<string, string[]>();
   try {
-    const raw = gunzipSync(readFileSync(new URL("./data/cmudict-1st.txt.gz", import.meta.url))).toString("utf8");
+    const raw = gunzipSync(readFileSync(new URL("./dict/cmudict-1st.txt.gz", import.meta.url))).toString("utf8");
     for (const line of raw.split("\n")) {
       const sp = line.indexOf(" ");
       if (sp > 0) m.set(line.slice(0, sp), line.slice(sp + 1).split(" "));
