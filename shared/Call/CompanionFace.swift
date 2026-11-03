@@ -105,7 +105,8 @@ struct CompanionFaceLoader: Sendable {
         do { body = try await get(base.appending(path: "v1/companion/prep"), token: token, what: "prep").0 }
         catch LoadError.status(_, 404) { return .none }   // no companion on this account
         guard let prep = try? JSONDecoder().decode(Prep.self, from: body), !prep.unreadable else { return .none }
-        guard let manifest = prep.face else { return .pending }   // prep still running: the face comes later
+        // prep still running: the face comes later; prep failed (PREP-1e): nothing comes until a Try again
+        guard let manifest = prep.face else { return prep.status == "failed" ? .none : .pending }
         let key = Self.cacheKey(subject: CallController.tokenSubject(token) ?? "anon", manifest: manifest)
         if key == currentKey { return .unchanged }
 
@@ -166,12 +167,15 @@ struct CompanionFaceLoader: Sendable {
 
     private struct Prep: Decodable {
         var face: FaceManifest?
+        /// running | ready | failed
+        var status: String?
         /// The server named a face the app can't read: the still stays (and asking again won't change that).
         var unreadable = false
-        enum CodingKeys: CodingKey { case face }
+        enum CodingKeys: CodingKey { case face, status }
         init(from decoder: Decoder) throws {
             // A face the app can't read is treated as no face: the still stays.
             let c = try? decoder.container(keyedBy: CodingKeys.self)
+            status = try? c?.decodeIfPresent(String.self, forKey: .status)
             face = try? c?.decodeIfPresent(FaceManifest.self, forKey: .face)
             if face == nil, let c, c.contains(.face), (try? c.decodeNil(forKey: .face)) == false { unreadable = true }
         }

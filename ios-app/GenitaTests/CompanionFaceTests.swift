@@ -322,6 +322,9 @@ import XCTest
         let unreadable = Data(#"{"status":"ready","face":{"bogus":1}}"#.utf8)
         let (bad, _) = stubServer(prep: unreadable)
         guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: bad).load(currentKey: nil) else { return XCTFail("an unreadable face is no face") }
+        let failed = Data(#"{"status":"failed","face":null}"#.utf8)
+        let (gaveUp, _) = stubServer(prep: failed)
+        guard case .none = try await CompanionFaceLoader(endpoint: endpoint, cacheRoot: tempDir(), fetch: gaveUp).load(currentKey: nil) else { return XCTFail("failed prep: stop asking") }
     }
 
     func testLoaderNeverSendsTheTokenToAnotherHost() async throws {
