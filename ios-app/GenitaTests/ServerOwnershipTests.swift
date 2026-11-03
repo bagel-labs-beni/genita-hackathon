@@ -76,6 +76,13 @@ final class ServerOwnershipTests: XCTestCase {
         XCTAssertFalse(talking(seen, epoch: 8))
         seen.applied(owner: .phone, epoch: 9)
         XCTAssertFalse(PhoneCallPresence.live(owner: .phone, epoch: 9, peerActive: true, peerInCall: false, seen: seen), "a server that reports calls wins")
+        // the state an older server hands over on connect is not a take this Mac watched (Codex P2 on #511)
+        seen.applied(owner: .phone, epoch: 10, trigger: "current")
+        XCTAssertFalse(talking(seen, epoch: 10), "iPhone open without a call, Mac connects: not 'Talking'")
+        seen.applied(owner: .phone, epoch: 11, trigger: "sync")
+        XCTAssertFalse(talking(seen, epoch: 11))
+        seen.applied(owner: .phone, epoch: 12, trigger: "start")
+        XCTAssertTrue(talking(seen, epoch: 12), "a call start the Mac heard about live")
     }
 
     func testOwnClaimIsAClaimAndALearnedOneIsAHello() {

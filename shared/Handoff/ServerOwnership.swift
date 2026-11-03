@@ -133,6 +133,8 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
     var onMessage: (([String: Any]) -> Void)?
     /// The trigger reported with this device's next claim (`button`, `touch`, `continue`).
     var nextTrigger = "continue"
+    /// The trigger of the last `ownership` event (nil after a `claim.result`), read while its claim is applied.
+    private(set) var lastOwnershipTrigger: String?
     private(set) var active = true
     private var wanted = false
     private var task: URLSessionWebSocketTask?
@@ -202,6 +204,11 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                     if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         self.onMessage?(object)
                         if let event = PresenceEvent(object) {
+                            switch event {
+                            case let .ownership(_, _, trigger): self.lastOwnershipTrigger = trigger
+                            case .claimResult: self.lastOwnershipTrigger = nil
+                            default: break
+                            }
                             for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
                         }
                     }
@@ -271,8 +278,12 @@ enum PhoneCallPresence {
 /// goes offline, or the account changes, so "Talking on your iPhone" never outlives the call it came from.
 struct PhoneCallLatch: Equatable {
     private(set) var epoch: Int?
-    /// A claim this device applied (server, local link or its own tap).
-    mutating func applied(owner: ConversationDevice, epoch: Int) { self.epoch = owner == .phone && epoch > 0 ? epoch : nil }
+    /// A claim this device applied (server, local link or its own tap). `trigger` is the server's: a `current` or `sync`
+    /// state handed over on (re)connect is not a take this device watched, so it never latches (Codex P2 on #511).
+    mutating func applied(owner: ConversationDevice, epoch: Int, trigger: String? = nil) {
+        let watched = trigger != "current" && trigger != "sync"
+        self.epoch = watched && owner == .phone && epoch > 0 ? epoch : nil
+    }
     /// The iPhone's presence changed: out of front or offline ends whatever call was shown.
     mutating func peer(active: Bool) { if !active { epoch = nil } }
     mutating func reset() { epoch = nil }

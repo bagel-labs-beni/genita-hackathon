@@ -180,14 +180,15 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
+            let trigger=server.lastOwnershipTrigger
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
             if pending != nil || motion != nil {
                 let generation=accountScope.generation
                 DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
                     guard let self,self.accountScope.accepts(generation) else{return}
-                    self.ownership.receive(claim)
+                    self.receiveServerClaim(claim,trigger:trigger)
                 }
-            } else {ownership.receive(claim)}
+            } else {receiveServerClaim(claim,trigger:trigger)}
         case .moveRequested:
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
         case .moveFailed:
@@ -195,8 +196,13 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
         }
     }
+    /// The trigger of the server claim being applied now (`current`/`sync` on connect are not a watched take).
+    private var applyingTrigger:String?
+    private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
+        applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
+    }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
-        phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch)
+        phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
             sharingStopped=false;showCompanion()
             MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
