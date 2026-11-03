@@ -451,3 +451,69 @@ struct LipThinTests {
         #expect(!b.lockY)
     }
 }
+
+/// 11/3 night stillness gate (CI): with the served "still face" map only the mouth and jaw may move. Renders the
+/// animal fixture talking (loud / quiet syllables) and measures the frame-to-frame |diff| in bands that are never
+/// mouth or jaw: the top 40 % (background, ears, eyes, forehead) and the bottom 12 % (chest). Background level ≈ 0.
+struct StillnessGateTests {
+    static func grey(_ img: CGImage) -> [Float] {
+        let w = img.width, h = img.height
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let ctx = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return (0..<(w * h)).map { i in 0.299 * Float(px[i * 4]) + 0.587 * Float(px[i * 4 + 1]) + 0.114 * Float(px[i * 4 + 2]) }
+    }
+
+    @Test func onlyTheMouthAndJawMoveWithTheStillFaceMap() throws {
+        let src = Bundle.module.url(forResource: "face-flow-animal", withExtension: nil, subdirectory: "Fixtures")!
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("still-gate-\(UUID().uuidString)")
+        try FileManager.default.copyItem(at: src, to: dir)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let mURL = dir.appendingPathComponent("manifest.json")
+        var m = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: mURL)) as? [String: Any])
+        var flow = try #require(m["flow"] as? [String: Any])
+        var map = try #require(flow["map"] as? [String: Any])
+        // what the server serves (prep face.ts STILL_FACE)
+        map["alive"] = ["headX": 0, "headRoll": 0, "nodPx": 0, "browPx": 0, "lockY": true]
+        map["brow"] = ["px": 0]
+        map["cheek"] = ["spread": 0, "pull": 0, "lift": 0, "cheek": 0, "cheekW": 0, "naso": 0, "nasoW": 0]
+        flow["map"] = map; m["flow"] = flow
+        try JSONSerialization.data(withJSONObject: m).write(to: mURL)
+
+        let set = try FaceSet(directory: dir)
+        let r = FaceRenderer(faceSet: set, outputSize: CGSize(width: 270, height: 480), seed: 2)
+        let tl = LipTimeline()
+        var pcm = Data()
+        for i in 0..<8 { pcm.append(lipTestPCM(amplitude: i % 2 == 0 ? 0.5 : 0.02, ms: 250)) }
+        tl.appendPCM(pcm, offsetMs: 0)
+        tl.appendText("a moment of the warm afternoon light")
+        tl.finishAudio()
+        var prev: [Float]? = nil
+        var top: [Float] = [], bottom: [Float] = [], mouthMoved = false
+        let w = 270, h = 480, yTop = Int(Double(h) * 0.40), yBot = Int(Double(h) * 0.88)
+        for i in 0..<50 {
+            let t = Double(i) / 25
+            let img = try #require(r.render(at: t, lip: tl.sample(atMs: t * 1000 + r.lipLookaheadMs)))
+            let g = Self.grey(img)
+            if let p = prev {
+                var a: Float = 0, b: Float = 0, c: Float = 0
+                for y in 0..<yTop { for x in 0..<w { a += abs(g[y * w + x] - p[y * w + x]) } }
+                for y in yBot..<h { for x in 0..<w { b += abs(g[y * w + x] - p[y * w + x]) } }
+                for y in yTop..<yBot { for x in 0..<w { c += abs(g[y * w + x] - p[y * w + x]) } }
+                top.append(a / Float(yTop * w)); bottom.append(b / Float((h - yBot) * w))
+                if c / Float((yBot - yTop) * w) > 0.2 { mouthMoved = true }
+            }
+            prev = g
+        }
+        // blink frames: drop the frames above 4x the median of the top band
+        let med = top.sorted()[top.count / 2]
+        let keep = top.indices.filter { top[$0] <= 4 * max(med, 0.02) }
+        let topMean = keep.map { top[$0] }.reduce(0, +) / Float(max(1, keep.count))
+        let botMean = bottom.reduce(0, +) / Float(max(1, bottom.count))
+        print(String(format: "STILL_GATE top %.3f bottom %.3f (frames kept %d/%d) mouth moved %@", topMean, botMean, keep.count, top.count, mouthMoved ? "yes" : "no"))
+        #expect(mouthMoved)
+        #expect(topMean <= 0.10)
+        #expect(botMean <= 0.10)
+    }
+}
