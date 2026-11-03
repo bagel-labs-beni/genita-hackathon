@@ -585,3 +585,31 @@ test("structural (#354 repro e128827): an 'I'm …ing' opener is held — droppe
     assert.deepEqual(j.push("Go with the black one.").speak, ["Go with the black one."], opener);
   }
 });
+
+test("narration (Codex r13): '… your notes and you should wear the trench' keeps the advice", () => {
+  assert.equal(guardSentence("Let me check your notes and you should wear the trench.", none), null);
+});
+
+test("Codex r14: 'My guess is the blue line' and 'I'm seeing onions' are answers; '… your notes and the black one fits best' keeps the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const line of ["My guess is the blue line is fastest.", "I'm seeing onions, tomatoes and garlic.", "I'm loving the trench on you."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.onToolCall().speak, ...j.push("It takes ten minutes.").speak, ...j.finish().speak];
+    assert.ok(out.join(" ").includes(line), line);
+  }
+  assert.equal(guardSentence("Let me check your notes and the black one fits best.", none), null);
+  assert.equal(guardSentence("I'm weighing the trench and denim against what suits you best.", none), null, "the guard leaves it to the structural hold");
+});
+
+test("Codex r15 + bug-fix fcece2f: a stated choice is never dropped; a wait that promises a lookup is, tool or no tool", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const line of ["I'm going with the trench tonight.", "I'm leaning toward the trench tonight."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.onToolCall().speak, ...j.push("It matches that understated style you like.").speak, ...j.finish().speak];
+    assert.ok(out.join(" ").includes(line), line);
+  }
+  assert.ok(isToolNarration("I'll pick between the two — give me a sec to remember your vibe."));
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick between the two — give me a sec to remember your vibe.").speak, ...j.push("Go with the trench, Chelsea.").speak, ...j.finish().speak];
+  assert.equal(out.join(" "), "Go with the trench, Chelsea.");
+});
