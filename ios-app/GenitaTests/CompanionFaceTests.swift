@@ -296,7 +296,8 @@ import XCTest
         XCTAssertGreaterThan(prepCalls.value, 1, "the call screen keeps asking while the face is being made")
 
         made.value = true   // prep finished mid-call
-        for _ in 0..<100 where call.face == nil { try await Task.sleep(for: .milliseconds(50)) }
+        // building the fixture face set takes 17–48 s on the CI simulator (the loader tests): wait for it, ≤ 180 s
+        for _ in 0..<1800 where call.face == nil { try await Task.sleep(for: .milliseconds(100)) }
         XCTAssertNotNil(call.face, "the moving face arrives in the same call")
 
         // the call screen goes away before a face exists: no more asking
