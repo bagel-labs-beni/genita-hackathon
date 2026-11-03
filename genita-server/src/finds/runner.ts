@@ -65,6 +65,25 @@ const PRODUCT_WORD = /^(shoes?|sneakers?|boots?|loafers?|heels?|sandals?|bags?|b
 
 /** intent.ts's shopping nouns too ("blazer", "parka", "cardigan"…) */
 const ITEM_NOUN = /^(blazers?|parkas?|vests?|overshirts?|t-?shirts?|tees?|cardigans?|trousers|shorts|totes?|caps?|scarves|mugs?|chairs?|lamps?|outfits?)$/;
+/**
+ * Capitalized words mid-sentence ("some Nike shoes"), lowercased. Not one: a sentence start, "I…", or a name being
+ * spoken to ("Hey Rio, …", "Okay Rio, find…": after a greeting word, or right before a comma).
+ */
+export function brandsIn(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/([A-Z][a-zA-Z&'-]+)/g)) {
+    const at = m.index ?? 0;
+    const before = text.slice(0, at).trimEnd();
+    const word = m[1];
+    if (!before || /[.!?]$/.test(before) || /^I('|$)/.test(word)) continue;
+    if (/\b(hey|hi|hello|okay|ok|so|thanks|yo)$/i.test(before) || text.slice(at + word.length).startsWith(",")) continue;
+    out.push(word.toLowerCase());
+  }
+  return out;
+}
+
+const EXCLUDE = /\b(no|not|without|non|except|other than|instead of|aren't|isn't|don't|nothing)\b/;
+const MATERIAL = /^(leather|suede|canvas|wool|cotton|linen|denim|silk|cashmere|nylon|vegan|patent|rubber|knit|velvet|satin|mesh)$/;
 const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|neon|silver|gold)$/;
 
 /** "Still hunting for the right pair, one sec." (shoes) / "…the right jacket…" */
@@ -287,6 +306,12 @@ export class FindsRunner {
     // a color or a price it never had in view (said, or the account's own taste) → fresh search
     if (named.some((w) => COLOR.test(w) && !p.inView.includes(w))) return null;
     if (/\$\s?\d|\bunder \d|\bcheap/.test(lower)) return null;
+    // anything narrower than "what goes with it" is its own search (Codex P2 #366): an exclusion, a material,
+    // a size, or a brand (a capitalized word mid-sentence) the prefetch never had in view
+    if (EXCLUDE.test(lower)) return null;
+    if (named.some((w) => MATERIAL.test(w) && !p.inView.includes(w))) return null;
+    if (/\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower)) return null;
+    if (brandsIn(text).some((w) => !p.inView.includes(w))) return null;
     this.prefetched = null;
     return p;
   }

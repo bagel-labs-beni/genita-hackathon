@@ -205,3 +205,34 @@ test("coordinator: nothing by ~30 s → one natural 'still hunting' line, not re
   await r2.settle(); await sleep(300);
   assert.ok(!said2.some((t) => /still hunting/i.test(t)), "card first: no filler");
 });
+
+test("Codex P2 (#366 r4): an exclusion, a material, a size or a brand the prefetch never had in view → a fresh search; the demo line still reuses", async () => {
+  for (const ask of [
+    "Find me dark brown shoes with no leather",
+    "Find me dark brown shoes without laces",
+    "Can you find me suede shoes for this?",
+    "Find me dark brown shoes in size 8",
+    "Find me some Nike shoes that go with this",
+    "Find me shoes that aren't too formal, not loafers",
+  ]) {
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+    await r.settle(); await sleep(30);
+    const pre = searches.length;
+    r.onTurn({ text: ask, frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+    await r.settle();
+    assert.equal(searches.length, pre + 1, ask);
+  }
+  // SAID mentions "leather accessories": leather was in view, so "leather shoes" still fits; the scripted S5 line fits too
+  for (const ask of ["Can you find me some dark brown shoes that go with this?", "Find me dark brown leather shoes for this", "Hey Rio, can you find me some dark brown shoes that go with this?", "Okay Rio, find me dark brown shoes. I'm going out tonight."]) {
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+    await r.settle(); await sleep(30);
+    const pre = searches.length;
+    r.onTurn({ text: ask, frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+    await r.settle();
+    assert.equal(searches.length, pre, `reused: ${ask}`);
+  }
+});
