@@ -25,7 +25,8 @@ const DANGLING_RE = /\[[A-Za-z\s]{0,30}$|<\s*[A-Za-z_-]{0,24}$/;
  * Spark with web_search on): never spoken ("two hundred eighty-one thousand…") or shown. A marker cut off by the end
  * of the stream ("【281835") goes too.
  */
-const CITATION_RE = /【[^】\n]{0,80}】|【[^】\n]{0,80}$/g;
+// only the marker shape (a number, then †…): 【AB1234】 or 【오늘 일정】 are text and stay (Codex #430 P2)
+const CITATION_RE = /【\d{1,12}(?:†[^】\n]{0,60})?】|【\d{1,12}(?:†[^】\n]{0,60})?$/g;
 
 const tidy = (s: string) => s.replace(/\s{2,}/g, " ").replace(/\s+([,.!?…])/g, "$1").trim();
 

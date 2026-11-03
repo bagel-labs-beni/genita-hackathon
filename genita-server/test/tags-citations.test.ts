@@ -16,5 +16,9 @@ test("a citation marker cut off by the end of the stream goes too", () => {
 });
 
 test("ordinary brackets and text are untouched", () => {
+  // Codex #430 P2: 【…】 that are not citation markers are text
+  assert.equal(parseTaggedSentence("예약 코드는 【AB1234】예요.").displayText, "예약 코드는 【AB1234】예요.");
+  assert.equal(parseTaggedSentence("【오늘 일정】").displayText, "【오늘 일정】");
+  assert.equal(parseTaggedSentence("문구는 【환불 불가입니다.").displayText, "문구는 【환불 불가입니다.");
   assert.equal(parseTaggedSentence("<happy> [smile] Three bucks, no cap.").displayText, "Three bucks, no cap.");
 });
