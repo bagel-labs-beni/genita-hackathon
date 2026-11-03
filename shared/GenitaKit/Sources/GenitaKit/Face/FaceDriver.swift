@@ -112,9 +112,13 @@ public final class FaceDriver: ObservableObject {
     }
 
     /// Watch "inhale" backchannel (#613): the brows go up once (0.3 s) now, on the render clock — no reply needed.
-    public func flashBrows() {
+    /// Ignored while a reply is playing (the server doesn't send it then; the talking face keeps its own brows).
+    /// Returns whether the flash was started.
+    @discardableResult public func flashBrows() -> Bool {
+        if currentUtteranceId != nil, playbackClock() != nil { return false }
         let r = renderer, t = now()
         queue.async { r.flashBrows(at: t) }
+        return true
     }
 
     public func setEmotion(_ emotion: String?) {

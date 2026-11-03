@@ -222,6 +222,21 @@ struct FaceDriverTests {
         #expect(meanDiff(bytes(d.renderFrame(at: 1, playbackMs: 300)), rest) == 0)
     }
 
+    /// watch "inhale" (#613): ignored while a reply plays (watch lane: the app must not stack it on the talking face)
+    @Test func anInhaleIsIgnoredWhileAReplyPlays() throws {
+        let d = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 5)
+        var playing: Double? = nil
+        d.playbackClock = { playing }
+        #expect(d.flashBrows())                     // idle: brows go up
+        guard case let .replyDelta(delta) = try event(#"{"type":"reply.delta","utteranceId":4,"text":"hi"}"#) else { Issue.record("decode"); return }
+        d.handle(replyDelta: delta)
+        #expect(d.flashBrows())                     // a reply was announced but nothing plays yet
+        playing = 300
+        #expect(!d.flashBrows())                    // the reply is playing
+        d.cancel(utteranceId: 4)
+        #expect(d.flashBrows())                     // barge-in / done: back to idle
+    }
+
     @Test func alignerTimingsReachTheMouth() throws {
         let driver = FaceDriver(faceSet: animalSet, outputSize: CGSize(width: 90, height: 160), seed: 1)
         func audio(_ id: Int) throws -> ServerEvent.Audio {
