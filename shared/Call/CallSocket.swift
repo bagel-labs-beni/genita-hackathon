@@ -14,8 +14,22 @@ final class CallSocket: NSObject, URLSessionWebSocketDelegate, @unchecked Sendab
     private var task: URLSessionWebSocketTask?
     private let queue = DispatchQueue(label: "ai.thebeni.genita.call-socket")
     private var closed = false
+    #if DEBUG
+    /// `--browser-preview` (Appetize): the recorded session answers instead of a server (BrowserPreview.swift).
+    private var replay: PreviewReplay?
+    #endif
 
     func connect(url: URL, token: String?) {
+        #if DEBUG
+        if BrowserPreview.isActive {
+            let session = ProcessInfo.processInfo.environment["GENITA_PREVIEW_SESSION"] ?? "r1"
+            MainActor.assumeIsolated {
+                replay = PreviewReplay(session: session) { [weak self] message in self?.onMessage?(message) }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self.onOpen?() } }
+            }
+            return
+        }
+        #endif
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         if let token, !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
@@ -31,16 +45,32 @@ final class CallSocket: NSObject, URLSessionWebSocketDelegate, @unchecked Sendab
     }
 
     func send(_ message: ClientMessage) {
+        #if DEBUG
+        if BrowserPreview.isActive {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.replay?.handle(message) } }
+            return
+        }
+        #endif
         guard let text = try? message.json() else { return }
         queue.async { [weak self] in self?.task?.send(.string(text)) { _ in } }
     }
 
     func send(audio: Data) {
+        #if DEBUG
+        if BrowserPreview.isActive { return }
+        #endif
         queue.async { [weak self] in self?.task?.send(.data(audio)) { _ in } }
     }
 
     /// Ends the call from the app side: `stop`, then a normal close.
     func close() {
+        #if DEBUG
+        if BrowserPreview.isActive {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.replay?.stop() } }
+            closed = true
+            return
+        }
+        #endif
         queue.async { [weak self] in
             guard let self, !self.closed else { return }
             self.closed = true

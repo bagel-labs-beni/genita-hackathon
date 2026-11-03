@@ -391,7 +391,7 @@ enum CallStop: Equatable {
     static var micWasOn: Bool {
         get {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--uitesting") { return false }
+            if ProcessInfo.processInfo.arguments.contains("--uitesting") || BrowserPreview.isActive { return false }
             #endif
             return UserDefaults.standard.bool(forKey: "genita.mic.lastOn")
         }

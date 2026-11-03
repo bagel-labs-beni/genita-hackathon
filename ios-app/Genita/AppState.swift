@@ -154,22 +154,7 @@ struct SavedSetup: Codable {
             onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("stub-token")))
         }
         if let raw = ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"], let reviewStage = Stage(rawValue: raw) {
-            let variant = ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? ""
-            setup.name = variant == "empty" ? "" : "Dyno"
-            // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
-            setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
-            setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
-            setup.voice = variant == "empty" ? nil : 0
-            setup.depth = SetupDepth(rawValue: variant) ?? .right
-            if variant != "empty" {
-                setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
-                setup.boundaries = ["Message anyone for me"]
-                setup.presence = ["Calm"]
-            }
-            if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
-               let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
-            else { setup.imageData = nil }
-            setup.stage = reviewStage
+            applyReviewFixture(stage: reviewStage, variant: ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? "")
         }
         #endif
     }
@@ -316,3 +301,27 @@ struct SavedSetup: Codable {
     func toggleBoundary(_ value: String) { if setup.boundaries.contains(value) { setup.boundaries.remove(value) } else { setup.boundaries.insert(value) } }
     func togglePresence(_ value: String) { if setup.presence.contains(value) { setup.presence.remove(value) } else { setup.presence.insert(value) } }
 }
+
+#if DEBUG
+extension AppState {
+    /// What the app knows at review stage `reviewStage` (name, imported style, answers, face), with the demo companion's name.
+    /// One source for the GENITA_REVIEW_STAGE launch environment (UI tests, screen review) and the browser preview menu.
+    func applyReviewFixture(stage reviewStage: Stage, variant: String) {
+        setup.name = variant == "empty" ? "" : "Dyno"
+        // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
+        setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
+        setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
+        setup.voice = variant == "empty" ? nil : 0
+        setup.depth = SetupDepth(rawValue: variant) ?? .right
+        if variant != "empty" {
+            setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
+            setup.boundaries = ["Message anyone for me"]
+            setup.presence = ["Calm"]
+        }
+        if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+        else { setup.imageData = nil }
+        setup.stage = reviewStage
+    }
+}
+#endif

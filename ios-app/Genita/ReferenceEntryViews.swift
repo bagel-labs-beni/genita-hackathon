@@ -84,8 +84,9 @@ struct ReferenceSignInView: View {
         }
         .alert("\(provider ?? "") sign-in", isPresented: Binding(get: { provider != nil }, set: { if !$0 { provider = nil } })) {
             #if DEBUG
-            // UI-test hook only: Release builds have no way past A02 without a real account, so CS01 can never be skipped (#218)
-            Button("Continue in demo") { model.signedIn(consented: true); provider = nil }
+            // UI-test hook only: Release builds have no way past A02 without a real account, so CS01 can never be skipped (#218).
+            // Appetize preview: the demo path still goes through the consent screen (CS01)
+            Button("Continue in demo") { model.signedIn(consented: !BrowserPreview.isActive); provider = nil }
             Button("Cancel", role: .cancel) { provider = nil }
             #else
             Button("OK", role: .cancel) { provider = nil }
@@ -113,7 +114,13 @@ struct ReferenceSignInView: View {
 
     /// Same white button as Apple / Google; envelope glyph in the logo's slot.
     var emailButton: some View {
-        Button { emailSheet = true } label: {
+        Button {
+            #if DEBUG
+            // Appetize preview: no real e-mail sign-in (it would sign in to the live service), the local demo instead
+            if BrowserPreview.isActive { provider = "Email"; return }
+            #endif
+            emailSheet = true
+        } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 12).fill(.white).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.9373), lineWidth: 2))
                 HStack(spacing: 11) {
@@ -140,6 +147,10 @@ struct ReferenceSignInView: View {
     /// F1-L2: native Sign in with Apple → session JWT. First sign-in (or no consent yet) → CS01, else back in.
     func signInWithApple() {
         guard !signingIn else { return }
+        #if DEBUG
+        // Appetize preview: no Apple login in a simulator stream, offer the local demo instead
+        if BrowserPreview.isActive { provider = "Apple"; return }
+        #endif
         signingIn = true
         Task { @MainActor in
             defer { signingIn = false }

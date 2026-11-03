@@ -7,6 +7,7 @@ extension AppState {
     /// UI tests and screen review run without a server unless they point one at the app (GENITA_API_URL).
     var serverWired: Bool {
         #if DEBUG
+        if BrowserPreview.isActive { return false } // Appetize preview: no server
         let env = ProcessInfo.processInfo.environment
         if env["GENITA_REVIEW_STAGE"] != nil && env["GENITA_API_URL"] == nil { return false }
         if ProcessInfo.processInfo.arguments.contains("--uitesting") && env["GENITA_API_URL"] == nil { return false }
