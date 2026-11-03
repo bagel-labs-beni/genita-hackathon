@@ -269,7 +269,7 @@ export function buildQuestionContext(c: {
   // AI sweep 11/3 (recall with the moment frame): "white twenty two went up", "Twenty eight went way up" — the visible
   // jersey was 25; small blurry numbers get misread
   // convo-intel eval 11/4: "why does he keep taking it off the heat?" got the caption read back, never the reason
-  out.push("If the user asks about it, answer in one short sentence. What's on screen: only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign). A comment or joke is fine, but it never adds an event, object or line that isn't in the frames or lines (nothing off screen or afterwards), and a quoted line stays exact. If they ask why or how, give the reason too: what the video said, or else common knowledge (\"so the eggs stay creamy\"), not the caption read back.");
+  out.push("If the user asks about it, answer in one short sentence. What's on screen: only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign). A comment or joke is fine, but it never adds an event, object or line that isn't in the frames or lines (nothing off screen or afterwards), and a quoted line stays exact. Plain conclusions from what was said or shown are fine and expected: answer them, don't hedge. If they ask why or how, give the reason too: what the video said, or else common knowledge (\"so the eggs stay creamy\"), not the caption read back.");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }
