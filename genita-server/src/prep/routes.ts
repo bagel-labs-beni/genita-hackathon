@@ -35,6 +35,16 @@ import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
+
+// D41: per-user queue for replacing a demo companion (two concurrent POST /v1/companion over the same demo)
+const demoSwaps = new Map<string, Promise<unknown>>();
+function demoSwap<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = demoSwaps.get(userId) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  demoSwaps.set(userId, next);
+  void next.finally(() => { if (demoSwaps.get(userId) === next) demoSwaps.delete(userId); }).catch(() => {});
+  return next;
+}
 import { PersonalizeError } from "../personalize/service.ts";
 import { getOps } from "../ops/limits.ts";
 
@@ -278,9 +288,15 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       // B7 keeps one companion per user: a judge's own companion takes the demo one's place, atomically and only
       // if that demo is still there (a concurrent create wins once; the other gets 409). Bad requests never get here.
       if (existing?.demo) {
-        // a resumed/retried prep of the demo must not keep writing (its saves are by user id) over the new companion
-        await runner.stop(user);
-        if (!(await d.store.replaceDemoCompanion(existing.id, c))) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
+        // one replacement per user at a time; inside it the demo is re-checked, so a losing request never stops the
+        // winner's new prep. A resumed/retried demo prep is stopped first (its saves are by user id).
+        const replaced = await demoSwap(user, async () => {
+          const now = await d.store.getCompanion(user);
+          if (!now?.demo || now.id !== existing.id) return false;
+          await runner.stop(user);
+          return d.store.replaceDemoCompanion(existing.id, c);
+        });
+        if (!replaced) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
         d.log("demo.replaced", { companion: existing.id });
       } else await d.store.putCompanion(c);
       d.log("voice.selected", { companionId: c.id, userId: user, voice_id: voice.id });

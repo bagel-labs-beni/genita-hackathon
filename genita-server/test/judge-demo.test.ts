@@ -258,6 +258,7 @@ test("two concurrent POST /v1/companion over the demo: one 201, the other 409, t
   assert.equal(now.body.id, won.id, "the 201 companion is the one that stays");
   assert.ok(await accounts.prepStore.getImage(won.imageId), "its photo stays");
   for (let i = 0; i < 100 && (await call("GET", "/v1/companion/prep", s.token)).body.status === "running"; i++) await new Promise((r) => setTimeout(r, 100));
+  assert.notEqual((await call("GET", "/v1/companion/prep", s.token)).body.status, "running", "the losing request never stops the winner's prep (Codex r2 11/3)");
 });
 
 test("making their own companion from the demo's own photo keeps the photo", async (t) => {
