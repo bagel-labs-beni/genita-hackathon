@@ -23,6 +23,9 @@ struct CallHUDGrid: Equatable {
     /// Bottom edge of the control rail and the self view: 828 on an iPhone 16 Pro (874 − 34 − 12).
     var baseline: CGFloat { size.height - safeBottom - 12 }
 
+    /// Camera box labels stay below this: the menu row band (safe top … safe top + 60) is the HUD's.
+    var labelFloor: CGFloat { safeTop + 60 }
+
     var menuCenter: CGPoint { CGPoint(x: Self.margin + Self.button / 2, y: rowY) }
 
     // MARK: control rail (camera, mic, more — top to bottom)

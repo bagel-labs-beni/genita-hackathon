@@ -171,55 +171,70 @@ import XCTest
         let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 80, height: 28)
         let menu = CameraBoxes.menuRect(grid: grid), pip = CameraBoxes.pipRect(view: view, top: top, sheetHalf: false)
         let open = CGRect(x: 120, y: 400, width: 100, height: 80)
-        XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip]), CGPoint(x: 120, y: 368), "free space: above, as boxes")
+        XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: grid.labelFloor, obstacles: [menu, pip]), CGPoint(x: 120, y: 368), "free space: above, as boxes")
         // the counter capture: a tomato right under the menu button — its label went onto the button
         let tomato = CGRect(x: 18, y: 110, width: 120, height: 115)
-        let t = CameraBoxes.labelOrigin(tomato, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip])
+        let t = CameraBoxes.labelOrigin(tomato, label: label, view: view, topInset: grid.labelFloor, obstacles: [menu, pip])
         XCTAssertFalse(CGRect(origin: t, size: label).intersects(menu), "not on the menu button")
         // a pepper under the PiP: the mask may be under it, its label may not
         let pepper = CGRect(x: 250, y: 170, width: 130, height: 120)
-        let p = CameraBoxes.labelOrigin(pepper, label: label, view: view, topInset: 96 + top, obstacles: [menu, pip])
+        let p = CameraBoxes.labelOrigin(pepper, label: label, view: view, topInset: grid.labelFloor, obstacles: [menu, pip])
         XCTAssertFalse(CGRect(origin: p, size: label).intersects(pip), "not under the PiP")
         XCTAssertTrue(CGRect(origin: .zero, size: view).contains(CGRect(origin: p, size: label)), "still on screen")
     }
 
     /// UI sweep 11/3: a box label never sits under the status line pill ("Green onion" behind "Listening").
-    /// HUD r01 A put the pill on the menu row, above the label floor (96 + top), on every screen size; it stays an obstacle.
+    /// HUD r01 A put the pill on the menu row, above the label floor (safe top + 60), on every screen size; it stays an obstacle.
     func testLabelsStayClearOfTheStatusLine() {
         for grid in [Self.grid16, CallHUDGrid(size: CGSize(width: 402, height: 874), safeTop: 62, safeBottom: 34), CallHUDGrid(size: CGSize(width: 375, height: 667), safeTop: 20, safeBottom: 0)] {
-            let top = grid.safeTop - 44
-            XCTAssertLessThanOrEqual(CameraBoxes.statusRect(grid: grid).maxY, 96 + top, "no label can reach the pill (\(grid.size))")
+            XCTAssertLessThanOrEqual(CameraBoxes.statusRect(grid: grid).maxY, grid.labelFloor, "no label can reach the pill (\(grid.size))")
+            XCTAssertLessThanOrEqual(CameraBoxes.menuRect(grid: grid).maxY - 6, grid.labelFloor, "nor the menu button")
         }
         let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
         let obstacles = [CameraBoxes.menuRect(grid: grid), CameraBoxes.statusRect(grid: grid), CameraBoxes.pipRect(view: view, top: top, sheetHalf: false)]
         let onion = CGRect(x: 150, y: 110, width: 100, height: 90)
-        let o = CameraBoxes.labelOrigin(onion, label: label, view: view, topInset: 96 + top, obstacles: obstacles)
+        let o = CameraBoxes.labelOrigin(onion, label: label, view: view, topInset: grid.labelFloor, obstacles: obstacles)
         XCTAssertFalse(CGRect(origin: o, size: label).intersects(obstacles[1]), "off the status line")
         let open = CGRect(x: 40, y: 420, width: 100, height: 80)
-        XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: 96 + top, obstacles: obstacles), CGPoint(x: 40, y: 388), "free space: unchanged")
+        XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: grid.labelFloor, obstacles: obstacles), CGPoint(x: 40, y: 388), "free space: unchanged")
+    }
+
+    /// 춘식이 (dyno504 preview-05): "Tofu" sat level with the pill. Labels stay out of the menu row band (safe top … + 60):
+    /// no room above → inside the box's top 6 pt; a box reaching into the band → under it 6 pt. The pill doesn't move.
+    func testLabelsStayOutOfTheMenuRowBand() {
+        let grid = Self.grid16, floor = grid.labelFloor
+        XCTAssertEqual(floor, 107)
+        let tofu = CGRect(x: 150, y: 120, width: 90, height: 80)          // room above? 120 − 32 = 88 < 107: no
+        XCTAssertEqual(CameraBoxes.labelOffsetY(tofu, topInset: floor), 6, "inside the box's top")
+        let high = CGRect(x: 150, y: 70, width: 90, height: 80)           // the box reaches into the band
+        XCTAssertEqual(CameraBoxes.labelOffsetY(high, topInset: floor), 80 + 6, "under the box")
+        let open = CGRect(x: 150, y: 300, width: 90, height: 80)
+        XCTAssertEqual(CameraBoxes.labelOffsetY(open, topInset: floor), -32, "room above: as before")
+        let o = CameraBoxes.labelOrigin(tofu, label: CGSize(width: 70, height: 28), view: grid.size, topInset: floor, obstacles: [CameraBoxes.menuRect(grid: grid), CameraBoxes.statusRect(grid: grid)])
+        XCTAssertEqual(o, CGPoint(x: 150, y: 126), "masks: inside the top too")
     }
 
     /// Codex P2: during a fridge search the PF-1 Finds line sits on the line under the row (left 24); a box label
     /// keeps clear of it there, not of the empty row.
     func testLabelsStayClearOfTheFindsLine() {
-        let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
+        let grid = Self.grid16, view = grid.size, label = CGSize(width: 90, height: 28)
         let finds = CameraBoxes.statusRect(grid: grid, line: .second, leadingWidth: 220)
         XCTAssertEqual(finds.midY, grid.secondLineY)
         XCTAssertEqual(finds.minX, 20)
         let box = CGRect(x: 100, y: 170, width: 120, height: 100)
         let boxRule = CGRect(x: box.minX, y: box.minY - label.height - 4, width: label.width, height: label.height)
         XCTAssertTrue(boxRule.intersects(finds), "red: above the box lands on the Finds line")
-        let o = CameraBoxes.labelOrigin(box, label: label, view: view, topInset: 96 + top, obstacles: [CameraBoxes.menuRect(grid: grid), finds])
+        let o = CameraBoxes.labelOrigin(box, label: label, view: view, topInset: grid.labelFloor, obstacles: [CameraBoxes.menuRect(grid: grid), finds])
         XCTAssertFalse(CGRect(origin: o, size: label).intersects(finds), "green: moved off the Finds line")
     }
 
     /// UI sweep 11/3 (after the status-line fix): a label moved below its box landed on the next box's label.
     func testLabelsDoNotSitOnEachOther() {
-        let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
+        let grid = Self.grid16, view = grid.size, label = CGSize(width: 90, height: 28)
         let obstacles = [CameraBoxes.menuRect(grid: grid), CameraBoxes.statusRect(grid: grid)]
-        let a = CGRect(x: 20, y: 110, width: 100, height: 90)    // under the menu button: label pushed below, (20, 204)
-        let b = CGRect(x: 40, y: 236, width: 100, height: 90)    // its own label above: (40, 204) — the same spot
-        let o = CameraBoxes.labelOrigins([(id: "a", rect: a, label: label), (id: "b", rect: b, label: label)], view: view, topInset: 96 + top, obstacles: obstacles)
+        let a = CGRect(x: 20, y: 110, width: 100, height: 90)    // no room above: label inside its top, (20, 116)
+        let b = CGRect(x: 40, y: 140, width: 100, height: 90)    // its label above, (40, 108), lands on a's
+        let o = CameraBoxes.labelOrigins([(id: "a", rect: a, label: label), (id: "b", rect: b, label: label)], view: view, topInset: grid.labelFloor, obstacles: obstacles)
         let ra = CGRect(origin: o["a"]!, size: label), rb = CGRect(origin: o["b"]!, size: label)
         XCTAssertFalse(ra.intersects(rb), "two pills never overlap")
         XCTAssertFalse(rb.intersects(obstacles[0]))
@@ -227,12 +242,12 @@ import XCTest
 
     /// UI sweep 11/3: "Whole milk" sat under the camera / mic / more buttons; the rail moves with the sheet.
     func testLabelsStayClearOfTheControlRail() {
-        let grid = Self.grid16, view = grid.size, top: CGFloat = grid.safeTop - 44, label = CGSize(width: 90, height: 28)
+        let grid = Self.grid16, view = grid.size, label = CGSize(width: 90, height: 28)
         let rail = CameraBoxes.railRect(grid: grid, sheet: .idle)
         XCTAssertTrue(rail.contains(CGPoint(x: grid.railX, y: grid.railY(.camera))) && rail.contains(CGPoint(x: grid.railX, y: grid.railY(.more))), "camera and more buttons inside")
         XCTAssertEqual(CameraBoxes.railRect(grid: grid, sheet: .half).minY, rail.minY - 440)
         let milk = CGRect(x: 280, y: 690, width: 90, height: 120)
-        let o = CameraBoxes.labelOrigin(milk, label: label, view: view, topInset: 96 + top, obstacles: [rail])
+        let o = CameraBoxes.labelOrigin(milk, label: label, view: view, topInset: grid.labelFloor, obstacles: [rail])
         XCTAssertFalse(CGRect(origin: o, size: label).intersects(rail), "moved off the buttons")
     }
 }

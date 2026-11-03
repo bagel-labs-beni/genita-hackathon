@@ -91,10 +91,10 @@ struct LiveBox: Identifiable, Equatable {
     }
 
     /// Where a label pill goes (absolute origin), keeping clear of `obstacles` (menu button, PiP). Tried in order:
-    /// above the box at its left edge (where boxes put it), below it, inside its top, then each of those slid beside
-    /// the obstacle it hits. Never above `topInset`, never off screen. Nothing fits: the box rule (above / below).
+    /// above the box at its left edge (where boxes put it), inside its top (6 pt), below it (6 pt), then each of those
+    /// slid beside the obstacle it hits. Never above `topInset` (the HUD row band), never off screen. Nothing fits: the box rule.
     static func labelOrigin(_ rect: CGRect, label: CGSize, view: CGSize, topInset: CGFloat, obstacles: [CGRect]) -> CGPoint {
-        let ys = [rect.minY - label.height - 4, rect.maxY + 4, rect.minY + 4]
+        let ys = [rect.minY - label.height - 4, rect.minY + 6, rect.maxY + 6]
         var xs = [max(0, rect.minX)]
         for o in obstacles { xs += [o.maxX + 4, o.minX - label.width - 4] }
         for y in ys {
@@ -204,11 +204,13 @@ struct LiveBox: Identifiable, Equatable {
     /// Label height 28 + 4 gap above the box; below it when the box is too near the top of the view.
     static func labelAbove(_ rect: CGRect, topInset: CGFloat) -> Bool { rect.minY - 32 >= topInset }
 
-    /// Label offset from the box top. Never lets the label sit above `topInset` (status bar, menu button): a box that
-    /// starts off the top edge gets its label pushed down instead of onto the clock.
+    /// Label offset from the box top. Never lets the label sit above `topInset` (HUD r01 A: the menu row band, safe top
+    /// + 60, where the status pill and menu button are): no room above → inside the box's top (6 pt); the box itself
+    /// reaches into the band → under the box (6 pt). The pill never moves for a label.
     static func labelOffsetY(_ rect: CGRect, topInset: CGFloat) -> CGFloat {
-        let y = labelAbove(rect, topInset: topInset) ? -32 : rect.height + 4
-        return max(y, topInset - rect.minY)
+        if labelAbove(rect, topInset: topInset) { return -32 }
+        if rect.minY >= topInset { return 6 }
+        return max(rect.height + 6, topInset - rect.minY)
     }
 
     /// A box that ends above the status/menu area has nothing to show (its label would float over the menu button).
