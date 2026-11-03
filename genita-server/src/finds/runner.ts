@@ -66,6 +66,26 @@ const PRODUCT_WORD = /^(shoes?|sneakers?|boots?|loafers?|heels?|sandals?|bags?|b
 
 /** intent.ts's shopping nouns too ("blazer", "parka", "cardigan"…) */
 const ITEM_NOUN = /^(blazers?|parkas?|vests?|overshirts?|t-?shirts?|tees?|cardigans?|trousers|shorts|totes?|caps?|scarves|mugs?|chairs?|lamps?|outfits?)$/;
+/**
+ * Capitalized words mid-sentence ("some Nike shoes"), lowercased. Not one: a sentence start, "I…", or a name being
+ * spoken to ("Hey Rio, …", "Okay Rio, find…": right after a greeting word).
+ */
+export function brandsIn(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/([A-Z][a-zA-Z&'-]+)/g)) {
+    const at = m.index ?? 0;
+    const before = text.slice(0, at).trimEnd();
+    const word = m[1];
+    if (!before || /[.!?]$/.test(before) || /^I('|$)/.test(word)) continue;
+    // a name being spoken to: after a greeting word only (a comma alone is not enough: "from Nike, preferably…")
+    if (/\b(hey|hi|hello|okay|ok|so|thanks|yo|and|well)$/i.test(before)) continue;
+    out.push(word.toLowerCase());
+  }
+  return out;
+}
+
+const EXCLUDE = /\b(no|not|without|non|except|other than|instead of|aren't|isn't|don't|nothing)\b/;
+const MATERIAL = /^(leather|suede|canvas|wool|cotton|linen|denim|silk|cashmere|nylon|vegan|patent|rubber|knit|velvet|satin|mesh)$/;
 const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|neon|silver|gold)$/;
 
 /** "Still hunting for the right pair, one sec." (shoes) / "…the right jacket…" */
@@ -287,13 +307,25 @@ export class FindsRunner {
     if (!p || now - p.at > PREFETCH_WINDOW_MS) return null;
     const lower = text.toLowerCase();
     const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
+    // whole words only ("on" is not in "undertones", "tan" is not in "standing")
+    const seen = new Set(p.inView.match(/[a-z]+/g) ?? []);
+    const inView = (w: string) => seen.has(w);
     // every item the ask names must be one the prefetch looked for ("shoes and a lamp" → fresh search)
     const itemWords = named.filter((w) => PRODUCT_WORD.test(w) || ITEM_NOUN.test(w));
     const wanted = (w: string) => p.wants.has(w) || p.wants.has(`${w}s`) || p.wants.has(w.replace(/s$/, ""));
     if (itemWords.some((w) => !wanted(w))) return null;
     // a color or a price it never had in view (said, or the account's own taste) → fresh search
-    if (named.some((w) => COLOR.test(w) && !p.inView.includes(w))) return null;
+    // a color must be one the search was steered by (what was said): taste alone didn't keep it from picking black
+    // for "dark brown" (prod 11/3 13:00)
+    const asked = new Set(p.question.toLowerCase().match(/[a-z]+/g) ?? []);
+    if (named.some((w) => COLOR.test(w) && !asked.has(w))) return null;
     if (/\$\s?\d|\bunder \d|\bcheap/.test(lower)) return null;
+    // anything narrower than "what goes with it" is its own search (Codex P2 #366): an exclusion, a material,
+    // a size, or a brand (a capitalized word mid-sentence) the prefetch never had in view
+    if (EXCLUDE.test(lower)) return null;
+    if (named.some((w) => MATERIAL.test(w) && !inView(w))) return null;
+    if (/\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower)) return null;
+    if (brandsIn(text).some((w) => !inView(w))) return null;
     this.prefetched = null;
     return p;
   }
