@@ -513,6 +513,8 @@ export class FindsRunner {
    * is read back from this account's Finds (FD-01 F2 → call, AU-70); another account's id is never loaded.
    */
   async focus(findId: string): Promise<void> {
+    // the newest pick wins: a slower read of an earlier pick never takes it back (Codex r2)
+    const gen = ++this.focusGen;
     if (this.cards.has(findId)) {
       this.focusId = findId;
       return;
@@ -522,8 +524,9 @@ export class FindsRunner {
     const card = await this.deps.store.get(owner, findId).catch(() => null);
     if (!card || this.purged || this.owner !== owner) return;
     if (!this.cards.has(findId)) this.cards.set(findId, card);
-    this.focusId = findId;
+    if (gen === this.focusGen) this.focusId = findId;
   }
+  private focusGen = 0;
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
   onScreen(): string | undefined {

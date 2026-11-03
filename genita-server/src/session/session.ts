@@ -516,6 +516,8 @@ export class Session {
   private finds: FindsRunner | null = null;
   /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
   private focusLoad: Promise<void> = Promise.resolve();
+  /** find.focus reads still running: no speculative guess meanwhile, and a spoken turn waits for them (Codex r2) */
+  private focusPending = 0;
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
   private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
   /** the companion just asked this call's question: the next user line is checked for the answer */
@@ -696,9 +698,13 @@ export class Session {
       case "find.focus":
         // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
         if (typeof msg.findId === "string") {
-          const load = this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve();
-          this.focusLoad = load.catch(() => {});
+          const load = (this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve()).catch(() => {});
+          this.focusLoad = load;
+          this.focusPending++;
+          // a guess built before the card was there has no card in it
+          this.dropSpeculation();
           await load;
+          this.focusPending--;
         }
         return;
       default:
@@ -1791,6 +1797,7 @@ export class Session {
     if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
+    if (this.focusPending) return; // the card "Talk about this" named is still loading (Codex r2)
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
@@ -1919,6 +1926,7 @@ export class Session {
       memoryRetry = preGreet.memoryRetry;
       this.log("call.greet_prestarted", { utteranceId });
     } else preGreet?.abort.abort();
+    if (!built && this.focusPending) await this.focusLoad;
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
     const greetLine = greeting && !self && this.deps.greetOpener === true ? this.greetOpener : null;

@@ -92,10 +92,13 @@ import XCTest
         try Data([9]).write(to: FindFrameStore.directory.appending(path: "abcdef12-0003-0.jpg"))
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").count, 2)
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").count, 1, "old loose frames still open")
-        FindFrameStore.removeAll(owner: "acct-a")
+        // and one of account B's, also loose
+        try Data([8]).write(to: FindFrameStore.directory.appending(path: "abcdef12-0004-0.jpg"))
+        FindFrameStore.removeAll(owner: "acct-a", ids: ["abcdef12-0001", "abcdef12-0003"])
         XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").isEmpty)
-        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").isEmpty, "loose frames go with any deletion")
+        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").isEmpty, "its own loose frames go")
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0002", owner: "acct-b").count, 1, "the other account keeps its frames")
+        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0004", owner: "acct-b").count, 1, "and its loose ones (Codex r2)")
     }
 
     /// AU-62 / AU-72: the socket dropped mid-search. The new session never sends that result: the search fails with

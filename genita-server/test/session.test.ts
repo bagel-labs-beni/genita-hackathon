@@ -966,3 +966,30 @@ test("AU-70: a typed turn right after find.focus waits for the card from Finds (
   assert.match(JSON.stringify(sparkCalls.at(-1)), /Yesterday's kimchi stew/);
   s2.close();
 });
+
+test("AU-70 (Codex r2): a spoken question right after find.focus waits for the card from Finds", async () => {
+  const { asr, client, session, sparkCalls } = setup();
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  class SlowStore extends MemoryFindsStore {
+    override async get(owner: string, id: string) {
+      await sleep(60);
+      return super.get(owner, id);
+    }
+  }
+  const store = new SlowStore();
+  await store.put(ownerKey("dev-1"), { id: "11111111-aaaa-4bbb-8ccc-000000000009", kind: "recipe", createdAt: "2026-11-03T10:00:00Z", eyebrow: "", title: "Yesterday's tofu stew", subtitle: "", items: [], steps: [{ text: "Simmer it." }], options: [], why: [], ask: [], sources: [], how: [] });
+  const vendors = { async spark() { return { text: "", output: [] }; }, async *sparkStream() {}, async sam() { return []; }, async image() { return null; } };
+  const s2 = new Session("f3", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: false, imageBase: "/v1/finds" } as never, userId: "dev-1" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona }));
+  const before = sparkCalls.length;
+  const focus = s2.onClientText(JSON.stringify({ type: "find.focus", findId: "11111111-aaaa-4bbb-8ccc-000000000009" }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  asr.fire({ type: "speechEnd", turnId: 0 });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "How long does it take?" });
+  await focus;
+  await client.waitFor((m) => m.type === "reply", 3000);
+  assert.ok(sparkCalls.length > before);
+  assert.match(JSON.stringify(sparkCalls.at(-1)), /Yesterday's tofu stew/);
+  s2.close();
+});
