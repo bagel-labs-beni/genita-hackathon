@@ -442,23 +442,24 @@ export class Personalize {
   /** tests / shutdown: wait for background card rewrites */
   async drainRewrites(): Promise<void> { while (this.rewrites.size) await Promise.all([...this.rewrites]); }
   /**
-   * tests / shutdown: every background write this instance started (story jobs, queued corrections, rewrites, the
-   * per-user store locks) has settled — or `maxMs` passed (a test's Spark that never answers never writes either).
+   * tests / shutdown: true once every background write this instance started (story jobs, queued corrections,
+   * rewrites, after-call growth, the per-user store locks) has settled; false when `maxMs` passed first (a test's Spark that never answers never writes either).
    * A test removing its store dir after this sees no file appear mid-delete (CI ENOTEMPTY flake, 11/4).
    */
-  async idle(maxMs = 3000): Promise<void> {
+  async idle(maxMs = 3000): Promise<boolean> {
     const end = Date.now() + maxMs;
     for (;;) {
       const all = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
-      if (!all.length || Date.now() >= end) return;
+      if (!all.length) return true;
+      if (Date.now() >= end) return false;
       const settled = await Promise.race([
         Promise.allSettled(all).then(() => true),
         new Promise<false>((r) => setTimeout(() => r(false), Math.max(0, end - Date.now())).unref?.()),
       ]);
-      if (!settled) return;
+      if (!settled) return false;
       // settled: anything new they started is picked up on the next pass; nothing new → done
       const again = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
-      if (again.every((x) => all.includes(x))) return;
+      if (again.every((x) => all.includes(x))) return true;
     }
   }
 
@@ -596,6 +597,14 @@ export class Personalize {
 
   /** After a call: grow the profile. Returns how many updates were applied. */
   async endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
+    // tracked from start to end: idle() waits for the after-call growth too (Codex #577)
+    const job = this.endCallNow(userId, turns, asked, startedAt);
+    const tracked = job.then(() => {}, () => {});
+    this.rewrites.add(tracked);
+    void tracked.finally(() => this.rewrites.delete(tracked));
+    return job;
+  }
+  private async endCallNow(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
     const userTurns = turns.filter((t) => t.role === "user" && t.text.trim());
     if (userTurns.length < 2) return 0;
     const card = await this.store.getStyle(userId);

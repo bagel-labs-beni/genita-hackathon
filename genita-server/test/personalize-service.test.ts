@@ -50,7 +50,11 @@ function harness(handler: Handler) {
   const logs: Array<[string, Record<string, unknown>]> = [];
   const p = new Personalize({ store, json: json!, log: (e, d) => logs.push([e, d]) });
   // background writes (story jobs, corrections) settle before the dir goes: CI flaked ENOTEMPTY on a write landing mid-rm (11/4)
-  const cleanup = async () => { await p.idle(2000); rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); };
+  // still busy after the wait (a fake Spark that never answers): a dir that can't go now stays in tmp, never a failure
+  const cleanup = async () => {
+    const settled = await p.idle(2000);
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }); } catch (err) { if (settled) throw err; }
+  };
   return { dir, store, p, calls, logs, cleanup };
 }
 
