@@ -42,7 +42,7 @@ struct AliveMotion {
     /// scale (±0.6% about the frame bottom, ±3–4 px at the eyes) summed to 16 px peak-to-peak at the
     /// eyes on T9. Horizontal sway and the small roll stay (they read as a live selfie, not a bob).
     var lockVertical = true
-    /// 11/4 (Chelsea: "the voice comes out but the face is frozen"): the whole head moves as one rigid piece with the
+    /// 11/4 (Chelsea: "the voice comes out but the face is frozen"): the whole frame moves as one rigid piece with the
     /// speech — slow sway (0.3–0.8 Hz) sized by the speech energy, a small nod on stressed onsets, a slight drop at the
     /// end of a sentence, a breath when quiet. Caps at output size: ±1.5 px, ±0.6°, ±0.4 % scale. No local warp: eyes,
     /// nose and mouth move together (the eye band stays still relative to the face). Map `alive.sway` scales it (0 = off).
@@ -126,7 +126,8 @@ struct AliveMotion {
             let cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, sy)) * k
             let rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * swayGain * live * noise(11, hz: 0.35, t))) * .pi / 180
             let sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * swayGain * live * noise(12, hz: 0.3, t)))
-            let pivot = CGPoint(x: face.midX, y: face.minY - face.height * 0.15)   // the neck
+            // about the face centre: the eyes, nose and mouth stay within the caps (a neck pivot swung the forehead 3 px per 0.5°)
+            let pivot = CGPoint(x: face.midX, y: face.midY)
             sway = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
                 .concatenating(CGAffineTransform(scaleX: sc, y: sc))
                 .concatenating(CGAffineTransform(rotationAngle: rr))
@@ -143,6 +144,9 @@ struct AliveMotion {
             .concatenating(CGAffineTransform(scaleX: 1, y: pitch))
             .concatenating(CGAffineTransform(rotationAngle: roll))
             .concatenating(CGAffineTransform(translationX: neck.x + dx, y: neck.y + dy))
-        return (headLocal.concatenating(sway).concatenating(body), body, camera)
+        // 11/4 01:00 (Chelsea: the clay's outline shimmered): the sway moves the whole frame like a hand-held phone,
+        // background included — no head-mask seam can stretch. The output is already over-scanned (`overscan`), so a
+        // 1.5 px move never shows an edge.
+        return (headLocal.concatenating(body), body, sway.concatenating(camera))
     }
 }

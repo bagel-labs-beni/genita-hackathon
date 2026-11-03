@@ -406,8 +406,9 @@ struct MouthQualityTests {
         for i in 0..<500 {
             let t = Double(i) / 25
             let open = (i / 100) % 2 == 0 ? ((i % 12) < 4 ? 0.9 : 0.1) : 0.0   // 4 s talk, 4 s quiet
-            let a = on.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out).head
-            let b = off.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out).head
+            let ta = on.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let tb = off.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out)
+            let a = ta.head.concatenating(ta.camera), b = tb.head.concatenating(tb.camera)
             let pa = p0.applying(a), pb = p0.applying(b)
             maxD = max(maxD, max(abs(pa.x - p0.x), abs(pa.y - p0.y)) * k)
             offMax = max(offMax, hypot(pb.x - p0.x, pb.y - p0.y) * k)
