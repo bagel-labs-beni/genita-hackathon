@@ -15,6 +15,9 @@ test("dictKey: punctuation and curly apostrophes", () => {
   assert.equal(dictKey("Halloween,"), "halloween");
   assert.equal(dictKey("I’d"), "i'd");
   assert.equal(dictKey("great."), "great");
+  assert.equal(dictKey("Peter\uB294"), "", "mixed-script word is not looked up");
+  assert.equal(dictKey("3pm"), "");
+  assert.equal(dictKey("\"you?\""), "you");
 });
 
 test("relabelPhonemes: the prod aligner's letter guesses become dictionary labels on the same times", () => {

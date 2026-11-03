@@ -3,6 +3,8 @@
  * the HTTP client (NDJSON, filler cache, fail-fast after a failure).
  */
 import { test } from "node:test";
+// these tests check the timing pass-through byte for byte; the dictionary relabel (lips/g2p.ts) has its own tests
+process.env.GENITA_LIPS_G2P = "0";
 import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";

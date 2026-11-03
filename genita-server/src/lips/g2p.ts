@@ -41,7 +41,10 @@ export function g2pOn(env: Record<string, string | undefined> = process.env): bo
 
 /** "Halloween," → "halloween"; "I'd" → "i'd"; curly apostrophes folded. */
 export function dictKey(word: string): string {
-  return word.toLowerCase().replace(/[‘’]/g, "'").replace(/^[^a-z']+|[^a-z']+$/g, "");
+  // only ASCII punctuation comes off the ends; a word with any other letter or digit left ("Peter는", "3pm") is not
+  // looked up (it keeps the aligner's phonemes — codex P2)
+  const k = word.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/^[!-&(-/:-@[-`{-~]+|[!-&(-/:-@[-`{-~]+$/g, "");
+  return /^[a-z']+$/.test(k) ? k : "";
 }
 
 /** The clause timing with dictionary phoneme labels on every known word (see the file comment). */
