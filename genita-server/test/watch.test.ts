@@ -976,18 +976,19 @@ test("crowd noise / a stray word is not dialogue: it never holds a reaction (the
   q.c.onMessage({ type: "frame", image: `${frame}b` });
   await wait(5);
   assert.equal(q.reacted.length, 1, "no words → not dialogue");
-  // and a finished one-word "line" (마이키님) leaves no dialogue tail
-  const r = quickController((req) => ((req.text?.format as { name?: string }).name === "watch_quick" ? quickYes(false) : memoNone));
-  r.c.onMessage({ type: "start", source: "YouTube" });
-  r.asr.fire({ type: "speechStart", turnId: 0 });
-  r.asr.fire({ type: "speechEnd", turnId: 0 });
-  r.at(7_000);
-  r.asr.fire({ type: "speechComplete", turnId: 0, text: "마이키님" });
-  r.c.onMessage({ type: "frame", image: `${frame}c`, motion: 0.4 });
-  r.at(7_330);
-  r.c.onMessage({ type: "frame", image: `${frame}d` });
-  await wait(5);
-  assert.equal(r.reacted.length, 1);
+  // a real one-word line ("Stop!") is dialogue: held unless the model says the sound is crowd/commentary
+  for (const talkOver of [false, true]) {
+    const r = quickController((req) => ((req.text?.format as { name?: string }).name === "watch_quick" ? quickYes(talkOver) : memoNone));
+    r.c.onMessage({ type: "start", source: "YouTube" });
+    r.at(7_000);
+    r.asr.fire({ type: "speechStart", turnId: 0 });
+    r.asr.fire({ type: "partial", text: "Stop!" });
+    r.c.onMessage({ type: "frame", image: `${frame}c`, motion: 0.4 });
+    r.at(7_330);
+    r.c.onMessage({ type: "frame", image: `${frame}d` });
+    await wait(5);
+    assert.equal(r.reacted.length, talkOver ? 1 : 0, `one word, talkOver=${talkOver}`);
+  }
 });
 
 test("quick look cadence: a motion-aware share gets a quick look every 1.5 s even without a spike (small subjects)", async () => {
@@ -1015,4 +1016,44 @@ test("quick look cadence: a motion-aware share gets a quick look every 1.5 s eve
   old.c.onMessage({ type: "start" });
   for (let ms = 7_000; ms <= 10_000; ms += 1_000) { old.at(ms); old.c.onMessage({ type: "frame", image: `${frame}${ms}` }); }
   assert.equal(quicks(), before);
+});
+
+test("Codex P2: spikes every frame (a dance) still get quick looks; a talkOver verdict doesn't cover a new speech turn", async () => {
+  const q = quickController((r) => ((r.text?.format as { name?: string }).name === "watch_quick" ? '{"react":false,"moment":"none","line":"","talkOver":false}' : memoNone));
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  for (let ms = 7_000; ms <= 9_000; ms += 333) {
+    q.at(ms);
+    q.c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.3 });
+    await wait(1);
+  }
+  assert.ok(q.calls.filter(q.isQuick).length >= 2, "continuous spikes don't starve the quick look");
+
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => (release = r));
+  const calls: SparkRequest[] = [];
+  const t = controller([], {}, {
+    quick: true, quickEveryMs: 60_000,
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      calls.push(req);
+      if ((req.text?.format as { name?: string }).name !== "watch_quick") { yield { type: "done", responseId: null, text: memoNone, status: "completed" }; return; }
+      await gate;
+      const text = quickYes(true);
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  t.c.onMessage({ type: "start", source: "YouTube" });
+  t.asr.fire({ type: "speechStart", turnId: 0 });
+  t.asr.fire({ type: "partial", text: "and the crowd goes wild" }); // commentary
+  t.at(7_000);
+  t.c.onMessage({ type: "frame", image: `${frame}x`, motion: 0.4 });
+  t.at(7_330);
+  t.c.onMessage({ type: "frame", image: `${frame}y` });
+  // before the answer: the commentary ends and a scene's dialogue starts
+  t.asr.fire({ type: "speechComplete", turnId: 0, text: "and the crowd goes wild" });
+  t.asr.fire({ type: "speechStart", turnId: 1 });
+  t.asr.fire({ type: "partial", text: "I love you" });
+  release();
+  await wait(5);
+  assert.deepEqual(t.reacted, [], "the new line gets its pause");
 });

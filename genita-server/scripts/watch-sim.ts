@@ -222,7 +222,7 @@ const logs: Record<string, unknown>[] = [];
 const REMOTE = args.find((a) => a.startsWith("--remote="))?.slice(9).replace(/\/+$/, "") ?? null;
 const remoteToken = process.env.GENITA_SESSION_TOKEN?.trim();
 if (REMOTE && !remoteToken) throw new Error("--remote needs GENITA_SESSION_TOKEN (a session JWT or the shared dev token)");
-if (REMOTE && !args.includes("--naming")) throw new Error("--remote supports --naming only (the other modes read server logs)");
+if (REMOTE && (!args.includes("--naming") || args.some((a) => ["--qa", "--react", "--blank", "--funny"].includes(a) || a.startsWith("--moments")))) throw new Error("--remote supports --naming only (the other modes read server logs)");
 const AUTH: Record<string, string> = REMOTE ? { authorization: `Bearer ${remoteToken}` } : {};
 const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event, data) => {
   logs.push({ t: Math.round(performance.now()), event, ...data });
@@ -495,7 +495,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
         if (t <= from) open = l.on === true;
         else if (t <= to && l.on === true) open = true;
       }
-      overDialogue = open;
+      // commentary / crowd the model judged fine to talk over is allowed (talkOver)
+      overDialogue = open && react.talkOver !== true;
     }
     let verdict = { correct: false, invented: false };
     if (react) {
@@ -516,7 +517,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const row = {
       clip: clip.id, kind: clip.kind, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, moment: react?.moment ?? null, delaySec,
       quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => (l.react ? `${l.moment}:${l.line}` : "no")),
-      afterLineMs: react?.afterLineMs ?? null, lineOpen: (react?.lineOpen as boolean | undefined) || overDialogue, held: react?.held ?? false, ...verdict,
+      afterLineMs: react?.afterLineMs ?? null, lineOpen: (!!react?.lineOpen && react?.talkOver !== true) || overDialogue, talkOver: react?.talkOver ?? null, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
       moments: memos.map((l) => l.moment), blocked: mine.filter((l) => l.event === "watch.react.blocked").map((l) => l.why),
       shareStartedLogged: !!startLog,

@@ -108,8 +108,8 @@ const QUICK_MIN_GAP_MS = 700;
 const QUICK_EVERY_MS = 1_500;
 /** quick looks in flight at once: a second spike (the trick right after a cut) doesn't wait for the first */
 const QUICK_CONCURRENCY = 2;
-/** a sound counts as dialogue for the reaction gate only once it has words: crowd noise and cheers transcribe
- *  as nothing or one stray word ("마이키님"), and must not hold a reaction until it's stale */
+/** a sound counts as dialogue for the reaction gate once it has a word ("Stop!" counts). Wordless crowd noise
+ *  and cheers don't; a stray transcribed word over a crowd is left to the model's talkOver */
 const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
 const QUICK_FRAMES = 3;
 const QUICK_ON = process.env.GENITA_WATCH_QUICK !== "0";
@@ -146,6 +146,9 @@ export class WatchController {
   /** the video's line in progress (partial transcript), for the echo check */
   private openLine = "";
   private speechEndAt: number | null = null;
+  /** counts the video's speech turns: a talkOver verdict only covers the sound it heard (Codex P2) */
+  private speechSeq = 0;
+  private wordsLogged = false;
   private lastDialogueEndAt: number | null = null;
   private lineSinceMemo = false;
   private lastReactionAt: number | null = null;
@@ -310,7 +313,7 @@ export class WatchController {
       if (motion !== null) this.motionAware = true;
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
-        this.quickSpikeAt = now; // the latest spike: its frames are what the quick look sees
+        this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
       }
       this.frames.push({ at: now, url });
       // the newest frame stays even when old: a paused screen sends no new frames
@@ -331,8 +334,9 @@ export class WatchController {
     const now = this.deps.now();
     switch (e.type) {
       case "speechStart":
-        if (!this.dialogueActive) this.log("watch.dialogue", { on: true });
         this.dialogueActive = true;
+        this.speechSeq++;
+        this.wordsLogged = false;
         this.openLine = "";
         if (this.speakerOffTimer) clearTimeout(this.speakerOffTimer);
         this.speakerOffTimer = null;
@@ -343,16 +347,18 @@ export class WatchController {
         this.labelsSeen = this.labelsSeen.filter((l) => now - l.at <= 10 * 60_000).slice(-50);
         return;
       case "speechEnd":
-        if (this.dialogueActive) this.log("watch.dialogue", { on: false });
+        if (this.dialogueActive && this.wordsLogged) this.log("watch.dialogue", { on: false });
+        this.wordsLogged = false;
         this.dialogueActive = false;
         this.speechEndAt = now;
-        if (words(this.openLine) >= 2) this.lastDialogueEndAt = now;
+        if (words(this.openLine) >= 1) this.lastDialogueEndAt = now;
         return;
       case "speechComplete": {
-        if (this.dialogueActive) this.log("watch.dialogue", { on: false });
+        if (this.dialogueActive && this.wordsLogged) this.log("watch.dialogue", { on: false });
+        this.wordsLogged = false;
         this.dialogueActive = false;
         const text = e.text.trim();
-        if (words(text) >= 2) this.lastDialogueEndAt = this.speechEndAt ?? now;
+        if (words(text) >= 1) this.lastDialogueEndAt = this.speechEndAt ?? now;
         this.speechEndAt = null;
         const label = this.pendingLabel;
         this.pendingLabel = null;
@@ -374,6 +380,7 @@ export class WatchController {
       }
       case "partial":
         if (this.dialogueActive) this.openLine = e.text.slice(0, 400);
+        if (this.dialogueActive && !this.wordsLogged && words(this.openLine) >= 1) { this.wordsLogged = true; this.log("watch.dialogue", { on: true }); }
         this.flushWaiters();
         return;
     }
@@ -457,6 +464,7 @@ export class WatchController {
     const frames = pickFrames(fresh.length ? fresh : this.frames.slice(-1), MEMO_FRAMES, spacing).map((f) => f.url);
     const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
+    const memoSeq = this.speechSeq;
     // how fresh the moment is = its newest frame or line, not when this memo started (Codex P2: a memo started late
     // after a long talk must not react to a scene from 20 s ago)
     const contentAt = Math.max(fresh.at(-1)?.at ?? this.frames.at(-1)?.at ?? at, lines.at(-1)?.at ?? -Infinity);
@@ -481,7 +489,7 @@ export class WatchController {
       raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
-        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver }, contentAt);
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq }, contentAt);
       });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
@@ -512,7 +520,7 @@ export class WatchController {
       return v;
     }
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
-    if (v.moment !== "none" && !early) this.tryReact(v, contentAt);
+    if (v.moment !== "none" && !early) this.tryReact({ ...v, talkOverSeq: memoSeq }, contentAt);
     return v;
   }
 
@@ -553,9 +561,9 @@ export class WatchController {
     const after = spike !== null && (this.frames.some((f) => f.at > spike! + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400);
     const newest = this.frames.at(-1)?.at ?? -Infinity;
     // the cadence needs a motion-aware Mac (frames carry `motion`, ≤3 fps); older builds get spikes only
-    const cadence = spike === null && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS);
+    const cadence = !after && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS);
     if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
-    if (cadence) spike = newest;
+    spike = after ? spike : newest;
     this.quickSpikeAt = null;
     // no point looking when a reaction couldn't go out anyway
     if (this.blank || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS)) return;
@@ -565,7 +573,8 @@ export class WatchController {
   async runQuick(spikeAt: number): Promise<void> {
     const at = this.deps.now();
     this.lastQuickAt = at;
-    const frames = pickFrames(this.frames.filter((f) => f.at >= spikeAt - 900), QUICK_FRAMES, 300).map((f) => f.url);
+    const frames = pickFrames(this.frames.filter((f) => f.at >= Math.min(spikeAt, (this.frames.at(-1)?.at ?? spikeAt)) - 900), QUICK_FRAMES, 300).map((f) => f.url);
+    const seq = this.speechSeq;
     const heard = [this.dialogueActive ? this.openLine : "", ...this.lines.filter((l) => at - l.at <= 3_000).map((l) => l.text)].filter(Boolean).slice(-2);
     const abort = new AbortController();
     this.quickInFlight.add(abort);
@@ -584,7 +593,7 @@ export class WatchController {
     if (abort.signal.aborted || !this.sharing) return;
     const q = parseQuick(raw);
     this.log("watch.quick", { ms: Math.round(this.deps.now() - at), react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
-    if (q) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver }, spikeAt, false, "quick");
+    if (q) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
   }
 
   private tryReact(v: MemoVerdict, verdictAt: number, retry = false, via: "memo" | "quick" = "memo"): void {
@@ -600,10 +609,12 @@ export class WatchController {
       sharingSince: this.sharingSince,
       lastReactionAt: this.lastReactionAt,
       conversationQuiet: this.host.conversationQuiet(),
-      dialogueActive: this.dialogueActive && words(this.openLine) >= 2,
+      dialogueActive: this.dialogueActive && words(this.openLine) >= 1,
       lastDialogueEndAt: this.lastDialogueEndAt,
       verdictAt,
-      talkOver: v.talkOver === true,
+      // talkOver covers only the sound that verdict heard: a new speech turn since then (a scene's dialogue
+      // starting) needs its own pause
+      talkOver: v.talkOver === true && (v.talkOverSeq ?? this.speechSeq) === this.speechSeq,
     });
     if (!gate.ok) {
       // the video is mid-line or someone is talking: hold it and try again on each tick until it is stale
@@ -636,7 +647,8 @@ export class WatchController {
       via,
       // eval: how long after the video's last line the reaction started, and that no line was open
       afterLineMs: this.lastDialogueEndAt === null ? null : Math.round(now - this.lastDialogueEndAt),
-      lineOpen: this.dialogueActive,
+      lineOpen: this.dialogueActive && words(this.openLine) >= 1,
+      talkOver: v.talkOver === true,
     });
   }
 
