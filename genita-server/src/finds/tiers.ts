@@ -130,13 +130,19 @@ export function toWire(cands: readonly Candidate[]): FindItem[] {
   return out.map(({ _o, ...i }) => i);
 }
 
-/** "About 15 min · You have 4, need rice" and the collapsed "Need rice". */
+/**
+ * "About 15 min · You have 3 · 3 to check · need rice" and the collapsed "Need rice". A "maybe" is not had until
+ * the user says yes (sweep 11/3 [P2]: kimchi/egg/rice as maybe read "You have 6, nothing to buy"); while items
+ * are still being checked there is no count at all (it read "You have 0, nothing to buy").
+ */
 export function recipeSummary(items: FindItem[], minutes: number | null): { subtitle: string; status: string } {
-  const have = items.filter((i) => i.tier === "have" || i.tier === "maybe").length;
+  const time = minutes && minutes > 0 ? `About ${minutes} min` : "";
+  if (items.some((i) => i.tier === "checking")) return { subtitle: time, status: "" };
+  const have = items.filter((i) => i.tier === "have").length;
+  const check = items.filter((i) => i.tier === "maybe").length;
   const need = items.filter((i) => i.tier === "buy" && !i.optional).map((i) => i.name);
-  const needText = need.length === 0 ? "nothing to buy" : need.length <= 2 ? `need ${need.join(" and ")}` : `need ${need.length} things`;
-  const parts = [] as string[];
-  if (minutes && minutes > 0) parts.push(`About ${minutes} min`);
-  parts.push(`You have ${have}, ${needText}`);
-  return { subtitle: parts.join(" · "), status: need.length === 0 ? "You have it all" : needText.charAt(0).toUpperCase() + needText.slice(1) };
+  const needText = need.length === 0 ? "" : need.length <= 2 ? `need ${need.join(" and ")}` : `need ${need.length} things`;
+  const parts = [time, have || !check ? `You have ${have}` : "", check ? `${check} to check` : "", needText || (check ? "" : "nothing to buy")].filter(Boolean);
+  const status = needText ? needText.charAt(0).toUpperCase() + needText.slice(1) : check ? `${check} to check` : "You have it all";
+  return { subtitle: parts.join(" · "), status };
 }

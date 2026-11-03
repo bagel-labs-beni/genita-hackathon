@@ -112,8 +112,12 @@ test("recipe summary lines", () => {
     { id: "3", name: "cooked rice", tier: "buy" as const, from: "recipe" as const },
     { id: "4", name: "sesame oil", tier: "buy" as const, from: "recipe" as const, optional: true },
   ];
-  assert.deepEqual(recipeSummary(items, 15), { subtitle: "About 15 min · You have 2, need cooked rice", status: "Need cooked rice" });
-  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "You have 2, nothing to buy", status: "You have it all" });
+  assert.deepEqual(recipeSummary(items, 15), { subtitle: "About 15 min · You have 1 · 1 to check · need cooked rice", status: "Need cooked rice" });
+  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "You have 1 · 1 to check", status: "1 to check" }, "a maybe is not had (sweep 11/3 P2)");
+  assert.deepEqual(recipeSummary([items[0]], null), { subtitle: "You have 1 · nothing to buy", status: "You have it all" });
+  assert.deepEqual(recipeSummary([items[1], { ...items[1], id: "5", name: "egg" }], 10), { subtitle: "About 10 min · 2 to check", status: "2 to check" });
+  // still checking: no count at all (it read "You have 0, nothing to buy")
+  assert.deepEqual(recipeSummary([{ ...items[0], tier: "checking" as const }, items[1]], 15), { subtitle: "About 15 min", status: "" });
 });
 
 test("confirm 맞아?: yes → have; no → buy (recipe) or gone (camera only)", () => {
@@ -127,7 +131,7 @@ test("confirm 맞아?: yes → have; no → buy (recipe) or gone (camera only)",
   assert.equal(card.items[0].hint, undefined);
   confirmItem(card, "b", false);
   assert.equal(card.items.length, 1);
-  assert.match(card.subtitle, /^About 15 min · You have 1/);
+  assert.equal(card.subtitle, "About 15 min · You have 1 · nothing to buy");
   const c2 = { items: [{ id: "c", name: "rice", tier: "maybe", from: "recipe" }], subtitle: "" } as unknown as FindCard;
   confirmItem(c2, "c", false);
   assert.equal(c2.items[0].tier, "buy");
@@ -278,7 +282,9 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.ok(!v.calls.some((c) => c.includes("salt")));
   assert.equal(last.items.find((i) => i.name === "kimchi")!.hint !== undefined, true);
   assert.equal(last.items.find((i) => i.name === "sesame oil")!.optional, true);
-  assert.equal(last.status, "You have it all");
+  // two maybes (kimchi, onion) are not had yet (sweep 11/3 P2)
+  assert.equal(last.status, "2 to check");
+  assert.equal(last.subtitle?.endsWith("You have 2 · 2 to check"), true, last.subtitle);
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
   // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge
