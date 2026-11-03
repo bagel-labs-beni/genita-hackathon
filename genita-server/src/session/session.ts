@@ -432,8 +432,6 @@ export class Session {
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
-  /** a real crisis line came up in this call: sticky, the 16-line history trim never clears it (Codex #502 P1) */
-  private crisisInCall = false;
   private frames: Frames | null = null;
   /** Demo S4: the move-to-Mac suggestion was made in this call */
   private macSuggested = false;
@@ -1461,7 +1459,7 @@ export class Session {
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
         recentReplies: this.recentReplies,
-        crisisInCall: this.crisisInCall ||= userLines.some(realCrisisSignal),
+        crisisInCall: this.crisisInCall || userLines.some(realCrisisSignal),
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1550,6 +1548,9 @@ export class Session {
   get isClosed(): boolean { return this.closed; }
   /** the user asked to forget something at any point in this call (#447) */
   forgetAsked = false;
+  /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
+   * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
+  crisisInCall = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
@@ -1557,6 +1558,7 @@ export class Session {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
+    if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
