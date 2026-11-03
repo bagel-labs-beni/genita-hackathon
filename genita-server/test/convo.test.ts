@@ -948,3 +948,40 @@ test("first-sound cap (sweep 11/3 P1): Spark silent past GENITA_HOLD_CAP_MS → 
   assert.equal(fast.text, "Octopuses have three hearts.");
   session.close();
 });
+
+test("first-sound cap (Codex P2 #427): after the beat, narration is still dropped and retried; a lone model 'Hmm.' that repeats the beat is the answer, not an error", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  let mode: "narrate" | "echo" = "narrate";
+  let calls = 0;
+  const client = new Client();
+  const session = new Session("cap2", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      calls++;
+      await new Promise((r) => setTimeout(r, 300));
+      if (mode === "narrate") {
+        yield { type: "text", delta: calls === 1 ? "<curious> Let me pull up what you told me." : "<warm> You said she just moved to Busan." };
+      } else {
+        const beat = String(client.json.find((m) => m.type === "reply.delta")?.text ?? "Hmm.");
+        yield { type: "text", delta: `<curious> ${beat}` };
+      }
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
+  const r1 = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+  assert.doesNotMatch(String(r1.text), /pull up/, "narration after a beat is still dropped");
+  assert.match(String(r1.text), /Busan/, "and retried for the real answer");
+  mode = "echo";
+  client.json.length = 0;
+  await new Promise((r) => setTimeout(r, 200));
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok cool" }));
+  const r2 = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
+  assert.equal(r2.type, "reply", "no spark_unavailable");
+  assert.match(String(r2.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/);
+  session.close();
+});

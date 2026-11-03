@@ -1746,7 +1746,9 @@ export class Session {
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
         let tts = p.ttsText;
-        if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        // a hold beat is not the reply's first sentence (Codex P2 #427): the model's first one still gets these checks
+        const modelFirst = !sentences.some((x) => !x.beat);
+        if (!keepOpener && modelFirst && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
@@ -1755,11 +1757,21 @@ export class Session {
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
         const prevSaid = sentences.at(-1)?.display;
+        // the model said exactly the hold beat ("Ooh, okay." after the cap's "Ooh, okay."): the beat was the answer's
+        // start, not said twice, and it counts as the model's (Codex P2 #427)
+        if (this.v1 && tts && prevSaid && sentences.at(-1)?.beat && normTranscript(parseTaggedSentence(tts).displayText) === normTranscript(prevSaid)) {
+          delete sentences.at(-1)!.beat;
+          this.log("convo.beat_was_answer", { utteranceId });
+          continue;
+        }
         // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
         const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
         const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
         if (this.v1 && tts && prevSaid && lead && lead === prevLead && isInterjectionOnly(prevSaid) && !interpret && !self) {
           const once = avoidRepeatedOpener(tts, [prevSaid]);
+          // the model's whole answer was the beat's own word ("Hmm." after the cap's "Hmm."): the beat becomes the answer
+          // instead of an empty reply and a retry (Codex P2 #427)
+          if (once !== tts && !parseTaggedSentence(once).displayText && sentences.at(-1)?.beat) { delete sentences.at(-1)!.beat; this.log("convo.beat_was_answer", { utteranceId }); continue; }
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
@@ -1769,7 +1781,7 @@ export class Session {
         }
         // v1: never narrate the user in the third person ("She's holding up the trench…" → "You're holding…", QA #354)
         if (this.v1 && !interpret && !self) {
-          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
+          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !x.beat && !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         // watch together took this call's question back: a reply already asking it (built before) drops that sentence
@@ -1800,7 +1812,7 @@ export class Session {
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
           // an announcement only leads a reply: once content was spoken, a later "lookup" sentence is kept (Codex #356 r6)
-          const cls = found === "narration" && sentences.some((x) => !isInterjectionOnly(x.display)) ? null : found;
+          const cls = found === "narration" && sentences.some((x) => !x.beat && !isInterjectionOnly(x.display)) ? null : found;
           if (cls) {
             // narration never becomes the spoken fallback; a style drop does (the first one kept)
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
@@ -1809,7 +1821,7 @@ export class Session {
             continue;
           }
         }
-        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        if (droppedOpener && modelFirst) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
