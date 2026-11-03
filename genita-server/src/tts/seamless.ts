@@ -221,7 +221,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       if (!req.signal?.aborted && outage) {
         const busy = status === 503 && err instanceof Error && /"busy"/.test(err.message);
         const forMs = busy ? BUSY_DOWN_MS : DOWN_MS;
-        downUntil = now() + forMs;
+        downUntil = Math.max(downUntil, now() + forMs); // a busy answer never shortens a running 30 s outage (Codex P2)
         opts.log?.("voice.down", { message: err instanceof Error ? err.message.slice(0, 160) : "unknown", forMs });
       }
       throw err;
