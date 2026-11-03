@@ -483,3 +483,8 @@ test("narration (Codex #356 round 6): any stated result stays — past tense, nu
   assert.equal(guardSentence("Let me pull that up; checking my notes confirms your appointment for Thursday.", none), null);
   for (const line of ["Figuring out where you mean so I can map City Hall for you.", "let me pull up what you told me.", "Let me pull that up and check the route for you."]) assert.equal(guardSentence(line, none), "narration", line);
 });
+
+test("narration (real Spark probe 11/3): 'I'll check what tomorrow's weather looks like in Seoul.' is an announcement", () => {
+  assert.equal(guardSentence("I'll check what tomorrow's weather looks like in Seoul.", none), "narration");
+  assert.equal(guardSentence("Checking now, it looks like rain at five.", none), null);
+});

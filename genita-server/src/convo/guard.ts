@@ -91,7 +91,8 @@ function bareLookupOnly(part: string): boolean {
 }
 
 export function isNarration(sentence: string): boolean {
-  const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ");
+  // "what the weather looks like" is the question being looked up, not a result (real Spark, 11/3 probe)
+  const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ").replace(/\b(what|how)\b([^.!?]{0,40}?)\blooks? like\b/gi, "$1$2");
   if (!announcementOnly(s) && !s.split(CONTENT_JOIN).some((p) => announcementOnly(p.trim()))) return false;
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
