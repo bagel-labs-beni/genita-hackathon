@@ -342,4 +342,26 @@ import UIKit
         XCTAssertEqual(lines.map(\.heading), [true, false, true, false])
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
+
+    /// QA build 5: signed out, the phone reopened on A03 and let N1–N3 run, then bounced to A02 at the end.
+    /// No session → A02 before onboarding (PRD A02 → CS01 → A03); A01 / A02 themselves stay.
+    func testNoSessionOpensOnSignInBeforeOnboarding() async {
+        let model = AppState(storage: store)
+        model.onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore()))
+        model.go(.name); model.save()
+        XCTAssertTrue(model.needsSignInFirst)
+        await model.routeOnLaunch()
+        XCTAssertEqual(model.stage, .signIn, "A02, not A03")
+        XCTAssertEqual(AppState(storage: store).stage, .signIn, "and a restart stays there")
+
+        let fresh = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        fresh.onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore()))
+        XCTAssertEqual(fresh.stage, .welcome)
+        XCTAssertFalse(fresh.needsSignInFirst, "A01 is fine signed out")
+
+        let signedIn = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        signedIn.onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("token")))
+        signedIn.go(.name)
+        XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
+    }
 }
