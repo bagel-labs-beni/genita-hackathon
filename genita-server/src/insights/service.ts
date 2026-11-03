@@ -18,7 +18,7 @@ import { sparkJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, toReport, withoutObservations, type InsightInputs } from "./report.ts";
+import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, type InsightInputs } from "./report.ts";
 import type { InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
@@ -128,7 +128,8 @@ export class Insights {
         const denied = old?.denied ?? [];
         const gone = report.observations.filter((o) => denied.some((d) => d.id === o.id || similarClaim(d.claim, o.claim))).map((o) => o.id);
         const right = new Set((old?.observations ?? []).filter((o) => o.verdict === "right").map((o) => o.id));
-        const kept = withoutObservations(report, gone);
+        // and what the user asked to forget / corrected away since (card.removed)
+        const kept = scrubRemoved(withoutObservations(report, gone), c.removed);
         const observations = kept.observations.map((o) => (right.has(o.id) ? { ...o, verdict: "right" as const, confidence: "high" as const } : o));
         return { ...c, insights: { ...kept, observations, ...(denied.length ? { denied } : {}) } };
       });

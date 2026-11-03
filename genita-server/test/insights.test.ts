@@ -14,7 +14,7 @@ import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { PrepRunner } from "../src/prep/runner.ts";
 import { Personalize } from "../src/personalize/service.ts";
 import { styleProfileText, toStyleCard, type StyleCard } from "../src/prep/importProfile.ts";
-import { GENERIC_PHRASES, genericHit, insightProblem, picksFromAnswers, picksFromSkip, settingsFrom, toReport, type InsightInputs } from "../src/insights/report.ts";
+import { GENERIC_PHRASES, genericHit, insightProblem, picksFromAnswers, picksFromSkip, scrubRemoved, settingsFrom, toReport, type InsightInputs } from "../src/insights/report.ts";
 import { Insights, insightProfileLines } from "../src/insights/service.ts";
 
 const PASTE = [
@@ -402,4 +402,40 @@ test("codex: quotes match whole words; creepy quotes and corrections are dropped
   const r = (await h.ins.get("u1", 3000)).report!;
   await h.ins.verdict("u1", r.observations[0].id, { verdict: "not_me", correction: "I live in Seoul." });
   assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined);
+});
+
+// ───────── Codex review round 2 ─────────
+
+test("codex r2: 'forget that …' takes the traits that cite it out of the report (and the call profile)", () => {
+  const LEATHER = "Loves leather accessories and wears a leather jacket every day.";
+  const inputs: InsightInputs = { ...INPUTS, text: `${PASTE}\n- ${LEATHER}` };
+  const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "taste", claim: "You dress quiet but your jacket does the talking.", evidence: [ev("import", LEATHER)], surprise: 1, use_in_call: "I'll suggest leather accessories that fit your look." })] };
+  const r = toReport(raw, inputs, { at: "", from: "import" });
+  assert.ok(r.observations.some((o) => /leather/.test(o.use_in_call)));
+  const removed = [{ text: "leather accessories", at: "t", forget: true as const }];
+  const scrubbed = scrubRemoved(r, removed);
+  assert.ok(!JSON.stringify(scrubbed).includes("leather"));
+  assert.equal(scrubbed.observations.length, r.observations.length - 1);
+  const card = { ...CARD, insights: scrubbed, removed };
+  assert.ok(!styleProfileText(card).toLowerCase().includes("leather accessories that"));
+});
+
+test("codex r2: 'not me' drops a type built on it; a like chip needs a plain mention; a minor's age is never kept", async (t) => {
+  const text = "Dislikes seafood. Korean food, the spicier the better.";
+  const inputs: InsightInputs = { text, findings: [], picks: [], source: "import" };
+  const like = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You eat loud and dress quiet on purpose.", evidence: [ev("import", "the spicier the better")], chips: [{ label: "Seafood", polarity: "like" }] })] }, inputs, { at: "", from: "import" });
+  assert.equal(like.observations[0].chips, undefined, "'Dislikes seafood' is never a like");
+
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You pick from good options, keep it light, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
+  const h = harness(() => TYPED);
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  assert.ok(r.type);
+  const think = r.observations.find((o) => o.category === "think")!;
+  const after = await h.ins.verdict("u1", think.id, { verdict: "not_me", correction: "I'm 15 and I just like choices." });
+  assert.equal(after.type, null, "one of its two bases is gone → the type goes");
+  assert.equal(after.share, null);
+  assert.equal((await h.store.getStyle("u1"))!.insights!.denied![0].correction, undefined, "a minor's age is never stored");
 });

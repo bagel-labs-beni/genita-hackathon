@@ -18,6 +18,7 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { isSensitiveDetail } from "../personalize/sensitive.ts";
 import { storyTextProblem } from "../personalize/story.ts";
 import { looksLikeInjection, redactSensitive } from "../prep/importProfile.ts";
+import { avoidKeys, mentionsAvoided } from "../personalize/forgotten.ts";
 import type { InsightCategory, InsightChip, InsightEvidence, InsightReport, InsightSettings, InsightSource, Observation, InsightType, InsightMix, InsightStrength, InsightWatchout, InsightChain } from "./profile.ts";
 
 export type InsightPick = { question: string; label: string };
@@ -57,6 +58,7 @@ const USAGE_MAX = 110;
 const QUOTE_MAX = 80;
 const LEARNING_MAX = 4;
 const FALLBACK_HEADLINE = "You gave me a good start. I'll learn the rest as we talk.";
+const FALLBACK_USAGE = "In our calls, I'll use what you told me and ask about the rest.";
 const TYPE_NAME_MAX = 30;
 const TYPE_LINE_MAX = 90;
 const SIGNATURE_MAX = 14;
@@ -128,26 +130,51 @@ function isEcho(claim: string, quotes: string[]): boolean {
 export const similarClaim = (a: string, b: string) => sameish(a, b);
 
 /** sensitive, creepy or a minor's detail — never stored as a correction or shown as a quote */
+/** an age under 18 said about oneself ("I'm 15", "15 yo") */
+const MINOR_AGE = /\b(?:i'?m|i am|im|age|aged)\s+(?:1[0-7]|[1-9])\b|\b(?:1[0-7]|[1-9])\s*(?:yo|y\/o|yrs?|years?)\b/i;
+
 export function privateDetail(s: string): boolean {
-  return isSensitiveDetail(s) || CREEPY.test(s) || MINOR.test(s);
+  return isSensitiveDetail(s) || CREEPY.test(s) || MINOR.test(s) || MINOR_AGE.test(s);
 }
 
-/** the report without these observations, and without what was built on them (type, strengths, watch-outs, headline) */
+/** shares at least two content words with one of these claims (a line stitched from a removed trait) */
+function builtOn(text: string, claims: string[]): boolean {
+  const t = new Set(stems(text));
+  return claims.some((c) => stems(c).filter((w) => t.has(w)).length >= 2);
+}
+
+/**
+ * The report without these observations and without what was built on them (Codex P2 ×2): a type that used any of
+ * them goes (and its share card); strengths / watch-outs tied to them go; headline / chain / usage that reuse their
+ * words are rebuilt from what is left.
+ */
 export function withoutObservations<R extends InsightReport>(r: R, ids: string[]): R {
   if (!ids.length) return r;
   const gone = new Set(ids);
-  const claims = r.observations.filter((o) => gone.has(o.id)).map((o) => o.claim);
+  const claims = r.observations.filter((o) => gone.has(o.id)).flatMap((o) => [o.claim, o.use_in_call]);
   const observations = r.observations.filter((o) => !gone.has(o.id));
-  const basis = r.type?.basis.filter((b) => !gone.has(b)) ?? [];
-  const type = r.type && basis.length && observations.length ? { ...r.type, basis } : null;
-  const headline = claims.some((c) => sameish(c, r.headline)) || !observations.length ? observations[0]?.claim ?? FALLBACK_HEADLINE : r.headline;
+  const type = r.type && observations.length && !r.type.basis.some((b) => gone.has(b)) ? r.type : null;
+  const headline = !observations.length || builtOn(r.headline, claims) ? observations[0]?.claim ?? FALLBACK_HEADLINE : r.headline;
+  const chain = r.chain && observations.length && !builtOn(`${r.chain.you_are} ${r.chain.so_you} ${r.chain.so_ill}`, claims) ? r.chain : null;
+  const first = observations[0]?.use_in_call;
+  const usage = builtOn(r.usage, claims) ? (first ? `In our calls, ${first}` : FALLBACK_USAGE) : r.usage;
   return {
-    ...r, observations, type, headline,
+    ...r, observations, type, headline, chain, usage,
     share: type ? r.share : null,
     strengths: r.strengths.filter((s) => !gone.has(s.basis)),
     watchouts: r.watchouts.filter((w) => !gone.has(w.basis)),
-    chain: observations.length ? r.chain : null,
   };
+}
+
+/** "forget that …" / corrected-away lines (card.removed): traits that cite or say them go, with what was built on them (Codex P1) */
+export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ text: string; forget?: true | boolean }> | undefined): R {
+  const keys = avoidKeys((removed ?? []).map((x) => ({ text: x.text, forget: !!x.forget })));
+  if (!keys.length) return r;
+  const gone = r.observations
+    .filter((o) => [o.claim, o.use_in_call, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].some((t) => mentionsAvoided(t, keys)))
+    .map((o) => o.id);
+  const out = withoutObservations(r, gone);
+  return { ...out, mix: out.mix.filter((m) => !mentionsAvoided(m.evidence.quote, keys)), learning: out.learning.filter((l) => !mentionsAvoided(l.label, keys)) };
 }
 
 function sameish(a: string, b: string): boolean {
@@ -197,10 +224,13 @@ function groundedChip(c: InsightChip, inputs: InsightInputs, haystack: string): 
   const pickText = norm(inputs.picks.map((p) => p.label).join(" "));
   const all = `${haystack} ${pickText}`;
   if (!words.every((w) => new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(w)}`, "u").test(all))) return false;
-  if (c.polarity !== "dislike") return true;
-  // a "no" within a few words before the label's first word
+  // each place the label's first word appears: negated ("no / dislikes … seafood") or not
   const first = escapeRe(words[0]);
-  return new RegExp(`${NEG.source}(?:\\s+[\\p{L}\\p{N}']+){0,3}\\s+${first}`, "u").test(haystack);
+  const negated = new RegExp(`${NEG.source}(?:\\s+[\\p{L}\\p{N}']+){0,3}\\s+${first}`, "gu");
+  const all2 = (all.match(new RegExp(`(?:^|[^\\p{L}\\p{N}])${first}`, "gu")) ?? []).length;
+  const neg = (haystack.match(negated) ?? []).length;
+  // a like needs a plain mention; a dislike needs a negated one (Codex P2: "Dislikes seafood" is never a like)
+  return c.polarity === "dislike" ? neg > 0 : all2 > neg;
 }
 
 // ───────── shape ─────────
@@ -302,7 +332,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   let usage = str(r.usage, 300);
   if (!/^In our calls\b/i.test(usage) || usage.length > USAGE_MAX || insightProblem(usage)) {
     const first = observations[0]?.use_in_call;
-    usage = first && first.length + 14 <= USAGE_MAX ? `In our calls, ${lowerFirst(first)}` : "In our calls, I'll use what you told me and ask about the rest.";
+    usage = first && first.length + 14 <= USAGE_MAX ? `In our calls, ${lowerFirst(first)}` : FALLBACK_USAGE;
   }
   // the type read (춘식이 r02): type, strengths, watch-outs, chain — each tied to kept traits; mix from the picks only
   const keptIds = new Set(observations.map((o) => o.id));

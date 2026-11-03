@@ -25,6 +25,7 @@ import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
 import { isSensitiveDetail } from "./sensitive.ts";
+import { scrubRemoved } from "../insights/report.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -519,7 +520,9 @@ export class Personalize {
       const m = updates.length ? mergeUpdates(c, updates, at) : null;
       applied = m?.applied ?? [];
       const merged = m ? m.card : c;
-      return { card: { ...merged, removed: [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40) }, out: true };
+      const removed = [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40);
+      // the SUM insight report forgets it too (Codex P1: a trait citing it would stay in the call profile)
+      return { card: { ...merged, removed, ...(merged.insights ? { insights: scrubRemoved(merged.insights, removed) } : {}) }, out: true };
     });
     return { applied, kept };
   }
