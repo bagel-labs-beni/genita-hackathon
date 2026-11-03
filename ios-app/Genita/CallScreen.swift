@@ -387,9 +387,10 @@ extension AppState {
     }
 
     /// The server's persona card (setup answers, F4) when there is one, always with the NM01 name; the imported
-    /// style's profile text (never the raw paste once the import ran); 2 s wait on the first call (D21).
+    /// style's profile text — never the raw paste, even when the import never landed (AU-13: it skipped every
+    /// redaction and injection filter); 2 s wait on the first call (D21).
     var callStart: ClientMessage.Start {
-        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? setup.response,
+        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? "",
                                                   traits: setup.presence.sorted(), voiceId: nil)
         if var persona = setup.serverPersona { persona.name = companionDisplayName; start.persona = persona }
         if let kind = setup.imageType.flatMap(ClientMessage.Persona.Kind.init(rawValue:)) { start.persona.kind = kind }
