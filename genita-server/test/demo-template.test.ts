@@ -10,7 +10,8 @@ import { createPrep } from "../src/prep/index.ts";
 import { newPrepState } from "../src/prep/runner.ts";
 import { interpretCheck } from "../src/prep/classify.ts";
 import { DEMO_NAME, DEMO_TEMPLATE_SUB, seedDemoCompanion } from "../src/prep/demo.ts";
-import { demoTemplateVersion, demoTemplateWanted, ensureDemoTemplate, startDemoTemplate, type DemoTemplateDeps } from "../src/prep/demoTemplate.ts";
+import { demoTemplateVersion, demoTemplateWanted, ensureDemoTemplate, readDemoPointer, startDemoTemplate, templateSub, type DemoTemplateDeps } from "../src/prep/demoTemplate.ts";
+import { configureOps } from "../src/ops/limits.ts";
 import { testDb } from "./helpers/db.ts";
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9]);
@@ -42,7 +43,7 @@ async function boot(t: import("node:test").TestContext) {
     return id;
   };
   const deps = (over: Partial<DemoTemplateDeps> = {}): DemoTemplateDeps => ({
-    templateUser: async () => (await accounts.accounts.upsertUser({ provider: "dev", sub: DEMO_TEMPLATE_SUB, displayName: "Demo template" })).user.id,
+    templateUser: async (sub) => (await accounts.accounts.upsertUser({ provider: "dev", sub, displayName: "Demo template" })).user.id,
     prep, blobs: accounts.blobs, log, image: JPEG, build, ...over,
   });
   return { accounts, prep, events, deps, builds: () => builds };
@@ -60,28 +61,74 @@ test("boot seeding: first run builds and stamps the template; the next boot keep
   assert.ok(events.some((e) => e.event === "demo.template.current"));
   // judges get it: the existing sign-in seed copies this template
   const { user } = await accounts.accounts.upsertUser({ provider: "dev", sub: "judge:alpha" });
-  const seeded = await seedDemoCompanion({ store: accounts.prepStore, blobs: accounts.blobs, templateUserId: () => accounts.accounts.findUserId("dev", DEMO_TEMPLATE_SUB), log: () => {} }, user.id);
+  const pointer = (await readDemoPointer(accounts.blobs))!;
+  assert.equal(pointer.companionId, "tpl1");
+  const seeded = await seedDemoCompanion({ store: accounts.prepStore, blobs: accounts.blobs, templateUserId: async () => (await readDemoPointer(accounts.blobs))?.userId ?? null, log: () => {} }, user.id);
   assert.equal(seeded.seeded, true);
 });
 
-test("a new version (photo or DEMO_TEMPLATE_VERSION) drops the old template and rebuilds it", async (t) => {
-  const { accounts, events, deps, builds } = await boot(t);
-  await ensureDemoTemplate(deps());
-  const tpl = (await accounts.accounts.findUserId("dev", DEMO_TEMPLATE_SUB))!;
-  const r = await ensureDemoTemplate(deps({ image: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 7]) }));
-  assert.equal(r.status, "seeded");
-  assert.equal(builds(), 2);
-  assert.equal((await accounts.prepStore.getCompanion(tpl))!.id, "tpl2");
-  assert.deepEqual(await accounts.blobs.list(`users/${tpl}/companions/tpl1/`), [], "old template files dropped");
-  assert.ok(events.some((e) => e.event === "demo.template.dropped" && e.data.companionId === "tpl1"));
-  assert.notEqual(demoTemplateVersion(JPEG, "v"), demoTemplateVersion(Buffer.from([1]), "v"));
-});
-
-test("a template that is not ready (half-built before a restart) is rebuilt", async (t) => {
+test("a new version is built in its own account; the old template stays until the pointer moves (nothing a judge copies is deleted)", async (t) => {
   const { accounts, deps, builds } = await boot(t);
   await ensureDemoTemplate(deps());
-  const tpl = (await accounts.accounts.findUserId("dev", DEMO_TEMPLATE_SUB))!;
+  const old = (await readDemoPointer(accounts.blobs))!;
+  const img2 = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 7]);
+  const r = await ensureDemoTemplate(deps({ image: img2 }));
+  assert.equal(r.status, "seeded");
+  assert.equal(builds(), 2);
+  const now = (await readDemoPointer(accounts.blobs))!;
+  assert.notEqual(now.userId, old.userId, "one account per version");
+  assert.equal(now.companionId, "tpl2");
+  assert.equal((await accounts.prepStore.getCompanion(old.userId))!.id, "tpl1", "old template kept");
+  assert.equal((await accounts.blobs.list(`users/${old.userId}/companions/tpl1/`)).length, 1, "old files kept");
+  assert.notEqual(templateSub(demoTemplateVersion(JPEG, "v")), templateSub(demoTemplateVersion(img2, "v")));
+});
+
+test("another process building this version (running, not ours, fresh) is left alone; the pointer is not moved", async (t) => {
+  const { accounts, prep, deps, builds, events } = await boot(t);
+  const version = demoTemplateVersion(JPEG, prep.deps.voices[0].id);
+  const tpl = (await accounts.accounts.upsertUser({ provider: "dev", sub: templateSub(version) })).user.id;
+  await deps().build!(tpl, JPEG);
   await accounts.prepStore.patchCompanion(tpl, (c) => ({ ...c, prep: { ...c.prep, status: "running" } }));
+  const r = await ensureDemoTemplate(deps());
+  assert.equal(r.status, "busy");
+  assert.equal(builds(), 1, "no second build");
+  assert.equal(await readDemoPointer(accounts.blobs), null);
+  assert.ok(events.some((e) => e.event === "demo.template.busy"));
+  // it finished elsewhere: the next run only moves the pointer
+  await accounts.prepStore.patchCompanion(tpl, (c) => ({ ...c, prep: { ...c.prep, status: "ready" } }));
+  assert.equal((await ensureDemoTemplate(deps())).status, "seeded");
+  assert.equal(builds(), 1);
+  assert.equal((await readDemoPointer(accounts.blobs))!.userId, tpl);
+});
+
+test("ops pause: nothing is generated at boot", async (t) => {
+  const { accounts, deps, builds, events } = await boot(t);
+  configureOps({ paused: true });
+  t.after(() => { configureOps({}); });
+  const r = await ensureDemoTemplate(deps());
+  assert.equal(r.status, "failed");
+  assert.equal(builds(), 0);
+  assert.equal(await readDemoPointer(accounts.blobs), null);
+  assert.ok(events.some((e) => e.event === "demo.template.failed" && e.data.message === "Error: paused"));
+});
+
+test("a judge copy refuses an empty template (never a ready companion without a face)", async (t) => {
+  const { accounts } = await boot(t);
+  const tpl = (await accounts.accounts.upsertUser({ provider: "dev", sub: "demo:template:empty" })).user.id;
+  await accounts.prepStore.putImage({ id: "e1", userId: tpl, mime: "image/jpeg", bytes: JPEG.length, check: CHECK, headBox: null, rightsAck: true, createdAt: new Date().toISOString(), ms: { check: 1, sam: 1 } } as any, JPEG);
+  await accounts.prepStore.putCompanion({ id: "empty", userId: tpl, imageId: "e1", type: "human", voiceId: "x", name: DEMO_NAME, createdAt: new Date().toISOString(), prep: { ...newPrepState(), status: "ready" as const } } as any);
+  const { user } = await accounts.accounts.upsertUser({ provider: "dev", sub: "judge:e" });
+  const r = await seedDemoCompanion({ store: accounts.prepStore, blobs: accounts.blobs, templateUserId: async () => tpl, log: () => {} }, user.id);
+  assert.equal(r.reason, "template_empty");
+  assert.equal(await accounts.prepStore.getCompanion(user.id), null);
+});
+
+test("a failed template in this version's account is rebuilt", async (t) => {
+  const { accounts, deps, builds } = await boot(t);
+  await ensureDemoTemplate(deps());
+  const tpl = (await readDemoPointer(accounts.blobs))!.userId;
+  // crashed build: failed status in this version's own account → rebuilt
+  await accounts.prepStore.patchCompanion(tpl, (c) => ({ ...c, prep: { ...c.prep, status: "failed" } }));
   assert.equal((await ensureDemoTemplate(deps())).status, "seeded");
   assert.equal(builds(), 2);
 });

@@ -2,15 +2,20 @@
  * D41 judge demo template, made by the server itself at boot (the hosted DB is inside the VPC, so the
  * ops script `npm run demo:template` cannot reach it from a laptop).
  *
- * ensureDemoTemplate() runs in the background after the accounts DB is migrated (007_companion_demo)
- * and never blocks startup. Idempotent: a ready template whose stamp matches the current version is
- * kept (log demo.template.current). Otherwise the old template is dropped and rebuilt through the
- * normal prep routes (photo check → companion → prep → prefs) under the reserved account
- * provider "dev", sub "demo:template" (log demo.template.seeded). Any failure is logged
- * (demo.template.failed) and retried once after RETRY_MS; judges then onboard like new users.
+ * startDemoTemplate() runs in the background after the accounts DB is migrated and never blocks startup.
+ * Each template version gets its own reserved account (provider "dev", sub `demo:template:<v>`), so a
+ * new template is built next to the old one and nothing a judge may be copying is ever deleted. Only a
+ * ready build moves the pointer `demo/template-current.json` ({userId, companionId, version}); judge
+ * sign-in copies whatever the pointer names (else the legacy `demo:template` account, prep/demo.ts).
+ *   - pointer already on a ready template of this version → kept (demo.template.current)
+ *   - this version ready but not pointed at (another process built it) → pointer moved (demo.template.seeded)
+ *   - this version being built by another process (running, < STALE_MS old) → left alone (demo.template.busy)
+ *   - missing / failed / stale in this version's own account → (re)built via the prep routes (demo.template.seeded)
+ *   - ops pause (GENITA_PAUSED / pause file) → nothing generated (demo.template.failed reason paused)
+ * Any failure is only logged (demo.template.failed) and retried once after RETRY_MS.
  *
  * Version = DEMO_TEMPLATE_VERSION (bump when the face pipeline changes) + the sample photo's hash +
- * the default voice. Stored next to the template's files: users/<tpl>/demo-template.json.
+ * the default voice.
  *
  * On by default only where it is wanted and paid for: a Postgres DB (the hosted server) with Judge
  * access codes configured. GENITA_DEMO_TEMPLATE=0 turns it off, =1 forces it on (tests, PGlite).
@@ -26,15 +31,20 @@ import type { AddressInfo } from "node:net";
 import type { BlobStore } from "../storage/blob.ts";
 import type { Prep } from "./index.ts";
 import { DEMO_NAME, DEMO_TEMPLATE_SUB } from "./demo.ts";
+import { getOps } from "../ops/limits.ts";
 
 export const DEMO_TEMPLATE_VERSION = "2026-11-03.1";
 export const DEMO_TEMPLATE_IMAGE = join(import.meta.dirname, "../../assets/demo/jin.jpg");
 const RETRY_MS = 10 * 60_000;
+/** a build in another process older than this is treated as crashed */
+const STALE_MS = 30 * 60_000;
+export const DEMO_POINTER_KEY = "demo/template-current.json";
+export type DemoPointer = { userId: string; companionId: string; version: string };
 
 type Log = (event: string, data: Record<string, unknown>) => void;
 export type DemoTemplateDeps = {
-  /** users.id of the reserved template account (created if missing) */
-  templateUser: () => Promise<string>;
+  /** users.id of the reserved template account for this version (created if missing) */
+  templateUser: (sub: string) => Promise<string>;
   prep: Prep;
   blobs: BlobStore;
   log: Log;
@@ -42,9 +52,22 @@ export type DemoTemplateDeps = {
   /** builds a ready template companion for this user and returns its id (default: the prep routes) */
   build?: (tplUserId: string, image: Buffer) => Promise<string>;
 };
-export type DemoTemplateResult = { status: "current" | "seeded" | "failed"; companionId?: string; version: string; ms: number };
+export type DemoTemplateResult = { status: "current" | "seeded" | "busy" | "failed"; companionId?: string; version: string; ms: number };
 
-const stampKey = (tpl: string) => `users/${tpl}/demo-template.json`;
+/** The reserved account for one template version. */
+export const templateSub = (version: string) => `${DEMO_TEMPLATE_SUB}:${createHash("sha256").update(version).digest("hex").slice(0, 12)}`;
+
+/** The template judges copy now (null = none yet; prep/demo.ts then falls back to the legacy account). */
+export async function readDemoPointer(blobs: BlobStore): Promise<DemoPointer | null> {
+  const b = await blobs.get(DEMO_POINTER_KEY).catch(() => null);
+  if (!b) return null;
+  try {
+    const p = JSON.parse(b.toString("utf8")) as DemoPointer;
+    return typeof p.userId === "string" && typeof p.companionId === "string" ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 export function demoTemplateVersion(image: Buffer, voiceId: string | undefined): string {
   return `${DEMO_TEMPLATE_VERSION}:${createHash("sha256").update(image).digest("hex").slice(0, 12)}:${voiceId ?? "none"}`;
@@ -72,25 +95,45 @@ async function run(d: DemoTemplateDeps): Promise<DemoTemplateResult> {
   try {
     const image = d.image ?? readFileSync(DEMO_TEMPLATE_IMAGE);
     version = demoTemplateVersion(image, d.prep.deps.voices[0]?.id);
-    const tpl = await d.templateUser();
     const store = d.prep.deps.store;
-    const cur = await store.getCompanion(tpl);
-    const stamp = await d.blobs.get(stampKey(tpl)).then((b) => (b ? (JSON.parse(b.toString("utf8")) as { version?: string }).version : null)).catch(() => null);
-    if (cur && cur.prep.status === "ready" && stamp === version) {
-      d.log("demo.template.current", { companionId: cur.id, version });
-      return { status: "current", companionId: cur.id, version, ms: ms() };
+    const pointer = await readDemoPointer(d.blobs);
+    if (pointer?.version === version) {
+      const c = await store.getCompanion(pointer.userId);
+      if (c?.id === pointer.companionId && c.prep.status === "ready") {
+        d.log("demo.template.current", { companionId: c.id, version });
+        return { status: "current", companionId: c.id, version, ms: ms() };
+      }
     }
-    if (cur) {
-      await d.prep.runner.stop(tpl); // a resumed half-built template must not keep writing
+    const tpl = await d.templateUser(templateSub(version));
+    let cur = await store.getCompanion(tpl);
+    if (cur?.prep.status === "running" && d.prep.runner.isRunning(tpl)) {
+      await d.prep.runner.run(tpl); // this process resumed it at boot: let it finish
+      cur = await store.getCompanion(tpl);
+    }
+    if (cur && cur.prep.status !== "ready") {
+      const age = Date.now() - Date.parse(cur.createdAt);
+      if (cur.prep.status === "running" && !d.prep.runner.isRunning(tpl) && age < STALE_MS) {
+        d.log("demo.template.busy", { companionId: cur.id, version, ageMs: age });
+        return { status: "busy", companionId: cur.id, version, ms: ms() };
+      }
+      // failed, or a crashed/stale build in this version's own account (never pointed at, nobody copies it)
+      await d.prep.runner.stop(tpl);
       await store.deleteCompanion(tpl);
-      d.log("demo.template.dropped", { companionId: cur.id, status: cur.prep.status, had: stamp ?? null, version });
+      d.log("demo.template.dropped", { companionId: cur.id, status: cur.prep.status, version });
+      cur = null;
     }
-    const companionId = await (d.build ?? buildViaRoutes(d))(tpl, image);
-    const done = await store.getCompanion(tpl);
-    if (!done || done.id !== companionId || done.prep.status !== "ready") throw new Error(`template prep ended ${done?.prep.status ?? "missing"}`);
-    await d.blobs.put(stampKey(tpl), Buffer.from(JSON.stringify({ version, companionId, at: new Date().toISOString() })), "application/json");
+    let companionId = cur?.id;
+    if (!companionId) {
+      if (getOps().isPaused("demo.template")) throw new Error("paused");
+      companionId = await (d.build ?? buildViaRoutes(d))(tpl, image);
+      const done = await store.getCompanion(tpl);
+      if (!done || done.id !== companionId || done.prep.status !== "ready") throw new Error(`template prep ended ${done?.prep.status ?? "missing"}`);
+    }
     const files = (await d.blobs.list(`users/${tpl}/companions/${companionId}/`)).length;
-    d.log("demo.template.seeded", { companionId, version, files, ms: ms() });
+    if (!files) throw new Error("template has no face files");
+    const next: DemoPointer = { userId: tpl, companionId, version };
+    await d.blobs.put(DEMO_POINTER_KEY, Buffer.from(JSON.stringify({ ...next, at: new Date().toISOString() })), "application/json");
+    d.log("demo.template.seeded", { companionId, version, files, previous: pointer?.version ?? null, ms: ms() });
     return { status: "seeded", companionId, version, ms: ms() };
   } catch (err) {
     d.log("demo.template.failed", { version, message: String(err).slice(0, 300), ms: ms() });
@@ -103,7 +146,7 @@ export function startDemoTemplate(d: DemoTemplateDeps, retryMs = RETRY_MS): { st
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
   void ensureDemoTemplate(d).then((r) => {
-    if (r.status !== "failed" || stopped) return;
+    if ((r.status !== "failed" && r.status !== "busy") || stopped) return;
     timer = setTimeout(() => void ensureDemoTemplate(d), retryMs);
     timer.unref?.();
   });
