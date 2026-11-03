@@ -215,7 +215,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         voices: r.voices.map((v) =>
           v.locale
             ? { id: v.id, name: v.name, blurb: v.blurb, locale: v.locale, gender: v.gender ?? "neutral", style: v.style ?? "", previewUrl: null }
-            : { id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${v.id}/preview` },
+            : { id: v.id, name: v.name, blurb: v.blurb, label: `${v.name} · ${v.blurb.split(",")[0].toLowerCase()}`, ...(v.gender ? { gender: v.gender } : {}), previewUrl: `/v1/companion/voices/${v.id}/preview` },
         ),
         suggested: r.suggested,
         available: r.available,
