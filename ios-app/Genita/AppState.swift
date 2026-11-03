@@ -262,6 +262,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
         invalidateOnboardingWork()
+        flowError = nil
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(nil)
@@ -275,6 +276,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
     func signedIn(userId: String? = nil, consented: Bool) {
         invalidateOnboardingWork()
+        // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
+        flowError = nil
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(userId)

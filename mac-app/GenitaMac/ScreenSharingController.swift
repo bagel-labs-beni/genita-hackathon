@@ -1,6 +1,7 @@
 import AppKit
 import ScreenCaptureKit
 import CoreMedia
+import QuartzCore
 
 @MainActor final class ScreenSharingController: NSObject, ObservableObject {
     @Published var permissionRequired = false
@@ -77,12 +78,33 @@ import CoreMedia
         showPicker()
     }
     func showPicker() {
-        captureRequest.begin()
+        let request = captureRequest.begin()
         stopStartingCapture()
         var configuration = SCContentSharingPickerConfiguration()
         configuration.allowedPickerModes = [.singleDisplay, .singleWindow]
         if let id = Bundle.main.bundleIdentifier { configuration.excludedBundleIDs = [id] }
         SCContentSharingPicker.shared.defaultConfiguration = configuration
+        // #318 review P1: a picker opened before the last stop/logout may still answer, and the shared picker's
+        // callbacks don't say which presentation they belong to. Close it, and present this one only after its
+        // answer (dropped by ScreenSharingRequest) or a short wait, so the next answer is this picker's.
+        guard captureRequest.stalePicker else { return presentPicker() }
+        SCContentSharingPicker.shared.isActive = false
+        staleWait?.cancel()
+        staleWait = Task { @MainActor [weak self] in
+            for _ in 0..<15 {   // ≤ 1.5 s
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
+                if !self.captureRequest.stalePicker { break }
+            }
+            guard let self, !Task.isCancelled, self.captureRequest.isCurrent(request) else { return }
+            // The old picker answered (and was dropped): the next answer is this picker's, no guard. Otherwise
+            // answers in the new picker's first second are still treated as the old one's (see start(_:replacing:)).
+            if self.captureRequest.stalePicker { self.captureRequest.clearStalePicker(presentingAt: CACurrentMediaTime()) }
+            self.presentPicker()
+        }
+    }
+    private var staleWait: Task<Void, Never>?
+    private func presentPicker() {
         SCContentSharingPicker.shared.isActive = true
         SCContentSharingPicker.shared.present()
     }
@@ -90,6 +112,7 @@ import CoreMedia
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") { NSWorkspace.shared.open(url) }
     }
     func stop() {
+        staleWait?.cancel(); staleWait = nil
         captureRequest.invalidate()
         stopStartingCapture()
         let old = activeCapture; activeCapture = nil; isSharing = false
@@ -110,7 +133,7 @@ import CoreMedia
         stopCapture(old)
     }
     private func cancelPicker() {
-        captureRequest.cancelPicker()
+        captureRequest.cancelPicker(now: CACurrentMediaTime())
     }
     /// End this account's capture, including a picker/start still in flight, before another account can sign in.
     func resetForSignOut() {
@@ -126,7 +149,12 @@ import CoreMedia
             captureRequest.begin()
             stopStartingCapture()
         }
-        guard let request = captureRequest.beginCapture() else { return }
+        guard let request = captureRequest.beginCapture(now: CACurrentMediaTime()) else {
+            // A dropped answer (the old picker's) while this account still asked for one: show the picker again, so a
+            // person who really picked that fast just picks once more instead of seeing nothing happen.
+            if stream == nil, captureRequest.current != nil { presentPicker() }
+            return
+        }
         Task {
             do {
                 guard captureRequest.isStarting(request) else { return }
