@@ -981,7 +981,9 @@ test("quick look: a spike gets its own small Spark call on the next frame and re
   const quick = q.calls.filter(q.isQuick);
   assert.equal(quick.length, 1);
   const imgs = (quick[0].input as { content: { type: string }[] }[])[0].content.filter((p) => p.type === "input_image");
-  assert.equal(imgs.length, 3, "the last ~1 s: before, at and after the spike");
+  assert.equal(imgs.length, 2, "the last second as 2 frames (the spike and after it), newest last");
+  assert.match(quick[0].instructions!, /only name what is clearly visible in the last frame/);
+  assert.match(quick[0].instructions!, /no clothes slipping or falling off/);
   assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 900, "small and fast");
   assert.deepEqual(q.reacted, ["<surprised> [surprised] What a dunk!"]);
 });
@@ -1041,7 +1043,7 @@ test("crowd noise / a stray word is not dialogue: it never holds a reaction (the
   }
 });
 
-test("quick look cadence: a motion-aware share gets a quick look every 1.5 s even without a spike (small subjects)", async () => {
+test("quick look cadence: a motion-aware share gets a quick look every 1.0 s even without a spike (small subjects)", async () => {
   const calls: SparkRequest[] = [];
   const { c, at } = controller([], {}, {
     quick: true,
@@ -1059,7 +1061,7 @@ test("quick look cadence: a motion-aware share gets a quick look every 1.5 s eve
     c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.03 });
     await wait(1);
   }
-  assert.equal(quicks(), 2, "7.0 s, then 8.67 s (≥1.5 s later); 10.0 s is only 1.33 s after");
+  assert.equal(quicks(), 3, "7.0, 8.33 and 9.66 s (each the first frame ≥1.0 s after the last look)");
   // an older Mac (no motion field) gets spikes only, never the cadence
   const old = controller([], {}, { quick: true, async *spark(req): AsyncGenerator<SparkStreamEvent> { calls.push(req); yield { type: "done", responseId: null, text: "{}", status: "completed" }; } });
   const before = quicks();

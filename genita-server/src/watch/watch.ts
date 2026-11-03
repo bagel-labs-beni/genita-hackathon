@@ -105,13 +105,14 @@ const QUICK_AFTER_SPIKE_MS = 250;
 const QUICK_MIN_GAP_MS = 700;
 /** …and every 1.5 s while the picture changes: small subjects (a dunk far away, a skateboard trick) barely move the
  *  32×18 luma, so a spike alone misses them */
-const QUICK_EVERY_MS = 1_500;
+const QUICK_EVERY_MS = 1_000;
 /** quick looks in flight at once: a second spike (the trick right after a cut) doesn't wait for the first */
 const QUICK_CONCURRENCY = 2;
 /** a sound counts as dialogue for the reaction gate once it has a word ("Stop!" counts). Wordless crowd noise
  *  and cheers don't; a stray transcribed word over a crowd is left to the model's talkOver */
 const words = (s: string) => s.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length;
-const QUICK_FRAMES = 3;
+/** 2 frames (~0.3–0.9 s apart, the newest last): enough for the motion, fewer images = a faster call (11/3 15:30) */
+const QUICK_FRAMES = 2;
 const QUICK_ON = process.env.GENITA_WATCH_QUICK !== "0";
 const ECHO_WINDOW_MS = 10_000;
 const ECHO_WAIT_MS = 1_500;
