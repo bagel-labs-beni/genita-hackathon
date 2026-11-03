@@ -590,6 +590,8 @@ extension AppState {
         let previous = insightVerdictTask
         let task = Task<String?, Never> {
             _ = await previous?.value
+            // queued behind an earlier verdict: the account may have changed meanwhile (settings lane Codex P1)
+            guard !Task.isCancelled, ownsOnboardingResponse(request) else { return nil }
             do {
                 let r = try await onboarding.insightVerdict(id: id, verdict: verdict, correction: correction)
                 if ownsOnboardingResponse(request) { insightReport = r }
