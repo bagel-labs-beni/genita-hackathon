@@ -1577,3 +1577,15 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("intel eval 11/4 forget in call: after 'forget I said that' the pointed-at line never reaches Spark again", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return JSON.stringify(calls.at(-1)!.input); };
+  await say("my ex texted me happy birthday out of nowhere");
+  assert.match(await say("actually forget I said that, i don't wanna get into it"), /happy birthday/, "the forget turn itself still sees what it points at");
+  const next = await say("ok what should i do tonight");
+  assert.doesNotMatch(next, /happy birthday|forget I said/);
+  assert.equal(session.forgetAsked, true);
+  session.close();
+});

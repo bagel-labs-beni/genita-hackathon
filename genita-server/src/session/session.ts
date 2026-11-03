@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { forgetInCall, isAnaphoricForget, pointedLine } from "../convo/forgetInCall.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1446,9 +1447,13 @@ export class Session {
     const p = this.deps.personalize;
     const userId = this.deps.userId;
     // "forget that …": from this line on, memory, notes and the turns handed on leave its target out (no Spark wait)
-    if (isForgetRequest(text) && this.mode === "chat") {
-      const target = forgetTarget(text);
-      if (target) { this.removedLines = [...this.removedLines, { text: target, forget: true }].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
+    // "forget I said that" points back: the line to forget is their previous one (strict match, not loose words of
+    // "i don't wanna get into it" — intel eval 11/4)
+    const pointsBack = isAnaphoricForget(text);
+    if ((isForgetRequest(text) || pointsBack) && this.mode === "chat") {
+      const prev = pointsBack ? pointedLine(this.history) : null;
+      const removed: Removed | null = pointsBack ? prev : forgetTarget(text) ? { text: forgetTarget(text), forget: true } : null;
+      if (removed) { this.removedLines = [...this.removedLines, removed].slice(-40); this.memoryCall?.setAvoid(this.removedLines); }
     }
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
@@ -1643,7 +1648,7 @@ export class Session {
   private remember(role: "user" | "assistant", text: string): void {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
-    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
+    if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text) || isAnaphoricForget(text))) this.forgetAsked = true;
     if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
@@ -1677,7 +1682,8 @@ export class Session {
       ? [{ type: "input_text", text }, ...images.map((u) => ({ type: "input_image" as const, image_url: u }))]
       : text;
     const input: InputMessage[] = [
-      ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
+      // intel eval 11/4: what they asked to forget in this call is not sent back to Spark either (convo/forgetInCall.ts)
+      ...forgetInCall(this.history, this.removedLines).map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
     const v1 = this.v1 ? this.v1Extras(turn, text) : {};
