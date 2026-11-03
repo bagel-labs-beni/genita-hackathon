@@ -130,18 +130,19 @@ test("PATCH /v1/profile (C1→C3): marked lines + what's right → profile chang
   assert.equal(r.status, 200);
   const body = (await r.json()) as { ack: string; card: { id: string; headline: string; tags: Array<{ text: string }> }; changed: string[]; profile: string; rows: Array<{ key: string }> };
   assert.equal(body.ack, "Got it. I'll remember that.");
-  // S1 perf: the answer doesn't wait for the reword — the card as shown, the marked tag out, the new fact in
+  // S1 (≤ 1 s): the answer doesn't wait for Spark — the card as shown, the marked tag out, their own words in
   assert.equal(body.card.id, "taste");
   assert.equal(body.card.headline, "taste headline.", "headline kept until the reworded card lands");
   assert.ok(!body.card.tags.some((t) => t.text === "Clean, minimal"), "the marked tag is gone");
-  assert.ok(body.changed.length > 0 && body.changed.every((c) => /logos/i.test(c)), JSON.stringify(body.changed));
-  // the Spark reword lands in the store right after; GET story shows it
+  assert.deepEqual(body.changed, ["No logos, ever."]);
+  // Spark's profile update and the reword land in the store right after; GET story shows them
   await h.p.drainRewrites();
+  const profile = (await h.p.startCall("u1"))?.profile ?? "";
+  assert.match(profile, /Dislikes logos/);
+  assert.doesNotMatch(profile, /Clean, minimal clothes/);
   const reworded = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
   assert.equal(reworded.headline, "Plain, no logos.");
   assert.deepEqual(cardTexts(reworded).filter((x) => /logos|Plain/.test(x)), ["Plain basics", "Not for you: logos"]);
-  assert.match(body.profile, /Dislikes logos/);
-  assert.doesNotMatch(body.profile, /Clean, minimal clothes/);
   const storyReq = h.calls.find((c) => c.schemaName === "story_cards")!;
   assert.match(storyReq.instructions!, /only these cards: taste\./);
   assert.match(String(h.calls[0].input), /marked these as wrong: \"Clean, minimal\"/);
@@ -178,6 +179,7 @@ test("PATCH unknowns: telling one now answers that topic and it leaves the list"
   t.after(srv.close);
   const r = (await (await fetch(`${srv.base}/v1/profile`, { method: "PATCH", body: JSON.stringify({ cardId: "unknowns", items: ["Reminder frequency"], text: "One a day is fine." }) })).json()) as { card: { unknowns: Array<{ item: string }> } };
   assert.ok(!r.card.unknowns.some((u) => u.item === "Reminder frequency"));
+  await h.p.drainRewrites(); // S1: the answer is saved in the background
   assert.equal((await h.store.getStyle("u1"))!.sections.boundaries[0].text, "One reminder a day is fine.");
 });
 
@@ -293,6 +295,7 @@ test("Codex round 2: a slow earlier sheet correction can't undo a later one", as
   await h.p.correct("u1", { cardId: "taste", text: "No wait, I hate cilantro" });
   releaseA();
   await a;
+  await h.p.drainRewrites();
   const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
   assert.ok(likes.includes("Dislikes cilantro, really."));
   assert.ok(!likes.includes("Loves cilantro."));
@@ -308,9 +311,10 @@ test("S1: noteShorter saves an observed line, never over an explicit one about t
   assert.deepEqual([resp[0].text, resp[0].label], ["Short replies, one or two sentences.", "observed"]);
 });
 
-test("S1 perf: PATCH /v1/profile answers after the correction call, not after the card reword (slow Spark story)", async (t) => {
+test("S1 perf: PATCH /v1/profile answers before any Spark call (slow correction and story calls run behind it)", async (t) => {
   let storyCalls = 0;
   const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") await new Promise((r) => setTimeout(r, 1500));
     if (req.schemaName === "profile_correction") return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
     if (req.schemaName === "story_cards") {
       if (++storyCalls > 1) await new Promise((r) => setTimeout(r, 1500)); // the reword after the import's story
@@ -323,7 +327,7 @@ test("S1 perf: PATCH /v1/profile answers after the correction call, not after th
   const t0 = performance.now();
   const r = await h.p.correct("u1", { cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." });
   const ms = performance.now() - t0;
-  assert.ok(ms < 500, `answered in ${Math.round(ms)} ms (the 1.5 s reword runs after)`);
+  assert.ok(ms < 300, `answered in ${Math.round(ms)} ms (the 1.5 s correction and 1.5 s reword run after)`);
   assert.equal(r.card!.headline, "taste headline.");
   await h.p.drainRewrites();
   assert.equal((await h.p.story("u1")).cards.find((c) => c.id === "taste")!.headline, "Plain, no logos.");
@@ -371,8 +375,25 @@ test("Codex S1: a text-only correction that replaced an unmarked fact answers wi
   t.after(h.cleanup);
   await withStory(h);
   const r = await h.p.correct("u1", { cardId: "talk", text: "I want long detailed answers now." });
-  const texts = cardTexts(r.card!);
-  assert.ok(texts.some((x) => /Long, detailed/.test(x)), JSON.stringify(texts));
-  assert.ok(!texts.some((x) => /Short answers/.test(x)), "the replaced fact isn't shown next to its replacement");
+  assert.ok(cardTexts(r.card!).includes("I want long detailed answers now."), "their own words, at once");
   await h.p.drainRewrites();
+  const profile = (await h.p.startCall("u1"))?.profile ?? "";
+  assert.match(profile, /Long, detailed answers/);
+  assert.doesNotMatch(profile, /Short answers first/);
+});
+
+test("S1: Spark down — the save still answers; the correction call is retried once, then logged (no 502)", async (t) => {
+  let tries = 0;
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") { tries++; throw new Error("meta 504: request timed out"); }
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", items: ["Clean, minimal"], text: "No logos, ever." });
+  assert.deepEqual(r.changed, ["No logos, ever."]);
+  await h.p.drainRewrites();
+  assert.equal(tries, 2, "one retry");
+  assert.ok(h.logs.some(([e]) => e === "profile.correct_failed"));
 });

@@ -15,7 +15,7 @@ import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -28,6 +28,8 @@ export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCom
 
 export const ACK = "Got it. I'll remember that.";
 export const CORRECTION_TEXT_MAX = 200;
+/** a failed correction call is tried once more after this (Spark 504s on 11/3) */
+const CORRECTION_RETRY_MS = 1500;
 /** 11/3 eval: story p50 ~5 s, one outlier > 20 s; past this the GET writes it from the stored card instead */
 const STORY_TIMEOUT_MS = 12_000;
 const STORY_BACKOFF_MS = 5 * 60_000;
@@ -54,6 +56,8 @@ export class Personalize {
   private readonly storyFailedAt = new Map<string, number>();
   /** C3 rewrites still running after PATCH /v1/profile answered */
   private readonly rewrites = new Set<Promise<void>>();
+  /** per user: the saved corrections still being applied in the background, in order */
+  private readonly corrections = new Map<string, Promise<void>>();
 
   constructor(o: { store: PersonalizeStore; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date }) {
     this.store = o.store;
@@ -224,14 +228,54 @@ export class Personalize {
     const texts = cardTexts(shown);
     if (items.some((i) => !texts.includes(i))) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     const t0 = performance.now();
+    // S1 (≤ 1 s, Spark or not): the save answers now with the card as the user left it — the marked lines out, their
+    // own words in — stored (stale) so a re-read or a second correction sees the same card. Spark turns it into
+    // profile updates and rewords the card in the background (queued per user, newest wins by asOf).
+    const card = optimisticCard(shown, items, text);
+    await this.update(userId, (c) => {
+      if (c.story?.version !== 2) return null;
+      const cards = card ? c.story.cards.map((x) => (x.id === cardId ? card : x)) : c.story.cards.filter((x) => x.id !== cardId);
+      // not marked stale here: a story read before Spark merged would reword it from the old profile
+      return { card: { ...c, story: { ...c.story, cards } }, out: true };
+    });
+    this.queueCorrection(userId, () => this.applyCorrection(userId, cardId, items, text, asOf, shown, texts));
+    const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
+    this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "background" });
+    return { card, ack: ACK, changed, profile: styleProfileText(before), rows: before.display };
+  }
+
+  /** Corrections of one user run one at a time, in the order they were saved. */
+  private queueCorrection(userId: string, fn: () => Promise<void>): void {
+    const prev = this.corrections.get(userId) ?? Promise.resolve();
+    const next = prev.then(fn, fn).catch(() => {});
+    this.corrections.set(userId, next);
+    this.rewrites.add(next);
+    void next.finally(() => {
+      this.rewrites.delete(next);
+      if (this.corrections.get(userId) === next) this.corrections.delete(userId);
+    });
+  }
+
+  /** C1 → C3 behind the save: Spark → profile updates (one retry) → merge → the card reworded. */
+  private async applyCorrection(userId: string, cardId: StoryId, items: string[], text: string, asOf: string, shown: StoryCard, texts: string[]): Promise<void> {
+    const t0 = performance.now();
+    const before = await this.store.getStyle(userId);
+    if (!before) return;
+    const once = async <T>(req: Parameters<JsonFn>[0]) => {
+      try { return await this.json<T>(req); } catch { await new Promise((r) => setTimeout(r, CORRECTION_RETRY_MS).unref?.()); return this.json<T>(req); }
+    };
 
     // C1: the marked lines + what's right → explicit updates (newer wins)
     let updates: ProfileUpdate[];
     if (cardId === "unknowns") {
       // "let me tell you now": an answer to one of the open topics
       const topic = shown.unknowns!.find((u) => u.topic === items[0]) ?? shown.unknowns![0];
-      if (!text || !topic) throw new PersonalizeError(400, "bad_correction", "text");
-      const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(before, text, undefined, topic)).catch(() => { throw new PersonalizeError(502, "upstream_failed", "try again"); });
+      if (!text || !topic) return;
+      const raw = await once<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(before, text, undefined, topic)).catch((err) => {
+        this.log("profile.correct_failed", { card: cardId, message: String(err).slice(0, 160) });
+        return null;
+      });
+      if (!raw) return;
       const answer = toAnswer(raw, topic.item);
       updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw)];
     } else {
@@ -241,10 +285,11 @@ export class Personalize {
       ].join(" ");
       const req = buildCorrectionRequest(before, line);
       req.instructions += "\nThis comes from the profile screen, where the user is correcting what a card says about them: treat it as their own explicit statement. Each marked line that is wrong goes into replaces (copy the matching current profile line). A marked line with nothing to put instead is an update with text \"\" and that line in replaces.";
-      const raw = await this.json<{ updates?: unknown }>(req).catch((err) => {
+      const raw = await once<{ updates?: unknown }>(req).catch((err) => {
         this.log("profile.correct_failed", { card: cardId, message: String(err).slice(0, 160) });
-        throw new PersonalizeError(502, "upstream_failed", "try again");
+        return null;
       });
+      if (!raw) return;
       updates = toCorrectionUpdates(raw, { allowRemove: true });
     }
     const applied = updates.length
@@ -256,7 +301,7 @@ export class Personalize {
         })) ?? [])
       : [];
     const latest = await this.store.getStyle(userId);
-    if (!latest) throw new PersonalizeError(404, "no_profile");
+    if (!latest) return;
     // C3: the answer doesn't wait for Spark to reword the card (S1 save took 9.6–14.8 s with both calls in a row):
     // it carries the card as shown with the marked lines out and the new facts in; the reworded card lands in the
     // store moments later (GET /v1/profile/story), other cards the change touched are rewritten on the next read
@@ -270,15 +315,11 @@ export class Personalize {
         return { card: { ...c, story: { ...c.story, cards, stale: [...new Set([...(c.story.stale ?? []), cardId])] } }, out: true };
       });
       void stored;
-      void this.rewriteCard(userId, cardId, latest.updatedAt); // story writes keep updatedAt; only merges move it
-      const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
-      this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0), rewrite: "background" });
-      return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
+      this.log("profile.correction_applied", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0) });
+      await this.rewriteCard(userId, cardId, latest.updatedAt); // story writes keep updatedAt; only merges move it
+      return;
     }
-    const card = Personalize.current(latest).find((c) => c.id === cardId) ?? null;
-    const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
-    this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0) });
-    return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
+    this.log("profile.correction_applied", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0) });
   }
 
   /** C3 in the background: Spark rewords the corrected card; a newer change while it wrote keeps it stale. */

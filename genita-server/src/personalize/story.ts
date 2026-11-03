@@ -503,6 +503,31 @@ export function interimCard(shown: StoryCard, marked: string[], before: StyleCar
   return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
 }
 
+/**
+ * S1 save, before any Spark: the card as shown with the marked lines out and the user's own words in (one line,
+ * as they typed it, evidence "explicit"). Spark's profile update and reword replace it in the background.
+ */
+export function optimisticCard(shown: StoryCard, marked: string[], text: string): StoryCard | null {
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const said = text.replace(/\s+/g, " ").trim().slice(0, 120);
+  const line = said ? said[0].toUpperCase() + said.slice(1) : "";
+  if (shown.id === "unknowns") {
+    const unknowns = (shown.unknowns ?? []).filter((u) => !gone.has(u.topic) && !(said && u === shown.unknowns?.[0] && !marked.length));
+    return unknowns.length ? { ...shown, unknowns } : null;
+  }
+  const items = shown.items.filter((i) => !gone.has(i.text));
+  const tags = shown.tags?.filter((t) => !gone.has(tagText(t)));
+  const help = shown.help?.filter((h) => !gone.has(h.label));
+  if (line) {
+    if (shown.id === "taste" && tags) tags.push({ group: "style", text: line.slice(0, 40), dislike: false });
+    else if (shown.id === "help" && help) help.push({ label: line.slice(0, 40), sub: "", mode: "ask_first" });
+    else items.push({ text: line, evidence: "explicit" as Evidence });
+  }
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
 export function cardTexts(c: StoryCard): string[] {
   return [
     ...c.items.map((i) => i.text),
