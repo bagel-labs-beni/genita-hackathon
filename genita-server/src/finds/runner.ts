@@ -636,7 +636,13 @@ export class FindsRunner {
   private tasteForgottenAt: string | null = null;
   /** searches already running then: their cards were made from the old taste too */
   private tasteForgottenIds = new Set<string>();
-  forgetTaste(): void { this.tasteForgottenAt = new Date().toISOString(); for (const id of this.running.keys()) this.tasteForgottenIds.add(id); }
+  forgetTaste(): void {
+    this.tasteForgottenAt = new Date().toISOString();
+    for (const id of this.running.keys()) this.tasteForgottenIds.add(id);
+    // a prefetch searched with the old taste: stopped and never reused (Codex #583 r9)
+    this.prefetched?.abort.abort();
+    this.prefetched = null;
+  }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */
   onScreen(): string | undefined {
