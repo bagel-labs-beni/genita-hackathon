@@ -893,3 +893,22 @@ test("GENITA_BACKCHANNEL=1, server voice: the cue carries the companion's own 'M
     session.close();
   }
 });
+
+test("Codex #475 P2: a cue whose voice lookup outlives its pause (the user spoke again) is never sent", async () => {
+  process.env.GENITA_BACKCHANNEL = "1";
+  let clock = 0;
+  const { asr, client, session } = setup({ deps: { now: () => clock }, ttsDelayMs: 300 });
+  try {
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    clock += 4000;
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+    await sleep(1300); // the pause fired, the cue's voice lookup is running
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started yelling" });
+    await sleep(800);
+    assert.ok(!client.json.some((m) => m.type === "backchannel"), "the stale cue was dropped");
+  } finally {
+    delete process.env.GENITA_BACKCHANNEL;
+    session.close();
+  }
+});

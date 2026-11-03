@@ -391,7 +391,11 @@ export class Session {
    * the event as base64 PCM; the app plays it beside the reply queue and silences its uplink for it + 300 ms.
    * Device voice: no audio (the app plays nothing). Sent only if it is still the user's turn after the lookup.
    */
+  /** bumped on every speech start / partial / end: a cue whose lookup outlived its pause is dropped (Codex #475 P2) */
+  private bcGen = 0;
+
   private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
+    const gen = this.bcGen;
     let audio: string | undefined;
     if (this.tts === "server" && !this.voiceOverflow) {
       try {
@@ -401,7 +405,7 @@ export class Session {
         if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
       } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
     }
-    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking) return;
+    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking || gen !== this.bcGen) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
     this.log("convo.backchannel", { kind, audio: !!audio });
   }
@@ -1073,22 +1077,26 @@ export class Session {
     switch (e.type) {
       case "speechStart":
         this.metrics = {};
+        this.bcGen++;
         this.backchannel?.start();
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.metrics.lastPartialAt = t;
+        this.bcGen++;
         this.backchannel?.partial(e.text);
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
+        this.bcGen++;
         this.backchannel?.stop();
         this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
+        this.bcGen++;
         this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;

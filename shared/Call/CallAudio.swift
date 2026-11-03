@@ -89,6 +89,8 @@ import os
 
     /// Queues one TTS chunk (s16le 24 kHz mono) for an utterance.
     func enqueue(pcm: Data, utteranceId: Int) {
+        // a reply never plays over a cue (Codex #475 P2)
+        if queuedBuffers == 0 { stopCue() }
         let floats = PCM.floats(fromS16LE: pcm)
         guard !floats.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(floats.count)) else { return }
         buffer.frameLength = AVAudioFrameCount(floats.count)
@@ -106,6 +108,12 @@ import os
             Task { @MainActor in self?.played(utteranceId: utteranceId, generation: gen) }
         }
         if startedUtterances.insert(utteranceId).inserted { onPlaybackStarted?(utteranceId) }
+    }
+
+    /// Stops a playing cue and ends its uplink window (a reply starts, flush, reset, the user speaks up).
+    func stopCue() {
+        if cuePlayer.engine != nil, cuePlayer.isPlaying { cuePlayer.stop() }
+        pipeline?.clearSilence()
     }
 
     /// Convo P1 #345: plays a short backchannel cue (s16le 24 kHz mono, ≤ 1.5 s) at once, quietly, while the user is
@@ -148,6 +156,7 @@ import os
 
     /// Stop now and drop everything queued (utterance.cancelled, disconnect, background).
     func flush() {
+        stopCue()
         generation += 1
         if player.engine != nil { player.stop() }   // before start() the node has no engine
         queuedBuffers = 0
@@ -218,6 +227,8 @@ import os
             if format.sampleRate > 0, format.channelCount > 0 {
                 let pipeline = MicPipeline(input: format)
                 pipeline.enabled = micOpen
+                // the user spoke up over a cue: stop the cue at once (Codex #475 P1)
+                pipeline.onSpeechDuringCue = { [weak self] in Task { @MainActor in self?.stopCue() } }
                 self.pipeline = pipeline
                 let sink = onMicFrame
                 input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 50), format: format) { buffer, _ in
@@ -284,11 +295,17 @@ final class MicPipeline: @unchecked Sendable {
     }
 
     private var silencedUntil: TimeInterval = 0
-    /// Convo P1 #345: while a backchannel cue plays (+ a 300 ms tail) the uplink carries silence, so the cue's echo can
-    /// never reach the server's ASR or barge-in, even where echo cancellation misses it. Timing stays continuous.
+    /// The user spoke up during a cue window (called on the audio thread).
+    var onSpeechDuringCue: (@Sendable () -> Void)?
+    /// Convo P1 #345: while a backchannel cue plays (+ a 300 ms tail) the uplink gates out the cue's echo residue after
+    /// echo cancellation (quiet frames → zeros), so it never reaches the server's ASR or barge-in. A frame loud enough
+    /// to be the user's own voice ends the window at once and is sent as is (Codex #475 P1: never eat their words).
     func silence(for seconds: TimeInterval) {
         lock.withLock { silencedUntil = max(silencedUntil, ProcessInfo.processInfo.systemUptime + seconds) }
     }
+    func clearSilence() { lock.withLock { silencedUntil = 0 } }
+    /// RMS (int16 units) above which a frame in the cue window counts as the user's voice
+    static let cueVoiceRMS: Double = 700
 
     init(input: AVAudioFormat) {
         converter = AVAudioConverter(from: input, to: output)
@@ -311,9 +328,17 @@ final class MicPipeline: @unchecked Sendable {
         }
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return [] }
         var chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
-        return lock.withLock {
-            if ProcessInfo.processInfo.systemUptime < silencedUntil { chunk = [Int16](repeating: 0, count: chunk.count) }
+        var resumed = false
+        let frames: [Data] = lock.withLock {
+            if ProcessInfo.processInfo.systemUptime < silencedUntil {
+                let sum = chunk.reduce(0.0) { $0 + Double($1) * Double($1) }
+                let rms = chunk.isEmpty ? 0 : (sum / Double(chunk.count)).squareRoot()
+                if rms >= MicPipeline.cueVoiceRMS { silencedUntil = 0; resumed = true }
+                else { chunk = [Int16](repeating: 0, count: chunk.count) }
+            }
             return framer.append(chunk)
         }
+        if resumed { onSpeechDuringCue?() }
+        return frames
     }
 }
