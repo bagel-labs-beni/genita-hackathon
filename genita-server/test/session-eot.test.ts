@@ -404,3 +404,35 @@ test("handover b9-6 P2: a cued turn dropped as watch echo does not strip the nex
   assert.deepEqual(finals, ["Mm-hm."]);
   assert.equal(h.at(thinking).length, 1, "the user's own 'Mm-hm.' is answered");
 });
+
+test("Codex b9-6 P2: after a handoff, the resumed segment's late final is not answered on the old device", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.asr.fire({ type: "speechStart", turnId: 1 }); // the user goes on…
+  h.session.stopForHandoff(); // …as the other device takes the sound
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: B_FINAL });
+  await sleep(EOT.incompleteMs + 300);
+  assert.equal(h.at(thinking).length, 0, h.types().join(","));
+  assert.equal(h.sparkCalls.length, 0);
+});
+
+test("Codex b9-6 P2: an echo check running at the handoff never completes a turn afterwards", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  let release!: (echo: boolean) => void;
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
+  h.asr.fire({ type: "speechStart", turnId: 0 });
+  h.asr.fire({ type: "speechEnd", turnId: 0 });
+  h.asr.fire({ type: "speechComplete", turnId: 0, text: "My sister is coming this weekend." });
+  await sleep(10);
+  h.session.stopForHandoff();
+  release(false);
+  await sleep(200);
+  assert.equal(h.at(thinking).length, 0);
+  assert.equal(h.sparkCalls.length, 0);
+});

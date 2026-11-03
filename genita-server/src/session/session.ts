@@ -484,6 +484,8 @@ export class Session {
   /** the open segment's latest partial; a watchdog commit keeps it, and then that segment's late final is dropped */
   private segmentPartial = "";
   private dropLateFinal = false;
+  /** bumped on a proximity handoff: an echo check that started before it never completes a turn */
+  private asrEpoch = 0;
   private echoPending = 0;
   private lastAsrAt = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
@@ -679,6 +681,10 @@ export class Session {
     // a turn the end-of-turn hold kept open is not answered here later (CA-14, handover b9-6 P2): this device lost the
     // sound and the mic, so its reply would only land in the shared history; no cue either
     this.dropHeld();
+    // …nor a final still on its way from this device (an open segment, an echo check): Codex b9-6 P2
+    if (this.segmentOpen) this.dropLateFinal = true;
+    this.segmentOpen = false;
+    this.asrEpoch++;
     this.bcGen++;
     this.backchannel?.stop();
     if (this.started && !this.closed) this.dispatch({ type: "client_barge_in" });
@@ -1355,7 +1361,8 @@ export class Session {
           // in order: a slow echo check must not let a later utterance go first (Codex 11/2) — an empty final too, while
           // one is pending (Codex CA-14 r2)
           this.echoPending++;
-          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {}).finally(() => { this.echoPending--; });
+          const epoch = this.asrEpoch;
+          this.echoChain = this.echoChain.then(() => (epoch === this.asrEpoch ? this.completeUnlessEcho(e.turnId, e.text, epoch) : undefined)).catch(() => {}).finally(() => { this.echoPending--; });
           return;
         }
         return this.completeTurn(e.turnId, e.text);
@@ -1481,10 +1488,10 @@ export class Session {
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
   private echoChain: Promise<void> = Promise.resolve();
 
-  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+  private async completeUnlessEcho(turnId: number, text: string, epoch = this.asrEpoch): Promise<void> {
     const echo = text.trim() ? ((await this.watch?.isEcho(text)) ?? false) : false;
-    // re-check after the wait: the call may have closed or switched to interpretation meanwhile
-    if (this.closed || this.mode === "interpret") return;
+    // re-check after the wait: the call may have closed, switched to interpretation or moved to the other device
+    if (this.closed || this.mode === "interpret" || epoch !== this.asrEpoch) return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
     // a held turn waits again from here (the video's line was not the user going on); if the user went on meanwhile,
