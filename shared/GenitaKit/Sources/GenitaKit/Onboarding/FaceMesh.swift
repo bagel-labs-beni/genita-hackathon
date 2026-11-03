@@ -131,7 +131,12 @@ public struct FaceMesh: Equatable, Sendable {
         let hasFeatures = le.count >= 2 && re.count >= 2 && lips.count >= 3
 
         var cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloat
-        let outline = convexHull(pts(raw))
+        var outline = convexHull(pts(raw))
+        // a "face" far smaller than its head (PH-06 c4 figure: SAM's face = the goggles) is not the face: use the head box
+        if outline.count >= 8, let b = headBox, let x1 = b.nx1, let y1 = b.ny1, let x2 = b.nx2, let y2 = b.ny2 {
+            let w = outline.map(\.x).max()! - outline.map(\.x).min()!, h = outline.map(\.y).max()! - outline.map(\.y).min()!
+            if w * h < 0.2 * (x2 - x1) * (y2 - y1) { outline = [] }
+        }
         if outline.count >= 8 {
             var top = outline.map(\.y).min()!
             let bottom = outline.map(\.y).max()!, minX = outline.map(\.x).min()!, maxX = outline.map(\.x).max()!
@@ -177,15 +182,47 @@ public struct FaceMesh: Equatable, Sendable {
     }
 
     /// Small faces read as a blob under r02: on a card smaller than 90 pt of face, or with two points closer than
-    /// 6 pt, the sparse r02Small net is used instead (`full` and `small` from the same answer).
+    /// 8 pt (lead 11/4 05:1x, was 6: the dog's chin points at 6.2 pt read crowded), the sparse r02Small net is used
+    /// instead (`full` and `small` from the same answer). Scale-only, so the crop's position doesn't matter.
     public static func fitted(full: FaceMesh, small: FaceMesh?, image: CGSize, in view: CGSize,
-                              minFaceHeight: CGFloat = 90, minGap: CGFloat = 6) -> FaceMesh {
+                              minFaceHeight: CGFloat = 90, minGap: CGFloat = 8) -> FaceMesh {
         guard let small else { return full }
         let p = full.points.map { aspectFill($0, image: image, in: view) }
         let faceHeight = (p.map(\.y).max() ?? 0) - (p.map(\.y).min() ?? 0)
         var gap = CGFloat.infinity
         for i in 0..<p.count { for j in (i + 1)..<p.count { gap = min(gap, hypot(p[i].x - p[j].x, p[i].y - p[j].y)) } }
         return faceHeight < minFaceHeight || gap < minGap ? small : full
+    }
+
+    /// the points' bounding box, fractions of the image
+    public var bounds: CGRect {
+        guard let x0 = points.map(\.x).min(), let x1 = points.map(\.x).max(),
+              let y0 = points.map(\.y).min(), let y1 = points.map(\.y).max() else { return .zero }
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+    }
+
+    /// Where the photo's top-left sits when it fills `card` (scaledToFill size). With a `focus` (the face, image
+    /// fractions) the face is centred, with at least `topMargin` pt above its top; without, the usual centred crop.
+    /// Never leaves a gap: the photo always covers the card. V03 and V02-T both use it, so the photo doesn't jump.
+    public static func fillOrigin(image: CGSize, in card: CGSize, focus: CGRect?, topMargin: CGFloat = 12) -> CGPoint {
+        guard image.width > 0, image.height > 0 else { return .zero }
+        let s = max(card.width / image.width, card.height / image.height)
+        let w = image.width * s, h = image.height * s
+        var o = CGPoint(x: (card.width - w) / 2, y: (card.height - h) / 2)
+        if let f = focus, f.width > 0, f.height > 0 {
+            o.x = card.width / 2 - f.midX * w
+            o.y = max(card.height / 2 - f.midY * h, topMargin - f.minY * h)
+        }
+        o.x = min(0, max(card.width - w, o.x))
+        o.y = min(0, max(card.height - h, o.y))
+        return o
+    }
+
+    /// Image fraction → card point for a photo filling the card with its top-left at `origin` (see `fillOrigin`).
+    public static func place(_ p: CGPoint, image: CGSize, in card: CGSize, origin: CGPoint) -> CGPoint {
+        guard image.width > 0, image.height > 0 else { return CGPoint(x: p.x * card.width, y: p.y * card.height) }
+        let s = max(card.width / image.width, card.height / image.height)
+        return CGPoint(x: origin.x + p.x * image.width * s, y: origin.y + p.y * image.height * s)
     }
 
     /// Image fraction → view point for an image shown `scaledToFill` (centered crop) in `view`.

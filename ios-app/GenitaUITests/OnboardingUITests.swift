@@ -58,8 +58,8 @@ final class OnboardingUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["V03"].waitForExistence(timeout: 10), "V03 scanning")
         // the answer comes at 2.6 s, then 0.4 s finish + 1 s hold + 0.3 s fade before V02-T
-        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 15), "V02-T after the scan")
-        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 20), "V02-T after the scan")
+        Thread.sleep(forTimeInterval: 2.5)   // V02-T on screen for the recording
         app.terminate()
     }
 

@@ -68,6 +68,8 @@ struct ImageCheckView: View {
     @State private var reveal = 0.0
     /// the uploaded photo's size (orientation applied), for mapping the points onto the `scaledToFill` frame
     @State private var photoSize = CGSize.zero
+    /// the face the photo is cropped to (the net's bounds, image fractions): V03 pans to it with the answer, V02-T keeps it
+    @State private var focus: CGRect?
     /// when the bar reached 100 % (the overlay's hold, breathing and fade count from here)
     @State private var doneAt: Date?
     /// one .success haptic when a passed scan reaches 100 %
@@ -102,12 +104,13 @@ struct ImageCheckView: View {
 
     /// The check answer's face points → the net, swept on from the top over 0.4 s.
     private func showMesh() {
-        guard let r = result else { mesh = nil; smallMesh = nil; reveal = 0; return }
+        guard let r = result else { mesh = nil; smallMesh = nil; reveal = 0; focus = nil; return }
         mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
         smallMesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox, layout: .r02Small)
-        guard mesh != nil else { return }
+        guard let mesh else { focus = nil; return }
         photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
-        if reduceMotion { reveal = 1 } else { withAnimation(Self.finishCurve) { reveal = 1 } }
+        // the photo pans to the face with the same 0.4 s curve as the reveal, so the net lands on it
+        if reduceMotion { reveal = 1; focus = mesh.bounds } else { withAnimation(Self.finishCurve) { reveal = 1; focus = mesh.bounds } }
     }
 
     /// r01: the answer takes the bar from where it is to 100 % in 0.4 s on an ease-in-out
@@ -130,12 +133,12 @@ struct ImageCheckView: View {
     /// V03 "Finding the details that make them recognizable." — a scan line over the photo and the real wait.
     private var analyzingPage: some View {
         WirePage(title: polishFlow ? "Getting your photo\nready for the call." : "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
-            photo(width: width).frame(width: width - 48, height: 240)
+            photo(width: width, height: 240)
                 .overlay {
                     // V03 face scan: the line follows the bar; the net comes with the check answer
                     FaceScanOverlay(progress: reduceMotion ? (reveal > 0 ? 1 : 0) : progress, reveal: reveal,
                                     mesh: mesh.map { FaceMesh.fitted(full: $0, small: smallMesh, image: photoSize, in: CGSize(width: width - 48, height: 240)) },
-                                    imageSize: photoSize, doneAt: doneAt,
+                                    imageSize: photoSize, origin: photoOrigin(CGSize(width: width - 48, height: 240)), doneAt: doneAt,
                                     reduceMotion: reduceMotion || model.reviewScan != nil, showLine: !reduceMotion)
                         .accessibilityIdentifier("faceScan")
                 }
@@ -175,7 +178,7 @@ struct ImageCheckView: View {
                      else if canRetry { model.retryPolish() }
                      else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) }
                  }) { width, top, _ in
-            photo(width: width).frame(width: width - 48, height: 289)
+            photo(width: width, height: 289)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 // one polish path, no type: the chips stay on today's V02-T only
                 .overlay(alignment: .topLeading) { if passed && !polishFlow { typeChips.padding(12) } }
@@ -247,7 +250,12 @@ struct ImageCheckView: View {
         }.accessibilityElement(children: .contain).accessibilityIdentifier("typeChips")
     }
 
-    @ViewBuilder private func photo(width: CGFloat) -> some View {
+    /// where the uploaded photo's top-left sits in a card of `card` size: centred on the face once the net is known
+    private func photoOrigin(_ card: CGSize) -> CGPoint {
+        FaceMesh.fillOrigin(image: photoSize, in: card, focus: focus, topMargin: 12)
+    }
+
+    @ViewBuilder private func photo(width: CGFloat, height: CGFloat) -> some View {
         // the polished picture only on V02-T: V03's finish keeps the original under its face net
         if !analyzing, finished, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
             // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
@@ -257,7 +265,15 @@ struct ImageCheckView: View {
                 .background { Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55) }
                 .clipped().accessibilityIdentifier("polishedImage")
         } else if let data = model.setup.imageData, let image = UIImage(data: data) {
-            Image(uiImage: image).resizable().scaledToFill()
+            // fills the card like scaledToFill, but cropped to the face (FaceMesh.fillOrigin) in both V03 and V02-T
+            let card = CGSize(width: width - 48, height: height)
+            let s = max(card.width / max(image.size.width, 1), card.height / max(image.size.height, 1))
+            let o = FaceMesh.fillOrigin(image: image.size, in: card, focus: focus, topMargin: 12)
+            Image(uiImage: image).resizable()
+                .frame(width: image.size.width * s, height: image.size.height * s)
+                .offset(x: o.x, y: o.y)
+                .frame(width: card.width, height: card.height, alignment: .topLeading)
+                .clipped()
         } else { Color(white: 0.93) }
     }
 }

@@ -107,6 +107,45 @@ struct FaceMeshTests {
         #expect(mesh.points.allSatisfy { $0.x >= 0.29 && $0.x <= 0.71 }, "the stray points are not part of the rim")
     }
 
+    @Test func theCardIsCroppedToTheFaceWithRoomAboveIt() throws {
+        let c = try check("," + String(companionGeometry.dropFirst().dropLast()))
+        let mesh = try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox))
+        let image = CGSize(width: 941, height: 1672)
+        for card in [CGSize(width: 342, height: 240), CGSize(width: 342, height: 289)] {   // V03, V02-T
+            let o = FaceMesh.fillOrigin(image: image, in: card, focus: mesh.bounds)
+            let pts = mesh.points.map { FaceMesh.place($0, image: image, in: card, origin: o) }
+            #expect(pts.map(\.y).min()! >= 12 - 0.01, "every point at least 12 pt below the card's top")
+            #expect(pts.map(\.y).max()! <= card.height, "the chin stays on the card")
+            // the photo still covers the card
+            let s = max(card.width / image.width, card.height / image.height)
+            #expect(o.x <= 0 && o.y <= 0 && o.x + image.width * s >= card.width - 0.01 && o.y + image.height * s >= card.height - 0.01)
+        }
+        // no face yet: the usual centred crop (what aspectFill does)
+        let centred = FaceMesh.fillOrigin(image: image, in: CGSize(width: 342, height: 240), focus: nil)
+        #expect(abs(FaceMesh.place(CGPoint(x: 0.5, y: 0.5), image: image, in: CGSize(width: 342, height: 240), origin: centred).y - 120) < 0.01)
+        // a face at the very top of the photo can't move the photo off the card
+        let top = FaceMesh.fillOrigin(image: image, in: CGSize(width: 342, height: 240), focus: CGRect(x: 0.4, y: 0, width: 0.2, height: 0.05))
+        #expect(top.y == 0)
+    }
+
+    @Test func pointsCloserThan8PtGetTheSparseNet() throws {
+        let c = try check("," + String(companionGeometry.dropFirst().dropLast()))
+        let full = try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox))
+        let small = try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox, layout: .r02Small))
+        // the review photo's closest two points are ~10.9 pt apart on the V03 card: 8 pt keeps the full net, 11 pt wouldn't
+        let image = CGSize(width: 941, height: 1672), card = CGSize(width: 342, height: 240)
+        #expect(FaceMesh.fitted(full: full, small: small, image: image, in: card) == full)
+        #expect(FaceMesh.fitted(full: full, small: small, image: image, in: card, minGap: 11) == small)
+    }
+
+    @Test func aFaceOutlineFarSmallerThanItsHeadUsesTheHeadBox() throws {
+        // PH-06 c4: SAM's "face" on a figure was its goggles (a thin band inside a big head box)
+        let goggles = (0..<16).map { k -> [Double] in let a = Double(k) / 16 * 2 * .pi; return [0.5 + 0.12 * cos(a), 0.3 + 0.03 * sin(a)] }
+        let head = ImageHeadBox(nx1: 0.3, ny1: 0.15, nx2: 0.7, ny2: 0.55)
+        let mesh = try #require(FaceMesh.make(outline: goggles, points: nil, headBox: head))
+        #expect(mesh.bounds.height > 0.2, "the net spans the head-box face, not the goggle band (\(mesh.bounds.height))")
+    }
+
     @Test func mapsImageFractionsLikeScaledToFill() {
         // a 941 × 1672 photo in a 342 × 240 frame: width fills, the middle band shows
         let view = CGSize(width: 342, height: 240), image = CGSize(width: 941, height: 1672)
