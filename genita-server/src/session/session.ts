@@ -454,6 +454,8 @@ export class Session {
    */
   private held: { text: string; turnId: number; kind: EotKind; since: number; segments: number; timer: NodeJS.Timeout | null } | null = null;
 
+  /** chat speechStarts so far: a final that waited on an async check knows whether the user went on meanwhile */
+  private speechStarts = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
   private userTurnOpen(): boolean {
     return this.turn.userSpeaking || this.held !== null;
@@ -1196,6 +1198,7 @@ export class Session {
       case "speechStart": {
         this.metrics = {};
         this.bcGen++;
+        this.speechStarts++;
         // the user goes on inside a held turn (CA-14): no commit while they talk; their next final joins it
         const resumed = this.held !== null;
         if (this.held?.timer) clearTimeout(this.held.timer);
@@ -1241,7 +1244,8 @@ export class Session {
         }
         if (this.watch?.isSharing && e.text.trim()) {
           // in order: a slow echo check must not let a later utterance go first (Codex 11/2)
-          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {});
+          const starts = this.speechStarts;
+          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text, starts)).catch(() => {});
           return;
         }
         return this.completeTurn(e.turnId, e.text);
@@ -1274,10 +1278,10 @@ export class Session {
    * (src/convo/endOfTurn.ts) is held open — the backchannel cue may play inside the hold, Spark may already guess —
    * and only a long enough silence commits it; if the user resumes, the next final is joined to it.
    */
-  private completeTurn(turnId: number, text: string): void {
+  private completeTurn(turnId: number, text: string, resumed = false): void {
     const whole = this.held ? joinSegments(this.held.text, text) : text;
     const v = this.holdVerdict(whole);
-    if (v) return this.holdTurn(turnId, whole, v);
+    if (v) return this.holdTurn(turnId, whole, v, resumed);
     if (this.held?.timer) clearTimeout(this.held.timer);
     const h = this.held;
     this.held = null;
@@ -1302,12 +1306,13 @@ export class Session {
     return v.holdMs > 0 ? v : null;
   }
 
-  private holdTurn(turnId: number, text: string, v: EotVerdict): void {
+  /** resumed: the user started talking again after this final (it arrived late, e.g. after the watch echo check) */
+  private holdTurn(turnId: number, text: string, v: EotVerdict, resumed = false): void {
     if (this.held?.timer) clearTimeout(this.held.timer);
     const prev = this.held;
-    // never a commit clock while the user talks (a late async final, e.g. after the watch echo check): their next
-    // final re-decides (Codex P1)
-    const timer = this.turn.userSpeaking ? null : setTimeout(() => this.commitHeld("silence"), v.holdMs);
+    // no commit clock when the user already went on (a late final, after the watch echo check): their next final
+    // re-decides (Codex P1)
+    const timer = resumed ? null : setTimeout(() => this.commitHeld("silence"), v.holdMs);
     this.held = { text, turnId, kind: v.kind, since: prev?.since ?? this.now(), segments: (prev?.segments ?? 0) + 1, timer };
     // the cue only for a turn that looks unfinished; a missing "." alone just waits a little
     if (v.kind === "incomplete") this.backchannel?.held(text, EOT.cueAfterMs, v.holdMs);
@@ -1342,15 +1347,16 @@ export class Session {
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
   private echoChain: Promise<void> = Promise.resolve();
 
-  private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
+  private async completeUnlessEcho(turnId: number, text: string, starts = this.speechStarts): Promise<void> {
     const echo = (await this.watch?.isEcho(text)) ?? false;
     // re-check after the wait: the call may have closed or switched to interpretation meanwhile
     if (this.closed || this.mode === "interpret") return;
-    if (!echo) return this.completeTurn(turnId, text);
+    const resumed = this.speechStarts !== starts;
+    if (!echo) return this.completeTurn(turnId, text, resumed);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
     // a held turn waits again from here (the video's line was not the user going on) — unless the user went on while
     // this check ran: their own final joins the held turn then (Codex P1)
-    if (this.held) return this.turn.userSpeaking ? undefined : this.completeTurn(turnId, "");
+    if (this.held) return resumed ? undefined : this.completeTurn(turnId, "");
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
