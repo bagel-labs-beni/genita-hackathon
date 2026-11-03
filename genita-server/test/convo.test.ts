@@ -1005,3 +1005,28 @@ test("QA 11/3: a reply never starts lowercase ('okay, did you…'), but 'iPhone'
     session.close();
   }
 });
+
+test("first-sound cap (Codex r3 #427): beat → narration dropped → the retry echoes the beat → said once, no error", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "100";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  let calls = 0;
+  const client = new Client();
+  const session = new Session("cap3", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      calls++;
+      await new Promise((r) => setTimeout(r, 300));
+      const beat = String(client.json.find((m) => m.type === "reply.delta")?.text ?? "Hmm.");
+      yield { type: "text", delta: calls === 1 ? "<curious> Let me pull up what you told me." : `<curious> ${beat}` };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember" }));
+  const r = await client.waitFor((m) => (m.type === "reply" && m.final === true) || m.type === "error", 5000);
+  assert.equal(r.type, "reply");
+  assert.match(String(r.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.)$/, String(r.text));
+  session.close();
+});

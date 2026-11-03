@@ -1729,7 +1729,9 @@ export class Session {
     let droppedOpener = false;
     // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
     const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
-    const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
+    // the model's own words were the hold beat's (Codex #427): the beat (still a beat for every check) is the answer
+    let echoed = false;
+    const hasAnswer = () => (echoed && !said().length) || narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
@@ -1753,7 +1755,7 @@ export class Session {
           beatEcho ??= normTranscript(sentences.map((x) => x.display).join(" "));
           if (clause && (beatEcho === clause || beatEcho.startsWith(`${clause} `))) {
             beatEcho = beatEcho.slice(clause.length).trim();
-            for (const x of sentences) delete x.beat;
+            echoed = true;
             this.log("convo.beat_was_answer", { utteranceId });
             continue;
           }
@@ -1778,7 +1780,7 @@ export class Session {
           const once = avoidRepeatedOpener(tts, [prevSaid]);
           // the model's whole answer was the beat's own word ("Hmm." after the cap's "Hmm."): the beat becomes the answer
           // instead of an empty reply and a retry (Codex P2 #427)
-          if (once !== tts && !parseTaggedSentence(once).displayText && sentences.at(-1)?.beat) { delete sentences.at(-1)!.beat; this.log("convo.beat_was_answer", { utteranceId }); continue; }
+          if (once !== tts && !parseTaggedSentence(once).displayText && sentences.at(-1)?.beat) { echoed = true; this.log("convo.beat_was_answer", { utteranceId }); continue; }
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
@@ -1949,15 +1951,15 @@ export class Session {
           releaseAskHold();
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
+          if (!said().length && !echoed && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (!said().length && !echoed && onlyOpener) enqueueSentences([onlyOpener], true);
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
-          if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          if (!said().length && !echoed && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           // the only real sentence was the question watch together took back: a short reaction instead of a retry
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
@@ -1965,6 +1967,9 @@ export class Session {
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
+          // a retry with nothing said yet checks for a beat echo again (Codex r3 #427)
+          beatEcho = null;
+          echoed = false;
           askHold = [];
           onlyOpener = null;
           guarded.first = null;
