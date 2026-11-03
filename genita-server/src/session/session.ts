@@ -249,7 +249,16 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
 const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
-const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."];
+/** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
+export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_HOLD_CAP_MS ?? 2200);
+  return Number.isFinite(n) && n >= 0 && n <= 10_000 ? n : 2200;
+}
+/**
+ * Hold beats: audio only (never in captions, the reply text or history), short, and never the same one twice in a
+ * row in a call — "Hmm" is 1 of 6 (QA item 16: replies opening with "Hmm" ≤ 1/6; Chelsea: no Hmm/Oh repeats).
+ */
+export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah.", "<warm> Okay, so.", "<curious> Hmm.", "<warm> Mm-hm."];
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
 /** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
@@ -426,6 +435,8 @@ export class Session {
   private bargeTimer: NodeJS.Timeout | null = null;
   private seq = 0;
   private lastWarmAt = -Infinity;
+  /** next hold beat (rotates through HOLD_BEATS, so two in a row are never the same) */
+  private beatIx = 0;
   /** replies whose first sound waits for the user to stop talking */
   private quietWaiters: (() => void)[] = [];
   private metrics: TurnMetrics = {};
@@ -1713,6 +1724,8 @@ export class Session {
     };
     let speculative: "hit" | "miss" | "none" = "none";
     let pre: AsyncIterable<SparkStreamEvent> | null = null;
+    /** a Finds turn answered with a fixed ack / product reaction: no first-sound cap beat on top */
+    let ackTurn = false;
     let memoryRetry: MemoryRetryState = {};
     let built: Built | null = null;
     if (!self && this.specTimer) clearTimeout(this.specTimer);
@@ -1758,6 +1771,7 @@ export class Session {
       cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {
+        ackTurn = true;
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
         // the card's own line follows when it lands
         if (spec && speculative === "hit") spec.abort.abort();
@@ -1867,7 +1881,9 @@ export class Session {
         // enqueue a blank sentence (or call TTS with just "[laughs]").
         if (!p.displayText) continue;
         let tts = p.ttsText;
-        if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        // a hold beat is not the reply's first sentence (Codex P2 #427): the model's first one still gets these checks
+        const modelFirst = !sentences.some((x) => !x.beat);
+        if (!keepOpener && modelFirst && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
         // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
@@ -1885,12 +1901,15 @@ export class Session {
         }
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
-        const prevSaid = sentences.at(-1)?.display;
+        // a hold beat is audio only and never the model's: the model's own "Hmm." after a beat "Hmm." is kept (Codex #427)
+        const prevSaid = [...sentences].reverse().find((x) => !x.beat)?.display;
         // only a standalone interjection ("Hmm," / "Oh!"), never a word in use ("Well water…", "Oh Sehun…", Codex P2)
         const lead = /^(?:\s*\[[^\]]*\]\s*)*([\p{L}']+)[,.!?…—-]/u.exec(tts)?.[1]?.toLowerCase();
         const prevLead = /[\p{L}']+/u.exec(prevSaid ?? "")?.[0]?.toLowerCase();
         if (this.v1 && tts && prevSaid && lead && lead === prevLead && isInterjectionOnly(prevSaid) && !interpret && !self) {
           const once = avoidRepeatedOpener(tts, [prevSaid]);
+          // the model's whole answer was the beat's own word ("Hmm." after the cap's "Hmm."): the beat becomes the answer
+          // instead of an empty reply and a retry (Codex P2 #427)
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
@@ -1901,7 +1920,7 @@ export class Session {
         }
         // v1: never narrate the user in the third person ("She's holding up the trench…" → "You're holding…", QA #354)
         if (this.v1 && !interpret && !self) {
-          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
+          const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !x.beat && !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         // watch together took this call's question back: a reply already asking it (built before) drops that sentence
@@ -1932,7 +1951,7 @@ export class Session {
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
           // an announcement only leads a reply: once content was spoken, a later "lookup" sentence is kept (Codex #356 r6)
-          const cls = found === "narration" && sentences.some((x) => !isInterjectionOnly(x.display)) ? null : found;
+          const cls = found === "narration" && sentences.some((x) => !x.beat && !isInterjectionOnly(x.display)) ? null : found;
           if (cls) {
             // narration never becomes the spoken fallback; a style drop does (the first one kept)
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
@@ -1944,9 +1963,10 @@ export class Session {
         }
         // a sentence start is never lower case (QA P3: a guard dropped "Summer," after the hold beat → "Hmm. told you
         // you'd crush it"); a clause after a comma ("Oh wow," + "that's huge") keeps its case
-        const prevEnd = sentences.at(-1)?.display.trim();
+        // a hold beat is audio only: the caption's previous sentence is the model's own (#427)
+        const prevEnd = [...sentences].reverse().find((x) => !x.beat)?.display.trim();
         // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
-        if ((droppedOpener && !sentences.length) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        if ((droppedOpener && !sentences.some((x) => !x.beat)) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
         // capitalised goes back to how Spark wrote it
         if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {
@@ -1962,7 +1982,7 @@ export class Session {
         if (this.v1 && !interpret && !self) {
           const key = normTranscript(display);
           // only after a tool ran in this reply: an intentional repeat ("Breathe in. Breathe out." ×2) is kept (Codex r23)
-          if (key && guarded.tool && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
+          if (key && guarded.tool && !isInterjectionOnly(display) && sentences.some((x) => !x.beat && normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
         }
         if (m.firstSentenceAt === undefined) {
           m.firstSentenceAt = this.now();
@@ -1975,7 +1995,8 @@ export class Session {
         sentences.push({ tts, display, emotion, face });
         cutBefore = false;
         // captions go out per sentence: the opener guard may rewrite the first one
-        if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
+        // a hold beat is audio only: no caption (the answer's first caption word is the answer's own)
+        if (display && !beating) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.slice(0, -1).some((x) => !x.beat) ? " " : "") + display });
       }
       waiter.wake?.();
     };
@@ -2006,21 +2027,36 @@ export class Session {
     // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
     // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
     let beatTimer: NodeJS.Timeout | null = null;
-    const armBeat = () => {
-      if (beatTimer || !this.v1 || interpret || self) return;
-      beatTimer = setTimeout(() => {
+    let capTimer: NodeJS.Timeout | null = null;
+    const beat = () => {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
         beating = true;
-        // never the opening word of the last replies (QA P3: "Hmm." started 2/4 return replies); Ooh / Mm before Hmm
+        // rotate (never the same twice in a row), and never the opening word of the last replies (QA P3, #423)
         const used = recentOpeningWords(this.recentReplies);
-        const beat = HOLD_BEATS.find((b) => !used.includes(b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase())) ?? HOLD_BEATS[utteranceId % HOLD_BEATS.length];
+        const firstWord = (b: string) => b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase();
+        let k = 0;
+        while (k < HOLD_BEATS.length - 1 && used.includes(firstWord(HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length]))) k++;
+        const beat = HOLD_BEATS[(this.beatIx + k) % HOLD_BEATS.length];
+        this.beatIx += k + 1;
         try { enqueueSentences([beat], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
-      }, HOLD_BEAT_MS);
+    };
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(beat, HOLD_BEAT_MS);
       beatTimer.unref?.();
     };
+    // first-sound cap (sweep 11/3 [P1]: speech end → first sound p50 3.34 s, max 5.3 s; Spark's first token alone
+    // is 1.3–3.4 s): nothing said HOLD_CAP_MS after the user stopped → the same one short beat. Not on a greeting or
+    // an initiative turn (nobody is waiting), not on a fixed ack (it is instant).
+    const capMs = holdCapMs();
+    if (capMs > 0 && this.v1 && !interpret && !self && !greeting && !cue && !ackTurn) {
+      const since = m.speechEndAt !== undefined ? this.now() - m.speechEndAt : 0;
+      capTimer = setTimeout(() => { this.log("convo.first_sound_cap", { utteranceId, capMs }); beat(); }, Math.max(0, capMs - since));
+      capTimer.unref?.();
+    }
     const producer = (async () => {
       try {
         if (self) {
@@ -2132,6 +2168,7 @@ export class Session {
         }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
+        if (capTimer) clearTimeout(capTimer);
         waiter.wake?.();
       }
     })();
@@ -2158,8 +2195,8 @@ export class Session {
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
     // Device mode always; server mode when the voice service failed for this reply.
-    const sayOnDevice = (i: number, s: { display: string; emotion: string | null }, record = true) => {
-      if (record) reply.spoken.push(s.display);
+    const sayOnDevice = (i: number, s: { display: string; emotion: string | null; beat?: true }, record = true) => {
+      if (record && !s.beat) reply.spoken.push(s.display);
       if (!s.display) return;
       if (reply.firstAudioAt === null) {
         reply.firstAudioAt = this.now();
@@ -2189,7 +2226,7 @@ export class Session {
         continue;
       }
       if (ttsFailed) {
-        reply.spoken.push(s.display);
+        if (!s.beat) reply.spoken.push(s.display);
         continue;
       }
       startJob(i);
@@ -2252,7 +2289,7 @@ export class Session {
           reply.audioMs += durationMs;
         }
         if (!signal.aborted) {
-          reply.spoken.push(s.display);
+          if (!s.beat) reply.spoken.push(s.display);
           // after the clause's audio: its words' span (aligner) or else its audio span, same timeline as audio.offsetMs
           if (s.face && sentAudio && this.deps.config.voice?.expressions !== false) {
             const startMs = clauseWords?.s ?? Math.round(sentenceOffset);
@@ -2279,7 +2316,7 @@ export class Session {
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
               // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
-              reply.spoken.push(s.display);
+              if (!s.beat) reply.spoken.push(s.display);
               const spoken = spokenText(s.display, seamlessLang(speechLang(s.display, lang), s.display));
               const rest = sentChars.trim() ? unspokenRest(spoken, sentChars) : s.display;
               if (rest) sayOnDevice(i, { display: rest, emotion: s.emotion }, false);
@@ -2287,7 +2324,7 @@ export class Session {
             continue;
           }
         }
-        reply.spoken.push(s.display);
+        if (!s.beat) reply.spoken.push(s.display);
       }
     }
     await producer;
