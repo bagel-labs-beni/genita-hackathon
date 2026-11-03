@@ -430,6 +430,9 @@ struct MacConsentView: View {
 struct MacSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var call = MacCall.shared
+    /// The call window is the phone's physical size (~330–360 pt on a MacBook), narrower than the 420 home window:
+    /// a 420-wide sheet there was cut off on both sides (Mac QA 11/3). The call passes `compact`.
+    var compact = false
 
     var body: some View {
         if MacDesignV2.enabled { v2Body } else { v1Body }
@@ -455,7 +458,7 @@ struct MacSettingsSheet: View {
                 .padding(.top, 12).accessibilityIdentifier("macSettingsSignOut")
             MacV2Button(label: "Done", id: "macSettingsDone") { dismiss() }.keyboardShortcut(.defaultAction).padding(.top, 24)
         }
-        .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 24).frame(width: 420, alignment: .topLeading)
+        .padding(.horizontal, compact ? 20 : 32).padding(.top, 28).padding(.bottom, 24).frame(width: compact ? 320 : 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
     }
 
