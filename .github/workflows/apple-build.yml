@@ -52,6 +52,11 @@ jobs:
           echo "id=$ID" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices available | grep "$ID"
 
+      - name: Start the onboarding stub (CompanionResetUITests)
+        run: |
+          nohup node ios-app/Tools/onboarding-stub/server.mjs --port 8790 > build-output-stub.log 2>&1 &
+          for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8790/healthz && break; sleep 0.5; done
+
       - name: iOS simulator build and tests
         run: |
           xcodebuild test \
@@ -61,6 +66,7 @@ jobs:
             -only-testing:GenitaUITests/HandoffScreensUITests \
             -only-testing:GenitaUITests/GenitaUITests/testReviewCorrections \
             -only-testing:GenitaUITests/BrowserPreviewUITests \
+            -only-testing:GenitaUITests/CompanionResetUITests \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
@@ -77,7 +83,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith(("R1", "E0", "P0", "MV", "PROX", "menu-", "pairing-", "conversation-", "preview-", "uidef-")):
+                  if name.startswith(("R1", "E0", "P0", "MV", "PROX", "menu-", "pairing-", "conversation-", "preview-", "uidef-", "reset-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens

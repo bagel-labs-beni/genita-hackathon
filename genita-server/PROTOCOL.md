@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | Companion reset: `POST /v1/companion/reset` (PREP_API.md) closes the account's live calls with **`4410` `companion_reset`** (new, additive). Clients: stop reconnecting and route like `/me` with no companion (iPhone → V01, Mac → "Set up on iPhone"). Older clients treat it like any other close and reconnect; the next `/me` routes them. |
 | 11/4 | `proximity.seen` accepts optional `requestId` (nonempty string, ≤128 characters); all `proximity.result` replies to it echo `requestId` and `token`. Macs match both, ignore superseded/uncorrelated replies, and treat a 5 s timeout as unconfirmed while keeping the leave-range latch. Additive: requests without an ID keep the legacy result shape. |
 | 11/4 | `proximity.result` gets `reason: server_error`: a store failure now answers the Mac's `proximity.seen` (it used to be a bare `error`, which left the Mac's one report in flight until it reconnected). Additive; older Macs treat it as any other refusal. |
 | 11/4 | `/v1/presence` `peer` gets `inCall` (bool): the other device has a started call socket right now (its `start` was handled, until the socket closes). The Mac home says "Talking on your iPhone" only while it is true (QA 171). Additive; older apps ignore it and newer apps fall back when it is missing. |
@@ -64,7 +65,7 @@ Authorization: Bearer <session JWT>     (or ?token=… ; dev fallback: GENITA_SE
 
 With neither accounts (`DATABASE_URL`) nor `GENITA_SESSION_TOKEN` the server only binds to loopback (local dev).
 Rejections at upgrade: `503` server full. Auth is checked after the upgrade and closes with `4401` (no/bad/expired/revoked token → sign in again) or `4403` (signed in, no AI-data consent yet → CS01).
-Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required.
+Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required, `4410` the companion was reset (`POST /v1/companion/reset`; no reconnect, route from `/me`).
 
 ## Frames
 

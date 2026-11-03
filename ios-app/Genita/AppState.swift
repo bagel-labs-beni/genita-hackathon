@@ -362,7 +362,36 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         prep = nil; sceneImage = nil
     }
-    /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
+    /// M02 "Make a new companion" (server `POST /v1/companion/reset` done, or its 4410 call close): this phone drops the
+    /// companion too and starts again at V01 "Bring an image". The account, the user's name and what Genita knows
+    /// about them (I04 rows / profile, HISY) stay. Safe to call twice (the HTTP answer and the call close both land here).
+    func companionReset() {
+        companionResets += 1
+        invalidateOnboardingWork()
+        var s = setup
+        s.companionName = nil; s.imageId = nil; s.imageType = nil; s.imageData = nil
+        s.companionCreated = nil; s.voice = nil; s.voiceId = nil; s.voiceName = nil
+        s.serverPersona = nil; s.companionDemo = nil; s.firstCallPending = nil
+        s.answers = [:]; s.boundaries = []; s.presence = []; s.presenceCardIDs = nil
+        s.hasOnboarded = false
+        s.stage = .image
+        setup = s
+        history = []
+        prep = nil; sceneImage = nil; imageCheck = nil; imageCheckError = nil; rightsAcked = false
+        polished = nil; polishedImage = nil; polishError = nil; polishRetriesLeft = 0; polishAttempts = 0
+        setupSummary = nil; suggestedCompanionName = nil; nameError = nil; prepError = nil; flowError = nil
+        menuOpen = false; settingsOpen = false
+    }
+    /// How many times this phone dropped its companion (`companionReset()`): Settings' reset request compares it, so its
+    /// HTTP answer arriving after the 4410 close already reset the phone never runs again (Codex #514 P2: it wiped the
+    /// photo the user had just picked on V01).
+    private(set) var companionResets = 0
+    /// Settings' `POST /v1/companion/reset` answered 200: the local reset, unless one already ran since `asked` (the call's 4410).
+    func companionResetAnswered(since asked: Int) {
+        guard companionResets == asked else { return }
+        companionReset()
+    }
+    /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403 / 4410, F1-L7).
     func route(_ stop: CallStop?) {
         switch stop {
         case .signIn?:
@@ -372,6 +401,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         case .consent?:
             storage.set(true, forKey: Self.needsConsentKey)
             if stage != .consent { go(.consent) }
+        case .companionReset?:
+            // reset from Settings (or another of this account's phones): no companion to reconnect to
+            if stage == .conversation || stage == .connecting { companionReset() }
         default: break
         }
     }

@@ -32,7 +32,9 @@ import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
-import { demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
+import { createCompanionReset, guardDemoSeed } from "./prep/reset.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -125,6 +127,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
+  if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
   // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
   const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)
@@ -163,6 +167,31 @@ export async function startServer(
       throw err;
     }
   };
+  // 11/4 "Make a new companion" (src/prep/reset.ts): the companion goes, the account stays. Same stop as DELETE /me
+  // (prep / top-up / reflow drained by the runner); then live calls close 4410 and call memory is forgotten.
+  const companionReset = createCompanionReset({
+    store: prep.deps.store, runner: prep.runner, log, blobs: accounts?.blobs ?? null,
+    isProtected: async (userId) => {
+      if (!accounts) return false;
+      const u = await accounts.accounts.getUser(userId);
+      if (u?.provider === "dev" && u.providerSub.startsWith(DEMO_TEMPLATE_SUB)) return true;
+      return (await readDemoPointer(accounts.blobs).catch(() => null))?.userId === userId;
+    },
+    afterErase: async (userId) => {
+      // after the rows: an app re-reading /me on 4410 already sees no companion
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4410, "companion_reset");
+      dropLastTurns(userId);
+      forgetOpenerTopics(userId);
+      // after the close: its revision bump refuses a late extraction or turn cache from that call; the new companion
+      // never met them (AU-90): when they last talked and the carried mood go too
+      await deps.memory?.forget(userId, undefined, { relationship: true });
+      // ...and it is call 1 with them again (first-call nod and question), what Genita knows about them stays (AU-90)
+      // in the profile's per-user lock: a personalize save under way can't write the old count back (Codex AU-90)
+      const personalize = deps.personalize ?? prep.deps.personalize;
+      if (personalize && "resetGrowth" in personalize) await (personalize as { resetGrowth(u: string): Promise<void> }).resetGrowth(userId);
+      else { const style = await prep.deps.store.getStyle(userId); if (style?.growth) await prep.deps.store.putStyle(userId, { ...style, growth: { calls: 0, asked: [] } }); }
+    },
+  });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   // proximity handoff moves a conversation only while the account has a live call socket
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
@@ -223,6 +252,12 @@ export async function startServer(
     }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
+    if (companionReset.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return companionReset.handle(req, res, who.userId);
+    }
     if (prep.routes.handles(req)) {
       const who = await principal(req, url);
       if (!who) return json(res, 401, { error: "unauthorized" });
