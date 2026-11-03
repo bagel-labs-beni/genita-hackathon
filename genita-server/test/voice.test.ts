@@ -315,6 +315,19 @@ test("normalize: texting slang is spoken as words; RN / FR in caps and words con
   assert.equal(normalizeEnglish("Turn left at the frontier, then burn it."), "Turn left at the frontier, then burn it.");
 });
 
+// 11/3 voice-naturalness pass: Seamless spells ALL-CAPS words letter by letter ("SO" -> "S O"), drags stretched
+// letters ("sooo") and reads "!!!" / "?!" flat; say them the way a person would. Captions keep the written form.
+test("normalize: shouted caps are said as words, known acronyms stay; OK is okay; stretched letters and repeated marks collapse", () => {
+  assert.equal(normalizeEnglish("That is SO GOOD, I LOVE it!!!"), "That is so good, I love it!");
+  assert.equal(normalizeEnglish("NO WAY. You did WHAT?!"), "no way. You did what?");
+  assert.equal(normalizeEnglish("The TV at NASA and the FBI in the USA, I'm OK."), "The TV at NASA and the FBI in the USA, I'm okay.");
+  assert.equal(normalizeEnglish("ok ok, Ok."), "okay okay, okay.");
+  assert.equal(normalizeEnglish("Sooo cute, yesss! Hmmmm, ahhh."), "So cute, yes! Hmm, ah.");
+  assert.equal(normalizeEnglish("Good, cool, coffee, bookkeeper, 2000."), "Good, cool, coffee, bookkeeper, two thousand.");
+  assert.equal(normalizeEnglish("hahahaha that's u, and ur cat"), "haha that's you, and your cat");
+  assert.equal(normalizeEnglish("Really?? Wow!!"), "Really? Wow!");
+});
+
 test("pauses: casual gaps — a comma barely stops, a sentence end is shorter than before, '...' still the longest", () => {
   assert.ok(pauseAfterMs("Wait,") <= 60);
   assert.ok(pauseAfterMs("No way.") <= 180);
