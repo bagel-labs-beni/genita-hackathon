@@ -102,8 +102,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var polishedImage: Data?
     var polishing = false
     var polishError: String?
-    /// "Try again" left for this upload (server: first polish + two retries)
+    /// "Try again" left for this upload (server: first polish + two retries); polishAttempts = polish calls made for it
     var polishRetriesLeft = 0
+    var polishAttempts = 0
     var creatingCompanion = false
     var suggestingName = false
     var savingName = false

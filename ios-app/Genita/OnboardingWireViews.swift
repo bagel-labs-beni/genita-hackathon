@@ -69,9 +69,11 @@ struct ImageCheckView: View {
     private var polishFlow: Bool { result?.polish == true }
     private var analyzing: Bool { model.imageCheckError == nil && (result == nil || (polishFlow && model.polishing)) }
     /// V02-T: the upload passed (today) or the polished picture passed its check (polish flow)
-    private var passed: Bool { polishFlow ? model.polished?.passed == true : result?.passed == true }
+    private var passed: Bool { polishFlow ? model.polished?.passed == true && model.polishedImage != nil : result?.passed == true }
     /// "Try again" on the polished picture (two at most)
-    private var canRetry: Bool { polishFlow && model.polishRetriesLeft > 0 }
+    private var canRetry: Bool {
+        polishFlow && model.canRetryPolish && (model.polishRetriesLeft > 0 || (model.polished != nil && model.polishedImage == nil))
+    }
 
     var body: some View {
         if analyzing { analyzingPage } else { resultPage }
@@ -122,7 +124,7 @@ struct ImageCheckView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(alignment: .topLeading) { if passed { typeChips.padding(12) } }
                 .position(x: width / 2, y: 226 + 144.5 + top)
-            if passed && canRetry {
+            if passed && canRetry && model.polishRetriesLeft > 0 {
                 // V02-T: the polished picture can be made again (same text-link style as NM01 "Use Jin")
                 Button { model.retryPolish() } label: {
                     Text("Try again (\(model.polishRetriesLeft) left)").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.ink).frame(height: 44)

@@ -264,7 +264,7 @@ extension AppState {
         if setup.companionCreated == true { go(.voice); return }
         guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
-        polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0
+        polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
         go(.imageCheck)
@@ -300,27 +300,51 @@ extension AppState {
         polishing = true; polishError = nil
         defer { if imageCheckTicket == ticket { polishing = false } }
         do {
+            polishAttempts += 1
             let p = try await onboarding.polishImage(imageId: source)
-            let bytes = try await onboarding.imageBytes(imageId: p.imageId)
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-            polished = p; polishedImage = bytes; polishRetriesLeft = p.retriesLeft
-            if p.passed { setup.imageId = p.imageId; setup.imageType = p.type } else { setup.imageId = nil }
+            // kept before the download: a failed download only reloads the picture, it never costs a polish
+            polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
+            setup.imageId = p.passed ? p.imageId : nil
+            if p.passed { setup.imageType = p.type }
+            await loadPolishedImage(ticket: ticket)
         } catch {
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
             switch error as? GenitaAuthError {
             // a refusal comes back the same for this photo: choose another one
             case .server(422, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
             case .server(429, "polish_limit")?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
-            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, polishRetriesLeft - 1)
+            // the failed attempt counts on the server too: three per upload
+            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
             default: polishError = Self.errorLine(error); route(error)
             }
         }
     }
 
-    /// V02-T "Try again": polish the same upload once more (two at most; the last good result stays until a new one lands).
+    private func loadPolishedImage(ticket: UUID) async {
+        guard let p = polished else { return }
+        do {
+            let bytes = try await onboarding.imageBytes(imageId: p.imageId)
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishedImage = bytes; polishError = nil
+        } catch {
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishError = "Couldn't load the picture."; route(error)
+        }
+    }
+
+    /// The polished picture can still be changed: no companion yet, none being made (the face is fixed after, B7).
+    var canRetryPolish: Bool { setup.companionCreated != true && !creatingCompanion && !polishing }
+
+    /// V02-T "Try again": reload a picture whose download failed, else polish the same upload once more (two at most).
     func retryPolish() {
-        guard let source = imageCheck?.imageId, polishRetriesLeft > 0, !polishing else { return }
+        guard canRetryPolish, let source = imageCheck?.imageId else { return }
         let ticket = UUID(); imageCheckTicket = ticket
+        if polished != nil, polishedImage == nil {
+            imageCheckTask = Task { polishing = true; defer { if imageCheckTicket == ticket { polishing = false } }; await loadPolishedImage(ticket: ticket) }
+            return
+        }
+        guard polishRetriesLeft > 0 else { return }
         imageCheckTask = Task { await polish(source: source, ticket: ticket) }
     }
 
