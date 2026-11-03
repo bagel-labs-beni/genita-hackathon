@@ -18,7 +18,8 @@ import CoreText
             // "Customizing window styles" sample does the same). The call window is a separate borderless window.
             MacStartView().preferredColorScheme(.light).toolbar(removing: .title)
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-                .genitaSplash() // launch splash B+ at window open (motion lane)
+                // MAC-0 is MacLaunchSplash ("A · Eclipse", 11/4) inside MacStartView; the iPhone splash board only for v1
+                .genitaSplash(!MacDesignV2.enabled)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif
