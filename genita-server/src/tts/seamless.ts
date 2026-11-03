@@ -97,7 +97,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
   let downUntil = 0;
   const modelName = cfg.model === "mms" ? "mms-tts" : SEAMLESS_MODEL;
 
-  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal): AsyncGenerator<TtsChunk> {
+  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
     // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
     let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
@@ -113,7 +113,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         r = await doFetch(`${cfg.url}/v1/tts`, {
           method: "POST",
           headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
-          body: JSON.stringify({ text, lang, speaker, speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}) }),
+          body: JSON.stringify({ text, lang, speaker, speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}), ...extra }),
           signal: ctl.signal,
         });
       } catch (err) {
@@ -188,6 +188,10 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const spk = Number.isFinite(speaker) ? speaker : 0;
     const tail = pauseAfterMs(text);
     const speed = speedFor(cfg.speed, req.emotion, text);
+    // 11/3 post chain: the reply's emotion also shapes pitch/brightness on the voice GPU (deploy/modal-voice/post.py).
+    // Short clauses (the cached fillers, the first sound) go without it, like the rate. GENITA_VOICE_POST=0 = raw voice.
+    const emo = text.length > CACHE_MAX_CHARS ? (req.emotion ?? "").toLowerCase() : "";
+    const extra: Record<string, unknown> = { ...(emo && emo !== "neutral" ? { emotion: emo } : {}), ...(cfg.post === false ? { post: false } : {}) };
     const k = key(lang, spk, text, tail, speed);
     const hit = cache.get(k);
     if (hit) {
@@ -203,7 +207,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let offsetSec = 0;
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
-        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal)) {
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra)) {
           let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;

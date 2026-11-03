@@ -2,7 +2,9 @@
 
     POST /v1/tts   Authorization: Bearer <GENITA_VOICE_TOKEN>
       {"text": "Hey, you're back!", "lang": "eng"|"kor", "speaker": 0..199, "speed": 1.0, "tail_ms": 0,
-       "align": false}
+       "align": false, "post": true, "emotion": "excited"|"warm"|"sad"|"teasing"|... | null}
+    post (default true, Seamless only): post.py — quality-safe polish + per-emotion pitch (varispeed) and tone,
+    same length and matching timing. false = the raw vocoder voice.
     -> application/x-ndjson, one line per <= 1 s chunk:
       {"audio_base64": <PCM s16le 24 kHz mono>, "alignment": {"characters": [...],
        "character_start_times_seconds": [...], "character_end_times_seconds": [...]} | null}
@@ -50,7 +52,7 @@ image = (
     .env({"HF_HOME": HF, "HF_HUB_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false", "TORCH_HOME": "/opt/torch"})
     # MMS_FA weights (~1.2 GB) baked into the image, so a cold container does not download them
     .run_commands("python -c 'import torchaudio; torchaudio.pipelines.MMS_FA.get_model(with_star=False)'")
-    .add_local_python_source("align")
+    .add_local_python_source("align", "post")
 )
 app = modal.App(APP)
 
@@ -63,6 +65,7 @@ app = modal.App(APP)
 MAX_CONTAINERS = int(os.environ.get("VOICE_MAX_CONTAINERS", "4"))
 TARGET_INPUTS = int(os.environ.get("VOICE_TARGET_INPUTS", "3"))
 MAX_INPUTS = 8
+POST_ON = True  # kill switch without a redeploy: genita-server GENITA_VOICE_POST=0 sends {"post": false}
 QUEUE_WAIT_MS = 2500
 
 
@@ -262,12 +265,26 @@ class Engine:
             u += d
         return res
 
-    def render(self, text, lang, speaker, speed=1.0, tail_ms=0, keep=None):
+    def render(self, text, lang, speaker, speed=1.0, tail_ms=0, keep=None, post=False, emotion=None):
         """-> (pcm16 bytes @24 kHz, alignment dict, gen_ms, audio_ms). keep: dict that gets "wav16", the
-        16 kHz audio exactly as sent (trimmed, before the tail), for the aligner."""
+        16 kHz audio as synthesized (trimmed, before the tail and the post chain), for the aligner.
+        post: post.py (quality-safe polish + per-emotion tone, emotion pitch by varispeed). The varispeed keeps the
+        length of a plain synth at `speed`, scales the character timing by the same factor, and keep["wav16"] is the
+        final timeline, so the aligner's word/phoneme timing matches what is played."""
         import numpy as np
         from scipy.signal import resample_poly
-        wav, align, gen_ms = self.synth(text, lang, speaker, speed)
+        import post as pp
+        # emotion pitch by varispeed (post.py): synthesize r times longer, resample r times shorter -> pitch x r,
+        # same length as a plain synth at `speed`; the character timing is scaled by the same factor
+        r = pp.pitch_ratio(emotion) if post and emotion else 1.0
+        if not 0.7 <= speed / r <= 1.4:
+            r = 1.0
+        wav, align, gen_ms = self.synth(text, lang, speaker, speed / r)
+        if r != 1.0:
+            n0 = len(wav)
+            wav = pp.varispeed(np.asarray(wav, np.float32), r)
+            k = len(wav) / max(1, n0)
+            align = [(ch, a * k, b * k) for ch, a, b in align] if align else align
         # trim leading/trailing near-silence (keep 40 ms), shift timings
         thr = 0.01 * (float(np.abs(wav).max()) or 1.0)
         loud = np.nonzero(np.abs(wav) > thr)[0]
@@ -283,6 +300,8 @@ class Engine:
         out = resample_poly(wav, 3, 2).astype(np.float32)  # 16 kHz -> 24 kHz
         if tail_ms > 0:
             out = np.concatenate([out, np.zeros(int(OUT_SR * min(tail_ms, 1500) / 1000), np.float32)])
+        if post:
+            out = pp.polish(pp.tone(out, emotion) if emotion else out, int(min(tail_ms, 1500)))
         pcm = (np.clip(out, -1, 1) * 32767).astype("<i2").tobytes()
         audio_ms = len(out) / OUT_SR * 1000
         alignment = None
@@ -473,15 +492,21 @@ class Voice:
             if model not in ("seamless", "mms") or (model == "mms" and mms is None):
                 return JSONResponse({"error": "bad_model"}, status_code=400)
             want_align = body.get("align") is True and model == "seamless" and aligner is not None
+            # post chain (post.py) on by default for Seamless; {"post": false} = the raw vocoder voice
+            post = body.get("post") is not False and model == "seamless" and POST_ON
+            emotion = body.get("emotion") if isinstance(body.get("emotion"), str) and len(body.get("emotion")) <= 16 else None
             if not use.hit():
                 return JSONResponse({"error": "daily_cap"}, status_code=429)
             try:
                 if want_align:
                     keep = {}
-                    pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, keep)
+                    pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, keep, post, emotion)
                     return StreamingResponse(aligned_lines(pcm, al, gen_ms, audio_ms, speaker, keep["wav16"], text, aligner),
                                              media_type="application/x-ndjson")
-                pcm, al, gen_ms, audio_ms = await asyncio.to_thread((mms if model == "mms" else eng).render, text, lang, speaker, speed, tail)
+                if model == "mms":
+                    pcm, al, gen_ms, audio_ms = await asyncio.to_thread(mms.render, text, lang, speaker, speed, tail)
+                else:
+                    pcm, al, gen_ms, audio_ms = await asyncio.to_thread(eng.render, text, lang, speaker, speed, tail, None, post, emotion)
             except Busy:
                 print(f"busy: GPU queue over {QUEUE_WAIT_MS} ms, 503", flush=True)
                 return JSONResponse({"error": "busy"}, status_code=503)

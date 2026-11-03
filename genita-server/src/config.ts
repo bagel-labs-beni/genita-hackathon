@@ -63,6 +63,8 @@ export type VoiceConfig = {
   /** GENITA_VOICE_ALIGN=1: ask the service for word + phoneme timing (Meta MMS forced aligner), sent to the app
    * as `audio.timing` after each clause's audio. Off: requests are unchanged. */
   align?: boolean;
+  /** GENITA_VOICE_POST=0: ask the voice GPU for the raw vocoder voice (no post chain, no emotion moves). Unset: unchanged requests. */
+  post?: boolean;
   /** `expression` events per reply clause (face expression layer, 11/3). Default on; GENITA_EXPRESSION=0 turns them off. */
   expressions?: boolean;
 };
@@ -105,6 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           timeoutMs: num(env.GENITA_VOICE_TIMEOUT_MS, 4000),
           model: env.GENITA_VOICE_MODEL === "mms" ? "mms" : "seamless",
           align: env.GENITA_VOICE_ALIGN === "1",
+          ...(env.GENITA_VOICE_POST === "0" ? { post: false } : {}),
           expressions: env.GENITA_EXPRESSION !== "0",
         }
       : null;
