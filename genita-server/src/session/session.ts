@@ -367,6 +367,8 @@ export class Session {
   private callStartedAt: string | null = null;
   /** profile lines the user removed (personalize): kept out of memory, notes and handed-off turns */
   private removedLines: Removed[] = [];
+  /** resolves when the running correction check ends (a "forget that …" waits for it instead of being skipped) */
+  private correctionDone: Promise<void> = Promise.resolve();
   /** this call was counted as a new call by personalize (not a handoff) */
   private callPlanned = false;
   /** the question watch together took back: a reply built before still asking it has that sentence dropped */
@@ -1251,11 +1253,19 @@ export class Session {
     const asked = this.awaitingAnswer;
     this.awaitingAnswer = null;
     // only lines that will reach Spark count toward the per-call budget
+    // a "forget that …" is never skipped because another check is still running: it runs right after it
+    if (this.correcting && p && userId && this.mode === "chat" && isForgetRequest(text) && !this.closed) {
+      const waitFor = this.correctionDone;
+      void waitFor.then(() => { if (!this.closed) this.checkCorrection(text); });
+      return;
+    }
     if (!p || !userId || this.mode !== "chat" || this.correcting || this.correctionChecks >= MAX_CORRECTION_CHECKS || (!asked && !mightBeCorrection(text))) return;
     const lastAssistant = [...this.history].reverse().find((h) => h.role === "assistant")?.text;
     const abort = new AbortController();
     this.correcting = abort;
     this.correctionChecks++;
+    let done!: () => void;
+    this.correctionDone = new Promise<void>((r) => (done = r));
     void p.voiceCorrection(userId, text, lastAssistant, abort.signal, asked).then(
       (r) => {
         if (!r || this.closed || abort.signal.aborted) return;
@@ -1272,7 +1282,7 @@ export class Session {
         this.log("profile.updated", { fields: r.applied.map((a) => a.field), answered: r.answered });
       },
       (err) => this.log("profile.correction_failed", { message: String(err).slice(0, 120) }),
-    ).finally(() => { if (this.correcting === abort) this.correcting = null; });
+    ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */

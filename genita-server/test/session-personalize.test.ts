@@ -618,3 +618,14 @@ test("QA post-deploy: a removed line stays out of memory notes, and the handed-o
   void avoid;
   s.session.close();
 });
+
+test("a 'forget that …' said while another correction check runs is not skipped: it runs right after", async () => {
+  const lines: string[] = [];
+  const s = setup({ slowCorrectionMs: 200, async voiceCorrection(_u, line) { lines.push(line); await sleep(200); return null; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await say(s, "Actually I don't like mushrooms anymore.", 1);
+  await say(s, "Actually, forget that I like leather accessories.", 2);
+  await sleep(500);
+  assert.deepEqual(lines, ["Actually I don't like mushrooms anymore.", "Actually, forget that I like leather accessories."]);
+  s.session.close();
+});
