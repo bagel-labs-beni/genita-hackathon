@@ -19,13 +19,15 @@ extension AppState {
     /// On launch with a saved token: `/me` decides the first screen (new account → A01…, consent → CS01,
     /// no name → A03, no companion → I01 or the onboarding step the user left, companion → S07 → S09).
     /// Offline keeps the saved screen; a 401 clears the token and shows A02.
-    func routeOnLaunch() async {
+    /// `afterSignIn`: a returning account goes to its call even if A03's Next was already tapped.
+    /// Token, authentication lifetime and cancellation are checked after each request.
+    func routeOnLaunch(afterSignIn: Bool = false) async {
         let request = launchAuthSnapshot
         guard serverWired, request.token != nil else { return }
         let state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
         // request must never sign out a newer login or re-adopt a logged-out account's handoff.
-        guard request.generation == authGeneration else { return }
+        guard request.generation == authGeneration, !Task.isCancelled else { return }
         if case .expired = state {
             guard onboarding.auth.token == nil else { return }
             signedOut()
@@ -38,12 +40,12 @@ extension AppState {
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
-        guard request.accepts(launchAuthSnapshot) else { return }
-        apply(route, me: me)
+        guard request.accepts(launchAuthSnapshot), !Task.isCancelled else { return }
+        apply(route, me: me, afterSignIn: afterSignIn)
     }
 
     func restoreCompanion(for request: LaunchAuthSnapshot) async {
-        guard let c = try? await onboarding.companion(), request.accepts(launchAuthSnapshot) else { return }
+        guard let c = try? await onboarding.companion(), request.accepts(launchAuthSnapshot), !Task.isCancelled else { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -55,7 +57,7 @@ extension AppState {
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
-           let data = try? await onboarding.sceneImage(url), request.accepts(launchAuthSnapshot), UIImage(data: data) != nil {
+           let data = try? await onboarding.sceneImage(url), request.accepts(launchAuthSnapshot), !Task.isCancelled, UIImage(data: data) != nil {
             setup.imageData = data
         }
     }
@@ -68,7 +70,7 @@ extension AppState {
         if sceneKey == key { sceneImage = (key, data) }
     }
 
-    func apply(_ route: StartRoute, me: GenitaMe? = nil) {
+    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
         let onboardingStages: Set<Stage> = [.prompt, .paste, .preparing, .preferences, .image, .imageCheck, .voice, .companionName,
                                             .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary,
                                             .skipTopics, .skipReplies, .skipAvoid, .bringing]
@@ -86,7 +88,8 @@ extension AppState {
         case .connecting, .textWhilePreparing:
             // the companion exists: straight to the call (photo face until prep lands, D28)
             setup.companionCreated = true
-            if !setup.hasOnboarded && onboardingStages.contains(stage) && stage != .bringing { return }
+            // (right after a sign-in nothing is in progress yet: the setup was just reset for this account)
+            if !afterSignIn && !setup.hasOnboarded && onboardingStages.contains(stage) && stage != .bringing { return }
             // a returning account (or a new phone): no first-call wait, that's only right after onboarding (D21)
             if stage != .conversation { setup.hasOnboarded = true; complete() }
         case .macNoCompanion, .macConversationOnPhone, .macConversationHere: break
@@ -202,7 +205,7 @@ extension AppState {
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
         if setup.companionCreated == true { go(.voice); return }
-        guard let data = setup.imageData else { return }
+        guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket

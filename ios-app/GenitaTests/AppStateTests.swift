@@ -43,16 +43,26 @@ import UIKit
         XCTAssertEqual(model.stage, .signIn)
         let restarted = AppState(storage: store)
         XCTAssertEqual(restarted.stage, .signIn, "a signed-out user does not land back in the call")
-        restarted.signedIn()
+        restarted.signedIn(consented: true)
         XCTAssertEqual(restarted.stage, .conversation)
         XCTAssertEqual(AppState(storage: store).stage, .conversation)
     }
+    /// #218: a sign-in whose consent is not recorded (or any new account) always lands on CS01, and the account
+    /// stays "needs consent" across a restart until CS01 is agreed.
+    func testSignInWithoutConsentGoesToCS01AndStaysThereAfterRestart() {
+        let model = AppState(storage: store)
+        model.signedIn(consented: false)
+        XCTAssertEqual(model.stage, .consent)
+        XCTAssertEqual(AppState(storage: store).stage, .consent, "killing the app does not skip CS01")
+        model.consentAccepted()
+        XCTAssertNotEqual(model.stage, .consent)
+    }
     func testAnotherAccountStartsWithAFreshLocalProfile() {
         let model = AppState(storage: store)
-        model.signedIn(userId: "user-a")
+        model.signedIn(userId: "user-a", consented: true)
         model.setup.name = "A"; model.setup.hasOnboarded = true
         model.signedOut()
-        model.signedIn(userId: "user-a")
+        model.signedIn(userId: "user-a", consented: true)
         XCTAssertEqual(model.setup.name, "A", "same account keeps its profile")
         XCTAssertEqual(model.stage, .conversation)
         model.signedOut()
@@ -64,14 +74,56 @@ import UIKit
     func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
         var accounts: [String?] = []
         let model = AppState(storage: store, onHandoffAccountChange: { accounts.append($0) })
+        model.routeAfterSignIn = {}
         model.setup.accountId = "a" // A saved profile alone must not start a connection.
         XCTAssertTrue(accounts.isEmpty)
         model.adopt(accountId: "a") // /me verifies the same saved account on launch.
         model.signedOut()
         model.signedIn(userId: "b", consented: false)
         model.signedOut()
-        model.signedIn(userId: "a")
+        model.signedIn(userId: "a", consented: true)
         XCTAssertEqual(accounts, ["a", nil, "b", nil, "a"])
+    }
+    /// Demo (two accounts on one iPhone): signing in as an account that already has a companion must ask the
+    /// server where to go (/me → restore the companion → the call), not start onboarding at A03.
+    func testSignInAsAnotherAccountAsksTheServerWhereToGo() async {
+        let model = AppState(storage: store)
+        model.signedIn(userId: "user-a", consented: true)
+        model.setup.hasOnboarded = true
+        model.signedOut()
+        var routed = 0
+        model.routeAfterSignIn = { routed += 1 }
+        model.signedIn(userId: "user-b", consented: true)
+        await model.signInRouting?.value
+        XCTAssertEqual(routed, 1, "a consented sign-in re-routes from /me (restores B's companion)")
+        model.signedOut()
+        model.signedIn(userId: "user-c", consented: false)
+        await model.signInRouting?.value
+        XCTAssertEqual(routed, 1, "no consent yet: CS01 first (it re-routes itself after Agree)")
+    }
+    /// Codex P1: a sign-out cancels the routing of the account before it and bumps the generation, so a late
+    /// /me or /v1/companion answer for A can never land on B.
+    func testSignOutCancelsTheEarlierAccountsRouting() async {
+        let model = AppState(storage: store)
+        var started: Task<Void, Never>?
+        model.routeAfterSignIn = { try? await Task.sleep(for: .seconds(30)) }
+        model.signedIn(userId: "user-a", consented: true)
+        started = model.signInRouting
+        let before = model.authGeneration
+        model.signedOut()
+        XCTAssertTrue(started?.isCancelled == true, "A's routing is cancelled at sign-out")
+        XCTAssertNil(model.signInRouting)
+        XCTAssertGreaterThan(model.authGeneration, before, "answers asked before the sign-out are dropped")
+    }
+    /// Codex P2: Next on A03 while /me is on its way must not keep a returning account in onboarding.
+    func testRoutingRightAfterSignInIgnoresAnOnboardingStepJustStarted() {
+        let model = AppState(storage: store)
+        model.go(.name); model.go(.prompt)
+        model.apply(.connecting)
+        XCTAssertEqual(model.stage, .prompt, "mid-onboarding on this phone (launch path): stays")
+        model.apply(.connecting, afterSignIn: true)
+        XCTAssertNotEqual(model.stage, .prompt, "right after sign-in: the returning account goes to its call")
+        XCTAssertTrue(model.setup.hasOnboarded)
     }
     func testPendingConsentSurvivesARestart() {
         let model = AppState(storage: store)
@@ -84,16 +136,17 @@ import UIKit
     func testAuthCallbacksInvalidateLaunchSnapshotsEvenWithTheSameToken() {
         let tokens = InMemoryTokenStore("token-a")
         let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
         model.onboarding = OnboardingClient(auth: GenitaAuthClient(store: tokens))
         let request = model.launchAuthSnapshot
         XCTAssertTrue(request.accepts(model.launchAuthSnapshot))
         model.signedOut()
         XCTAssertFalse(request.accepts(model.launchAuthSnapshot), "Logout invalidates /me even before the token is cleared")
-        model.signedIn(userId: "b")
+        model.signedIn(userId: "b", consented: true)
         XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
         let bRequest = model.launchAuthSnapshot
         model.signedOut()
-        model.signedIn(userId: "a")
+        model.signedIn(userId: "a", consented: true)
         XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
         XCTAssertFalse(bRequest.accepts(model.launchAuthSnapshot))
     }

@@ -352,7 +352,8 @@ export async function startServer(
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
     const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id) });
+    // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id), personalize: deps.personalize ?? prep.deps.personalize });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
