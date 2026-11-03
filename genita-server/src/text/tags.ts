@@ -20,12 +20,20 @@ export type TaggedSentence = { emotion: string | null; ttsText: string; displayT
 // a tag cut off by the end of the stream ("Hello. [smi" then an upstream error) is never spoken or shown
 const DANGLING_RE = /\[[A-Za-z\s]{0,30}$|<\s*[A-Za-z_-]{0,24}$/;
 
+/**
+ * web_search citation markers Spark leaves in the answer text ("…counseling【281835†L1-L3】", AI sweep 11/3, real
+ * Spark with web_search on): never spoken ("two hundred eighty-one thousand…") or shown. A marker cut off by the end
+ * of the stream ("【281835") goes too.
+ */
+const CITATION_RE = /【[^】\n]{0,80}】|【[^】\n]{0,80}$/g;
+
 const tidy = (s: string) => s.replace(/\s{2,}/g, " ").replace(/\s+([,.!?…])/g, "$1").trim();
 
 export function parseTaggedSentence(raw: string): TaggedSentence {
   let emotion: string | null = null;
   let tagged: string | null = null;
   const noEmotion = raw
+    .replace(CITATION_RE, " ")
     .replace(DANGLING_RE, " ")
     .replace(EMOTION_RE, (_m, name: string) => {
       if (!emotion) emotion = name.toLowerCase();
