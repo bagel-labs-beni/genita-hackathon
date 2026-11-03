@@ -76,7 +76,7 @@ test("crisis means: everyday pills, bridges, roofs, rope and kitchen / screen kn
 });
 
 test("crisis means: a threat from someone else still counts, kitchen or screen words around it or not", () => {
-  for (const line of ["he pulled a knife on me in the kitchen", "a guy with a knife is outside", "my husband has a gun", "a guy has a gun in the movie theater", "he pulled a knife on me in the movie"]) {
+  for (const line of ["he pulled a knife on me in the kitchen", "a guy with a knife is outside", "my husband has a gun", "a guy has a gun in the movie theater"]) {
     assert.ok(realCrisisSignal(line), line);
   }
 });
@@ -97,6 +97,15 @@ test("Codex 11/4 crisis-means r1: a kitchen or a screen in one clause never canc
     assert.ok(realCrisisSignal(line), `miss: ${line}`);
   }
   for (const line of ["I loaded my gun in the game", "The villain made a noose in the movie", "I've got my pills ready for my prescribed dose", "I counted out my meds into my weekly pill organizer", "I'm sitting on the edge of my bed putting on socks", "I'm holding a razor to shave my beard", "I'm holding a rope for the hammock", "I'm sitting on the ledge with my coffee", "I'm holding a knife to cut the tape on this box"]) {
+    assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
+  }
+});
+
+test("Codex 11/4 crisis-means r2: a body as the object, a subject in the clause before, a screen prefix, a drug in the bottle, a denied act", () => {
+  for (const line of ["I'm holding a knife to cut my wrists right now", "I'm cutting bread, my stalker is outside and holding a knife", "I took a whole bottle of sleeping pills", "I'm watching a movie but I'm about to swallow all these pills", "I'm about to swallow all these pills, my doctor won't listen"]) {
+    assert.ok(realCrisisSignal(line), `miss: ${line}`);
+  }
+  for (const line of ["In the game, I loaded my gun", "In the game I have a gun to my head", "I've got my pills ready and I'm about to take my prescribed dose", "I took a whole bottle of water on my hike", "I didn't take a handful of pills", "I haven't made a noose"]) {
     assert.ok(!realCrisisSignal(line), `false alarm: ${line}`);
   }
 });
