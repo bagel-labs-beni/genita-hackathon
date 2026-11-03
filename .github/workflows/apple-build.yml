@@ -83,6 +83,14 @@ jobs:
             ls build-output/screens
           fi
 
+      # "** TEST FAILED **" with every suite passed: show what the result bundle says failed
+      - name: Why the iOS tests failed
+        if: failure()
+        continue-on-error: true
+        run: |
+          [ -d build-output/ios.xcresult ] || exit 0
+          xcrun xcresulttool get test-results summary --path build-output/ios.xcresult | head -c 6000
+
       # I03 live soul orb: ~9 s simulator video + the app's own fps / GPU-time log (GENITA_ORB_STATS=1)
       - name: Record the I03 orb
         if: always()
