@@ -7,6 +7,7 @@
  *   voice    5 corrections said in a call + 2 lines that must not change anything
  *   ask      3 simulated first calls: the planned unknown is asked within the first 3 replies (profile.asking),
  *            and the user's answer comes back as "Noted: …"
+ *   sheet    "That's not me" on the profile sheet (PATCH /v1/profile): ms to the answer and to the reworded card
  *   reasons  5 Finds results (3 recipe, 2 outfit; real camera frames from GENITA_FIXTURES_DIR/suite/t4) carry
  *            reason chips from the profile
  */
@@ -351,6 +352,46 @@ if (parts.has("knows")) {
   }
   const after = (await store.getStyle("u-k"))!;
   report.knows = { greets, voice, budget_on_card: (await p.story("u-k", 10_000)).cards.find((c) => c.id === "taste")?.tags?.map((t) => t.text), no_income_stored: !JSON.stringify(after.sections).match(/80k|loan/i) };
+}
+
+const SHEET_RAW = {
+  sections: {
+    tendencies: [{ text: "Compares two concrete options before deciding.", label: "observed", scope: "any" }],
+    communication: [{ text: "Warm, direct and informal.", label: "explicit", scope: "any" }],
+    response: [{ text: "Short answers first.", label: "explicit", scope: "any" }],
+    help: [{ text: "Find clothes that fit my style and send links.", label: "explicit", scope: "any" }],
+    support: [],
+    interests: [{ text: "Visual design.", label: "observed", scope: "any" }],
+    likes: [{ text: "Style: clean, minimal clothes in black, grey and navy.", label: "explicit", scope: "any" }, { text: "Food: Korean home cooking.", label: "explicit", scope: "any" }, { text: "Dislikes loud logos.", label: "explicit", scope: "any" }],
+    boundaries: [{ text: "No advice she didn't ask for.", label: "explicit", scope: "any" }],
+    approach: [],
+  },
+  rules: [],
+  to_confirm: ["Reminder frequency"],
+} as unknown as Parameters<typeof toStyleCard>[0];
+
+if (parts.has("sheet")) {
+  // S1 "That's not me" on the profile sheet: time to the answer (toast) and to the reworded card
+  const rows: Record<string, unknown>[] = [];
+  const sheetRuns = Number(arg("runs", "1"));
+  for (const [name, text] of Object.entries(PROFILES).flatMap(([n, t]) => Array.from({ length: sheetRuns }, (_, k) => [`${n}${k}`, t] as const))) {
+    const user = `u-sheet-${name}`;
+    // the import parse is not what is measured here: a fixed card when the vendor times out on the long paste
+    await importStyle(d, user, text).catch(() => store.putStyle(user, toStyleCard(SHEET_RAW, "import")));
+    const cards = (await p.story(user, 15_000)).cards;
+    const taste = cards.find((c) => c.id === "taste") ?? cards.find((c) => c.id !== "unknowns");
+    if (!taste) continue;
+    const marked = [taste.tags?.[0]?.text ?? taste.items[0]?.text].filter((x): x is string => !!x);
+    const t0 = ms();
+    const r = await p.correct(user, { cardId: taste.id, items: marked, text: "Not that anymore. I've moved to earth tones and no logos at all." });
+    const answerMs = Math.round(ms() - t0);
+    await p.drainRewrites();
+    const rewordMs = Math.round(ms() - t0);
+    const after = (await p.story(user)).cards.find((c) => c.id === taste.id);
+    rows.push({ profile: name, card: taste.id, answer_ms: answerMs, reword_ms: rewordMs, changed: r.changed, interim_headline: r.card?.headline, reworded_headline: after?.headline });
+  }
+  const p95 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.ceil(xs.length * 0.95) - 1)];
+  report.sheet = { n: rows.length, rows, answer_p50_ms: p50(rows.map((r) => r.answer_ms as number)), answer_p95_ms: p95(rows.map((r) => r.answer_ms as number)), reword_p50_ms: p50(rows.map((r) => r.reword_ms as number)) };
 }
 
 report.failures = logs.filter(([e]) => e.endsWith("failed")).map(([e, d]) => ({ e, ...d }));
