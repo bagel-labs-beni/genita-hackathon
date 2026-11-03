@@ -22,7 +22,7 @@ import SwiftUI
                 if ProcessInfo.processInfo.arguments.contains("--handoff-demo") { ConversationView(model:model) }
                 else { RootView(model:model) }
             }
-                .genitaSplash() // launch: the mark draws, the eye opens, wakes into the first screen (≤ 1.6 s, tap skips)
+                .genitaSplash() // launch: the mark draws, the eye opens, wakes into the first screen (2.6 s from its first frame; 0.6 s when signed in; tap skips)
                 .onAppear {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--fixture-image"), let url = Bundle.main.url(forResource: "companion", withExtension: "png") { model.setup.imageData = try? Data(contentsOf: url) }
