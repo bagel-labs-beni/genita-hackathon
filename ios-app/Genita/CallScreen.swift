@@ -248,6 +248,8 @@ struct CallMoreSheet: View {
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
     var openTextChat: (() -> Void)?
     var openFinds: (() -> Void)?
+    /// RP-1 (D37): the system report sheet
+    var report: (() -> Void)?
     var close: () -> Void
     var body: some View {
         VStack(spacing: 0) {
@@ -265,6 +267,7 @@ struct CallMoreSheet: View {
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
+            if let report { row("flag", "Report", "A reply or picture that's wrong", id: "moreReport") { close(); report() } }
         }
         .padding(.top, 28).padding(.horizontal, 16).padding(.bottom, 40)
         .frame(maxWidth: .infinity)
