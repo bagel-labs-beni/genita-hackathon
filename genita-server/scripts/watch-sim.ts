@@ -53,6 +53,8 @@ const envFile = process.env.GENITA_ENV_FILE ?? join(homedir(), ".config/genita/m
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const SR = 24000;
+/** the session's user name (start.user.name); the CW-03 judge only lets this one name through */
+const SIM_USER = "Chelsea";
 const CHUNK = (SR * 2 * 80) / 1000;
 const args = process.argv.slice(2);
 const T5 = args.includes("--qa") || (!args.includes("--react") && !args.includes("--blank") && !args.includes("--naming") && !args.includes("--title") && !args.some((a) => a.startsWith("--moments")) && !args.some((a) => a.startsWith("--recall"))) ? fixturePath("suite") : undefined;
@@ -131,7 +133,7 @@ class Call {
       JSON.stringify({
         type: "start",
         persona: { name: "Jin", kind: "human", traits: ["warm", "dry humor"], speakingStyle: "short, playful" },
-        user: { name: "Chelsea" },
+        user: { name: SIM_USER },
         mic: false,
         lip: "none",
       }),
@@ -267,7 +269,7 @@ async function judgeVideo(truth: string, key: string | undefined, q: string, a: 
   for (let i = 0; i < 3; i++) {
     try {
       const g = await sparkText(config.metaKey, {
-        input: `A friend watched a short video with the user and answered the user's question about it.\nWhat the video shows (checked frame by frame by a person): ${truth}${key ? `\nExpected answer for this question: ${key}` : ""}\nQuestion: ${q}\nAnswer given: ${a}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the answer gets the question right per the video (casual wording, extra chat and jokes are fine); invented = it states a concrete detail the video does not show or contradicts (a person, object, event, quote, number). A figure of speech about something that is there invents nothing, and the user is called Chelsea (saying her name is fine). why = 3 to 10 words.`,
+        input: `A friend watched a short video with the user and answered the user's question about it.\nWhat the video shows (checked frame by frame by a person): ${truth}${key ? `\nExpected answer for this question: ${key}` : ""}\nQuestion: ${q}\nAnswer given: ${a}\nAnswer as JSON {"correct":bool,"invented":bool,"why":string}: correct = the answer gets the question right per the video (casual wording, extra chat and jokes are fine); invented = it states a concrete detail the video does not show or contradicts (a person, object, event, quote, number). A figure of speech about something that is there invents nothing, and the user's profile name is ${SIM_USER} (saying that name is fine; any other name is invented). why = 3 to 10 words.`,
         effort: "low",
       });
       const o = JSON.parse(g.match(/\{[\s\S]*\}/)?.[0] ?? "null") as Record<string, unknown> | null;
