@@ -130,6 +130,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
+    /// M02-X (Figma 82:2): A02 shows "Your account and data are deleted." once, after a deletion
+    var accountDeletedNotice = false
     /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
     /// again (`GET /v1/profile/story`).
     var story: [StoryCard]?
@@ -255,6 +257,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
     func signedIn(userId: String? = nil, consented: Bool) {
         invalidateOnboardingWork()
+        accountDeletedNotice = false
         // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
         flowError = nil
         authGeneration += 1
@@ -307,6 +310,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         resetLocalProfile()
         storage.removeObject(forKey: Self.userKey)
         signedOut()
+        accountDeletedNotice = true
     }
     func resetLocalProfile() {
         storage.removeObject(forKey: Self.storageKey)

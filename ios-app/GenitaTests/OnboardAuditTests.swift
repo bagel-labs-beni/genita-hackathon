@@ -88,4 +88,18 @@ import XCTest
         XCTAssertEqual(model.stage, .conversation, "a finished account goes to its call, not A03")
         XCTAssertTrue(patched.value?.contains("Summer") == true, "the saved name goes to the server again")
     }
+
+    /// AU-06 · SE-03 M02-X: after a deletion A02 carries the "deleted" notice once, and nothing of the account stays.
+    func testAccountDeletedLandsOnA02WithTheNoticeAndNoLocalSetup() {
+        let storage = UserDefaults(suiteName: UUID().uuidString)!
+        let model = AppState(storage: storage, imageURL: URL.temporaryDirectory.appending(path: UUID().uuidString + ".jpg"))
+        model.setup.name = "Summer"; model.setup.companionName = "Jin"; model.complete()
+        model.accountDeleted()
+        XCTAssertEqual(model.stage, .signIn)
+        XCTAssertTrue(model.accountDeletedNotice, "M02-X: A02 + toast")
+        XCTAssertEqual(model.setup.name, "")
+        XCTAssertNil(model.setup.companionName)
+        model.signedIn(userId: "u2", consented: false)
+        XCTAssertFalse(model.accountDeletedNotice, "a new sign-in never shows it")
+    }
 }

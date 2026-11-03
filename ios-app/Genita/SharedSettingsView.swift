@@ -119,7 +119,12 @@ struct SettingsView: View {
                 dismiss()
                 model.accountDeleted()
             } catch {
-                accountError = "Try again in a moment. Nothing was deleted."
+                // AU-06: a slow answer (or a step that failed after the files went) may still have deleted the
+                // account. If the session is gone now, it was: nothing of it stays here either (M02-X).
+                switch await model.onboarding.auth.sessionState() {
+                case .expired, .signedOut: dismiss(); model.accountDeleted()
+                default: accountError = "Try again in a moment."
+                }
             }
         }
     }

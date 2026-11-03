@@ -76,6 +76,21 @@ struct ReferenceSignInView: View {
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
                     .frame(maxWidth: 342).padding(.horizontal, 24).padding(.top, 228)
                     .transition(.opacity).accessibilityElement(children: .combine).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("signInFailed")
+            } else if model.accountDeletedNotice {
+                // M02-X (Figma 82:2 "Status"): 342 × 52 at canvas y 272, #111, radius 16, 12/16 padding, 15 pt
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 18, weight: .regular)).frame(width: 20, height: 20)
+                    Text("Your account and data are deleted.").font(TypeStyle.body(15)).lineSpacing(3)
+                    Spacer(minLength: 0)
+                }.foregroundStyle(Color(white: 0.992)).padding(.horizontal, 16).padding(.vertical, 12).frame(minHeight: 52)
+                    .background(Color(white: 17.0 / 255), in: RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: Color(white: 17.0 / 255).opacity(0.18), radius: 12, y: 8)
+                    .frame(maxWidth: 342).padding(.horizontal, 24).padding(.top, 228)
+                    .transition(.opacity).accessibilityElement(children: .combine).accessibilityAddTraits(.isStaticText).accessibilityIdentifier("accountDeletedToast")
+                    .task {
+                        try? await Task.sleep(for: .seconds(4))
+                        withAnimation(.easeOut(duration: 0.2)) { model.accountDeletedNotice = false }
+                    }
             }
         }
         .judgeAccessAlert(isPresented: $judgeAlert, busy: $signingIn, model: model)
