@@ -32,6 +32,8 @@ export interface SummaryRepository {
   /** newest first */
   listSummaries(userId: string, limit: number): Promise<CallSummary[]>;
   deleteSummaries(userId: string): Promise<void>;
+  /** one thread's row (its new summary came back empty, e.g. everything in it was asked to be forgotten) */
+  deleteSummary?(userId: string, threadId: string): Promise<void>;
 }
 
 /** last N summaries kept per user */

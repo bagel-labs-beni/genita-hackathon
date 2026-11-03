@@ -16,7 +16,8 @@ import type { SparkRequest } from "../src/meta/spark.ts";
 import { InMemoryMemoryRepository, mergeSummary } from "../src/memory/repository.ts";
 import { PgMemoryRepository } from "../src/memory/pgRepository.ts";
 import { MemoryService } from "../src/memory/service.ts";
-import { safeMemoryText, type Turn } from "../src/memory/extract.ts";
+import { cleanKeys, safeMemoryText, type Turn } from "../src/memory/extract.ts";
+import { MemoryCall } from "../src/memory/call.ts";
 import { cleanSummary, createSummarizer, summaryPrompt, SUMMARY_KEEP, type CallSummary, type Summarizer } from "../src/memory/summaries.ts";
 
 const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
@@ -655,9 +656,41 @@ test("server (train review P2): iPhone → Mac, the Mac hangs up, the old iPhone
 });
 
 test("QA 11/3 P2: a forget request never becomes a memory or a note (no 'you told me to forget X')", () => {
-  for (const bad of ["User asked to forget the leather accessories thing", "Asked me not to remember the leather bag", "Wants the companion to erase what they said about leather", "가죽 얘기는 잊어 달라고 함"]) {
+  for (const bad of ["User asked to forget the leather accessories thing", "Asked me not to remember the leather bag", "Wants the companion to erase what they said about leather", "Forget the leather accessories thing", "Please forget about it", "Don't remember that I said that", "Leather accessories, asked to be forgotten", "가죽 얘기는 잊어 달라고 함", "그 얘기 기억하지 마"]) {
     assert.equal(safeMemoryText(bad), false, bad);
+  }
+  // ordinary facts that happen to say "forget" stay (coordinator 11/3)
+  for (const ok of ["I always forget my keys", "I forgot my umbrella at the cafe", "I tend to forget birthdays", "My favorite movie is Forgetting Sarah Marshall"]) {
+    assert.equal(safeMemoryText(ok), true, ok);
   }
   const s = cleanSummary({ topics: ["Leather accessories (asked to forget)", "Jacket shopping"], mood: "relaxed", open_threads: ["User wants Jin to forget the leather thing"], promises: ["Forget the leather accessories"], asks: [] });
   assert.deepEqual(s, { topics: ["Jacket shopping"], mood: "relaxed", open_threads: [], promises: [], asks: [] });
+});
+
+test("Codex 11/3 (#443): an empty summary of a thread whose topic was asked to be forgotten clears that thread's old row", async () => {
+  let next: Summarizer = async () => cleanSummary({ topics: ["Leather accessories"], mood: "", open_threads: [], promises: [], asks: [] });
+  const { memory } = setup(async (t, p) => next(t, p));
+  await memory.summarizeThread("acct-a", "t1", [{ user: "I love leather accessories.", assistant: "Nice." }], 0);
+  assert.equal((await memory.summaries("acct-a")).length, 1);
+  next = async () => null; // the model left everything out: "forget the leather thing"
+  await memory.summarizeThread("acct-a", "t1", [{ user: "Forget the leather thing.", assistant: "Done." }], 0, 2);
+  assert.deepEqual(await memory.summaries("acct-a"), [], "no stale 'Leather accessories' note for the next call");
+  // a vendor failure (throw) keeps the old row
+  next = async () => cleanSummary({ topics: ["Jacket shopping"], mood: "", open_threads: [], promises: [], asks: [] });
+  await memory.summarizeThread("acct-a", "t2", [{ user: "Jacket?", assistant: "Sure." }], 0);
+  next = async () => { throw new Error("vendor"); };
+  await memory.summarizeThread("acct-a", "t2", [{ user: "x", assistant: "y" }], 0, 2).catch(() => null);
+  assert.equal((await memory.summaries("acct-a")).length, 1);
+});
+
+test("Codex 11/3 (#443): recall keys never carry a forget request, and the recall tool returns only id + text", async () => {
+  assert.deepEqual(cleanKeys(["forget the leather thing", "jacket", "navy", "잊어줘"]), ["jacket", "navy"]);
+  const repo = new InMemoryMemoryRepository();
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [{ text: "I like navy jackets.", kind: "fact", sensitive: "none", follow_up: false, keys: ["forget the leather thing", "jacket"] }] });
+  await memory.extract("u", "s", [{ user: "I like navy jackets.", assistant: "Nice." }], 0);
+  assert.deepEqual((await memory.list("u"))[0].keys, ["jacket"]);
+  const call = new MemoryCall(memory, "u", "s2"); await call.open(false);
+  const out = await (call as unknown as { execute(c: { name: string; arguments: string; call_id: string; type: "function_call" }): Promise<{ memories: Record<string, unknown>[] }> }).execute({ type: "function_call", name: "recall", call_id: "c", arguments: JSON.stringify({ query: "navy jacket" }) });
+  assert.deepEqual(Object.keys(out.memories[0]).sort(), ["id", "text"]);
+  call.close(); await memory.drain();
 });
