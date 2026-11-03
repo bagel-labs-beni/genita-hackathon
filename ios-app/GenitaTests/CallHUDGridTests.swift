@@ -14,7 +14,8 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual([g.railY(.more), g.railY(.mic), g.railY(.camera)], [806, 750, 694], "44 pt, 12 apart, ending on 828")
         XCTAssertEqual(g.selfCenter(), CGPoint(x: 52, y: 780), "camera-off tile 72 × 96: left 16, bottom 828")
         XCTAssertEqual(g.rowPillWidth, 402 - 136, "pill room on the row: clear of the menu button and its mirror by 8")
-        XCTAssertEqual(g.secondLineY, 132, "second line: top 8 under the row's pill (62 + 46 + 8), 32 tall")
+        XCTAssertEqual(g.secondLineY, 138, "second line: top 8 under the menu button (62 + 52 + 8), 32 tall")
+        XCTAssertEqual(g.secondLineY - CallPillMetrics.height / 2 - (g.menuCenter.y + CallHUDGrid.button / 2), 8, "8 pt clear of the button")
         // the chip and the prep line stack 6 pt under whatever is above them
         XCTAssertEqual(g.chipCenterY(status: .row, prepLine: false), 92 + 16 + 6 + 15)
         XCTAssertEqual(g.prepLineCenterY(status: .row), 92 + 16 + 6 + 18)
@@ -22,11 +23,11 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(g.prepLineCenterY(status: .none), 92, "no pill: the prep line takes the row")
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: true), 92 + 18 + 6 + 15)
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false, fitsRow: true), 92, "alone and short: on the row, like the pill")
-        XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 62 + 54 + 15, "alone and wide: top on the second line (+54)")
+        XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 62 + 60 + 15, "alone and wide: top on the second line (+60)")
         XCTAssertGreaterThan(g.chipCenterY(status: .none, prepLine: false) - 15, g.menuCenter.y + CallHUDGrid.button / 2, "clear of the menu button (Codex P2)")
-        XCTAssertEqual(g.prepLineCenterY(status: .second), 132 + 16 + 6 + 18, "under the second line, not on it (Codex P2)")
-        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: true), 132 + 16 + 6 + 36 + 6 + 15)
-        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: false), 132 + 16 + 6 + 15, "chip 6 under the second line too")
+        XCTAssertEqual(g.prepLineCenterY(status: .second), 138 + 16 + 6 + 18, "under the second line, not on it (Codex P2)")
+        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: true), 138 + 16 + 6 + 36 + 6 + 15)
+        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: false), 138 + 16 + 6 + 15, "chip 6 under the second line too")
     }
 
     /// The rail and the self view end on one line, and both sides keep the same 16 pt margin, on every size.

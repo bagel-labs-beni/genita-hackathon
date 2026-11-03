@@ -53,8 +53,10 @@ struct CallHUDGrid: Equatable {
         case second
     }
     var pillCenter: CGPoint { CGPoint(x: size.width / 2, y: rowY) }
-    /// The second line's centre: its top 8 under the row's pill (safe top + 46 + 8), 32 tall. Max width = screen − 32.
-    var secondLineY: CGFloat { safeTop + 54 + CallPillMetrics.height / 2 }
+    /// The second line's centre: its top 8 under the row's tallest piece — the 44 pt menu button (safe top + 52 + 8;
+    /// 춘식이's "8 under the row", measured from the button: from the pill it left 2 pt under the button, pixel QA #530).
+    /// 32 tall. Max width = screen − 32.
+    var secondLineY: CGFloat { rowY + Self.button / 2 + 8 + CallPillMetrics.height / 2 }
     /// Room for a centred pill on the menu row without touching the menu button or its mirror (8 pt clear).
     var rowPillWidth: CGFloat { size.width - 2 * (Self.margin + Self.button + 8) }
     func statusY(_ line: StatusLine) -> CGFloat { line == .second ? secondLineY : rowY }
@@ -65,7 +67,7 @@ struct CallHUDGrid: Equatable {
     }
     /// The "Getting to know you" / "Noted" chip (30 tall) sits 6 pt under the lowest line above it.
     /// Alone (no pill, no prep line) it follows the pill's rule: on the row when it fits between the menu button and
-    /// its mirror (`fitsRow`), else on the second line (top at safe top + 54), never across the menu button.
+    /// its mirror (`fitsRow`), else on the second line (top 8 under the menu button), never across it.
     func chipCenterY(status: StatusLine, prepLine: Bool, fitsRow: Bool = false) -> CGFloat {
         if status == .none && !prepLine { return fitsRow ? rowY : secondLineY - CallPillMetrics.height / 2 + 15 }
         let above = prepLine ? prepLineCenterY(status: status) + CallPillMetrics.prepHeight / 2 : statusY(status) + CallPillMetrics.height / 2
