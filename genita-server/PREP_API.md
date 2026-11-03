@@ -27,6 +27,31 @@ Prompt v3 has 10 sections: 1 Thinking style, 2 Communication style, 3 Response p
 
 `style.display` = I04's six rows in order `communication` Communication style (section 2) · `response` Response preferences (3, then rules fill free slots) · `help` How Genita can help (4) · `interests` Interests (6) · `likes` Likes & dislikes (7; when there is a dislike, one of the 3 slots shows it) · `boundaries` Boundaries (8), each `{key, title, items:[{text, label}]}` (max 3 items). Sections 1, 5, 9 are not rows; they go into `profile`. `label` ∈ `explicit` (You said so) · `observed` (Your AI noticed) · `memory` (Your AI's memory) · `suggested` (My suggestion). An empty row shows "Not enough information yet". `style.partial` = I04-P. `style.toConfirm` = "I'll ask N more things on our first call". `profile` goes into the session's `start.user.profile` (≤2,000 chars): Likes & dislikes first as `- Taste:` lines (Finds' outfit and recipe cards read its first 800 chars), then the other five rows' fields, every boundary, the rules, the to-confirm line, then support/thinking/suggestions. The pasted text is never stored.
 
+## How I see you + corrections (D47 HISY v2, lane 개인화)
+
+Screens: Figma rp1wR9pxV0IsgyjvOcwo92 HISY-0~7 (import), S0~S4 (skip), C1~C3 (That's not me). HISY-0 and HISY-7 are the app's own copy; the server sends the cards between them.
+
+| call | body | answer |
+|---|---|---|
+| `POST /v1/import` | as above | now also `story`: the cards (written from the same paste **in parallel** with the parse; `null` if it isn't ready 1.5 s after the parse — then it's saved when it lands, read it with `GET /v1/profile/story?wait=8`) |
+| `GET /v1/profile/story?wait=s` | | `{status:"ready"\|"processing"\|"none", source:"import"\|"skip", cards, ms?}`. Not written yet (skip users, or the import's story failed) → the server writes it from the stored style (+ SUM lines once saved); `wait` (0–10 s) holds the answer that long. `processing` = still writing, ask again |
+| `PATCH /v1/profile` | `{cardId, items?: string[], text?: string}` (≤2 KB; `items` = texts the user marked on C1, each must be one of the card's own: item texts, tag texts — a dislike tag is `"Not for you: <tag lowercased>"` —, help labels, unknown topics; `text` ≤200 chars; at least one) | `200 {card, ack:"Got it. I'll remember that.", changed, profile, rows}`: `card` = the same card rewritten (C3; `null` if the correction emptied it), `changed` = its texts that are new (draw them with the blue border), `rows` = the six I04 rows, updated · `400 bad_correction` · `404 no_profile` · `409 card_not_shown` · `429 rate_limited` (10/min) · `502 upstream_failed`. On `unknowns`, `items:[topic]` + `text` answers that topic and it leaves the list |
+
+Card `{id, eyebrow, headline, subline?, items, promise?, evidence, tags?, note?, help?, unknowns?}`, in this order, each only when the profile has something for it (otherwise its topic joins `unknowns`):
+
+| id | eyebrow | shows |
+|---|---|---|
+| `think` | How you think | `headline` + 1–2 `items` |
+| `talk` | How you like to talk | `headline` + 1–2 `items` + `promise` ("So I'll …", the blue box) |
+| `taste` | What you're into | `headline` + `tags [{group: style\|food\|watch\|interest, text, dislike}]` (dislikes dashed with ✕) + card `evidence`; `note` "No favorites yet. Tell me one anytime, or show me on camera." when there are no likes. Skip users (S2, Figma 269:228): tags are exactly the N1 tiles (`interest`, "You said this") and the N3 Clothes / Food like (blue) and no (dashed) chips (legend "From your answers") — Spark only words the headline |
+| `help` | How I can help | headline "Where I'll actually be useful." + `help [{label, sub, mode: ask_first\|just_do_it}]` (≤3) + card `evidence` |
+| `lines` | Lines I won't cross | headline "Some things I'll leave alone." + 1–4 `items` (the app adds "And always: I won't buy, book, or message anyone for you.") |
+| `unknowns` | Still getting to know you | `headline` + `subline` (import / skip copy) + `unknowns [{item, topic, sub}]` (≤4; shrinks as calls answer them) |
+
+`items[].evidence` / card `evidence` ∈ `explicit` (You said this) · `observed` (You did this often) · `memory` (From your memories). Never stronger than the profile lines behind the card; a `[Suggested]` line is never shown as a fact. Server checks: no personality labels, diagnosis or flattery, no injection/sensitive text (a failing card falls back to the profile's own lines).
+
+In calls (with an account): the server uses the stored profile; each of the first 3 calls asks one `unknowns` topic (first 3 turns; `profile.asking` when the reply asks it, then the next line is checked for the answer → `profile.updated` "Noted: …"); corrections said in the call → `profile.updated` "Updated: …"; after the call, explicit statements and repeated patterns from it are saved. Finds cards get `reasons` (PROTOCOL.md).
+
 ## Image, voices, companion (F2-L20, F2-L8, F2-L3)
 
 | call | body | answer |
