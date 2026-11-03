@@ -106,10 +106,23 @@ enum ProductPicks {
     ///   From your import and what you said · {source 1} · {source 2}
     /// Cards from before #171 carry no `evidence`: their `why` + `how` lines as written.
     static func evidence(from card: FindCard) -> ProductEvidence {
-        guard let first = basis(card) else { return ProductEvidence(lines: card.why + card.how) }
-        let domains = picks(from: card).map(\.domain)
-        let from = card.evidence?.style.isEmpty == false ? "From your import and what you said" : "From what you said"
-        return ProductEvidence(lines: [first, ([from] + domains).joined(separator: " · ")])
+        guard let first = basis(card) else { return ProductEvidence(lines: card.why + card.how.filter { !isLegend($0) }) }
+        return ProductEvidence(lines: [first, sourceLine(card)])
+    }
+
+    // D4 (Chelsea 04:53): no colour legend — each chip says where it came from with a mark in front of it.
+    /// ✦ = your style (from the import) · “ = what you said
+    static let styleMark = "✦"
+    static let saidMark = "“"
+    /// The server's old legend line ("Blue: your style, from your import. Grey: what you said.").
+    static func isLegend(_ line: String) -> Bool { line.hasPrefix("Blue:") || line.hasPrefix("Grey:") }
+    /// "From your style and what you said · northline.com +1" (iPhone PF-1 and Mac "Why these" alike).
+    static func sourceLine(_ card: FindCard) -> String {
+        let from = card.evidence?.style.trimmingCharacters(in: .whitespaces).isEmpty == false ? "From your style and what you said" : "From what you said"
+        var domains = picks(from: card).map(\.domain)
+        if domains.isEmpty { domains = card.sources.map(\.domain).filter { !$0.isEmpty } }
+        guard let first = domains.first else { return from }
+        return from + " · " + first + (domains.count > 1 ? " +\(domains.count - 1)" : "")
     }
 
     /// MF-1 "Why" while searching: the import line the last product answer of this call stood on. Only the style —

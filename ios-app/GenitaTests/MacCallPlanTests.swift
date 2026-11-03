@@ -108,14 +108,24 @@ final class MacCallPlanTests: XCTestCase {
     func testEvidenceQuotesTheServerStyleAndSituation() throws {
         let e = ProductPicks.evidence(from: try sampleCard())
         XCTAssertEqual(e.lines, ["“Clean, minimal clothes. Understated colors.” · Mild and dry this weekend, 18°C",
-                                 "From your import and what you said · northline.example.com · fieldandco.example.com"])
+                                 "From your style and what you said · northline.example.com +1"])
     }
 
     func testNoImportMeansNoStyleQuote() throws {
         var c = try sampleCard()
         c.evidence = .init(style: "", situation: "Mild and dry this weekend, 18°C")
         XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Mild and dry this weekend, 18°C",
-                                                              "From what you said · northline.example.com · fieldandco.example.com"])
+                                                              "From what you said · northline.example.com +1"])
+    }
+
+    /// D4: the colour legend never shows; the marks on the chips say where each came from.
+    func testNoColourLegend() throws {
+        var c = try sampleCard()
+        c.evidence = nil
+        XCTAssertFalse(ProductPicks.evidence(from: c).lines.contains { $0.hasPrefix("Blue:") || $0.hasPrefix("Grey:") })
+        XCTAssertTrue(ProductPicks.isLegend("Blue: your style, from your import. Grey: what you said."))
+        XCTAssertTrue(ProductPicks.isLegend("Grey: what you said. I don’t know your style yet."))
+        XCTAssertFalse(ProductPicks.isLegend("Searched the web · northline.example.com +1"))
     }
 
     func testOlderCardsShowTheirWhyAndHow() throws {
