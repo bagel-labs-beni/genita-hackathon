@@ -42,6 +42,11 @@ public final class FaceRenderer: @unchecked Sendable {
     private let framingZoom: CGFloat
     private let framingCenter: CGPoint
     private let blinkMask: CIImage?
+    /// 11/4 brow flash: a soft band over the brows (moved up a little on stressed words) and its lift at full flash (still px)
+    private let browMask: CIImage?
+    private let browLift: CGFloat
+    /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
+    nonisolated(unsafe) public static var browFlash = true
     /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
     private let exprUpperMask: CIImage
     private let exprFaceMask: CIImage
@@ -150,6 +155,11 @@ public final class FaceRenderer: @unchecked Sendable {
         // Eye band: from 12% below the face top down to a quarter of the way above the mouth.
         let bandTop = face.maxY - face.height * 0.12
         let bandBottom = mouth.maxY + (face.maxY - mouth.maxY) * 0.22
+        // brows: the top third of the eye band, the face's width; a 0.3 s lift on stressed words (BrowFlash)
+        let browY = bandTop - (bandTop - bandBottom) * 0.28
+        browMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: browY), rx: face.width * 0.42, ry: max(4, (bandTop - bandBottom) * 0.3),
+                                    inner: 0.45, extent: extent)
+        browLift = max(1, face.height * 0.012)
         blinkMask = faceSet.hasBlink
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),
                                rx: face.width * 0.55, ry: max(4, (bandTop - bandBottom) / 2), inner: 0.6, extent: extent)
@@ -303,6 +313,20 @@ public final class FaceRenderer: @unchecked Sendable {
             // A blink is a cut (half-dissolved lids read as glass), held while it is more than 30% closed.
             f.maskImage = blink > 0.3 ? mask : Self.withOpacity(mask, 0)
             img = f.outputImage!.cropped(to: extent)
+        }
+
+        // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
+        // through a soft mask (no warp of the eyes; 0–2 per sentence)
+        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
+            let w = BrowFlash.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings, loudness: { ctx.timeline.loudness(atMs: $0) })
+            if w > 0.01 {
+                let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
+                let f = CIFilter.blendWithAlphaMask()
+                f.inputImage = lifted
+                f.backgroundImage = img
+                f.maskImage = bm
+                img = f.outputImage!.cropped(to: extent)
+            }
         }
 
         // 5. aspect fill (with overscan while the camera drifts), then 6. the alive base at output

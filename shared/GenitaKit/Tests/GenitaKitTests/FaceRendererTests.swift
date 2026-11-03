@@ -442,3 +442,24 @@ struct MouthQualityTests {
     }
 }
 
+
+/// 11/4 brow flash: stressed (loudest 20 %) vowels lift the brows for 0.3 s, at least 1.6 s apart.
+struct BrowFlashTests {
+    @Test func loudVowelsFlashBrieflyAndRarely() {
+        // ten vowels 0.5 s apart; every third is loud
+        var ph: [LipPhonemeTiming] = []
+        for i in 0..<10 { ph.append(LipPhonemeTiming(phoneme: "AA1", startMs: i * 500, endMs: i * 500 + 150)) }
+        let loud: (Double) -> Double = { ms in
+            let i = Int(ms / 500); let inVowel = ms - Double(i * 500) < 150
+            return inVowel ? (i % 3 == 0 ? 0.9 : 0.3) : 0.02
+        }
+        let on = BrowFlash.onsets(phonemes: ph, loudness: loud)
+        #expect(!on.isEmpty)
+        for (a, b) in zip(on, on.dropFirst()) { #expect(b - a >= BrowFlash.minGap - 1e-9) }
+        let s = on[0]
+        #expect(BrowFlash.weight(atMs: (s + 0.15) * 1000, phonemes: ph, loudness: loud) == 1)
+        #expect(BrowFlash.weight(atMs: (s + 0.35) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: (s - 0.05) * 1000, phonemes: ph, loudness: loud) == 0)
+        #expect(BrowFlash.weight(atMs: 1000, phonemes: [], loudness: loud) == 0)
+    }
+}
