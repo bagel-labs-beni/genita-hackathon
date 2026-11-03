@@ -122,6 +122,9 @@ export type SessionDeps = {
   companionVoiceId?: () => Promise<string | null | undefined>;
 };
 
+/** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
+export const PRODUCT_REACTION_LINE =
+  "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
 export type SessionPersonalize = {
   startCall(userId: string): Promise<CallStart | null>;
@@ -1464,10 +1467,36 @@ export class Session {
         // the card's own line follows when it lands
         if (spec && speculative === "hit") spec.abort.abort();
         const ack = started.ack;
-        pre = (async function* () {
+        const fixed = (async function* () {
           yield { type: "text" as const, delta: ack };
           yield { type: "done" as const, responseId: null, text: ack, status: "completed" };
         })();
+        if (started.kind === "product") {
+          // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
+          // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
+          // A failed reaction falls back to the short ack.
+          // text only: the frames already went to the search, and an image costs the reaction ~1–2 s of first word
+          const textOnly = Array.isArray(req.input)
+            ? req.input.map((m) => ("content" in m && Array.isArray(m.content) ? { ...m, content: m.content.filter((c) => c.type === "input_text").map((c) => (c as { text: string }).text).join(" ") } : m))
+            : req.input;
+          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
+          pre = (async function* () {
+            let said = false;
+            try {
+              for await (const ev of react) {
+                if (ev.type === "done") {
+                  if (said) { yield ev; return; }
+                  break; // an empty reaction: the short ack below, never the tool-carrying retry
+                }
+                if (ev.type === "text" && ev.delta.trim()) said = true;
+                yield ev;
+              }
+            } catch (err) {
+              if (said) throw err;
+            }
+            if (!said) yield* fixed;
+          })();
+        } else pre = fixed;
         this.log("finds.ack", { utteranceId, kind: started.kind });
       }
     }
