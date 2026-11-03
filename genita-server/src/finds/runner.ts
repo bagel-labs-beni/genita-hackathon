@@ -33,7 +33,8 @@ export type FindsDeps = {
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
-export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Let me take a look." };
+// recipe: a reaction to what's shown, not a lookup announcement ("Let me take a look." read as narration, 11/3)
+export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Ooh, nice haul." };
 
 /** Demo S5: an outfit card's background search for what goes with it is reused this long. */
 export const PREFETCH_WINDOW_MS = 5 * 60_000;

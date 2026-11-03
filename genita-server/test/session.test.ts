@@ -458,7 +458,7 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
   // ① the short line, not a full answer from the raw photo (which named milk and chicken)
   const ack = await client.waitFor((m) => m.type === "reply", 3000);
-  assert.equal(ack.text, "Let me take a look.");
+  assert.equal(ack.text, "Ooh, nice haul.");
   assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   // ③ only checked items, after their boxes ②
