@@ -194,6 +194,12 @@ createServer(async (req, res) => {
     companion.voiceId = b.voiceId;
     return send(200, companionView());
   }
+  // M02 "Make a new companion" (PREP_API.md "Make a new companion"): the companion goes, the account stays
+  if (req.method === "POST" && p === "/v1/companion/reset") {
+    const removed = !!companion;
+    companion = null; prepStartedAt = 0;
+    return send(200, { ok: true, removed });
+  }
   if (req.method === "POST" && p === "/v1/companion") {
     if (companion) return send(409, { error: "companion_exists" });
     companion = { id: "c1", type: "human", name: b.name ?? "Mira", voiceId: b.voiceId, imageId: b.imageId, createdAt: "t" };
