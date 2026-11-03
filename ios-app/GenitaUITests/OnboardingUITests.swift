@@ -47,6 +47,22 @@ final class OnboardingUITests: XCTestCase {
         }
     }
 
+    /// V03 face scan motion over a person / an animal / a character (CI records the simulator around each).
+    func testV03MotionHuman() throws { try runV03Motion("human") }
+    func testV03MotionAnimal() throws { try runV03Motion("animal") }
+    func testV03MotionCharacter() throws { try runV03Motion("character") }
+    private func runV03Motion(_ kind: String) throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "anim-\(kind)"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V03"].waitForExistence(timeout: 10), "V03 scanning")
+        // the answer comes at 2.6 s, then 0.4 s finish + 1 s hold + 0.3 s fade before V02-T
+        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 15), "V02-T after the scan")
+        Thread.sleep(forTimeInterval: 0.8)
+        app.terminate()
+    }
+
     /// Photo polish (11/4): V02-T confirms the polished picture with "Use this image" and "Try again (2 left)", no "Use my original".
     func testV02TConfirmsThePolishedPhoto() throws {
         let app = XCUIApplication()

@@ -71,6 +71,21 @@ jobs:
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
+      - name: V03 face scan recordings (person, animal, character)
+        if: always()
+        run: |
+          mkdir -p build-output/screens
+          for kind in Human Animal Character; do
+            xcrun simctl io "${{ steps.simulator.outputs.id }}" recordVideo --codec=h264 --force "build-output/screens/onb-V03-motion-$kind.mp4" > /dev/null 2>&1 &
+            REC=$!; sleep 1
+            xcodebuild test -project ios-app/Genita.xcodeproj -scheme Genita \
+              -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+              -only-testing:GenitaUITests/OnboardingUITests/testV03Motion$kind \
+              CODE_SIGNING_ALLOWED=NO | grep -E "^Test Case .*(passed|failed)|error:|\*\* TEST" | cut -c1-240 || true
+            kill -INT $REC; wait $REC || true
+          done
+          ls -la build-output/screens/*.mp4 || true
+
       - name: Replay server log, app log, crash reports
         if: always()
         run: |
