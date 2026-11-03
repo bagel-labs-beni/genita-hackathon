@@ -168,7 +168,8 @@ import Foundation
         guard let req = JudgeAccess.request(code: code, base: auth.baseURL) else { return JudgeAccess.message(status: 401) }
         guard let (data, response) = try? await URLSession.shared.data(for: req) else { return JudgeAccess.message(status: nil) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if let message = JudgeAccess.message(status: status) { return message }
+        let wait = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
+        if let message = JudgeAccess.message(status: status, retryAfterSec: wait) { return message }
         guard let signedIn = try? JSONDecoder().decode(GenitaSignInResponse.self, from: data) else { return JudgeAccess.message(status: 500) }
         // a sign-out (or another sign-in) happened while this was on its way: don't bring this session back
         guard gen == generation else { return nil }

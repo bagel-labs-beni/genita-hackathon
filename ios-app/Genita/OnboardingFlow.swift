@@ -226,7 +226,7 @@ extension AppState {
     }
 
     static func importErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(let status, _) = error, status == 400 || status == 422 {
+        if case GenitaAuthError.server(let status, _, _) = error, status == 400 || status == 422 {
             return "I couldn’t read this one. Paste the whole reply, or try again."
         }
         return errorLine(error)
@@ -301,7 +301,7 @@ extension AppState {
                 let c = try await onboarding.createCompanion(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
-            } catch GenitaAuthError.server(409, _) {
+            } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
@@ -358,7 +358,7 @@ extension AppState {
                     setup.companionCreated = true
                 }
                 go(.depth)
-            } catch GenitaAuthError.server(400, _) {
+            } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
             } catch { nameError = Self.errorLine(error); route(error) }
         }
@@ -403,7 +403,7 @@ extension AppState {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
-            } catch GenitaAuthError.server(404, _) {
+            } catch GenitaAuthError.server(404, _, _) {
                 return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
             try? await Task.sleep(for: .seconds(seconds))
