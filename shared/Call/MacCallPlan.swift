@@ -118,10 +118,12 @@ enum ProductPicks {
     static func isLegend(_ line: String) -> Bool { line.hasPrefix("Blue:") || line.hasPrefix("Grey:") }
     /// "From your style and what you said · northline.com +1" (iPhone PF-1 and Mac "Why these" alike).
     static func sourceLine(_ card: FindCard) -> String {
-        let style = card.evidence?.style.trimmingCharacters(in: .whitespaces).isEmpty == false || (card.products ?? []).contains { !$0.taste.isEmpty }
+        // the server's evidence decides; a card without it (saved before #171) counts a style chip as style
+        let style = card.evidence.map { !$0.style.trimmingCharacters(in: .whitespaces).isEmpty } ?? (card.products ?? []).contains { !$0.taste.isEmpty }
         let from = style ? "From your style and what you said" : "From what you said"
-        var domains = picks(from: card).map(\.domain)
-        if domains.isEmpty { domains = card.sources.map(\.domain).filter { !$0.isEmpty } }
+        var domains: [String] = []
+        // sites, not products: two picks from one shop are one site (as the server counts them)
+        for d in picks(from: card).map(\.domain) + card.sources.map(\.domain) where !d.isEmpty && !domains.contains(d) { domains.append(d) }
         guard let first = domains.first else { return from }
         return from + " · " + first + (domains.count > 1 ? " +\(domains.count - 1)" : "")
     }

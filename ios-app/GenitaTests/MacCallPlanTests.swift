@@ -118,6 +118,18 @@ final class MacCallPlanTests: XCTestCase {
                                                               "From what you said · northline.example.com +1"])
     }
 
+    /// D4 source line: sites counted once; without server evidence a style chip counts as style.
+    func testSourceLineCountsSitesAndStyle() throws {
+        var c = try sampleCard()
+        c.products = c.products.map { ps in ps.map { var p = $0; p.domain = "shop.example"; p.url = "https://shop.example/\(p.id)"; return p } }
+        c.sources = []
+        XCTAssertEqual(ProductPicks.sourceLine(c), "From your style and what you said · shop.example", "one shop, no +1")
+        c.evidence = nil
+        XCTAssertTrue(ProductPicks.sourceLine(c).hasPrefix("From your style and what you said"), "a style chip, no evidence")
+        c.products = c.products.map { ps in ps.map { var p = $0; p.taste = ""; return p } }
+        XCTAssertTrue(ProductPicks.sourceLine(c).hasPrefix("From what you said"))
+    }
+
     /// D4: the colour legend never shows; the marks on the chips say where each came from.
     func testNoColourLegend() throws {
         var c = try sampleCard()
