@@ -50,17 +50,20 @@ struct CompanionFaceView: View {
     /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
     var poster: CGImage? = nil
     var lip: LipSource = .none
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         ZStack {
             if let still { still.resizable().scaledToFill() } else { CallInk.ink }
             if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
             if let face {
-                FaceFrameView(driver: face, still: faceStill)
+                // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
+                FaceFrameView(driver: face, still: faceStill).transition(.opacity)
             } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
                 LoopingVideo(url: loop).allowsHitTesting(false)
             }
             LipLayer(source: lip).allowsHitTesting(false)
         }
+        .animation(reduceMotion || CallMotion.reviewStill ? nil : CompanionFace.revealCurve, value: face.map(ObjectIdentifier.init))
         .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
     }
     /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.

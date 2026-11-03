@@ -198,6 +198,10 @@ enum CallStop: Equatable {
     @ObservationIgnored private var faceLoad: Task<Void, Never>?
     /// a face set download is in flight (from prepareFace or showFace)
     @ObservationIgnored private var faceLoading = false
+    /// which load `faceLoading` belongs to (AU-25 × #524)
+    @ObservationIgnored private var faceLoadGeneration = 0
+    /// the account the load in flight is for
+    @ObservationIgnored private var faceLoadOwner: String?
     /// The account the face set belongs to (JWT `sub`); another account never sees it.
     @ObservationIgnored private var faceOwner: String?
     /// Utterance ids restart with each session; the face sees `faceIdBase + id` so they only grow.
@@ -1012,7 +1016,7 @@ enum CallStop: Equatable {
     func prepareFace(reduceMotion: Bool) {
         guard !CompanionFace.clipLoopFace, !faceOnScreen else { return }
         faceReduceMotion = reduceMotion
-        faceLoad?.cancel()
+        cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
@@ -1100,16 +1104,26 @@ enum CallStop: Equatable {
         guard !CompanionFace.clipLoopFace else { return }
         // a load started while connecting (prepareFace) keeps going: restarting it was what left the upload photo
         // on screen for the first ~4 s of the call (build 6 device)
-        if faceLoading { return }
-        faceLoad?.cancel()
+        // … unless it's for the account before (a sign-in meanwhile): that one never lands here
+        if faceLoading, faceLoadOwner == Self.tokenSubject(currentEndpoint.token) { return }
+        cancelFaceLoad()
         faceLoad = Task { [weak self] in await self?.loadFace() }
     }
 
     /// The call screen went away: no more frames.
     func hideFace() {
         faceOnScreen = false
-        faceLoad?.cancel()
+        cancelFaceLoad()
         face?.stop()
+    }
+
+    /// Stops the load in flight and says so at once: a hide → show right after must start a new load, not wait for a
+    /// cancelled one (AU-25 × #524 `faceLoading`).
+    private func cancelFaceLoad() {
+        faceLoad?.cancel()
+        faceLoad = nil
+        faceLoading = false
+        faceLoadGeneration += 1
     }
 
     func setFaceReduceMotion(_ on: Bool) {
@@ -1124,9 +1138,39 @@ enum CallStop: Equatable {
         renderFacePoster(set, size: CompanionFace.outputSize(for: set), seed: faceSeed, reduceMotion: faceReduceMotion, for: face)
     }
 
+    /// AU-25 · S09-P (D28): a call that starts before the face set is made checks again this often while the call
+    /// screen is up, so the mouth starts moving in that same call once prep finishes (or the network comes back).
+    @ObservationIgnored var faceRetryInterval: Duration = .seconds(5)
+    #if DEBUG
+    /// Tests: the face set loader (stub server, temp cache) instead of the live one.
+    @ObservationIgnored var faceLoaderOverride: ((CallEndpoint) -> CompanionFaceLoader)?
+    #endif
+
+    /// Loads the face set; while it isn't made yet (or the request failed) and the call screen is up, tries again
+    /// every `faceRetryInterval` until it loads. `hideFace` (and a newer load) cancels the wait.
     private func loadFace() async {
+        // #524: a load in flight makes showFace wait for it instead of restarting it. Only the newest load may say
+        // it's over (a cancelled one finishing late must not clear a newer one's flag); cancels clear it at once.
+        faceLoadGeneration += 1
+        let generation = faceLoadGeneration
         faceLoading = true
-        defer { faceLoading = false }
+        faceLoadOwner = Self.tokenSubject(currentEndpoint.token)
+        defer { if faceLoadGeneration == generation { faceLoading = false } }
+        while await loadFaceOnce() {
+            try? await Task.sleep(for: faceRetryInterval)
+            guard !Task.isCancelled, faceOnScreen, face == nil else { return }
+        }
+    }
+
+    private func makeFaceLoader() -> CompanionFaceLoader {
+        #if DEBUG
+        if let faceLoaderOverride { return faceLoaderOverride(currentEndpoint) }
+        #endif
+        return CompanionFaceLoader(endpoint: currentEndpoint)
+    }
+
+    /// One load. True = no face yet but one may still come (prep still running, or offline): try again.
+    private func loadFaceOnce() async -> Bool {
         let owner = Self.tokenSubject(currentEndpoint.token)
         do {
             let outcome: CompanionFaceLoader.Outcome
@@ -1136,22 +1180,28 @@ enum CallStop: Equatable {
                 let key = "dir:" + dir
                 outcome = key == faceKey ? .unchanged : .loaded(key: key, set: try await Task.detached { try FaceSet(directory: URL(fileURLWithPath: dir)) }.value)
             } else {
-                outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+                outcome = try await makeFaceLoader().load(currentKey: faceKey)
             }
             #else
-            outcome = try await CompanionFaceLoader(endpoint: currentEndpoint).load(currentKey: faceKey)
+            outcome = try await makeFaceLoader().load(currentKey: faceKey)
             #endif
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return false }
             switch outcome {
-            case .unchanged: break
-            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+            case .unchanged: return false
+            case .none: if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }; return false
+            case .pending:
+                if face != nil { useFace(nil, key: nil, reduceMotion: faceReduceMotion) }
+                return faceOnScreen
             case let .loaded(key, set):
                 log.info("face set \(key, privacy: .public): \(set.patches.count) mouth shapes; \(set.notes.joined(separator: "; "), privacy: .public)")
                 useFace(set, key: key, owner: owner, reduceMotion: faceReduceMotion)
+                return false
             }
         } catch {
-            // Offline or the server said no: keep what is on screen (the still, or the face from before).
+            // Offline or the server said no: keep what is on screen (the still, or the face from before); with no
+            // face yet, try again while the call screen is up.
             log.error("face set: \(String(describing: error), privacy: .public)")
+            return !Task.isCancelled && faceOnScreen && face == nil
         }
     }
 

@@ -42,7 +42,7 @@ struct MacConversationView: View {
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
-                if let face = call.face {
+                ZStack(alignment: .topLeading) { if let face = call.face {
                     // same presence: the face set's own rest frame sits under the live face, so the first frame after
                     // arriving from the iPhone is already this face in this crop (never the prep still, then a jump)
                     ZStack {
@@ -50,7 +50,9 @@ struct MacConversationView: View {
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                         .allowsHitTesting(false)
-                }
+                        // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
+                        .transition(.opacity)
+                } }.animation(reduceMotion ? nil : CompanionFace.revealCurve, value: call.face.map(ObjectIdentifier.init))
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
