@@ -49,14 +49,14 @@ const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?:
 /** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
 // the subject may be dropped after a dash: "I'll pick a favorite — pulling up what I remember" (bug-fix 1c63d32 outfit 1/6)
 // what a lookup is about — memory, a route, options — never a plain noun ("Choosing your own clothes builds confidence", Codex r23)
-const LOOKUP_OBJ = "(?:what (?:i|you)\\b|from what (?:i|you)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
-const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up|picking|choosing|sizing up)\\b(?=.*${LOOKUP_OBJ})${TAIL}$`);
+const LOOKUP_OBJ = "(?:what (?:i|you)\\b|on what you\\b|from what (?:i|you)\\b|something (?:good|tasty|fun|nice|new)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
+const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up|picking|choosing|sizing up|thinking back|cooking up|whipping up|putting together)\\b(?=.*${LOOKUP_OBJ})${TAIL}$`);
 /** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
  * A bare "Let me think" stays (it is how people start an answer). */
 const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
 /** a plan to choose, not the choice: "I'll pick between the two" (bug-fix lane, fcece2f outfit 1/6) */
 // …and "I'll pick one for you" / "a favorite" / "the winner": a choice promised with nothing chosen (bug-fix 5784953, 3/6)
-const NO_CHOICE = "(?:one|a favorite|a favourite|the winner|a winner|something|for you|the one (?:that|which|you))";
+const NO_CHOICE = "(?:one|a favorite|a favourite|the winner|a winner|something|for you|the one (?:that|which) (?:fits|works|suits|goes)(?: [\\w']+){0,3} best|the one you(?:'ll| will)? (?:like|love) (?:most|best))";
 const CHOOSE_PLAN = new RegExp(`^(?:(?:got it|okay|ok|alright)\\b[^a-z]*)?(?:[^—–;]*[—–;,]\\s*)?(?:let me|i'll|i will|i need to|i'm gonna|i'm going to) (?:pick|choose|decide)(?: (?:between|which)\\b| ${NO_CHOICE}\\b)${TAIL}$|^(?:still |just )?(?:deciding|choosing|picking|torn) between\\b${TAIL}$`);
 /** a wait that promises a lookup, tool or no tool: "give me a sec to remember your vibe", "one sec while I check" */
 const WAIT_TO = new RegExp(`^(?:${WAIT})(?: (?:to|while i|so i can|and i'll|let me))? (?:remember|recall|think|check|look|pull|find|map|dig|figure|search|go through)\\b${TAIL}$`);
@@ -75,11 +75,15 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
+  // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
+  if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
   if (META.test(s)) return metaIsUser && !META_GUARD.test(s);
   if (WAIT_TO.test(s)) return true;
   // "Outfit vote incoming." / "Your pick, coming right up." — a short promise of what's next (bug-fix a6df112)
   if (s.split(" ").length <= 6 && !/\b(?:is|are|was|were)\b/.test(s) && /\b(?:incoming|coming (?:right )?up)$/.test(s)) return true;
+  // "Your dinner idea is coming" — our own answer promised, not a status (bug-fix 95acde0 smoke)
+  if (/^your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way)$/.test(s)) return true;
   // a plan to choose — unless the choice is in the same clause ("I'll pick one for you and it's the trench", "I'll pick one: the trench", Codex r17)
   if (CHOOSE_PLAN.test(s) && !/[:]|\b(?:it'?s|is|are|was|and (?:it|that|this)|the winner is)\b/.test(s)) return true;
   // "…for that but tofu works": a turn in the clause keeps it
@@ -88,6 +92,8 @@ function isNarrationClause(clause: string): boolean {
   const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "").replace(/\band (?:that|the|your|this|those|these|my)\s+(?!(?:is|are|was|one)\b)(?![a-z' -]*\b\w+s$)[a-z' -]{1,40}$/, "");
   // a clause that already states its result ("Checking your calendar shows dinner is on Thursday", Codex r20) is the answer
   if (/\b(?:shows|says|is|are|was|were|confirms|suggests|has|it'?s|that'?s|takes|costs)\b|\d/.test(s)) return false;
+  // a finished lookup stated in the past ("Checking the route confirmed the last train already left", Codex #371 r2)
+  if (/\b(?:\w{3,}ed|found|left|came|went)\b/.test(s.replace(/\bwhat (?:i|you|we)(?:'ve)? (?:remember|know|told|said|shared|mentioned|liked|got)\b/g, " ").replace(/\b(?:need|needed|based|used)\b/g, " "))) return false;
   // a gerund subject with its own verb ("Scanning your boarding pass opens the gate", Codex r22): a verb in -s followed
   // by an object word is a statement, not a lookup in progress
   if (/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|it|you|up|out|in|on|off|into)\b/.test(s.replace(/\b(?:what (?:i|you) (?:remember|know|told|said)|your (?:notes|options|favorites|faves|details|plans|messages))\b/g, " "))) return false;
@@ -97,13 +103,14 @@ function isNarrationClause(clause: string): boolean {
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
+  if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);
   if (clauses.length <= 1) return isNarrationClause(s);
   // every clause announces, waits or narrates the user; any real clause keeps the sentence
   const narrates = (c: string) => isNarrationClause(c) || (TRYING.test(c) && clauses.some((w) => WAIT_ONLY.test(w)));
   // an acknowledgement clause ("got it — …") rides along with the announcement
-  const ACK_ONLY = /^(?:got it|okay|ok|alright|all right|sure|yep|yeah|mm+|hm+)$/;
+  const ACK_ONLY = /^(?:got it|you got it|okay|ok|alright|all right|sure|yep|yeah|mm+|hm+|on it)$/;
   return clauses.every((c) => narrates(c) || WAIT_ONLY.test(c) || ACK_ONLY.test(c)) && clauses.some(narrates);
 }
 
@@ -127,6 +134,26 @@ export function stripNarrationClauses(raw: string): string {
   // the reply's <emotion> stays; face/delivery tags in front belong to the first clause and go with it
   const head = keep[0] ? lead : (lead.match(/<[^<>\n]{1,24}>/g) ?? []).join(" ") + (lead.trim() ? " " : "");
   return head + text.charAt(0).toUpperCase() + text.slice(1) + end;
+}
+
+/**
+ * main 11/3 (smoke 95acde0 2/10): an acknowledgement, a dash or comma, then a subject-less "-ing" clause about our own
+ * process — "Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared…".
+ * Same family as "I'm …ing": the process clause is dropped; the acknowledgement stays only if real content follows
+ * (the judge drops a "process" line at EOF too, so a reply that is only this says nothing and retries).
+ */
+const PROCESS_ACK = /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
+const PROCESS_ING = /^(?:just )?(?:picking (?:something|one)\b|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|between)\b|scrolling|loading|grabbing (?:something|a few))\b/;
+const OPINION_ING = /^(?:loving|seeing|feeling|liking|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening)\b/;
+export function isProcessLine(sentence: string): boolean {
+  const s = normalize(sentence);
+  const clauses = s.split(/\s*(?:—|–|;| - |,)\s*/).map((c) => c.trim()).filter(Boolean);
+  if (clauses.length < 2) return false;
+  const [head, ...rest] = clauses;
+  // only a lookup / plan in progress, never a choice or a result ("You got it — wearing the trench tonight",
+  // "… taking the bus saves you twenty minutes", Codex #371)
+  return PROCESS_ACK.test(head) && rest.length === 1 && PROCESS_ING.test(rest[0]) && !OPINION_ING.test(rest[0])
+    && !/\b(?:shows|says|is|are|it'?s|that'?s|takes)\b|\d/.test(rest[0]) && !/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|you|it|up|out)\b/.test(rest[0]);
 }
 
 /** Hold a wait or interjection until the following clause can be judged. */
@@ -172,7 +199,7 @@ const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|th
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
-const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you|the one (?:that|which|you))|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
+const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you|the one (?:that|which) (?:fits|works|suits|goes)(?: [\w']+){0,3} best|the one you(?:'ll| will)? (?:like|love) (?:most|best))|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
 /** the line already states what was chosen ("… and it's the trench", "the winner is…"): an answer, never held (Codex r18) */
 const CARRIES_CHOICE = /\b(?:and|so) (?:it'?s|that'?s|the winner is|i'?m going with)\b|\bthe winner is\b|:\s*(?:the|that|this)\b/;
 /** "let me walk you through it / tell you / explain" leads into content, never a tool (#194 S1 cut-off test) */
@@ -182,7 +209,7 @@ const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.
 const DASH_END = /[—–]\s*$/;
 
 export class NarrationJudge {
-  private pending: { raw: string; kind: "lead" | "announcement" | "filler" | "clause" | "suspect" }[] = [];
+  private pending: { raw: string; kind: "lead" | "announcement" | "process" | "ack" | "filler" | "clause" | "suspect" }[] = [];
   /** held lines that a tool call followed: dropped when the answer comes, spoken at EOF if none does */
   private preTool: string[] = [];
   private usedTool = false;
@@ -201,9 +228,16 @@ export class NarrationJudge {
     const merged = raw;
     raw = stripNarrationClauses(raw);
     const text = parseTaggedSentence(raw).displayText;
+    // what's left after a stripped process clause is only an acknowledgement ("You got it."): it is said only if real
+    // content follows, never on its own (main 11/3)
+    if (raw !== merged && /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah)[.!]*$/i.test(text.trim())) {
+      this.pending.push({ raw, kind: "ack" });
+      return this.result();
+    }
     // once merged/stripped, judge what is left ("Go with the black one — I'll check my memory." keeps the pick, r11)
     if ((raw === merged && announcement) || isToolNarration(text)) {
-      this.pending.push({ raw, kind: "announcement" });
+      // a narrated own process ("You got it — thinking back on what you shared…") is never the answer, tool or no tool
+      this.pending.push({ raw, kind: isProcessLine(text) ? "process" : "announcement" });
     } else if (isToolNarrationLead(text)) {
       this.pending.push({ raw, kind: "lead" });
     } else if (!this.usedTool && DASH_END.test(text)) {
@@ -239,7 +273,7 @@ export class NarrationJudge {
     // no answer came after the tool: the held line is the answer after all (never leave the turn empty)
     const preamble = this.preTool;
     this.preTool = [];
-    const { speak, dropped } = this.flush(this.usedTool);
+    const { speak, dropped } = this.flush(this.usedTool, true);
     return this.result([...preamble, ...speak], dropped);
   }
 
@@ -248,10 +282,10 @@ export class NarrationJudge {
     return sentences.some((text) => !!text.trim() && (!this.usedTool || !isFillerOnly(text)));
   }
 
-  private flush(dropAnnouncements: boolean): NarrationDecision {
+  private flush(dropAnnouncements: boolean, atEnd = false): NarrationDecision {
     const speak: string[] = [], dropped: string[] = [];
     for (const { raw, kind } of this.pending) {
-      (dropAnnouncements && kind === "announcement" ? dropped : speak).push(raw);
+      ((dropAnnouncements && kind === "announcement") || kind === "process" || (atEnd && kind === "ack") ? dropped : speak).push(raw);
     }
     this.pending = [];
     return this.result(speak, dropped);

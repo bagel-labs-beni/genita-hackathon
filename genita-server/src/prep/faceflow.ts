@@ -79,6 +79,8 @@ export type FaceflowInput = {
   timeoutMs?: number;
   /** nose box on the scene (SAM), normalised; null = the script estimates the subnasale line from the face box */
   nose?: () => Promise<readonly [number, number, number, number] | null>;
+  /** animal species from the image check (faceflow bird / small-muzzle / long-snout rules) */
+  species?: string;
   /** character2d: eye boxes on the scene (SAM) for the clean-plate blink, normalised */
   eyes?: () => Promise<Array<readonly [number, number, number, number]>>;
   signal?: AbortSignal;
@@ -133,6 +135,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     args[3] = keys.map((f) => `${f.split(".")[0]}=${join(dir, f)}`).join(",");
     const nose = o.nose ? await o.nose().catch(() => null) : null;
     if (nose) args.push("--nose", fmt(nose));
+    if (o.species) args.push("--species", o.species);
     // 2D: the blink is a clean plate over the open eyes + the key's closed-eye lines (no flow)
     if (o.profile === "character2d" && o.state.items.blink?.status === "done" && o.eyes) {
       const eyes = await o.eyes().catch(() => []);

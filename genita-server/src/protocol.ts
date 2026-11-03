@@ -89,6 +89,8 @@ export type ClientMessage =
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
+  /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
+  | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
   | { type: "mode"; mode: Mode; interpret?: InterpretOptionsWire }
@@ -193,6 +195,8 @@ export type ServerEvent =
       bargeIn: { minMs: number; minWords: number };
       /** the voice mode actually used for this call */
       tts: TtsMode;
+      /** PERC-1: present (true) only when the server reads face crops; the app sends `perception.frame` then */
+      perception?: boolean;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -284,7 +288,7 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: ["perception"] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
@@ -348,7 +352,10 @@ export function checkServerEvent(o: Record<string, unknown>): string[] {
 // s16le mono 24 kHz (the shared screen's sound, never the mic).
 
 export type WatchClientMessage =
-  | { type: "start"; source?: string }
+  /** title (11/3): the shared window's title, e.g. a browser tab "<YouTube video title> - YouTube" (ScreenCaptureKit window title) */
+  | { type: "start"; source?: string; title?: string }
+  /** context (11/3): the shared window's title changed (another video or page); sent only on change */
+  | { type: "context"; title?: string }
   /** motion: 0..1 change from the previous sent frame (Mac, 32×18 luma); a spike = a cut or a big move (11/3) */
   | { type: "frame"; image: string; blank?: boolean; motion?: number }
   | { type: "stop" }

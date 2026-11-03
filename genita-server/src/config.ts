@@ -28,6 +28,8 @@ export type Config = {
   sessionToken: string | null;
   defaultVoiceId: string;
   webSearch: boolean;
+  /** PERC-1 (#319): camera perception (Spark face reads → triggers for the conversation engine). GENITA_PERCEPTION=1; default off. */
+  perception?: boolean;
   asrLanguages: string[];
   bargeInMinMs: number;
   bargeInMinWords: number;
@@ -124,6 +126,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sessionToken: env.GENITA_SESSION_TOKEN || null,
     defaultVoiceId: env.GENITA_DEFAULT_VOICE_ID ?? "seamless:0",
     webSearch: env.GENITA_WEB_SEARCH !== "0",
+    perception: env.GENITA_PERCEPTION === "1",
     asrLanguages: (env.GENITA_ASR_LANGUAGES ?? "English,Korean").split(",").map((s) => s.trim()).filter(Boolean),
     bargeInMinMs: num(env.GENITA_BARGE_IN_MIN_MS, 400),
     bargeInMinWords: num(env.GENITA_BARGE_IN_MIN_WORDS, 2),

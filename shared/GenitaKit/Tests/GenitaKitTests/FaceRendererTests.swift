@@ -372,20 +372,39 @@ struct MouthQualityTests {
         #expect(a.head != b.head)
     }
 
-    @Test func speechOnsetsNodTheHead() {
+    /// 11/3 pm (Chelsea: "the background is locked but the person bobs up and down"): by default the
+    /// person layer never moves vertically — no speech nod, no vertical drift, no breathing.
+    @Test func thePersonNeverBobsVerticallyByDefault() {
         let size = CGSize(width: 540, height: 960)
-        let quiet = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
         let talk = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
-        let mouth = FaceRenderer.ciRect(animalSet.mouthBox, height: animalSet.pixelSize.height)
-        let p0 = CGPoint(x: mouth.midX, y: mouth.midY)
+        let face = faceCI(animalSet)
+        let eyes = CGPoint(x: face.midX, y: face.maxY - face.height * 0.3)   // on the roll axis: any vertical move is a bob
+        let k = size.width / animalSet.pixelSize.width
+        var lo = CGFloat.infinity, hi = -CGFloat.infinity
+        for i in 0..<250 {
+            let t = Double(i) / 25
+            let open = (i % 12) < 4 ? 0.9 : 0.05      // a syllable every ~0.5 s
+            let m = talk.motionTransforms(at: t, open: open)
+            let y = eyes.applying(m.head.concatenating(m.camera)).y * k
+            lo = min(lo, y); hi = max(hi, y)
+        }
+        print(String(format: "vertical: eyes p2p %.2f px", hi - lo))
+        #expect(hi - lo < 0.5)     // was ~16 px on T9 with nod + drift + breathing
+    }
+
+    @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
+        var quiet = AliveMotion(seed: 3), talk = AliveMotion(seed: 3)
+        quiet.lockVertical = false; talk.lockVertical = false
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let p0 = CGPoint(x: face.midX, y: face.midY)
         var maxDiff: CGFloat = 0
         for i in 0..<100 {
             let t = Double(i) / 25
-            let open = (i % 12) < 4 ? 0.9 : 0.05      // a syllable every ~0.5 s
-            let q = quiet.motionTransforms(at: t, open: 0).head, s = talk.motionTransforms(at: t, open: open).head
-            maxDiff = max(maxDiff, abs(p0.applying(q).y - p0.applying(s).y) * size.width / animalSet.pixelSize.width)
+            let open = (i % 12) < 4 ? 0.9 : 0.05
+            let q = quiet.transforms(at: t, open: 0, face: face, extent: extent, outputWidth: 540).head
+            let s = talk.transforms(at: t, open: open, face: face, extent: extent, outputWidth: 540).head
+            maxDiff = max(maxDiff, abs(p0.applying(q).y - p0.applying(s).y) * 540 / animalSet.pixelSize.width)
         }
-        print(String(format: "nod: max %.2f px", maxDiff))
         #expect(maxDiff > 1)
         #expect(maxDiff < 4)
     }

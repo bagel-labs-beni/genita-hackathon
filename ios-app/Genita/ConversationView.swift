@@ -10,6 +10,15 @@ struct ConversationView: View {
     private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
+    #if DEBUG
+    /// #291 probe for UI tests: how many times ✕ Stop interpreting ran its action (the tap reached the button)
+    @State private var debugStopTaps = 0
+    /// same probe for ⋮ More (CallScreenUITests: the sheet did not open after a reconnect)
+    @State private var debugMoreTaps = 0
+    /// taps the face took (call.interrupt) and how often the rail was swapped for the handoff waiting sheet
+    @State private var debugFaceTaps = 0
+    @State private var debugWaitingSeen = 0
+    #endif
     @State private var cameraGuide = false
     @State private var findsTabOpen = false
     @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
@@ -70,7 +79,7 @@ struct ConversationView: View {
                         if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
-                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
                                     .frame(width: full.size.width, height: full.size.height)
                                     .transition(.opacity)
                             }
@@ -84,7 +93,7 @@ struct ConversationView: View {
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
+                        Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
@@ -122,6 +131,12 @@ struct ConversationView: View {
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
+                        }
+                        // CC-1 wins over GK-1 (a "Noted: …" answers the question)
+                        if !connecting, let chip = call.profileChip ?? call.askingChip {
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
+                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : (model.callPrepIndicator != nil && !interpreting ? 232 : 184)) + top)
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
                         if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
@@ -181,6 +196,14 @@ struct ConversationView: View {
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
+        #if DEBUG
+        // #291 probe (DEBUG builds only, never in TestFlight): taps that reached ✕ and the call's mode right now
+        .overlay(alignment: .bottomLeading) {
+            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link)) face:\(debugFaceTaps) waiting:\(debugWaitingSeen) surface:\(String(describing: handoff.surface))").font(.system(size: 2)).opacity(0.02)
+                .allowsHitTesting(false).accessibilityIdentifier("debugInterpretProbe")
+                .onChange(of: waitingCopy != nil) { _, on in if on { debugWaitingSeen += 1 } }
+        }
+        #endif
         // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
         .onAppear { if !connecting { showFace() } }
         .onDisappear { if !connecting { call.hideFace() } }
@@ -201,6 +224,7 @@ struct ConversationView: View {
                 model.setup.firstCallPending = false
                 #if DEBUG
                 call.installFindsFixture()
+                call.installProfileChipFixture()
                 installFindsTabFixture()
                 #endif
             }
@@ -229,6 +253,16 @@ struct ConversationView: View {
         let line = "Connecting to \(model.companionDisplayName)…"
         return max(label.w, ceil((line as NSString).size(withAttributes: [.font: label.font]).width) + 2)
     }
+    private func debugNoteMore() {
+        #if DEBUG
+        debugMoreTaps += 1
+        #endif
+    }
+    private func debugNoteStop() {
+        #if DEBUG
+        debugStopTaps += 1
+        #endif
+    }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
 
     /// CAM-1: the first time the camera is asked for, say what it does before the system prompt. Turning it off needs no guide.
@@ -238,6 +272,9 @@ struct ConversationView: View {
 
     /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
     private func faceTapped() {
+        #if DEBUG
+        debugFaceTaps += 1
+        #endif
         if withAnimation(.drawer, { call.finds.faceTapped() }) { return }
         call.interrupt()
     }
@@ -290,11 +327,14 @@ struct ConversationView: View {
     #if DEBUG
     /// Screenshots of the Finds tab without a server: GENITA_FINDS_TAB = list | empty | detail (recorded cards).
     func installFindsTabFixture() {
-        guard let mode = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"] else { return }
+        let configured = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"]
+        // Appetize preview: Finds always reads the recorded cards (the demo has no account), the tab opens by itself only when asked
+        guard let mode = configured ?? (BrowserPreview.isActive ? "list" : nil) else { return }
         let recorded = FixtureFindsAPI.recorded()
         findsList.api = FixtureFindsAPI(cards: mode == "empty" ? [] : recorded.cards)
         findsList.frames = { recorded.frames[$0] ?? [] }
         findsList.purge = { _ in }
+        guard configured != nil else { return }
         Task { @MainActor in
             for _ in 0..<80 where call.link != .live { try? await Task.sleep(for: .milliseconds(100)) }
             try? await Task.sleep(for: .milliseconds(300))

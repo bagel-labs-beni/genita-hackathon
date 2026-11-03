@@ -724,3 +724,124 @@ test("bug-fix a27831b outfit 1/9: 'I'll pick the one that fits tonight best' is 
   assert.doesNotMatch(out, /I'll pick the one/);
   assert.match(out, /Go with the trench\./);
 });
+
+test("Codex r24: 'I'm picking the trench for you.' is the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'm picking the trench for you.").speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak].join(" ");
+  assert.match(out, /picking the trench/);
+});
+
+test("bug-fix 95acde0 smoke 2/10: 'Your dinner idea is coming — picking something good.' and 'You got it — thinking back on what you shared…' are never voiced", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(first).speak, ...j.push("Try kimchi carbonara.").speak, ...j.finish().speak].join(" ");
+    assert.match(out, /^(?:You got it\. )?Try kimchi carbonara\.$/, first);
+  }
+});
+
+test("hard fail (main 11/3, smoke 95acde0): ack + dash + subject-less process '-ing' — dropped; the ack stays only with real content after", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const withContent = new NarrationJudge(true);
+    const a = [...withContent.push(first).speak, ...withContent.push("Try kimchi carbonara.").speak, ...withContent.finish().speak].join(" ");
+    assert.doesNotMatch(a, /picking something|thinking back/i, first);
+    assert.match(a, /Try kimchi carbonara\./);
+    const alone = new NarrationJudge(true);
+    assert.deepEqual([...alone.push(first).speak, ...alone.finish().speak], [], `${first} alone: nothing spoken (the turn retries)`);
+  }
+  // an ack + a real -ing answer stays
+  const j = new NarrationJudge(true);
+  assert.ok([...j.push("Got it — taking the 2 line is fastest.").speak, ...j.finish().speak].join(" ").includes("2 line"));
+});
+
+test("Codex #371: an ack + a real choice or result stays; a pick named by its features stays", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — taking the bus saves you twenty minutes.", "Get off at City Hall."]), /saves you twenty minutes/);
+  assert.match(run(["You got it — wearing the trench tonight."]), /wearing the trench/);
+  assert.match(run(["I'll pick the one that has the red buttons.", "It matches your understated style."]), /red buttons/);
+  assert.doesNotMatch(run(["I'll pick the one that fits tonight best.", "Go with the trench."]), /I'll pick the one/);
+});
+
+test("Codex #371 r2: a concrete pick after an ack and a past-tense lookup result stay", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — picking a black blazer over the denim jacket.", "It matches your understated style."]), /black blazer/);
+  assert.match(run(["Checking the route confirmed the last train already left.", "Take a taxi instead."]), /last train already left/);
+  assert.doesNotMatch(run(["You got it — thinking back on what you shared about your sister.", "Try asking her."]), /thinking back/);
+});
+test("hard fail (demo lane 11/3): a line about being interrupted is never said", { skip: !v1 }, async () => {
+  for (const line of ["You cut me off twice, so one line from now on.", "Okay, you keep cutting me off.", "You talked over me there.", "I'll keep it short from now on.", "Since you interrupted me, quick version."]) {
+    assert.equal(guardSentence(line, none), "interruption", line);
+  }
+  assert.equal(guardSentence("You can cut me off and call 911 right now.", { camera: false, userText: "I'm scared for my life, sorry I cut you off." }), null);
+  for (const keep of ["Cut the onions first.", "Short and sweet: go black.", "You interrupted the movie?", "Did your boss interrupt the meeting again?"]) assert.equal(guardSentence(keep, none), null, keep);
+  const { client, session } = setup(["<happy> You cut me off twice, so one line from now on. Go with the trench."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "which one" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Go with the trench.");
+  session.close();
+});
+
+test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent past ~1.5 s — one short beat, then the answer", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("hb", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<curious> I'll check what you told me about your sister. " };
+      yield { type: "tool", name: "recall", status: "in_progress" };
+      await new Promise((r) => setTimeout(r, 1900));
+      yield { type: "tool", name: "recall", status: "completed" };
+      yield { type: "text", delta: "<warm> You said she just moved to Busan." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 5000);
+  assert.match(String(reply.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.) You said she just moved to Busan\.$/);
+  assert.doesNotMatch(String(reply.text), /I'll check/);
+  session.close();
+});
+
+// 11/3 tone pass: the name as a vocative in reply after reply sounds scripted when spoken
+test("dropRepeatedName: a vocative name already said in the last replies is dropped; first use, seasons and bare names stay", async () => {
+  const { dropRepeatedName: d } = await import("../src/prompt/persona.ts");
+  const prev = ["<happy> Nice one, Summer."];
+  assert.equal(d("Summer, you crushed it.", "Summer", prev), "You crushed it.");
+  assert.equal(d("Ugh, that sucks, Summer.", "Summer", prev), "Ugh, that sucks.");
+  assert.equal(d("Hey Summer, back already?", "Summer", prev), "Hey, back already?");
+  assert.equal(d("[smile] Summer, no way!", "Summer", prev), "[smile] No way!");
+  assert.equal(d("Chill it first, Summer, then cut fast.", "Summer", prev), "Chill it first, then cut fast.");
+  assert.equal(d("Summer,", "Summer", prev), "", "the eager first clause alone: skipped by the caller");
+  assert.equal(d("Summer!", "Summer", prev), "Summer!");
+  assert.equal(d("Let's go this Summer, okay?", "Summer", prev), "Let's go this Summer, okay?");
+  assert.equal(d("Summer, you crushed it.", "Summer", ["<happy> Nice one."]), "Summer, you crushed it.", "not said lately: kept");
+  assert.equal(d("Summer, you crushed it.", undefined, prev), "Summer, you crushed it.");
+});
+
+test("session v1: the second reply in a row drops the vocative name (the first keeps it)", { skip: !v1 }, async () => {
+  const { client, session, logs } = setup(["<happy> No way, Summer. That's huge.", "<excited> Summer, you earned it. Ramen's on me."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I got the job" }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  assert.equal(first.text, "No way, Summer. That's huge.");
+  await session.onClientText(JSON.stringify({ type: "text", text: "I start in two weeks" }));
+  const second = await client.waitFor((m) => m.type === "reply" && m !== first);
+  assert.equal(second.text, "You earned it. Ramen's on me.");
+  assert.ok(logs.some(([e]) => e === "convo.name_dropped"));
+  session.close();
+});
+
+test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotion tags lead like face tags", async () => {
+  const { dropRepeatedName: d } = await import("../src/prompt/persona.ts");
+  assert.equal(d("Oh Summer Walker is amazing.", "Summer", ["Hi Summer."]), "Oh Summer Walker is amazing.");
+  assert.equal(d("May, June and July are the best months.", "May", ["Hey May."]), "May, June and July are the best months.");
+  assert.equal(d("Pick January, May, June or July.", "May", ["Hey May."]), "Pick January, May, June or July.");
+  assert.equal(d("<excited> Summer, you earned it.", "Summer", ["Nice one, Summer."]), "<excited> You earned it.");
+  assert.equal(d("<excited> [smile] Summer,", "Summer", ["Nice one, Summer."]), "");
+});

@@ -10,7 +10,7 @@ import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
-import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
@@ -43,7 +43,9 @@ import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
+import { PerceptionController } from "../perception/controller.ts";
 import { detectRename } from "./rename.ts";
 import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
@@ -52,7 +54,7 @@ import { mightBeCorrection } from "../personalize/corrections.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { convoV1, initiativeOn } from "../convo/flags.ts";
+import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -105,6 +107,8 @@ export type SessionDeps = {
   priorTurns?: (revision: number) => HistoryItem[] | null;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
+  /** Server handoff ordering: actual history writes, never socket open/close or a copied seed. */
+  onHistoryChange?: (role: HistoryItem["role"]) => void;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -113,8 +117,12 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** Demo S4: iPhone calls only — the account's Mac app is open, so an outfit ask can move to the Mac's camera */
+  macNearby?: () => boolean;
   /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
   personalize?: SessionPersonalize;
+  /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
+  continuesCall?: () => boolean;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -122,9 +130,14 @@ export type SessionDeps = {
   companionVoiceId?: () => Promise<string | null | undefined>;
 };
 
+/** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
+export const PRODUCT_REACTION_LINE =
+  "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
 export type SessionPersonalize = {
-  startCall(userId: string): Promise<CallStart | null>;
+  startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
+  /** watch together attached before the question: not a new conversation after all (give the count back) */
+  unplanCall?(userId: string, item: string | null): Promise<void>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
@@ -139,6 +152,10 @@ const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
+
+/** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+export const SUGGEST_MAC_LINE =
+  "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
 
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
@@ -165,7 +182,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -216,6 +233,9 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
+const HOLD_BEAT_MS = 1500;
+const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -286,6 +306,8 @@ export class Session {
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
+  /** Demo S4: the move-to-Mac suggestion was made in this call */
+  private macSuggested = false;
   private asr: AsrLike | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
@@ -316,6 +338,10 @@ export class Session {
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private callStartedAt: string | null = null;
+  /** this call was counted as a new call by personalize (not a handoff) */
+  private callPlanned = false;
+  /** the question watch together took back: a reply built before still asking it has that sentence dropped */
+  private askDropped: UnknownItem | null = null;
   /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
   private timeZone: string | undefined;
   private nod: string | null = null;
@@ -327,6 +353,11 @@ export class Session {
   private correctionChecks = 0;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
+  /** PERC-1 (#319): sets `perception` (declared above) when GENITA_PERCEPTION is on */
+  private perceptionCtl: PerceptionController | null = null;
+  /** for perception timing: when the companion's last reply ended / the user last stopped speaking */
+  private lastReplyEndAt: number | null = null;
+  private lastUserSpeechAt: number | null = null;
 
   constructor(id: string, client: ClientSink, deps: SessionDeps) {
     this.id = id;
@@ -337,6 +368,22 @@ export class Session {
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
+    if (deps.config.perception) {
+      this.perceptionCtl = new PerceptionController({
+        spark: deps.spark,
+        now: this.now,
+        convo: () => ({
+          companionSpeaking: this.turn.phase === "speaking",
+          lastReplyEndAt: this.lastReplyEndAt,
+          userSpeaking: this.turn.userSpeaking,
+          lastUserSpeechAt: this.lastUserSpeechAt,
+        }),
+        log: (event, data) => this.log(event, data),
+        // nobody reacts in interpretation or while watching together: no reads there (also for a waiting frame)
+        active: () => this.mode === "chat" && !this.watch?.isSharing,
+      });
+      this.perception = this.perceptionCtl;
+    }
     if (deps.finds) {
       this.finds = new FindsRunner(deps.finds, {
         emit: (e) => !this.closed && this.client.sendJson(e),
@@ -442,7 +489,13 @@ export class Session {
       case "frames":
         this.setFrames(msg.images);
         return;
+      case "perception.frame":
+        // PERC-1: background face read (the controller skips it in interpretation / watch together)
+        this.perceptionCtl?.frame(msg.image);
+        return;
       case "stop":
+        // the app's hang-up (CallSocket.close sends stop, then a normal close): a new call later is a return, not a move
+        this.endedByUser = true;
         return this.close(1000, "stopped");
       case "find.confirm":
         if (typeof msg.findId === "string" && typeof msg.itemId === "string" && typeof msg.yes === "boolean") this.finds?.confirm(msg.findId, msg.itemId, msg.yes);
@@ -589,8 +642,13 @@ export class Session {
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
         // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
+        // a handoff (iPhone → Mac, seeded or `start.handoff`) is the same conversation: profile only, no question,
+        // no first-call nod, not counted as a call (P1 11/3: the Mac's S4 answer ended with the call-2 question)
+        let continuation = this.continued || msg.handoff === true;
+        try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
+        this.callPlanned = !continuation;
         const p = await Promise.race([
-          this.deps.personalize.startCall(this.deps.userId),
+          this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
           new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
         this.callStartedAt = new Date().toISOString();
@@ -621,6 +679,7 @@ export class Session {
       voiceId: this.voiceId,
       bargeIn: { minMs: this.bargeCfg.bargeInMinMs, minWords: this.bargeCfg.bargeInMinWords },
       tts: this.tts,
+      ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
@@ -808,6 +867,7 @@ export class Session {
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
     this.interp?.stop();
+    this.perceptionCtl?.close();
     this.dropCallAsr();
     this.asr?.end();
     this.memoryCall?.close();
@@ -946,6 +1006,15 @@ export class Session {
       },
     );
     this.watch.attach(sink);
+    // watch together is not a getting-to-know-you call: drop this call's question and give the count back
+    if (this.callPlanned && this.deps.personalize?.unplanCall && this.deps.userId && !this.ask?.asked) {
+      const item = this.ask?.item ?? null;
+      this.callPlanned = false;
+      this.askDropped = this.ask?.topic ?? null;
+      this.ask = null;
+      this.nod = null;
+      void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
+    }
     return this.watch;
   }
 
@@ -965,7 +1034,10 @@ export class Session {
       this.client.sendJson({ type: "state", state: "listening" });
       return;
     }
+    const before = this.turn;
     this.turn = r.state;
+    if (before.phase === "speaking" && r.state.phase !== "speaking") this.lastReplyEndAt = this.now();
+    if (before.userSpeaking && !r.state.userSpeaking) this.lastUserSpeechAt = this.now();
     for (const fx of r.effects) this.run(fx);
     if (!this.turn.userSpeaking && this.quietWaiters.length) for (const w of this.quietWaiters.splice(0)) w();
     if (e.type === "reply_done" && this.turn.phase === "listening" && this.pendingAnnounce && this.mode !== "interpret") {
@@ -1072,7 +1144,8 @@ export class Session {
     // they asked for long answers themselves: two cut-offs don't override that (the server checks the labels too)
     if (/\b(?:long|longer|detailed|thorough|in[- ]depth|whole story)\b[^.\n]{0,30}\b(?:answers?|repl(?:y|ies)|explanations?)\b/i.test(this.user?.profile ?? "")) return;
     // set now so the very next reply says it; cleared if the server doesn't save it
-    const line = "They cut you off twice this call when you ran long. Start this reply by saying, in a few words, that you'll keep it short from now on (\"You cut me off twice, so one line from now on.\"), then answer in one short sentence.";
+    // silent adaptation (main 11/3 P0): just get shorter — never mention the interruptions or the change (meta + guilt on camera)
+    const line = "Keep this reply, and the rest of the call, to one short sentence. Never mention that they interrupted you or that you're keeping it short.";
     this.shorterLine = line;
     void p.noteShorter(this.deps.userId).then(
       (r) => {
@@ -1121,7 +1194,8 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item };
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length };
+      // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
@@ -1219,10 +1293,15 @@ export class Session {
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
   get historyForgetRevision(): number | null { return this.historyRevision; }
+  /** stopped or closed, even if its socket has not finished closing yet */
+  get isClosed(): boolean { return this.closed; }
+  /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
+  endedByUser = false;
 
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
+    this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
   }
 
@@ -1231,7 +1310,9 @@ export class Session {
     const greeting = !!turn.greeting;
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
-    const interpret = this.mode === "interpret" || hangul;
+    // English only (11/3): in chat a Hangul transcript is answered in English, not auto-interpreted; the explicit
+    // interpretation mode is unchanged. GENITA_ENGLISH_ONLY=0 restores the F8 auto-switch.
+    const interpret = this.mode === "interpret" || (hangul && !englishOnly());
     if (interpret) {
       const from = hangul ? "Korean" : "English";
       const to = hangul ? "English" : "Korean";
@@ -1254,7 +1335,7 @@ export class Session {
       { role: "user", content },
     ];
     const v1 = this.v1 ? this.v1Extras(turn) : {};
-    const instructions = buildInstructions({
+    const base = buildInstructions({
       persona,
       user: this.user,
       memories: this.memories,
@@ -1264,12 +1345,18 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
-      ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      // never while watching together (the question would land on top of the show)
+      ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
       nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,
       ...v1,
     });
+    // a refine after a product search in this call ("another one in black…") stays a search: the Finds runner's own rule
+    const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
+    const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
+    const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     return {
@@ -1278,6 +1365,7 @@ export class Session {
       // Finds get the camera frames only, never the shared screen
       images: camera,
       lang: this.language,
+      suggestMac,
       req: {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
@@ -1452,7 +1540,8 @@ export class Session {
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !self && !synthetic && this.finds) {
+    // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
+    if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
@@ -1463,10 +1552,36 @@ export class Session {
         // the card's own line follows when it lands
         if (spec && speculative === "hit") spec.abort.abort();
         const ack = started.ack;
-        pre = (async function* () {
+        const fixed = (async function* () {
           yield { type: "text" as const, delta: ack };
           yield { type: "done" as const, responseId: null, text: ack, status: "completed" };
         })();
+        if (started.kind === "product") {
+          // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
+          // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
+          // A failed reaction falls back to the short ack.
+          // text only: the frames already went to the search, and an image costs the reaction ~1–2 s of first word
+          const textOnly = Array.isArray(req.input)
+            ? req.input.map((m) => ("content" in m && Array.isArray(m.content) ? { ...m, content: m.content.filter((c) => c.type === "input_text").map((c) => (c as { text: string }).text).join(" ") } : m))
+            : req.input;
+          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
+          pre = (async function* () {
+            let said = false;
+            try {
+              for await (const ev of react) {
+                if (ev.type === "done") {
+                  if (said) { yield ev; return; }
+                  break; // an empty reaction: the short ack below, never the tool-carrying retry
+                }
+                if (ev.type === "text" && ev.delta.trim()) said = true;
+                yield ev;
+              }
+            } catch (err) {
+              if (said) throw err;
+            }
+            if (!said) yield* fixed;
+          })();
+        } else pre = fixed;
         this.log("finds.ack", { utteranceId, kind: started.kind });
       }
     }
@@ -1474,7 +1589,9 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true }[] = [];
+    /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
+    const said = () => sentences.filter((x) => !x.beat);
     let emotion: string | null = null;
     const waiter: { wake: (() => void) | null } = { wake: null };
     let sparkDone = false;
@@ -1483,7 +1600,7 @@ export class Session {
     let droppedOpener = false;
     // a she/he in the reply is the user only when their own line is about themselves (the v1 address check)
     const narration = new NarrationJudge(!interpret && !self, { thirdPersonIsUser: !synthetic && thirdPersonCouldBeUser(text, this.user?.name) });
-    const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
+    const hasAnswer = () => narration.hasAnswer(said().map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
@@ -1501,6 +1618,11 @@ export class Session {
         if (!p.displayText) continue;
         let tts = p.ttsText;
         if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
+        if (this.v1 && tts && !keepOpener && !interpret && !self) {
+          const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
+          if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
         if (!tts || !parseTaggedSentence(tts).displayText) {
           onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
@@ -1510,6 +1632,11 @@ export class Session {
         if (this.v1 && !interpret && !self) {
           const addressed = addressUser(tts, { camera: guardCtx.camera, first: !sentences.some((x) => !isInterjectionOnly(x.display)), userText: guardCtx.userText, userName: this.user?.name });
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
+        }
+        // watch together took this call's question back: a reply already asking it (built before) drops that sentence
+        if (this.askDropped && !interpret && !self && /\?\s*$/.test(parseTaggedSentence(tts).displayText) && replyAsks(parseTaggedSentence(tts).displayText, this.askDropped)) {
+          this.log("profile.ask_dropped", { utteranceId });
+          continue;
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
@@ -1562,6 +1689,20 @@ export class Session {
     };
 
     // Producer: Spark stream → sentences
+    // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
+    // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
+    let beatTimer: NodeJS.Timeout | null = null;
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(() => {
+        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        const before = sentences.length;
+        enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true);
+        for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
+        this.log("convo.hold_beat", { utteranceId });
+      }, HOLD_BEAT_MS);
+      beatTimer.unref?.();
+    };
     const producer = (async () => {
       try {
         if (self) {
@@ -1582,6 +1723,7 @@ export class Session {
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {
+                if (ev.delta.trim()) armBeat();
                 // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
                 if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
                 gotText ||= !!ev.delta.trim();
@@ -1607,15 +1749,15 @@ export class Session {
           applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && guarded.first && !neverSpoken(guarded.first.cls)) {
+          if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
-          if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          if (!said().length && onlyOpener) enqueueSentences([onlyOpener], true);
           // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
           // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
-          if (!sentences.length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
+          if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -1633,6 +1775,7 @@ export class Session {
       } finally {
         if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
+        if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
       }
     })();
@@ -1815,6 +1958,8 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
+    // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
+    if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
     if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
       this.ask.asked = true;

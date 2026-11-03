@@ -5,7 +5,7 @@
  * adapter uses it (so before/after differ only in this engine), then the sentence guard and opener guard.
  * Not imported by the server. Types are structural so this file needs nothing from evals/.
  */
-import { avoidRepeatedOpener, buildInstructions, type PersonaCard } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
 import { memoryPrompt } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
@@ -78,6 +78,8 @@ export const adapter = {
     let first: { raw: string; cls: GuardClass } | null = null;
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
+      if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
+      if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
       const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
       const cls = found === "narration" && kept.length ? null : found;

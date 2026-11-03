@@ -81,6 +81,26 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     }
 }
 
+extension MotionV2Params {
+    /// v59 (11/3 pm, Chelsea: "the mouth moves far too little — talking through a slight gap"): applied
+    /// over whatever prep sent for people on the lip rig (already-prepped faces carry v41-era values).
+    /// Lips fully meet between syllables (no idle jaw, deeper consonant dip), stressed vowels open
+    /// further, and the jaw / spring are quicker so open↔closed reads at phone size.
+    /// Rollback: `MotionV2Params.v59On = false` (the map's values as sent).
+    nonisolated(unsafe) public static var v59On = true
+    public func v59() -> MotionV2Params {
+        guard Self.v59On else { return self }
+        var p = self
+        p.idle = 0
+        p.consonantJaw = min(p.consonantJaw, 0.05)
+        p.amp = max(p.amp, 0.5); p.unstressed = min(p.unstressed, 0.45)
+        p.springHz = max(p.springHz, 11)
+        p.jawAttackMs = min(p.jawAttackMs, 40); p.jawReleaseMs = min(p.jawReleaseMs, 50)
+        p.shapeTauMs = min(p.shapeTauMs, 70)
+        return p
+    }
+}
+
 struct MotionV2 {
     static let round: Set<String> = ["AO", "OW", "OY", "UW", "UH", "W"]
     static let spread: Set<String> = ["IY", "IH", "EY", "EH", "Y"]
@@ -91,6 +111,16 @@ struct MotionV2 {
         [("EI", 0), ("EH", 0.45), ("AH2", 0.85)],
         [("MID", 0), ("AH", 0.35), ("AH2", 0.7)],
     ]
+    /// v60 (11/3 pm review: every opening was a round "O" with a black hole — "blowing air"): a / e / i climb
+    /// the wide, flat keys with the upper-teeth band (EH, AH); the big round AH2 is left to nothing, the
+    /// round ladder (o / u / w) keeps OH. Rollback: `MotionV2.v60Ladders = false`.
+    nonisolated(unsafe) static var v60Ladders = true
+    static let laddersV60: [[(String, Double)]] = [
+        [("U", 0), ("OH", 0.45)],
+        [("EI", 0), ("EH", 0.45)],
+        [("MID", 0), ("EH", 0.3), ("AH", 0.65)],
+    ]
+    var useV60 = false
 
     var p: MotionV2Params
     var faceNorm: Double
@@ -193,7 +223,7 @@ struct MotionV2 {
         let mbp = order.firstIndex(of: "MBP")
         if closed { if let m = mbp { tgt[m] = 1 } } else {
             for c in 0..<3 where shape[c] > 1e-3 {
-                let steps = Self.ladders[c].compactMap { k, x -> (Int, Double)? in
+                let steps = (useV60 ? Self.laddersV60 : Self.ladders)[c].compactMap { k, x -> (Int, Double)? in
                     guard let r = resolve(k), let i = order.firstIndex(of: r) else { return nil }
                     return (i, x)
                 }
@@ -226,7 +256,9 @@ struct MotionV2 {
         // spring (closures fast)
         if x.count != order.count { x = tgt; v = tgt.map { _ in 0 } }
         if closed { for i in x.indices { x[i] += 0.7 * (tgt[i] - x[i]); v[i] = 0 } } else {
-            let w0 = 2 * Double.pi * p.springHz, sub = 8, h = dt / 1000 / Double(sub)
+            let w0 = 2 * Double.pi * p.springHz
+            // enough sub-steps for any frame gap (codex P2: 11 Hz × a 110 ms frame diverged with a fixed 8)
+            let sub = max(8, Int((dt / 1000 * w0 / 0.25).rounded(.up))), h = dt / 1000 / Double(sub)
             for _ in 0..<sub { for i in x.indices {
                 let acc = w0 * w0 * (tgt[i] - x[i]) - 2 * w0 * v[i]
                 v[i] += h * acc; x[i] += h * v[i]

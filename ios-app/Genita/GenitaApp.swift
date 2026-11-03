@@ -1,9 +1,17 @@
 import SwiftUI
 
 @main struct GenitaApp: App {
-    @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
+    @State private var model = AppState(reset: GenitaApp.resetOnLaunch, onHandoffAccountChange: { PhoneHandoff.shared.setAccount($0) })
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
+    /// UI tests start clean. So does the Appetize browser preview (`--browser-preview`, Debug builds only, see BrowserPreview.swift).
+    private static var resetOnLaunch: Bool {
+        #if DEBUG
+        BrowserPreview.prepare()
+        if BrowserPreview.isActive { return true }
+        #endif
+        return ProcessInfo.processInfo.arguments.contains("--uitesting")
+    }
     @ObservedObject private var handoff = PhoneHandoff.shared
     /// R1 dims the image behind the status bar, so the status bar turns light, as in the design.
     /// PF-1b / r03 full: a full Finds sheet leaves a dark band under the status bar, so it turns light too.
@@ -29,6 +37,9 @@ import SwiftUI
                     }
                     #endif
                 }
+                #if DEBUG
+                .overlay { BrowserPreviewMenu(model: model) } // Preview tab; nothing unless launched with --browser-preview
+                #endif
                 .preferredColorScheme(darkStatusBar ? .dark : .light)
                 // server-driven config (GET /v1/app-config): launch + every foreground; bundled defaults offline
                 .overlay(alignment: .top) { UpdateBanner(config: appConfig.config) }

@@ -61,6 +61,16 @@ import UniformTypeIdentifiers
         return Self.jpeg(image)?.base64EncodedString()
     }
 
+    /// PERC-2: the latest frame for the perception face crop, only if it came from the front camera (iPhone).
+    /// The frame carries its own camera, so a flip or a quick off/on can never pass a rear-camera face as the user's.
+    func latestFrontImage() -> CIImage? {
+        guard isOn else { return nil }
+        #if DEBUG
+        if let fixture { return CIImage(cgImage: fixture) }
+        #endif
+        return worker.latestFront()
+    }
+
     nonisolated static func jpeg(_ image: CIImage, maxSide: CGFloat = 768, quality: CGFloat = 0.6) -> Data? {
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { return nil }
@@ -86,6 +96,8 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     private var input: AVCaptureDeviceInput?
     private let lock = NSLock()
     private var frame: CIImage?
+    /// which camera `frame` came from
+    private var framePosition: AVCaptureDevice.Position = .unspecified
 
     func start(session: AVCaptureSession, device: AVCaptureDevice?) {
         queue.async {
@@ -124,6 +136,15 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
 
     func latest() -> CIImage? { lock.withLock { frame } }
 
+    func latestFront() -> CIImage? {
+        lock.withLock { () -> CIImage? in
+            #if os(iOS)
+            guard framePosition == .front else { return nil }
+            #endif
+            return frame // the Mac has one camera, facing the user
+        }
+    }
+
     private func attach(session: AVCaptureSession, device: AVCaptureDevice?) {
         if let input { session.removeInput(input); self.input = nil }
         guard let device, let input = try? AVCaptureDeviceInput(device: device), session.canAddInput(input) else { return }
@@ -142,6 +163,7 @@ private final class CameraWorker: NSObject, AVCaptureVideoDataOutputSampleBuffer
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let image = CIImage(cvPixelBuffer: pixels)
-        lock.withLock { frame = image }
+        let position = (connection.inputPorts.first?.input as? AVCaptureDeviceInput)?.device.position ?? .unspecified
+        lock.withLock { frame = image; framePosition = position }
     }
 }
