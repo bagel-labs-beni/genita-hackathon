@@ -39,7 +39,7 @@ struct ConsentView: View {
                 ZStack {
                     if sending { ProgressView().tint(CallInk.onInk) } else { Text("Agree and continue") }
                 }.font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                    .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
             }.buttonStyle(.plain).disabled(sending).accessibilityIdentifier("consentAgree")
             Button("Not now") { notNow() }
                 .font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 50)

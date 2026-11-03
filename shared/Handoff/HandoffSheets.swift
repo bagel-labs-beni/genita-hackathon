@@ -38,7 +38,7 @@ struct HandoffWaitingSheet: View {
             }.padding(.top, 16)
             Button(action: action) {
                 Text("Continue here").font(.custom("PretendardVariable-Medium", fixedSize: 16)).foregroundStyle(sheetOnInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(sheetInk, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+                    .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: sheetInk, radius: 6)).contentShape(Rectangle())
             }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("continueHere")
         }
         .padding(.top, 40).padding(.horizontal, 38).padding(.bottom, 48)
@@ -72,7 +72,7 @@ struct MediaPermissionSheet: View {
             Spacer(minLength: 16)
             Button(action: openSettings) {
                 Text("Open Settings").font(.custom("PretendardVariable-Medium", fixedSize: 16)).foregroundStyle(sheetOnInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(sheetInk, in: RoundedRectangle(cornerRadius: 6)).contentShape(Rectangle())
+                    .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: sheetInk, radius: 6)).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("permissionOpenSettings")
             Button(action: dismiss) {
                 Text(kind == .camera ? "Keep camera off" : "Not now").font(.custom("PretendardVariable-Medium", fixedSize: 15)).foregroundStyle(sheetInk).frame(maxWidth: .infinity).frame(height: 36).contentShape(Rectangle())

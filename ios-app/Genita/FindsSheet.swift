@@ -329,13 +329,13 @@ struct FindsSheet: View {
                     let saved = finds.current?.saved == true
                     Button { if saved { openFinds?() } else { finds.toggleSave() } } label: {
                         Text(saved ? "Open Finds" : "Save to Finds").font(TypeStyle.body(16, .medium)).foregroundStyle(saved ? CallInk.ink : CallInk.onInk)
-                            .frame(maxWidth: .infinity).frame(height: 50).background(saved ? FindsInk.skip : CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                            .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: saved ? FindsInk.skip : CallInk.ink))
                     }.buttonStyle(PressScale()).accessibilityIdentifier(saved ? "openFinds" : "findCTA").accessibilitySortPriority(-10)
                 } else {
                 // r03 F2 `.fcta`: on a card reopened from Finds the one button continues the call about it
                 Button { if reopened { finds.talkAboutThis(); talk?() } else if let card { finds.ask(Self.cta(card.kind)) } } label: {
                     Text(reopened ? "Talk about this on a call" : (card.map { Self.cta($0.kind) } ?? "")).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 50).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+                        .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
                 }.buttonStyle(PressScale()).disabled(!reopened && !finds.canAsk).opacity(reopened || finds.canAsk ? 1 : 0.4).accessibilityIdentifier(reopened ? "findTalk" : "findCTA").accessibilitySortPriority(-10)
                 }
             }
@@ -360,7 +360,7 @@ struct FindsSheet: View {
                 FindsTalkWave(color: CallInk.onInk)
                 (Text("New: ") + Text(title).fontWeight(.semibold)).font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 Text("View").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
-            }.padding(.horizontal, 12).frame(width: 228, height: 44).background(CallInk.ink, in: RoundedRectangle(cornerRadius: 12))
+            }.padding(.horizontal, 12).frame(width: 228, height: 44).background(GlassCTA(color: CallInk.ink))
         }
         .buttonStyle(PressScale())
         .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 38).padding(.top, finds.state == .full ? 72 : 40)
@@ -945,7 +945,7 @@ struct FindUnclearCard: View {
             Text(lines?.body ?? "").font(TypeStyle.body(14)).foregroundStyle(CallInk.onInk.opacity(0.76)).fixedSize(horizontal: false, vertical: true)
             Button { withAnimation(.fade) { call.lookAgain() } } label: {
                 Text("Look again").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                    .frame(maxWidth: .infinity).frame(height: 44).background(CallInk.onInk, in: RoundedRectangle(cornerRadius: 12))
+                    .frame(maxWidth: .infinity).frame(height: 44).background(GlassCTA(color: CallInk.onInk))
             }.buttonStyle(PressScale()).padding(.top, 8).accessibilityIdentifier("findLookAgain")
         }
         .padding(16).frame(width: 342, alignment: .leading)

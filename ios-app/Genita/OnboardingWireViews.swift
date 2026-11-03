@@ -42,7 +42,7 @@ struct WirePage<Content: View>: View {
                     if let primary {
                         Button(action: action) {
                             ZStack {
-                                RoundedRectangle(cornerRadius: 12).fill(primaryEnabled ? CallInk.ink : Color(white: 0.8))
+                                GlassCTA(color: primaryEnabled ? CallInk.ink : Color(white: 0.8))
                                 if primaryBusy { ProgressView().tint(CallInk.onInk) }
                                 else { Text(primary).font(TypeStyle.body(16, .medium)).foregroundStyle(primaryEnabled ? CallInk.onInk : Color(white: 0.65)) }
                             }
