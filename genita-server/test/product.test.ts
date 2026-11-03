@@ -405,3 +405,14 @@ test("S5 speed: the search prompt asks for one product search (GENITA_PRODUCT_ON
   process.env.GENITA_PRODUCT_ONE_SEARCH = "0";
   try { assert.match(await run(), /at most 2 product searches/); } finally { delete process.env.GENITA_PRODUCT_ONE_SEARCH; }
 });
+
+test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless asked; the prompt says so", async () => {
+  const { offOccasion, productPrompt } = await import("../src/finds/product.ts");
+  const ask = "Can you find me some shoes that match my style?";
+  for (const p of ["Shearling slipper https://shop.example.com/p/slipper-123", "Leather slide sandal", "Suede mules https://x.com/products/suede-mules", "Classic flip-flops"]) assert.equal(offOccasion(p, ask), true, p);
+  for (const p of ["Chelsea boots https://shop.example.com/p/chelsea-boot", "Penny loafers", "Leather sneakers"]) assert.equal(offOccasion(p, ask), false, p);
+  assert.equal(offOccasion("Leather slide sandal", "find me sandals for the beach"), false, "asked for");
+  assert.equal(offOccasion("Leather slide buckle belt", "find me a black belt"), false, "a belt, not a shoe (Codex P2)");
+  assert.equal(offOccasion("Leather slide buckle belt", ask), false);
+  assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
+});

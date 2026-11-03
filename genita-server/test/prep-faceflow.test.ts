@@ -23,7 +23,7 @@ test("faceflow asset names: store-safe ids for every file the script writes", ()
   assert.equal(flowAssetName("mask.png"), "flow_mask");
   assert.equal(flowAssetName("flow.json"), null);
   assert.equal(flowAssetName("../x.jpg"), null);
-  for (const k of FACE_KEYS) assert.match(flowAssetName(`${k}.nk.f16`) ?? "", /^[A-Za-z0-9_]{1,24}$/);
+  for (const k of FLOW_KEYS) assert.match(flowAssetName(`${k}.nk.f16`) ?? "", /^[A-Za-z0-9_]{1,24}$/);
 });
 
 test("flow keys: visemes + mouth keys, never the expressions", () => {

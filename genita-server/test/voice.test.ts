@@ -3,6 +3,8 @@
  * the HTTP client (NDJSON, filler cache, fail-fast after a failure).
  */
 import { test } from "node:test";
+// these tests check the timing pass-through byte for byte; the dictionary relabel (lips/g2p.ts) has its own tests
+process.env.GENITA_LIPS_G2P = "0";
 import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";
@@ -122,11 +124,29 @@ test("client: sends spoken text, lang, speaker, pause; yields PCM + character al
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://voice.test/v1/tts");
   assert.equal(calls[0].auth, "Bearer secret");
-  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1.05, tail_ms: 200, model: "seamless" });
+  assert.deepEqual(calls[0].body, { text: "It's five dollars, okay?", lang: "eng", speaker: 3, speed: 1.05, tail_ms: 200, model: "seamless", emotion: "happy" });
   assert.equal(chunks.length, 2);
   assert.equal(chunks[0].audio.length, 4800);
   assert.deepEqual(chunks[0].alignment, { chars: ["H", "i"], startsSec: [0, 0.05], endsSec: [0.05, 0.1] });
   assert.equal(chunks[0].model, "seamless-m4t-v2");
+});
+
+// 11/3 post chain: the emotion goes to the voice GPU for longer clauses only (fillers and the first sound stay cached
+// and unchanged); neutral sends nothing; GENITA_VOICE_POST=0 asks for the raw voice
+test("client: emotion is sent for longer clauses only, neutral never; post:false only when turned off", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const f = (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch;
+  const v = createSeamless(cfg, { fetch: f });
+  const say = async (cl: typeof v, text: string, emotion: string | null) => { for await (const _ of cl.speak({ voiceId: "seamless:3", text, emotion, model: "x" })) void _; };
+  await say(v, "Oh wow,", "excited");
+  await say(v, "you actually made the soup?", "Excited");
+  await say(v, "you actually made the soup?", "neutral");
+  await say(createSeamless({ ...cfg, post: false }, { fetch: f }), "you actually made the soup?", "sad");
+  assert.equal("emotion" in bodies[0], false, "short filler: no emotion");
+  assert.equal(bodies[1].emotion, "excited");
+  assert.equal("emotion" in bodies[2], false, "neutral: nothing");
+  assert.equal(bodies[3].post, false);
+  assert.equal("post" in bodies[0], false, "default requests do not carry post");
 });
 
 test("client: Korean sentences go out as kor (interpretation uses the same service)", async () => {

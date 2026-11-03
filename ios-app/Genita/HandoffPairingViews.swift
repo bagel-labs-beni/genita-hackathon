@@ -58,6 +58,9 @@ struct PhonePairingView: View {
                 if clean.count == 6 { handoff.connect() }
             })).keyboardType(.numberPad).focused($focused).textContentType(.oneTimeCode)
                 .foregroundStyle(.clear).tint(.clear).frame(width: 304, height: 52).opacity(0.02)
+                // the sheet is white but the call behind it runs dark: the number pad follows the sheet, not the call
+                // (UI sweep 11/3: three of the four pairing shots had a dark keypad under the white sheet)
+                .environment(\.colorScheme, .light)
                 .accessibilityLabel("Pairing code").accessibilityIdentifier("pairingCode")
         }.frame(width: 304, height: 52, alignment: .leading)
     }

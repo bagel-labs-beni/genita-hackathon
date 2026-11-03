@@ -233,3 +233,67 @@ test("server: the iPhone call hears about the account's open Mac app; the Mac's 
   assert.doesNotMatch(await ask("/v1/session?device=mac"), MAC_LINE, "already on the Mac");
   macPresence.ws.close();
 });
+
+test("QA P2 (S4 1/4): Spark ignores the move-to-Mac ask and gives outfit advice → the fixed Mac line is said instead, 10/10, no card", async () => {
+  const { SUGGEST_MAC_REPLIES } = await import("../src/session/session.ts");
+  for (let i = 0; i < 10; i++) {
+    const { deps, sink, events } = setup(() => true);
+    deps.spark = async function* () {
+      yield { type: "text", delta: "<happy> Go with the black jeans and the cream knit. " };
+      yield { type: "text", delta: "Simple, sharp, and so you. Add the loafers." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    };
+    const s = new Session(`qa${i}`, sink, deps);
+    await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+    for (let k = 0; k < i; k++) await s.onClientText(JSON.stringify({ type: "text", text: "hi" })); // rotate utterance ids
+    const before = replies(events);
+    await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+    await waitFor(() => replies(events) > before);
+    const reply = events.filter((e) => e.type === "reply").at(-1) as { text: string };
+    assert.match(reply.text, /\bMac\b/, `run ${i}`);
+    assert.ok(SUGGEST_MAC_REPLIES.some((l) => l.replace(/<[^>]*>\s*/, "") === reply.text), reply.text);
+    assert.ok(!events.some((e) => e.type === "find.created" || e.type === "find.started"), "no card on the suggest turn");
+    s.close();
+  }
+});
+
+test("mustNameMac: a reply naming the Mac in its second sentence passes through unchanged", async () => {
+  const { mustNameMac } = await import("../src/session/session.ts");
+  async function* src() {
+    yield { type: "text" as const, delta: "<excited> Of course! " };
+    yield { type: "text" as const, delta: "Can you move our call to your Mac? I want to see it all." };
+    yield { type: "done" as const, responseId: "r", text: "", status: "completed" };
+  }
+  let out = "";
+  for await (const ev of mustNameMac(src(), "FIXED")) if (ev.type === "text") out += ev.delta;
+  assert.equal(out, "<excited> Of course! Can you move our call to your Mac? I want to see it all.");
+});
+
+test("mustNameMac (Codex #423): a stream that stalls after its first words gets the fixed line on its own clock", async () => {
+  const { mustNameMac } = await import("../src/session/session.ts");
+  async function* stalled() {
+    yield { type: "text" as const, delta: "<excited> Of course! " };
+    await new Promise((r) => setTimeout(r, 5000));
+    yield { type: "done" as const, responseId: "r", text: "", status: "completed" };
+  }
+  const t0 = Date.now();
+  let out = "";
+  for await (const ev of mustNameMac(stalled(), "FIXED Mac line", Date.now, 300)) if (ev.type === "text") out += ev.delta;
+  assert.equal(out, "FIXED Mac line");
+  assert.ok(Date.now() - t0 < 1500, `${Date.now() - t0} ms`);
+});
+
+test("Codex #423 final: a guard drops the Mac sentence (camera off, 'you look great') → the ask is still said", async () => {
+  const { deps, sink, events } = setup(() => true);
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Of course! You look great already, but move our call to your Mac so I can see it all." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  const s = new Session("qa-mac-guard", sink, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: ASK }));
+  await waitFor(() => replies(events) >= 1);
+  const reply = events.filter((e) => e.type === "reply").at(-1) as { text: string };
+  assert.match(reply.text, /\bMac\b/);
+  s.close();
+});
