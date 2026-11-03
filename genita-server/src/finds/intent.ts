@@ -26,6 +26,10 @@ const SHOP_LINKS = /\b(product links?|links? to (?:buy|shop))\b/i;
 /** "send me the links": shop pages only after a product search or with a thing to buy named; otherwise a web
  * answer ("best ramen places in Seoul… send me the links" → the sources sheet, #413) */
 const LINKS_ASK = /\b(send me (?:the )?links?)\b|링크\s*보내/i;
+/** "send me the links" on its own (a product search only with shopping context) */
+export function isLinksAsk(text: string): boolean {
+  return LINKS_ASK.test(text);
+}
 /** follow-ups that only make sense after a product search ("match my style", "a couple that…", "cheaper") */
 const REFINE = /\b(match(?:es)? my style|a couple (?:of )?(?:options|ones|that|more)|cheaper|another (?:one|color|colour)|in (?:black|navy|grey|gray|white|beige))\b/i;
 

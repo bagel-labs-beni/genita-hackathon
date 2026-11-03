@@ -154,8 +154,11 @@ export function recipeSummary(items: FindItem[], minutes: number | null): { subt
     [...time, ...haveP, ...checkP, cap(needText)],
     [...time, ...checkP, cap(needText)],
     [...time, ...haveP, ...checkP, counted],
+    [...time, ...checkP, counted],
+    [...time, counted || `${check} to check`],
   ].map((p) => p.filter(Boolean).join(" · "));
-  const subtitle = options.find((o) => o.length <= RECIPE_SUBTITLE_MAX) ?? options[2];
+  // always one line beside the picture (Codex P2: "15 min · Have 1 · 1 to check · Need 2 things" was 44)
+  const subtitle = options.find((o) => o.length <= RECIPE_SUBTITLE_MAX) ?? options[options.length - 1];
   const status = need.length ? cap(needText) : check ? `${check} to check` : "You have it all";
   return { subtitle, status };
 }

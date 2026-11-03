@@ -117,6 +117,8 @@ test("recipe summary lines", () => {
   assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "Have 1 · 1 to check", status: "1 to check" });
   assert.deepEqual(recipeSummary([items[0]], null), { subtitle: "Have 1 · Nothing to buy", status: "You have it all" });
   assert.deepEqual(recipeSummary([items[1], { ...items[1], id: "5", name: "egg" }], 10), { subtitle: "10 min · 2 to check", status: "2 to check" });
+  const long = [items[0], items[1], { id: "6", name: "Shaoxing cooking wine", tier: "buy" as const, from: "recipe" as const }, { id: "7", name: "dried shiitake mushrooms", tier: "buy" as const, from: "recipe" as const }];
+  assert.ok(recipeSummary(long, 15).subtitle.length <= 38, recipeSummary(long, 15).subtitle);
   // still checking: no count at all (it read "You have 0, nothing to buy")
   assert.deepEqual(recipeSummary([{ ...items[0], tier: "checking" as const }, items[1]], 15), { subtitle: "15 min", status: "" });
 });

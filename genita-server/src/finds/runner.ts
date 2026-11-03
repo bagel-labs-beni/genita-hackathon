@@ -9,7 +9,7 @@ import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
-import { classifyTurn, isProductAsk } from "./intent.ts";
+import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
@@ -155,8 +155,6 @@ export class FindsRunner {
   afterProduct(recent: string[] = []): boolean {
     return (
       (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
-      // demo S4→S5: the shoes the outfit pick named are being searched already ("send me the links" → that card)
-      (!!this.prefetched && this.hooks.now() - this.prefetched.at < PREFETCH_WINDOW_MS) ||
       // a call continued on the other device: the search was asked on the first one (#199)
       recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)))
     );
@@ -172,7 +170,10 @@ export class FindsRunner {
   onTurn(t: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
     const afterProduct = this.afterProduct(t.recent);
-    const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct);
+    // demo S4→S5: a bare "send me the links" while the outfit's shoes are being searched already takes that search
+    // (only a links ask: "does this jacket match my style?" stays an outfit question, Codex P2)
+    const prefetchLive = !!this.prefetched && this.hooks.now() - this.prefetched.at < PREFETCH_WINDOW_MS;
+    const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct) ?? (prefetchLive && isLinksAsk(t.text) ? { kind: "product" as const } : null);
     if (!intent) return null;
     const findId = randomUUID();
     const abort = new AbortController();
