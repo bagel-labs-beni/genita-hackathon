@@ -1529,7 +1529,8 @@ export class Session {
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
         if (this.v1 && !interpret && !self) {
           const key = normTranscript(display);
-          if (key && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
+          // only after a tool ran in this reply: an intentional repeat ("Breathe in. Breathe out." ×2) is kept (Codex r23)
+          if (key && guarded.tool && !isInterjectionOnly(display) && sentences.some((x) => normTranscript(x.display) === key)) { this.log("convo.duplicate_dropped", { utteranceId }); continue; }
         }
         if (m.firstSentenceAt === undefined) {
           m.firstSentenceAt = this.now();
