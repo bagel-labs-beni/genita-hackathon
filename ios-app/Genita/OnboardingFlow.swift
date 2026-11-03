@@ -187,7 +187,22 @@ extension AppState {
                 setup.skipSent = true
                 applyStyle(style)
                 go(.preferences)
-            } catch { flowError = Self.errorLine(error); route(error) }
+            } catch {
+                // the server may have saved them (no answer, or a 5xx): they stay this account's, never carried to
+                // another sign-in; a 401 / 403 / 4xx is a sure "not saved" (Codex #516 AU-20 r1)
+                if Self.maybeSaved(error) { setup.skipOwner = setup.accountId ?? "unknown" }
+                flowError = Self.errorLine(error); route(error)
+            }
+        }
+    }
+
+    /// A failed send whose outcome is unknown: no answer at all (`offline` includes timeouts and dropped
+    /// connections), a 5xx, or an unreadable answer. A 401 / consent / 4xx answer means nothing was saved.
+    static func maybeSaved(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .unauthorized?, .consentRequired?, .cancelled?: return false
+        case .server(let status, _, _)?: return status >= 500
+        default: return true
         }
     }
 

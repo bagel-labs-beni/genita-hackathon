@@ -64,6 +64,9 @@ struct SavedSetup: Codable {
     /// false = N1–N3 picked on this phone and not sent yet; true = a send was tried (they belong to that account even
     /// if its reply was lost); nil = unknown (an older build) — only `false` picks go on to another account (Codex #516)
     var skipSent: Bool?
+    /// AU-20 / Codex #516: the account a send went to whose outcome is unknown (timeout, dropped connection, 5xx) —
+    /// the server may have saved them there, so they never move to another account (nil = only this phone has them)
+    var skipOwner: String?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
@@ -73,7 +76,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -290,7 +293,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             // unsent N1–N3 picks stay (same rule as resetLocalProfile)
-            if setup.skipSent == false && setup.styleRows == nil && setup.companionCreated != true {
+            if setup.skipSent == false && setup.skipOwner == nil && setup.styleRows == nil && setup.companionCreated != true {
                 fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
                 fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
                 fresh.skipSent = false
@@ -320,7 +323,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     func resetLocalProfile(keepUnsentSkipPicks: Bool = false) {
         let old = setup
         // only picks known to be unsent (`false`, set when picked); nil = an older build's data, never carried (Codex #516)
-        let carry = keepUnsentSkipPicks && old.skipSent == false && old.styleRows == nil && old.companionCreated != true
+        let carry = keepUnsentSkipPicks && old.skipSent == false && old.skipOwner == nil && old.styleRows == nil && old.companionCreated != true
         storage.removeObject(forKey: Self.storageKey)
         try? FileManager.default.removeItem(at: imageURL)
         history = []

@@ -72,14 +72,33 @@ final class RestoreStub: URLProtocol, @unchecked Sendable {
         return m
     }
 
+    private func finish(_ m: AppState) async throws -> Bool {
+        m.finishSkip()
+        for _ in 0..<500 where m.importing { try await Task.sleep(for: .milliseconds(10)) }
+        return !m.importing
+    }
+
     func testFailedSkipSendLeavesThePicksUnsent() async throws {
-        for status in [401, 400, 503] {
+        for status in [401, 400] {
             let m = model(status: status)
-            m.finishSkip()
-            for _ in 0..<200 where m.importing { try await Task.sleep(for: .milliseconds(10)) }
-            XCTAssertFalse(m.importing)
+            m.setup.accountId = "acct-a"
+            // one request at a time: the next stub only after this one finished (Codex #516 r1 P2)
+            guard try await finish(m) else { return XCTFail("HTTP \(status): the send never finished") }
             XCTAssertEqual(m.setup.skipSent, false, "HTTP \(status): still unsent")
+            XCTAssertNil(m.setup.skipOwner, "HTTP \(status): surely not saved")
             XCTAssertEqual(m.setup.skipInterests, ["Food", "Style"], "HTTP \(status): the picks stay")
         }
+    }
+
+    /// A 5xx (or no answer): maybe saved at A — the picks stay on this phone for A but never go to account B.
+    func testUncertainSkipSendNeverCarriesToAnotherAccount() async throws {
+        let m = model(status: 503)
+        m.setup.accountId = "acct-a"
+        guard try await finish(m) else { return XCTFail("the send never finished") }
+        XCTAssertEqual(m.setup.skipSent, false)
+        XCTAssertEqual(m.setup.skipOwner, "acct-a")
+        XCTAssertEqual(m.setup.skipInterests, ["Food", "Style"], "still here for A")
+        m.adopt(accountId: "acct-b")
+        XCTAssertNil(m.setup.skipInterests, "never carried to B")
     }
 }
