@@ -45,8 +45,8 @@ function afterLines(r: InsightReport): string[] {
   out.push(r.headline);
   for (const o of r.observations) out.push(`${o.confidence === "medium" ? "I think " + o.claim.charAt(0).toLowerCase() + o.claim.slice(1) : o.claim} [${o.evidence.map((e) => `${e.source_label}: "${e.quote}"`).join("; ")}] On our calls: ${o.use_in_call}`);
   for (const m of r.mix) out.push(`Your mix: ${m.left} ${"·".repeat(m.position)}●${"·".repeat(4 - m.position)} ${m.right} [You picked "${m.evidence.quote}"]`);
-  for (const s of r.strengths) out.push(`Strength: ${s.text}`);
-  for (const w of r.watchouts) out.push(`Watch out: ${w.text} ${w.fix}`);
+  for (const s of r.strengths) out.push(`Strength: ${s.text} [${s.evidence.source_label}: "${s.evidence.quote}"]`);
+  for (const w of r.watchouts) out.push(`Watch out: ${w.text} ${w.fix} [${w.evidence.source_label}: "${w.evidence.quote}"]`);
   if (r.chain) out.push(`${r.chain.you_are} → ${r.chain.so_you} → ${r.chain.so_ill}`);
   out.push(r.usage);
   return out;

@@ -188,7 +188,8 @@ export class Insights {
         findings: cardFindings(card),
         picks: [...(card.picks ?? []), ...answerPicks],
         source: card.source,
-        denied: (card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })),
+        // AU-23: what the user took out of the profile (HISY "That's not me", "forget that …") is not true either
+        denied: [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).slice(-10).map((r) => ({ claim: r.text }))],
         unknowns: card.toConfirm,
       };
     }, { settings });
@@ -217,6 +218,17 @@ export class Insights {
     if (this.jobs.has(userId)) return { status: "pending", report };
     if (report) return { status: "ready", report };
     return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
+  }
+
+  /**
+   * "Forget all of this" (AU-92 DELETE /v1/profile, SY-01): the stored report with its quoted lines goes with the
+   * profile row; this drops what is only in this process — the paste kept for the answers rewrite, a failure
+   * backoff — and makes any write still running land nowhere (a newer write number, and no card to land on).
+   */
+  forget(userId: string): void {
+    this.texts.delete(userId);
+    this.failedAt.delete(userId);
+    this.seq.set(userId, ++this.seqNext);
   }
 
   /** "That's right" / "Not me" (+ what's right, ≤ 200 chars). */

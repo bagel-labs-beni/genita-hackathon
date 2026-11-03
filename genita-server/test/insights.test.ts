@@ -294,18 +294,20 @@ test("report: highlight is a phrase inside its own quote, or nothing", () => {
 test("report: the type read (춘식이 r02) — type, strengths, watch-outs, chain tied to kept traits; mix only from picks", () => {
   const raw = {
     ...RAW,
-    type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
+    type: { name: "The Playful Editor", line: "You shortlist options, joke about prices, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
     strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
     watchouts: [{ text: "A long menu of options can freeze the whole night.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
-    chain: { you_are: "You line options up before you commit.", so_you: "So you want a shortlist, not a lecture.", so_ill: "So I'll bring a shortlist and my favorite." },
+    chain: { you_are: "You weigh two or three options before you commit.", so_you: "So you want options, not a lecture.", so_ill: "So I'll bring two options and my favorite." },
   };
   const inputs = { ...INPUTS, picks: [...INPUTS.picks, { question: "How you like replies", label: "Show me options" }, { question: "pace", label: "Quick-leaning" }] };
   const r = toReport(raw, inputs, { at: "", from: "answers" });
   const think = r.observations.find((o) => o.category === "think")!;
   assert.deepEqual(r.type, { name: "The Playful Editor", line: raw.type.line, signature: ["Options", "Light", "Final say"], basis: [think.id, r.observations.find((o) => o.category === "humor")!.id] });
-  assert.deepEqual(r.strengths, [{ text: "Two or three options and you're already deciding.", basis: think.id }]);
+  assert.deepEqual(r.strengths.map((x) => ({ text: x.text, basis: x.basis })), [{ text: "Two or three options and you're already deciding.", basis: think.id }]);
+  assert.equal(r.strengths[0].evidence.quote, "usually asks for two or three options before deciding", "each strength carries its receipt");
+  assert.ok(r.watchouts.every((w) => w.evidence && w.evidence.quote), "each watch-out carries its receipt");
   assert.deepEqual(r.watchouts.map((w) => w.fix), ["I'll stop at two options and name my favorite."], "a fix must be 'I'll …'");
-  assert.equal(r.chain!.so_ill, "So I'll bring a shortlist and my favorite.");
+  assert.equal(r.chain!.so_ill, "So I'll bring two options and my favorite.");
   assert.deepEqual(r.share, { title: "{name} is The Playful Editor", lines: ["Options", "Light", "Final say"] });
   assert.deepEqual(r.mix.map((m) => [m.left, m.right, m.position, m.evidence.quote]), [["Options", "One answer", 1, "Show me options"], ["Reflective", "Quick", 3, "Quick-leaning"]]);
   assert.deepEqual(toReport(raw, INPUTS, { at: "", from: "import" }).mix, [], "no picks for it → no mix row");
@@ -361,14 +363,14 @@ test("codex: a late import report never lands on the card of a newer import; an 
   await new Promise((r) => setTimeout(r, 30));
   const ins = (await h2.store.getStyle("u1"))!.insights!;
   assert.equal(ins.settings!.why, "Be there");
-  assert.equal(ins.headline, RAW.headline);
+  assert.notEqual(ins.headline, "You are the old one.", "the slow older write never landed");
 });
 
 test("codex: a 'not me' made while a rewrite runs is not brought back; what was built on it goes", async (t) => {
   let release!: () => void;
   let gated = false;
   const gate = new Promise<void>((r) => (release = r));
-  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0] }, strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }] };
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist options, joke about prices, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0] }, strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }] };
   const h = harness(async () => { if (gated) await gate; return TYPED; });
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
@@ -428,7 +430,7 @@ test("codex r2: 'not me' drops a type built on it; a like chip needs a plain men
   const like = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You eat loud and dress quiet on purpose.", evidence: [ev("import", "the spicier the better")], chips: [{ label: "Seafood", polarity: "like" }] })] }, inputs, { at: "", from: "import" });
   assert.equal(like.observations[0].chips, undefined, "'Dislikes seafood' is never a like");
 
-  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
+  const TYPED = { ...RAW, type: { name: "The Playful Editor", line: "You shortlist options, joke about prices, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1] } };
   const h = harness(() => TYPED);
   t.after(h.cleanup);
   const job = h.ins.begin("u1", PASTE);
@@ -521,4 +523,84 @@ test("codex r8: a retry after a forget doesn't send the paste again", async (t) 
   await h.ins.fromAnswers("u1", { help: "Think with me" });
   await h.ins.get("u1", 3000); // call 2 fails; no retry with the paste
   assert.equal(n, 2, "no third call");
+});
+
+// ───────── audit 11/4 (AU-21, AU-22, AU-23) ─────────
+
+test("AU-21: headline, type line and chain must reuse a concrete word of the kept traits or picks", () => {
+  const raw = {
+    ...RAW,
+    headline: "You climb mountains every weekend at dawn.",
+    type: { name: "The Shortlist Joker", line: "You run marathons and paint watercolors.", signature: ["Options", "Jokes", "Say-so"], basis: [0] },
+    chain: { you_are: "You love sailing.", so_you: "So you want sea air.", so_ill: "So I'll bring boat tips." },
+  };
+  const r = toReport(raw, INPUTS, { at: "", from: "import" });
+  assert.equal(r.headline, r.observations[0].claim, "an ungrounded headline falls back to the top trait");
+  assert.equal(r.type, null);
+  assert.equal(r.chain, null);
+  const ok = toReport({ ...raw, chain: { you_are: "You weigh two or three options first.", so_you: "So you want options laid out.", so_ill: "So I'll lay out two options and my pick." } }, INPUTS, { at: "", from: "import" });
+  assert.ok(ok.chain);
+});
+
+test("AU-22: a 'don't want' pick reads 'You said no to' and never backs a claim that likes it", () => {
+  const inputs: InsightInputs = { ...INPUTS, picks: [{ question: "Food: you like", label: "Spicy" }, { question: "Food: you don't want", label: "Seafood" }] };
+  const liked = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You're all in on seafood nights.", evidence: [ev("answer", "Seafood")] })] }, inputs, { at: "", from: "answers" });
+  assert.equal(liked.observations.length, 0, "no receipt left → no trait");
+  const said = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You keep the heat and skip the seafood.", evidence: [ev("answer", "Spicy"), ev("answer", "Seafood")] })] }, inputs, { at: "", from: "answers" });
+  assert.deepEqual(said.observations[0].evidence.map((e) => e.source_label), ["You picked", "You said no to"]);
+});
+
+test("AU-23: the stored profile (with corrections) goes to Spark with the paste, and wins", async () => {
+  const { buildInsightRequest } = await import("../src/insights/report.ts");
+  const req = buildInsightRequest({ text: PASTE, findings: ["Likes olive green too."], picks: [], source: "import", denied: [{ claim: "Wears only black." }] });
+  assert.match(String(req.input), /<pasted_reply>/);
+  assert.match(String(req.input), /<profile>[\s\S]*olive green/);
+  assert.match(String(req.input), /<not_true>[\s\S]*only black/);
+  assert.match(String(req.instructions), /profile wins/);
+});
+
+test("AU-21/22 (Codex): one shared word isn't grounding; a 'no' must be about that pick; a flipped like drops the trait", () => {
+  const inputs: InsightInputs = { ...INPUTS, picks: [{ question: "Food: you like", label: "Spicy" }, { question: "Food: you don't want", label: "Seafood" }] };
+  const r = toReport({ ...RAW, headline: "You finish marathons after spicy dinners." }, inputs, { at: "", from: "answers" });
+  assert.notEqual(r.headline, "You finish marathons after spicy dinners.");
+  const notAbout = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You love seafood, not bland dinners.", evidence: [ev("answer", "Seafood")] })] }, inputs, { at: "", from: "answers" });
+  assert.equal(notAbout.observations.length, 0);
+  const mixed = toReport({ ...RAW, observations: [obs({ category: "taste", claim: "You crave seafood for a fiery dinner.", evidence: [ev("answer", "Spicy"), ev("answer", "Seafood")] })] }, inputs, { at: "", from: "answers" });
+  assert.equal(mixed.observations.length, 0, "the whole trait goes, not just the contradicting receipt");
+});
+
+test("SY-01: 'Forget all of this' — the quotes go with the profile row, the paste leaves memory, a running write lands nowhere", async (t) => {
+  let release!: () => void;
+  let gated = false;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async () => { if (gated) await gate; return RAW; });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  assert.ok(r.observations.some((o) => o.evidence.some((e) => e.source === "import")), "quotes stored");
+  gated = true;
+  await h.ins.fromAnswers("u1", { help: "Think with me" }); // a rewrite is running
+  // DELETE /v1/profile: the row goes (FileStore: the style file), then the service forgets
+  rmSync(join(h.dir, "styles"), { recursive: true, force: true });
+  h.ins.forget("u1");
+  release();
+  await new Promise((res) => setTimeout(res, 30));
+  assert.equal(await h.store.getStyle("u1"), null, "nothing written back");
+  // a later card (a new import or skip) never gets the old paste quoted
+  await h.p.replaceStyle("u1", CARD);
+  const calls = h.calls.length;
+  await h.ins.fromAnswers("u1", { help: "Be there" });
+  await h.ins.get("u1", 3000);
+  const last = h.calls.slice(calls).find((c) => c.schemaName === "insight_report");
+  assert.ok(last && !String(last.input).includes("ok but which one is cheaper lol"), "the forgotten paste is not sent again");
+});
+
+test("lead 11/4: a strength / watch-out that reuses no word of a quote or pick has no receipt and isn't shown", () => {
+  const raw = { ...RAW,
+    strengths: [{ text: "You keep calm under pressure, always.", trait: 0 }, { text: "Two or three options and you're already deciding.", trait: 0 }],
+    watchouts: [{ text: "You might overcommit on weekends.", fix: "I'll check in before plans.", trait: 1 }] };
+  const r = toReport(raw, INPUTS, { at: "", from: "import" });
+  assert.deepEqual(r.strengths.map((s) => s.text), ["Two or three options and you're already deciding."]);
+  assert.equal(r.watchouts.length, 0, "an empty watch-outs section is fine");
 });
