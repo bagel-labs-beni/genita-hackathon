@@ -791,7 +791,7 @@ struct FindCardPage: View {
 
     // r03 #19 "How I found this"; D4: a product card says it in one line instead of a colour legend
     @ViewBuilder private var howSection: some View {
-        if card.kind == .product {
+        if card.kind == .product && card.evidence != nil {
             Text(ProductPicks.sourceLine(card)).font(TypeStyle.body(13)).lineSpacing(5).foregroundStyle(FindsInk.sourceLine)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8).accessibilityIdentifier("findHow")
@@ -802,7 +802,8 @@ struct FindCardPage: View {
     private var howList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("How I found this").font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.mute)
-            ForEach(card.how, id: \.self) { line in
+            // D4: never the old colour legend (cards saved before the marks, or an older server)
+            ForEach(card.how.filter { !ProductPicks.isLegend($0) }, id: \.self) { line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     // PF-1b has no icons here: the lines use the full column (Figma 179:68)
                     if card.kind != .product {

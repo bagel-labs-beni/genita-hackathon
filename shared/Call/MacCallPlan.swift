@@ -118,7 +118,8 @@ enum ProductPicks {
     static func isLegend(_ line: String) -> Bool { line.hasPrefix("Blue:") || line.hasPrefix("Grey:") }
     /// "From your style and what you said · northline.com +1" (iPhone PF-1 and Mac "Why these" alike).
     static func sourceLine(_ card: FindCard) -> String {
-        let from = card.evidence?.style.trimmingCharacters(in: .whitespaces).isEmpty == false ? "From your style and what you said" : "From what you said"
+        let style = card.evidence?.style.trimmingCharacters(in: .whitespaces).isEmpty == false || (card.products ?? []).contains { !$0.taste.isEmpty }
+        let from = style ? "From your style and what you said" : "From what you said"
         var domains = picks(from: card).map(\.domain)
         if domains.isEmpty { domains = card.sources.map(\.domain).filter { !$0.isEmpty } }
         guard let first = domains.first else { return from }
