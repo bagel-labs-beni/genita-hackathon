@@ -482,6 +482,58 @@ export function cardsForField(field: keyof StyleCard["sections"]): StoryId[] {
 }
 
 /** Every text on a card the user can mark as "off" in C1 (items, tags, tiles, topics). */
+/**
+ * PATCH /v1/profile answers before Spark rewrites the card (S1: 9.6–14.8 s → one Spark call): the card as shown,
+ * minus the lines the user marked, plus the new facts the correction put in the profile (the plain fallback
+ * wording for those lines only). The Spark rewrite replaces it in the store moments later.
+ */
+export function interimCard(shown: StoryCard, marked: string[], before: StyleCard, card: StyleCard): StoryCard | null {
+  if (shown.id === "unknowns") return shown;
+  const fb = fallbackCard(shown.id as SparkStoryId, card);
+  if (!fb) return null;
+  // only the lines the correction brought in (the plain wording of facts that were there before stays out)
+  const old = fallbackCard(shown.id as SparkStoryId, before);
+  // the correction also replaced facts the user didn't mark (text only: "I want long answers now"): the card as
+  // shown may still say the old thing — answer with the plain card built from the corrected profile instead (Codex)
+  const now = new Set(cardTexts(fb));
+  if (old && cardTexts(old).some((t) => !now.has(t)) && !marked.length) return fb;
+  const had = new Set([...cardTexts(shown), ...(old ? cardTexts(old) : [])]);
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const items = [...shown.items.filter((i) => !gone.has(i.text)), ...fb.items.filter((i) => !had.has(i.text))].slice(0, shown.id === "lines" ? 4 : 3);
+  const tags = shown.tags || fb.tags ? [...(shown.tags ?? []).filter((t) => !gone.has(tagText(t))), ...(fb.tags ?? []).filter((t) => !had.has(tagText(t)))] : undefined;
+  const help = shown.help || fb.help ? [...(shown.help ?? []).filter((h) => !gone.has(h.label)), ...(fb.help ?? []).filter((h) => !had.has(h.label))].slice(0, 3) : undefined;
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
+/**
+ * S1 save, before any Spark: the card as shown with the marked lines out and the user's own words in (one line,
+ * as they typed it, evidence "explicit"). Spark's profile update and reword replace it in the background.
+ */
+export function optimisticCard(shown: StoryCard, marked: string[], text: string): StoryCard | null {
+  const gone = new Set(marked);
+  const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);
+  const said = text.replace(/\s+/g, " ").trim().slice(0, 120);
+  const line = said ? said[0].toUpperCase() + said.slice(1) : "";
+  if (shown.id === "unknowns") {
+    const unknowns = (shown.unknowns ?? []).filter((u) => !gone.has(u.topic) && !(said && u === shown.unknowns?.[0] && !marked.length));
+    return unknowns.length ? { ...shown, unknowns } : null;
+  }
+  const items = shown.items.filter((i) => !gone.has(i.text));
+  const tags = shown.tags?.filter((t) => !gone.has(tagText(t)));
+  const help = shown.help?.filter((h) => !gone.has(h.label));
+  // a chip is short: cut at a word, with an ellipsis (never mid-word: "…earth to")
+  const chip = (t: string) => (t.length <= 40 ? t : t.slice(0, 39).replace(/\s+\S*$/, "").replace(/[\s,.;:!?-]+$/, "") + "…");
+  if (line) {
+    if (shown.id === "taste" && tags) tags.push({ group: "style", text: chip(line), dislike: false });
+    else if (shown.id === "help" && help) help.push({ label: chip(line), sub: "", mode: "ask_first" });
+    else items.push({ text: line, evidence: "explicit" as Evidence });
+  }
+  if (!items.length && !tags?.length && !help?.length) return null;
+  return { ...shown, items, ...(tags ? { tags } : {}), ...(help ? { help } : {}) };
+}
+
 export function cardTexts(c: StoryCard): string[] {
   return [
     ...c.items.map((i) => i.text),

@@ -138,6 +138,8 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   next.dropped = card.dropped;
   if (card.growth) next.growth = card.growth;
   if (card.importedAt) next.importedAt = card.importedAt;
+  // S1 saves not turned into updates yet: a voice correction / call analysis merging meanwhile keeps them (Codex)
+  if (card.pendingCorrections?.length) next.pendingCorrections = card.pendingCorrections;
   if (tombs.length) next.removed = tombs.slice(-40);
   if (card.story) next.story = { ...card.story, stale: [...new Set([...(card.story.stale ?? []), ...stale])] };
   next.updatedAt = at;
