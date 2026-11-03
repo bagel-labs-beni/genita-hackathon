@@ -50,7 +50,7 @@ final class CompanionResetUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Jin, their face, voice and your chats together will be removed. What Genita knows about you stays."].exists)
         let startOver = app.buttons["Start over"]
         XCTAssertTrue(startOver.exists)
-        XCTAssertTrue(app.buttons["Cancel"].exists)
+        // iOS 26 shows the confirmation dialog as a popover without its Cancel row (tap outside cancels), as for Delete account
         capture(app, "reset-confirm-sheet")
         startOver.tap()
         // V01 "Bring an image": the companion is gone on the server and on the phone
@@ -77,8 +77,11 @@ final class CompanionResetUITests: XCTestCase {
         app.buttons["openMenu"].tap(); app.buttons["settings"].tap()
         XCTAssertTrue(app.buttons["makeNewCompanion"].waitForExistence(timeout: 5))
         app.buttons["makeNewCompanion"].tap()
-        XCTAssertTrue(app.buttons["Cancel"].waitForExistence(timeout: 5))
-        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["Start over"].waitForExistence(timeout: 5))
+        // Cancel: the Cancel row where the OS shows one (before iOS 26), else a tap outside the popover
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
+        else { app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap() }
+        XCTAssertTrue(app.buttons["Start over"].waitForNonExistence(timeout: 5), "the dialog closed")
         XCTAssertTrue(app.navigationBars["Settings"].exists, "Cancel keeps Settings open")
         XCTAssertEqual(stubCall("GET", "/me", token: true)?["hasCompanion"] as? Bool, true, "nothing removed")
     }
