@@ -1310,11 +1310,18 @@ final class FlowMorph: @unchecked Sendable {
             drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], nil, u, lf))
         }
         // Teeth layer (rig): the top key's mouth inside, opaque, alpha = its warped interior × opening.
-        var teethL: (key: [Float], field: [Float], int: [Float], s: Float)? = nil
+        var teethL: (key: [Float], field: [Float], int: [Float], s: Float, lit: Float)? = nil
         if let rg, let j = rigTop, let ip = intPix[order[j]] {
             let s = Float(min(1, max(0, (Double(am[j]) - rg.teethAlpha[0]) / max(1e-3, rg.teethAlpha[1]))))
             let leaving = rg.teethExitBeforeClose && usedV2 && (v2?.preClose ?? false)
-            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s) }
+            // 11/4: less light reaches a narrow gap (a closure releasing squeezed full-bright teeth into a white wire)
+            var lit: Float = 1
+            if interiorOn {
+                let open = Double(am[j]) - Double(order.firstIndex(of: "MBP").map { am[$0] } ?? 0)
+                let u = min(1, max(0, (open - 0.1) / 0.35))
+                lit = Float(0.55 + 0.45 * u * u * (3 - 2 * u))
+            }
+            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s, lit) }
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -1480,6 +1487,7 @@ final class FlowMorph: @unchecked Sendable {
                         al = min(1, al * tl.s)
                         if al > 0.002 {
                             var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
+                            if tl.lit < 1 { c = (c.0 * tl.lit, c.1 * tl.lit, c.2 * tl.lit) }
                             // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
                             if let ow = openW, tY < ow.yc {
                                 let l = (c.0 + c.1 + c.2) / 3, bw = min(1, max(0, (l - 120) / 60)) * 0.18
