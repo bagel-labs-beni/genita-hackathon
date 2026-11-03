@@ -131,7 +131,7 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
   // the net for every photo with a face, passed or not (lead 11/4 05:3x: the polish flow and V02-F show it too);
   // only "no face" skips it
   const faceFound = !!check.type && !check.reasons.some((r) => r.code === "no_face");
-  const faceOutline = faceFound ? faceRim(faceBoxes, rimHead) : null;
+  const faceOutline = faceFound ? faceRim(faceBoxes, rimHead, eyes) : null;
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,

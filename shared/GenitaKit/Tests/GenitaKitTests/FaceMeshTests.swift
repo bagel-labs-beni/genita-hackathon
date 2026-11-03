@@ -146,6 +146,21 @@ struct FaceMeshTests {
         #expect(mesh.bounds.height > 0.2, "the net spans the head-box face, not the goggle band (\(mesh.bounds.height))")
     }
 
+    @Test func aRealFaceInsideABigHeadBoxIsKept() throws {
+        // PH-06 p5: the head box took in the hands and the mug; the face (taller than wide) is 16 % of it
+        let face = (0..<32).map { k -> [Double] in let a = Double(k) / 32 * 2 * .pi; return [0.6 + 0.124 * cos(a), 0.35 + 0.193 * sin(a)] }
+        let mesh = try #require(FaceMesh.make(outline: face, points: nil, headBox: ImageHeadBox(nx1: 0.213, ny1: 0, nx2: 0.824, ny2: 0.947)))
+        #expect(mesh.bounds.maxY < 0.56, "the net stays on the face (\(mesh.bounds.maxY))")
+    }
+
+    @Test func theRimStaysInsideAnOffCentreOutline() throws {
+        // AU-36: a pear-shaped outline (wide at the bottom-right) puts the centroid off the box centre
+        let outline: [[Double]] = [[0.40, 0.20], [0.50, 0.18], [0.58, 0.22], [0.66, 0.40], [0.70, 0.60], [0.62, 0.66], [0.48, 0.66], [0.40, 0.55], [0.38, 0.35]]
+        let mesh = try #require(FaceMesh.make(outline: outline, points: nil, headBox: nil))
+        let rim = mesh.points.prefix(12)
+        #expect(rim.allSatisfy { $0.x >= 0.38 - 1e-6 && $0.x <= 0.70 + 1e-6 }, "rim x \(rim.map(\.x))")
+    }
+
     @Test func mapsImageFractionsLikeScaledToFill() {
         // a 941 × 1672 photo in a 342 × 240 frame: width fills, the middle band shows
         let view = CGSize(width: 342, height: 240), image = CGSize(width: 941, height: 1672)
