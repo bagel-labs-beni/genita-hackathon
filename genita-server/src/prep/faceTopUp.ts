@@ -20,6 +20,9 @@ export async function topUpFaceKeys(o: {
   env?: Record<string, string | undefined>;
   log?: (event: string, data: Record<string, unknown>) => void;
   signal?: AbortSignal;
+  /** After the write, wait this long and check the companion again: an account deletion that ran its blob sweep
+   *  while this (out-of-process) run was writing removes the row a moment later; the images go then too (codex P1). */
+  settleMs?: number;
 }): Promise<TopUpResult> {
   const t0 = performance.now();
   const c = o.companion;
@@ -76,6 +79,13 @@ export async function topUpFaceKeys(o: {
     // gone (or replaced) while we ran: drop what this run wrote
     if (written.length && !(await still())) await o.store.deleteAssets(c.userId, c.id).catch(() => undefined);
     return done("skipped", [], [], "companion gone");
+  }
+  if (written.length && (o.settleMs ?? 10_000) > 0) {
+    await new Promise((r) => setTimeout(r, o.settleMs ?? 10_000));
+    if (!(await still())) {
+      await o.store.deleteAssets(c.userId, c.id).catch(() => undefined);
+      return done("skipped", [], [], "companion gone");
+    }
   }
   const added = settled.filter(([k, i]) => i.status === "done" && written.includes(k)).map(([k]) => k);
   const rejected = settled.filter(([, i]) => i.status === "rejected").map(([k]) => k);

@@ -1,10 +1,12 @@
 /**
- * npm run face:topup -- (--companion <userId> … | --demo | --all) [--dry-run]
+ * npm run face:topup -- (--companion <userId> … | --demo) [--dry-run]
  *
  * Ops-only (11/3 night, expression layer): adds the face keys a prepped companion is missing (surprised /
  * concerned, Muse Image + SAM, ~30 s and two image edits per companion) without redoing its face set.
- * --demo = the judge demo template (D41) and every demo companion copied from it; --all = every companion whose
- * face step is done. Idempotent: a complete set is left alone. --dry-run only lists what would be made.
+ * --demo = the judge demo template (D41) and every demo companion copied from it. Idempotent: a complete set is left
+ * alone. --dry-run only lists what would be made. No "--all": this runs outside the server process, so it can't take
+ * part in DELETE /me; each write is re-checked 10 s later and dropped if the companion is gone (codex P1), and it
+ * is meant for the ops-owned demo set and named companions only.
  *
  * Env: DATABASE_URL (the server's DB), MODEL_API_KEY, the server's blob env (GENITA_S3_* or GENITA_DATA_DIR).
  * Prints one JSON line per companion; never prints keys.
@@ -23,14 +25,14 @@ const env = process.env;
 if (!env.DATABASE_URL) throw new Error("DATABASE_URL is required (the server's database)");
 if (!env.MODEL_API_KEY && !args.includes("--dry-run")) throw new Error("MODEL_API_KEY is required");
 const ids = args.flatMap((a, i) => (a === "--companion" ? [args[i + 1]] : []));
-const all = args.includes("--all"), demo = args.includes("--demo"), dry = args.includes("--dry-run");
-if (!ids.length && !all && !demo) throw new Error("say which: --companion <userId> | --demo | --all");
+const demo = args.includes("--demo"), dry = args.includes("--dry-run");
+if (!ids.length && !demo) throw new Error("say which: --companion <userId> | --demo");
 
 const db = await openDb(env.DATABASE_URL);
 const store = new PgPrepStore(db, blobStoreFromEnv(env, join(env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "blobs")));
 const log = (event: string, data: Record<string, unknown>) => console.log(JSON.stringify({ event, ...data }));
 try {
-  const list = (await store.listCompanions()).filter((c) => all || ids.includes(c.userId) || (demo && c.demo === true));
+  const list = (await store.listCompanions()).filter((c) => ids.includes(c.userId) || (demo && c.demo === true));
   if (demo) {
     const { DEMO_TEMPLATE_SUB } = await import("../src/prep/demo.ts");
     const { Accounts } = await import("../src/auth/accounts.ts");

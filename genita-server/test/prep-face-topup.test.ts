@@ -40,7 +40,7 @@ test("face top-up: only the missing expression keys are edited, saved, and serve
     await store.putCompanion(prepped());
     await store.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
     const { media, calls } = fakeMedia({ keyOf });
-    const r = await topUpFaceKeys({ store, media, metaKey: "k", companion: (await store.getCompanion("u1"))!, env: {} });
+    const r = await topUpFaceKeys({ store, media, metaKey: "k", companion: (await store.getCompanion("u1"))!, env: {}, settleMs: 0 });
     assert.equal(r.status, "added");
     assert.deepEqual([...r.added].sort(), ["concerned", "surprised"]);
     assert.deepEqual(calls.edits.map((e) => e.key).sort(), ["concerned", "surprised"], "no old key is redone");
@@ -53,7 +53,7 @@ test("face top-up: only the missing expression keys are edited, saved, and serve
     const m = faceManifest(f, (k) => `/v1/companion/face/${k}`);
     assert.deepEqual(Object.keys(m.images), ["neutral", "person", "blink", "smile", "warm", "surprised", "concerned"]);
     // second run: nothing to do
-    const again = await topUpFaceKeys({ store, media, metaKey: "k", companion: c, env: {} });
+    const again = await topUpFaceKeys({ store, media, metaKey: "k", companion: c, env: {}, settleMs: 0 });
     assert.equal(again.status, "complete");
     assert.equal(calls.edits.length, 2);
     // the switch off: nothing is made
@@ -73,7 +73,7 @@ test("face top-up: a companion still prepping (or without a face) is skipped, ne
     c.prep.steps.face = { status: "running", attempts: 1 };
     await store.putCompanion(c);
     const { media, calls } = fakeMedia({ keyOf });
-    const r = await topUpFaceKeys({ store, media, metaKey: "k", companion: c, env: {} });
+    const r = await topUpFaceKeys({ store, media, metaKey: "k", companion: c, env: {}, settleMs: 0 });
     assert.equal(r.status, "skipped");
     assert.equal(calls.edits.length, 0);
   } finally {
@@ -104,7 +104,7 @@ test("face top-up (codex P1/P2): a companion deleted mid-run keeps no new image;
     await s2.putCompanion(a);
     await s2.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
     const failing = fakeMedia({ keyOf, fail: (tag) => (tag.startsWith("surprised") ? new Error("upstream 503") : null) });
-    const run2 = topUpFaceKeys({ store: s2, media: failing.media, metaKey: "k", companion: a, env: {} });
+    const run2 = topUpFaceKeys({ store: s2, media: failing.media, metaKey: "k", companion: a, env: {}, settleMs: 0 });
     await s2.patchCompanion("u1", (x) => {
       const f = x.prep.steps.face!;
       return { ...x, prep: { ...x.prep, steps: { ...x.prep.steps, face: { ...f, face: { ...f.face!, items: { ...f.face!.items, surprised: { status: "done", box: BOX, retried: false, ms: 1 } } } } } } };
@@ -114,6 +114,16 @@ test("face top-up (codex P1/P2): a companion deleted mid-run keeps no new image;
     const after = (await s2.getCompanion("u1"))!.prep.steps.face!.face!.items;
     assert.equal(after.surprised?.status, "done", "never downgraded");
     assert.equal(after.concerned?.status, "done");
+
+    // P1 (2nd review): the deletion's blob sweep ran while this run wrote; the row goes a moment later → swept
+    const s3 = new FileStore(join(dir, "c"));
+    await s3.putCompanion(prepped());
+    await s3.putAsset("u1", "c1", "neutral", fakePng(1000, 2000, "scene"));
+    const run3 = topUpFaceKeys({ store: s3, media: fakeMedia({ keyOf }).media, metaKey: "k", companion: (await s3.getCompanion("u1"))!, env: {}, settleMs: 80 });
+    await new Promise((r) => setTimeout(r, 40));
+    await s3.deleteCompanion("u1");
+    assert.equal((await run3).status, "skipped");
+    for (const k of ["surprised", "concerned"]) assert.equal(await s3.getAsset("u1", "c1", k), null, `${k} swept`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
