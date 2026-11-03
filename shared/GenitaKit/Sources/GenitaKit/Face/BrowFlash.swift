@@ -45,6 +45,20 @@ enum BrowFlash {
         return 0
     }
 
+    /// 11/4 watch "inhale" backchannel (#613): one flash on the render clock (s), no reply audio needed — the companion
+    /// reacts to a big move on the shared screen with a small inhale and its brows go up once (0.3 s, the same envelope).
+    /// A new trigger restarts it; a clock that goes back drops it.
+    struct Timed {
+        private(set) var onset: Double?
+        mutating func trigger(at t: Double) { onset = t }
+        mutating func weight(at t: Double) -> Double {
+            guard let s = onset else { return 0 }
+            // a frame stamped just before the trigger (in flight on the render queue) waits; a clock reset drops it
+            if t < s - 0.5 || t - s >= BrowFlash.rise + BrowFlash.hold + BrowFlash.fall { onset = nil; return 0 }
+            return BrowFlash.envelope(at: t, onsets: [s])
+        }
+    }
+
     /// Codex P2: the aligner sends phonemes clause by clause, so the loudness ranking changes as a reply streams.
     /// A flash that has started is kept to its end, and a new one must start ≥ minGap after the last one shown.
     struct Tracker {

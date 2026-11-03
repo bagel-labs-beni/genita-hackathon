@@ -111,6 +111,12 @@ public final class FaceDriver: ObservableObject {
         queue.async { r.addExpression(e, utteranceId: utteranceId) }
     }
 
+    /// Watch "inhale" backchannel (#613): the brows go up once (0.3 s) now, on the render clock — no reply needed.
+    public func flashBrows() {
+        let r = renderer, t = now()
+        queue.async { r.flashBrows(at: t) }
+    }
+
     public func setEmotion(_ emotion: String?) {
         let r = renderer, t = now()
         queue.async { r.setEmotion(emotion, at: t) }

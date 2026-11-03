@@ -48,6 +48,12 @@ public final class FaceRenderer: @unchecked Sendable {
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
     private var browTracker = BrowFlash.Tracker()
+    private var timedBrows = BrowFlash.Timed()
+    /// Watch "inhale" backchannel (#613): the brows lift once (0.3 s) starting at render time `t` (the clock `render(at:)`
+    /// gets), with or without a reply playing. No-op on faces without a brow band (animals) and with Reduce Motion.
+    public func flashBrows(at t: Double) { lock.lock(); timedBrows.trigger(at: t); lock.unlock() }
+    /// This face has a brow band to lift (tests).
+    var hasBrowBand: Bool { browMask != nil }
     /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
     /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
     /// a band hung from its top lifted the hairline, not the brows). The brow ellipse ends above the eye cut-out.
@@ -393,10 +399,12 @@ public final class FaceRenderer: @unchecked Sendable {
 
         // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
         // through a soft mask (no warp of the eyes; 0–2 per sentence)
-        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
+        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask {
             let w: Double = { lock.lock(); defer { lock.unlock() }
-                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
-                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
+                let timed = timedBrows.weight(at: t)   // the watch inhale (render clock)
+                guard let ctx = context else { return timed }
+                return max(timed, browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
+                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) })) }()
             if w > 0.01 {
                 let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
                 let f = CIFilter.blendWithAlphaMask()

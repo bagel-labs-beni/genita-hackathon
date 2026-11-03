@@ -492,6 +492,39 @@ struct BrowFlashTests {
         #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
     }
 
+    /// 11/4 watch "inhale" (#613): a time-driven flash — up within 0.1 s, held, down by 0.3 s (≤ 0.5 s), once.
+    @Test func anInhaleFlashesTheBrowsOnceOnTheRenderClock() {
+        var b = BrowFlash.Timed()
+        #expect(b.weight(at: 5) == 0)
+        b.trigger(at: 10)
+        #expect(b.weight(at: 9.9) == 0)
+        #expect(b.weight(at: 10.05) > 0 && b.weight(at: 10.05) < 1)
+        #expect(b.weight(at: 10.15) == 1)
+        #expect(b.weight(at: 10.29) > 0)
+        #expect(b.weight(at: 10.31) == 0)
+        #expect(b.onset == nil)                                  // done: it does not come back
+        #expect(b.weight(at: 10.15) == 0)
+        b.trigger(at: 20); _ = b.weight(at: 20.1)
+        #expect(b.weight(at: 3) == 0 && b.onset == nil)          // a clock that goes back drops it
+        #expect(BrowFlash.rise + BrowFlash.hold + BrowFlash.fall <= 0.5)
+    }
+
+    /// The renderer lifts the brow band for an inhale without any reply playing (no lip context).
+    @Test func anInhaleLiftsTheBrowsWithoutAReply() {
+        let size = CGSize(width: 180, height: 320)
+        let a = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3), b = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3)
+        #expect(a.hasBrowBand)
+        b.flashBrows(at: 1.0)
+        let still = bytes(a.render(at: 1.15, lip: .rest)), lifted = bytes(b.render(at: 1.15, lip: .rest))
+        #expect(meanDiff(still, lifted) > 0.01)
+        // after the flash both render the same frame again
+        #expect(meanDiff(bytes(a.render(at: 1.6, lip: .rest)), bytes(b.render(at: 1.6, lip: .rest))) < 1e-9)
+        // Reduce Motion: no lift
+        let c = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true), d = FaceRenderer(faceSet: animalSet, outputSize: size, seed: 3, reduceMotion: true)
+        d.flashBrows(at: 1.0)
+        #expect(meanDiff(bytes(c.render(at: 1.15, lip: .rest)), bytes(d.render(at: 1.15, lip: .rest))) < 1e-9)
+    }
+
     @Test func aClockJumpBackForgetsTheOldFlashes() {
         var tr = BrowFlash.Tracker()
         let ph = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }

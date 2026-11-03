@@ -829,6 +829,8 @@ enum CallStop: Equatable {
         case let .backchannel(b):
             // convo P1 #345: the server's soft "mm-hm" in the companion's own voice, played beside (never as) a reply
             if let audio = b.audio, let pcm = Data(base64Encoded: audio) { self.audio.playCue(pcm: pcm) }
+            // 11/4 watch together (#613): "inhale" = the instant nonverbal reaction — the brows lift with the breath
+            if b.kind == "inhale" { face?.flashBrows() }
         }
     }
 
