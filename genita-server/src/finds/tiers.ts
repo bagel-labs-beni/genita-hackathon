@@ -134,22 +134,31 @@ export function toWire(cands: readonly Candidate[]): FindItem[] {
 export const RECIPE_SUBTITLE_MAX = 38;
 
 /**
- * "15 min · Have 4 · Need rice" and the collapsed "Need rice". The line must fit on one line beside the picture
- * with the shopping part whole (#215: "…You have 6, need soy sa…" lost the part that matters): the full names when
- * they fit, else without the count, else "Need 3 things".
+ * "15 min · Have 3 · 3 to check · Need rice" and the collapsed "Need rice". One line beside the picture with the
+ * shopping part whole (#215): the full names when they fit, else without the count, else "Need 3 things".
+ * A "maybe" is not had until the user says yes (sweep 11/3 [P2]: kimchi/egg/rice as maybe read "You have 6,
+ * nothing to buy"); while items are still being checked there is no count at all ("You have 0, nothing to buy").
  */
 export function recipeSummary(items: FindItem[], minutes: number | null): { subtitle: string; status: string } {
-  const have = items.filter((i) => i.tier === "have" || i.tier === "maybe").length;
-  const need = items.filter((i) => i.tier === "buy" && !i.optional).map((i) => i.name);
-  const needText = need.length === 0 ? "nothing to buy" : need.length <= 2 ? `need ${need.join(" and ")}` : `need ${need.length} things`;
-  const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
   const time = minutes && minutes > 0 ? [`${minutes} min`] : [];
-  const counted = need.length === 0 ? "Nothing to buy" : `Need ${need.length} ${need.length === 1 ? "thing" : "things"}`;
+  if (items.some((i) => i.tier === "checking")) return { subtitle: time.join(""), status: "" };
+  const have = items.filter((i) => i.tier === "have").length;
+  const check = items.filter((i) => i.tier === "maybe").length;
+  const need = items.filter((i) => i.tier === "buy" && !i.optional).map((i) => i.name);
+  const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const needText = need.length === 0 ? (check ? "" : "nothing to buy") : need.length <= 2 ? `need ${need.join(" and ")}` : `need ${need.length} things`;
+  const counted = need.length === 0 ? (check ? "" : "Nothing to buy") : `Need ${need.length} ${need.length === 1 ? "thing" : "things"}`;
+  const haveP = have || !check ? [`Have ${have}`] : [];
+  const checkP = check ? [`${check} to check`] : [];
   const options = [
-    [...time, `Have ${have}`, cap(needText)],
-    [...time, cap(needText)],
-    [...time, `Have ${have}`, counted],
-  ].map((p) => p.join(" · "));
-  const subtitle = options.find((o) => o.length <= RECIPE_SUBTITLE_MAX) ?? options[2];
-  return { subtitle, status: need.length === 0 ? "You have it all" : cap(needText) };
+    [...time, ...haveP, ...checkP, cap(needText)],
+    [...time, ...checkP, cap(needText)],
+    [...time, ...haveP, ...checkP, counted],
+    [...time, ...checkP, counted],
+    [...time, counted || `${check} to check`],
+  ].map((p) => p.filter(Boolean).join(" · "));
+  // always one line beside the picture (Codex P2: "15 min · Have 1 · 1 to check · Need 2 things" was 44)
+  const subtitle = options.find((o) => o.length <= RECIPE_SUBTITLE_MAX) ?? options[options.length - 1];
+  const status = need.length ? cap(needText) : check ? `${check} to check` : "You have it all";
+  return { subtitle, status };
 }

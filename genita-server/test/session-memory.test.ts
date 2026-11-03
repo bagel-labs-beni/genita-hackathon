@@ -16,7 +16,8 @@ import type { SparkRequest } from "../src/meta/spark.ts";
 import { InMemoryMemoryRepository, mergeSummary } from "../src/memory/repository.ts";
 import { PgMemoryRepository } from "../src/memory/pgRepository.ts";
 import { MemoryService } from "../src/memory/service.ts";
-import { safeMemoryText, type Turn } from "../src/memory/extract.ts";
+import { cleanKeys, safeMemoryText, type Turn } from "../src/memory/extract.ts";
+import { MemoryCall } from "../src/memory/call.ts";
 import { cleanSummary, createSummarizer, summaryPrompt, SUMMARY_KEEP, type CallSummary, type Summarizer } from "../src/memory/summaries.ts";
 
 const config = { ...loadConfig({ MODEL_API_KEY: "fake-meta" }), port: 0, webSearch: false, speculate: false, sparkHedge: 1 };
@@ -652,4 +653,164 @@ test("server (train review P2): iPhone → Mac, the Mac hangs up, the old iPhone
   const back = await open("mac"); start(back); await waitFor(() => back.replies() >= 1);
   assert.equal(logs.filter((e) => e === "history.seeded").length, before, "the Mac hung up last: a return visit there");
   for (const w of sockets) w.terminate();
+});
+
+test("QA 11/3 P2: a forget request never becomes a memory or a note (no 'you told me to forget X')", () => {
+  for (const bad of ["User asked to forget the leather accessories thing", "Asked me not to remember the leather bag", "Wants the companion to erase what they said about leather", "Forget the leather accessories thing", "Please forget about it", "Don't remember that I said that", "Leather accessories, asked to be forgotten", "가죽 얘기는 잊어 달라고 함", "그 얘기 기억하지 마"]) {
+    assert.equal(safeMemoryText(bad), false, bad);
+  }
+  // ordinary facts that happen to say "forget" stay (coordinator 11/3)
+  for (const ok of ["I always forget my keys", "I forgot my umbrella at the cafe", "I tend to forget birthdays", "My favorite movie is Forgetting Sarah Marshall"]) {
+    assert.equal(safeMemoryText(ok), true, ok);
+  }
+  const s = cleanSummary({ topics: ["Leather accessories (asked to forget)", "Jacket shopping"], mood: "relaxed", open_threads: ["User wants Jin to forget the leather thing"], promises: ["Forget the leather accessories"], asks: [] });
+  assert.deepEqual(s, { topics: ["Jacket shopping"], mood: "relaxed", open_threads: [], promises: [], asks: [] });
+});
+
+test("Codex 11/3 (#443): an empty summary of a thread whose topic was asked to be forgotten clears that thread's old row", async () => {
+  let next: Summarizer = async () => cleanSummary({ topics: ["Leather accessories"], mood: "", open_threads: [], promises: [], asks: [] });
+  const { memory } = setup(async (t, p) => next(t, p));
+  await memory.summarizeThread("acct-a", "t1", [{ user: "I love leather accessories.", assistant: "Nice." }], 0);
+  assert.equal((await memory.summaries("acct-a")).length, 1);
+  next = async () => null; // the model left everything out: "forget the leather thing"
+  await memory.summarizeThread("acct-a", "t1", [{ user: "Forget the leather thing.", assistant: "Done." }], 0, 2);
+  assert.deepEqual(await memory.summaries("acct-a"), [], "no stale 'Leather accessories' note for the next call");
+  // a vendor failure (throw) keeps the old row
+  next = async () => cleanSummary({ topics: ["Jacket shopping"], mood: "", open_threads: [], promises: [], asks: [] });
+  await memory.summarizeThread("acct-a", "t2", [{ user: "Jacket?", assistant: "Sure." }], 0);
+  next = async () => { throw new Error("vendor"); };
+  await memory.summarizeThread("acct-a", "t2", [{ user: "x", assistant: "y" }], 0, 2).catch(() => null);
+  assert.equal((await memory.summaries("acct-a")).length, 1);
+});
+
+test("Codex 11/3 (#443): recall keys never carry a forget request, and the recall tool returns only id + text", async () => {
+  assert.deepEqual(cleanKeys(["forget the leather thing", "jacket", "navy", "잊어줘"]), ["jacket", "navy"]);
+  const repo = new InMemoryMemoryRepository();
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [{ text: "I like navy jackets.", kind: "fact", sensitive: "none", follow_up: false, keys: ["forget the leather thing", "jacket"] }] });
+  await memory.extract("u", "s", [{ user: "I like navy jackets.", assistant: "Nice." }], 0);
+  assert.deepEqual((await memory.list("u"))[0].keys, ["jacket"]);
+  const call = new MemoryCall(memory, "u", "s2"); await call.open(false);
+  const out = await (call as unknown as { execute(c: { name: string; arguments: string; call_id: string; type: "function_call" }): Promise<{ memories: Record<string, unknown>[] }> }).execute({ type: "function_call", name: "recall", call_id: "c", arguments: JSON.stringify({ query: "navy jacket" }) });
+  assert.deepEqual(Object.keys(out.memories[0]).sort(), ["id", "text"]);
+  call.close(); await memory.drain();
+});
+
+test("P1 FILM 11/3: a quick call-back after a hang-up has the call that just ended even while its summary is still being written", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {}); // the background summary is slow (Spark Open reasoning)
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open("iphone"); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["White or black for the Halloween party?", "Black it is.", "Remind me to get dark brown shoes."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open("iphone"); start(back); await waitFor(() => back.replies() >= 1);
+  const inst = requests[0].instructions ?? "";
+  assert.match(inst, /ended moments ago/);
+  assert.match(inst, /Black it is/); assert.match(inst, /dark brown shoes/);
+  // the next reply keeps it too (recall question), not just the greeting
+  const n = back.replies(); back.ws.send(JSON.stringify({ type: "text", text: "What did I decide?" })); await waitFor(() => back.replies() > n);
+  assert.match(requests.at(-1)!.instructions ?? "", /Black it is/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/3 (#447): a hung-up call with a forget request in it sends no raw lines; a mid-call summary doesn't hide the later decision", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I picked the leather jacket." }, { role: "assistant", text: "Nice." }, { role: "user", text: "Forget the leather thing." }], "t1", 2);
+  assert.equal(c.lastCall, null, "nothing from that call rides along until its safe summary exists");
+  c.setLastCall([{ role: "user", text: "White or black?" }, { role: "assistant", text: "Black." }, { role: "user", text: "Black it is, final." }], "t2", 13);
+  c.summaries = [{ thread_id: "t2", turns: 12, created_at: 0, updated_at: 0, topics: ["Choosing white vs black"], mood: null, open_threads: ["White or black"], promises: [], asks: [] }];
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "hi" }, new AbortController().signal, src as never, "hi", null)) { /* drain */ }
+  assert.match(reqs[0].instructions ?? "", /Black it is, final/, "the 12-turn summary doesn't cover turn 13");
+  c.close(); await memory.drain();
+});
+
+test("Codex 11/3 (#447 r2): a forget request early in the call (outside the last lines) still keeps all raw lines out of the call-back", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=iphone`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open(); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["Don't remember anything from this call.", "I bought an amber pendant.", "It was on sale.", "The chain is gold.", "I wore it today."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/3 (#447 r3): a forget request travels with the conversation to the other device", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+  await say(phone, "Don't remember anything from this call.");
+  for (let i = 0; i < 8; i++) await say(phone, i === 7 ? "I bought an amber pendant." : `Small talk line ${i}.`);
+  const mac = await open("mac"); start(mac); await waitFor(mac.ready); // inherits; the request is outside its kept lines
+  await say(mac, "On the Mac now.");
+  phone.ws.send(JSON.stringify({ type: "stop" }));
+  mac.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.filter((e) => e === "session.close").length >= 2);
+  requests.length = 0;
+  const back = await open("mac"); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/4 (hotfix merge): a 'forget that …' said in the call-back clears the matching line of the call that just ended", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I like leather accessories." }, { role: "assistant", text: "Leather suits you." }, { role: "user", text: "Black it is." }], "t1", 2);
+  c.setAvoid([{ text: "I like leather accessories", forget: true }]);
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "What should I wear?" }, new AbortController().signal, src as never, "What should I wear?", undefined)) { /* drain */ }
+  const inst = reqs[0].instructions ?? "";
+  assert.doesNotMatch(inst, /leather/i);
+  assert.match(inst, /Black it is/, "the rest of the last call stays");
+  c.close(); await memory.drain();
 });

@@ -44,6 +44,8 @@ export function pickSources(searches: WebSearch[], question = ""): FindCard["sou
 
 /** "let me check", "I'll look it up", "checking who won… for you", "pulling the latest now": the line before the search */
 const NARRATION = [
+  // a hold beat or a bare reaction is not a point ("Ooh, okay.", "Got it.", "Mm.")
+  /^\W*(?:ooh|oh|mm|mm-hm|hmm|yeah|yes|okay|ok|so|got it|sure|you got it|right)(?:[,\s]+(?:okay|so|then))?\W*$/i,
   /^\W*(got it|okay|ok|sure|hold on|one sec|give me a sec)\W*$/i,
   /\b(let me|i'?ll|i will|i'm|i am|gonna|going to)\b[^.!?]*\b(check|look|search|pull|find|dig)/i,
   /\b(checking|pulling up|pulling the latest|looking (?:it|that|this) up|searching|digging)\b[^.!?]*\b(now|for you|real quick|quick|the latest)\b/i,

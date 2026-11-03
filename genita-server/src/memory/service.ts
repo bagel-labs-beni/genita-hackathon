@@ -85,7 +85,16 @@ export class MemoryService {
     if ((await this.state.getState(userId)).revision !== revision) return null;
     const previous = (await this.summaryStore!.listSummaries(userId, SUMMARY_KEEP)).find((s) => s.thread_id === threadId) ?? null;
     const body = await this.options.summarize!(turns, previous);
-    if (!body) return null;
+    if (!body) {
+      // A valid but empty summary (a vendor failure throws instead): nothing in this thread may be carried forward,
+      // so its older row goes too — e.g. the whole earlier topic was asked to be forgotten (Codex 11/3).
+      if (previous) await this.serial(userId, async () => {
+        if ((await this.state.getState(userId)).revision !== revision) return;
+        await this.summaryStore!.deleteSummary?.(userId, threadId);
+        this.log("memory.summary_cleared", { turns: covered });
+      });
+      return null;
+    }
     return this.serial(userId, async () => {
       if ((await this.state.getState(userId)).revision !== revision) return null;
       const now = this.now();

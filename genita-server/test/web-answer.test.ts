@@ -57,6 +57,8 @@ test("the card: the spoken answer without the 'let me check' line, one source pe
   assert.deepEqual(answerPoints("You got it — I'll check who leads Nintendo right now.Hey, it's Shuntaro Furukawa! He's been president since June 2018."), ["Hey, it's Shuntaro Furukawa!", "He's been president since June 2018."]);
   assert.deepEqual(answerPoints("Catching you up on Artemis — pulling the latest now.Hey, so Artemis III is now an Earth-orbit test."), ["Hey, so Artemis III is now an Earth-orbit test."]);
   assert.deepEqual(answerPoints("Hey — checking who won the latest World Series for you.The Brewers won it all! They beat the Rays 4–1."), ["The Brewers won it all!", "They beat the Rays 4–1."]);
+  assert.deepEqual(answerPoints("Ooh, okay. The Brewers won it, beating the Rays four games to one."), ["The Brewers won it, beating the Rays four games to one."], "a beat is not a point (real Spark 11/3)");
+  assert.deepEqual(answerPoints("Got it. Okay so big shakeup, Artemis III is not landing now."), ["Okay so big shakeup, Artemis III is not landing now."]);
   assert.deepEqual(answerPoints("Sure, the current president is Shuntaro Furukawa. He has held the role since 2018."), ["Sure, the current president is Shuntaro Furukawa.", "He has held the role since 2018."], "a leading 'Sure' keeps the answer (Codex P2)");
   assert.deepEqual(answerPoints("The U.S. Army band played. They're looking at a 2027 launch."), ["The U.S. Army band played.", "They're looking at a 2027 launch."], "facts stay, abbreviations stay whole");
   const card = webAnswerCard({ id: "f1", question: "Who is the CEO of Nintendo?", said: "It's Shuntaro Furukawa.", searches: [{ query: SEARCH.action.query, urls: SEARCH.action.sources.map((s) => s.url) }] })!;

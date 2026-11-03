@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { loadConfig, type VoiceConfig } from "../src/config.ts";
 import { normalizeEnglish, normalizeKorean, numberToWords, pauseAfterMs, sinoKorean } from "../src/voice/normalize.ts";
 import { SentenceSplitter } from "../src/text/sentences.ts";
-import { createSeamless, resolveSpeaker, seamlessLang, speedFor } from "../src/tts/seamless.ts";
+import { FILLERS, NEUTRAL_FILLERS, VOICE_EMOTIONS, createSeamless, resolveSpeaker, seamlessLang, speedFor } from "../src/tts/seamless.ts";
 import { defaultDeps } from "../src/server.ts";
 
 // ---------- config ----------
@@ -133,20 +133,62 @@ test("client: sends spoken text, lang, speaker, pause; yields PCM + character al
 
 // 11/3 post chain: the emotion goes to the voice GPU for longer clauses only (fillers and the first sound stay cached
 // and unchanged); neutral sends nothing; GENITA_VOICE_POST=0 asks for the raw voice
-test("client: emotion is sent for longer clauses only, neutral never; post:false only when turned off", async () => {
+// Chelsea 11/3 23:42: emotion on every clause incl. the first sound and the fillers; the filler cache is per emotion
+test("client: emotion is sent on every clause (fillers too), neutral/curious never; post:false only when turned off", async () => {
   const bodies: Record<string, unknown>[] = [];
   const f = (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch;
   const v = createSeamless(cfg, { fetch: f });
   const say = async (cl: typeof v, text: string, emotion: string | null) => { for await (const _ of cl.speak({ voiceId: "seamless:3", text, emotion, model: "x" })) void _; };
-  await say(v, "Oh wow,", "excited");
+  await say(v, "Hmm,", "excited");
   await say(v, "you actually made the soup?", "Excited");
   await say(v, "you actually made the soup?", "neutral");
+  await say(v, "you actually made the soup?", "curious");
   await say(createSeamless({ ...cfg, post: false }, { fetch: f }), "you actually made the soup?", "sad");
-  assert.equal("emotion" in bodies[0], false, "short filler: no emotion");
+  assert.equal(bodies[0].emotion, "excited", "short filler / first sound: emotion too");
   assert.equal(bodies[1].emotion, "excited");
   assert.equal("emotion" in bodies[2], false, "neutral: nothing");
-  assert.equal(bodies[3].post, false);
+  assert.equal("emotion" in bodies[3], false, "curious has no voice move: nothing");
+  assert.equal(bodies[4].post, false);
+  assert.equal("emotion" in bodies[4], false, "raw voice: no emotion either");
   assert.equal("post" in bodies[0], false, "default requests do not carry post");
+  // a filler x emotion pair that measured > 0.1 UTMOS below the raw filler stays neutral
+  await say(v, "Oh wow,", "excited");
+  assert.equal("emotion" in bodies[5], false, "Oh wow, | excited is in NEUTRAL_FILLERS");
+  assert.ok(NEUTRAL_FILLERS.has("Oh wow,|excited") && !NEUTRAL_FILLERS.has("Hmm,|excited"));
+});
+
+test("client: GENITA_VOICE_EMOTION=0 keeps the post chain but sends no emotion", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const f = (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch;
+  const c = loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "http://127.0.0.1:9", GENITA_VOICE_TOKEN: "t", GENITA_VOICE_EMOTION: "0" });
+  assert.equal(c.voice?.emotion, false);
+  for await (const _ of createSeamless({ ...cfg, emotion: false }, { fetch: f }).speak({ voiceId: "seamless:3", text: "you actually made the soup?", emotion: "excited", model: "x" })) void _;
+  assert.equal("emotion" in bodies[0], false);
+  assert.equal("post" in bodies[0], false);
+});
+
+test("client: the filler cache is per emotion; the same emotional filler is a cache hit the second time", async () => {
+  let n = 0;
+  const v = createSeamless(cfg, { fetch: (async () => (n++, ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  const say = async (emotion: string | null) => { for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hmm,", emotion, model: "x" })) void _; };
+  await say(null);
+  await say("excited");
+  await say("excited");
+  await say(null);
+  assert.equal(n, 2, "neutral and excited each fetched once");
+});
+
+test("client: prefetch caches the neutral fillers, then every filler per voice emotion, so an emotional first sound hits the cache", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const v = createSeamless(cfg, { fetch: (async (_u: string, init: RequestInit) => (bodies.push(JSON.parse(String(init.body))), ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  v.prefetch(3);
+  const want = FILLERS.length * (1 + VOICE_EMOTIONS.length) - [...NEUTRAL_FILLERS].length;
+  for (let i = 0; i < 400 && bodies.length < want; i++) await new Promise((r) => setTimeout(r, 1));
+  assert.equal(bodies.length, want);
+  assert.equal(bodies.slice(0, FILLERS.length).every((b) => !("emotion" in b)), true, "neutral first");
+  const before = bodies.length;
+  for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hmm,", emotion: "teasing", model: "x" })) void _;
+  assert.equal(bodies.length, before, "cache hit, no request");
 });
 
 test("client: Korean sentences go out as kor (interpretation uses the same service)", async () => {

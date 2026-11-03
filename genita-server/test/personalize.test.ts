@@ -74,7 +74,7 @@ test("toStory: HISY v2 cards — fixed eyebrows/headlines, evidence clamped per 
   const raw = {
     cards: [
       sc("think", { headline: "You decide by comparing.", items: [{ text: "You line up two options.", evidence: "explicit" }] }),
-      sc("talk", { headline: "Warm, direct, and short.", items: [{ text: "You like a friendly tone, but you want the answer up front.", evidence: "explicit" }, { text: "You switch to Korean when relaxed.", evidence: "memory" }], promise: "I'll lead with the answer." }),
+      sc("talk", { headline: "Warm, direct, and short.", items: [{ text: "You like a friendly tone, but you want the answer up front.", evidence: "explicit" }, { text: "You loosen up and joke more when relaxed.", evidence: "memory" }], promise: "I'll lead with the answer." }),
       sc("taste", { headline: "Clean lines, home cooking.", tags: [tag("style", "Clean, minimal"), tag("food", "Korean comfort food"), tag("food", "Cilantro", true), tag("watch", "a".repeat(40))] }),
       sc("help", { headline: "ignored", help: [{ label: "Find clothes that fit your style", sub: "Two picks, with links", mode: "just_do_it" }, { label: "Book a table", sub: "", mode: "ask_first" }] }),
       sc("lines", { items: [{ text: "No advice you didn't ask for.", evidence: "explicit" }] }),
@@ -529,4 +529,13 @@ test("the first-call nod is a taste guess, never 'I hear' or a look", () => {
   assert.match(nod, /guess or tease about their taste/);
   assert.match(nod, /never say "you look", "looks like"/);
   assert.doesNotMatch(nod, /like "I hear you're into/);
+});
+
+test("QA K-test P3: a shopping price range always lands in likes as one Budget line, never in interests", async () => {
+  const { asBudget } = await import("../src/personalize/merge.ts");
+  assert.deepEqual(asBudget({ field: "interests", text: "Prefers clothes usually under $100.", replaces: [], label: "explicit" }), { field: "likes", text: "Budget: usually under $100.", replaces: [], label: "explicit" });
+  assert.equal(asBudget({ field: "interests", text: "Into film photography.", replaces: [], label: "explicit" }).field, "interests");
+  const r = mergeUpdates(rawCard(), [{ field: "interests", text: "Prefers clothes usually under $100.", replaces: [], label: "explicit" }], "2026-11-03T12:00:00Z");
+  assert.equal(r.card.sections.likes[0].text, "Budget: usually under $100.");
+  assert.ok(!r.card.sections.interests.some((x) => /\$100/.test(x.text)));
 });

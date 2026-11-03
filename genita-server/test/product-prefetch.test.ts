@@ -80,6 +80,30 @@ test("an outfit card starts the matching shoe search in the background; a later 
   assert.ok(!events.some((e) => "findId" in e && e.findId !== started!.findId && e.type === "find.created" && e.card.kind === "product"), "the prefetch's own id never reaches the app");
 });
 
+test("Codex P2 (#links-ask): after an outfit pick, a bare 'send me the links' takes the prefetched shoes", async () => {
+  const { v, searches } = vendors(50);
+  const { r, events } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await sleep(20);
+  const pre = searches.length;
+  await r.settle(); await sleep(200);
+  const started = r.onTurn({ text: "Send me the links.", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  assert.equal(started?.kind, "product");
+  await r.settle();
+  assert.equal(searches.length, pre, "no second search");
+  assert.ok(events.some((e) => e.type === "find.created" && e.findId === started!.findId));
+});
+
+test("Codex P2: a live prefetch does not turn 'does this jacket match my style?' into a product search", async () => {
+  const { v } = vendors(50);
+  const { r } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await sleep(20);
+  const started = r.onTurn({ text: "Does this jacket match my style?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
+  assert.equal(started?.kind, "outfit");
+  await r.settle();
+});
+
 test("an unrelated ask, or one after 5 minutes, searches as before", async () => {
   const { v, searches } = vendors(10);
   let now = 0;

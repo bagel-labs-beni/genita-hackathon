@@ -324,7 +324,7 @@ export async function startServer(
   const zero: Progress = { turn: 0, update: 0 };
   const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -335,6 +335,13 @@ export async function startServer(
   // Join order: when a call took up the conversation (its memory start ran priorTurns), not when its socket opened.
   // At equal progress the later joiner is the one that inherited the conversation (Codex 11/3 r7/r8).
   let nextGen = 0;
+  /** a same-device return visit's view of the call that just ended (taken once by the new call) */
+  const lastCallFor = new Map<string, { turns: HistoryItem[]; threadId: string | null; covered: number }>();
+  function lastCall(self: string): { turns: HistoryItem[]; threadId: string | null; covered: number } | null {
+    const c = lastCallFor.get(self) ?? null;
+    lastCallFor.delete(self);
+    return c;
+  }
   const sessionGens = new Map<string, number>();
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
     // this call joins the conversation now (a slow first memory read can make it join after a later socket)
@@ -349,6 +356,7 @@ export async function startServer(
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
+    let forgetAsked = !!cached?.forgetAsked;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
@@ -363,15 +371,22 @@ export async function startServer(
         // on this same device is a return visit, exactly like its cached copy will be.
         best = t; thread = session.threadInfo(); bestProgress = p; bestGen = g;
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
+        forgetAsked = session.forgetAsked;
       }
     }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
     if (best && hungUpHere) {
       log("history.not_seeded", { session: self, by: "hang_up" });
+      // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
+      // memories of that call are written in the background and can take longer than a quick call-back
+      // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
+      if (!forgetAsked) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {
+      // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
+      if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
       progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
       handedThread.set(self, thread);
       return best;
@@ -418,7 +433,7 @@ export async function startServer(
       const tags = keep ? { device: cached!.device, hungUp: cached!.hungUp, gen: cached!.gen } : { device, hungUp: session.endedByUser, gen };
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -454,7 +469,7 @@ export async function startServer(
     // D41: judge demo accounts get a per-code daily turn cap (auth/judge.ts), on top of the D46 ops caps
     const turnGate = who.judge && accounts ? accounts.judgeTurns.gate(who.judge) : undefined;
     const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, turnGate, renameCompanion: rename, companionVoiceId,
-      priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
+      priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
       onHistoryChange: (role) => {
@@ -506,6 +521,7 @@ export async function startServer(
       const joined = sessionGens.get(id) ?? gen;
       sessionGens.delete(id);
       handedThread.delete(id);
+      lastCallFor.delete(id);
       touches.delete(id);
       void cacheTurns(who.userId, session, callDevice, joined)
         .catch(() => log("history.unavailable", { session: id }))

@@ -14,6 +14,14 @@ import { checkServerEvent, type ServerEvent } from "../src/protocol.ts";
 test("product intent: voice alone starts it; shopping beats the camera; other asks stay chat", () => {
   assert.deepEqual(classifyTurn("Jin, can we look for a jacket for this weekend?", false), { kind: "product" });
   assert.deepEqual(classifyTurn("Find a couple that match my style, and send me the links.", false), { kind: "product" });
+  // sweep 11/3 [P1]: "send me the links" alone is not a shopping ask — a web answer with its sources sheet
+  assert.equal(classifyTurn("What are the best ramen places in Seoul? Send me the links.", false), null);
+  assert.equal(classifyTurn("send me the links", false), null);
+  assert.deepEqual(classifyTurn("send me the links", false, true), { kind: "product" }, "right after a product search it still is");
+  assert.deepEqual(classifyTurn("Can you send me the links for those sneakers?", false), { kind: "product" });
+  assert.deepEqual(classifyTurn("Any product links?", false), { kind: "product" });
+  assert.deepEqual(classifyTurn("Send me the links for black heels.", false), { kind: "product" }, "Codex P2");
+  assert.deepEqual(classifyTurn("Can you send me the links for earrings?", false), { kind: "product" });
   assert.deepEqual(classifyTurn("can you find me some white sneakers", true), { kind: "product" }, "shopping words win over the camera");
   assert.deepEqual(classifyTurn("Which jacket should I wear, this or that?", true), { kind: "outfit" });
   assert.deepEqual(classifyTurn("What can I make with what's in my fridge?", true), { kind: "recipe" });
