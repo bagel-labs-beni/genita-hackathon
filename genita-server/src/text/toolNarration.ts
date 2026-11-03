@@ -48,7 +48,7 @@ const LOOKUP_INTENT = new RegExp(`^(?:(?:${WAIT})${SEPARATOR})?(?:i'll|i will|le
 const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?: (?:just|quickly|quick|go|now|first))* (?:pull up|look up|find|check|map out|get|grab) (?:you )?(?:the )?(?:best |fastest |quickest |easiest )?(?:route|directions|way there|options|a few (?:options|picks|spots))\\b${TAIL}$`);
 /** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
 // the subject may be dropped after a dash: "I'll pick a favorite — pulling up what I remember" (bug-fix 1c63d32 outfit 1/6)
-const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up)(?: up| through| into| for)? (?:your|my|what (?:i|you))\\b${TAIL}$`);
+const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up|picking|choosing|sizing up)(?: up| through| into| for| out)? (?:your|my|what (?:i|you))\\b${TAIL}$`);
 /** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
  * A bare "Let me think" stays (it is how people start an answer). */
 const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
@@ -76,13 +76,19 @@ function isNarrationClause(clause: string): boolean {
   if (isNarrowNarration(s)) return true;
   if (META.test(s)) return metaIsUser && !META_GUARD.test(s);
   if (WAIT_TO.test(s)) return true;
+  // "Outfit vote incoming." / "Your pick, coming right up." — a short promise of what's next (bug-fix a6df112)
+  if (s.split(" ").length <= 6 && /\b(?:incoming|coming (?:right )?up|on (?:its|the) way|loading)$/.test(s)) return true;
   // a plan to choose — unless the choice is in the same clause ("I'll pick one for you and it's the trench", "I'll pick one: the trench", Codex r17)
   if (CHOOSE_PLAN.test(s) && !/[:]|\b(?:it'?s|is|are|was|and (?:it|that|this)|the winner is)\b/.test(s)) return true;
   // "…for that but tofu works": a turn in the clause keeps it
   // "between the trench and denim" / "… and choose tonight" are part of the announcement, not a second statement
-  const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "");
+  // "… your style and that cozy bedroom backdrop": a noun phrase after "and" is part of the object (bug-fix a6df112)
+  const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "").replace(/\band (?:that|the|your|this|those|these|my)\s+(?!(?:is|are|was|one)\b)[a-z' -]{1,40}$/, "");
   // a clause that already states its result ("Checking your calendar shows dinner is on Thursday", Codex r20) is the answer
   if (/\b(?:shows|says|is|are|was|were|confirms|suggests|has|it'?s|that'?s|takes|costs)\b|\d/.test(s)) return false;
+  // a gerund subject with its own verb ("Scanning your boarding pass opens the gate", Codex r22): a verb in -s followed
+  // by an object word is a statement, not a lookup in progress
+  if (/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|it|you|up|out|in|on|off|into)\b/.test(s.replace(/\b(?:what (?:i|you) (?:remember|know|told|said)|your (?:notes|options|favorites|faves|details|plans|messages))\b/g, " "))) return false;
   return !/\b(?:and|but|because|then)\b/.test(guard) && (LOOKUP_INTENT.test(s) || WEB_INTENT.test(s) || THINK_INTENT.test(s) || LOOKING_NOW.test(s));
 }
 
@@ -160,7 +166,7 @@ export type NarrationDecision = {
 // any first-person present-progressive opener ("I'm weighing…", "I am pulling…") or a line about our own process is held
 // until the stream shows whether a tool follows (main 11/3: close the pattern, not a word list)
 // …but an opinion or an observation in that form is content: "I'm seeing onions", "I'm loving the trench" (Codex r14)
-const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|thinking|guessing|betting|getting|hearing|sensing|noticing|spotting)\b)\w+ing\b|^(?:my (?:plan|first step)|first,? i'?ll|okay,? so i'?m)\b|\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
+const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|thinking|guessing|betting|getting|hearing|sensing|noticing|spotting)\b)\w+ing\b|^(?:just )?(?!(?:loving|seeing|feeling|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening|thing|king|spring|ring|sing|bring it)\b)\w{3,}ing (?:up |out |through |into )?(?:your|my|what|the|a|between)\b|^(?:my (?:plan|first step)|first,? i'?ll|okay,? so i'?m)\b|\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
