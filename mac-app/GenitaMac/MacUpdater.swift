@@ -105,7 +105,7 @@ final class MacUpdater: NSObject {
 extension MacUpdater: SPUUpdaterDelegate {
     /// The update is downloaded and would install on quit: take over and offer an immediate restart.
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
-        let version = item.displayVersionString
+        let version = item.versionString   // the build number (171); the short version is 0.1 for every build
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.installNow = immediateInstallHandler
@@ -145,14 +145,17 @@ struct UpdateReadyPill: View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
                 .symbolEffect(.bounce, options: .nonRepeating, value: shown)
-            Text("\(title) · \(version)").font(.custom("PretendardVariable-Medium", fixedSize: 12.5)).foregroundStyle(.white)
+            // Sparkle 161 → 171 check (11/4): "Update ready · 0.1" named the version the user already has (every build is 0.1),
+            // and the button read "Restart to…". The title alone; texts never truncate.
+            Text(title).font(.custom("PretendardVariable-Medium", fixedSize: 12.5)).foregroundStyle(.white).lineLimit(1).fixedSize()
             Button(action: restart) {
-                Text(action).font(.custom("PretendardVariable-SemiBold", fixedSize: 12.5)).padding(.horizontal, 11).padding(.vertical, 5)
+                Text(action).font(.custom("PretendardVariable-SemiBold", fixedSize: 12.5)).lineLimit(1).fixedSize().padding(.horizontal, 11).padding(.vertical, 5)
                     .background(.white, in: Capsule()).foregroundStyle(.black)
-            }.buttonStyle(.plain).accessibilityIdentifier("macUpdateRestart")
+            }.buttonStyle(.plain).accessibilityIdentifier("macUpdateRestart").accessibilityHint("Installs build \(version) and reopens Genita")
             Button(action: later) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.7)) }
                 .buttonStyle(.plain).accessibilityLabel("Later")
         }
+        .fixedSize()
         .padding(.leading, 14).padding(.trailing, 10).padding(.vertical, 7)
         .background(Capsule().fill(.black.opacity(0.78)))
         .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
