@@ -43,6 +43,15 @@ public final class GenitaAuthClient: @unchecked Sendable {
         return r
     }
 
+    /// A02-J Judge access (D41): a code from the submission form / README → a session for that code's demo account.
+    /// Wrong code = `.unauthorized` (401, nothing stored), too many tries = `.server(status: 429, …)`.
+    @discardableResult
+    public func signInWithJudgeCode(_ code: String, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        let r: GenitaSignInResponse = try await send("POST", "/auth/judge", json: ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue], authorized: false)
+        store.save(r.token)
+        return r
+    }
+
     /// Email sign-in, step 1: the server mails a 6-digit code (same answer whether or not an account exists).
     /// Too soon / too many = `.server(status: 429, code: "rate_limited")`; mail off = `.server(status: 503, …)`.
     @discardableResult
