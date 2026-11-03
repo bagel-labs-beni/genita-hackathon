@@ -89,8 +89,9 @@ extension AppState {
         guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
               !Task.isCancelled else { return }
         // the account or companion may have changed while the image was on its way: keep it only for the same
-        // account, and never over a newer scene already loaded for the prep on screen
-        guard (setup.accountId ?? "-") == account, prep?.sceneURL == url || sceneImageData == nil else { return }
+        // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
+        // applied by the caller right after this, so its scene always wins)
+        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
         sceneImage = (key, data)
     }
 
@@ -114,7 +115,8 @@ extension AppState {
         let deadline = Date().addingTimeInterval(Self.sceneWaitSeconds)
         while sceneImageData == nil, !Task.isCancelled, deadline.timeIntervalSinceNow > 0 {
             await loadScene(within: deadline.timeIntervalSinceNow)
-            if sceneImageData == nil { try? await Task.sleep(for: .milliseconds(500)) }
+            let left = deadline.timeIntervalSinceNow
+            if sceneImageData == nil, left > 0 { try? await Task.sleep(for: .seconds(min(0.5, left))) }
         }
     }
 
@@ -514,7 +516,8 @@ extension AppState {
     /// SUM Cancel (PRD F4): back to the first question (P1, after D01), every answer kept.
     func cancelSummary() {
         guard stage == .summary, !savingPrefs else { return }
-        go(setup.depth.path.first { $0 != .depth } ?? .help)
+        // back through the history (P1's Back goes to D01, not to SUM)
+        returnTo(setup.depth.path.first { $0 != .depth } ?? .help)
     }
 
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
