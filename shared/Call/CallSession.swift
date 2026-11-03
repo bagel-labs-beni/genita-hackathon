@@ -822,6 +822,9 @@ enum CallStop: Equatable {
             break
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
+        case .backchannel:
+            // convo P1 #345: the server flag is off by default; playing a soft clip is a follow-up
+            break
         }
     }
 
