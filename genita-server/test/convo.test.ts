@@ -1066,3 +1066,31 @@ test("hold beats (coordinator 11/3): varied, never the same twice in a row, audi
   assert.ok(beats.filter((b) => b === "Hmm.").length <= 1);
   session.close();
 });
+
+test("first-sound cap (Codex r5 #427): after a recall tool, the model's own 'Yeah.' is not dropped as a duplicate of a 'Yeah.' beat", { skip: !v1 }, async (t) => {
+  const prev = process.env.GENITA_HOLD_CAP_MS;
+  process.env.GENITA_HOLD_CAP_MS = "60";
+  t.after(() => { if (prev === undefined) delete process.env.GENITA_HOLD_CAP_MS; else process.env.GENITA_HOLD_CAP_MS = prev; });
+  const client = new Client();
+  const session = new Session("cap5", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      await new Promise((r) => setTimeout(r, 200));
+      yield { type: "tool", name: "recall", status: "in_progress" };
+      yield { type: "tool", name: "recall", status: "completed" };
+      yield { type: "text", delta: "<warm> Yeah." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  // beats rotate Mm. → Ooh. → Yeah.: the third turn's beat is the model's own word
+  for (let k = 0; k < 3; k++) {
+    client.json.length = 0;
+    await session.onClientText(JSON.stringify({ type: "text", text: `I told you my sister moved to Busan, right? ${k}` }));
+    const r = await client.waitFor((m) => m.type === "reply" && m.final === true, 5000);
+    assert.equal(r.text, "Yeah.", `turn ${k}: ${r.text}`);
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  session.close();
+});
