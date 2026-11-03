@@ -34,7 +34,7 @@ test("#342 a card without takes (made before prep wrote them, or a demo card) ge
 test("#342 v1 prompt carries the takes as data and says to keep them; legacy prompt unchanged", () => {
   const v1 = buildInstructions({ persona: mira, mode: "chat", style: "v1" });
   assert.match(v1, /Background: A night-owl friend who cooks and loves music\. Own takes: [^.;]+; [^.;]+\. Quirk: [^.]+\./);
-  assert.match(v1, /You have your own opinions \(keep your takes call to call; the quirk only now and then\), moods and taste; you are not their assistant/);
+  assert.match(v1, /You have your own opinions \(your takes stay the same call to call, said only when the topic comes up; the quirk now and then\), moods and taste; you are not their assistant/);
   const v1p = buildInstructions({ persona: prepped, mode: "chat", style: "v1" });
   assert.equal((v1p.match(/Own takes:/g) ?? []).length, 1, "prep's takes are not repeated");
   assert.match(v1p, /Own takes: Cold pizza beats hot pizza; Rainy Sundays are the best Sundays\. Quirk: rates things out of ten\./);
@@ -56,6 +56,6 @@ test("#342 own-take nudge: three replies in a row with no take of its own → th
   assert.equal(ownTakeLine([...flat.slice(0, 2), "<teasing> Honestly I'd have left."], "lol"), null, "a recent take: no nudge");
   assert.equal(ownTakeLine(flat, "ugh today was so bad"), null, "bad news: no opinions pushed on them");
   assert.equal(ownTakeLine(flat, "I want to die"), null, "never on a crisis line");
-  assert.match(turnHints({ userText: "it was fine I guess", remembers: false, recentReplies: flat })!, /This turn: [^\n]*one of your own takes/);
+  assert.match(turnHints({ userText: "it was fine I guess", remembers: false, recentReplies: flat })!, /This turn: [^\n]*Give your own take on what they just said/);
   assert.doesNotMatch(turnHints({ userText: "ok", remembers: false }) ?? "", /takes/, "no replies passed: no nudge");
 });

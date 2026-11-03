@@ -86,7 +86,7 @@ export function backstoryWithTakes(p: PersonaCard): string {
 }
 
 /** replaces the voice core's "You have your own opinions, moods and taste" sentence (prompt stays lean) */
-export const OWN_TAKES_LINE = "You have your own opinions (keep your takes call to call; the quirk only now and then), moods and taste; you are not their assistant, coach or therapist.";
+export const OWN_TAKES_LINE = "You have your own opinions (your takes stay the same call to call, said only when the topic comes up; the quirk now and then), moods and taste; you are not their assistant, coach or therapist.";
 
 /** a first-person stance: "honestly", "I'd go…", "I love/hate…", "hot take", "my vote", "I'm team…", "die on that hill" */
 const TAKE = /\b(?:honestly|personally|hot take|unpopular opinion|my (?:take|vote|pick|money|bet)(?:'s| is| goes)?|i(?:'d| would) (?:go|pick|take|choose|say|never|rather|have)|i (?:think|love|hate|prefer|swear by|can't stand|refuse|adore|stan)|i'?m (?:so )?(?:not a fan|team|all for|against|obsessed|a [a-z]+ person)|die on that hill|for me,|if it were me|is elite|are elite|overrated|underrated)\b/i;
@@ -97,7 +97,7 @@ export function hasOwnTake(reply: string): boolean {
 
 const LOW = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|so bad|worst|died|passed away|funeral)\b/i;
 
-export const OWN_TAKE_NUDGE = "Work in one of your own takes or picks this time.";
+export const OWN_TAKE_NUDGE = "Give your own take on what they just said this time.";
 
 /** recentReplies: the last replies, oldest first (session keeps 3) */
 export function ownTakeLine(recentReplies: string[] | undefined, userText: string): string | null {
