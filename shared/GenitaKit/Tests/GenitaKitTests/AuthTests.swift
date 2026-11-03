@@ -198,7 +198,8 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         StubProtocol.handler = { _ in (429, Data(#"{"error":"too_many_attempts"}"#.utf8)) }
         await #expect(throws: GenitaAuthError.server(status: 429, code: "too_many_attempts")) { try await client.signInWithEmailCode(email: "a@b.co", code: "000000") }
         StubProtocol.handler = { _ in (429, Data(#"{"error":"rate_limited","retryAfterSec":42}"#.utf8)) }
-        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.startEmailSignIn(email: "a@b.co") }
+        // the server's wait rides along (11/4)
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited", retryAfterSec: 42)) { try await client.startEmailSignIn(email: "a@b.co") }
         #expect(store.load() == nil)
     }
 
