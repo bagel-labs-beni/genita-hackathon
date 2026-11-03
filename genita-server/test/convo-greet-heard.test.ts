@@ -129,3 +129,10 @@ test("session v1 greet-heard: 'I can already hear that grin' is not spoken on th
   assert.match(String(calls[0].instructions), /haven't said anything yet/, "the greeting prompt says so too");
   session.close();
 });
+
+test("Codex #495 P2: hearing still to come, or a recall of earlier in the call (initiative), is kept", () => {
+  for (const line of ["Can't wait to hear you laugh at my terrible jokes.", "I'm dying to hear your take on the finale.", "Your laugh earlier is still cracking me up.", "That sigh before, was it the deck again?"]) {
+    assert.equal(guardSentence(line, greet), null, line);
+  }
+  assert.equal(guardSentence("Your laugh is already making my night.", greet), "unseen", "a claim about right now is still dropped");
+});
