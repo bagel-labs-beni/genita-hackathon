@@ -22,6 +22,7 @@ struct CameraGuideSheet: View {
     let bottomInset: CGFloat
     var turnOn: () -> Void
     var notNow: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -30,16 +31,24 @@ struct CameraGuideSheet: View {
                 Capsule().fill(CallInk.handle).frame(width: 47, height: 5).accessibilityHidden(true)
                 Text("I only see when it’s on.").font(TypeStyle.title(28)).tracking(-0.28).foregroundStyle(CallInk.ink)
                     .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).padding(.top, 24).accessibilityAddTraits(.isHeader)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Turn on the camera to show me things.")
-                    Text("I look while it’s on and don’t keep the video.")
-                }.font(TypeStyle.body(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
+                Group {
+                    if dynamicTypeSize > .large {
+                        // larger text: one paragraph that wraps on its own (two fixed lines left "me things." alone)
+                        Text("Turn on the camera to show me things. I look while it’s on and don’t keep the video.")
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Turn on the camera to show me things.")
+                            Text("I look while it’s on and don’t keep the video.")
+                        }
+                    }
+                }.font(TypeStyle.text(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
                 Button(action: turnOn) {
-                    Text("Turn on camera").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 50).background(GlassCTA(color: CallInk.ink))
+                    Text("Turn on camera").font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)
+                        .frame(maxWidth: .infinity).frame(minHeight: 50).background(GlassCTA(color: CallInk.ink))
                 }.buttonStyle(PressScale()).padding(.top, 32).accessibilityIdentifier("cameraGuideTurnOn")
                 Button(action: notNow) {
-                    Text("Not now").font(TypeStyle.body(15, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+                    Text("Not now").font(TypeStyle.text(15, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
                 }.buttonStyle(PressScale()).padding(.top, 4).accessibilityIdentifier("cameraGuideNotNow")
             }
             .padding(.horizontal, 38).padding(.top, 28).padding(.bottom, 48 + bottomInset)
@@ -48,6 +57,7 @@ struct CameraGuideSheet: View {
                 .shadow(color: CallInk.ink.opacity(0.18), radius: 12).ignoresSafeArea(edges: .bottom))
             .accessibilityElement(children: .contain).accessibilityAddTraits(.isModal).accessibilityIdentifier("cameraGuide")
         }
+        .dynamicTypeSize(TextScale.sheet)
     }
 }
 

@@ -98,6 +98,21 @@ final class ProximityTests: XCTestCase {
         XCTAssertNotNil(feed(&d, rssi: -40, from: 32.8, seconds: 1), "taken away and brought back: moves")
     }
 
+    func testUnconfirmedTimeoutThenLateSuccessKeepsTheApproachLatched() {
+        var d = ProximityDetector()
+        var report = ProximityReport()
+        let token = "7K2M9QXA"
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 0, seconds: 1, token: token))
+        let id = report.sent(token, at: 0.5)
+        XCTAssertEqual(report.expire(at: 5.5), token)
+        // MacProximity leaves the detector untouched on timeout: the save is still unconfirmed.
+        XCTAssertEqual(report.answered(requestID: id, token: token), token, "the original save succeeds late")
+        d.reset() // ownership moved to Mac, then the user taps Continue here on the iPhone
+        XCTAssertNil(feed(&d, rssi: -40, from: 6, seconds: 30, token: token), "even after cooldown, still close means no second move")
+        XCTAssertNil(feed(&d, rssi: -65, from: 36.1, seconds: 0.3, token: token))
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 36.5, seconds: 1, token: token), "leaving and approaching again re-arms normally")
+    }
+
     func testUnknownTokenDoesNotBlockMyPhoneWhileTheRejectedPhoneStaysClose() {
         var d = ProximityDetector()
         let stranger = "7K2M9QXA", mine = "8K2M9QXA"
@@ -188,6 +203,7 @@ final class ProximityTests: XCTestCase {
         XCTAssertNil(ProximityMessage(["type": "proximity.token", "token": "bad"]), "a malformed token is never advertised")
         XCTAssertEqual(ProximityMessage(["type": "proximity.unavailable", "reason": "not_in_call"]), .unavailable(reason: "not_in_call"))
         XCTAssertEqual(ProximityMessage(["type": "proximity.result", "accepted": false, "reason": "cooldown"]), .result(accepted: false, reason: "cooldown"))
+        XCTAssertEqual(ProximityMessage(["type": "proximity.result", "accepted": false, "reason": "unknown_token", "token": "7K2M9QXA", "requestId": "attempt-a"]), .result(accepted: false, reason: "unknown_token", token: "7K2M9QXA", requestID: "attempt-a"))
         XCTAssertEqual(ProximityMessage(["type": "ownership", "owner": "mac", "epoch": 4, "trigger": "proximity"]), .moved(to: .mac))
         XCTAssertNil(ProximityMessage(["type": "ownership", "owner": "mac", "epoch": 4, "trigger": "button"]), "a button move has no proximity moment")
         XCTAssertNil(ProximityMessage(["type": "peer", "device": "mac", "online": true]))

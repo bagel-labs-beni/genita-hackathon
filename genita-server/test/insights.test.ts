@@ -296,7 +296,7 @@ test("report: the type read (춘식이 r02) — type, strengths, watch-outs, cha
     ...RAW,
     type: { name: "The Playful Editor", line: "You shortlist options, joke about prices, and keep the final say.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
     strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
-    watchouts: [{ text: "A long menu of options can freeze the whole night.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
+    watchouts: [{ text: "Two or three options can freeze the whole decision.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
     chain: { you_are: "You weigh two or three options before you commit.", so_you: "So you want options, not a lecture.", so_ill: "So I'll bring two options and my favorite." },
   };
   const inputs = { ...INPUTS, picks: [...INPUTS.picks, { question: "How you like replies", label: "Show me options" }, { question: "pace", label: "Quick-leaning" }] };
@@ -603,4 +603,11 @@ test("lead 11/4: a strength / watch-out that reuses no word of a quote or pick h
   const r = toReport(raw, INPUTS, { at: "", from: "import" });
   assert.deepEqual(r.strengths.map((s) => s.text), ["Two or three options and you're already deciding."]);
   assert.equal(r.watchouts.length, 0, "an empty watch-outs section is fine");
+});
+
+test("eval 11/4: reading them against themselves is creepy — counts of how often, 'says X then does Y anyway'", () => {
+  for (const s of ["You order serious, then send memes anyway.", "You asked for sneaker help six times.", "You say no jokes but still send memes."]) assert.equal(insightProblem(s), "creepy", s);
+  assert.equal(insightProblem("You ask for two or three options, then decide fast."), null, "an ordinary 'then' is fine");
+  assert.equal(insightProblem("You decide by comparing, not by being told."), null);
+  assert.equal(insightProblem("You keep the final say on anything that leaves your hands."), null);
 });
