@@ -115,24 +115,6 @@ jobs:
             ls build-output/screens
           fi
 
-      - name: Record a real splash cold launch (not frozen)
-        if: always()
-        continue-on-error: true
-        run: |
-          # the app the UI tests installed; --splash-demo shows the splash, A02 underneath as at a first launch
-          SIM="${{ steps.simulator.outputs.id }}"
-          mkdir -p build-output/screens
-          xcrun simctl terminate "$SIM" ai.thebeni.genita 2>/dev/null || true
-          xcrun simctl io "$SIM" recordVideo --codec h264 --force build-output/screens/splash-cold-launch.mp4 &
-          REC=$!
-          sleep 2
-          SIMCTL_CHILD_GENITA_REVIEW_STAGE=signIn SIMCTL_CHILD_GENITA_SPLASH_MODE=full \
-            xcrun simctl launch "$SIM" ai.thebeni.genita --splash-demo || true
-          sleep 6
-          kill -INT "$REC" || true
-          wait "$REC" || true
-          ls -la build-output/screens/splash-cold-launch.mp4 || true
-
       - name: Mac build
         working-directory: ios-app
         run: |
