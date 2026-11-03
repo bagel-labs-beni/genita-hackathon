@@ -32,6 +32,8 @@ type UserState = {
   loading: Promise<OwnershipRecord> | null;
   conns: Set<Conn>;
   calls: Set<Call>;
+  /** started call sockets per device (any call, gated or not): `peer.inCall` */
+  live: Map<HandoffDevice, number>;
   /** claims in flight that will change the owner; the gate is shut while > 0 */
   switching: number;
   /** after a change the new owner waits until then, so the old device's cancel lands first */
@@ -158,6 +160,28 @@ export class HandoffHub {
     };
   }
 
+  /**
+   * A call on `device` has started (its `start` was handled). Returns the "call ended" closer (idempotent).
+   * The other device's presence learns it as `peer.inCall`, so the Mac says "Talking on your iPhone" only during a real call.
+   */
+  callStarted(userId: string, device: HandoffDevice): () => void {
+    const u = this.user(userId);
+    const before = (u.live.get(device) ?? 0) > 0;
+    u.live.set(device, (u.live.get(device) ?? 0) + 1);
+    if (!before) this.peerChanged(u, device);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const n = (u.live.get(device) ?? 1) - 1;
+      if (n > 0) u.live.set(device, n);
+      else {
+        u.live.delete(device);
+        this.peerChanged(u, device);
+      }
+    };
+  }
+
   /** This account has `device` open and active on /v1/presence (app running, not locked). */
   isPresent(userId: string, device: HandoffDevice): boolean {
     for (const c of this.users.get(userId)?.conns ?? []) if (c.device === device && c.active) return true;
@@ -256,7 +280,7 @@ export class HandoffHub {
   private user(userId: string): UserState {
     let u = this.users.get(userId);
     if (!u) {
-      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), switching: 0, leaseUntil: 0, chain: Promise.resolve() };
+      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), live: new Map(), switching: 0, leaseUntil: 0, chain: Promise.resolve() };
       this.users.set(userId, u);
     }
     return u;
@@ -359,7 +383,7 @@ export class HandoffHub {
 
   private peer(u: UserState, device: HandoffDevice): Msg {
     const conns = [...u.conns].filter((c) => c.device === device);
-    return { type: "peer", device, online: conns.length > 0, active: conns.some((c) => c.active) };
+    return { type: "peer", device, online: conns.length > 0, active: conns.some((c) => c.active), inCall: (u.live.get(device) ?? 0) > 0 };
   }
 
   private peerChanged(u: UserState, device: HandoffDevice) {

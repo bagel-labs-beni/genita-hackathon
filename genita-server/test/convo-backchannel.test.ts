@@ -40,7 +40,7 @@ test("backchannel: a 1.2 s pause mid-sentence in a long turn gets one 'mm'; shor
   assert.deepEqual(sent, ["mm"], "a finished sentence is the turn ending, not a pause");
 });
 
-test("backchannel: ≥ 6 s apart, ≤ 2 per turn, a new partial resets the pause, a turn end cancels it", () => {
+test("backchannel: ≥ 20 s apart (11/4), ≤ 2 per turn, a new partial resets the pause, a turn end cancels it", () => {
   const { bc, sent, advance } = rig();
   bc.start();
   advance(4000);
@@ -53,7 +53,9 @@ test("backchannel: ≥ 6 s apart, ≤ 2 per turn, a new partial resets the pause
   assert.deepEqual(sent, ["mm"]);
   bc.partial(words(18));
   advance(1500);
-  assert.deepEqual(sent, ["mm"], "not within 6 s of the last one");
+  assert.deepEqual(sent, ["mm"], "not within 20 s of the last one");
+  advance(15_000);
+  assert.deepEqual(sent, ["mm"], "still under 20 s");
   advance(5000);
   assert.deepEqual(sent, ["mm", "yeah"]);
   bc.partial(words(30));

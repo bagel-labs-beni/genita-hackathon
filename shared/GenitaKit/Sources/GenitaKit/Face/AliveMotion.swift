@@ -42,6 +42,13 @@ struct AliveMotion {
     /// scale (±0.6% about the frame bottom, ±3–4 px at the eyes) summed to 16 px peak-to-peak at the
     /// eyes on T9. Horizontal sway and the small roll stay (they read as a live selfie, not a bob).
     var lockVertical = true
+    /// 11/4 (Chelsea: "the voice comes out but the face is frozen"): the whole frame moves as one rigid piece with the
+    /// speech — slow sway (0.3–0.8 Hz) sized by the speech energy, a small nod on stressed onsets, a slight drop at the
+    /// end of a sentence, a breath when quiet. Caps at output size: ±1.5 px, ±0.6°, ±0.4 % scale. No local warp: eyes,
+    /// nose and mouth move together (the eye band stays still relative to the face). Map `alive.sway` scales it (0 = off).
+    var swayGain = 1.0
+    static let swayMaxPx = 1.5, swayMaxDeg = 0.6, swayMaxScale = 0.004
+    private var energy = 0.0, energyPeak = 0.0
 
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
@@ -101,6 +108,32 @@ struct AliveMotion {
             .concatenating(CGAffineTransform(translationX: bottom.x, y: bottom.y))
             .concatenating(parallax)
 
+        // Speech-coupled rigid sway (see swayGain): energy low-passed (0.6 s), its recent peak decays over 1.5 s.
+        if dt > 0, dt <= 0.5 {
+            energy += (open - energy) * min(1, dt / 0.6)
+            energyPeak = max(energy, energyPeak * exp(-dt / 1.5))
+        } else if dt < 0 || dt > 0.5 { energy = open; energyPeak = open }
+        var sway = CGAffineTransform.identity
+        if swayGain > 0 {
+            let live = 0.3 + 0.7 * min(1, energy / 0.5)                      // quiet: a breath of motion; talking: full
+            let endDrop = max(0, min(1, (energyPeak - energy) / 0.3))        // a sentence ends: the head settles down a little
+            let sx = Self.swayMaxPx * swayGain * live * noise(9, hz: 0.45, t)
+            var sy = 0.6 * Self.swayMaxPx * swayGain * live * noise(10, hz: 0.55, t)
+            sy -= 0.6 * swayGain * min(1, nod)                                 // stressed onset: a small nod (down)
+            sy -= 0.5 * swayGain * endDrop
+            sy += 0.25 * swayGain * (1 - live) * sin(2 * .pi * Self.breathingHz * t)   // quiet breath
+            let cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, sx)) * k
+            let cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, sy)) * k
+            let rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * swayGain * live * noise(11, hz: 0.35, t))) * .pi / 180
+            let sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * swayGain * live * noise(12, hz: 0.3, t)))
+            // about the face centre: the eyes, nose and mouth stay within the caps (a neck pivot swung the forehead 3 px per 0.5°)
+            let pivot = CGPoint(x: face.midX, y: face.midY)
+            sway = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+                .concatenating(CGAffineTransform(scaleX: sc, y: sc))
+                .concatenating(CGAffineTransform(rotationAngle: rr))
+                .concatenating(CGAffineTransform(translationX: pivot.x + cx, y: pivot.y + cy))
+        }
+
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
         let neck = CGPoint(x: face.midX, y: face.minY - face.height * 0.15)
         let roll = Self.headRollDegrees * rollGain * .pi / 180 * noise(6, hz: 0.11, t)
@@ -111,6 +144,9 @@ struct AliveMotion {
             .concatenating(CGAffineTransform(scaleX: 1, y: pitch))
             .concatenating(CGAffineTransform(rotationAngle: roll))
             .concatenating(CGAffineTransform(translationX: neck.x + dx, y: neck.y + dy))
-        return (headLocal.concatenating(body), body, camera)
+        // 11/4 01:00 (Chelsea: the clay's outline shimmered): the sway moves the whole frame like a hand-held phone,
+        // background included — no head-mask seam can stretch. The output is already over-scanned (`overscan`), so a
+        // 1.5 px move never shows an edge.
+        return (headLocal.concatenating(body), body, sway.concatenating(camera))
     }
 }

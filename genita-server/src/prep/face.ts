@@ -125,6 +125,10 @@ export type FaceFlow = {
   lockSource: string;
   kind: string;
   map: Record<string, unknown>;
+  /** 11/4: 2 = prep offered a SAM face silhouette to the blend mask (scripts/reflow-masks.ts re-runs older faces);
+   *  `silhouette` = it was applied */
+  maskVersion?: number;
+  silhouette?: boolean;
   /** character2d: snap blink = paste `image` through `mask` inside `rect` (normalised) for `frames` frames */
   blink?: { mode: string; image: string; mask: string; frames: number; rect: [number, number, number, number] };
   ms?: number;
