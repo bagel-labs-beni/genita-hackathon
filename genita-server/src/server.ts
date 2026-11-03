@@ -158,6 +158,8 @@ export async function startServer(
       for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
       await findsDeleted;
       await prep.runner.forgetUser(userId);
+      // SUM insight report: the kept paste (memory only) goes, and a write still running lands nowhere
+      prep.deps.insights?.forget(userId);
       await deps.memory?.forget(userId);
       await deps.finds?.store.removeOwner(ownerKey(userId));
       // S5 product cache: this account's cards and warm-ups (in memory, keyed by the account)
