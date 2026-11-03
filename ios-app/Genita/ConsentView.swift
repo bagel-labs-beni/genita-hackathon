@@ -41,6 +41,8 @@ struct ConsentView: View {
             .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
             }
             .scrollBounceBehavior(.basedOnSize)
+            // at large text the copy scrolls under the buttons: fade its last 24 pt instead of a hard cut (empty space at the default size)
+            .mask { VStack(spacing: 0) { Color.black; LinearGradient(colors: [.black, .black.opacity(0)], startPoint: .top, endPoint: .bottom).frame(height: 24) } }
             Button { agree() } label: {
                 ZStack {
                     if sending { ProgressView().tint(CallInk.onInk) } else { Text("Agree and continue") }
