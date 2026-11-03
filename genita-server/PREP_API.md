@@ -56,12 +56,33 @@ In calls (with an account): the server uses the stored profile; each of the firs
 
 | call | body | answer |
 |---|---|---|
-| `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F |
+| `POST /v1/companion/image?rights=1` | raw image bytes (`content-type: image/jpeg`), or JSON `{image: base64, rightsAck}` | `{imageId, passed, type: human\|animal\|character\|null, checks:{oneFaceFrontFacing, sharpAndLit, noText}, reasons:[{code,label}], headBox, ms}`. `checks` = V02's three rows; `reasons` = V02-F. Additive (11/4): `polish` (true = run the photo-polish confirm step below) and `heads:[{x1,y1,x2,y2}]` (every head SAM found, pixels of the uploaded image, largest first, max 6) |
+| `POST /v1/companion/image/polish` | `{imageId}` (the upload's id; "Try again" sends it again) | `200 {imageId, sourceImageId, passed, type, checks, reasons, headBox, attempt, retriesLeft, ms:{polish, check}}`. See "Photo polish" |
+| `GET /v1/companion/image/{imageId}` | | the uploaded or polished image bytes (this user's only, else `404 unknown_image`) |
 | `GET /v1/companion/voices?imageId=` | | `{voices:[{id, name, blurb, label, gender, previewUrl}], suggested, available}`: 4 curated Seamless speakers for the image's look (human/animal/character), recommended default first (72 / 16 / 68), `label` = "Tara · warm"; `gender` = "female" \| "male" \| "neutral" as measured (median pitch + an offline classifier, 11/3), every look has women and men; `available` = voice service answers /healthz (cached 15 s) |
 | `GET /v1/companion/voices/{id}/preview` | | `audio/wav` from the Meta voice service, cached; `503 voice_unavailable` without it; device voices → `404 {error:"device_preview"}` |
 | `PUT /v1/companion/voice` | `{voiceId}` | saves the V04 pick on the companion + persona card; `400 unknown_voice`, `404 no_companion` |
 | `POST /v1/companion` | `{imageId, voiceId, name?}` | `201` companion (name defaults to the voice card name; a given name follows the rule below, else `400 bad_name`). Starts prep in the background ("Use this image"). `409 companion_exists`, except over a `demo:true` companion, which this replaces (below) |
 | `GET /v1/companion` | | companion + `demo` + `prep` + `persona` + `session` (fields for the realtime `start` message) |
+
+### Photo polish (11/4, flag `GENITA_PHOTO_POLISH`, default on)
+
+Users bring any photo. Before the face set is made, one Muse Image edit turns it into a clean reference
+(one subject centered, face to the viewer, mouth closed, even light, plain background, same identity, species and art
+style) and V02-T shows it for confirmation. One prompt for every subject: no human / animal / character branch.
+
+- Order: upload check first (a public figure is refused there and never edited, D26) → polish → the same Spark + SAM
+  check on the result, which must pass and keep the subject type (else `reasons:[style_changed]`, `passed:false`).
+- Polished: side view, poor light / blur, text over the image, a group photo (the largest subject is kept; the app can
+  crop the upload to another `heads` box and upload that), a half-covered face. Refused: `public_figure`, `no_face`
+  (`422 not_polishable`).
+- `passed` on the upload stays strict, so a build without the confirm step works as before. V02-T offers "Use this image"
+  (`POST /v1/companion {imageId}` with the polished id) and "Try again" (Chelsea 11/4: no "Use my original"; after two
+  retries: the last good result or "Choose another photo").
+- The confirmed polished picture is the call scene itself (scene step `source: "polish"`, no second Muse edit).
+- Limits: 3 polishes per upload (first + two "Try again", then `429 polish_limit`), 6 per user per minute
+  (`429 rate_limited`). `502 polish_failed {retryable, retriesLeft}` when Muse Image fails (the attempt counts).
+- `GENITA_PHOTO_POLISH=0`: the upload answers `polish:false`, this route `404 polish_off`: today's flow.
 
 ### Judge demo companion (D41)
 

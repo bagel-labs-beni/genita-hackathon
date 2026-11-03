@@ -6,6 +6,10 @@
  *   POST /v1/import/skip {interests, replies, avoid}  N1–N3 → style card, no Spark call
  *   GET  /v1/import                         F3-L2  {status, style} (after "Continue in the background")
  *   POST /v1/companion/image                F2-L20 raw image body (or JSON {image: base64}); ?rights=1
+ *                                           → + polish (run the confirm step) + heads (every head, largest first)
+ *   POST /v1/companion/image/polish {imageId}  photo polish (11/4): Muse Image edit + re-check → V02-T confirm
+ *                                           (404 polish_off · 422 not_polishable · 429 polish_limit · 502 polish_failed)
+ *   GET  /v1/companion/image/:id            an uploaded / polished image of this user (V02-T shows the polished one)
  *   GET  /v1/companion/voices?imageId=      F2-L8  4–6 curated voices for the look, recommended first; available = voice service up
  *   GET  /v1/companion/voices/:id/preview   F2-L8  WAV (cached); device voices → 404 device_preview
  *   PUT  /v1/companion/voice {voiceId}      V04: the picked voice is saved on the companion (404 no companion, 400 unknown_voice)
@@ -35,6 +39,8 @@ import { flowAssets } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
+import { checkPhotoInput } from "./photoInput.ts";
+import { PolishFailed, headsView, polishImage, uploadPolish } from "./polish.ts";
 
 // D41: per-user queue for replacing a demo companion (two concurrent POST /v1/companion over the same demo)
 const demoSwaps = new Map<string, Promise<unknown>>();
@@ -115,6 +121,8 @@ type ImportJob = { status: "processing" | "failed"; error?: string };
 
 export type PrepRoutes = { handles(req: IncomingMessage): boolean; handle(req: IncomingMessage, res: ServerResponse, userId?: string): Promise<void> };
 
+/** a polish is one Muse Image edit + one Spark check: at most 6 per user per minute (and 3 per photo) */
+const POLISH_PER_MIN = 6;
 /** suggest is a Spark call: at most 10 per user per rolling minute */
 const SUGGEST_PER_MIN = 10;
 /** a profile correction is up to two Spark calls: same budget */
@@ -141,6 +149,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
   const allowSuggest = limiter(SUGGEST_PER_MIN);
   const allowCorrect = limiter(CORRECT_PER_MIN);
   const allowStory = limiter(STORY_PER_MIN);
+  const allowPolish = limiter(POLISH_PER_MIN);
+  /** polishes per uploaded photo (first + two "Try again"); in memory: a restart only gives a few more */
+  const polishAttempts = new Map<string, number>();
 
   async function route(req: IncomingMessage, res: ServerResponse, url: URL, userId?: string) {
     const m = req.method ?? "GET";
@@ -204,6 +215,14 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         throw new PrepError(400, "rights_required", "Confirm you have the right to use this image.");
       }
       const uploadAt = new Date(uploadedAt).toISOString();
+      // photo polish: a photo that can never work is refused from its bytes, before the quota and any model call
+      if (d.photoPolish && bytes.length && bytes.length <= MAX_IMAGE_BYTES) {
+        const input = checkPhotoInput(bytes);
+        if (!input.ok && input.reason !== "unsupported") {
+          d.log("face.rejected", { reason: input.reason });
+          throw new PrepError(422, "unreadable_image", "We couldn't read this image. Choose another photo.");
+        }
+      }
       if (!await getOps().reserveUpload(user)) return send(res, 429, { error: "limit_reached", limit: "user_uploads" });
       const rec = await checkImage(d, user, bytes, rights, uploadAt);
       d.log("face.uploaded", { imageId: rec.id, userId: user, bytes: bytes.length, check_ms: rec.ms.check, at: uploadAt });
@@ -215,7 +234,41 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         reasons: rec.check.reasons,
         headBox: rec.headBox,
         ms: rec.ms,
+        // photo polish: true = the app polishes this photo and shows it for confirmation (V02-T); `passed` stays strict
+        polish: uploadPolish(rec.check, !!d.photoPolish),
+        heads: headsView(rec.heads),
       });
+    }
+
+    if (m === "POST" && p === "/v1/companion/image/polish") {
+      const b = await readJson(req);
+      if (!allowPolish(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+      try {
+        const r = await polishImage(d, user, b.imageId, polishAttempts);
+        return send(res, 200, {
+          imageId: r.rec.id,
+          sourceImageId: r.source.id,
+          passed: r.rec.check.passed,
+          type: r.rec.check.type,
+          checks: r.rec.check.checks,
+          reasons: r.rec.check.reasons,
+          headBox: r.rec.headBox,
+          attempt: r.attempt,
+          retriesLeft: r.retriesLeft,
+          ms: r.ms,
+        });
+      } catch (err) {
+        if (err instanceof PolishFailed) return send(res, 502, { error: err.code, message: err.message, retryable: err.retriesLeft > 0, retriesLeft: err.retriesLeft });
+        throw err;
+      }
+    }
+
+    const im = p.match(/^\/v1\/companion\/image\/([A-Za-z0-9_-]{1,64})$/);
+    if (m === "GET" && im) {
+      const img = await d.store.getImage(im[1]).catch(() => null);
+      if (!img || img.rec.userId !== user) throw new PrepError(404, "unknown_image");
+      res.writeHead(200, { "content-type": sniffImage(img.bytes) ?? img.rec.mime, "content-length": img.bytes.length, "cache-control": "private, max-age=3600" });
+      return void res.end(img.bytes);
     }
 
     if (m === "GET" && p === "/v1/companion/voices") {

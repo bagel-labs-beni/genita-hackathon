@@ -148,8 +148,10 @@ export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose" |
  * SAM 3.1 sometimes finds nothing for "the person's mouth" on closed lips while
  * "the person's lips" and plain "mouth" hit (11/2 e2e). Tried in order, only on a miss.
  */
-export function MOUTH_PROMPTS(kind: CompanionKind): string[] {
-  return [samPrompt(kind, "mouth"), kind === "animal" ? "the animal's muzzle" : `the ${NOUN[kind]}'s lips`, "mouth"];
+export function MOUTH_PROMPTS(kind: CompanionKind, species?: string): string[] {
+  // an animal with its mouth closed (photo polish, 11/4) is often found only by its species: "the dog's mouth"
+  const named = kind === "animal" && species && /^[a-z][a-z ]{0,23}$/i.test(species.trim()) ? [`the ${species.trim().toLowerCase()}'s mouth`] : [];
+  return [samPrompt(kind, "mouth"), kind === "animal" ? "the animal's muzzle" : `the ${NOUN[kind]}'s lips`, ...named, "mouth"];
 }
 
 /** Mouth shape per viseme: [human lips wording, wording for a muzzle, beak or drawn mouth]. */
@@ -385,7 +387,7 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     const url = dataUrl(img);
     const size = imageSize(img);
     if (!size) throw new Error("face set: unreadable image");
-    const [primary, ...fallback] = MOUTH_PROMPTS(o.kind);
+    const [primary, ...fallback] = MOUTH_PROMPTS(o.kind, o.species);
     let [faces, mouths] = await Promise.all([
       o.media.samDetect(o.metaKey, url, samPrompt(o.kind, "face"), o.signal),
       o.media.samDetect(o.metaKey, url, primary, o.signal),
@@ -535,6 +537,17 @@ export const V93_PERIORAL = Object.freeze({
   mbpChinPx: 1.1, lpfMs: 150, microPx: 0, lipThin: 0.8, lipThinPx: 0.014, openMag: 0,
 });
 
+/**
+ * 11/4: the app's speech-coupled rigid frame sway (app #465, map `alive.sway`; 0 = the still frame). Ops can turn it
+ * down or off without an app build: GENITA_ALIVE_SWAY (default 1, clamped 0…2; not a number → 1).
+ */
+export function aliveSway(env: Record<string, string | undefined> = process.env): number {
+  const raw = (env.GENITA_ALIVE_SWAY ?? "").trim();
+  if (raw === "") return 1;
+  const v = Number(raw);
+  return Number.isFinite(v) ? Math.min(2, Math.max(0, v)) : 1;
+}
+
 export function v93MouthOn(env: Record<string, string | undefined> = process.env): boolean {
   const v = (env.GENITA_FACE_V93_MOUTH ?? "").trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off");
@@ -567,7 +580,7 @@ const rec = (v: unknown): Record<string, unknown> => (isRecord(v) ? v : {});
 /** The served lip map (see V93_PERIORAL, STILL_FACE, V93_MOTION); the stored prep state is never changed. */
 export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
   if (!on) return map;
-  const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
+  const out: Record<string, unknown> = { ...map, alive: { ...rec(map.alive), ...STILL_FACE.alive, sway: aliveSway() }, brow: { ...rec(map.brow), ...STILL_FACE.brow } };
   // always sent: without a block the app falls back to its own moving cheek rules (codex P2)
   out.cheek = { ...rec(map.cheek), ...STILL_FACE.cheek };
   if (kind === "human") {
