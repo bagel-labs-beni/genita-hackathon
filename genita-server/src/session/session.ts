@@ -252,6 +252,8 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** AU-44: notes-based follow-up greetings, like the memory opener (memory/service.ts revisitGapHours) */
+const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
 /** speech end → first sound cap (GENITA_HOLD_CAP_MS, 0 = off) */
@@ -1512,12 +1514,19 @@ export class Session {
     let opener: string | undefined;
     if (turn.greeting) {
       const now = (this.deps.memory?.now ?? Date.now)();
-      const o = { hasProfile: !!this.user?.profile, sinceLastMs: last === undefined || last === null ? last : Math.max(0, now - last), hasItem: !!turn.greeting.item || !!this.memoryCall?.summaries.length || !!this.memoryCall?.lastCall };
+      const sinceLastMs = last === undefined || last === null ? last : Math.max(0, now - last);
+      // AU-44: notes are a thread to pick up only after the same 6 h gap as a memory opener (or right after a hang-up,
+      // lastCall); otherwise every call with notes was a "followup" on the same open thread, call after call
+      const notes = this.memoryCall?.summaries ?? [];
+      const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs >= NOTES_OPENER_GAP_MS);
+      const o = { hasProfile: !!this.user?.profile, sinceLastMs, hasItem: !!turn.greeting.item || notesDue || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
       // #341: open on a different profile thing than the last calls (not for a follow-up or a "back already" line)
       const kind = openerKind(o);
-      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
-      const hooks = rotates ? profileHooks(this.user?.profile) : [];
+      // AU-44: a notes follow-up names ONE open thread / promise, rotated like profile hooks (recorded per account)
+      const notesFollowup = kind === "followup" && !turn.greeting.item && !this.memoryCall?.lastCall && notesDue;
+      const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days" || notesFollowup;
+      const hooks = notesFollowup ? [...new Set(notes.flatMap((n) => [...n.open_threads, ...n.promises]).map((x) => x.trim()).filter((x) => x.length >= 3))].slice(0, 8) : rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined

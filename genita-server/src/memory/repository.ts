@@ -32,6 +32,8 @@ export type MemorySettings = { rememberSeen: boolean; photosOfUs: boolean };
 export type CallState = {
   last_message_at: number | null;
   last_opener_day: string | null;
+  /** AU-43: when the last memory opener was said (the 6 h gap is checked against this, not the UTC day) */
+  last_opener_at?: number | null;
   revision: number;
   recent_openers: string[];
   settings: MemorySettings;
