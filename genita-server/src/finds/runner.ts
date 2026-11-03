@@ -129,6 +129,15 @@ export class FindsRunner {
     this.likes = o.owner && this.deps.likes ? this.deps.likes(o.owner).catch(() => undefined) : Promise.resolve(undefined);
   }
 
+  /** A product search of this call is still open for refines ("another one in black"). `recent` as in TurnInput. */
+  afterProduct(recent: string[] = []): boolean {
+    return (
+      (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
+      // a call continued on the other device: the search was asked on the first one (#199)
+      recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)))
+    );
+  }
+
   /** A correction in the call changed the profile: later cards use it. */
   setProfile(profile: string, taste: TasteLine[]): void {
     this.profile = profile;
@@ -138,10 +147,7 @@ export class FindsRunner {
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
   onTurn(t: TurnInput): TurnStarted | null {
     if (this.closed || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
-    const afterProduct =
-      (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
-      // a call continued on the other device: the search was asked on the first one (#199)
-      (t.recent ?? []).some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
+    const afterProduct = this.afterProduct(t.recent);
     const intent = classifyTurn(t.text, t.frames.length > 0, afterProduct);
     if (!intent) return null;
     const findId = randomUUID();

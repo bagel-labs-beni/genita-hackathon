@@ -43,6 +43,7 @@ import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
+import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
@@ -113,6 +114,8 @@ export type SessionDeps = {
   finds?: FindsDeps;
   /** F2-L26 rename by voice: persist the companion's new name (server.ts → prep store); unset = this call only */
   renameCompanion?: (userId: string, name: string) => Promise<unknown>;
+  /** Demo S4: iPhone calls only — the account's Mac app is open, so an outfit ask can move to the Mac's camera */
+  macNearby?: () => boolean;
   /** lane 개인화 (src/personalize/service.ts): server profile, first-call asks, voice corrections, post-call growth */
   personalize?: SessionPersonalize;
   /**
@@ -143,6 +146,10 @@ const MAX_CORRECTION_CHECKS = 12;
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
 
+/** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
+export const SUGGEST_MAC_LINE =
+  "The user's Mac is open and its bigger camera can see their whole outfit. Before giving outfit advice, warmly ask them to move this call to their Mac (Move to Mac in the menu) so you can see the whole outfit. Keep it to one or two short sentences.";
+
 const schedule = (fn: () => void, ms: number) => {
   const timer = setTimeout(fn, ms);
   return () => clearTimeout(timer);
@@ -168,7 +175,7 @@ type Reply = {
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
 type TurnMetrics = { speechEndAt?: number; completeAt?: number; lastPartialAt?: number; specStartAt?: number };
 /** lang = the language the reply is written in (interpretation: the target) */
-type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string };
+type Built = { req: SparkRequest; interpret: boolean; detected: { from: string; to: string } | null; images: string[]; lang: string; suggestMac?: boolean };
 /** firstTextAt: when the speculative stream's first text arrived (it is buffered until the final transcript) */
 type Speculation = { norm: string; abort: AbortController; built: Built; stream: Eager<SparkStreamEvent>; memoryRetry: MemoryRetryState; confirm: () => void; at: number; firstTextAt?: number };
 
@@ -289,6 +296,8 @@ export class Session {
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
   private frames: Frames | null = null;
+  /** Demo S4: the move-to-Mac suggestion was made in this call */
+  private macSuggested = false;
   private asr: AsrLike | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
@@ -1258,7 +1267,7 @@ export class Session {
       { role: "user", content },
     ];
     const v1 = this.v1 ? this.v1Extras(turn) : {};
-    const instructions = buildInstructions({
+    const base = buildInstructions({
       persona,
       user: this.user,
       memories: this.memories,
@@ -1274,6 +1283,11 @@ export class Session {
       nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,
       ...v1,
     });
+    // a refine after a product search in this call ("another one in black…") stays a search: the Finds runner's own rule
+    const recent = this.history.slice(-6).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
+    const afterProduct = this.finds ? this.finds.afterProduct(recent) : recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)));
+    const suggestMac = !this.macSuggested && isOutfitAsk(text, afterProduct) && this.deps.macNearby?.() === true;
+    const instructions = suggestMac ? `${base}\n${SUGGEST_MAC_LINE}\n` : base;
     // said once, on the next reply the user asked for (not a greeting or an initiative turn)
     if (!greeting && !turn.cue) this.shorterLine = null;
     return {
@@ -1282,6 +1296,7 @@ export class Session {
       // Finds get the camera frames only, never the shared screen
       images: camera,
       lang: this.language,
+      suggestMac,
       req: {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
@@ -1456,7 +1471,8 @@ export class Session {
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
-    if (!interpret && !self && !synthetic && this.finds) {
+    // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
+    if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
@@ -1844,6 +1860,8 @@ export class Session {
     // its script would otherwise be extracted as something the user said
     if (full && !interpret) { this.remember("assistant", full); if (!self) this.memoryCall?.assistantMessage(full); }
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
+    // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
+    if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
     // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
     if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
       this.ask.asked = true;
