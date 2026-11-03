@@ -2,9 +2,9 @@ import SwiftUI
 import UIKit
 
 // F5-U-CAM · CAM-H (full-flow board r01 §6): the camera is the stage, the companion's face is a 96 × 128 window at the
-// top right, and the boxes the server found sit on the live preview. A box pops in over 240 ms, 60 ms after the one
-// before; its label is above it (below when there is no room); all fade after 4 s. A tapped ingredient chip lights its box.
-// Colours: `.box` border --blue-on-ink 2 px, radius 12, fill rgba(84,193,255,.16); label = pill 28 pt, 12/16 medium.
+// top right, and the boxes the server found sit on the live preview. Items light up one by one, 150 ms apart, each
+// fading in over 200 ms (ease-out), the label 100 ms later (Dyno's video 1:30.5); its label is above it (below when there is no room); all fade after 4 s. A tapped ingredient chip lights its box.
+// Colours: edge #00A2FF 2.5 pt + glow (blur 6, 60 %), inside white 20 % (lit 35 %); label = pill 28 pt, 12/16 medium.
 
 struct CameraStage: View {
     let call: CallController
@@ -115,23 +115,35 @@ private struct PopBox: View {
     /// absolute origin of the label pill (masks only); nil = the box rule
     var labelAt: CGPoint? = nil
     @State private var shown = false
+    /// the label joins 100 ms after its item lights up
+    @State private var labelShown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// #00A2FF, the edge and glow in Dyno's video
+    static let edgeBlue = Color(red: 0, green: 162 / 255, blue: 1)
+    /// one item after another: 150 ms apart, each fading in over 200 ms (ease-out); the label 100 ms later
+    static let stagger = 0.15, fadeIn = 0.2, labelDelay = 0.1
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if let mask {
-                // a light, neutral fill (red-on-red vanishes on tomatoes) and a blue outline, both from the mask grid
-                Color.white.opacity(lit ? 0.45 : 0.25)
+                // Dyno's video (1:30.5): the item lit from inside (white 20 %), a #00A2FF edge with a soft glow of the
+                // same blue (blur 6, 60 %), both from the mask grid
+                Color.white.opacity(lit ? 0.35 : 0.20)
                     .mask(Image(decorative: mask.fill, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 2))
                     .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                CallInk.blueOnInk
-                    .mask(Image(decorative: mask.edge, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 0.6))
+                Self.edgeBlue.opacity(0.6)
+                    .mask(Image(decorative: mask.edge, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 1.2))
+                    .blur(radius: 6)
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+                Self.edgeBlue
+                    .mask(Image(decorative: mask.edge, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 0.9))
                     .scaleEffect(x: mirrored ? -1 : 1, y: 1)
             } else {
-                RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
-                RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(lit ? 0.35 : 0.20))
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Self.edgeBlue, lineWidth: 2.5)
+                    .shadow(color: Self.edgeBlue.opacity(0.6), radius: 6)
             }
-            if showsLabel {
+            if showsLabel && labelShown {
             Text(item.label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(height: 28)
                 .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 12))
@@ -140,13 +152,15 @@ private struct PopBox: View {
             }
         }
         .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)
-        .scaleEffect(shown || reduceMotion ? 1 : 0.97)
-        .opacity((shown || reduceMotion ? 1 : 0) * (dimmed ? 0 : 1))
+        .opacity((shown ? 1 : 0) * (dimmed ? 0 : 1))
         .offset(x: rect.minX, y: rect.minY)
         .task {
-            if reduceMotion { shown = true; return }
-            try? await Task.sleep(for: .milliseconds(60 * item.order))
-            withAnimation(.easeOut(duration: 0.24)) { shown = true }
+            // Reduce Motion: everything fades in together, no stagger
+            if reduceMotion { withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true; labelShown = true }; return }
+            try? await Task.sleep(for: .milliseconds(Int(Self.stagger * 1000) * item.order))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { shown = true }
+            try? await Task.sleep(for: .milliseconds(Int(Self.labelDelay * 1000)))
+            withAnimation(.easeOut(duration: Self.fadeIn)) { labelShown = true }
         }
     }
 }

@@ -63,7 +63,9 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
-import { mentionsProfile, moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
+import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
+import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMood.ts";
+import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -263,6 +265,10 @@ export function holdCapMs(env: NodeJS.ProcessEnv = process.env): number {
 export const HOLD_BEATS = ["<warm> Mm.", "<curious> Ooh.", "<warm> Yeah.", "<warm> Okay, so.", "<curious> Hmm.", "<warm> Mm-hm."];
 /** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
 const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
+/** the backchannel cue's echo in a transcript ("mm-hm", "mhm", "mm"), never a real word */
+export function stripCueEcho(text: string): string {
+  return text.replace(/(^|[\s,])(?:m+-?h+m+|mh+m+|m{2,})[.,!?…]*(?=\s|$)/gi, "$1").replace(/\s{2,}/g, " ").replace(/\s+([,.!?])/g, "$1").trim();
+}
 /** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
@@ -393,6 +399,18 @@ export class Session {
   private lastMessageAt: number | null | undefined = undefined;
   /** #341: profile things recent greetings opened on (oldest → newest); undefined = not read yet */
   private openerRecent: string[] | undefined = undefined;
+  /** #344: where this call's mood starts (the last call's ending mood, faded); null = the persona's baseline */
+  private startMood: Mood | null = null;
+  /** #344: where this companion's mood rests (moodState.ts, from its traits / speaking style) */
+  private get moodBase(): Mood {
+    return personaBaseline(this.persona);
+  }
+  /** the mood so far this call (user lines folded on the start mood, decaying toward the persona baseline) */
+  private callMood(extra?: string): Mood {
+    const lines = this.history.filter((h) => h.role === "user").map((h) => h.text);
+    const base = this.moodBase;
+    return moodFrom(extra ? [...lines, extra] : lines, this.startMood ?? base, base);
+  }
   /** the companion speaks first mid-call (src/convo/initiative.ts); null = off for this call */
   private initiative: InitiativeGovernor | null = null;
   private initiativeTimer: NodeJS.Timeout | null = null;
@@ -411,11 +429,39 @@ export class Session {
     ? new Backchannel({
         now: () => this.now(),
         stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
-        send: (kind) => { this.client.sendJson({ type: "backchannel", kind }); this.log("convo.backchannel", { kind }); },
+        send: (kind) => void this.sendBackchannel(kind),
       })
     : null;
   /** perception lane (camera face reading, GENITA_PERCEPTION): read-only, assigned by its message hook */
   perception: PerceptionSource | null = null;
+
+  /**
+   * P1 #345: the cue in the companion's own voice ("Mm-hm." / "Yeah." are prefetched fillers, so no GPU wait) rides
+   * the event as base64 PCM; the app plays it beside the reply queue and silences its uplink for it + 300 ms.
+   * Device voice: no audio (the app plays nothing). Sent only if it is still the user's turn after the lookup.
+   */
+  /** bumped on every speech start / partial / end: a cue whose lookup outlived its pause is dropped (Codex #475 P2) */
+  private bcGen = 0;
+  /** a cue played during this user turn: a stray "mm-hm" in its transcript is the cue's echo, not the user */
+  private cuedTurn = false;
+
+  private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
+    const gen = this.bcGen;
+    let audio: string | undefined;
+    if (this.tts === "server" && !this.voiceOverflow) {
+      try {
+        const parts: Buffer[] = [];
+        for await (const c of this.deps.tts({ voiceId: this.voiceId, text: "Mm-hm.", emotion: null, model: SEAMLESS_MODEL, signal: AbortSignal.timeout(800), lang: "en-US" })) if (c.audio.length) parts.push(c.audio);
+        const pcm = Buffer.concat(parts);
+        if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
+      } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
+    }
+    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking || gen !== this.bcGen) return;
+    this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
+    // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
+    this.cuedTurn = true;
+    this.log("convo.backchannel", { kind, audio: !!audio });
+  }
   private perceptionUnsub: (() => void) | null = null;
   /** D21: start.greetAfterMs window; the user speaking or typing inside it cancels the greeting */
   private greetTimer: (() => void) | null = null;
@@ -723,6 +769,7 @@ export class Session {
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
+        this.startMood = null;
         forgetOpenerTopics(userId, memory, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       });
       // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
@@ -745,7 +792,7 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); }
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)(), this.moodBase); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -1082,6 +1129,10 @@ export class Session {
     this.backchannel?.stop();
     this.dropCallAsr();
     this.asr?.end();
+    // #344: the call's ending mood carries into the next call (numbers only; not after an account delete or Forget-less unknown state)
+    if (this.v1 && this.deps.memory && this.deps.userId && this.memoryCall && this.historyRevision !== null && reason !== "account_deleted" && this.history.some((h) => h.role === "user")) {
+      saveCallMood(this.deps.memory, this.deps.userId, this.callMood(), (this.deps.memory.now ?? Date.now)(), this.historyRevision, (e) => this.log("convo.mood_save_failed", { message: String(e).slice(0, 120) }));
+    }
     this.memoryCall?.close();
     this.correcting?.abort();
     // lane 개인화: the call's turns grow the profile (not after an account delete)
@@ -1113,25 +1164,31 @@ export class Session {
     // interpretation speech counts as talking too: returning to chat never starts on a stale silence (Codex P2)
     if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
     if (this.interp) return this.onInterpretAsr(e);
+    if (this.cuedTurn && (e.type === "partial" || e.type === "speechComplete")) e = { ...e, text: stripCueEcho(e.text) };
+    if (e.type === "speechComplete") this.cuedTurn = false;
     switch (e.type) {
       case "speechStart":
         this.metrics = {};
+        this.bcGen++;
         this.backchannel?.start();
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
       case "partial":
         this.metrics.lastPartialAt = t;
+        this.bcGen++;
         this.backchannel?.partial(e.text);
         this.client.sendJson({ type: "transcript", final: false, text: e.text });
         this.dispatch({ type: "partial", text: e.text });
         return this.considerSpeculation(e.text);
       case "speechEnd":
+        this.bcGen++;
         this.backchannel?.stop();
         this.metrics = { speechEndAt: t, lastPartialAt: this.metrics.lastPartialAt };
         this.client.sendJson({ type: "speech.end", turnId: e.turnId });
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
+        this.bcGen++;
         this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
@@ -1422,6 +1479,27 @@ export class Session {
     ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
+  /** #345: a smile / laugh the camera saw at the last reply, until the next user turn reads it */
+  private faceLanded: { kind: "smiled" | "laughed"; at: number } | null = null;
+
+  /** one perception subscription per call: feeds the initiative governor (if on) and what-landed (#345) */
+  private subscribePerception(): void {
+    if (!this.perception || this.perceptionUnsub) return;
+    try {
+      this.perceptionUnsub = this.perception.onTrigger((t) => {
+        if (t.kind === "smiled_at_reply" || t.kind === "laughed") this.faceLanded = { kind: t.kind === "laughed" ? "laughed" : "smiled", at: this.now() };
+        this.initiative?.perception(t);
+      });
+    } catch { this.perceptionUnsub = () => {}; }
+  }
+
+  /** the landed face for this turn, if it was seen in the last 20 s; consumed once */
+  private takeFaceLanded(): "smiled" | "laughed" | null {
+    const f = this.faceLanded;
+    this.faceLanded = null;
+    return f && this.now() - f.at <= 20_000 ? f.kind : null;
+  }
+
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
   private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
@@ -1449,15 +1527,17 @@ export class Session {
     } catch { /* the reply never fails on the camera lane */ }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
+    this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
-      const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
       turnLine = turnHints({
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
-        mood: moodLine(moodFrom(userLines)),
+        // never an upbeat / playful mood hint on a real crisis line (Codex #490 P1)
+        mood: realCrisisSignal(userText) ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
+        faceLanded: this.takeFaceLanded(),
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1489,7 +1569,7 @@ export class Session {
     const gov = this.initiative;
     if (!gov || this.initiativeBusy || this.closed) return;
     if (this.perception && !this.perceptionUnsub) {
-      try { this.perceptionUnsub = this.perception.onTrigger((t) => gov.perception(t)); } catch { this.perceptionUnsub = () => {}; }
+      this.subscribePerception();
     }
     const d = gov.decide(this.now(), this.initiativeIdle());
     if (!d.fire) return;
@@ -1940,6 +2020,8 @@ export class Session {
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
+    // #344: this reply's mood (the user's line already in history for a user turn)
+    const replyMood: Mood | null = this.v1 && !interpret && !self ? this.callMood() : null;
     let laughs = 0;
     // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
     // (read from the request itself: it was built before this turn was counted)
@@ -2073,6 +2155,13 @@ export class Session {
         }
         // expression layer: one face per clause (Spark's [tag], else its words / the reply's <emotion>); never in interpretation
         let face = interpret ? null : clauseExpression(p, emotion, !!p.emotion, { scaled: this.v1 });
+        // #344: the face follows the call's mood — size by energy, and a reply with no face of its own keeps a faint
+        // one on its first clause instead of snapping back to neutral
+        if (this.v1 && !interpret && !self && replyMood) {
+          if (face && face.tag !== "laugh") face = { ...face, intensity: moodScaledIntensity(face.intensity, replyMood) };
+          // never on a crisis turn or after an explicit [neutral] (Codex #477/#490 P1)
+          else if (!face && !sentences.length && !emotion && p.expression !== "neutral" && !realCrisisSignal(guardCtx.userText)) face = restingFace(replyMood);
+        }
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;
         sentences.push({ tts, display, emotion, face });

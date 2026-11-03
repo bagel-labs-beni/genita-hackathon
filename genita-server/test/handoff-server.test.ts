@@ -182,6 +182,23 @@ test("lock keeps the owner, the other device sees peer inactive; HTTP claim and 
   mac.ws.close();
 });
 
+test("QA 171: the Mac's presence hears peer.inCall true only between the iPhone call's start and its close", async (t) => {
+  const { base } = await boot(t);
+  const phonePresence = await open(base, "/v1/presence?device=iphone", "incall");
+  const macPresence = await open(base, "/v1/presence?device=mac", "incall");
+  assert.equal((await macPresence.waitFor((m) => m.type === "peer" && m.device === "iphone")).inCall, false, "app open, no call");
+  const phoneCall = await open(base, "/v1/session?device=iphone", "incall");
+  await sleep(50);
+  assert.ok(!macPresence.json.some((m) => m.type === "peer" && m.inCall === true), "an open socket without start is not a call");
+  phoneCall.send({ type: "start", persona: { name: "Jin" } });
+  await phoneCall.waitFor((m) => m.type === "ready");
+  await macPresence.waitFor((m) => m.type === "peer" && m.device === "iphone" && m.inCall === true);
+  const seen = macPresence.json.length;
+  phoneCall.ws.close();
+  await macPresence.waitFor((m) => macPresence.json.indexOf(m) >= seen && m.type === "peer" && m.inCall === false);
+  for (const c of [phonePresence, macPresence]) c.ws.close();
+});
+
 test("review P1: a presence message that is valid JSON but not an object is an error, not a crash", async (t) => {
   const { base } = await boot(t);
   const p = await open(base, "/v1/presence?device=mac", "z");
