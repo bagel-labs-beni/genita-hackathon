@@ -138,6 +138,8 @@ export type SessionDeps = {
   personalize?: SessionPersonalize;
   /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
   continuesCall?: () => boolean;
+  /** resolves true once this call's device may play sound (handoff owner, lease over), false if it won't soon */
+  untilPlayable?: () => Promise<boolean>;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -894,10 +896,7 @@ export class Session {
     if (this.continued) {
       // handoff: the conversation goes on, no greeting of either kind. A drop coming back (same device, or a gap)
       // says one short line so the user isn't met by silence (coordinator 11/4 WT-06 follow-up)
-      if (this.reconnected && startMode === "chat" && !this.closed && !this.reply) {
-        this.log("call.reconnect_line", {});
-        this.dispatch({ type: "self_speak", text: RECONNECT_LINE, origin: "card" });
-      }
+      if (this.reconnected && startMode === "chat") void this.sayReconnectLine();
       return;
     }
     if (greetAfterMs === null) {
@@ -926,6 +925,21 @@ export class Session {
       }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
+  }
+
+  /**
+   * The reconnect line, once this device may play (the start claim and a switch's short lease: said into a closed
+   * gate it was lost — Codex #555), and only if nothing happened meanwhile: no user turn yet, still a chat (not
+   * interpretation), no reply under way (Codex #555 P2s).
+   */
+  private async sayReconnectLine(): Promise<void> {
+    const playable = (await this.deps.untilPlayable?.().catch(() => false)) ?? true;
+    if (!playable || this.closed || this.reply || this.mode !== "chat" || this.turn.utteranceId !== 0) {
+      this.log("call.reconnect_skipped", { playable, busy: !!this.reply, mode: this.mode, turns: this.turn.utteranceId });
+      return;
+    }
+    this.log("call.reconnect_line", {});
+    this.dispatch({ type: "self_speak", text: RECONNECT_LINE, origin: "card" });
   }
 
   private startPreGreet(): void {

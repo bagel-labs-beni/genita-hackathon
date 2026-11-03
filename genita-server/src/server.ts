@@ -491,6 +491,12 @@ export async function startServer(
       priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), lastCall: () => lastCall(id),
       personalize: deps.personalize ?? prep.deps.personalize, macNearby,
       continuesCall: () => continuesOtherDevice(who.userId, id, callDevice),
+      // the reconnect line waits for the start claim and a switch's lease (src/handoff/hub.ts mayPlay), at most 2 s
+      untilPlayable: gated ? () => new Promise<boolean>((resolve) => {
+        const t0 = Date.now();
+        const tick = () => (gated.call.mayPlay() ? resolve(true) : Date.now() - t0 > 2000 ? resolve(false) : void setTimeout(tick, 50).unref?.());
+        tick();
+      }) : undefined,
       onHistoryChange: (role) => {
         const p = progress.get(id) ?? zero;
         progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });

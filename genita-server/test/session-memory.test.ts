@@ -414,10 +414,15 @@ async function dropAndReturn(t: import("node:test").TestContext, o: { from: stri
   await memory.drain();
   // the time the user was away (the server reads Date.now)
   if (o.gapMs) { const real = Date.now; const gap = o.gapMs; Date.now = () => real() + gap; t.after(() => { Date.now = real; }); }
+  // the app on the other device takes the conversation when its call starts (like Move / Call here)
+  if (o.to !== o.from) {
+    const claim = await fetch(`http://127.0.0.1:${addr.port}/v1/handoff/claim`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ device: o.to, trigger: "button" }) });
+    assert.equal(claim.status, 200);
+  }
   const back = await open(o.to);
   back.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
   await waitFor(back.ready);
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 700)); // the switch's 250 ms lease, then the line
   back.ws.close();
   return { logs, lines: back.lines };
 }
