@@ -55,3 +55,31 @@ final class RestoreStub: URLProtocol, @unchecked Sendable {
         XCTAssertFalse(storage.bool(forKey: AppState.signedOutKey))
     }
 }
+
+/// AU-20 (11/4 audit): the N1–N3 send failing (401 / offline / 400) leaves the picks unsent, so the next N3 tap keeps
+/// N1/N2 and signing in again carries them; only a saved send marks them sent.
+@MainActor final class SkipSendTests: XCTestCase {
+    private func model(status: Int) -> AppState {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RestoreStub.self]
+        RestoreStub.handler = { req in
+            (req.url?.path ?? "").hasSuffix("/v1/import/skip") ? (status, Data(#"{"error":"unauthorized"}"#.utf8)) : (404, Data())
+        }
+        let m = AppState(storage: UserDefaults(suiteName: UUID().uuidString)!)
+        m.routeAfterSignIn = {}
+        m.onboarding = OnboardingClient(auth: GenitaAuthClient(baseURL: URL(string: "https://skip.stub")!, store: InMemoryTokenStore("token-a"), session: URLSession(configuration: config)))
+        m.setup.skipInterests = ["Food", "Style"]; m.setup.skipReplies = "Show me options"; m.setup.skipSent = false
+        return m
+    }
+
+    func testFailedSkipSendLeavesThePicksUnsent() async throws {
+        for status in [401, 400, 503] {
+            let m = model(status: status)
+            m.finishSkip()
+            for _ in 0..<200 where m.importing { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertFalse(m.importing)
+            XCTAssertEqual(m.setup.skipSent, false, "HTTP \(status): still unsent")
+            XCTAssertEqual(m.setup.skipInterests, ["Food", "Style"], "HTTP \(status): the picks stay")
+        }
+    }
+}

@@ -181,8 +181,11 @@ extension AppState {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
-                setup.skipSent = true   // from here on they are this account's (even if the reply is lost)
-                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
+                let style = try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3)
+                // only a saved send makes them this account's (AU-20): a 401 / offline / 400 leaves them unsent, so the
+                // next N3 tap keeps N1/N2 and signing in again carries them (the case #516 is for)
+                setup.skipSent = true
+                applyStyle(style)
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
         }
