@@ -205,13 +205,12 @@ public struct MotionNotedCheck: View {
 // MARK: - Card 10 · call connecting / ending
 
 /// The face behind blur 14, darkened and at 1.04 while `veiled`; it clears once in 520 ms (0.16, 1, 0.3, 1) the first time
-/// it is not veiled, with one medium impact. Turning veiled again (the call ending) blurs and darkens it in 300 ms.
+/// it is not veiled (the call site plays the connect haptic on the call going live). Turning veiled again (the call ending) blurs and darkens it in 300 ms.
 /// Reduce Motion: only the dark veil, fading. `enabled: false` draws it plain (offscreen captures).
 struct MotionCallReveal: ViewModifier {
     var veiled: Bool
     var enabled = true
     @State private var open = false
-    @State private var connected = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func body(content: Content) -> some View {
         let clear = !enabled || open || GenitaMotion.reviewStill
@@ -219,14 +218,12 @@ struct MotionCallReveal: ViewModifier {
             .blur(radius: clear || reduceMotion ? 0 : 14, opaque: true)
             .scaleEffect(clear || reduceMotion ? 1 : 1.04)
             .overlay { Color.black.opacity(clear ? 0 : 0.4).allowsHitTesting(false) }
-            .sensoryFeedback(.impact(weight: .medium), trigger: connected)
             .onAppear { set(veiled: veiled) }
             .onChange(of: veiled) { _, v in set(veiled: v) }
     }
     private func set(veiled: Bool) {
         guard enabled, !GenitaMotion.reviewStill, open == veiled else { return }
         withAnimation(reduceMotion ? GenitaMotion.fade : veiled ? MotionCall.conceal : MotionCall.reveal) { open = !veiled }
-        if !veiled { connected += 1 }
     }
 }
 

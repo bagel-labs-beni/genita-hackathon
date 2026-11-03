@@ -27,6 +27,7 @@ struct ConversationView: View {
     @State private var loopURL: URL?
     /// card 10: S09 stops waiting for the generated face after 2.5 s (a photo-only companion never gets one)
     @State private var faceWaitOver = false
+    @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -68,7 +69,7 @@ struct ConversationView: View {
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             // motion details card 10: veiled until the generated face (poster or live) is there, then clears
                             // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
-                            .modifier(CallFaceVeil(connecting: connecting, faceReady: call.facePoster != nil || call.face != nil || faceWaitOver, enabled: handoffEnabled))
+                            .modifier(CallFaceVeil(connecting: connecting, faceReady: call.facePoster != nil || faceWaitOver, enabled: handoffEnabled))
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -172,7 +173,7 @@ struct ConversationView: View {
                         // CC-1 wins over GK-1 (a "Noted: …" answers the question)
                         // not over the Finds tab (its back button and title sit on the menu row)
                         if !connecting && !findsTabOpen, let chip = call.profileChip ?? call.askingChip {
-                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(call.profileChip == nil ? chip : "\(chip)#\(call.profileChipSerial)")
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
                                           y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine,
@@ -254,6 +255,9 @@ struct ConversationView: View {
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // card 10: one medium tap when this call first goes live (not on a cached face alone, not on reconnects)
+        .sensoryFeedback(trigger: connectedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
+        .onChange(of: call.link == .live, initial: true) { _, live in if live && !connecting && connectedTaps == 0 { connectedTaps = 1 } }
         .task(id: connecting) {
             guard !connecting, !faceWaitOver else { return }
             try? await Task.sleep(for: .seconds(2.5))

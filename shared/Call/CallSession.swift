@@ -119,6 +119,8 @@ enum CallStop: Equatable {
     /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
     /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
     private(set) var profileChip: String?
+    /// One per `profile.updated`: the chip view restarts (and re-times its exit) even when the words repeat.
+    private(set) var profileChipSerial = 0
     /// GK-1 "Getting to know you · {topic}": the companion just asked this call's question (`profile.asking`).
     /// A soft chip for `askingChipMs`, or until the answer is saved (CC-1 "Noted: …").
     private(set) var askingChip: String?
@@ -891,6 +893,7 @@ enum CallStop: Equatable {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         profileChip = String(text.prefix(60))
+        profileChipSerial += 1
         profileChipTask?.cancel()
         profileChipTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.profileChipMs))

@@ -28,10 +28,15 @@ import os
     /// The reply's loudness 0…1 at the playhead (20 ms steps of the queued audio), 0 when nothing plays.
     var outputLevel: Float {
         guard let now = nowSample() else { return 0 }
-        outputSpans.removeAll { $0.end <= now }
+        pruneOutputSpans(now: now)
         guard let span = outputSpans.first(where: { $0.start <= now }) else { return 0 }
         let i = Int((now - span.start) / AVAudioFramePosition(OutputSpan.stepSamples))
         return span.levels.indices.contains(i) ? span.levels[i] : 0
+    }
+    /// Drops levels already played (also from the playback path, so a call nobody draws the meter for stays small).
+    private func pruneOutputSpans(now: AVAudioFramePosition? = nil) {
+        guard let now = now ?? nowSample() else { return }
+        outputSpans.removeAll { $0.end <= now }
     }
     private let inputMeter = VoiceLevelMeter()
     private var outputSpans: [OutputSpan] = []
@@ -193,6 +198,7 @@ import os
 
     private func played(utteranceId: Int, generation gen: Int) {
         guard gen == generation else { return }
+        pruneOutputSpans()
         queuedBuffers = max(0, queuedBuffers - 1)
         queuedByUtterance[utteranceId, default: 1] -= 1
         checkDone(utteranceId)
