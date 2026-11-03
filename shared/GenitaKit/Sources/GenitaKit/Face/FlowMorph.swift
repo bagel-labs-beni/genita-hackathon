@@ -209,7 +209,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var chinLpHz = 2.0, chinGain = 0.3
         /// critic bgperi (11/3): the skin around the lips (outside the lip ellipse) also takes this share
         /// of its motion from the slow amounts (× skinGain), so it moves continuously; 0 = off
-        public var skinShare = 0.4, skinGain = 1.0   // v9.2 (bgperi: median .42 = reference)
+        public var skinShare = 0.0, skinGain = 1.0   // 0.4 made the jaw 1.5× fast for no perioral gain (v9.3)
         /// ramp start below the mouth box bottom and its length (× still height)
         public var chinRamp = [0.035, 0.03]
         /// texture blend: w_k = a_k/Σa × clip((Σa − blendFloor[0]) / blendFloor[1])
@@ -344,12 +344,12 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lpfMs) { lpfMs = max(0, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .microPx) { microPx = v }
         }
-        /// App v9.2 values for people on the lip rig when prep sends no perioral block (bgperi 11/3:
-        /// perioral median .42 vs reference .42, moving frames 75 %, cheek 1.04, background .03).
+        /// Release values for people on the lip rig when prep sends no perioral block: the human lane's
+        /// v56 (critic 8.5; jawDrop 0 — 5 px made the jaw 1.34× too fast), plus the app's ring follow.
         public static let release: Perioral = {
             var p = Perioral()
-            p.follow = 0.2; p.philtrumPx = 1.6; p.spreadPx = 6; p.roundInPx = 3; p.jawDropPx = 2; p.roundBulgePx = 1.2
-            p.mbpChinPx = 1.3; p.lpfMs = 150; p.microPx = 0.4
+            p.follow = 0.2; p.philtrumPx = 1.6; p.spreadPx = 5; p.roundInPx = 3; p.jawDropPx = 0; p.roundBulgePx = 1.2
+            p.mbpChinPx = 1.3; p.lpfMs = 150; p.microPx = 0
             return p
         }()
         var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 }
@@ -1268,8 +1268,11 @@ final class FlowMorph: @unchecked Sendable {
         lastLaugh = (ew["laugh"] ?? 0, context?.audioMs ?? 0)
         func sum(_ ks: [String]) -> Double { Double(ks.compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }) }
         let mbpA = sum(["MBP"])
-        let peri = (open: min(1, max(0, Double(am.reduce(0, +)) - mbpA)), ee: min(1, sum(["EH", "EI"])),
-                    round: min(1, sum(["O", "OH", "U", "WQ"])), mbp: min(1, mbpA))
+        // v56 drivers: spread / round normalised (a stressed EY is only ~.3 of spread keys), straight from
+        // the lips; open / closure low-passed below. A smile owns the corners: spread / round × (1 − w).
+        let sw = max(ew["smile"] ?? 0, ew["smileopen"] ?? 0, 0.8 * (ew["laugh"] ?? 0))
+        let peri = (open: min(1, max(0, Double(am.reduce(0, +)) - mbpA)), ee: min(1, sum(["EH", "EI"]) / 0.45) * (1 - sw),
+                    round: min(1, sum(["O", "OH", "U", "WQ"]) / 0.6) * (1 - sw), mbp: min(1, mbpA))
         var dCheek = cornerD, periUse = peri, micro = (0.0, 0.0)
         if let pr = rig.perioral {
             let dt = periT.map { min(0.5, max(0, t - $0)) } ?? 0
@@ -1281,7 +1284,7 @@ final class FlowMorph: @unchecked Sendable {
                 periA = (periA.open + a * (peri.open - periA.open), periA.ee + a * (peri.ee - periA.ee),
                          periA.round + a * (peri.round - periA.round), periA.mbp + a * (peri.mbp - periA.mbp))
             }
-            if pr.lpfMs > 0 { periUse = periA }
+            if pr.lpfMs > 0 { periUse = (periA.open + 0.25 * (1 - periA.open) * min(1, periLoud), peri.ee, peri.round, periA.mbp) }
             // loudness envelope: fast attack, 400 ms release, so the skin keeps living between syllables
             let o = Double(max(0, min(1, lip.openness)))
             periLoud = o > periLoud ? periLoud + (1 - exp(-dt / 0.04)) * (o - periLoud) : periLoud * exp(-dt / 0.4)
