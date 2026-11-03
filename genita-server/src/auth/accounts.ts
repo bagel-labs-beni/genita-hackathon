@@ -178,6 +178,14 @@ export class Accounts {
 
   /** Deletes the user row; ON DELETE CASCADE clears every user-owned table. */
   async deleteUser(userId: string): Promise<boolean> {
-    return (await this.db.query("DELETE FROM users WHERE id = $1", [userId])).rowCount > 0;
+    const r = await this.db.query("DELETE FROM users WHERE id = $1 RETURNING email, provider, provider_sub", [userId]);
+    // AU-07 (SE-03): email_codes has no user FK, so the address it keeps goes with the account
+    const addresses = new Set<string>();
+    for (const row of r.rows as { email: string | null; provider: string; provider_sub: string }[]) {
+      if (row.email) addresses.add(row.email.trim().toLowerCase());
+      if (row.provider === "email" && row.provider_sub) addresses.add(row.provider_sub.trim().toLowerCase());
+    }
+    if (addresses.size > 0) await this.db.query("DELETE FROM email_codes WHERE lower(email) = ANY($1::text[])", [[...addresses]]);
+    return r.rowCount > 0;
   }
 }
