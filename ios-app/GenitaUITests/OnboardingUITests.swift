@@ -31,6 +31,47 @@ final class OnboardingUITests: XCTestCase {
         shot.name = "onb-V02-F-public-figure"; shot.lifetime = .keepAlways; add(shot)
     }
 
+    /// Photo polish (11/4): V02-T confirms the polished picture with "Use this image" and "Try again (2 left)", no "Use my original".
+    func testV02TConfirmsThePolishedPhoto() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "polished", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 10), "V02-T")
+        XCTAssertTrue(app.descendants(matching: .any)["polishedImage"].exists, "the polished picture is shown")
+        XCTAssertEqual(app.buttons["primaryCTA"].label, "Use this image")
+        XCTAssertEqual(app.buttons["polishTryAgain"].label, "Try again (2 left)")
+        XCTAssertFalse(app.buttons["Use my original"].exists)
+        Thread.sleep(forTimeInterval: 0.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-V02-T-polished"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// After two retries only "Use this image" is left (Chelsea 11/4: the last result or another photo).
+    func testV02TAfterTheLastRetry() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "polished-last", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 10), "V02-T")
+        XCTAssertFalse(app.buttons["polishTryAgain"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-V02-T-polished-last"; shot.lifetime = .keepAlways; add(shot)
+    }
+
+    /// A photo without any face: one plain line (Chelsea 11/4).
+    func testV02FNoFace() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "fail-no_face", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V02-F"].waitForExistence(timeout: 10), "V02-F")
+        XCTAssertTrue(app.descendants(matching: .any)["Failed: We couldn't find a clear face. Try another photo."].exists)
+        XCTAssertEqual(app.buttons["primaryCTA"].label, "Choose another image")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-V02-F-no-face"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     func testOnboardingAgainstTheServer() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
