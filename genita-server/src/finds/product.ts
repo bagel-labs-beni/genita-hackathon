@@ -507,7 +507,7 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   ctx.log("product.kept", { findId: ctx.findId, kept: products.length, ...dropped, serverOpened, pageRead: facts.filter(Boolean).length });
 
   if (!products.length) {
-    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "Couldn’t find a good match. Try a color or a price, or ask me again." });
+    ctx.emit({ type: "find.failed", findId: ctx.findId, reason: "search_failed", message: "Couldn’t find a good match. Try a color or a price." });
     return { card: null, timings, label };
   }
 

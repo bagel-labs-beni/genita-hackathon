@@ -433,6 +433,32 @@ test("faceManifest: the served flow map carries the v9.3 mouth; the switch off s
   assert.equal(off.flow!.map.perioral, undefined);
 });
 
+test("mouth interior (11/4): rig people get rig.interior 1 + a lips-together listening idle; GENITA_FACE_MOUTH_INTERIOR=0 serves build 6", async () => {
+  const { withV93Mouth, mouthInteriorOn } = await import("../src/prep/face.ts");
+  const map = { rig: { chinLpHz: 2, teethTop: { min: 0.08 } }, motion: { riseMs: 70 } };
+  const out = withV93Mouth(map, "human", true);
+  const rig = out.rig as Record<string, unknown>;
+  assert.equal(rig.interior, 1);
+  assert.equal(rig.restOpen, 0.05);
+  assert.equal(rig.chinLpHz, 2);
+  assert.deepEqual(rig.teethTop, { min: 0.08 });
+  // build 6 reads motion.idleJaw: ≤ 0.05 keeps its teeth layer (teethMin 0.08) off while listening
+  assert.deepEqual(out.motion, { riseMs: 70, idleJaw: 0.05 });
+  assert.equal((map.rig as Record<string, unknown>).interior, undefined, "the stored map is not mutated");
+  // own perioral block (prep-tuned) still gets the mouth inside
+  assert.equal((withV93Mouth({ rig: {}, perioral: { lipThin: 0.5 } }, "human", true).rig as Record<string, unknown>).interior, 1);
+  // off: interior 0, no idle override
+  const off = withV93Mouth(map, "human", true, false);
+  assert.equal((off.rig as Record<string, unknown>).interior, 0);
+  assert.deepEqual(off.motion, { riseMs: 70 });
+  // not a rig face / not a person: untouched
+  assert.equal(withV93Mouth({ alive: {} }, "human", true).rig, undefined);
+  assert.equal(withV93Mouth({ drive: "open" }, "animal", true).motion, undefined);
+  assert.equal(withV93Mouth({ rig: {}, drive: "snap" }, "human", true).motion, undefined);
+  assert.equal(mouthInteriorOn({}), true);
+  for (const v of ["0", "false", "off", " OFF "]) assert.equal(mouthInteriorOn({ GENITA_FACE_MOUTH_INTERIOR: v }), false);
+});
+
 test("aliveSway: GENITA_ALIVE_SWAY scales the app's frame sway (default 1, clamped, junk = 1)", async () => {
   const { aliveSway } = await import("../src/prep/face.ts");
   assert.equal(aliveSway({}), 1);

@@ -16,7 +16,8 @@ import type { SessionDeps } from "../src/session/session.ts";
 async function fixture(t: TestContext, persistent = false) {
   const dir = await mkdtemp(join(tmpdir(), "genita-upload-limits-"));
   const env = { GENITA_DATA_DIR: dir, GENITA_JWT_SECRET: "j".repeat(40) };
-  const config = loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_HTTP_KEEPALIVE_MS: "0", GENITA_META_DAILY_CALLS: "12" });
+  const config = loadConfig({ MODEL_API_KEY: "synthetic", PORT: "0", GENITA_HTTP_KEEPALIVE_MS: "0", GENITA_META_DAILY_CALLS: "30" });
+  // an upload = 5 Meta calls: Spark check + SAM head + SAM face, eyes, mouth (V03 face scan, 11/4); 5 uploads + 1 for another user = 30
   const deps: SessionDeps = {
     config,
     openAsr() { throw new Error("ASR forbidden in upload tests"); },
@@ -97,7 +98,7 @@ test("uploads 1–5 succeed; sixth spends no Meta budget, other users work, and 
   await f.db.query("INSERT INTO usage_daily (user_id, day, turns, clip_sets) VALUES ($1, $2::date, 7, 1)", [a.id, new Date().toISOString().slice(0, 10)]);
   for (let n = 0; n < 5; n++) assert.equal((await f.upload(a.token)).status, 200);
   const before = f.calls();
-  assert.equal(before, 10);
+  assert.equal(before, 25);
   assert.deepEqual(await f.upload(a.token, "spoof-new-user"), { status: 429, body: { error: "limit_reached", limit: "user_uploads" } });
   assert.equal(f.calls(), before, "the capped upload must not call Spark or SAM");
   assert.equal((await f.upload(b.token)).status, 200, "another account still has the remaining shared budget");
@@ -116,7 +117,7 @@ test("concurrent uploads for one authenticated account admit exactly five before
   const results = await Promise.all(Array.from({ length: 16 }, (_, n) => f.upload(a.token, `spoof-${n}`)));
   assert.equal(results.filter((r) => r.status === 200).length, 5);
   assert.equal(results.filter((r) => r.status === 429).length, 11);
-  assert.equal(f.calls(), 10);
+  assert.equal(f.calls(), 25);
   assert.deepEqual((await f.db.query("SELECT uploads FROM usage_daily WHERE user_id = $1", [a.id])).rows, [{ uploads: 5 }]);
 });
 
