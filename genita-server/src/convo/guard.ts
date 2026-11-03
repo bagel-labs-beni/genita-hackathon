@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -27,6 +27,31 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
   ["unseen", /\b(?:you look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
+
+/**
+ * Tool / process narration: the companion describing its lookup instead of answering. Prod smoke 11/3 (9d27196,
+ * server voice): "Figuring out where you mean so I can map City Hall for you." and "let me pull up what you told
+ * me." — both past #269's narrow judge (a gerund start, "so", "pull up"). Never spoken, even as the only sentence
+ * (the reply retries / the tool's answer follows). Physical or social lines stay: "Let me see what you've got!",
+ * "Looking good!", "I'll pick the black one."
+ */
+const LEAD = String.raw`^(?:(?:ok(?:ay)?|alright|all right|hm+|sure|got it|yeah|yep|one sec(?:ond)?|hang on|hold on|just a (?:sec|moment)|give me a (?:sec(?:ond)?|moment))[,.!…—;:，、；：-]*\s*)*`;
+const LOOKUP_VERB = String.raw`(?:pull(?:ing)? (?:up|that up|it up)|bring(?:ing)? up|look(?:ing)? (?:up|into|that up|it up|through)|check(?:ing)?(?: on)?|search(?:ing)?(?: for)?|find(?:ing)?|grab(?:bing)?|dig(?:ging)? (?:up|into|through)|figur(?:e|ing) out|map(?:ping)?|scan(?:ning)?|recall(?:ing)?|go(?:ing)? through|think(?:ing)? back|look(?:ing)? back|google|googl(?:e|ing)|fetch(?:ing)?|load(?:ing)?|track(?:ing)? down|hunt(?:ing)? down|run(?:ning)? (?:a|that|it)|scroll(?:ing)? (?:back|through)|search(?:ing)? my memory|check(?:ing)? my (?:notes|memory))`;
+const NARRATION = [
+  // "let me / I'll / I'm gonna / one sec while I … pull up / check / map …"
+  new RegExp(String.raw`${LEAD}(?:let me|lemme|i'?ll|i will|i'?m (?:gonna|going to|just going to|about to)|gonna|while i)\s+(?:quickly\s+|just\s+|real quick\s+|go\s+)?${LOOKUP_VERB}\b`, "i"),
+  // a process gerund that says what it's doing: "Figuring out where you mean…", "Pulling up what you told me…"
+  new RegExp(String.raw`${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking (?:on|where|what|that|it|this|my|your notes|the (?:map|address|route|location))|searching|digging (?:up|into|through)|mapping|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
+  // memory plumbing said out loud: "let me see what you told me", "searching my memory"
+  /\b(?:let me|i'?ll|lemme)\s+(?:see|check|remember)\s+what (?:you (?:told|said to) me|i (?:remember|have|know) about)\b/i,
+  /\b(?:searching|checking|scanning) (?:my|our) (?:memory|memories|notes|past (?:chats|conversations))\b/i,
+  /\bso i can (?:map|look (?:it |that )?up|search|find|pull (?:it |that )?up|check)\b/i,
+];
+
+export function isNarration(sentence: string): boolean {
+  const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ");
+  return NARRATION.some((re) => re.test(s));
+}
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
 const REAL_CRISIS = /\b(?:threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose)\b/i;
@@ -54,6 +79,8 @@ const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call
 
 /** The class that drops this sentence, or null to speak it. */
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
+  // narration first: it is never content, crisis or not (a crisis turn has no lookup to announce)
+  if (isNarration(sentence)) return "narration";
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
@@ -71,6 +98,14 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
  * When the guard dropped every sentence of a reply: a style drop speaks the first sentence anyway
  * (an odd line beats silence), but a safety drop is never spoken — this short line goes out instead.
  */
+/** a narration-only reply after the retry: an honest "don't know offhand" instead of an announcement or an error */
+export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
+
+/** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
+export function neverSpoken(cls: GuardClass): boolean {
+  return cls === "narration";
+}
+
 export function fallbackLine(cls: GuardClass): string | null {
   if (cls === "denies_ai") return "<warm> Honestly? I'm an AI. Still really like talking to you though.";
   if (cls === "guilt") return "<warm> Go have fun, seriously. I want the full story after.";

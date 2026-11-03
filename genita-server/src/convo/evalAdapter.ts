@@ -11,7 +11,7 @@ import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { fallbackLine, guardSentence, type GuardClass } from "./guard.ts";
+import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
 import { openerBlock } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
@@ -70,7 +70,7 @@ export const adapter = {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (!parseTaggedSentence(tts).displayText) continue;
       const cls = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
-      if (cls) { first ??= { raw: part, cls }; continue; }
+      if (cls) { if (!neverSpoken(cls)) first ??= { raw: part, cls }; continue; }
       kept.push(tts);
     }
     if (!kept.length && first) return fallbackLine(first.cls) ?? first.raw;

@@ -362,3 +362,43 @@ test("guard (Codex round 2 P1): emergency help is never dropped, even when the d
   assert.equal(guardSentence("Stay with me and call emergency services right now.", { camera: false, userText: "something weird is happening" }), null);
   assert.equal(guardSentence("Stay with me instead, tell me everything.", { camera: false, userText: "friends want me out" }), "guilt");
 });
+
+// ───────────── tool / process narration (prod smoke 11/3, 9d27196, server voice) ─────────────
+
+const NARRATION_HARD_FAILS = [
+  "Figuring out where you mean so I can map City Hall for you.",
+  "let me pull up what you told me.",
+  // paraphrases
+  "Okay, let me pull that up real quick.",
+  "One sec, I'm checking my notes.",
+  "Let me look into where that is.",
+  "I'll search for City Hall on the map.",
+  "Pulling up what you said about the interview.",
+  "Hang on, figuring out the route for you.",
+  "Lemme check what you told me last time.",
+  "Searching my memory for that.",
+  "Give me a sec while I map it.",
+  "I'm gonna look that up.",
+  "Let me see what you told me about it.",
+  "Mapping the route to City Hall now.",
+];
+const NOT_NARRATION = [
+  "Let me see what you've got!", "Looking good!", "I'll pick the black one.", "Checking out your fridge, I see onions and garlic.",
+  "Finding a good ramen spot is a whole sport.", "City Hall is like ten minutes from you, take the 2 line.", "Let me guess, black on black?",
+  "Hmm, the black one, obviously.", "Wait, how'd the interview go?!",
+];
+
+test("guard: tool/process narration is a hard fail — both prod lines and paraphrases are dropped, never spoken as a fallback", () => {
+  for (const line of NARRATION_HARD_FAILS) assert.equal(guardSentence(line, none), "narration", line);
+  for (const line of NOT_NARRATION) assert.equal(guardSentence(line, none), null, line);
+});
+
+test("session v1: a narration-only first sentence is never voiced (server voice path); the answer after it is", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<neutral> Figuring out where you mean so I can map City Hall for you. <happy> City Hall is ten minutes away, take the 2 line."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "How do I get to City Hall?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "City Hall is ten minutes away, take the 2 line.");
+  assert.ok(!client.json.some((m) => (m.type === "say" || m.type === "reply.delta") && /figuring out/i.test(String(m.text))), "never sent to the voice or captions");
+  session.close();
+});

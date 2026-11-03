@@ -46,7 +46,7 @@ import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
-import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
+import { fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { openerBlock } from "../convo/opener.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -1331,7 +1331,7 @@ export class Session {
     const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
-    const guarded: { first: { raw: string; cls: GuardClass } | null } = { first: null };
+    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean } = { first: null, narration: false };
     let laughs = 0;
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text };
     const enqueueSentences = (list: string[], keepOpener = false) => {
@@ -1351,7 +1351,9 @@ export class Session {
         if (this.v1 && !keepOpener && !interpret && !self) {
           const cls = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
           if (cls) {
-            guarded.first ??= { raw, cls };
+            // narration never becomes the spoken fallback; a style drop does (the first one kept)
+            if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
+            else guarded.narration = true;
             this.log("convo.guard", { utteranceId, cls });
             continue;
           }
@@ -1432,12 +1434,14 @@ export class Session {
           applyNarration(narration.finish());
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
-          if (!sentences.length && guarded.first) {
+          if (!sentences.length && guarded.first && !neverSpoken(guarded.first.cls)) {
             // never an empty reply: a style drop speaks its sentence; a safety drop says the fallback line
             const fb = fallbackLine(guarded.first.cls);
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
           if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
+          // the retry also only announced a lookup: say so honestly rather than the announcement or an error
+          if (!sentences.length && attempt === 1 && guarded.narration) enqueueSentences([NO_ANSWER_LINE], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
