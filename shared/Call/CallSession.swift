@@ -174,6 +174,8 @@ enum CallStop: Equatable {
     @ObservationIgnored private var profileChipTask: Task<Void, Never>?
     @ObservationIgnored private var askingChipTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
+    @ObservationIgnored private var graceTask: Task<Void, Never>?
+    @ObservationIgnored private var micBeforeBackground = false
     @ObservationIgnored private var userEnded = true
     @ObservationIgnored private var capturePermissions = CapturePermissionRequests()
     @ObservationIgnored private var fixedEndpoint: CallEndpoint?
@@ -353,6 +355,7 @@ enum CallStop: Equatable {
     func end() {
         capturePermissions.invalidate()
         userEnded = true
+        graceTask?.cancel(); graceTask = nil; micBeforeBackground = false
         reconnectTask?.cancel(); pingTask?.cancel(); holdTask?.cancel(); profileChipTask?.cancel(); profileChip = nil; askingChipTask?.cancel(); askingChip = nil
         socket?.close()
         socket = nil
@@ -381,11 +384,35 @@ enum CallStop: Equatable {
     /// a real background transition still invalidates it, as do end(), handoff and audio interruption.
     /// Only `.background` closes capture (AU-47): a permission alert, Control Center, Notification Center or the app
     /// switcher makes the scene `.inactive` for a moment, and the mic and the companion's voice carry on through it.
+    ///
+    /// Home or lock (IC-02 step 4, RV-01 step 2): the call pauses — mic, camera and sound off, the session stays. Back
+    /// within `backgroundGraceMs` the same call goes on (same session, no greeting) with the mic as it was. Past the
+    /// grace the call hangs up with `stop`, so the next call greets as a new one. A swipe-kill ends it at once (app).
     func sceneActivityChanged(_ activity: CapturePermissionRequests.Activity) {
         let answers = capturePermissions.updateActivity(activity, callEnded: userEnded, isOwner: ownsConversation)
-        if activity == .background { suspendCapture() }
+        if activity == .background, !userEnded {
+            if graceTask == nil { micBeforeBackground = micOn }
+            suspendCapture()
+            graceTask?.cancel()
+            graceTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(Self.backgroundGraceMs))
+                guard let self, !Task.isCancelled, self.graceTask != nil else { return }
+                self.log.info("background grace over: hang up")
+                self.end()
+            }
+        }
         for answer in answers { applyCapturePermission(answer) }
+        if activity == .active, let grace = graceTask {
+            grace.cancel(); graceTask = nil
+            if !userEnded, micBeforeBackground, mode == .chat, !micOn { toggleMic() }
+            micBeforeBackground = false
+        }
     }
+
+    /// How long a call paused by Home or lock waits for the user before it hangs up (coordinator 11/4: 30 s).
+    nonisolated(unsafe) static var backgroundGraceMs = 30_000
+    /// The paused call is waiting for the user to come back.
+    var inBackgroundGrace: Bool { graceTask != nil }
 
     private func suspendCapture() {
         guard !userEnded else { return }

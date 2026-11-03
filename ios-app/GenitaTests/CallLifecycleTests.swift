@@ -4,8 +4,46 @@ import XCTest
 /// Audit 11/4 (call lane): scene, hang-up, handoff-return and local-stop rules of CallController.
 @MainActor final class CallLifecycleTests: XCTestCase {
     private var savedMicWasOn = false
-    override func setUp() async throws { savedMicWasOn = CallController.micWasOn }
-    override func tearDown() async throws { CallController.micWasOn = savedMicWasOn }
+    private var savedGrace = 0
+    override func setUp() async throws { savedMicWasOn = CallController.micWasOn; savedGrace = CallController.backgroundGraceMs }
+    override func tearDown() async throws { CallController.micWasOn = savedMicWasOn; CallController.backgroundGraceMs = savedGrace }
+
+    // IC-02 step 4 (coordinator 11/4): Home or lock and back within the grace — the same call goes on: same session,
+    // no `stop`, no new `start` (so no greeting), the mic back on.
+    func testBackWithinTheGraceResumesTheSameCall() async throws {
+        CallController.backgroundGraceMs = 10_000
+        let (call, sockets, _) = begin(micOn: true)
+        defer { call.end() }
+        let socket = sockets.connections[0]
+        socket.onMessage?(.text(ready("s1")))
+        let starts = socket.sent.filter { if case .start = $0 { return true }; return false }.count
+        call.sceneActivityChanged(.background)
+        XCTAssertFalse(call.micOn, "paused: the mic is closed in the background")
+        XCTAssertTrue(call.inBackgroundGrace)
+        try await Task.sleep(for: .milliseconds(100))
+        call.sceneActivityChanged(.active)
+        XCTAssertFalse(call.inBackgroundGrace)
+        XCTAssertFalse(call.isEnded)
+        XCTAssertTrue(call.micOn, "the mic comes back as it was")
+        XCTAssertEqual(sockets.connections.count, 1, "same session")
+        XCTAssertFalse(socket.closedWithStop)
+        XCTAssertEqual(socket.sent.filter { if case .start = $0 { return true }; return false }.count, starts, "no new start, no greeting")
+    }
+
+    // RV-01 step 2: past the grace the paused call hangs up with `stop` (the next call greets as a new one).
+    func testPastTheGraceTheCallHangsUpWithStop() async throws {
+        CallController.backgroundGraceMs = 50
+        let (call, sockets, _) = begin(micOn: true)
+        defer { call.end() }
+        sockets.connections[0].onMessage?(.text(ready("s1")))
+        call.sceneActivityChanged(.background)
+        for _ in 0..<50 where !call.isEnded { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(call.isEnded)
+        XCTAssertTrue(sockets.connections[0].closedWithStop)
+        call.sceneActivityChanged(.active)
+        XCTAssertTrue(call.isEnded, "the call screen begins the new call (ConversationView.callBack)")
+        XCTAssertFalse(call.micOn)
+    }
 
     // AU-47: a permission alert, Control Center or the app switcher (.inactive) keeps the mic on; only .background closes it.
     func testInactiveSceneKeepsTheMicOnAndBackgroundClosesIt() {
@@ -19,6 +57,7 @@ import XCTest
         XCTAssertTrue(call.micOn)
         call.sceneActivityChanged(.background)
         XCTAssertFalse(call.micOn)
+        XCTAssertFalse(sockets.connections[0].closedWithStop, "background pauses, it does not hang up at once")
     }
 
     // AU-38: hanging up says `stop`; the call can begin again afterwards (call screen back on .active).

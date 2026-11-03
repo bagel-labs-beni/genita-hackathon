@@ -236,10 +236,10 @@ struct ConversationView: View {
         .onAppear { if !connecting { keepScreenAwake(scenePhase == .active) } }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: call.sceneActivityChanged(.active); callBack()
+            case .active: CallBackgroundTime.end(); call.sceneActivityChanged(.active); callBack()
             case .inactive: call.sceneActivityChanged(.inactive)
-            case .background: call.sceneActivityChanged(.background); hangUp()
-            @unknown default: call.sceneActivityChanged(.background); hangUp()
+            case .background: call.sceneActivityChanged(.background); holdForGrace()
+            @unknown default: call.sceneActivityChanged(.background); holdForGrace()
             }
             if !connecting { keepScreenAwake(phase == .active) }
         }
@@ -250,18 +250,16 @@ struct ConversationView: View {
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
-    /// AU-38 / RV-01: Home, lock and a swipe-kill hang up like leaving the call screen does: `stop` goes out, so the
-    /// next call greets as a new call. The background task gives the close frame time to leave before suspension.
-    private func hangUp() {
-        guard !connecting, !call.isEnded else { return }
-        let task = UIApplication.shared.beginBackgroundTask(withName: "genita.call.stop", expirationHandler: nil)
-        call.end()
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
-            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
-        }
+    /// AU-38 / IC-02 step 4: Home or lock pauses the call for its grace (CallController.backgroundGraceMs). The app has
+    /// no audio background mode, so a background task keeps it running that long; then the call hangs up with `stop`
+    /// (or sooner, if iOS takes the time back). A swipe-kill ends it through `willTerminate`.
+    private func holdForGrace() {
+        guard !connecting, call.inBackgroundGrace else { return }
+        let call = call
+        CallBackgroundTime.begin(seconds: Double(CallController.backgroundGraceMs) / 1000 + 2) { call.end() }
     }
-    /// IC-02 step 4 "돌아오면 재연결": back in the app, the call screen calls again (mic as the user left it, B12).
+    /// IC-02 step 4 "돌아오면 재연결": back after the grace ran out (the call hung up), the call screen calls again —
+    /// a new call that greets, mic as the user left it (B12). Back within the grace, the paused call resumes itself.
     /// Not after the server stopped the call (sign-in, consent, time limit route elsewhere).
     private func callBack() {
         guard !connecting, call.isEnded, call.stopped == nil else { return }
@@ -454,5 +452,27 @@ struct CallPrepLine: View {
         .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 36)
         .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
         .accessibilityElement(children: .combine).accessibilityIdentifier("callPrepPill")
+    }
+}
+
+/// The background time a paused call holds its grace with (one at a time).
+@MainActor enum CallBackgroundTime {
+    private static var task: UIBackgroundTaskIdentifier = .invalid
+    private static var timer: Task<Void, Never>?
+    /// Runs `expired` when iOS takes the time back before the grace is over; the task ends by itself after `seconds`.
+    static func begin(seconds: Double, expired: @escaping @MainActor () -> Void) {
+        end()
+        task = UIApplication.shared.beginBackgroundTask(withName: "genita.call.grace") {
+            MainActor.assumeIsolated { expired(); end() }
+        }
+        timer = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            end()
+        }
+    }
+    static func end() {
+        timer?.cancel(); timer = nil
+        if task != .invalid { UIApplication.shared.endBackgroundTask(task); task = .invalid }
     }
 }
