@@ -5,6 +5,7 @@
 import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
+import { makePersonMatte } from "./person.ts";
 import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
@@ -43,7 +44,7 @@ export function newPrepState(): PrepState {
 }
 
 /** Public URL of a companion image (scene = `neutral`); GET /v1/companion/face/:key, same auth as every prep route. */
-export const faceUrl = (key: "neutral" | FaceKey) => `/v1/companion/face/${key}`;
+export const faceUrl = (key: "neutral" | "person" | FaceKey) => `/v1/companion/face/${key}`;
 /** Face-flow assets (`flow_*`) are served by the same route. */
 export const flowUrl = (asset: string) => `/v1/companion/face/${asset}`;
 
@@ -345,6 +346,21 @@ export class PrepRunner {
           signal,
         });
         signal.throwIfAborted();
+      }
+      // subject matte for the device's background lock (SAM 3.1, Meta-only); optional, a miss never fails the face step
+      if (!out.person) {
+        try {
+          const size = imageSize(scene!);
+          const png = size ? await makePersonMatte({ media: mediaOf(d), metaKey: d.metaKey, sceneDataUrl: `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, size, kind: c.type, signal }) : null;
+          if (png) {
+            await this.stored(companionId, () => d.store.putAsset(userId, companionId, "person", png), ac);
+            out.person = true;
+          }
+          d.log("face.person", { companion: companionId, ok: !!png });
+        } catch (err) {
+          if (signal.aborted) throw err;
+          d.log("face.person", { companion: companionId, ok: false, error: String(err).slice(0, 200) });
+        }
       }
       await setStep("face", { status: "done", face: out, ms: out.ms.total, error: undefined });
       const m = faceManifest(out, faceUrl, flowUrl);

@@ -71,7 +71,7 @@ export function userIdOf(req: IncomingMessage): string {
   return id;
 }
 
-const FACE_ASSETS = new Set<string>(["neutral", ...ALL_FACE_KEYS]);
+const FACE_ASSETS = new Set<string>(["neutral", "person", ...ALL_FACE_KEYS]);
 
 /** All companion kinds animate the Meta face set on the device. */
 function sessionLip(_c: CompanionRecord): "none" {
@@ -298,6 +298,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       // only files the manifest lists (a rejected key never is)
       if (isFlow) {
         if (!flowAssets(c.prep.steps.face?.face?.flow).has(fk[1])) throw new PrepError(404, "no_image");
+      } else if (fk[1] === "person") {
+        if (!c.prep.steps.face?.face?.person) throw new PrepError(404, "no_image");
       } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
       const bytes = await d.store.getAsset(user, c.id, fk[1]);
       if (!bytes) throw new PrepError(404, "no_image");
