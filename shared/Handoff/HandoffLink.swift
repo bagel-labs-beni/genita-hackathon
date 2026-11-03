@@ -47,7 +47,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     private let service = "genita-handoff"
     private let store: UserDefaults
     private let rememberedKey = "genita.handoff.rememberedMac"
-    private let tokensKey = "genita.handoff.pairedTokens"
+    private var tokensKey = "genita.handoff.pairedTokens"
     private let macIDKey = "genita.handoff.macID"
     init(store: UserDefaults = .standard) {
         self.store = store
@@ -64,11 +64,19 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         if let value = store.string(forKey: macIDKey) { return value }
         let value = UUID().uuidString.lowercased(); store.set(value, forKey: macIDKey); return value
     }
-    func host() {
+    func host(accountID: String? = nil) {
+        tokensKey = HandoffAccountScope.storageKey(base: "genita.handoff.pairedTokens", accountID: accountID) ?? "genita.handoff.pairedTokens"
         code = String(Int.random(in: 100000...999999))
         advertiser = MCNearbyServiceAdvertiser(peer: peer, discoveryInfo: ["code": code, "mac": macID], serviceType: service)
         advertiser?.delegate = self; advertiser?.startAdvertisingPeer()
         status = "Waiting for your iPhone"
+    }
+    /// Account changes close the local channel too. Queued callbacks belong to the old session.
+    func stopHosting() {
+        advertiser?.stopAdvertisingPeer(); advertiser = nil
+        session.disconnect(); session = makeSession()
+        connected = false; code = ""; incomingUsedCode = false; pairedWithCode = false
+        status = "Not connected"
     }
     func join(_ code: String) {
         guard code.count == 6 else { status = "Enter the six digits shown on your Mac"; return }
@@ -112,6 +120,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
     func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) { if !connected { invited = false } }
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+        guard advertiser === self.advertiser else { invitationHandler(false, nil); return }
         let text = context.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         let byCode = text == "code:" + code && session.connectedPeers.isEmpty
         // A remembered phone may return before the session has noticed its old connection is gone.
@@ -152,6 +161,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
         guard data.count < 12_000_000, let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         DispatchQueue.main.async {
+            guard session === self.session else { return }
             if object["type"] as? String == "paired", let mac = object["mac"] as? String, let token = object["token"] as? String { self.remember(RememberedMac(mac: mac, token: token)) }
             self.onMessage?(object)
         }

@@ -58,26 +58,41 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var epoch=0
     private var bestRTT=Double.infinity
     private var subscriptions=Set<AnyCancellable>()
+    private var accountScope=HandoffAccountScope()
     /// The iPhone counts as reachable over the local link (pongs) or the server (presence).
     private var phoneReachable:Bool { (link.connected && Date().timeIntervalSince1970-lastPong<3) || server.peerOnline }
     init() {
+        ownership.useAccount(nil) // Never restore the account-agnostic legacy epoch.
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         server.onEffect = { [weak self] in self?.serverEffect($0) }
         server.onConnect = { [weak self] in
-            guard let self else{return}
+            guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":true])
         }
         server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
-        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {server.start()}
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
-        link.host()
-        // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
-        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion();MacCall.shared.conversationArrived() }}
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
+    }
+    /// Called only with the verified /me user, or nil on logout/session expiry.
+    func setAccount(_ accountID:String?) {
+        guard accountScope.select(accountID) else{return}
+        server.stop();link.stopHosting()
+        epoch+=1;pending=nil;motion=nil;renderedMotionID=nil;candidate=nil;last=nil;dock=nil
+        lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
+        sharing.stop();sharing.permissionRequired=false;media.stopAll()
+        companion?.orderOut(nil);companionVisible=false;sharingStopped=false;closeRegistration()
+        ownership.useAccount(accountID)
+        status="Waiting for your iPhone"
+        refreshSurface()
+        guard let accountID else{return}
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {
+            link.host(accountID:accountID);server.start()
+        }
+        if ownership.isOwner && ownership.state.epoch>0 {showCompanion()}
     }
     func showRegistration() {
         screen = screen ?? NSScreen.main
@@ -126,7 +141,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
     func continueHere() {
-        guard !ownership.isOwner else{return}
+        guard accountScope.accountID != nil,!ownership.isOwner else{return}
         let atEdge=freshAtDock
         server.nextTrigger = atEdge ? "touch" : "continue"
         ownership.claimHere()
@@ -140,11 +155,16 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         status="Moving to your iPhone"
     }
     private func serverEffect(_ effect:PresenceEffect) {
+        guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
             if pending != nil || motion != nil {
-                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+                let generation=accountScope.generation
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
+                    guard let self,self.accountScope.accepts(generation) else{return}
+                    self.ownership.receive(claim)
+                }
             } else {ownership.receive(claim)}
         case .moveRequested:
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
@@ -176,6 +196,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     private var freshAtDock:Bool { nowFresh && last.map { p in dock.map { p.sameDock($0) && p.touchesEdge(phoneHeight:phoneHeight) } ?? false } == true }
     func receive(_ message:[String:Any]) {
+        guard accountScope.accountID != nil else{return}
         let now=Date().timeIntervalSince1970
         switch message["type"] as? String {
         case "connected":

@@ -44,6 +44,7 @@ import Foundation
     private var wantsCall = false
     /// Bumped on sign-out: answers to requests started before it are dropped (no call with an old token).
     private var generation = 0
+    private var handoffAccountID: String?
     /// This Mac's turns, kept when the conversation moves away so coming back resumes it.
     private var history: [ClientMessage.HistoryItem] = []
 
@@ -69,11 +70,13 @@ import Foundation
         let gen = generation
         // keep the screen on view until the answer is in (only the first launch shows the empty window);
         // the 10 s re-check on MAC-2 must not blink the window
-        guard let token = CallEndpoint.current().token, !token.isEmpty else { account = .signedOut; return }
+        guard let token = CallEndpoint.current().token, !token.isEmpty else { generation += 1; account = .signedOut; useHandoffAccount(nil); return }
         let next: Account
+        var accountID: String?
         var plan: CompanionCallPlan?
         do {
             let me: GenitaMe = try await get("/me", token: token)
+            accountID = me.user.id
             if !me.consented {
                 next = .needsConsent
             } else if StartRouter.route(.active(me), device: .mac) == .macNoCompanion {
@@ -90,6 +93,8 @@ import Foundation
         }
         guard gen == generation else { return } // signed out meanwhile
         account = next
+        if next == .signedOut { generation += 1; useHandoffAccount(nil) }
+        else if let accountID { useHandoffAccount(accountID) }
         guard let plan else { return }
         call.companionName = plan.name
         loadFace(plan, token: token, generation: gen)
@@ -106,13 +111,18 @@ import Foundation
         let gen = generation
         Task {
             do {
-                try await flow.signIn(client: auth, device: .mac)
-                // signed out while the browser sheet was open: drop the session GenitaKit just stored
-                guard gen == generation else { auth.store.clear(); return }
+                let client = GenitaAuthClient(baseURL: auth.baseURL, store: InMemoryTokenStore())
+                let signedIn = try await flow.signIn(client: client, device: .mac)
+                guard gen == generation else { return }
+                generation += 1
+                useHandoffAccount(nil)
+                auth.store.save(signedIn.token)
                 await refresh()
             } catch GenitaAuthError.cancelled {
+                guard gen == generation else { return }
                 account = .signedOut
             } catch {
+                guard gen == generation else { return }
                 account = .signedOut
                 signInMessage = "Sign in didn’t finish. Try again."
             }
@@ -134,6 +144,7 @@ import Foundation
         do { signedIn = try await client.signInWithEmailCode(email: email, code: code, device: .mac) } catch { return EmailSignInCopy.message(for: error, sendingCode: false) }
         guard gen == generation else { return nil }
         generation += 1
+        useHandoffAccount(nil)
         auth.store.save(signedIn.token)
         await refresh()
         return nil
@@ -150,6 +161,7 @@ import Foundation
         // a sign-out (or another sign-in) happened while this was on its way: don't bring this session back
         guard gen == generation else { return nil }
         generation += 1
+        useHandoffAccount(nil)
         auth.store.save(signedIn.token)
         await refresh()
         return nil
@@ -164,13 +176,14 @@ import Foundation
             return true
         } catch GenitaAuthError.unauthorized {
             // the session expired or was revoked (GenitaKit already cleared it): back to A02
-            if gen == generation { generation += 1; account = .signedOut; face = nil; history = [] }
+            if gen == generation { generation += 1; account = .signedOut; useHandoffAccount(nil) }
             return true
         } catch { return false }
     }
 
     func signOut() {
         generation += 1
+        useHandoffAccount(nil)
         account = .signedOut
         face = nil
         history = []
@@ -194,6 +207,7 @@ import Foundation
         switch stop {
         case .signIn:
             generation += 1
+            useHandoffAccount(nil)
             history = []
             auth.store.clear()
             account = .signedOut
@@ -206,6 +220,20 @@ import Foundation
     }
 
     // MARK: the call follows the conversation
+
+    /// Only a verified /me user can activate handoff; no old call intent crosses accounts.
+    private func useHandoffAccount(_ accountID: String?) {
+        let changed = handoffAccountID != accountID
+        if changed || accountID == nil {
+            wantsCall = false; history = []; face = nil
+            call.end()
+        }
+        handoffAccountID = accountID
+        MacHandoff.shared.setAccount(accountID)
+        if changed, accountID != nil {
+            wantsCall = MacHandoff.shared.ownership.isOwner && MacHandoff.shared.ownership.state.epoch > 0
+        }
+    }
 
     /// The conversation is on this Mac now (ownership → mac).
     func conversationArrived() {
