@@ -265,8 +265,14 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var lipTone = 1.0
         /// lip saturation ceiling: × the neutral texture's mean lip saturation (v9.0 review: magenta closed lips); 0 = off
         public var lipSatMax = 1.05
+        /// 11/4 mouth inside (Chelsea, build 6 Listening: a flat white teeth band at rest): lips together while
+        /// listening (idle drift ≤ restOpen, no teeth layer without a reply) and teeth lit like the face
+        /// (`toneTeethLit`). Map `interior: 0` = the build 6 mouth (rollback without an app build).
+        public var interior = true
+        /// the largest idle opening while listening (amount of the first jaw key)
+        public var restOpen = 0.05
         public init() {}
-        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, skinShare, skinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop }
+        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, skinShare, skinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop, interior, restOpen }
         enum TeethKeys: String, CodingKey { case hyst, min, alpha, tone, exitBeforeClose }
         public init(from decoder: Decoder) throws {
             self.init()
@@ -286,6 +292,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTex) { lipTex = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTone) { lipTone = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipSatMax) { lipSatMax = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .interior) { interior = v >= 0.5 }
+            else if let v = try? c.decodeIfPresent(Bool.self, forKey: .interior) { interior = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .restOpen), v.isFinite { restOpen = min(0.2, max(0, v)) }
             // prep #266 nests the teeth rules: teethTop {hyst, min, alpha, fade, cavity}
             if let t = try? c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop) {
                 if let v = try? t.decodeIfPresent(Double.self, forKey: .hyst) { teethHyst = v }
@@ -302,6 +311,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             try c.encode(blendFloor, forKey: .blendFloor); try c.encode(noTex, forKey: .noTex)
             try c.encode(teethHyst, forKey: .teethHyst); try c.encode(teethMin, forKey: .teethMin); try c.encode(teethAlpha, forKey: .teethAlpha)
             try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone); try c.encode(lipSatMax, forKey: .lipSatMax)
+            try c.encode(interior ? 1.0 : 0.0, forKey: .interior); try c.encode(restOpen, forKey: .restOpen)
             var t = c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop)
             try t.encode(teethHyst, forKey: .hyst); try t.encode(teethMin, forKey: .min); try t.encode(teethAlpha, forKey: .alpha)
             try t.encodeIfPresent(teethTone, forKey: .tone); try t.encode(teethExitBeforeClose ? 1.0 : 0.0, forKey: .exitBeforeClose)
@@ -1608,6 +1618,11 @@ final class FlowMorph: @unchecked Sendable {
     /// the interior's V percentile + 25 become a darker, warmer cavity; an upper band (rows above
     /// `split`, |dx| < `band`, fading 40 % toward the sides) of bright unsaturated pixels is lifted
     /// toward white by `teethLift`.
+    /// 11/4 teeth lit like the face (stub)
+    static func toneTeethLit(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone) -> [Float] {
+        toneTeeth(p, interior: interior, width: w, height: h, tone: tone)
+    }
+
     static func toneTeeth(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone) -> [Float] {
         var ys: [Int] = [], xs: [Int] = [], vs: [Float] = []
         for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 {
