@@ -1,7 +1,7 @@
 import SwiftUI
 import AVFoundation
 
-/// M02 Settings (iPhone + Mac). Hackathon build: no "What I keep" row (ST-1's toggles were only for the
+/// M02 Settings (r01 C, 춘식이 prefs: short iOS list, About you on its own page). Hackathon build: no "What I keep" row (ST-1's toggles were only for the
 /// cut Us photo / seen memory; general memory stays on), Privacy · Terms (D16), Sign out, Delete account.
 struct SettingsView: View {
     @Bindable var model: AppState
@@ -38,62 +38,66 @@ struct SettingsView: View {
             return (line, !line.hasPrefix("•") && next.hasPrefix("•"))
         }
     }
-    private var styleText: String {
-        guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
-        return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
-    }
-    private var voiceName: String {
-        model.setup.voiceName ?? "Default"
-    }
+    private var companionName: String { model.companionDisplayName }
+    /// M02 r01 C first screen: companion card → About you → Account → Start over → legal links. Five groups, one screen.
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Profile") { TextField("Name", text: $model.setup.name) }
-                Section("Your companion") {
-                    LabeledContent("Name", value: model.companionDisplayName)
-                    if model.setup.companionDemo == true {
-                        // judge accounts start with a ready-made companion (PR #178)
-                        Text("Demo companion").font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("demoCompanionLabel")
-                    }
-                    LabeledContent("Voice", value: voiceName)
-                    if signedIn {
-                        Button(resetting ? "Starting over…" : "Make a new companion") { confirmReset = true }
-                            .disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
-                    }
+            SettingsPage {
+                SettingsGroup {
+                    NavigationLink { SettingsCompanionPage(model: model) } label: { companionCard }
+                        .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsCompanion")
                 }
-                Section("Your preferences") {
-                    if !styleText.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(Self.styleLines(styleText).enumerated()), id: \.offset) { i, line in
-                                Text(line.text)
-                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: line.heading ? 13 : 15))
-                                    .foregroundStyle(line.heading ? .secondary : .primary)
-                                    .padding(.top, line.heading && i > 0 ? 10 : 0)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }.padding(.vertical, 4).textSelection(.enabled).accessibilityElement(children: .combine)
+                SettingsGroup(header: "About you") {
+                    NavigationLink { AboutYouPage(model: model) } label: { aboutYouRow }
+                        .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsAboutYou")
+                    SettingsSeparator()
+                    NavigationLink { SettingsShowsUpPage(model: model) } label: {
+                        SettingsRowLabel(title: "How \(companionName) shows up", value: showsUpValue, chevron: true)
+                    }.buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsShowsUp")
+                }
+                SettingsGroup(header: "Account") {
+                    HStack(spacing: 12) {
+                        Text("Your name").font(SettingsType.font(17)).foregroundStyle(SettingsInk.ink)
+                        TextField("Name", text: $model.setup.name).font(SettingsType.font(17)).foregroundStyle(SettingsInk.value)
+                            .multilineTextAlignment(.trailing).submitLabel(.done).accessibilityIdentifier("settingsName")
+                    }.padding(.horizontal, 16).frame(minHeight: 52)
+                    if signedIn {
+                        SettingsSeparator()
+                        Button { reportOpen = true } label: { SettingsRowLabel(title: "Report a problem") }
+                            .buttonStyle(SettingsRowStyle()).accessibilityIdentifier("settingsReport")
+                        SettingsSeparator()
+                        Button { signOut() } label: { SettingsRowLabel(title: "Sign out") }
+                            .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("signOut")
                     }
-                    LabeledContent("Setup", value: model.setup.depth.title)
-                    ForEach(model.setup.answers.keys.sorted(), id: \.self) { key in LabeledContent(Self.label(for: key), value: Self.display(key, model.setup.answers[key] ?? "")) }
                 }
                 if signedIn {
-                    // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
-                    Section("Account") {
-                        Button("Report a problem") { reportOpen = true }.accessibilityIdentifier("settingsReport")
-                        Button("Sign out") { signOut() }.disabled(working || resetting).accessibilityIdentifier("signOut")
-                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working || resetting).accessibilityIdentifier("deleteAccount")
+                    // F1-L8: in-app account deletion (App Review 5.1.1(v)); D97 Make a new companion. Destructive, last.
+                    SettingsGroup(header: "Start over") {
+                        Button { confirmReset = true } label: { SettingsRowLabel(title: resetting ? "Starting over…" : "Make a new companion") }
+                            .buttonStyle(SettingsRowStyle()).disabled(resetting || working).accessibilityIdentifier("makeNewCompanion")
+                        SettingsSeparator()
+                        Button { confirmDelete = true } label: { SettingsRowLabel(title: working ? "Deleting…" : "Delete account", tint: SettingsInk.danger) }
+                            .buttonStyle(SettingsRowStyle()).disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
                 }
-                Section {
+                HStack(spacing: 6) {
                     Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                    Text("·").accessibilityHidden(true)
                     Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
                 }
-            }.navigationTitle("Settings")
+                .font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).tint(SettingsInk.header)
+                .frame(maxWidth: .infinity).padding(.top, 24)
+            }
+            .navigationTitle("Settings")
             .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                // r01 C: the title in Pretendard SemiBold 17 (the bar keeps "Settings" as its name for VoiceOver and tests)
+                ToolbarItem(placement: .principal) { Text("Settings").font(SettingsType.font(17, .semibold, relativeTo: .headline)).foregroundStyle(SettingsInk.ink).accessibilityAddTraits(.isHeader) }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.font(SettingsType.font(15, .semibold)) }
+            }
             .confirmationDialog("Delete your account?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete account", role: .destructive) { deleteAccount() }
                 Button("Cancel", role: .cancel) {}
@@ -114,6 +118,48 @@ struct SettingsView: View {
         #else
         .frame(width: 390, height: 600)
         #endif
+    }
+
+    /// C1 companion card: photo 56 (circle), name KMU80 22, "{voice} voice" 13 #6E6E73.
+    private var companionCard: some View {
+        HStack(spacing: 14) {
+            SettingsAvatar(imageData: model.setup.imageData, name: companionName, size: 56)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(companionName).font(SettingsType.serif(22)).foregroundStyle(SettingsInk.ink).lineLimit(1)
+                Text(companionSubtitle).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header).lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            SettingsChevron()
+        }
+        .padding(16).contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+    private var companionSubtitle: String {
+        let voice = model.setup.voiceName.map { "\($0) voice" } ?? "Default voice"
+        return model.setup.companionDemo == true ? voice + " · Demo companion" : voice
+    }
+    /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
+    private var aboutYouRow: some View {
+        let summary = AboutYouSummary(model: model)
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("What \(companionName) knows about you").font(SettingsType.font(17, .semibold)).foregroundStyle(SettingsInk.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(summary.preview).font(SettingsType.font(15, relativeTo: .subheadline)).foregroundStyle(SettingsInk.body).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let counts = summary.counts {
+                    Text(counts).font(SettingsType.font(13, relativeTo: .footnote)).foregroundStyle(SettingsInk.header)
+                }
+            }
+            Spacer(minLength: 4)
+            SettingsChevron().padding(.top, 4)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14).contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+    }
+    /// The first screen shows the help answer ("Think with me"); the page holds the rest.
+    private var showsUpValue: String? {
+        model.setup.answers["help"].map { Self.display("help", $0) }
     }
 
     /// "{Name}, their face, voice and your chats together will be removed. What Genita knows about you stays."
