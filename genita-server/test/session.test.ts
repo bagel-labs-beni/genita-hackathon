@@ -1089,3 +1089,30 @@ test("AU-70 (Codex r5): an Ask chip on an earlier card, barged in or switched to
   assert.ok(!client.json.slice(n).some((m) => m.type === "transcript" || m.type === "find.started"), "dropped");
   s2.close();
 });
+
+test("AU-70 (Codex r6): an Ask chip still loading its card never runs after a newer typed question", async () => {
+  const { client, session, sparkCalls } = setup();
+  const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
+  class SlowStore extends MemoryFindsStore {
+    override async get(owner: string, id: string) {
+      await sleep(60);
+      return super.get(owner, id);
+    }
+  }
+  const store = new SlowStore();
+  await store.put(ownerKey("dev-1"), { id: "44444444-aaaa-4bbb-8ccc-0000000000d1", kind: "recipe", createdAt: "2026-11-03T10:00:00Z", eyebrow: "", title: "Old card", subtitle: "", items: [], steps: [], options: [], why: [], ask: [], sources: [], how: [] });
+  const vendors = { async spark() { return { text: "", output: [] }; }, async *sparkStream() {}, async sam() { return []; }, async image() { return null; } };
+  const s2 = new Session("f7", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store, images: false, imageBase: "/v1/finds" } as never, userId: "dev-1" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const n = client.json.length;
+  const old = s2.onClientText(JSON.stringify({ type: "text", text: "Is it spicy?", findId: "44444444-aaaa-4bbb-8ccc-0000000000d1" }));
+  await sleep(5);
+  await s2.onClientText(JSON.stringify({ type: "text", text: "What time is it?" }));
+  await old;
+  await sleep(30);
+  const said = client.json.slice(n).filter((m) => m.type === "transcript").map((m) => m.text);
+  assert.deepEqual(said, ["What time is it?"]);
+  assert.ok(sparkCalls.length > 0);
+  s2.close();
+});
