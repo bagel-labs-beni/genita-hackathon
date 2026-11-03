@@ -72,8 +72,8 @@ export type TurnHintInput = {
   mentionSpent?: boolean;
   /** the last replies as stored, oldest first (session keeps 3) */
   recentReplies?: string[];
-  /** this call's user lines so far, oldest first (a crisis earlier in the call still counts; Codex #502 P1) */
-  userLines?: string[];
+  /** this call already had a real crisis line, kept as call state, not read from the trimmed history (Codex #502 P1) */
+  crisisInCall?: boolean;
 };
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
@@ -92,7 +92,7 @@ export function turnHints(t: TurnHintInput): string | null {
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
   // #342: three replies with no take of its own → ask for one (ownTakes.ts)
-  const take = ownTakeLine(t.recentReplies, user, t.userLines);
+  const take = ownTakeLine(t.recentReplies, user, t.crisisInCall);
   if (take) out.push(take);
   if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");

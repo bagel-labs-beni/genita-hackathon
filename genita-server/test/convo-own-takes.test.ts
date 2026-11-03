@@ -62,10 +62,9 @@ test("#342 own-take nudge: three replies in a row with no take of its own → th
 
 test("Codex #502 P1: once the call had a real crisis line, no take is asked on the turns after it", () => {
   const plain3 = ["<warm> Oh no.", "<warm> I'm here.", "<warm> Tell me more."];
-  const crisis = "I want to kill myself.";
   for (const followUp of ["Yes, I have the pills beside me", "I'm about to swallow all these pills", "whatever"]) {
-    assert.equal(ownTakeLine(plain3, followUp, ["hey", crisis, followUp]), null, followUp);
-    assert.doesNotMatch(turnHints({ lastReply: plain3[2], userText: followUp, remembers: false, recentReplies: plain3, userLines: ["hey", crisis, followUp] }) ?? "", /own take/, followUp);
+    assert.equal(ownTakeLine(plain3, followUp, true), null, followUp);
+    assert.doesNotMatch(turnHints({ lastReply: plain3[2], userText: followUp, remembers: false, recentReplies: plain3, crisisInCall: true }) ?? "", /own take/, followUp);
   }
-  assert.equal(ownTakeLine(plain3, "what should i cook", ["hey", "what should i cook"]), OWN_TAKE_NUDGE, "no crisis in the call: still asked");
+  assert.equal(ownTakeLine(plain3, "what should i cook", false), OWN_TAKE_NUDGE, "no crisis in the call: still asked");
 });

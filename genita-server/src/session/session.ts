@@ -432,6 +432,8 @@ export class Session {
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
+  /** a real crisis line came up in this call: sticky, the 16-line history trim never clears it (Codex #502 P1) */
+  private crisisInCall = false;
   private frames: Frames | null = null;
   /** Demo S4: the move-to-Mac suggestion was made in this call */
   private macSuggested = false;
@@ -1459,7 +1461,7 @@ export class Session {
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
         recentReplies: this.recentReplies,
-        userLines,
+        crisisInCall: this.crisisInCall ||= userLines.some(realCrisisSignal),
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };

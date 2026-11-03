@@ -11,7 +11,7 @@ import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
+import { fallbackLine, guardSentence, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
@@ -74,7 +74,7 @@ export const adapter = {
       mood: moodLine(moodFrom(userLines)),
       remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
-      userLines,
+      crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
     const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };

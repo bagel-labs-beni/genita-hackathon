@@ -99,11 +99,11 @@ const LOW = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stres
 
 export const OWN_TAKE_NUDGE = "Give your own take on what they just said this time.";
 
-/** recentReplies: the last replies, oldest first (session keeps 3). userLines: this call's user lines so far — once any
- * of them was a real crisis line, no take is asked for the rest of the call ("yes, I have the pills" follows it; Codex #502 P1) */
-export function ownTakeLine(recentReplies: string[] | undefined, userText: string, userLines: string[] = []): string | null {
+/** recentReplies: the last replies, oldest first (session keeps 3). crisisInCall: this call already had a real crisis line —
+ * no take is asked for the rest of the call ("yes, I have the pills" follows it, even after history trimming; Codex #502 P1 ×2) */
+export function ownTakeLine(recentReplies: string[] | undefined, userText: string, crisisInCall = false): string | null {
   const last = (recentReplies ?? []).slice(-3);
   if (last.length < 3 || last.some(hasOwnTake)) return null;
-  if (LOW.test(userText) || realCrisisSignal(userText) || userLines.some(realCrisisSignal)) return null;
+  if (crisisInCall || LOW.test(userText) || realCrisisSignal(userText)) return null;
   return OWN_TAKE_NUDGE;
 }

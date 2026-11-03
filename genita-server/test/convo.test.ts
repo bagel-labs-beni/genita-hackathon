@@ -1396,3 +1396,19 @@ test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greetin
   assert.equal(greet.text, "Okay Summer, when am I finally getting a taste of that kimchi grilled cheese?");
   session.close();
 });
+
+test("Codex #502 P1: a crisis line early in the call still blocks the take nudge after the 16-line history trim", { skip: !v1 }, async () => {
+  for (const first of ["I want to kill myself.", "hey"]) {
+    const { client, session, calls } = setup(["<warm> Okay."]);
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+    const lines = [first, ...Array(9).fill("ok"), "I'm about to swallow all these pills"];
+    for (let i = 0; i < lines.length; i++) {
+      await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+      await client.waitFor(() => client.json.filter((m) => m.type === "reply").length === i + 1);
+    }
+    const last = calls.at(-1)!.instructions!;
+    if (first === "hey") assert.match(last, /own take/, "control: no crisis in the call, the nudge fires");
+    else assert.doesNotMatch(last, /own take/);
+    session.close();
+  }
+});
