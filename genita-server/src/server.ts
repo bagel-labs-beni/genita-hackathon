@@ -326,8 +326,8 @@ export async function startServer(
   // At equal progress the later joiner is the one that inherited the conversation (Codex 11/3 r7/r8).
   let nextGen = 0;
   /** a same-device return visit's view of the call that just ended (taken once by the new call) */
-  const lastCallFor = new Map<string, { turns: HistoryItem[]; threadId: string | null }>();
-  function lastCall(self: string): { turns: HistoryItem[]; threadId: string | null } | null {
+  const lastCallFor = new Map<string, { turns: HistoryItem[]; threadId: string | null; covered: number }>();
+  function lastCall(self: string): { turns: HistoryItem[]; threadId: string | null; covered: number } | null {
     const c = lastCallFor.get(self) ?? null;
     lastCallFor.delete(self);
     return c;
@@ -368,7 +368,7 @@ export async function startServer(
       log("history.not_seeded", { session: self, by: "hang_up" });
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
-      lastCallFor.set(self, { turns: best.slice(-8), threadId: thread?.threadId ?? null });
+      lastCallFor.set(self, { turns: best.slice(-8), threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {

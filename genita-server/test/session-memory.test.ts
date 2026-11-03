@@ -713,7 +713,7 @@ test("P1 FILM 11/3: a quick call-back after a hang-up has the call that just end
   });
   const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
   const c1 = await open("iphone"); start(c1); await waitFor(() => c1.replies() >= 1);
-  for (const line of ["White or black for the Halloween party?", "Black it is.", "Forget the leather thing.", "Remind me to get dark brown shoes."]) {
+  for (const line of ["White or black for the Halloween party?", "Black it is.", "Remind me to get dark brown shoes."]) {
     const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
   }
   c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
@@ -722,9 +722,22 @@ test("P1 FILM 11/3: a quick call-back after a hang-up has the call that just end
   const inst = requests[0].instructions ?? "";
   assert.match(inst, /ended moments ago/);
   assert.match(inst, /Black it is/); assert.match(inst, /dark brown shoes/);
-  assert.doesNotMatch(inst, /leather/, "a forget request never rides along");
   // the next reply keeps it too (recall question), not just the greeting
   const n = back.replies(); back.ws.send(JSON.stringify({ type: "text", text: "What did I decide?" })); await waitFor(() => back.replies() > n);
   assert.match(requests.at(-1)!.instructions ?? "", /Black it is/);
   for (const w of sockets) w.terminate();
+});
+
+test("Codex 11/3 (#447): a hung-up call with a forget request in it sends no raw lines; a mid-call summary doesn't hide the later decision", async () => {
+  const { memory } = setup();
+  const c = new MemoryCall(memory, "acct-a", "back"); await c.open(false);
+  c.setLastCall([{ role: "user", text: "I picked the leather jacket." }, { role: "assistant", text: "Nice." }, { role: "user", text: "Forget the leather thing." }], "t1", 2);
+  assert.equal(c.lastCall, null, "nothing from that call rides along until its safe summary exists");
+  c.setLastCall([{ role: "user", text: "White or black?" }, { role: "assistant", text: "Black." }, { role: "user", text: "Black it is, final." }], "t2", 13);
+  c.summaries = [{ thread_id: "t2", turns: 12, created_at: 0, updated_at: 0, topics: ["Choosing white vs black"], mood: null, open_threads: ["White or black"], promises: [], asks: [] }];
+  const reqs: SparkRequest[] = [];
+  const src = async function* (req: SparkRequest) { reqs.push(req); yield { type: "text", delta: "ok" } as const; yield { type: "done", responseId: "r", text: "", status: "completed" } as const; };
+  for await (const _ of c.stream({ input: "hi" }, new AbortController().signal, src as never, "hi", null)) { /* drain */ }
+  assert.match(reqs[0].instructions ?? "", /Black it is, final/, "the 12-turn summary doesn't cover turn 13");
+  c.close(); await memory.drain();
 });
