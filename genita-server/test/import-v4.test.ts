@@ -140,3 +140,13 @@ test("QA post-deploy: a forgotten line is only a do-not-mention, never a fact or
   assert.doesNotMatch(text.split("Never bring these up")[0], /leather/);
   assert.doesNotMatch(text, /Short answers first/, "a corrected line is just replaced, not listed");
 });
+
+test("Codex P2 #432: a lean tag never gets a fact chip through a shared category word ('food')", () => {
+  const card = toStyleCard({
+    sections: { tendencies: [], communication: [], response: [], help: [], support: [], interests: [], likes: [{ text: "Food: Korean food (direction only)", label: "observed", scope: "any" }, { text: "Food: Vegetarian food.", label: "explicit", scope: "any" }], boundaries: [], approach: [] },
+    rules: [],
+    to_confirm: [],
+  });
+  const { cards } = toStory({ cards: [{ id: "taste", headline: "Veggie food.", items: [], promise: "", evidence: "explicit", tags: [{ group: "food", text: "Korean food", dislike: false }, { group: "food", text: "Vegetarian food", dislike: false }], help: [] }], topics: [] }, card);
+  assert.deepEqual(cards.find((c) => c.id === "taste")!.tags!.map((t) => t.text), ["Vegetarian food"]);
+});

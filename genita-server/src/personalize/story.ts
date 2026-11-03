@@ -378,7 +378,9 @@ const isDislikeLine = (t: string) => /^\s*(?:dislikes?|avoids?|hates?|not into|n
 type RawItem = { text?: unknown; evidence?: unknown };
 type RawCard = { id?: unknown; headline?: unknown; items?: unknown; promise?: unknown; evidence?: unknown; tags?: unknown; help?: unknown };
 
-const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []).map((w) => w.slice(0, 6)));
+/** category words every taste line shares ("Food: …", "Style: …"): never evidence on their own (Codex P2, #432) */
+const CATEGORY = new Set(["food", "foods", "style", "styles", "media", "music", "shows", "show", "films", "movies", "games", "books", "aesthetics", "aesthetic", "places", "activities", "products", "brands", "cooking", "fashion", "clothes", "things", "stuff", "taste", "tastes", "leans", "toward", "likes", "dislikes"].map((w) => w.slice(0, 6)));
+const keyWords = (t: string) => new Set((t.toLowerCase().match(/[\p{L}]{4,}/gu) ?? []).map((w) => w.slice(0, 6)).filter((w) => !CATEGORY.has(w)));
 /**
  * Evidence for one shown line: the best label among the card's source lines it echoes. A line that only echoes
  * suggestions is not shown (null); a line that echoes nothing gets the weakest fact label behind the card.
