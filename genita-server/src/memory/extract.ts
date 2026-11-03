@@ -1,4 +1,5 @@
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
+import { backgroundJson } from "../meta/sparkOpen.ts";
 import type { MemoryKind } from "./repository.ts";
 
 export type Turn = { user: string; assistant: string };
@@ -43,7 +44,8 @@ export function createKeyMaker(client: StructuredClient): KeyMaker {
     return cleanKeys(r.keys);
   };
 }
-export const metaKeyMaker = (key: string): KeyMaker => createKeyMaker((req) => sparkJson(key, req, AbortSignal.timeout(20_000)));
+// background (off the reply path): Muse Spark Open on Baseten first, Muse Spark API fallback (meta/sparkOpen.ts)
+export const metaKeyMaker = (key: string): KeyMaker => createKeyMaker((req) => backgroundJson(key, req, { timeoutMs: 20_000 }));
 
 export function createExtractor(client: StructuredClient): Extractor {
   return async (turns) => {
@@ -58,7 +60,8 @@ export function createExtractor(client: StructuredClient): Extractor {
   };
 }
 
-export const metaExtractor = (key: string): Extractor => createExtractor((req) => sparkJson(key, req, AbortSignal.timeout(30_000)));
+// background after turns/calls: Muse Spark Open on Baseten first, Muse Spark API fallback (meta/sparkOpen.ts)
+export const metaExtractor = (key: string): Extractor => createExtractor((req) => backgroundJson(key, req, { timeoutMs: 30_000 }));
 
 export async function metaMemorySafety(key: string, text: string): Promise<boolean> {
   const result = await sparkJson<{ safe: boolean }>(key, {

@@ -7,6 +7,7 @@
 import { META_BASE, UpstreamError, metaHeaders, metaJson } from "./http.ts";
 import { getOps } from "../ops/limits.ts";
 import { SseParser } from "./sse.ts";
+import { SPARK_OPEN_NAME, logLlm, openFallbackFor, sparkOpenJson } from "./sparkOpen.ts";
 
 export const SPARK_MODEL = "muse-spark-1.3";
 
@@ -132,8 +133,28 @@ export async function sparkText(key: string, req: SparkRequest, signal?: AbortSi
   return outputText(await metaJson<ResponseObject>(key, "/responses", body(req, false), signal));
 }
 
-/** Structured output via text.format json_schema; returns the parsed object. */
+/**
+ * Structured output via text.format json_schema; returns the parsed object.
+ * A Muse Spark API 5xx/504 (or network failure) on a text-only call tries Muse Spark Open on Baseten
+ * once when it is configured (meta/sparkOpen.ts); if that fails too, the original error is thrown.
+ */
 export async function sparkJson<T>(
+  key: string,
+  req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> },
+  signal?: AbortSignal,
+): Promise<T> {
+  try {
+    return await museJson<T>(key, req, signal);
+  } catch (err) {
+    const openKey = openFallbackFor(err, req, signal);
+    if (!openKey) throw err;
+    logLlm("llm.fallback", { from: SPARK_MODEL, to: SPARK_OPEN_NAME, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
+    return sparkOpenJson<T>(openKey, req, signal).catch(() => { throw err; });
+  }
+}
+
+/** The Muse Spark API json_schema call alone (no Spark Open hop): sparkOpen.ts's fallback target. */
+export async function museJson<T>(
   key: string,
   req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> },
   signal?: AbortSignal,
