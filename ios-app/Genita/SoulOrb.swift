@@ -183,7 +183,11 @@ enum SoulOrbLook {
 /// Feature flag (default ON) + whether this device can draw it.
 enum SoulOrbFlag {
     static var isOn: Bool {
-        if ProcessInfo.processInfo.environment["GENITA_LIVE_ORB"] == "0" { return false }
+        let env = ProcessInfo.processInfo.environment
+        if env["GENITA_LIVE_ORB"] == "0" { return false }
+        // unit-test host (FidelitySnapshotTests draws whole screens into images): the still PNG. UI tests and the app
+        // itself run without this variable and get the live orb.
+        if env["XCTestConfigurationFilePath"] != nil { return false }
         if let stored = UserDefaults.standard.object(forKey: "GenitaLiveOrb") as? Bool, !stored { return false }
         return SoulOrbGPU.shared != nil
     }
