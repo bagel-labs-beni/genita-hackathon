@@ -394,10 +394,8 @@ struct ConversationView: View {
     /// photo never shows on a call (Chelsea P1, build 7); until the scene or the face set lands it's the dark ground.
     /// Unwired builds (UI tests, Appetize preview) keep their bundled fixture face.
     var companionImage: Image? {
-        if let data = model.sceneImageData, let image = UIImage(data: data) { return Image(uiImage: image) }
-        guard !model.serverWired else { return nil }
-        if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
-        return Image(resource: "companion")
+        if let data = model.companionFaceData, let image = UIImage(data: data) { return Image(uiImage: image) }
+        return model.serverWired ? nil : Image(resource: "companion")
     }
 }
 
