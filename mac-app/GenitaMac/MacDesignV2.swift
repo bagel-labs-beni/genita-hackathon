@@ -82,8 +82,9 @@ struct MacV2Status: View {
 }
 
 /// Buttons of the Mac v2 set, Liquid Glass on macOS 26 (CEO 11/3: "Apple-style glass, not flat stamps"):
-/// primary = ink-tinted glass, secondary = clear glass, both 50 tall capsules with hover and press states;
-/// text = 44 tall, 15 medium ink. Before macOS 26 the same capsules fall back to ink fill / white + 1 pt outline.
+/// primary = ink-tinted glass, secondary = clear glass, both 50 tall and 12 round (the Figma radius, same as the
+/// iPhone's GlassCTA #414) with hover and press states; text = 44 tall, 15 medium ink. Before macOS 26 they fall back
+/// to ink fill / white + 1 pt outline.
 struct MacV2Button: View {
     enum Style { case primary, secondary, text }
     let label: String
@@ -114,13 +115,13 @@ struct MacV2Button: View {
             .lineLimit(1)
             .frame(maxWidth: style == .text ? nil : .infinity).frame(height: style == .text ? 44 : 50)
             .padding(.horizontal, style == .text ? 12 : 20)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }.buttonStyle(MacGlassButtonStyle(kind: style == .primary ? .prominent : style == .secondary ? .regular : .plain))
             .accessibilityIdentifier(id)
     }
 }
 
-/// One button look for every Mac surface: Liquid Glass capsule (macOS 26) with hover lift and press squeeze.
+/// One button look for every Mac surface: Liquid Glass, 12 round (macOS 26), with hover lift and press squeeze.
 struct MacGlassButtonStyle: ButtonStyle {
     enum Kind { case prominent, regular, plain }
     var kind: Kind
@@ -150,16 +151,17 @@ private struct MacGlassButtonBody<Label: View>: View {
             label.opacity(pressed ? 0.6 : 1).background(Capsule().fill(MacSheetInk.ink.opacity(hover && isEnabled ? 0.05 : 0)))
         case .prominent, .regular:
             if #available(macOS 26.0, *) {
-                label.glassEffect(glass, in: Capsule())
+                label.glassEffect(glass, in: shape)
                     .brightness(hover && isEnabled && kind == .prominent ? 0.08 : 0)
             } else {
                 label.background {
-                    if kind == .prominent && isEnabled { Capsule().fill(tint).brightness(hover ? 0.08 : 0) }
-                    else { Capsule().fill(Color.white).overlay(Capsule().strokeBorder(hover && isEnabled ? MacSheetInk.faint : MacDesignV2.outline, lineWidth: 1)) }
+                    if kind == .prominent && isEnabled { shape.fill(tint).brightness(hover ? 0.08 : 0) }
+                    else { shape.fill(Color.white).overlay(shape.strokeBorder(hover && isEnabled ? MacSheetInk.faint : MacDesignV2.outline, lineWidth: 1)) }
                 }
             }
         }
     }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
     @available(macOS 26.0, *) private var glass: Glass {
         kind == .prominent && isEnabled ? .regular.tint(tint).interactive() : .regular.interactive(isEnabled)
     }
