@@ -107,6 +107,8 @@ export type SessionDeps = {
   priorTurns?: (revision: number) => HistoryItem[] | null;
   /** Session memory: the thread those turns belong to (same conversation on the next device), read right after priorTurns */
   priorThread?: (revision: number) => ThreadState | null;
+  /** Server handoff ordering: actual history writes, never socket open/close or a copied seed. */
+  onHistoryChange?: (role: HistoryItem["role"]) => void;
   memory?: MemoryService;
   photos?: UsPhotoService;
   resolveCompanionFace?: CompanionFaceResolver;
@@ -1267,6 +1269,7 @@ export class Session {
   private remember(role: "user" | "assistant", text: string): void {
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
+    this.deps.onHistoryChange?.(role);
     if (role === "assistant") this.recentReplies = [...this.recentReplies, text].slice(-3);
   }
 
