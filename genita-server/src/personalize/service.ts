@@ -14,15 +14,17 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
+import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
-import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
+import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
 import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -46,7 +48,8 @@ export class PersonalizeError extends Error {
   constructor(status: number, code: string, message = code) { super(message); this.status = status; this.code = code; }
 }
 
-export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[]; nod?: string; /** this call's number (growth.calls), for the engine's closeness line */ calls?: number };
+export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[]; nod?: string; /** this call's number (growth.calls), for the engine's closeness line */ calls?: number;
+  /** lines the user took out of the profile: the call keeps them out of memory, notes and handed-off turns */ removed?: Removed[] };
 /** events: "Noted: …" (the planned question was answered) and/or "Updated: …" (a correction) */
 export type VoiceUpdate = { events: Array<{ text: string; fields: string[] }>; applied: AppliedUpdate[]; answered: boolean; profile: string; taste: TasteLine[] };
 
@@ -278,6 +281,23 @@ export class Personalize {
     const texts = cardTexts(shown);
     if (items.some((i) => !texts.includes(i))) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     const t0 = performance.now();
+    // "forget that …" on the sheet: like the voice path, only the profile's own words are kept; the request text
+    // itself is never stored, shown or replayed (Codex r7) — the marked lines still go
+    if (text && isForgetRequest(text)) {
+      await this.rememberForget(userId, before, forgetTarget(text));
+      if (!items.length) {
+        const latest = (await this.store.getStyle(userId)) ?? before;
+        this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "forget" });
+        return { card: Personalize.current(latest).find((c) => c.id === cardId) ?? shown, ack: ACK, changed: [], profile: styleProfileText(latest), rows: latest.display };
+      }
+      return this.correct(userId, { cardId, items });
+    }
+    // a sensitive or identifying text (health, money, an email …) is never stored, shown or sent to Spark (Codex P1):
+    // the card stays as it was, the user still gets the ack
+    if (text && (isSensitiveDetail(text) || redactSensitive(text) !== text || looksLikeInjection(text))) {
+      this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "dropped_sensitive" });
+      return { card: shown, ack: ACK, changed: [], profile: styleProfileText(before), rows: before.display };
+    }
     // S1 (≤ 1 s, Spark or not): the save answers now with the card as the user left it — the marked lines out, their
     // own words in — stored (stale) so a re-read or a second correction sees the same card. Spark turns it into
     // profile updates and rewords the card in the background (queued per user, newest wins by asOf).
@@ -433,14 +453,14 @@ export class Personalize {
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
       const card = await this.store.getStyle(userId);
-      return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
+      return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), removed: (card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
     }
     return this.update(userId, (card) => {
       const r = beginCall(card, this.now().toISOString());
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
       return {
         card: r.card,
-        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
+        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
       };
     });
   }
@@ -459,6 +479,41 @@ export class Personalize {
   }
 
   /**
+   * A "forget that …" (voice or the profile sheet): what is kept is never the user's words, only the stored
+   * profile's own words the request named — those passed every filter once, so no new detail ("asthma when
+   * running") is stored or sent on (Codex r5–r7). Returns whether anything was kept.
+   */
+  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<{ applied: AppliedUpdate[]; kept: string } | null> {
+    const keys = avoidKeys([{ text: target, forget: true }]);
+    const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
+    const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
+    const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
+    const kept = words.join(" ").slice(0, 80);
+    if (!kept) return null;
+    const at = this.now().toISOString();
+    let applied: AppliedUpdate[] = [];
+    const targetKeys = keys.flatMap((k) => k.keys);
+    await this.update(userId, (c) => {
+      // the profile lines the request is about go now (more than half of the request's words are in the line), so
+      // the sheet's "forget that …" really removes it without waiting for Spark (Codex r8); "asthma when running"
+      // does not take "Likes running." with it
+      const updates: ProfileUpdate[] = [];
+      for (const [field, list] of Object.entries(c.sections ?? {})) {
+        const hit = (list as Finding[]).filter((f) => {
+          const w = keyWords(f.text);
+          return targetKeys.filter((x) => w.includes(x)).length * 2 > targetKeys.length;
+        }).map((f) => f.text);
+        if (hit.length && (PROFILE_FIELDS as readonly string[]).includes(field)) updates.push({ field: field as ProfileField, text: "", replaces: hit, label: "explicit", asOf: at });
+      }
+      const m = updates.length ? mergeUpdates(c, updates, at) : null;
+      applied = m?.applied ?? [];
+      const merged = m ? m.card : c;
+      return { card: { ...merged, removed: [...(merged.removed ?? []), { text: kept, at, forget: true as const }].slice(-40) }, out: true };
+    });
+    return { applied, kept };
+  }
+
+  /**
    * One user line in a call. `asked` = the companion just asked this call's question: the line is always
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
@@ -468,18 +523,33 @@ export class Personalize {
     if (!card) return null;
     const t0 = performance.now();
     const asOf = this.now().toISOString();
+    let forgot: { applied: AppliedUpdate[]; kept: string } | null = null;
+    // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
+    // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
+    if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
+      const target = forgetTarget(line);
+      // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
+      // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
+      forgot = await this.rememberForget(userId, card, target);
+    }
+    // removed already: the call's profile and taste follow now, even if Spark has nothing more to change (Codex r9)
+    const forgotUpdate = async (): Promise<VoiceUpdate | null> => {
+      if (!forgot?.applied.length) return null;
+      const latest = (await this.store.getStyle(userId)) ?? card;
+      return { events: [{ text: `Updated: forgot ${forgot.kept}`.slice(0, 60), fields: [...new Set(forgot.applied.map((a) => a.field))] }], applied: forgot.applied, answered: false, profile: styleProfileText(latest, 2000, { toConfirm: false }), taste: tasteLines(latest) };
+    };
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
     // "forget that…" may remove a line by voice (removal-only updates are otherwise only from the profile screen)
     const updates = [...(answer ? [answer] : []), ...toCorrectionUpdates(raw, { allowRemove: FORGET.test(line) })].map((u) => ({ ...u, asOf }));
-    if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return null; }
+    if (!updates.length || signal?.aborted) { this.log("profile.voice_checked", { applied: 0, ms: Math.round(performance.now() - t0) }); return signal?.aborted ? null : forgotUpdate(); }
     const out = await this.update(userId, (latest) => {
       const m = mergeUpdates(latest, updates, this.now().toISOString());
       if (!m.applied.length) return null;
       if (answer && m.card.growth) m.card.growth = { ...m.card.growth, asked: m.card.growth.asked.map((a) => (a.item === asked!.item ? { ...a, answered: true } : a)) };
       return { card: m.card, out: { m, card: m.card } };
     });
-    if (!out) return null;
+    if (!out) return forgotUpdate();
     const events: Array<{ text: string; fields: string[] }> = [];
     const noted = out.m.applied.filter((a) => answer && a.text === answer.text);
     const rest = out.m.applied.filter((a) => !noted.includes(a));

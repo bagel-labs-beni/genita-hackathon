@@ -131,3 +131,12 @@ test("Codex P2s: garbage under a heading is still 422; a spending rule stays a b
   const { tasteLines } = await import("../src/personalize/reasons.ts");
   assert.deepEqual(tasteLines("How the user wants to be treated:\n- Taste: Dislikes cilantro.\nLeans (indirect, not stated by them; at most a light guess, never a fact or a nickname):\n- Taste: Style: leans toward minimal clothes").map((l) => l.text), ["Dislikes cilantro."]);
 });
+
+test("QA post-deploy: a forgotten line is only a do-not-mention, never a fact or 'you told me to forget'", async () => {
+  const { styleProfileText } = await import("../src/prep/importProfile.ts");
+  const card = { ...toStyleCard({ sections: { tendencies: [], communication: [{ text: "Direct and plain.", label: "explicit", scope: "any" }], response: [], help: [], support: [], interests: [], likes: [], boundaries: [], approach: [] }, rules: [], to_confirm: [] }), removed: [{ text: "Likes leather accessories.", at: "2026-11-03T12:00:00Z", forget: true as const }, { text: "Short answers first.", at: "2026-11-03T12:00:00Z" }] };
+  const text = styleProfileText(card);
+  assert.match(text, /Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:\n- Likes leather accessories\./);
+  assert.doesNotMatch(text.split("Never bring these up")[0], /leather/);
+  assert.doesNotMatch(text, /Short answers first/, "a corrected line is just replaced, not listed");
+});

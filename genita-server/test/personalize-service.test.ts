@@ -439,3 +439,104 @@ test("S1: an answered unknown leaves GET story at once, before Spark merges it",
   release();
   await h.p.drainRewrites();
 });
+
+test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing on; a plain target is kept out", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Forget that I have diabetes.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.removed ?? []).includes("diabetes"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /diabetes/);
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  const removed = (await h.store.getStyle("u1"))!.removed ?? [];
+  assert.deepEqual(removed.filter((r) => r.forget).map((r) => [r.text, r.forget]), [["leather accessories", true]]);
+  assert.ok(!(await h.store.getStyle("u1"))!.sections.likes.some((x) => /leather/.test(x.text)), "the line itself is gone");
+});
+
+test("Codex P1 r2: a sensitive sheet correction is never stored or shown; an email hidden by punctuation stripping is never kept", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have diabetes." });
+  assert.deepEqual(r.changed, []);
+  const stored = (await h.store.getStyle("u1"))!;
+  assert.ok(!JSON.stringify(stored).includes("diabetes"));
+  await h.p.voiceCorrection("u1", "Forget that my email is alice@example.com.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("alice"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /alice|example/);
+});
+
+test("Codex P1 r3: an address is never stored (voice forget or sheet), 'lives in hoodies' is still a taste", async (t) => {
+  const { isSensitiveDetail } = await import("../src/personalize/sensitive.ts");
+  assert.ok(isSensitiveDetail("Forget that I live at 12 Example Street."));
+  assert.ok(isSensitiveDetail("My address is 123 Example Street, Apt 4."));
+  assert.ok(!isSensitiveDetail("Lives in hoodies and plain sneakers."));
+  assert.ok(isSensitiveDetail("My home is 42 5th Avenue."));
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  await h.p.voiceCorrection("u1", "Forget that I live at 12 Example Street.");
+  await h.p.correct("u1", { cardId: "taste", text: "My address is 123 Example Street, Apt 4." });
+  await h.p.voiceCorrection("u1", "Forget that my home is 42 5th Avenue.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("Example"));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("5th Avenue"));
+});
+
+test("Codex r5: a forget target is only kept when the stored profile speaks about it ('asthma' never stored)", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["leather accessories"]);
+});
+
+test("Codex r6: only the stored profile's own words are kept ('asthma when running' with 'Likes running.' keeps 'running')", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes running.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const stored = JSON.stringify((await h.store.getStyle("u1"))!);
+  assert.ok(!stored.includes("asthma"));
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["running"]);
+});
+
+test("Codex r7: 'Forget that I have asthma' on the sheet stores and shows nothing; a profile thing is kept out by its own words", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have asthma." });
+  assert.deepEqual(r.changed, []);
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like clean minimal clothes." });
+  const removed = ((await h.store.getStyle("u1"))!.removed ?? []).filter((x) => x.forget).map((x) => x.text);
+  assert.ok(removed.length === 1 && /clean|minimal|clothes/.test(removed[0]), JSON.stringify(removed));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.pendingCorrections ?? []).includes("Forget"));
+});
+
+test("Codex r8: the sheet's 'forget that I like leather accessories' really removes the line (no Spark), not 'Likes running' for 'asthma when running'", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories."), f("Likes running.")] } }, "import"));
+  const { toStory } = await import("../src/personalize/story.ts");
+  const c0 = (await h.store.getStyle("u1"))!;
+  const { cards, topics } = toStory(STORY_RAW, c0);
+  await h.store.putStyle("u1", { ...c0, story: { version: 2, cards, topics, at: "", from: "text" } });
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like leather accessories." });
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma when running.");
+  const likes = (await h.store.getStyle("u1"))!.sections.likes.map((x) => x.text);
+  assert.deepEqual(likes, ["Likes running."]);
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /leather accessories\./);
+});
+
+test("Codex r9: a voice forget that removed the line up front still updates the call (profile, taste, chip) when Spark changes nothing more", async (t) => {
+  const h = harness(() => ({ updates: [{ field: "likes", text: "", replaces: ["Likes leather accessories."], chip: "forgot leather" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  const r = await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.ok(r, "an update comes back");
+  assert.doesNotMatch(r!.profile, /leather accessories\./);
+  assert.ok(!r!.taste.some((x) => /leather/.test(x.text)));
+  assert.match(r!.events[0].text, /^Updated: forgot/);
+});
