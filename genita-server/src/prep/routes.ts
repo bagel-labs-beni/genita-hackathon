@@ -31,7 +31,7 @@ import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
-import { flowAssets } from "./faceflow.ts";
+import { flowAssetAllowed } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
 import type { CompanionRecord } from "./store.ts";
 import { cleanName, renameCompanion, suggestName } from "./naming.ts";
@@ -346,7 +346,7 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       if (!c) throw new PrepError(404, "no_companion");
       // only files the manifest lists (a rejected key never is)
       if (isFlow) {
-        if (!flowAssets(c.prep.steps.face?.face?.flow).has(fk[1])) throw new PrepError(404, "no_image");
+        if (!flowAssetAllowed(c.prep.steps.face?.face?.flow, fk[1])) throw new PrepError(404, "no_image");
       } else if (fk[1] === "person") {
         if (!c.prep.steps.face?.face?.person) throw new PrepError(404, "no_image");
       } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");

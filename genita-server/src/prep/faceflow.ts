@@ -40,6 +40,13 @@ export function flowAssetName(file: string): string | null {
   return null;
 }
 
+/** A flow asset the route may serve: one the flow block lists, or (11/4, codex P2) the previous generation of one —
+ *  an app that fetched the manifest just before a re-flow swapped it still downloads every file it was told about. */
+export function flowAssetAllowed(flow: FaceFlow | null | undefined, name: string): boolean {
+  const cur = flowAssets(flow);
+  return cur.has(name) || (!name.endsWith("_g2") && cur.has(`${name}_g2`));
+}
+
 /** Asset names a face state's flow block lists (what the route may serve). */
 export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   const out = new Set<string>();

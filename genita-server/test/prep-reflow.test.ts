@@ -128,3 +128,14 @@ test("runner.reflowMask: starts once in the background for an old-mask face, log
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("flowAssetAllowed (codex P2): the previous generation of a listed asset is still served after a re-flow swap", async () => {
+  const { flowAssetAllowed } = await import("../src/prep/faceflow.ts");
+  const g2 = { ...oldFlow, mask: "flow_mask_g2", neutralRoi: "flow_neutral_g2", files: { AH: { key: "flow_AH_key_g2", nk: "flow_AH_nk_g2" } } } as unknown as FaceFlow;
+  assert.equal(flowAssetAllowed(g2, "flow_AH_nk_g2"), true);
+  assert.equal(flowAssetAllowed(g2, "flow_AH_nk"), true, "old generation of a listed file");
+  assert.equal(flowAssetAllowed(g2, "flow_mask"), true);
+  assert.equal(flowAssetAllowed(g2, "flow_MID_nk"), false, "never listed");
+  assert.equal(flowAssetAllowed(g2, "flow_AH_nk_g2_g2"), false);
+  assert.equal(flowAssetAllowed(oldFlow, "flow_mask"), true);
+});
