@@ -343,15 +343,16 @@ import UIKit
         XCTAssertEqual(SettingsView.styleLines("Just a pasted paragraph.").map(\.heading), [false], "no bullets: body text")
     }
 
-    /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.
-    func testReadingOrbMotion() {
-        XCTAssertEqual(1 / ReadingOrb.turnRate(0), 11, accuracy: 0.01)
-        XCTAssertGreaterThan(ReadingOrb.turnRate(1), ReadingOrb.turnRate(0.5))
-        XCTAssertGreaterThanOrEqual(1 / ReadingOrb.turnRate(1), 7)
-        XCTAssertEqual(ReadingOrb.breath(0), 1, accuracy: 0.0001)
-        XCTAssertEqual(ReadingOrb.breath(1.5), 1.04, accuracy: 0.0001)
-        XCTAssertEqual(ReadingOrb.breath(3), 1, accuracy: 0.0001)
-        XCTAssertGreaterThan(AppState.readingPulseMs, 250, "the pulse is seen before I04")
+    /// QA build 5: "Please sign in again." from the signed-out pass stayed on N3 after signing in.
+    func testSigningInClearsTheLastSessionsError() {
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        model.flowError = "Please sign in again."
+        model.signedIn(userId: "a", consented: true)
+        XCTAssertNil(model.flowError)
+        model.flowError = "Please sign in again."
+        model.signedOut()
+        XCTAssertNil(model.flowError, "A02 starts clean too")
     }
 
     /// QA build 5: signed out, the phone reopened on A03 and let N1–N3 run, then bounced to A02 at the end.
@@ -374,5 +375,16 @@ import UIKit
         signedIn.onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("token")))
         signedIn.go(.name)
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
+    }
+
+    /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.
+    func testReadingOrbMotion() {
+        XCTAssertEqual(1 / ReadingOrb.turnRate(0), 11, accuracy: 0.01)
+        XCTAssertGreaterThan(ReadingOrb.turnRate(1), ReadingOrb.turnRate(0.5))
+        XCTAssertGreaterThanOrEqual(1 / ReadingOrb.turnRate(1), 7)
+        XCTAssertEqual(ReadingOrb.breath(0), 1, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(1.5), 1.04, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(3), 1, accuracy: 0.0001)
+        XCTAssertGreaterThan(AppState.readingPulseMs, 250, "the pulse is seen before I04")
     }
 }

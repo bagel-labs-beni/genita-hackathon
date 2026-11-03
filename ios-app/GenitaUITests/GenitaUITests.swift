@@ -94,17 +94,6 @@ final class GenitaUITests: XCTestCase {
         app.buttons["settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5)); capture("33-설정-상단")
         app.swipeUp(); capture("34-설정-하단"); app.terminate()
-        // I03 orb in motion (Chelsea 11/4): six shots ~0.5 s apart, exported as preview-*
-        open("preparing")
-        XCTAssertTrue(app.descendants(matching: .any)["primaryCTA"].waitForExistence(timeout: 10))
-        let start = Date()
-        for i in 0..<6 {
-            let due = start.addingTimeInterval(0.5 * Double(i))
-            if due > Date() { Thread.sleep(until: due) }
-            let a = XCTAttachment(screenshot: app.screenshot())
-            a.name = String(format: "preview-i03-orb-%d-%04dms", i, Int(Date().timeIntervalSince(start) * 1000)); a.lifetime = .keepAlways; add(a)
-        }
-        app.terminate()
         // QA build 5: A03's way out to another account, N3 on the title's left edge (exported as preview-*)
         func shot(_ name: String) {
             Thread.sleep(forTimeInterval: 0.8)
@@ -119,6 +108,17 @@ final class GenitaUITests: XCTestCase {
         XCTAssertTrue(chip.waitForExistence(timeout: 10))
         if title.exists { XCTAssertEqual(chip.frame.minX, title.frame.minX, accuracy: 1.5, "N3 chips start at the title's left edge") }
         shot("qa5-n3-taste"); app.terminate()
+        // I03 orb in motion (Chelsea 11/4): six shots ~0.5 s apart, exported as preview-*
+        open("preparing")
+        XCTAssertTrue(app.descendants(matching: .any)["primaryCTA"].waitForExistence(timeout: 10))
+        let start = Date()
+        for i in 0..<6 {
+            let due = start.addingTimeInterval(0.5 * Double(i))
+            if due > Date() { Thread.sleep(until: due) }
+            let a = XCTAttachment(screenshot: app.screenshot())
+            a.name = String(format: "preview-i03-orb-%d-%04dms", i, Int(Date().timeIntervalSince(start) * 1000)); a.lifetime = .keepAlways; add(a)
+        }
+        app.terminate()
     }
     func testCaptureReviewTransientScreens() {
         let app = XCUIApplication()
@@ -153,7 +153,8 @@ final class GenitaUITests: XCTestCase {
             ("05-프롬프트", "prompt", ""), ("06-답변-입력전", "paste", "empty"),
             ("07-답변-입력완료", "paste", ""), ("08-AI스타일-처리중", "preparing", ""),
             ("09-AI스타일-결과", "preferences", ""), ("10-이미지-업로드전", "image", "empty"),
-            ("11-이미지-선택완료", "image", "image"), ("12-목소리-선택전", "voice", "empty"),
+            ("11-이미지-선택완료", "image", "image"), ("11b-V03-스캔-0", "imageCheck", "scan-0"),
+            ("11c-V03-스캔-55", "imageCheck", "scan-55"), ("11d-V03-스캔-100", "imageCheck", "scan-100"), ("12-목소리-선택전", "voice", "empty"),
             ("13-목소리-선택완료", "voice", ""), ("14-설정깊이-기본", "depth", "right"),
             ("15-설정깊이-빠른", "depth", "quick"), ("16-설정깊이-깊은", "depth", "deep"),
             ("17-도움-선택전", "help", "empty"), ("18-도움-선택완료", "help", ""),
