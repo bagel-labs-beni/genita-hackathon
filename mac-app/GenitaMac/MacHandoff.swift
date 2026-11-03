@@ -32,6 +32,21 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     let server = ServerOwnershipLink(device:.mac)
     private var fanout: OwnershipFanout?
     @Published var status = "Waiting for your iPhone"
+    /// AU-88 · MV-1 / MV-E on the Mac (same copy pattern as the iPhone): the call's status line while Move to iPhone
+    /// waits (≤ 5 s), then "iPhone not responding. Still here." for 3 s. Cleared when the conversation moves.
+    @Published private(set) var moveLine: String?
+    private var moveLineToken = 0
+    private func showMoveLine(_ text: String?, for seconds: Double? = nil) {
+        moveLineToken += 1; let token = moveLineToken
+        moveLine = text
+        guard let seconds else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.moveLineToken == token else { return }
+            if text == Self.movingLine { self.showMoveLine(Self.failedLine, for: 3) } else { self.moveLine = nil }
+        }
+    }
+    static let movingLine = "Moving to your iPhone…"
+    static let failedLine = "iPhone not responding. Still here."
     /// Older-server fallback for "Talking on your iPhone": the iPhone take this Mac watched happen (PhoneCallLatch).
     @Published private(set) var phoneCallSeen = PhoneCallLatch()
     @Published fileprivate(set) var surface = HandoffSurface.active
@@ -197,6 +212,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         // One channel per request, so a late duplicate can't undo a later Continue here.
         if server.peerActive {server.moveRequest(to:.phone)} else {link.send(["type":"moveRequest"])}
         status="Moving to your iPhone"
+        showMoveLine(Self.movingLine, for: 5)
     }
     private func serverEffect(_ effect:PresenceEffect) {
         guard accountScope.accountID != nil else{return}
@@ -215,6 +231,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
         case .moveFailed:
             status="Your iPhone isn’t available. Still on this Mac."
+            if moveLine != nil {showMoveLine(Self.failedLine, for: 3)}
         case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
         }
     }
@@ -225,6 +242,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
+        showMoveLine(nil)
         if new == .mac {
             sharingStopped=false;showCompanion()
             MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
