@@ -261,7 +261,8 @@ export type StyleCard = {
   /** when this profile was imported (or made from N1–N3): call analyses older than this are dropped */
   importedAt?: string;
   /** lines removed by corrections, with when (an older analysis can't bring them back), last 40 */
-  removed?: Array<{ text: string; at: string; field?: string }>;
+  /** forget = from a "forget that …" (its target words are kept out loosely: any of them) */
+  removed?: Array<{ text: string; at: string; field?: string; forget?: true }>;
   /** S1: "That's not me" saves answered at once and not yet turned into profile updates (replayed after a restart) */
   pendingCorrections?: Array<{ cardId: string; items: string[]; text: string; asOf: string }>;
 };
@@ -431,7 +432,8 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   if (leans.length) parts.push("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", ...leans);
   // "forget that…" / "That's not me": the model must not know-and-say it. Listed only as do-not-mention, never as a
   // fact, and never acknowledged ("you told me to forget …" in the next call, QA post-deploy 11/3)
-  const gone = (card.removed ?? []).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
+  // only what they asked to forget; a corrected line is simply replaced (its new line is the fact now)
+  const gone = (card.removed ?? []).filter((t) => t.forget).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
   if (gone.length) parts.push("Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:", ...gone.map((t) => `- ${t}`));
   if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
   let out = parts.join("\n");

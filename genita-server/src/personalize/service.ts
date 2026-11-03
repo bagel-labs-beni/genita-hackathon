@@ -23,6 +23,7 @@ import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrecti
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
 import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
+import { forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -46,7 +47,8 @@ export class PersonalizeError extends Error {
   constructor(status: number, code: string, message = code) { super(message); this.status = status; this.code = code; }
 }
 
-export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[]; nod?: string; /** this call's number (growth.calls), for the engine's closeness line */ calls?: number };
+export type CallStart = { profile?: string; ask?: string; askItem?: string; askTopic?: UnknownItem; taste: TasteLine[]; nod?: string; /** this call's number (growth.calls), for the engine's closeness line */ calls?: number;
+  /** lines the user took out of the profile: the call keeps them out of memory, notes and handed-off turns */ removed?: Removed[] };
 /** events: "Noted: …" (the planned question was answered) and/or "Updated: …" (a correction) */
 export type VoiceUpdate = { events: Array<{ text: string; fields: string[] }>; applied: AppliedUpdate[]; answered: boolean; profile: string; taste: TasteLine[] };
 
@@ -433,14 +435,14 @@ export class Personalize {
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
       const card = await this.store.getStyle(userId);
-      return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
+      return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), removed: (card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
     }
     return this.update(userId, (card) => {
       const r = beginCall(card, this.now().toISOString());
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
       return {
         card: r.card,
-        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
+        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
       };
     });
   }
@@ -468,6 +470,11 @@ export class Personalize {
     if (!card) return null;
     const t0 = performance.now();
     const asOf = this.now().toISOString();
+    // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
+    if (isForgetRequest(line)) {
+      const target = forgetTarget(line);
+      if (target) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+    }
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
     // "forget that…" may remove a line by voice (removal-only updates are otherwise only from the profile screen)

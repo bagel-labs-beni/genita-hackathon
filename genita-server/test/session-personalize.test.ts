@@ -605,3 +605,16 @@ test("#387 follow-up (edge): the question was the reply's only sentence → a sh
     s.session.close();
   }
 });
+
+test("QA post-deploy: a removed line stays out of memory notes, and the handed-off turns drop the forget request", async () => {
+  const s = setup({ async startCall() { return { profile: "- Taste: Clean, minimal.", taste: [], removed: ["Likes leather accessories."] }; } });
+  const avoid: string[][] = [];
+  (s.session as unknown as { memoryCall: unknown }).memoryCall = null;
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await say(s, "Actually, forget about the leather bag thing.", 1);
+  await say(s, "Find me a jacket.", 2);
+  const snap = s.session.historySnapshot();
+  assert.ok(!snap.some((h) => /forget|leather/i.test(h.text)), JSON.stringify(snap));
+  void avoid;
+  s.session.close();
+});
