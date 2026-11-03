@@ -134,10 +134,13 @@ struct ImageCheckView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(rows, id: \.0) { row in
-                    HStack(spacing: 8) {
+                    // icon on the first line; a two-sentence reason gets a sentence per line
+                    // ("We couldn't find a clear face. Try / another photo." → "… face. / Try another photo.", pixel QA 11/4)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: row.1 ? "checkmark" : "xmark").font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(row.1 ? Color(red: 0, green: 0.42, blue: 0.75) : Color(red: 0.85, green: 0.2, blue: 0.2)).frame(width: 20, height: 20)
-                        Text(row.0).font(TypeStyle.body(15)).foregroundStyle(CallInk.ink)
+                            .foregroundStyle(row.1 ? Color(red: 0, green: 0.42, blue: 0.75) : Color(red: 0.85, green: 0.2, blue: 0.2)).frame(width: 20)
+                        Text(row.1 ? row.0 : row.0.replacingOccurrences(of: ". ", with: ".\n")).font(TypeStyle.body(15)).foregroundStyle(CallInk.ink)
+                            .fixedSize(horizontal: false, vertical: true)
                     }.accessibilityElement(children: .combine).accessibilityLabel((row.1 ? "Passed: " : "Failed: ") + row.0)
                 }
             }.frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 536 + 41 + top)
