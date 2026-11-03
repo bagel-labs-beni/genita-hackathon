@@ -21,8 +21,8 @@ struct CameraStage: View {
                 Spacer(minLength: 0)
             }.allowsHitTesting(false)
             CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect,
-                             // demo S3 option (c): mask labels keep clear of the menu button and the self-view PiP
-                             labelObstacles: [CameraBoxes.menuRect(top: topInset),
+                             // demo S3 option (c): labels keep clear of the menu button, the status line and the self-view PiP
+                             labelObstacles: [CameraBoxes.menuRect(top: topInset), CameraBoxes.statusRect(view: size, top: topInset),
                                               CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
         }
         .frame(width: size.width, height: size.height).clipped()
@@ -77,8 +77,9 @@ struct CameraBoxOverlay: View {
                            dimmed: boxes.highlighted != nil && boxes.highlighted != d.item.key,
                            showsLabel: labeled.contains(d.item.id),
                            mask: mask, mirrored: mirrored,
-                           // boxes keep their label rule; masks (flag on) move the pill off the menu button and the PiP
-                           labelAt: mask == nil ? nil : CameraBoxes.labelOrigin(d.rect, label: Self.labelSize(d.item.label), view: g.size, topInset: topInset, obstacles: labelObstacles))
+                           // boxes and masks alike: the pill moves off the menu button, the status line and the PiP
+                           // (labelOrigin tries the box rule's spot first, so a label in free space doesn't move)
+                           labelAt: CameraBoxes.labelOrigin(d.rect, label: Self.labelSize(d.item.label), view: g.size, topInset: topInset, obstacles: labelObstacles))
                 }
             }
             .opacity(boxes.visible ? 1 : 0)
