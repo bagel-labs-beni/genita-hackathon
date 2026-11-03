@@ -86,6 +86,8 @@ export class MemoryCall {
   /** pairs this thread covers in total (the other device's count + this call's), and at the last summary */
   covered = 0;
   private summarizedAt = 0;
+  /** Codex r8 (#545): this call itself had a real crisis line (the session sets it per turn) */
+  callHadCrisis = false;
   /** earlier threads' summaries for this call's instructions (loaded once at open) */
   summaries: CallSummary[] = [];
   /** what the user had removed from their profile ("forget that…"): never summarized, extracted or put in a prompt */
@@ -298,7 +300,7 @@ export class MemoryCall {
           + "\nYou are the same companion picking it back up: use what was decided or asked there, never recite these lines or say you have notes.\n"
         : "";
       // Chelsea 11/1 + lead 11/4: a hard moment in the call that just ended is no reason for hotlines on a low-mood line now
-      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && plainLowMood(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
+      const afterCrisis = last && process.env.GENITA_PRIOR_CRISIS_LINE !== "0" && !this.callHadCrisis && plainLowMood(query) && lastLines.some((l) => l.role === "user" && realCrisisSignal(l.text)) ? PRIOR_CRISIS_LINE : "";
       const notes = summaryPrompt(this.clearSummaries(this.summaries), this.service.now()) + last + afterCrisis;
       const pinned = this.clearOf(this.pinned);
       const pinnedIds = new Set(pinned.map((m) => m.id));

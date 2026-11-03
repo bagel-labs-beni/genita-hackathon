@@ -1636,3 +1636,9 @@ test("Codex r5: a detector miss with only 'someone you trust' gets no 988; 'tire
   for (const t of ["writing farewell notes before leaving my job", "I wrote goodbye letters to my friends before moving to Canada."]) assert.ok(!realCrisisSignal(t), t);
   assert.equal(crisisFollowUpFor("My phone is dead. How do I end my contract?", ["Call your carrier's customer support hotline."]), null, "Codex r6: a customer hotline is not crisis support");
 });
+
+test("Codex r8: 'practice with someone you trust' after a crisis-word line gets no 988 line", async () => {
+  const { crisisFollowUp } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUp(["Practice with someone you trust first."]), null);
+  assert.equal(crisisFollowUp(["Please call a crisis line right now."]), (await import("../src/session/session.ts")).CRISIS_NUMBER_LINE);
+});

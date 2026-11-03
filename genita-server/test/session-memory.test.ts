@@ -867,7 +867,7 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   ws.terminate();
 });
 
-test("lead 11/4: right after a crisis call, a low-mood line gets the warm check-in line (no hotlines); a real hint now gets none of it", { timeout: 30_000 }, async (t) => {
+test("lead 11/4 + Codex r8: a crisis carried into this call never gets the no-hotlines line, low mood or not", { timeout: 30_000 }, async (t) => {
   const never: Summarizer = () => new Promise(() => {});
   const { deps, requests } = setup(never);
   const logs: string[] = [];
@@ -888,8 +888,13 @@ test("lead 11/4: right after a crisis call, a low-mood line gets the warm check-
   await say(c1, "I want to kill myself.");
   c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
   const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
-  assert.match(await say(back, "I'm kinda tired today"), /really hard moment in that call[^\n]*no hotlines/);
-  assert.doesNotMatch(await say(back, "I don't want to be here anymore"), /really hard moment in that call/);
-  assert.doesNotMatch(await say(back, "I'm going to hang myself tonight"), /really hard moment in that call/, "Codex P1: a method line never gets the no-hotlines line");
-  for (const w of sockets) w.terminate();
+  try {
+    // a call-back seconds later carries the crisis lines as this call's own (crisisInCall): Codex r8 — never the
+    // "no hotlines" line in a call that had a crisis; the model sees the lines and decides
+    const first = await say(back, "I'm kinda tired today");
+    assert.match(first, /ended moments ago/);
+    assert.doesNotMatch(first, /really hard moment in that call/);
+    assert.doesNotMatch(await say(back, "I don't want to be here anymore"), /really hard moment in that call/);
+    assert.doesNotMatch(await say(back, "I'm going to hang myself tonight"), /really hard moment in that call/, "Codex P1: a method line never gets the no-hotlines line");
+  } finally { for (const w of sockets) w.terminate(); }
 });

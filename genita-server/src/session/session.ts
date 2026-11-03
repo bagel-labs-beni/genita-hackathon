@@ -279,7 +279,8 @@ const HELP_NUMBER = /\b(?:988|911|112|999|000|nine[- ]eight[- ]eight|nine[- ]one
 export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
 /** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
 /** Codex r4 P1: crisis support, not medical care ("see a doctor", "urgent care" for a kitchen cut never gets 988) */
-const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text )?line|hotline|helpline|lifeline|samaritans|suicide|someone you trust|emergency (?:services|number))\b/i;
+// Codex r8: only explicit crisis services earn the number line (not "someone you trust", not a generic hotline)
+const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text |help|hot)?line|crisis text|lifeline|suicide (?:hotline|helpline|line|prevention line))\b/i;
 export function crisisFollowUp(said: string[]): string | null {
   if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
   return said.some((x) => HELP_NUMBER.test(x)) || !said.some((x) => CRISIS_SUPPORT.test(x)) ? null : CRISIS_NUMBER_LINE;
@@ -1773,6 +1774,8 @@ export class Session {
     const content = last && typeof last !== "string" && "role" in last ? last.content : undefined;
     const query = typeof last === "string" ? last : typeof content === "string" ? content
       : Array.isArray(content) ? content.map((p) => (p && typeof p === "object" && "type" in p && p.type === "input_text" && "text" in p ? String(p.text) : "")).join(" ").trim() : "";
+    // Codex r8: a crisis line earlier in THIS call also keeps the "no hotlines" check-in away
+    if (this.memoryCall) this.memoryCall.callHadCrisis = this.crisisInCall || realCrisisSignal(query);
     return this.memoryCall && useMemory ? this.memoryCall.stream(req, signal, source, query, opening, confirmed, memoryRetry) : source(req, signal);
   }
 
