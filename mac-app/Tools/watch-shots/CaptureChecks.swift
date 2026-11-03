@@ -19,13 +19,15 @@ import ScreenCaptureKit
   // A static screen emits idle after reconnect: replay must not wait for another complete buffer.
   let capture = WatchCapture()
   var frames: [Data] = []
-  capture.onFrame = { jpeg, _ in frames.append(jpeg) }
+  var motions: [Float] = []
+  capture.onFrame = { jpeg, _, motion in frames.append(jpeg); motions.append(motion) }
   capture.handleScreen(screenSample(status: .complete))
   precondition(frames.count == 1)
   let initialFrame = frames[0]
   capture.handleScreen(screenSample(status: .idle))
   capture.forceNextFrame()
   precondition(frames == [initialFrame, initialFrame], "Reconnect must immediately replay the static JPEG")
+  precondition(motions == [1, 0], "Replaying a static JPEG must not report new motion")
   capture.reset() // stop, account change and ownership transfer all reset the capture
   capture.forceNextFrame()
   precondition(frames.count == 2, "A new share must not replay the previous share's JPEG")

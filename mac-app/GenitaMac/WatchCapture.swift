@@ -5,20 +5,22 @@ import CoreVideo
 import ScreenCaptureKit
 
 /// Turns ScreenCaptureKit buffers into what watch together sends (F5-L7):
-/// - a JPEG (≤1024 px, set in the stream config) only when the picture changed, at most 1 per second;
+/// - a JPEG (≤768 px, set in the stream config) only when the picture changed, at most 3 per second, with how much
+///   it changed (`motion`, 0…1): continuous video (a dance, a fall, a cut) reaches the companion as motion (11/3);
 /// - "blank" when the frames are (almost) black — protected windows capture black (MS-3);
 /// - the last 3 s of frames kept in memory on the device only;
 /// - system audio as PCM s16le mono 24 kHz in 80 ms chunks.
 /// Runs on the stream's sample queue; nothing is written to disk.
 final class WatchCapture: @unchecked Sendable {
     struct Thumb { var luma: [Float] }
-    static let minFrameInterval: TimeInterval = 1.0
+    static let minFrameInterval: TimeInterval = 1.0 / 3
     static let changeThreshold: Float = 0.02     // mean abs luma diff (0…1) on a 32×18 thumbnail
     static let blankLuma: Float = 0.035          // mean luma under this, and…
     static let blankSpread: Float = 0.03         // …max − min under this = black frame
     static let ringSeconds: TimeInterval = 3
 
-    var onFrame: ((Data, Bool) -> Void)?
+    /// JPEG, blank, motion (mean abs luma change from the previous sent frame on a 32×18 thumbnail, 0…1)
+    var onFrame: ((Data, Bool, Float) -> Void)?
     var onAudio: ((Data) -> Void)?
     var onBlank: ((Bool) -> Void)?
 
@@ -38,7 +40,8 @@ final class WatchCapture: @unchecked Sendable {
     /// A static screen may only emit `.idle` after reconnect, so replay its latest JPEG now.
     /// `reset()` discards the ring when sharing stops (including sign-out or ownership transfer).
     func forceNextFrame() {
-        if let latest = ring.last { onFrame?(latest.jpeg, isBlankSent) }
+        // Replaying the same picture seeds the new session without inventing a motion spike.
+        if let latest = ring.last { onFrame?(latest.jpeg, isBlankSent, 0) }
         else { lastThumb = nil; lastSent = .distantPast }
     }
 
@@ -49,19 +52,21 @@ final class WatchCapture: @unchecked Sendable {
         let image = CIImage(cvPixelBuffer: pixels)
         guard let thumb = thumbnail(image) else { return }
         let isBlank = Self.isBlank(thumb)
-        // two black samples in a row (≥ 1 s) before telling anyone: a fade to black is not a protected window
+        // four black samples in a row (≥ 1 s at the stream's 4 fps) before telling anyone: a fade to black is not a
+        // protected window
         blankRun = isBlank ? blankRun + 1 : 0
-        let nowBlank = blankRun >= 2
+        let nowBlank = blankRun >= 4
         if nowBlank != blank { blank = nowBlank; onBlank?(nowBlank) }
-        let changed = lastThumb.map { Self.difference($0, thumb) > Self.changeThreshold } ?? true
+        let motion = lastThumb.map { Self.difference($0, thumb) } ?? 1
+        let changed = motion > Self.changeThreshold
         guard changed || (nowBlank != isBlankSent), now.timeIntervalSince(lastSent) >= Self.minFrameInterval else { return }
-        guard let jpeg = context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.6]) else { return }
+        guard let jpeg = context.jpegRepresentation(of: image, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: [CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): 0.55]) else { return }
         lastThumb = thumb
         lastSent = now
         isBlankSent = nowBlank
         ring.append((now, jpeg))
         ring.removeAll { now.timeIntervalSince($0.at) > Self.ringSeconds }
-        onFrame?(jpeg, nowBlank)
+        onFrame?(jpeg, nowBlank, min(1, motion))
     }
 
     static func isComplete(_ sampleBuffer: CMSampleBuffer) -> Bool {

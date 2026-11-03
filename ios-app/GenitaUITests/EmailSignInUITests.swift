@@ -23,8 +23,10 @@ final class EmailSignInUITests: XCTestCase {
         let app = launch("")
         let button = app.buttons["continueWithEmail"]
         XCTAssertTrue(button.waitForExistence(timeout: 8))
-        XCTAssertTrue(app.buttons["Continue with Apple"].exists && app.buttons["Continue with Google"].exists)
-        XCTAssertLessThan(app.buttons["Continue with Google"].frame.maxY, button.frame.minY, "email sits under Apple / Google")
+        // #218: Google is hidden by default; email sits right under Apple
+        XCTAssertTrue(app.buttons["Continue with Apple"].exists)
+        XCTAssertFalse(app.buttons["Continue with Google"].exists)
+        XCTAssertLessThan(app.buttons["Continue with Apple"].frame.maxY, button.frame.minY, "email sits under Apple")
         capture(app, "auth-A02-email")
 
         button.tap()

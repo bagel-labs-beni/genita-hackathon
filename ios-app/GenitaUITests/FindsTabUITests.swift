@@ -110,6 +110,19 @@ final class FindsTabUITests: XCTestCase {
         capture(app, "cam-H-faded")
     }
 
+    /// Demo S3 · SAM pixel masks behind GENITA_SAM_MASKS_UI=1 (off by default): soft masks + one label per ingredient,
+    /// from live #298 observe.boxes recorded on these frames. Captures for Chelsea's look before the flag goes on.
+    /// `-c` = option (c): 25% fill, labels kept clear of the menu button and the PiP.
+    func testSamMasksOverLivePreview() throws {
+        for (state, frame, name) in [("33", "bundle:finds-frame-fridge-1", "cam-H-masks-fridge-c"), ("34", "bundle:finds-frame-counter-0", "cam-H-masks-counter-c")] {
+            let app = launch(camera.merging(["GENITA_FINDS_STATE": state, "GENITA_FIXTURE_CAMERA": frame, "GENITA_SAM_MASKS_UI": "1"]) { $1 })
+            XCTAssertTrue(any(app, "cameraStage").waitForExistence(timeout: 25), "camera is the stage")
+            Thread.sleep(forTimeInterval: 1.4)
+            capture(app, name)
+            app.terminate()
+        }
+    }
+
     /// An ingredient chip is pressed: its box is lit, the others step back, the scene dims.
     func testChipLightsItsBox() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "32"]) { $1 })

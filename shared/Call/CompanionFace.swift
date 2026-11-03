@@ -35,10 +35,26 @@ enum CompanionFace {
 struct FaceFrameView: View {
     @ObservedObject var driver: FaceDriver
     var still: CGImage?
+    /// The fps line shows only with GENITA_SHOW_FPS=1 or the user default genita.showFaceFPS = true.
+    static let showFPS: Bool = {
+        let env = ProcessInfo.processInfo.environment["GENITA_SHOW_FPS"]
+        if let env { return env == "1" }
+        if UserDefaults.standard.object(forKey: "genita.showFaceFPS") != nil { return UserDefaults.standard.bool(forKey: "genita.showFaceFPS") }
+        return false   // off by default: the demo is filmed on a TestFlight build (FACE_FPS log stays on)
+    }()
     var body: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             if let image = still ?? driver.frame {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
+            }
+            if Self.showFPS, still == nil, driver.liveFPS > 0 {
+                // device QA (TestFlight): the face's real frame rate, one small line
+                Text(String(format: "face %.1f fps", driver.liveFPS))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 4).padding(.vertical, 2)
+                    .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 3))
+                    .padding(.top, 60).padding(.leading, 8)
             }
         }
         .allowsHitTesting(false)
