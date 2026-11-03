@@ -1900,9 +1900,10 @@ export class Session {
       while (!sentences[i] && !sparkDone && !signal.aborted) await new Promise<void>((r) => (waiter.wake = r));
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
-      const s = sentences[i];
       // watch together attached while this question was queued (or its TTS prefetched): it is not said
+      // (read the sentence after the check: the only sentence may have been replaced by the short reaction)
       if (askedAt(i)) continue;
+      const s = sentences[i];
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
         if (signal.aborted) break;
