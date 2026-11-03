@@ -317,6 +317,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "POST" && p === "/v1/companion") {
       const b = await readJson(req);
+      // POST /v1/companion/reset sweeps this account's photos right now: a new companion waits until it is done
+      if (runner.isResetting(user)) throw new PrepError(409, "reset_in_progress", "Starting over. Try again in a moment.");
       const existing = await d.store.getCompanion(user);
       if (existing && !existing.demo) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
       const img = typeof b.imageId === "string" ? await d.store.getImage(b.imageId).catch(() => null) : null;

@@ -116,6 +116,11 @@ export class PrepRunner {
   private d: PrepDeps;
   constructor(d: PrepDeps) { this.d = d; }
 
+  /** POST /v1/companion/reset is erasing this account's companion (POST /v1/companion answers 409 meanwhile) */
+  isResetting(userId: string) {
+    return this.resetting.has(userId);
+  }
+
   isRunning(userId: string) {
     return this.running.has(userId);
   }

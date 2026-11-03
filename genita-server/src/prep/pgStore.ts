@@ -199,9 +199,10 @@ export class PgPrepStore implements PrepStore {
    * retry sweeps the prefix again even for bytes whose row an earlier try already removed.
    */
   async deleteUnusedImages(userId: string) {
-    const keep = new Set((await this.db.query("SELECT image_id FROM companions WHERE user_id = $1", [userId])).rows.map((r) => String(r.image_id)));
     const prefix = `users/${userId}/images/`;
-    for (const key of await this.blobs.list(prefix)) if (!keep.has(key.slice(prefix.length))) await this.blobs.deletePrefix(key);
+    const inUse = async (id: string) => (await this.db.query("SELECT 1 FROM companions WHERE user_id = $1 AND image_id = $2", [userId, id])).rows.length > 0;
+    // checked per file right before it goes (Codex P2: a companion made meanwhile keeps its photo)
+    for (const key of await this.blobs.list(prefix)) if (!(await inUse(key.slice(prefix.length)))) await this.blobs.deletePrefix(key);
     const r = await this.db.query(
       "DELETE FROM companion_images WHERE user_id = $1 AND id NOT IN (SELECT image_id FROM companions WHERE user_id = $1) RETURNING id",
       [userId],

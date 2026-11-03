@@ -241,3 +241,24 @@ test("companion reset: a storage failure answers 502 and a retry still removes e
   assert.equal((await call("GET", "/me")).body.hasCompanion, false);
   assert.deepEqual([...files.keys()].filter((k) => k.startsWith(`users/${userId}/`)), [`users/${userId}/reports/r1.json`], "no photo or face file left behind");
 });
+
+test("companion reset: POST /v1/companion waits (409) while a reset is erasing, and works right after", async (t) => {
+  const { hooks, account } = await boot(t);
+  const { call } = await account();
+  const entered = gate();
+  const release = gate();
+  t.after(release.resolve);
+  hooks.beforeDelete = async (prefix) => {
+    if (prefix.includes("/companions/")) { entered.resolve(); await release.promise; }
+  };
+  const reset = call("POST", "/v1/companion/reset");
+  await entered.promise;
+  const during = await call("POST", "/v1/companion");
+  assert.equal(during.status, 409);
+  assert.equal(during.body.error, "reset_in_progress");
+  release.resolve();
+  assert.equal((await reset).status, 200);
+  hooks.beforeDelete = async () => {};
+  const after = await call("POST", "/v1/companion");
+  assert.notEqual(after.body.error, "reset_in_progress", "the block lifts after the reset");
+});

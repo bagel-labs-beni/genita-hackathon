@@ -133,11 +133,12 @@ struct SettingsView: View {
                 CallController.shared.end()
                 dismiss()
                 model.companionReset()
-            } catch _ where !asked.accepts(model.launchAuthSnapshot) {
-                return
-            } catch GenitaAuthError.unauthorized {
+            } catch GenitaAuthError.unauthorized where asked.generation == model.authGeneration {
+                // this request's 401 cleared the token (same sign-in): A02, as everywhere else
                 dismiss()
                 model.signedOut()
+            } catch _ where !asked.accepts(model.launchAuthSnapshot) {
+                return
             } catch GenitaAuthError.server(status: 429, _) {
                 resetError = "You’ve started over a lot today. Try again tomorrow."
             } catch {
