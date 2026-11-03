@@ -8,7 +8,7 @@ import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { missingFaceKeys, topUpFaceKeys, topUpOn } from "./faceTopUp.ts";
 import { getOps } from "../ops/limits.ts";
 import { makeFaceSilhouette, makePersonMatte } from "./person.ts";
-import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
+import { FACE_EXPRESSIONS, FACE_KEYS, faceKeysFor, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
 import { needsReflow, reflowFace } from "./reflow.ts";
@@ -68,6 +68,9 @@ export function prepProgress(p: PrepState): { done: number; total: number } {
 }
 
 /** Public view for GET /companion/prep. */
+/** The expression keys this server makes (GENITA_FACE_EMOTION_KEYS=0 drops surprised / concerned). */
+const EXPRESSION_KEYS = FACE_EXPRESSIONS.filter((k) => faceKeysFor("human").includes(k));
+
 export function prepView(c: CompanionRecord) {
   const p = c.prep;
   return {
@@ -86,7 +89,15 @@ export function prepView(c: CompanionRecord) {
       scene: { status: p.steps.scene.status, ms: p.steps.scene.ms ?? null },
       videos: Object.fromEntries(PREP_EMOTIONS.map((e) => [e, { status: "skipped", ms: null }])),
       face: p.steps.face
-        ? { status: p.steps.face.status, settled: Object.keys(p.steps.face.face?.items ?? {}).length, total: FACE_KEYS.length, ms: p.steps.face.ms ?? null }
+        ? {
+            status: p.steps.face.status,
+            settled: Object.keys(p.steps.face.face?.items ?? {}).length,
+            total: FACE_KEYS.length,
+            // AU-29: the keys run all at once, so `settled` can't tell the Expressions row from the Mouth row
+            expressionsSettled: EXPRESSION_KEYS.filter((k) => p.steps.face?.face?.items?.[k]).length,
+            expressionsTotal: EXPRESSION_KEYS.length,
+            ms: p.steps.face.ms ?? null,
+          }
         : null,
     },
     startedAt: p.startedAt,
