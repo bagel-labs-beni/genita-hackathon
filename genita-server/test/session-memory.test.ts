@@ -866,3 +866,29 @@ test("Codex #502 P1 r5: with memory on, a client-claimed handoff history of 20 k
   assert.doesNotMatch(requests.map((r) => r.instructions ?? "").join("\n"), /own take/);
   ws.terminate();
 });
+
+test("lead 11/4: right after a crisis call, a low-mood line gets the warm check-in line (no hotlines); a real hint now gets none of it", { timeout: 30_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-pc" };
+  const sockets: WebSocket[] = [];
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=iphone`, { headers });
+    sockets.push(ws); let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); return requests.at(-1)!.instructions ?? ""; };
+  const c1 = await open(); start(c1); await waitFor(() => c1.replies() >= 1);
+  await say(c1, "I want to kill myself.");
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
+  assert.match(await say(back, "I'm kinda tired today"), /really hard moment in that call[^\n]*no hotlines/);
+  assert.doesNotMatch(await say(back, "I don't want to be here anymore"), /really hard moment in that call/);
+  for (const w of sockets) w.terminate();
+});
