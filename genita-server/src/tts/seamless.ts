@@ -10,8 +10,8 @@
  * - Text is turned into spoken form first (normalize.ts); captions keep the written text.
  * - Each clause gets a short pause at its end (Seamless trims silence; separate requests would run together).
  * - Short clauses ("Hmm,", "Oh!", "Yeah.") are cached per speaker+lang and prefetched for each speaker.
- * - After a failure the client stays "down" for 30 s and fails fast, so replies go to the app's
- *   own voice (`say`) instead of waiting on a dead service; then it tries again.
+ * - After a failure the client stays "down" for 30 s and fails fast (a live reply's one retry, `force`, still
+ *   asks); the reply then shows captions without a voice, never another voice (11/4); then it tries again.
  */
 import { UpstreamError } from "../meta/http.ts";
 import type { VoiceConfig } from "../config.ts";
@@ -223,7 +223,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       yield* hit;
       return;
     }
-    if (now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
+    if (!req.force && now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
     const got: TtsChunk[] = [];
     // normalisation can grow a sentence past the service's 400-char cap: send it in pieces, pause only after
     // the last, and shift each piece's timing onto the sentence's own timeline

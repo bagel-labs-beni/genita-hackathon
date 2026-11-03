@@ -167,6 +167,8 @@ const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
+/** wait before the one retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s) */
+const TTS_RETRY_MS = 400;
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
 export const SUGGEST_MAC_LINE =
@@ -474,6 +476,8 @@ export class Session {
   private lip: LipPlan = { requested: "none", active: "none", reason: null };
   private tts: TtsMode = "device";
   private voiceOverflow = false;
+  /** over the seat cap with the device fallback off: logged once per stretch, the call keeps the server voice */
+  private seatsOver = false;
   /** the account's saved companion voice (same presence), looked up as the socket opens */
   private readonly ownedVoice: Promise<string | null>;
   private history: HistoryItem[] = [];
@@ -1811,6 +1815,14 @@ export class Session {
     if (this.closed || this.tts === "device") return true;
     const seats = this.deps.config.voice ? this.deps.voiceSeats : undefined;
     if (!seats) return false;
+    // 11/4: a full GPU no longer hands the call to the phone's voice (another, robotic voice): the call keeps the
+    // companion's own voice and waits its turn on the autoscaling GPU. The seat is still taken (holders = live load).
+    if (!this.deps.config.voice?.deviceFallback) {
+      const over = !seats.tryTake(this.id);
+      if (over && !this.seatsOver) this.log("voice.capacity_over", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
+      this.seatsOver = over;
+      return false;
+    }
     const overflow = !seats.tryTake(this.id);
     if (overflow && !this.voiceOverflow) this.log("voice.capacity_fallback", { sessionId: this.id, holders: seats.holders(), max: this.deps.config.voiceMaxCalls ?? 3 });
     if (!overflow && this.voiceOverflow) this.log("voice.capacity_restored", { sessionId: this.id });
@@ -2370,10 +2382,8 @@ export class Session {
 
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
-    const startJob = (i: number) => {
-      if (jobs[i] || !sentences[i] || askedAt(i)) return;
-      const s = sentences[i];
-      jobs[i] = new Eager(
+    const ttsJob = (s: (typeof sentences)[number], force?: true) =>
+      new Eager(
         this.deps.tts({
           voiceId: this.voiceId,
           text: s.tts,
@@ -2382,10 +2392,16 @@ export class Session {
 
           signal,
           lang: speechLang(s.display || s.tts, lang),
+          ...(force ? { force } : {}),
         }),
       );
+    const startJob = (i: number) => {
+      if (jobs[i] || !sentences[i] || askedAt(i)) return;
+      jobs[i] = ttsJob(sentences[i]);
     };
     let ttsFailed = false;
+    // 11/4: one retry per reply for a clause the voice service failed before any of its audio went out (no device voice)
+    let retried = false;
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
@@ -2515,12 +2531,28 @@ export class Session {
         }
       } catch (err) {
         if (signal.aborted) break;
+        const ttsOff = err instanceof Error && err.message === "tts_off";
+        if (!ttsOff && this.deps.config.voice && !this.deps.config.voice.deviceFallback && !sentAudio && !retried) {
+          // the companion's own voice or nothing (11/4): ask the voice service once more for this clause, even if
+          // it is parked as down; a second failure leaves the rest of this reply as captions
+          retried = true;
+          this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
+          await new Promise<void>((r) => { const t = setTimeout(r, TTS_RETRY_MS); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
+          if (signal.aborted) break;
+          if (sentences[i] === s && !sentences[i]?.drop) jobs[i] = ttsJob(s, true);
+          else jobs[i] = undefined as never;
+          i--;
+          continue;
+        }
         ttsFailed = true;
-        if (!(err instanceof Error && err.message === "tts_off")) {
+        if (!ttsOff) {
           // tts_off = no server voice configured (the app speaks on-device): text-only is the normal path
           this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-          if (this.deps.config.voice) {
+          if (this.deps.config.voice && !this.deps.config.voice.deviceFallback) {
+            // no other voice stands in for the companion: this clause and the rest of the reply are captions only
+            this.log("tts.text_only", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
+          } else if (this.deps.config.voice) {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;
             this.log("tts.fallback_device", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });

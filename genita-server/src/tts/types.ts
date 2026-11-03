@@ -11,5 +11,7 @@ export type TtsRequest = {
   model: string;
   signal?: AbortSignal;
   lang?: string;
+  /** a live reply's one retry of a failed clause: asks the service even while it is parked as down */
+  force?: boolean;
 };
 export const pcmDurationMs = (bytes: number) => (bytes / 2 / PCM_SAMPLE_RATE) * 1000;

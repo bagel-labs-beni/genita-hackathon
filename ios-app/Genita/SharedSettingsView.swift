@@ -38,8 +38,10 @@ struct SettingsView: View {
         guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
         return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
     }
+    /// The account's voice: the V04 pick on this phone, else the companion's saved voice from the server (another
+    /// phone, a reinstall: build 7 Appetize showed "Default" after picking Leah, 11/4).
     private var voiceName: String {
-        model.setup.voiceName ?? "Default"
+        model.setup.voiceName ?? VoicePlayer.name(forVoiceId: model.setup.voiceId) ?? "Default"
     }
     var body: some View {
         NavigationStack {

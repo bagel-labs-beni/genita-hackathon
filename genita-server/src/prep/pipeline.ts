@@ -12,7 +12,7 @@ import { EYES_PROMPT, MOUTH_PROMPT, facePointsFromSam, facePrompt, outlineFromSa
 import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
-import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
+import { isDeviceVoice, orderForFace, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
 import type { Personalize } from "../personalize/service.ts";
@@ -195,9 +195,9 @@ export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are 
  * `available` = the voice service answers /healthz (cached 15 s); when false the app greys the
  * list ("Voice preview is waking up") and lets the user continue with the default.
  */
-export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
+export async function orderedVoices(d: PrepDeps, _userId: string, kind: CompanionKind | null, fit?: string | null): Promise<{ voices: VoiceOption[]; suggested: string | null; available: boolean; ms: number }> {
   const t0 = performance.now();
-  const voices = voicesForKind(d.voices, kind);
+  const voices = orderForFace(voicesForKind(d.voices, kind), fit);
   return { voices, suggested: voices[0]?.id ?? null, available: await voiceAvailable(d), ms: since(t0) };
 }
 

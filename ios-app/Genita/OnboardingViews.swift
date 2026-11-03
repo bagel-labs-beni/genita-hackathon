@@ -56,6 +56,12 @@ struct RootView: View {
         return (ranked.first ?? AVSpeechSynthesisVoice(language: "en-US"))?.identifier
     }
 
+    /// The curated name of a server voice id ("19" → "Leo"), nil for an unknown id.
+    static func name(forVoiceId id: String?) -> String? {
+        guard let id else { return nil }
+        return fallback(kind: nil).first { $0.id == id }?.name
+    }
+
     /// What V04 shows when the server can't be reached at all: the same curated four per look (greyed).
     static func fallback(kind: String?) -> [OnboardingClient.CompanionVoice] {
         func v(_ id: String, _ name: String, _ blurb: String) -> OnboardingClient.CompanionVoice { .init(id: id, name: name, blurb: blurb) }
