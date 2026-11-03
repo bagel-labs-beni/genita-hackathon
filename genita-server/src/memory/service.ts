@@ -274,10 +274,11 @@ export class MemoryService {
       if (s.last_message_at === null || now - s.last_message_at < gap) return null;
       if (lastOpener !== null ? now - lastOpener < gap : s.last_opener_day === day(now)) return null;
       const eligible = (await this.repository.list(userId)).filter((m) => m.kind === "episode" && m.follow_up && m.source_session_id !== sessionId);
-      const seen = eligible.filter((m) => m.image_ref && now - m.updated_at >= 6 * 3_600_000);
       // AU-43: never-raised items first, then the one raised longest ago; one raised in the last day waits
+      // (Codex #585 P2: filter what may be raised again FIRST, then prefer a seen crop among those)
       const fresh = (m: Memory) => m.last_used_at === null || now - m.last_used_at >= 24 * 3_600_000;
-      const item = [...seen.length ? seen : eligible.filter((m) => !m.image_ref)].filter(fresh)
+      const seen = eligible.filter((m) => m.image_ref && now - m.updated_at >= 6 * 3_600_000 && fresh(m));
+      const item = [...seen.length ? seen : eligible.filter((m) => !m.image_ref && fresh(m))]
         .sort((a, b) => (a.last_used_at ?? 0) - (b.last_used_at ?? 0) || b.updated_at - a.updated_at)[0];
       if (!item) return null;
       s.last_opener_day = day(now); s.last_opener_at = now; await this.state.putState(userId, s);

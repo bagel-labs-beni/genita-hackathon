@@ -1613,13 +1613,13 @@ test("AU-44: notes make a follow-up greeting only after 6 h (or right after a ha
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "Into: ramen." } }));
   const s = session as unknown as { memoryCall: unknown; lastMessageAt: number | null; v1Extras(t: unknown): { opener?: string } };
   const note = { thread_id: "t", created_at: 0, updated_at: 0, turns: 4, topics: ["shoes"], mood: null, open_threads: ["dark brown shoes for the trench"], promises: ["help pick a pottery glaze"], asks: [] };
-  s.memoryCall = { summaries: [note], lastCall: null, close() {} };
+  s.memoryCall = { summaries: [note], visibleSummaries: () => [note], lastCall: null, close() {} };
   s.lastMessageAt = Date.now() - 2 * 3_600_000;
   assert.doesNotMatch(s.v1Extras({ greeting: { item: null } }).opener ?? "", /picking up the thread/, "2 h later: no notes follow-up");
   s.lastMessageAt = Date.now() - 7 * 3_600_000;
   const late = s.v1Extras({ greeting: { item: null } }).opener ?? "";
   assert.match(late, /picking up the thread[^\n]*"(?:dark brown shoes for the trench|help pick a pottery glaze)"/, "7 h later: one named thread");
-  s.memoryCall = { summaries: [note], lastCall: { lines: [{ role: "user", text: "remind me" }], threadId: "t", covered: 1 }, close() {} };
+  s.memoryCall = { summaries: [note], visibleSummaries: () => [note], lastCall: { lines: [{ role: "user", text: "remind me" }], threadId: "t", covered: 1 }, close() {} };
   s.lastMessageAt = Date.now() - 60_000;
   assert.match(s.v1Extras({ greeting: { item: null } }).opener ?? "", /picking up the thread/, "right after a hang-up: still picks it back up");
   s.memoryCall = null;

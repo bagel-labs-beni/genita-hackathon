@@ -1523,7 +1523,7 @@ export class Session {
       const sinceLastMs = last === undefined || last === null ? last : Math.max(0, now - last);
       // AU-44: notes are a thread to pick up only after the same 6 h gap as a memory opener (or right after a hang-up,
       // lastCall); otherwise every call with notes was a "followup" on the same open thread, call after call
-      const notes = this.memoryCall?.summaries ?? [];
+      const notes = this.memoryCall?.visibleSummaries?.() ?? [];
       const notesDue = notes.length > 0 && (!!this.memoryCall?.lastCall || sinceLastMs === null || sinceLastMs === undefined || sinceLastMs >= NOTES_OPENER_GAP_MS);
       const o = { hasProfile: !!this.user?.profile, sinceLastMs, hasItem: !!turn.greeting.item || notesDue || !!this.memoryCall?.lastCall };
       // ^ notes from the last call (#307) are a thread to pick up too: "followup", not a bare "back" line (eval 11/3)
@@ -1531,8 +1531,9 @@ export class Session {
       const kind = openerKind(o);
       // AU-44: a notes follow-up names ONE open thread / promise, rotated like profile hooks (recorded per account)
       const notesFollowup = kind === "followup" && !turn.greeting.item && !this.memoryCall?.lastCall && notesDue;
+      if (this.memoryCall) this.memoryCall.notesOpener = notesDue || !!this.memoryCall.lastCall;
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days" || notesFollowup;
-      const hooks = notesFollowup ? [...new Set(notes.flatMap((n) => [...n.open_threads, ...n.promises]).map((x) => x.trim()).filter((x) => x.length >= 3))].slice(0, 8) : rotates ? profileHooks(this.user?.profile) : [];
+      const hooks = notesFollowup ? [...new Set(notes.flatMap((n) => [...n.open_threads, ...n.promises]).map((x) => x.trim().slice(0, 80)).filter((x) => x.length >= 3))].slice(0, 8) : rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
