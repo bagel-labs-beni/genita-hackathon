@@ -406,11 +406,14 @@ struct MacHomeView:View {
         switch v2Screen {
         case .setup: ("Waiting for your companion",.waiting)
         case .pair: ("Looking for your iPhone",.waiting)
-        case .onPhone: ("Talking on your iPhone",.live)
+        // QA 171: "Talking" only while the iPhone is really in a call (in front, and it took the conversation with a
+        // call start or a move); a fresh account's default owner is the phone at epoch 0, which is not a call.
+        case .onPhone: phoneInCall ? ("Talking on your iPhone",.live) : ("Not in a call right now",.idle)
         case .here: (paired || handoff.server.peerOnline ? "Paired with your iPhone" : "Signed in on this Mac",.live)
         case .offline: ("No connection",.idle)
         }
     }
+    private var phoneInCall:Bool { handoff.server.peerActive && handoff.ownership.state.owner == .phone && handoff.ownership.state.epoch>0 }
     private func v2Para(_ text:String)->some View {
         Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
     }

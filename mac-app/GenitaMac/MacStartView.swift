@@ -165,8 +165,19 @@ struct MacEmailSheet: View {
     private var v2Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacV2Title(text: step == .address ? "Continue with email." : "Check your email.")
-            Text(step == .address ? "We’ll send a six-digit code. No password." : "Enter the code we sent to \(sentTo).")
-                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineLimit(1).truncationMode(.middle).padding(.top, 8)
+            if step == .address {
+                Text("We’ll send a six-digit code. No password.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineLimit(1).padding(.top, 8)
+            } else {
+                // QA 171: one middle-truncated line cut the sentence ("…we sent t…ae2207@…"). The address gets its own
+                // line; only a very long address is shortened, in its middle.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enter the code we sent to")
+                    Text(verbatim: sentTo + ".").lineLimit(1).truncationMode(.middle)
+                }
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).padding(.top, 8)
+                .accessibilityElement(children: .combine)
+            }
             if step == .address && MacDesignV2.reviewRender {
                 // review renders: ImageRenderer can't draw the AppKit field, so draw its focused empty look
                 Text(verbatim: "you@example.com").font(MacSheetInk.sans(16)).foregroundStyle(MacDesignV2.faint)
