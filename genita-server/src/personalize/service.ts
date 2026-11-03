@@ -124,9 +124,11 @@ export class Personalize {
   }
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
-  async replaceStyle(userId: string, card: StyleCard): Promise<void> {
+  /** → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
+  async replaceStyle(userId: string, card: StyleCard): Promise<string> {
     const at = this.now().toISOString();
     await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
+    return at;
   }
 
   // ───────────── D47 story ─────────────

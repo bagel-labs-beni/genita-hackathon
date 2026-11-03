@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import type { SparkRequest } from "../meta/spark.ts";
 import { isSensitiveDetail } from "../personalize/sensitive.ts";
 import { storyTextProblem } from "../personalize/story.ts";
-import { looksLikeInjection } from "../prep/importProfile.ts";
+import { looksLikeInjection, redactSensitive } from "../prep/importProfile.ts";
 import type { InsightCategory, InsightChip, InsightEvidence, InsightReport, InsightSettings, InsightSource, Observation, InsightType, InsightMix, InsightStrength, InsightWatchout, InsightChain } from "./profile.ts";
 
 export type InsightPick = { question: string; label: string };
@@ -56,6 +56,7 @@ const HEADLINE_MAX = 80;
 const USAGE_MAX = 110;
 const QUOTE_MAX = 80;
 const LEARNING_MAX = 4;
+const FALLBACK_HEADLINE = "You gave me a good start. I'll learn the rest as we talk.";
 const TYPE_NAME_MAX = 30;
 const TYPE_LINE_MAX = 90;
 const SIGNATURE_MAX = 14;
@@ -124,6 +125,31 @@ function isEcho(claim: string, quotes: string[]): boolean {
   return c.filter((w) => q.has(w)).length / c.length >= 0.75;
 }
 
+export const similarClaim = (a: string, b: string) => sameish(a, b);
+
+/** sensitive, creepy or a minor's detail — never stored as a correction or shown as a quote */
+export function privateDetail(s: string): boolean {
+  return isSensitiveDetail(s) || CREEPY.test(s) || MINOR.test(s);
+}
+
+/** the report without these observations, and without what was built on them (type, strengths, watch-outs, headline) */
+export function withoutObservations<R extends InsightReport>(r: R, ids: string[]): R {
+  if (!ids.length) return r;
+  const gone = new Set(ids);
+  const claims = r.observations.filter((o) => gone.has(o.id)).map((o) => o.claim);
+  const observations = r.observations.filter((o) => !gone.has(o.id));
+  const basis = r.type?.basis.filter((b) => !gone.has(b)) ?? [];
+  const type = r.type && basis.length && observations.length ? { ...r.type, basis } : null;
+  const headline = claims.some((c) => sameish(c, r.headline)) || !observations.length ? observations[0]?.claim ?? FALLBACK_HEADLINE : r.headline;
+  return {
+    ...r, observations, type, headline,
+    share: type ? r.share : null,
+    strengths: r.strengths.filter((s) => !gone.has(s.basis)),
+    watchouts: r.watchouts.filter((w) => !gone.has(w.basis)),
+    chain: observations.length ? r.chain : null,
+  };
+}
+
 function sameish(a: string, b: string): boolean {
   const x = stems(a), y = new Set(stems(b));
   if (!x.length || !y.size) return false;
@@ -137,7 +163,7 @@ function checkEvidence(raw: unknown, inputs: InsightInputs, haystack: string): I
   let quote = typeof e.quote === "string" ? e.quote.replace(/\s+/g, " ").trim().replace(/^["'“‘]+|["'”’]+$/g, "").trim() : "";
   if (!source || quote.length < 2) return null;
   if (quote.length > QUOTE_MAX) return null;
-  if (looksLikeInjection(quote) || isSensitiveDetail(quote) || /\[(?:email|link|number|phone|secret)\]/.test(quote) || MINOR.test(quote)) return null;
+  if (looksLikeInjection(quote) || privateDetail(quote) || /\[(?:email|link|number|phone|secret)\]/.test(quote)) return null;
   if (source === "answer") {
     const pick = inputs.picks.find((p) => norm(p.label) === norm(quote));
     if (pick) quote = pick.label;
@@ -146,11 +172,35 @@ function checkEvidence(raw: unknown, inputs: InsightInputs, haystack: string): I
   } else {
     // import (and chat, which onboarding never has): must be in the text the user gave, word for word
     const n = norm(quote);
-    if (source === "chat" || n.length < 6 || !haystack.includes(n)) return null;
+    // whole words only: "likes seafood" is not in "dislikes seafood" (Codex P2)
+    if (source === "chat" || n.length < 6 || !wordSpan(haystack, n)) return null;
   }
   const h = typeof e.highlight === "string" ? e.highlight.replace(/\s+/g, " ").trim() : "";
   const highlight = h.length >= 2 && h.length <= 40 && h.length < quote.length && quote.toLowerCase().includes(h.toLowerCase()) ? quote.substr(quote.toLowerCase().indexOf(h.toLowerCase()), h.length) : undefined;
   return { source, quote, source_label: SOURCE_LABEL[source], ...(highlight ? { highlight } : {}) };
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** `needle` appears in `hay` starting and ending on word boundaries (both already norm()ed) */
+function wordSpan(hay: string, needle: string): boolean {
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(needle)}(?:$|[^\\p{L}\\p{N}])`, "u").test(hay);
+}
+const NEG = /\b(?:no|not|never|dislikes?|hates?|avoids?|without|don'?t|skip)\b/;
+
+/** a chip must be the user's own: its words in the picks or the text; a dislike needs a "no / dislikes / not" near it (Codex P2) */
+function groundedChip(c: InsightChip, inputs: InsightInputs, haystack: string): boolean {
+  const label = norm(c.label).replace(/^(?:no|not|never)\s+/, "");
+  const words = stems(label);
+  if (!words.length) return false;
+  const pick = inputs.picks.find((p) => norm(p.label) === label || norm(p.label) === norm(c.label));
+  if (pick) return c.polarity === "dislike" ? /don't want|avoid|\bno\b|never/i.test(pick.question) : !/don't want|avoid|never/i.test(pick.question);
+  const pickText = norm(inputs.picks.map((p) => p.label).join(" "));
+  const all = `${haystack} ${pickText}`;
+  if (!words.every((w) => new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRe(w)}`, "u").test(all))) return false;
+  if (c.polarity !== "dislike") return true;
+  // a "no" within a few words before the label's first word
+  const first = escapeRe(words[0]);
+  return new RegExp(`${NEG.source}(?:\\s+[\\p{L}\\p{N}']+){0,3}\\s+${first}`, "u").test(haystack);
 }
 
 // ───────── shape ─────────
@@ -221,7 +271,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
     if (obs.some((y) => sameish(y.claim, claim))) continue;
     const use = useOf(x.use_in_call);
     if (!use) continue;
-    const chips = category === "taste" || category === "interest" ? chipsOf(x.chips) : [];
+    const chips = category === "taste" || category === "interest" ? chipsOf(x.chips).filter((c) => groundedChip(c, inputs, haystack)) : [];
     const kept: Observation = {
       id: insightId(category, claim),
       category,
@@ -247,7 +297,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   for (const u of inputs.unknowns ?? []) if (u.length <= 50 && !insightProblem(u)) learn(`u-${insightId("unknown", u).slice(0, 6)}`, u);
 
   let headline = claimOf(r.headline);
-  if (!/^You(?:\b|['’])/.test(headline) || headline.length > HEADLINE_MAX || insightProblem(headline)) headline = observations[0]?.claim ?? "You gave me a good start. I'll learn the rest as we talk.";
+  if (!/^You(?:\b|['’])/.test(headline) || headline.length > HEADLINE_MAX || insightProblem(headline)) headline = observations[0]?.claim ?? FALLBACK_HEADLINE;
   headline = sentence(headline);
   let usage = str(r.usage, 300);
   if (!/^In our calls\b/i.test(usage) || usage.length > USAGE_MAX || insightProblem(usage)) {
@@ -306,6 +356,9 @@ export function mixFrom(picks: InsightPick[]): InsightMix[] {
   if (has("Show me options")) add("options", "Options", "One answer", 1, "Show me options");
   else if (has("Start with the answer")) add("options", "Options", "One answer", 3, "Start with the answer");
   else if (has("Talk it out")) add("talk", "Talk it through", "Get to it", 1, "Talk it out");
+  const chat = picks.find((p) => /^In our chats/.test(p.question) && /^jokes?$/i.test(p.label));
+  if (chat) add("light", "Light", "Serious", /don't want/.test(chat.question) ? 3 : 1, chat.label);
+  if (has("Message anyone for me")) add("sayso", "Ask me first", "Just do it", 0, "Message anyone for me");
   const scale = (id: string, left: string, right: string, labels: string[]) => {
     const i = picks.findIndex((p) => labels.includes(p.label));
     if (i >= 0) add(id, left, right, labels.indexOf(picks[i].label), picks[i].label);
@@ -365,9 +418,11 @@ export function picksFromAnswers(a: Record<string, unknown>): InsightPick[] {
 /** N1–N3 body (POST /v1/import/skip) → picks. */
 export function picksFromSkip(b: Record<string, unknown>): InsightPick[] {
   const out: InsightPick[] = [];
-  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim().length > 0 && x.length <= 60).map((x) => x.trim()) : []);
+  // the same filters as the card's lines: an email / number / sensitive or injected pick never reaches Spark or storage (Codex P1)
+  const ok = (x: string) => redactSensitive(x) === x && !looksLikeInjection(x) && !privateDetail(x);
+  const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim().length > 0 && x.length <= 60).map((x) => x.trim()).filter(ok) : []);
   for (const i of list(b.interests)) out.push({ question: "What you're into", label: i });
-  if (typeof b.replies === "string" && b.replies.length <= 60) out.push({ question: "How you like replies", label: b.replies });
+  if (typeof b.replies === "string" && b.replies.length <= 60 && ok(b.replies)) out.push({ question: "How you like replies", label: b.replies });
   for (const i of list(b.avoid)) out.push({ question: "What to avoid", label: i });
   const n3 = b.n3 && typeof b.n3 === "object" ? (b.n3 as Record<string, Record<string, unknown> | undefined>) : {};
   const group: Record<string, string> = { clothes: "Clothes", food: "Food", chats: "In our chats" };

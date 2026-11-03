@@ -154,6 +154,9 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
   // S1 saves not turned into updates yet: a voice correction / call analysis merging meanwhile keeps them (Codex)
   if (card.pendingCorrections?.length) next.pendingCorrections = card.pendingCorrections;
   if (tombs.length) next.removed = tombs.slice(-40);
+  // SUM insight report + N1–N3 picks (and the "not me" list) survive profile updates (Codex P1)
+  if (card.insights) next.insights = card.insights;
+  if (card.picks) next.picks = card.picks;
   if (card.story) next.story = { ...card.story, stale: [...new Set([...(card.story.stale ?? []), ...stale])] };
   next.updatedAt = at;
   return { card: next, applied, staleCards: [...stale] };
