@@ -132,7 +132,9 @@ final class MacCallPlanTests: XCTestCase {
         var c = try sampleCard()
         c.evidence = nil
         c.why = ["Because"]
-        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how)
+        // D4: their why and how as written, minus the old colour legend
+        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because"] + c.how.filter { !ProductPicks.isLegend($0) })
+        XCTAssertEqual(ProductPicks.evidence(from: c).lines, ["Because", "Searched the web · northline.example.com +1"])
     }
 
     func testSearchingWhyIsTheEarlierImportLine() throws {
