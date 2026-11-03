@@ -153,7 +153,7 @@ export type SessionPersonalize = {
   startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
   /** watch together attached before the question: not a new conversation after all (give the count back) */
   unplanCall?(userId: string, item: string | null): Promise<void>;
-  /** "Forget all of this" was the last profile event (AU-92): a timed-out profile read uses no profile */
+  /** "Forget all of this" was the last profile event in this process (AU-92): a failed / timed-out read uses no profile */
   isForgotten?(userId: string): boolean;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
@@ -858,26 +858,41 @@ export class Session {
         let continuation = this.continued || msg.handoff === true;
         try { continuation ||= this.deps.continuesCall?.() ?? false; } catch { /* never fails the call */ }
         this.callPlanned = !continuation;
+        const TIMED_OUT = Symbol("timed_out");
+        const read = this.deps.personalize.startCall(this.deps.userId, { plan: !continuation });
         const p = await Promise.race([
-          this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
-          new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
+          read,
+          new Promise<typeof TIMED_OUT>((r) => setTimeout(() => r(TIMED_OUT), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
         this.callStartedAt = new Date().toISOString();
-        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
-        if (p) this.user = { ...this.user, profile: p.profile || undefined };
-        // the read timed out right after "Forget all of this" (AU-92): no profile, never the app's (or another device's) old copy
-        else if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
-        if (p?.nod) this.nod = p.nod;
-        // what they removed from their profile stays out of memory, notes and the handed-off turns
-        if (p?.removed?.length) {
-          this.removedLines = p.removed;
-          this.memoryCall?.setAvoid(p.removed);
-          this.history = scrubHistory(this.history, avoidKeys(p.removed));
+        if (p === TIMED_OUT) {
+          // the app's copy carries the call until the server's lands (then it applies to the rest of the call) — except
+          // right after "Forget all of this" in this process: no profile then (AU-92). Trade-off kept on purpose: a slow
+          // or failing profile store must not strip every call of its profile.
+          if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+          this.log("profile.start_timeout", {});
+          void read.then((late) => {
+            if (!late || this.closed) return;
+            this.user = { ...this.user, profile: late.profile || undefined };
+            this.taste = late.taste ?? [];
+          }).catch(() => {});
         }
-        if (p?.calls) this.callNumber = p.calls;
-        if (p?.ask && p.askItem) this.ask = { line: p.ask, item: p.askItem, topic: p.askTopic ?? null, asked: false };
-        this.taste = p?.taste ?? [];
+        const got = p === TIMED_OUT ? null : p;
+        // a stored profile always wins, even an empty one (a deleted preference must not come back from the app's copy)
+        if (got) this.user = { ...this.user, profile: got.profile || undefined };
+        if (got?.nod) this.nod = got.nod;
+        // what they removed from their profile stays out of memory, notes and the handed-off turns
+        if (got?.removed?.length) {
+          this.removedLines = got.removed;
+          this.memoryCall?.setAvoid(got.removed);
+          this.history = scrubHistory(this.history, avoidKeys(got.removed));
+        }
+        if (got?.calls) this.callNumber = got.calls;
+        if (got?.ask && got.askItem) this.ask = { line: got.ask, item: got.askItem, topic: got.askTopic ?? null, asked: false };
+        this.taste = got?.taste ?? [];
       } catch (err) {
+        // the read failed: the app's copy, unless they just asked to forget it (AU-92)
+        if (this.deps.personalize.isForgotten?.(this.deps.userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
         this.log("profile.unavailable", { message: String(err).slice(0, 120) });
       }
       if (this.closed) return;

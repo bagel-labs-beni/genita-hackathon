@@ -164,7 +164,7 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
     const s = await Promise.race([storyJob, grace]);
     if (s && s !== "late") card = d.personalize.withStory(card, s);
     // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
-    else if (s === "late") d.personalize.trackLate(userId, storyJob);
+    else if (s === "late") d.personalize.trackLate(userId, storyJob, gen);
   }
   // under the personalize lock: a call starting at the same moment can't write the old card back
   if (d.personalize) {

@@ -171,19 +171,20 @@ export class Personalize {
   }
 
   /** The paste's story is still being written after the import answered: GET story waits for it instead of writing another. */
-  trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>): void {
-    // written from the paste of this generation: after "Forget all of this" (and a new profile) it is dropped (AU-92 r2)
-    const gen = this.generation(userId);
+  trackLate(userId: string, job: Promise<{ raw: unknown; ms: number } | null>, since = this.generation(userId)): void {
+    // written from a paste of generation `since` (the import's start): after "Forget all of this" it never lands (AU-92)
     const j = job
-      .then((r) => (r && gen === this.generation(userId) ? this.attachLate(userId, r) : undefined))
+      .then((r) => (r ? this.attachLate(userId, r, since) : undefined))
       .catch(() => {})
       .finally(() => { if (this.storyJobs.get(userId) === j) this.storyJobs.delete(userId); });
     this.storyJobs.set(userId, j);
   }
 
   /** Save a story that landed after the import response went out (only if the card has none yet). */
-  async attachLate(userId: string, r: { raw: unknown; ms: number }): Promise<void> {
+  async attachLate(userId: string, r: { raw: unknown; ms: number }, since?: number): Promise<void> {
     await this.update(userId, (card) => {
+      // checked in the per-user lock, where forgetAll bumps the generation
+      if (since !== undefined && since !== this.generation(userId)) return null;
       if (card.story) return null;
       const next = this.withStory(card, r);
       // corrected before the paste's story landed: the story was written from the old text
@@ -210,8 +211,9 @@ export class Personalize {
     const running = this.storyJobs.get(userId);
     if (running) return running;
     const job = (async () => {
+      const gen = this.generation(userId);   // "Forget all of this" while Spark writes: never saved (AU-92)
       const card = await this.store.getStyle(userId);
-      if (!card) return;
+      if (!card || card.forgotten) return;
       const need = Personalize.needsWrite(card);
       if (!need) return;
       const only = need === "all" ? undefined : need;
@@ -220,6 +222,7 @@ export class Personalize {
       const raw = await this.timedJson<unknown>(buildStoryRequest({ card, summary: await this.summaryLines(userId) }, only));
       const ms = Math.round(performance.now() - t0);
       await this.update(userId, (latest) => {
+        if (gen !== this.generation(userId)) return null;
         const prev = latest.story?.version === 2 ? latest.story : undefined;
         const { cards, topics } = toStory(raw as { cards?: unknown }, latest, prev?.cards, only);
         // the profile changed while Spark wrote: what was written may be old → stays stale, the next read rewrites it
