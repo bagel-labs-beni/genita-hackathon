@@ -41,14 +41,23 @@ struct MacGlassControl: View {
     var icon: String
     var size: CGFloat = 47
     var slashed = false
+    /// A live state (sharing on): the same glass circle tinted (red), never a flat filled disc (CEO 11/3).
+    var tint: Color? = nil
     var body: some View {
         ZStack {
-            if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
-            else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(0.15))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
+            if let tint { tinted(tint) } else { clearGlass }
             if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
                 resourceImage(icon).resizable().frame(width: CGFloat(bitmap.pixelsWide) / 4, height: CGFloat(bitmap.pixelsHigh) / 4)
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
+    }
+    @ViewBuilder private var clearGlass: some View {
+        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
+        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(0.15))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
+    }
+    @ViewBuilder private func tinted(_ tint: Color) -> some View {
+        if #available(macOS 26.0, *) { Circle().fill(tint.opacity(0.35)).glassEffect(.regular.tint(tint.opacity(0.85)).interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.55), .white.opacity(0.04), .white.opacity(0.25)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
+        else { Circle().fill(tint).overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)) }
     }
 }

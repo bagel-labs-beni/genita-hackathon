@@ -301,33 +301,30 @@ struct MacJudgeCodeSheet: View {
     @FocusState private var focused: Bool
 
     var body: some View {
+        // A02-J in the email sheet's Mac v2 look (it still had the old one: filled field, 16 pt mute body,
+        // 24 pt sides, a grey disabled block — the two sign-in sheets didn't match)
         VStack(alignment: .leading, spacing: 0) {
-            Text("Judge access").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
+            MacV2Title(text: "Judge access")
             Text("Enter the code from the submission form. No Apple ID needed.")
-                .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
             TextField("Access code", text: $code)
                 .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.ink)
                 .padding(.horizontal, 16).frame(height: 50)
-                .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                 .padding(.top, 24).onSubmit { submit() }
                 .accessibilityIdentifier("macJudgeCodeField")
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macJudgeCodeError")
             }
-            Button { submit() } label: {
-                ZStack {
-                    if sending { ProgressView().controlSize(.small).tint(MacSheetInk.onInk) } else { Text("Continue") }
-                }.font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).disabled(sending || code.trimmingCharacters(in: .whitespaces).isEmpty).padding(.top, 24)
-                .keyboardShortcut(.defaultAction).accessibilityIdentifier("macJudgeCodeContinue")
-            Button("Cancel") { dismiss() }
-                .buttonStyle(.plain).font(MacSheetInk.sans(16, .medium)).foregroundStyle(MacSheetInk.ink)
-                .frame(maxWidth: .infinity).frame(height: 50).disabled(sending).keyboardShortcut(.cancelAction)
+            MacV2Button(label: "Continue", loading: sending, id: "macJudgeCodeContinue") { submit() }
+                .disabled(sending || code.trimmingCharacters(in: .whitespaces).isEmpty).keyboardShortcut(.defaultAction).padding(.top, 12)
+            MacV2Button(label: "Cancel", style: .text, id: "macJudgeCodeCancel") { dismiss() }.disabled(sending).keyboardShortcut(.cancelAction)
+                .frame(maxWidth: .infinity).padding(.top, 4)
         }
-        .padding(24).frame(width: 400)
+        .padding(.horizontal, 32).padding(.top, 28).padding(.bottom, 20).frame(width: 420, alignment: .topLeading)
         .background(MacSheetInk.sheet)
         .onAppear { focused = true }
     }

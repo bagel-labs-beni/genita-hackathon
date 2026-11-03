@@ -134,6 +134,12 @@ export class PrepRunner {
     return !!ac;
   }
 
+  /** Cancels a running prep and waits until it has stopped (no more saves). Used before a demo companion is replaced. */
+  async stop(userId: string): Promise<void> {
+    this.cancel(userId);
+    await this.running.get(userId)?.catch(() => {});
+  }
+
   /**
    * Before deleting account rows: stop prep, drain in-flight writes, then erase
    * every face image. Keep new prep blocked through the remaining feature/row

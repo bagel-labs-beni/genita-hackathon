@@ -31,6 +31,7 @@
     "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts",
     "product:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/product-e2e.ts",
     "eval:perception": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/perception-eval.ts",
+    "demo:template": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/demo-template.ts",
     "watch-sim": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/watch-sim.ts",
     "funnel:report": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/funnel-report.ts"
   },

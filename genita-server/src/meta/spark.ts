@@ -36,6 +36,8 @@ export type SparkStreamEvent =
   | { type: "text"; delta: string }
   | FunctionCall
   | { type: "tool"; name: string; status: string }
+  /** one finished web search: its query and the result pages it returned (not opened) */
+  | { type: "sources"; query: string; urls: string[] }
   | { type: "done"; responseId: string | null; text: string; status: string };
 
 function body(req: SparkRequest, stream: boolean) {
@@ -48,7 +50,20 @@ function body(req: SparkRequest, stream: boolean) {
     ...(req.tools?.length ? { tools: req.tools } : {}),
     ...(req.maxOutputTokens ? { max_output_tokens: req.maxOutputTokens } : {}),
     ...(req.text ? { text: req.text } : {}),
+    // a search's result URLs (11/3 probe: without this the search action has only the query)
+    ...(req.tools?.some((t) => t.type === "web_search") ? { include: ["web_search_call.action.sources"] } : {}),
   };
+}
+
+type WebSearchItem = { type: "web_search_call"; id?: string; action?: { type?: string; query?: string; queries?: string[]; sources?: Array<{ type?: string; url?: string }> } };
+
+/** A finished search's result pages, or null (an open_page action, or no sources). */
+export function searchSources(item: WebSearchItem): { type: "sources"; query: string; urls: string[] } | null {
+  const a = item.action;
+  if (!a || (a.type && a.type !== "search")) return null;
+  const urls = [...new Set((a.sources ?? []).map((s) => s?.url ?? "").filter((u) => /^https?:\/\//i.test(u)))];
+  if (!urls.length) return null;
+  return { type: "sources", query: String(a.query ?? a.queries?.[0] ?? "").slice(0, 200), urls };
 }
 
 /**
@@ -72,10 +87,11 @@ export async function* sparkStream(
     let text = "";
     let responseId: string | null = null;
     const calls = new Set<string>();
+    const searches = new Set<string>();
     for await (const chunk of r.body as unknown as AsyncIterable<Uint8Array>) {
       for (const ev of parser.feed(dec.decode(chunk, { stream: true }))) {
         if (ev.data === "[DONE]") continue;
-        let e: { type?: string; delta?: string; item?: FunctionCall; response?: { id?: string; status?: string; output?: Array<FunctionCall | { type: "message"; content?: Array<{ type: string; text?: string }> }>; error?: { message?: string } | null } };
+        let e: { type?: string; delta?: string; item?: FunctionCall | WebSearchItem; response?: { id?: string; status?: string; output?: Array<FunctionCall | WebSearchItem | { type: "message"; content?: Array<{ type: string; text?: string }> }>; error?: { message?: string } | null } };
         try {
           e = JSON.parse(ev.data);
         } catch {
@@ -90,6 +106,9 @@ export async function* sparkStream(
         } else if (type === "response.output_item.done" && e.item?.type === "function_call") {
           clearTimeout(timer);
           if (!calls.has(e.item.call_id)) { calls.add(e.item.call_id); yield e.item; }
+        } else if (type === "response.output_item.done" && e.item?.type === "web_search_call") {
+          const found = searchSources(e.item);
+          if (found && !searches.has(e.item.id ?? found.query)) { searches.add(e.item.id ?? found.query); yield found; }
         } else if (type.startsWith("response.web_search_call.")) {
           clearTimeout(timer);
           yield { type: "tool", name: "web_search", status: type.split(".").pop() ?? "" };
@@ -106,6 +125,10 @@ export async function* sparkStream(
           }
           for (const item of e.response?.output ?? []) {
             if (item.type === "function_call" && !calls.has(item.call_id)) { calls.add(item.call_id); yield item; }
+            if (item.type === "web_search_call") {
+              const found = searchSources(item);
+              if (found && !searches.has(item.id ?? found.query)) { searches.add(item.id ?? found.query); yield found; }
+            }
           }
           yield { type: "done", responseId: e.response?.id ?? responseId, text, status: e.response?.status ?? type.split(".")[1] };
           return;

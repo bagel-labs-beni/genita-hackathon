@@ -445,7 +445,8 @@ for (const voice of ["server", "device"] as const) {
 
   for (const followup of ["", "<curious> Hmm."]) test(`P2: interjection-only tool turn retries an empty answer (${voice}, ${JSON.stringify(followup)})`, async () => {
     const { events, logs, spoken, answer, followups } = await recallTurn(voice, [["Hmm. I'll search my memory for that. "]], [followup, "You told me you love tofu."]);
-    const expected = ["Hmm.", followup ? "Hmm." : "", answer].filter(Boolean).join(" ");
+    // QA r5: the follow-up's own "Hmm." after the first "Hmm." is said once (v1 interjection guard)
+    const expected = ["Hmm.", followup && process.env.GENITA_CONVO_V1 === "0" ? "Hmm." : "", answer].filter(Boolean).join(" ");
     assert.equal(followups, 2);
     assert.equal(logs.filter((log) => log.event === "spark.empty_retry").length, 1);
     assert.deepEqual(events.filter((e) => e.type === "reply").map((e) => e.text), [expected]);
