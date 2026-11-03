@@ -219,7 +219,8 @@ test("Spark recall/remember tools execute and feed Responses function outputs ba
     yield { type: "done", responseId: "r", text: "", status: "completed" };
   };
   for await (const e of call.stream({ input: "Remember I like kimchi jjigae." }, new AbortController().signal, source, "kimchi")) events.push(e);
-  assert.equal(requests.length, 3); assert.equal(requests[0].tools!.length, 2);
+  // the reply carries `recall` only (QA sweep 11/3); a `remember` call Spark still makes is executed as before
+  assert.equal(requests.length, 3); assert.equal(requests[0].tools!.length, process.env.GENITA_REMEMBER_TOOL === "1" ? 2 : 1);
   const outputs = (requests[2].input as SparkInputForTest[]).filter((i) => i.type === "function_call_output").map((i) => JSON.parse(i.output!));
   assert.equal(outputs[0].saved, true); assert.equal(outputs[1].saved, false); assert.equal(outputs[2].error, "invalid_arguments"); assert.match(outputs[3].memories[0].text, /kimchi/);
   assert.equal(events.filter((e) => e.type === "done").length, 1); call.close();
@@ -286,4 +287,30 @@ test("recall bookkeeping (Codex 11/3): the background last_used_at write never u
   const [row] = await repo.list("a");
   assert.equal(row.image_ref, "sam-crops/newer.jpg", "newer field kept");
   assert.ok(row.last_used_at, "last_used_at still recorded");
+});
+
+test("QA sweep 11/3: the reply's memory tools are recall only (saving is the background extraction's); GENITA_REMEMBER_TOOL=1 restores remember", async () => {
+  const { replyMemoryTools } = await import("../src/memory/call.ts");
+  const names = (env: NodeJS.ProcessEnv) => replyMemoryTools(env).map((t) => ("name" in t ? t.name : t.type));
+  assert.deepEqual(names({}), ["recall"]);
+  assert.deepEqual(names({ GENITA_REMEMBER_TOOL: "1" }), ["recall", "remember"]);
+});
+
+test("QA sweep 11/3: a round's tool calls run side by side, not one after another", async () => {
+  const { service } = setup(); const call = new MemoryCall(service, "a", "s"); await call.open();
+  let inFlight = 0; let maxInFlight = 0;
+  const realRecall = service.recall.bind(service);
+  service.recall = (async (...args: Parameters<typeof service.recall>) => { inFlight++; maxInFlight = Math.max(maxInFlight, inFlight); await new Promise((r) => setTimeout(r, 30)); inFlight--; return realRecall(...args); }) as typeof service.recall;
+  let n = 0;
+  const source = async function* (): AsyncGenerator<SparkStreamEvent> {
+    n++;
+    if (n === 1) {
+      yield { type: "function_call", name: "recall", call_id: "a1", arguments: JSON.stringify({ query: "sister" }) };
+      yield { type: "function_call", name: "recall", call_id: "a2", arguments: JSON.stringify({ query: "dog" }) };
+    } else yield { type: "text", delta: "Biscuit's beach day, right?" };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  for await (const _ of call.stream({ input: "remember my dog?" }, new AbortController().signal, source, "dog")) void _;
+  assert.equal(maxInFlight >= 2, true, `max in flight ${maxInFlight}`);
+  call.close();
 });

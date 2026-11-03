@@ -920,3 +920,30 @@ test("session v1 (Codex review): 'Well. Well water needs testing.' keeps the wor
   assert.equal(reply.text, "Well. Well water needs testing.");
   session.close();
 });
+
+test("session v1 (QA P3): a sentence never starts lower case after a dropped name / a full stop; a comma clause keeps its case", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<happy> No way, Summer. That's huge.", "<excited> Called it. told you you'd crush it, honestly."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I got the job" }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  await session.onClientText(JSON.stringify({ type: "text", text: "start monday" }));
+  const second = await client.waitFor((m) => m.type === "reply" && m !== first);
+  assert.equal(second.text, "Called it. Told you you'd crush it, honestly.");
+  session.close();
+});
+
+test("session v1 (QA P3): a returning greeting that is plainly a question ends with '?'", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<curious> Hey Summer, how's the prep for that studio interview going."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Hey Summer, how's the prep for that studio interview going?");
+  session.close();
+});
+
+test("guard (QA sweep 11/3): saving out loud is narration; a seat, money or a pick is not", () => {
+  const c = { camera: false, userText: "I went bouldering with Biscuit" };
+  assert.equal(guardSentence("I'll save that bouldering detail quietly while we keep chatting.", c), "narration");
+  assert.equal(guardSentence("Biscuit — locking that in so I keep his beach story straight.", c), "narration");
+  assert.equal(guardSentence("Saved that for next time.", c), "narration");
+  for (const keep of ["I'll save you a seat.", "Saving money is smart.", "Locking in the black one, final answer.", "I'll remember that forever."]) assert.equal(guardSentence(keep, c), null, keep);
+});

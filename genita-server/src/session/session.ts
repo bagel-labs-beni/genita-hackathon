@@ -10,7 +10,7 @@ import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
-import { avoidRepeatedOpener, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, recentOpeningWords, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
@@ -239,7 +239,54 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
 const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
-const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
+const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."];
+/** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
+const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:how|how's|what|what's|when|where|who|why|which|did|do|does|are|is|was|were|have|has|can|could|will|would|you (?:still|feeling|ready|nervous|excited|good|doing))\b/i;
+/** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
+ * Mac open always gets this line, at once (no Spark); rotates by utterance */
+export const SUGGEST_MAC_REPLIES = [
+  "<excited> Of course! Can you move our call to your Mac? I want to see your whole outfit.",
+  "<happy> Ooh, yes. Move our call to your Mac real quick? I want to see the whole fit.",
+  "<teasing> Okay, outfit emergency. Can you move our call to your Mac? I need to see all of it.",
+];
+
+/**
+ * Demo S4: pass Spark's suggest-turn reply through once it names the Mac; if two sentences (or 160 chars, or 2.5 s
+ * of text) go by without it, or the reply ends without it, say the fixed line instead and stop reading Spark.
+ * Upstream errors still throw (a failed reply keeps the suggestion for the retry).
+ */
+export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now): AsyncGenerator<SparkStreamEvent> {
+  let buf = "";
+  let passing = false;
+  let firstTextAt: number | null = null;
+  const fixed = function* (): Generator<SparkStreamEvent> {
+    yield { type: "text", delta: line };
+    yield { type: "done", responseId: null, text: line, status: "completed" };
+  };
+  try {
+  for await (const ev of src) {
+    if (passing) { yield ev; continue; }
+    if (ev.type === "text") {
+      buf += ev.delta;
+      firstTextAt ??= now();
+      if (/\bMac\b/i.test(buf)) { passing = true; yield { type: "text", delta: buf }; continue; }
+      const sentences = (buf.replace(/<[^>]*>|\[[^\]]*\]/g, " ").match(/[.!?](?:\s|$)/g) ?? []).length;
+      if (sentences >= 2 || buf.length > 160 || now() - firstTextAt > 2500) { yield* fixed(); return; }
+      continue;
+    }
+    if (ev.type === "done") {
+      // an incomplete reply keeps its own ending (the suggestion stays unused for the retry, Codex P2 round 3)
+      if (/\bMac\b/i.test(buf) || ev.status !== "completed") { if (buf) yield { type: "text", delta: buf }; yield ev; } else yield* fixed();
+      return;
+    }
+    yield ev;
+  }
+  } catch (err) {
+    // a stream cut mid-reply behaves as before: what was written so far is said, then the error (Codex P2 round 2)
+    if (!passing && buf) yield { type: "text", delta: buf };
+    throw err;
+  }
+}
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
@@ -1786,7 +1833,13 @@ export class Session {
             continue;
           }
         }
-        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // a sentence start is never lower case (QA P3: a guard dropped "Summer," after the hold beat → "Hmm. told you
+        // you'd crush it"); a clause after a comma ("Oh wow," + "that's huge") keeps its case
+        const prevEnd = sentences.at(-1)?.display.trim();
+        if ((droppedOpener && !sentences.length) || (this.v1 && !interpret && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // QA P3: a returning greeting's question ended with "." 1/2 ("…how's the prep going.") — a greeting or initiative
+        // sentence that is plainly a question ends with "?"
+        if (this.v1 && synthetic && QUESTION_START.test(parseTaggedSentence(tts).displayText) && /\.\s*$/.test(tts) && !/\.\.\.\s*$/.test(tts)) tts = tts.replace(/\.\s*$/, "?");
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
@@ -1842,7 +1895,10 @@ export class Session {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
         beating = true;
-        try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
+        // never the opening word of the last replies (QA P3: "Hmm." started 2/4 return replies); Ooh / Mm before Hmm
+        const used = recentOpeningWords(this.recentReplies);
+        const beat = HOLD_BEATS.find((b) => !used.includes(b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase())) ?? HOLD_BEATS[utteranceId % HOLD_BEATS.length];
+        try { enqueueSentences([beat], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
       }, HOLD_BEAT_MS);
@@ -1864,7 +1920,9 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
+            const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {

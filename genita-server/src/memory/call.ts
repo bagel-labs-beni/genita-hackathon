@@ -14,6 +14,17 @@ export const MEMORY_TOOLS: Tool[] = [
     parameters: { type: "object", properties: { fact: { type: "string", maxLength: 300 }, kind: { type: "string", enum: ["fact", "episode"] } }, required: ["fact", "kind"], additionalProperties: false } },
 ];
 
+/**
+ * QA sweep 11/3 (2 of 7 memory turns): the in-reply `remember` tool made Spark narrate the save ("I'll save that
+ * bouldering detail quietly…", "locking that in so I keep his beach story straight") and chained 2–3 sequential
+ * save rounds (8.7–15 s to the first sound). Saving now happens only after the answer, in the background extraction
+ * (every 4 pairs and at call end, Forget-aware, same rules), so the reply carries `recall` only.
+ * GENITA_REMEMBER_TOOL=1 puts the in-reply save back.
+ */
+export function replyMemoryTools(env: NodeJS.ProcessEnv = process.env): Tool[] {
+  return env.GENITA_REMEMBER_TOOL === "1" ? MEMORY_TOOLS : MEMORY_TOOLS.filter((t) => !("name" in t) || t.name !== "remember");
+}
+
 /** reply-path budgets for memory reads (a store that is slower just means no memory this turn) */
 export const RECALL_BUDGET_MS = 400;
 export const OPENING_BUDGET_MS = 1000;
@@ -197,7 +208,7 @@ export class MemoryCall {
       const notes = summaryPrompt(this.summaries, this.service.now());
       const pinnedIds = new Set(this.pinned.map((m) => m.id));
       const extra = items.filter((m) => !pinnedIds.has(m.id));
-      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(this.pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...MEMORY_TOOLS] };
+      next = { ...req, instructions: (req.instructions ?? "") + pinnedPrompt(this.pinned) + notes + memoryPrompt(extra, opening !== undefined, !!notes), tools: [...req.tools ?? [], ...replyMemoryTools()] };
     }
     for (let round = 0; round < 4; round++) {
       if (signal.aborted) return;
@@ -217,12 +228,12 @@ export class MemoryCall {
       if (signal.aborted) return;
       const input: SparkInputItem[] = typeof next.input === "string" ? [{ role: "user", content: next.input }] : [...next.input];
       if (text) input.push({ role: "assistant", content: text });
-      for (const call of calls) {
+      // the round's calls run side by side (QA sweep: 2–3 sequential calls at 1.1–1.5 s each held the answer)
+      for (const call of calls) yield { type: "tool", name: call.name, status: "in_progress" };
+      const results = await Promise.all(calls.map((call) => this.execute(call).catch(() => ({ error: "memory_unavailable" }))));
+      for (const [i, call] of calls.entries()) {
         if (signal.aborted) return;
-        yield { type: "tool", name: call.name, status: "in_progress" };
-        let result: unknown;
-        try { result = await this.execute(call); } catch { result = { error: "memory_unavailable" }; }
-        if (signal.aborted) return;
+        const result: unknown = results[i];
         input.push(call, { type: "function_call_output", call_id: call.call_id, output: JSON.stringify(result) });
         // Checkpoint completed calls/results before exposing completion. An empty
         // or failed follow-up retries this continuation, never the original save.

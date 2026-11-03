@@ -132,12 +132,26 @@ const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call
 /** talk about being interrupted ("You cut me off twice, so one line from now on", demo lane 11/3): meta and guilt, never said */
 const INTERRUPTION = /\b(?:(?:you|u)\s+(?:keep\s+|kept\s+|just\s+)?(?:cut(?:ting)?\s+me\s+off|interrupt(?:ed|ing)?\s+me|talk(?:ed|ing)?\s+over\s+me)|cut\s+me\s+off|talk(?:ed|ing)?\s+over\s+me|interrupt(?:ed|ing)\s+me|(?:keep|keeping)\s+it\s+(?:short|brief)\s+from\s+now\s+on|one\s+line\s+from\s+now\s+on)\b/i;
 
+/**
+ * Saving out loud (QA sweep 11/3, 2 of 7 memory turns): "I'll save that bouldering detail quietly while we keep
+ * chatting.", "Biscuit — locking that in so I keep his beach story straight." Memory plumbing is never said; the
+ * save itself now happens after the answer (memory/call.ts replyMemoryTools). Not "I'll save you a seat".
+ */
+const SAVE_TALK = [
+  // saving out loud (QA sweep 11/3, 2 of 7 memory turns): "I'll save that bouldering detail quietly while we keep,
+  // chatting.", "Biscuit — locking that in so I keep his beach story straight." Not "I'll save you a seat".,
+  /\b(?:i'?ll|i will|let me|lemme|gonna|i'?m (?:gonna|going to|just going to))\s+(?:quietly\s+|just\s+|go ahead and\s+)?(?:save|store|log|stash|jot(?: down)?|note(?: down)?|file(?: away)?|lock(?: in)?|write down|keep track of|make a (?:mental )?note of)\s+(?:that|this|it|the|your|his|her|their)\b/i,
+  /^(?:[\p{L}'’]+\s*[—–,-]\s*)?(?:locking|saving|storing|logging|noting|filing|stashing|jotting)\s+(?:that|this|it)\b(?:\s+(?:in|down|away))?/iu,
+  /\b(?:saved|locked|noted|logged|filed|stored)\s+(?:that|it|this)\s+(?:in|away|down)?\s*(?:for (?:later|next time)|in my (?:memory|head|notes))\b/i,
+  /\bso i (?:keep|get|have) [^.!?]{0,40}\bstraight\b/i,
+];
+
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
-  if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
+  if (!realCrisisSignal(ctx.userText) && (isNarration(sentence) || SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'"))))) return "narration";
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
