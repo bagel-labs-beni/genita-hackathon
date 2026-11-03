@@ -90,15 +90,15 @@ struct MacGlassControl: View {
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
     }
-    /// MA-04: the call controls sit over the animated face, where live glass / material re-samples every frame. A solid
-    /// stand-in for the Figma control (rgba(40,40,40,0.32) + blur 12 + white rim): the blurred dark disc at 50 %, same rim.
-    private var clearGlass: some View {
-        Circle().fill(Color(white: 40.0 / 255).opacity(0.5))
-            .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
+    @ViewBuilder private var clearGlass: some View {
+        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
+        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(0.15))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
     }
     /// Sharing on: ink-in-glass in red (#E7200C), the GlassCTA structure with the MacInkGlass non-key rule.
-    /// MA-04: solid over the animated face (no live glass), the same red disc + rim as a still.
-    private func tinted(_ tint: Color) -> some View {
-        Circle().fill(tint).overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.7))
+    @ViewBuilder private func tinted(_ tint: Color) -> some View {
+        if #available(macOS 26.0, *) {
+            Circle().fill(tint.opacity(MacInkGlass.fillOpacity(activeState))).glassEffect(.regular.tint(tint).interactive(), in: Circle())
+                .animation(.easeOut(duration: 0.2), value: activeState)
+        } else { Circle().fill(tint).overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)) }
     }
 }

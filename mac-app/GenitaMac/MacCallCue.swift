@@ -34,10 +34,14 @@ enum MacInkGlass {
 struct MacDarkGlass<S: Shape>: ViewModifier {
     var shape: S
     @Environment(\.controlActiveState) private var activeState
-    /// MA-04: the pills float over the animated face; live glass there re-samples every frame. The 84 % ink pill
-    /// (Figma) is the same look as a still, without the per-frame cost.
-    func body(content: Content) -> some View {
-        content.background(MacSheetInk.pill, in: shape)
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.background(shape.fill(MacSheetInk.ink.opacity(MacInkGlass.fillOpacity(activeState))))
+                .glassEffect(.regular.tint(MacSheetInk.ink), in: shape).environment(\.colorScheme, .dark)
+                .animation(.easeOut(duration: 0.2), value: activeState)
+        } else {
+            content.background(MacSheetInk.pill, in: shape)
+        }
     }
 }
 extension View {

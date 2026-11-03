@@ -236,8 +236,8 @@ struct MacConversationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background {
                         // MA-04: a live material over the animated face re-blurs every frame (CA commit on the main
-                        // thread). Solid stand-in with the same look in a still: the dark material + 28 % black ≈ #1C1B20 at 92 %.
-                        RoundedRectangle(cornerRadius: 16).fill(Color(red: 28.0 / 255, green: 27.0 / 255, blue: 32.0 / 255).opacity(0.92))
+                        // thread). Solid stand-in with the same look in a still: the dark material + 28 % black ≈ #1E1B1E at 92 % (matched on the CI render, 3× crop).
+                        RoundedRectangle(cornerRadius: 16).fill(Color(red: 30.0 / 255, green: 27.0 / 255, blue: 30.0 / 255).opacity(0.92))
                     }
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
                     .accessibilityElement().accessibilityLabel("Your camera is off")
