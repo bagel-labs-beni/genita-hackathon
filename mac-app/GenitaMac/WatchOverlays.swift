@@ -8,16 +8,17 @@ struct WatchOverlays: View {
     @ObservedObject var sharing: ScreenSharingController
     var review: String = ""
 
-    private var sharingOn: Bool { sharing.isSharing || ["sharing", "reacting", "black", "speaker"].contains(review) }
+    private var sharingOn: Bool { (sharing.isSharing && sharing.connectionMessage == nil) || ["sharing", "reacting", "black", "speaker"].contains(review) }
     private var source: String? { review.isEmpty ? sharing.sourceName : "Safari" }
-    private var reacting: Bool { sharing.reacting || review == "reacting" }
-    private var blank: Bool { (sharing.isSharing && sharing.blank) || review == "black" }
+    private var reacting: Bool { (sharingOn && sharing.reacting) || review == "reacting" }
+    private var blank: Bool { (sharingOn && sharing.blank) || review == "black" }
     private var speaker: String? { review == "speaker" ? "the chef" : (sharing.isSharing ? sharing.speakerName : nil) }
     private var notice: Bool { sharing.noticeVisible || review == "share-notice" }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if sharingOn { SharingChip(source: source).position(x: 83 + SharingChip.width(source) / 2, y: 86) }
+            // Mac v2: the sharing chip sits in the pill row under the menu button, like every other call pill
+            if sharingOn { SharingChip(source: source).position(x: (MacDesignV2.enabled ? 24 : 83) + SharingChip.width(source) / 2, y: MacDesignV2.enabled ? 103 : 86) }
             if blank {
                 BlackScreenCard { sharing.showPicker() }.frame(width: 342).position(x: 195, y: 124 + 76)
             } else if reacting {
@@ -68,7 +69,7 @@ struct SharingChip: View {
             Text(Self.label(source)).font(WatchPalette.sans(14, medium: true)).lineLimit(1)
         }
         .foregroundStyle(WatchPalette.onInk).padding(.horizontal, 12).frame(height: 36)
-        .background(WatchPalette.pill, in: Capsule())
+        .macDarkGlass(in: Capsule())
         .accessibilityElement(children: .combine)
     }
 }
@@ -81,7 +82,7 @@ struct ReactingCue: View {
             Text("Reacting").font(WatchPalette.sans(14, medium: true))
         }
         .foregroundStyle(WatchPalette.onInk).padding(.vertical, 8).padding(.horizontal, 16).frame(minHeight: 36)
-        .background(WatchPalette.pill, in: RoundedRectangle(cornerRadius: 18))
+        .macDarkGlass(in: Capsule())
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
     }
 }
@@ -130,17 +131,13 @@ struct ShareNoticeSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Capsule().fill(WatchPalette.handle).frame(width: 47, height: 5).frame(maxWidth: .infinity).padding(.bottom, 24)
-            Text("I only see what you share.").font(WatchPalette.serif(28)).tracking(-0.28).lineSpacing(6)
+            // Mac v2: break by meaning, never "what / you share."
+            Text(MacDesignV2.enabled ? "I only see\nwhat you share." : "I only see what you share.").font(WatchPalette.serif(28)).tracking(-0.28).lineSpacing(6)
             // MS-1 (157:74): three even lines, one per sentence
             Text("Pick a window or your whole screen.\nI look while it’s shared and don’t keep it.\nGenita’s window is left out.")
                 .font(WatchPalette.sans(15)).lineSpacing(9).padding(.top, 16).fixedSize(horizontal: false, vertical: true)
-            Button(action: choose) {
-                Text("Choose what to share").font(WatchPalette.sans(16, medium: true)).foregroundStyle(WatchPalette.onInk)
-                    .frame(maxWidth: .infinity).frame(height: 50).background(WatchPalette.ink, in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).padding(.top, 32).accessibilityIdentifier("watchChooseShare")
-            Button(action: notNow) {
-                Text("Not now").font(WatchPalette.sans(15, medium: true)).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).padding(.top, 4)
+            MacV2Button(label: "Choose what to share", id: "watchChooseShare", action: choose).padding(.top, 32)
+            MacV2Button(label: "Not now", style: .text, id: "watchNotNow", action: notNow).frame(maxWidth: .infinity).padding(.top, 4)
         }
         .foregroundStyle(WatchPalette.ink)
         .padding(.top, 28).padding(.horizontal, 38).padding(.bottom, 48)

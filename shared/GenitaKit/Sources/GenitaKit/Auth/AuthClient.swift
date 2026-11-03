@@ -3,7 +3,7 @@ import CryptoKit
 import Security
 
 /// F1-L7 · app side of genita-server accounts. Keeps the session JWT in the
-/// token store; any 401 clears it (the app routes to A02). Also hands the
+/// token store; a 401 clears its matching session (the app routes to A02). Also hands the
 /// token to the realtime call (`Authorization: Bearer`, F1-L5).
 public final class GenitaAuthClient: @unchecked Sendable {
     public let baseURL: URL
@@ -39,6 +39,15 @@ public final class GenitaAuthClient: @unchecked Sendable {
         if let familyName, !familyName.isEmpty { name["familyName"] = familyName }
         if !name.isEmpty { body["fullName"] = name }
         let r: GenitaSignInResponse = try await send("POST", "/auth/apple", json: body, authorized: false)
+        store.save(r.token)
+        return r
+    }
+
+    /// A02-J Judge access (D41): a code from the submission form / README → a session for that code's demo account.
+    /// Wrong code = `.unauthorized` (401, nothing stored), too many tries = `.server(status: 429, …)`.
+    @discardableResult
+    public func signInWithJudgeCode(_ code: String, device: GenitaDevice = .iphone) async throws -> GenitaSignInResponse {
+        let r: GenitaSignInResponse = try await send("POST", "/auth/judge", json: ["code": code.trimmingCharacters(in: .whitespacesAndNewlines), "device": device.rawValue], authorized: false)
         store.save(r.token)
         return r
     }
@@ -94,6 +103,13 @@ public final class GenitaAuthClient: @unchecked Sendable {
         try await send("POST", "/me/consent", json: ["kind": "ai_data", "version": version])
     }
 
+    /// RP-1 (D37): report a reply, a card or a picture. The server keeps it with the account; the app says "Thanks, noted".
+    public func report(_ reason: GenitaReportReason, note: String, surface: String, text: String? = nil) async throws {
+        var json: [String: Any] = ["reason": reason.rawValue, "note": String(note.prefix(280)), "surface": surface]
+        if let text, !text.isEmpty { json["text"] = String(text.prefix(600)) }
+        let _: EmptyReply = try await send("POST", "/me/report", json: json)
+    }
+
     @discardableResult public func setName(_ name: String) async throws -> GenitaMe {
         try await send("PATCH", "/me", json: ["displayName": name])
     }
@@ -117,7 +133,7 @@ public final class GenitaAuthClient: @unchecked Sendable {
     private struct ErrorReply: Decodable { var error: String? }
 
     /// Shared transport for the account and onboarding calls (OnboardingClient): bearer from the store,
-    /// 401 clears it, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
+    /// 401 clears the matching sent token, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
     func send<T: Decodable>(_ method: String, _ path: String, json: [String: Any]? = nil, body: Data? = nil, contentType: String? = nil,
                             query: String? = nil, timeout: TimeInterval = 20, authorized: Bool = true) async throws -> T {
         let data = try await sendData(method, path, json: json, body: body, contentType: contentType, query: query, timeout: timeout, authorized: authorized)
@@ -139,9 +155,13 @@ public final class GenitaAuthClient: @unchecked Sendable {
             req.setValue(contentType ?? "application/octet-stream", forHTTPHeaderField: "content-type")
             req.httpBody = body
         }
+        let sentToken: String?
         if authorized {
             guard let token = store.load() else { throw GenitaAuthError.unauthorized }
+            sentToken = token
             req.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        } else {
+            sentToken = nil
         }
         let data: Data, response: URLResponse
         do { (data, response) = try await http.data(for: req) } catch let e as URLError where [.notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .timedOut, .dataNotAllowed].contains(e.code) {
@@ -149,7 +169,7 @@ public final class GenitaAuthClient: @unchecked Sendable {
         }
         guard let status = (response as? HTTPURLResponse)?.statusCode else { throw GenitaAuthError.badResponse }
         if status == 401 {
-            if authorized { store.clear() }
+            if let sentToken { store.clear(ifMatching: sentToken) }
             throw GenitaAuthError.unauthorized
         }
         let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
@@ -192,5 +212,21 @@ public enum AuthCallback: Equatable, Sendable {
 extension Data {
     var genitaBase64URL: String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+}
+
+/// RP-1 reasons (PRD D37), in the sheet's order.
+public enum GenitaReportReason: String, CaseIterable, Sendable {
+    case inappropriateImage = "inappropriate_image"
+    case harmfulAnswer = "harmful_answer"
+    case someoneElsesPhoto = "someone_elses_photo"
+    case other
+    public var title: String {
+        switch self {
+        case .inappropriateImage: "Inappropriate image"
+        case .harmfulAnswer: "Harmful or wrong answer"
+        case .someoneElsesPhoto: "Someone else's photo"
+        case .other: "Other"
+        }
     }
 }

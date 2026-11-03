@@ -37,6 +37,19 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
     return { status: r.status, json: (await r.json()) as Record<string, any> };
   };
 
+  // SUB-8 (#125): an upload without the rights acknowledgement is a 400 and nothing is stored or checked
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+  const raw = (path: string, body: Buffer) => fetch(base + path, { method: "POST", headers: { "x-genita-user": "u1", "content-type": "image/jpeg" }, body: new Uint8Array(body) });
+  const noAck = await raw("/v1/companion/image", jpeg);
+  assert.equal(noAck.status, 400);
+  assert.equal(((await noAck.json()) as Record<string, any>).error, "rights_required");
+  assert.equal((await raw("/v1/companion/image?rights=0", jpeg)).status, 400);
+  assert.equal((await call("POST", "/v1/companion/image", { image: jpeg.toString("base64") })).json.error, "rights_required");
+  assert.equal((await call("POST", "/v1/companion/image", { image: jpeg.toString("base64"), rightsAck: false })).json.error, "rights_required");
+  // with the ack the gate is passed: an empty body is then refused for being empty, not for rights
+  assert.equal((await call("POST", "/v1/companion/image", { image: "", rightsAck: true })).json.error, "empty_image");
+  assert.equal((await raw("/v1/companion/image?rights=1", Buffer.alloc(0))).status, 400);
+
   const p = await call("GET", "/v1/import/prompt");
   assert.equal(p.status, 200);
   assert.match(p.json.prompt, /^Create an evidence-based personalization profile for Genita/);
@@ -71,7 +84,7 @@ test("prep routes: prompt, validation, one companion per user, prefs → persona
   await runner.run("u1"); // fake input has no usable scene; route validation remains available
   const prep = await call("GET", "/v1/companion/prep");
   assert.equal(prep.json.status, "failed");
-  assert.equal(prep.json.progress.total, 19);
+  assert.equal(prep.json.progress.total, 21);
 
   assert.equal((await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there" } })).json.error, "bad_prefs");
   // no Meta key → Spark fails → deterministic persona fallback still answers

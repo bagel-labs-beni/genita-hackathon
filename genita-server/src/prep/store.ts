@@ -71,6 +71,8 @@ export type CompanionRecord = {
   prep: PrepState;
   prefs?: { depth: Depth; answers: SetupAnswers; updatedAt: string };
   persona?: PersonaResult;
+  /** D41: the ready-made "Jin" a judge account starts with (src/prep/demo.ts); POST /v1/companion replaces it */
+  demo?: boolean;
 };
 
 export interface PrepStore {
@@ -85,6 +87,15 @@ export interface PrepStore {
   listCompanions(): Promise<CompanionRecord[]>;
   getVoicePreview(voiceId: string, version: string): Promise<Buffer | null>;
   putVoicePreview(voiceId: string, version: string, audio: Buffer): Promise<void>;
+  /** removes the user's companion (and, on Postgres, its photo and users/<id>/companions/<cid>/ files); false if none */
+  deleteCompanion(userId: string): Promise<boolean>;
+  /**
+   * D41: swap the user's demo companion `demoId` for `rec` in one step (the old one's photo and files go,
+   * unless `rec` reuses the photo). False, with nothing written, when the current companion is not that demo one.
+   */
+  replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean>;
+  /** drops one of the user's photos (row + bytes); cleans up a demo seed that failed half-way */
+  deleteImage(userId: string, imageId: string): Promise<void>;
   /**
    * Companion images (scene = `neutral`, face set keys), served by GET /v1/companion/face/:key.
    * Kept under the user (blob key users/<userId>/companions/<companionId>/face/<name>), so
@@ -192,6 +203,35 @@ export class FileStore implements PrepStore {
   }
   putVoicePreview(voiceId: string, version: string, audio: Buffer) {
     return this.write(`voices/${safe(voiceId)}-${safe(version)}.wav`, audio);
+  }
+  async deleteCompanion(userId: string) {
+    const key = safe(userId);
+    await (this.locks.get(key) ?? Promise.resolve()).catch(() => {});
+    const c = await this.getCompanion(key);
+    if (!c) return false;
+    await rm(join(this.dir, `companions/${key}.json`), { force: true });
+    await this.deleteAssets(key, c.id);
+    return true;
+  }
+  replaceDemoCompanion(demoId: string, rec: CompanionRecord): Promise<boolean> {
+    const key = safe(rec.userId);
+    const next = (this.locks.get(key) ?? Promise.resolve())
+      .catch(() => {})
+      .then(async () => {
+        const cur = await this.getCompanion(key);
+        if (!cur || cur.id !== demoId || !cur.demo) return false;
+        await this.putCompanion(rec);
+        await this.deleteAssets(key, demoId);
+        return true;
+      });
+    this.locks.set(key, next);
+    return next;
+  }
+  async deleteImage(userId: string, imageId: string) {
+    const rec = await this.read<ImageRecord>(`images/${safe(imageId)}.json`);
+    if (!rec || rec.userId !== userId) return;
+    await rm(join(this.dir, `images/${safe(imageId)}.json`), { force: true });
+    await rm(join(this.dir, `images/${safe(imageId)}.bin`), { force: true });
   }
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {
     return this.write(`assets/${safe(userId)}/${safe(companionId)}/${safe(name)}.bin`, bytes);

@@ -3,7 +3,8 @@
  * rule is unit-testable without sockets or vendors.
  */
 
-export const REACT_MIN_GAP_MS = 30_000;
+/** at most one reaction every ~25 s (Chelsea 11/3: one per 20–30 s) */
+export const REACT_MIN_GAP_MS = 25_000;
 /** no reaction in the first seconds of a share: nothing has happened yet */
 export const REACT_AFTER_START_MS = 6_000;
 /** a dialogue line that ended this recently still counts as "talking" */
@@ -24,6 +25,8 @@ export type ReactGate = {
   lastDialogueEndAt: number | null;
   /** when the frames/lines the verdict is about were current */
   verdictAt: number;
+  /** the video's sound right now is crowd, music, commentary or narration (fine to talk over), not a scene's dialogue */
+  talkOver?: boolean;
 };
 
 export type GateResult = { ok: true } | { ok: false; why: string };
@@ -35,8 +38,8 @@ export function reactionAllowed(g: ReactGate): GateResult {
   if (g.now - g.sharingSince < REACT_AFTER_START_MS) return { ok: false, why: "just_started" };
   if (g.lastReactionAt !== null && g.now - g.lastReactionAt < REACT_MIN_GAP_MS) return { ok: false, why: "gap" };
   if (!g.conversationQuiet) return { ok: false, why: "conversation" };
-  if (g.dialogueActive) return { ok: false, why: "dialogue" };
-  if (g.lastDialogueEndAt !== null && g.now - g.lastDialogueEndAt < DIALOGUE_TAIL_MS) return { ok: false, why: "dialogue" };
+  if (!g.talkOver && g.dialogueActive) return { ok: false, why: "dialogue" };
+  if (!g.talkOver && g.lastDialogueEndAt !== null && g.now - g.lastDialogueEndAt < DIALOGUE_TAIL_MS) return { ok: false, why: "dialogue" };
   if (g.now - g.verdictAt > REACT_MAX_STALE_MS) return { ok: false, why: "stale" };
   return { ok: true };
 }
@@ -47,17 +50,29 @@ const AUDIO_TAG = /\[[^\[\]\n]{1,30}\]/g;
 const EMOTION_TAG = /<\s*[A-Za-z][A-Za-z_-]{0,23}\s*>/g;
 
 /**
+ * A reaction that tells a story the frames can't show (AI sweep 11/3, prod + local watch-sim: a blurred jumpstyle
+ * dance became "Whoa he's losing balance", "Oh he totally dodged that", "Oh his shoe flew off", "Oh no his pants"): balance, dodging,
+ * near misses, things flying off, what's about to happen. Better silent than invented; the memo's next verdict can
+ * still react. A fall or fail that happened ("he fell", "he slipped and fell", "total wipeout") is not a guess and stays (Codex P2).
+ */
+const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
+export function isGuessLine(words: string): boolean {
+  return GUESS.test(words);
+}
+
+/**
  * The spoken reaction line: Spark writes the words only; the tags are ours.
  * funny → <laugh> [laughs] (the app plays the laugh clip on speaking.emotion
  * "laugh"; spoken normalization removes the bracketed delivery tag).
  */
 export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
-  if (moment === "none" || !clean) return null;
+  if (moment === "none" || !clean || isGuessLine(clean)) return null;
   const capped = clean.split(" ").slice(0, 12).join(" ");
-  if (moment === "funny") return `<laugh> [laughs] ${capped}`;
-  if (moment === "surprising") return `<surprised> ${capped}`;
-  return `<warm> ${capped}`;
+  // the face: funny → smileopen (laugh draws as smileopen for now, 11/3), sweet → smile, surprising → surprised
+  if (moment === "funny") return `<laugh> [smileopen] [laughs] ${capped}`;
+  if (moment === "surprising") return `<surprised> [surprised] ${capped}`;
+  return `<warm> [smile] ${capped}`;
 }
 
 // ───────────────────────── echo guard (F5-L13) ─────────────────────────
@@ -84,6 +99,22 @@ export function isVideoEcho(userText: string, recentLines: string[], minOverlap 
     if (hit / u.length >= minOverlap) return true;
   }
   return false;
+}
+
+/**
+ * While the video is mid-line: can the user's turn be decided now from the line's partial transcript, or must
+ * it wait for the line to finish? The system-audio transcriber hears the video before the mic's own turn ends,
+ * so a real echo already shows in the partial. "wait" only when the partial is still too short to tell.
+ * A one-word turn ("wow") is never treated as an echo (same as isVideoEcho).
+ */
+export function echoNow(userText: string, openLine: string, minOverlap = 0.7): "echo" | "user" | "wait" {
+  const u = tokens(userText);
+  if (u.length < 2) return "user";
+  const open = tokens(openLine);
+  if (!open.length) return "wait";
+  const set = new Set(open);
+  if (u.filter((w) => set.has(w)).length / u.length >= minOverlap) return "echo";
+  return open.length >= u.length ? "user" : "wait";
 }
 
 // ───────────────────────── speaker chip (F5-L16) ─────────────────────────

@@ -7,6 +7,7 @@ extension AppState {
     /// UI tests and screen review run without a server unless they point one at the app (GENITA_API_URL).
     var serverWired: Bool {
         #if DEBUG
+        if BrowserPreview.isActive { return false } // Appetize preview: no server
         let env = ProcessInfo.processInfo.environment
         if env["GENITA_REVIEW_STAGE"] != nil && env["GENITA_API_URL"] == nil { return false }
         if ProcessInfo.processInfo.arguments.contains("--uitesting") && env["GENITA_API_URL"] == nil { return false }
@@ -19,20 +20,39 @@ extension AppState {
     /// On launch with a saved token: `/me` decides the first screen (new account → A01…, consent → CS01,
     /// no name → A03, no companion → I01 or the onboarding step the user left, companion → S07 → S09).
     /// Offline keeps the saved screen; a 401 clears the token and shows A02.
-    func routeOnLaunch() async {
-        guard serverWired, onboarding.auth.isSignedIn else { return }
+    /// `afterSignIn`: a returning account goes to its call even if A03's Next was already tapped.
+    /// Token, authentication lifetime and cancellation are checked after each request.
+    func routeOnLaunch(afterSignIn: Bool = false) async {
+        let launchRequest = launchAuthSnapshot
+        let request = onboardingSnapshot()
+        guard serverWired, launchRequest.token != nil else { return }
         let state = await onboarding.auth.sessionState()
+        // A current 401 clears its token in the auth client. It still routes to A02, but an old
+        // request must never sign out a newer login or re-adopt a logged-out account's handoff.
+        guard launchRequest.generation == authGeneration, !Task.isCancelled,
+              ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
+        if case .expired = state {
+            guard onboarding.auth.token == nil else { return }
+            signedOut()
+            return
+        }
+        guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion() }
-        apply(route, me: me)
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
+        apply(route, me: me, afterSignIn: afterSignIn)
     }
 
-    func restoreCompanion() async {
-        guard let c = try? await onboarding.companion() else { return }
+    func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
+        let launchRequest = launchAuthSnapshot
+        let request = request ?? onboardingSnapshot()
+        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -44,7 +64,8 @@ extension AppState {
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
-           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
+           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+           launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) {
             setup.imageData = data
         }
     }
@@ -57,7 +78,7 @@ extension AppState {
         if sceneKey == key { sceneImage = (key, data) }
     }
 
-    func apply(_ route: StartRoute, me: GenitaMe? = nil) {
+    func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
         let onboardingStages: Set<Stage> = [.prompt, .paste, .preparing, .preferences, .image, .imageCheck, .voice, .companionName,
                                             .depth, .help, .relationship, .challenge, .tempo, .initiative, .boundaries, .presence, .summary,
                                             .skipTopics, .skipReplies, .skipAvoid, .bringing]
@@ -75,7 +96,8 @@ extension AppState {
         case .connecting, .textWhilePreparing:
             // the companion exists: straight to the call (photo face until prep lands, D28)
             setup.companionCreated = true
-            if !setup.hasOnboarded && onboardingStages.contains(stage) && stage != .bringing { return }
+            // (right after a sign-in nothing is in progress yet: the setup was just reset for this account)
+            if !afterSignIn && !setup.hasOnboarded && onboardingStages.contains(stage) && stage != .bringing { return }
             // a returning account (or a new phone): no first-call wait, that's only right after onboarding (D21)
             if stage != .conversation { setup.hasOnboarded = true; complete() }
         case .macNoCompanion, .macConversationOnPhone, .macConversationHere: break
@@ -97,18 +119,22 @@ extension AppState {
         importTask?.cancel()
         importError = nil
         let text = setup.response
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         guard serverWired else { importing = false; return }
+        let request = onboardingSnapshot()
         importing = true
         importTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let style = try await onboarding.importReply(text)
-                if Task.isCancelled { return }
+                guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 applyStyle(style)
                 importing = false
                 if stage == .preparing { go(.preferences) }
             } catch {
-                if Task.isCancelled { return }
+                let expiredCurrentSession = (error as? GenitaAuthError) == .unauthorized
+                guard !Task.isCancelled,
+                      ownsOnboardingResponse(request, allowingClearedSession: expiredCurrentSession) else { return }
                 importing = false
                 importError = Self.importErrorLine(error)
                 if stage == .preparing { returnTo(.paste) }
@@ -146,6 +172,51 @@ extension AppState {
         setup.styleRows = style.rows
         setup.styleProfile = style.profile
         setup.stylePartial = style.partial
+        // a new import / N1–N3 answers: the old cards are gone (nil → HISY reads the new story), back to the opener
+        story = style.story?.isEmpty == false ? style.story : nil
+        storySource = style.source
+        storyChanged = [:]; storyFailed = false; hisyPage = 0
+    }
+
+    // MARK: HISY "How I see you" (D47 v2)
+
+    /// The story when the import didn't bring it (N1–N3, or written late): the server holds each ask up to 8 s
+    /// while it writes; `processing` asks again (3 tries). Nothing → HISY-0 "Show me" goes to HISY-7.
+    func loadStory() async {
+        guard serverWired, story == nil, !storyLoading, !importing else { return }
+        storyLoading = true; storyFailed = false
+        defer { storyLoading = false }
+        for _ in 0..<3 {
+            do {
+                let r = try await onboarding.story(wait: 8)
+                if story != nil { return }   // the import landed meanwhile
+                if r.status == .ready, !r.cards.isEmpty { story = r.cards; storySource = r.source ?? storySource; return }
+                if r.status == .none { break }
+            } catch {
+                route(error); break
+            }
+        }
+        if story == nil { storyFailed = true }
+    }
+
+    /// C1 Save: the marked texts and/or what's right. The card comes back rewritten (C3: the new texts get the blue
+    /// border) or nil when the correction emptied it (it leaves the deck); the six I04 rows and the call's profile
+    /// text follow. Returns the error line to show in the sheet (nil = done).
+    func correctStory(cardId: String, items: [String], text: String?) async -> String? {
+        do {
+            let r = try await onboarding.correct(cardId: cardId, items: items, text: text)
+            if var cards = story, let i = cards.firstIndex(where: { $0.id == cardId }) {
+                if let card = r.card { cards[i] = card } else { cards.remove(at: i); hisyPage = min(hisyPage, cards.count + 1) }
+                story = cards
+            }
+            storyChanged[cardId] = r.changed
+            if !r.rows.isEmpty { setup.styleRows = r.rows; setup.stylePartial = r.rows.contains { $0.items.isEmpty } }
+            setup.styleProfile = r.profile   // "" too: the last line was taken out, the call mustn't bring it back
+            return nil
+        } catch {
+            route(error)
+            return Self.errorLine(error)
+        }
     }
 
     /// I04: the six rows as read-only text (I04-P rows say "Not enough information yet.").
@@ -191,7 +262,7 @@ extension AppState {
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
         if setup.companionCreated == true { go(.voice); return }
-        guard let data = setup.imageData else { return }
+        guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket

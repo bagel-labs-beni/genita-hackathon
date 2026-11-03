@@ -6,6 +6,8 @@
  * User turns are admitted synchronously from memory (no DB wait on the reply path, order kept); with a DB
  * each accepted turn is written to usage_daily in the background and the stored total flows back into
  * memory, so other hosts/restarts are caught up within one turn. No keys/input are logged.
+ * Uploads await a conditional usage_daily UPSERT before any vendor I/O: the
+ * five-per-user UTC-day cap is strict across hosts/restarts. Failed attempts count.
  * Pause: GENITA_PAUSED=1 (needs a restart) or the file GENITA_PAUSE_FILE exists (checked every 5 s, no
  * restart, running calls keep going).
  */
@@ -17,8 +19,9 @@ import { UpstreamError } from "../meta/http.ts";
 
 type Log = (event: string, data: Record<string, unknown>) => void;
 type Options = { now?: () => number; log?: Log; db?: Queryable };
-type Limit = "calls" | "images" | "user_turns";
+type Limit = "calls" | "images" | "user_turns" | "user_uploads";
 type OpsConfig = Pick<Config, "paused" | "metaDailyCalls" | "metaDailyImages" | "userDailyTurns"> & { pauseFile?: string | null };
+const USER_DAILY_UPLOADS = 5;
 
 export class OpsLimits {
   private readonly config: OpsConfig;
@@ -29,6 +32,7 @@ export class OpsLimits {
   private calls = 0;
   private images = 0;
   private turns = new Map<string, number>();
+  private uploads = new Map<string, number>();
   private synced = new Set<string>();
   private priming = new Set<string>();
   private turnErrors = new Set<string>();
@@ -49,6 +53,7 @@ export class OpsLimits {
       this.day = day;
       this.calls = this.images = 0;
       this.turns.clear();
+      this.uploads.clear();
       this.synced.clear();
       this.priming.clear();
       this.turnErrors.clear();
@@ -60,6 +65,7 @@ export class OpsLimits {
   private cap(limit: Limit): number {
     return limit === "calls" ? this.config.metaDailyCalls ?? 20_000
       : limit === "images" ? this.config.metaDailyImages ?? 600
+      : limit === "user_uploads" ? USER_DAILY_UPLOADS
       : this.config.userDailyTurns ?? 300;
   }
 
@@ -122,6 +128,31 @@ export class OpsLimits {
   usage(): { calls: number; images: number } {
     this.today();
     return { calls: this.calls, images: this.images };
+  }
+
+  /** Reserve before image checks. DB errors propagate: never spend Meta budget without a reservation. */
+  async reserveUpload(userId: string): Promise<boolean> {
+    const day = this.today();
+    if (this.db) {
+      const r = await this.db.query(
+        `INSERT INTO usage_daily (user_id, day, uploads) VALUES ($1, $2::date, 1)
+         ON CONFLICT (user_id, day) DO UPDATE SET uploads = usage_daily.uploads + 1
+         WHERE usage_daily.uploads < $3
+         RETURNING uploads`,
+        [userId, day, USER_DAILY_UPLOADS],
+      );
+      if (r.rows.length > 0) return true;
+      this.exhausted("user_uploads", USER_DAILY_UPLOADS, day);
+      return false;
+    }
+    // Shared-token/loopback mode has no DB; check-and-increment without yielding.
+    const used = this.uploads.get(userId) ?? 0;
+    if (used >= USER_DAILY_UPLOADS) {
+      this.exhausted("user_uploads", used, day);
+      return false;
+    }
+    this.uploads.set(userId, used + 1);
+    return true;
   }
 
   /** Used before speculative Spark, without spending a turn on a partial. Memory only: never waits. */

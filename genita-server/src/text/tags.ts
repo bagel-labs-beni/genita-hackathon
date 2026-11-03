@@ -20,12 +20,21 @@ export type TaggedSentence = { emotion: string | null; ttsText: string; displayT
 // a tag cut off by the end of the stream ("Hello. [smi" then an upstream error) is never spoken or shown
 const DANGLING_RE = /\[[A-Za-z\s]{0,30}$|<\s*[A-Za-z_-]{0,24}$/;
 
+/**
+ * web_search citation markers Spark leaves in the answer text ("…counseling【281835†L1-L3】", AI sweep 11/3, real
+ * Spark with web_search on): never spoken ("two hundred eighty-one thousand…") or shown. A marker cut off by the end
+ * of the stream ("【281835") goes too.
+ */
+// only the marker shape (a number, then †…): 【AB1234】 or 【오늘 일정】 are text and stay (Codex #430 P2)
+const CITATION_RE = /【\d{1,12}(?:†[^】\n]{0,60})?】|【\d{1,12}(?:†[^】\n]{0,60})?$/g;
+
 const tidy = (s: string) => s.replace(/\s{2,}/g, " ").replace(/\s+([,.!?…])/g, "$1").trim();
 
 export function parseTaggedSentence(raw: string): TaggedSentence {
   let emotion: string | null = null;
   let tagged: string | null = null;
   const noEmotion = raw
+    .replace(CITATION_RE, " ")
     .replace(DANGLING_RE, " ")
     .replace(EMOTION_RE, (_m, name: string) => {
       if (!emotion) emotion = name.toLowerCase();
@@ -49,10 +58,29 @@ const CONCERN_RE = /\b(?:oh no|sorry|ugh|oof|that sucks|rough|tough|long day|tir
  * One clause → at most one face expression, or null (neutral: no event).
  * Order: Spark's inline [tag] > laughing / concerned words > the reply's <emotion>, only on the clause where it appears.
  */
-export function clauseExpression(s: TaggedSentence, emotion: string | null, emotionStartsHere: boolean): { tag: Expression; intensity: number } | null {
+export function clauseExpression(s: TaggedSentence, emotion: string | null, emotionStartsHere: boolean, opts: { scaled?: boolean } = {}): { tag: Expression; intensity: number } | null {
   if (s.expression === "neutral") return null;
   const tag: Expression | null =
     s.expression ??
     (LAUGH_RE.test(s.ttsText) ? "laugh" : CONCERN_RE.test(s.displayText) ? "concerned" : emotionStartsHere && emotion ? EMOTION_FACE[emotion] ?? null : null);
-  return tag ? { tag, intensity: tag === "laugh" ? 1 : 0.7 } : null;
+  if (!tag) return null;
+  if (tag === "laugh") return { tag, intensity: 1 };
+  return { tag, intensity: opts.scaled ? scaledIntensity(tag, emotion) : 0.7 };
+}
+
+/**
+ * Conversation engine v1 (DESIGN §7.2): how big the face is follows how strong the feeling is — a warm reply
+ * gets a soft smile, an excited one a grin. The reply's emotion sets it; a face with no matching emotion keeps
+ * the tag's own default.
+ */
+const EMOTION_INTENSITY: Record<string, number> = { excited: 0.9, surprised: 0.85, happy: 0.65, teasing: 0.55, warm: 0.45, sad: 0.6, curious: 0.5, whisper: 0.4 };
+const TAG_INTENSITY: Record<Exclude<Expression, "laugh">, number> = { smileopen: 0.85, surprised: 0.8, smile: 0.6, concerned: 0.6 };
+
+export function scaledIntensity(tag: Exclude<Expression, "laugh">, emotion: string | null): number {
+  const e = emotion ? EMOTION_INTENSITY[emotion] : undefined;
+  // a grin can't be fainter than 0.7, a concerned face never stronger than 0.7 (it reads as alarm)
+  if (e === undefined) return TAG_INTENSITY[tag];
+  if (tag === "smileopen") return Math.max(0.7, e);
+  if (tag === "concerned") return Math.min(0.7, Math.max(0.45, e));
+  return e;
 }

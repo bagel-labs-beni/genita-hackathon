@@ -139,6 +139,15 @@ public enum ServerEvent: Equatable, Sendable {
     /// F2-L26: the user renamed the companion by voice ("Call yourself Max"). Already saved on the server;
     /// update every {name} label (S07, S09-T, PREP-1 …).
     case companionNamed(CompanionNamed)
+    /// Lane 개인화: saved to the profile from the call — a correction ("Updated: no cilantro") or the answer to
+    /// the call's getting-to-know-you question ("Noted: quiet company"). Chip under the status line for 2.5 s.
+    case profileUpdated(ProfileUpdated)
+    /// Lane 개인화 GK-1: the companion just asked this call's getting-to-know-you question.
+    /// Soft chip "Getting to know you · {topic}".
+    case profileAsking(ProfileAsking)
+    /// Convo P1 #345 (server flag GENITA_BACKCHANNEL=1, off by default): mid user turn, play a soft listening
+    /// clip ("mm" / "yeah") from the app's own sounds. Not a reply, no state change.
+    case backchannel(Backchannel)
     /// A type this build does not know yet. Ignore it; never fail the socket.
     case unknown(type: String)
 
@@ -161,6 +170,8 @@ public enum ServerEvent: Equatable, Sendable {
         public var bargeIn: BargeIn
         /// Voice mode used for this call. Optional: servers before 11/2 (metaface) do not send it (= server).
         public var tts: TtsMode?
+        /// PERC-1: true only when the server reads face crops (GENITA_PERCEPTION); send `perceptionFrame` then.
+        public var perception: Bool?
     }
     public struct StateChange: Codable, Equatable, Sendable { public var state: Phase }
     public struct Turn: Codable, Equatable, Sendable { public var turnId: Int }
@@ -327,6 +338,20 @@ public enum ServerEvent: Equatable, Sendable {
         public var name: String
         public init(name: String) { self.name = name }
     }
+    public struct ProfileUpdated: Codable, Equatable, Sendable {
+        public var text: String
+        /// profile sections it touched, e.g. `likes`
+        public var fields: [String]
+        public init(text: String, fields: [String]) { self.text = text; self.fields = fields }
+    }
+    public struct ProfileAsking: Codable, Equatable, Sendable {
+        public var topic: String
+        public init(topic: String) { self.topic = topic }
+    }
+    public struct Backchannel: Codable, Equatable, Sendable {
+        public var kind: String
+        public init(kind: String) { self.kind = kind }
+    }
 }
 
 private enum TypeKey: String, CodingKey { case type }
@@ -366,6 +391,9 @@ extension ServerEvent: Codable {
         case "find.image": self = .findImage(try .init(from: decoder))
         case "find.failed": self = .findFailed(try .init(from: decoder))
         case "companion.named": self = .companionNamed(try .init(from: decoder))
+        case "profile.updated": self = .profileUpdated(try .init(from: decoder))
+        case "profile.asking": self = .profileAsking(try .init(from: decoder))
+        case "backchannel": self = .backchannel(try .init(from: decoder))
         default: self = .unknown(type: type)
         }
     }
@@ -403,6 +431,9 @@ extension ServerEvent: Codable {
         case .findImage: "find.image"
         case .findFailed: "find.failed"
         case .companionNamed: "companion.named"
+        case .profileUpdated: "profile.updated"
+        case .profileAsking: "profile.asking"
+        case .backchannel: "backchannel"
         case let .unknown(type): type
         }
     }
@@ -439,6 +470,9 @@ extension ServerEvent: Codable {
         case let .findImage(p): try p.encode(to: encoder)
         case let .findFailed(p): try p.encode(to: encoder)
         case let .companionNamed(p): try p.encode(to: encoder)
+        case let .profileUpdated(p): try p.encode(to: encoder)
+        case let .profileAsking(p): try p.encode(to: encoder)
+        case let .backchannel(p): try p.encode(to: encoder)
         case .unknown: break
         }
         var c = encoder.container(keyedBy: TypeKey.self)
@@ -467,6 +501,8 @@ public enum ClientMessage: Equatable, Sendable {
     case findConfirm(FindConfirm)
     /// Stop button while a card is still being looked for.
     case findStop(findId: String)
+    /// PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception — only when `ready.perception == true`.
+    case perceptionFrame(image: String)
 
     public struct Persona: Codable, Equatable, Sendable {
         public enum Kind: String, Codable, Sendable { case human, animal, character }
@@ -567,7 +603,7 @@ public enum ClientMessage: Equatable, Sendable {
 }
 
 extension ClientMessage: Codable {
-    private enum K: String, CodingKey { case type, utteranceId, mode, t, interpret, on, findId }
+    private enum K: String, CodingKey { case type, utteranceId, mode, t, interpret, on, findId, image }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: K.self)
@@ -588,6 +624,7 @@ extension ClientMessage: Codable {
         case "stop": self = .stop
         case "find.confirm": self = .findConfirm(try .init(from: decoder))
         case "find.stop": self = .findStop(findId: try c.decode(String.self, forKey: .findId))
+        case "perception.frame": self = .perceptionFrame(image: try c.decode(String.self, forKey: .image))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown client message \(type)")
         }
     }
@@ -609,6 +646,7 @@ extension ClientMessage: Codable {
         case .stop: try c.encode("stop", forKey: .type)
         case let .findConfirm(p): try p.encode(to: encoder); try c.encode("find.confirm", forKey: .type)
         case let .findStop(id): try c.encode("find.stop", forKey: .type); try c.encode(id, forKey: .findId)
+        case let .perceptionFrame(image): try c.encode("perception.frame", forKey: .type); try c.encode(image, forKey: .image)
         }
     }
 }

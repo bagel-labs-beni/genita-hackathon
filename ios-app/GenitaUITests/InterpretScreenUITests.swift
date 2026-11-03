@@ -45,8 +45,19 @@ final class InterpretScreenUITests: XCTestCase {
         let mine = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'interpretBubble' AND label CONTAINS '2호선'")).firstMatch
         XCTAssertTrue(mine.waitForExistence(timeout: 80), "INT-5"); capture("INT-5-my-reply-in-korean")
         XCTAssertTrue(wait(bar) { $0.contains("Couldn’t tell the language") }, "INT-6"); capture("INT-6-unclear")
-        app.buttons["interpretStop"].tap()
-        XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 5), "back to the call screen")
+        let stop = app.buttons["interpretStop"]
+        let stopFrame = stop.frame, stopHittable = stop.isHittable
+        stop.tap()
+        let back = app.buttons["micToggle"].waitForExistence(timeout: 5)
+        if !back {
+            // #291: say which side lost it: the tap (stop:0), the mode coming back (stop:1 mode:interpret) or the screen
+            let probe = app.descendants(matching: .any)["debugInterpretProbe"].firstMatch
+            let note = XCTAttachment(string: "probe=\(probe.exists ? probe.label : "missing") stopFrame=\(stopFrame) hittable=\(stopHittable)\n\n\(app.debugDescription)")
+            note.name = "int-291-diagnostics"; note.lifetime = .keepAlways; add(note)
+            print("INT-291 probe=\(probe.exists ? probe.label : "missing") stopFrame=\(stopFrame) hittable=\(stopHittable)") // lands in the flow-videos test log
+            print(String(app.debugDescription.prefix(6000)))
+        }
+        XCTAssertTrue(back, "back to the call screen")
         capture("INT-off")
     }
 }

@@ -54,15 +54,21 @@ jobs:
             -project ios-app/Genita.xcodeproj -scheme Genita \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
             -only-testing:GenitaTests \
+            -only-testing:GenitaUITests/SplashUITests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
+            -only-testing:GenitaUITests/GenitaUITests/testJudgeAccessSheet \
+            -only-testing:GenitaUITests/GenitaUITests/testA02LegalLinksOpenSafari \
+            -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleByDefault \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ShowsGoogleWhenFlagOff \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ESignInFailedCardDoesNotCoverTheTitle \
             -only-testing:GenitaUITests/EmailSignInUITests \
             -only-testing:GenitaUITests/FindsTabUITests \
             -only-testing:GenitaUITests/CameraGuideUITests \
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -resultBundlePath build-output/ios.xcresult \
-            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
       - name: Replay server log, app log, crash reports

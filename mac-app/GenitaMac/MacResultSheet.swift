@@ -8,7 +8,8 @@ import AppKit
 /// (MAC-LINK, 184:150), never inside the sheet.
 extension SheetState {
     /// MAC-RS-a is taller than the iPhone's 148: the searching row plus the scan line (198 visible).
-    var macHeight: CGFloat { self == .searching ? 198 : height }
+    /// Mac v2: the full sheet stops 54 pt lower so the face pip (top 28) never covers its ✕ and bookmark.
+    var macHeight: CGFloat { self == .searching ? 198 : (self == .full && MacDesignV2.enabled ? 674 : height) }
 }
 
 struct MacResultSheet: View {
@@ -157,8 +158,8 @@ struct MacResultSheet: View {
                 let saved = entry?.saved == true
                 Button { finds.toggleSave() } label: {
                     Text(saved ? "Saved to Finds" : "Save to Finds").font(MacSheetInk.sans(16, .medium)).foregroundStyle(saved ? MacSheetInk.ink : MacSheetInk.onInk)
-                        .frame(width: 314, height: 50).background(saved ? MacSheetInk.chip : MacSheetInk.ink, in: RoundedRectangle(cornerRadius: 12))
-                }.buttonStyle(.plain).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
+                        .frame(width: 314, height: 50).contentShape(RoundedRectangle(cornerRadius: 12))
+                }.buttonStyle(MacGlassButtonStyle(kind: saved ? .regular : .prominent)).padding(.bottom, 56).accessibilityIdentifier("macResultSave").accessibilityValue(saved ? "saved" : "")
             }
         }
     }
@@ -185,12 +186,13 @@ struct MacResultSheet: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(card.eyebrow).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
-                HStack(spacing: 0) {
+                // Mac v2: one result = no pager (a lone dot read as a stray mark, QA)
+                if carded.count > 1 || !MacDesignV2.enabled { HStack(spacing: 0) {
                     ForEach(carded.suffix(6), id: \.self) { i in
                         Circle().fill(i == finds.page ? MacSheetInk.ink : MacSheetInk.handle).frame(width: 6, height: 6)
                             .padding(2).contentShape(Rectangle()).onTapGesture { withAnimation { finds.showPage(i) } }
                     }
-                }.accessibilityLabel("Find \((carded.firstIndex(of: finds.page) ?? 0) + 1) of \(max(carded.count, 1))")
+                }.accessibilityLabel("Find \((carded.firstIndex(of: finds.page) ?? 0) + 1) of \(max(carded.count, 1))") }
             }
             Spacer()
             Button { finds.toggleSave() } label: { Image(systemName: entry?.saved == true ? "bookmark.fill" : "bookmark").font(.system(size: 16)).frame(width: 44, height: 44) }
@@ -230,6 +232,8 @@ struct MacProductCard: View {
     let open: () -> Void
     @State private var hover = false
 
+    /// Mac v2: both cards' Open in browser look the same (outlined, ink on hover) — one action, one style.
+    private var filled: Bool { (primary && !MacDesignV2.enabled) || hover }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             picture.frame(width: 151, height: 151).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -242,11 +246,9 @@ struct MacProductCard: View {
             }.padding(.top, 10).frame(minHeight: 58, alignment: .top)
             Button(action: open) {
                 Text("Open in browser ↗").font(MacSheetInk.sans(14, .medium))
-                    .foregroundStyle(primary || hover ? MacSheetInk.onInk : MacSheetInk.ink)
-                    .frame(width: 151, height: 34)
-                    .background(primary || hover ? MacSheetInk.ink : MacSheetInk.sheet, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(primary || hover ? .clear : MacSheetInk.line))
-            }.buttonStyle(.plain).onHover { hover = $0 }.padding(.top, 6)
+                    .foregroundStyle(filled ? MacSheetInk.onInk : MacSheetInk.ink)
+                    .frame(width: 151, height: 34).contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(MacGlassButtonStyle(kind: filled ? .prominent : .regular)).onHover { hover = $0 }.padding(.top, 6)
                 .accessibilityLabel("Open \(pick.name) in your browser").accessibilityIdentifier("macOpenInBrowser")
         }.frame(width: 151, alignment: .leading)
     }
@@ -275,6 +277,29 @@ struct MacLinkPrompt: View {
     let share: () -> Void
     let notNow: () -> Void
     var body: some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+    /// MAC-LINK v2: the spoken line stays a one-line pill (#211, drawn by the call view); the ask is the same white
+    /// sheet as MS-1 (handle, serif title, ink button, Not now).
+    private var v2Body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 0) {
+                Capsule().fill(MacSheetInk.handle).frame(width: 47, height: 5).frame(maxWidth: .infinity).padding(.bottom, 24)
+                Text("Look at it together?").font(MacSheetInk.serif(24)).tracking(-0.24).foregroundStyle(MacSheetInk.ink).lineLimit(1)
+                    .accessibilityAddTraits(.isHeader).accessibilityIdentifier("macLinkPrompt")
+                Text("I opened it in your browser. Share that window and I’ll see what you see.")
+                    .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
+                MacV2Button(label: "Share this window", id: "macShareThisWindow", action: share).padding(.top, 24)
+                MacV2Button(label: "Not now", style: .text, id: "macLinkNotNow", action: notNow).frame(maxWidth: .infinity).padding(.top, 4)
+            }
+            .padding(.top, 28).padding(.horizontal, 38).padding(.bottom, 40)
+            .frame(width: 390, alignment: .leading)
+            .background(MacSheetInk.sheet, in: UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30))
+            .shadow(color: .black.opacity(0.06), radius: 12)
+        }.frame(width: 390, height: 844)
+    }
+    private var v1Body: some View {
         ZStack(alignment: .topLeading) {
             LinearGradient(colors: [MacSheetInk.ink.opacity(0), MacSheetInk.ink.opacity(0.55)], startPoint: .top, endPoint: .bottom)
                 .frame(width: 390, height: 260).position(x: 195, y: 844 - 130).allowsHitTesting(false)

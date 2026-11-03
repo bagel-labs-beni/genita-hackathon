@@ -142,6 +142,34 @@ import XCTest
         XCTAssertNotEqual(call.cue, .answerFailed, "speaking again clears S09-F")
     }
 
+    /// D48 ①: `profile.updated` shows "Updated: …" for 2.5 s; a second one replaces it and restarts the clock.
+    func testProfileUpdatedShowsTheChipFor2500ms() async throws {
+        let call = CallController()
+        XCTAssertNil(call.profileChip)
+        call.handle(#"{"type":"profile.updated","text":"Updated: no cilantro","fields":["likes"]}"#)
+        XCTAssertEqual(call.profileChip, "Updated: no cilantro")
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertEqual(call.profileChip, "Updated: no cilantro", "still up at 1.5 s")
+        call.handle(#"{"type":"profile.updated","text":"Updated: shorter replies","fields":["response"]}"#)
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertEqual(call.profileChip, "Updated: shorter replies", "the second chip restarted the 2.5 s")
+        try await Task.sleep(for: .milliseconds(1400))
+        XCTAssertNil(call.profileChip, "gone after 2.5 s")
+        call.handle(#"{"type":"profile.updated","text":"  ","fields":[]}"#)
+        XCTAssertNil(call.profileChip, "an empty text shows nothing")
+    }
+
+    /// GK-1: `profile.asking` sets the soft chip; the saved answer (`profile.updated` "Noted: …") clears it.
+    func testProfileAskingShowsTheSoftChipUntilTheAnswerIsSaved() {
+        let call = CallController()
+        call.handle(#"{"type":"profile.asking","topic":"How chatty calls should be"}"#)
+        XCTAssertEqual(call.askingChip, "Getting to know you · How chatty calls should be")
+        XCTAssertNil(call.profileChip)
+        call.handle(#"{"type":"profile.updated","text":"Noted: quiet company","fields":["communication"]}"#)
+        XCTAssertNil(call.askingChip)
+        XCTAssertEqual(call.profileChip, "Noted: quiet company")
+    }
+
     func testLipChangedReplacesTheReadyPlan() {
         let call = CallController()
         call.handle(#"{"type":"lip.changed","lip":{"requested":"atlas","active":"atlas","reason":null}}"#)

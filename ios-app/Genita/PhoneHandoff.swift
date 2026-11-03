@@ -20,15 +20,28 @@ import ARKit
     var motionVisible: Bool { motion != nil && renderedMotionID == motion?.id }
     func effectReady(_ id:String) { guard motion?.id == id else{return};renderedMotionID=id }
     @Published var settings = false
+    /// P01-E: the six digits found no Mac.
+    @Published var pairingFailed = false
+    /// Review hook only: shows P02 without a Mac.
+    @Published var debugPaired = false
+    private var pairingAttempt = 0
     @Published var code = ""
     @Published private(set) var moving = false
-    @Published var moveFailed = false
+    /// MV-E: shown for 3 s as the call's status line, then it clears itself (independent of any view).
+    @Published var moveFailed = false {
+        didSet {
+            guard moveFailed else{return} // every failure restarts the 3 s (a quick retry that fails again stays up 3 s)
+            moveFailedToken+=1;let token=moveFailedToken
+            DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in if self?.moveFailedToken==token {self?.moveFailed=false} }
+        }
+    }
+    private var moveFailedToken = 0
     /// P03: the rear camera is looking for the MAC-REG picture.
     @Published private(set) var registeringVisible = false
     /// P04: the toast after the screen was learned (4 s).
     @Published private(set) var registeredToast = false
     /// Touch to move needs world tracking (A12+) and a known display size. LiDAR only adds precision.
-    var proximitySupported: Bool { ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
+    var proximitySupported: Bool { debugPaired || ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
     var isPaired: Bool { link.remembered != nil }
     private var pending: [String: Any]?
     private var snapshot = ""
@@ -43,20 +56,24 @@ import ARKit
     private var trackingStarted=false
     private var lastPing=Date().timeIntervalSince1970
     private var timer: Timer?
-    private var debugPeerReachable: Bool?
+    /// DEBUG review states pin "the Mac is reachable" (--handoff-state, --proximity-moment).
+    var debugPeerReachable: Bool?
     private var subscriptions = Set<AnyCancellable>()
+    private var accountScope = HandoffAccountScope()
+    private let accountResolver = HandoffAccountResolver()
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
         link=HandoffLink()
         ownership=OwnershipCoordinator(device:.phone)
+        ownership.useAccount(nil)
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         server.onEffect = { [weak self] in self?.serverEffect($0) }
         server.onConnect = { [weak self] in
-            guard let self else{return}
+            guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":self.sceneActive])
         }
         tracker.$registered.dropFirst().removeDuplicates().sink { [weak self] done in
@@ -64,7 +81,6 @@ import ARKit
             // Keep `registering` on: tracking must restart even if the app leaves before the world map is saved.
             self.registeringVisible=false;self.showRegisteredToast()
         }.store(in:&subscriptions)
-        link.autoReconnect=true
         tracker.onReading = { [weak self] reading in
             guard let self else { return }; var packet=reading; packet["type"]="reading"
             self.link.send(packet, reliable:false)
@@ -72,11 +88,51 @@ import ARKit
         // the live call owns camera and mic (CallController); Dyno's tracking hooks attach to it
         CallController.shared.beforeCameraStart = { [weak self] in self?.trackingStarted=false;self?.tracker.stop() }
         CallController.shared.onCameraChange = { [weak self] in self?.updateTracking() }
+        CallController.shared.onConnected = { [weak self] in self?.startConnections() }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         tracker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){ [weak self] _ in Task { @MainActor in self?.refreshSurface() } }
+    }
+    /// Verified sign-in /me and logout switch the local link and ownership together.
+    func setAccount(_ accountID: String?) {
+        // Logout must cancel /me even when no scope has been resolved yet.
+        accountResolver.invalidate()
+        guard accountScope.select(accountID) else { return }
+        server.stop();link.autoReconnect=false;link.useAccount(accountID)
+        generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
+        pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
+        moving=false;moveFailed=false;pairingFailed=false;code="";settings=false
+        registering=false;registeringVisible=false;registeredToast=false
+        trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
+        media.stopAll()
+        ownership.useAccount(accountID)
+        refreshSurface()
+        link.autoReconnect=accountID != nil && sceneActive
+        if accountID != nil,model != nil {startConnections()}
+    }
+    private func startConnections() {
+        guard sceneActive else { return }
+        guard accountScope.accountID != nil else { resolveAccount();return }
+        let args=ProcessInfo.processInfo.arguments
+        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        if !link.connected {link.reconnect()}
+    }
+    private func resolveAccount() {
+        guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
+              !model.storage.bool(forKey:AppState.signedOutKey) else { return }
+        let auth=model.onboarding.auth
+        accountResolver.resolve(snapshot:model.launchAuthSnapshot,current:{ model.launchAuthSnapshot },
+            fetch:{ await auth.sessionState() },adopt:{ [weak self,weak model] accountID in
+                guard let self,let model else { return }
+                // Verification resets the account's transports. Keep the code entered while /me
+                // was pending, then join only after the verified scope has been installed.
+                let code=self.code,settings=self.settings
+                model.adopt(accountId:accountID)
+                self.code=code;self.settings=settings
+                if code.count == 6 {self.connect()}
+            },expired:{ [weak model] in model?.signedOut() })
     }
     func attach(_ model: AppState) {
         self.model=model
@@ -86,6 +142,13 @@ import ARKit
             switch args[i+1] {
             case "p03": registeringVisible=true;return
             case "p04": showRegisteredToast();return
+            // CI screenshots of the pairing sheet and the move status line (no Mac needed)
+            case "p01": code="482";settings=true;return
+            case "p01-looking": code="482918";settings=true;return
+            case "p01e": code="482918";pairingFailed=true;settings=true;return
+            case "p02": debugPaired=true;settings=true;return
+            case "mv1": moving=true;return
+            case "mve": moveFailed=true;return
             default: break
             }
             if !ownership.isOwner || ownership.state.epoch==0 {ownership.receive(OwnershipClaim(owner:.mac,epoch:1))}
@@ -95,17 +158,31 @@ import ARKit
         }
         #endif
         // UI tests stay offline so their screens never depend on a server.
-        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        startConnections()
         if !launchConnected,let i=args.firstIndex(of:"--handoff-code"),args.indices.contains(i+1) {launchConnected=true;code=args[i+1];connect();return}
-        if !link.connected {link.reconnect()}
     }
     func resume() {
-        sceneActive=true;link.autoReconnect=true;lastPing=Date().timeIntervalSince1970
+        sceneActive=true;link.autoReconnect=accountScope.accountID != nil;lastPing=Date().timeIntervalSince1970
         server.setActive(true)
-        if !link.connected {link.reconnect()}
+        startConnections()
         updateTracking();refreshSurface()
     }
-    func connect() { registering=proximitySupported;link.join(code) }
+    /// P01: runs by itself when the sixth digit goes in. No Mac within 8 s shows P01-E.
+    func connect() {
+        // Registering the screen waits for Set up touch to move (P02), so Not now leaves no MAC-REG behind.
+        pairingFailed=false;registering=false
+        guard code.count == 6 else{return}
+        if accountScope.accountID == nil {resolveAccount()} else {link.join(code)}
+        pairingAttempt+=1;let attempt=pairingAttempt
+        DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self] in
+            guard let self,self.pairingAttempt==attempt,!self.link.connected else{return}
+            self.pairingFailed=true
+        }
+    }
+    /// Editing the digits drops a running search, so its timer can't flag the new input.
+    func codeEdited() { pairingAttempt+=1;pairingFailed=false }
+    /// Closes P01/P02. A half-entered code is dropped.
+    func closePairing() { pairingAttempt+=1;pairingFailed=false;if !link.connected {code=""};settings=false }
     /// P02 Set up touch to move → P03 here and MAC-REG on the Mac at the same time.
     func registerScreen() { registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false;model?.settingsOpen=false }
     func cancelRegistration() { registeringVisible=false;registering=false;link.send(["type":"registerCancel"]);updateTracking() }
@@ -161,12 +238,17 @@ import ARKit
         } else if trackingStarted {trackingStarted=false;tracker.stop()}
     }
     private func serverEffect(_ effect:PresenceEffect) {
+        guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
             // A touch move's effect is driven by Dyno's local prepare/ready/start. If the server's copy of the
             // same claim arrives first, hold it until the effect has begun so the transition looks unchanged.
             if pending != nil || motion != nil {
-                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+                let generation=accountScope.generation
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
+                    guard let self,self.accountScope.accepts(generation) else{return}
+                    self.ownership.receive(claim)
+                }
             } else {ownership.receive(claim)}
         case .moveRequested: if sceneActive && !ownership.isOwner {server.nextTrigger="move";continueHere()}
         case .moveFailed: if moving {moving=false;moveAttempt+=1;moveFailed=true}
@@ -180,6 +262,7 @@ import ARKit
         if next != surface {withAnimation(.easeOut(duration:0.24)) {surface=next}}
     }
     func receive(_ data:[String:Any]) {
+        guard accountScope.accountID != nil else{return}
         switch data["type"] as? String {
         case "connected":
             lastPing=Date().timeIntervalSince1970
@@ -189,7 +272,8 @@ import ARKit
             link.send(hello)
             ownership.publishCurrent()
             if moving && !server.peerActive {link.send(["type":"moveRequest"])}
-            if link.pairedWithCode {settings=false}
+            // P02 (Paired) follows the code. Without position tracking there is nothing to set up, so it closes.
+            if link.pairedWithCode && !proximitySupported {settings=false}
             refreshSurface()
         case "welcome":
             guard let identity=data["identity"] as? String, let url=URL(string:"genita://"+identity) else{return}
@@ -235,6 +319,7 @@ import ARKit
     }
     /// Background or lock. The owner stays the same; only the effect layer rests.
     func pause() {
+        accountResolver.invalidate()
         sceneActive=false;link.autoReconnect=false
         server.setActive(false)
         link.send(["type":"inactive"]);updateTracking()
@@ -254,36 +339,11 @@ struct PhoneHandoffOverlay: View {
             if let motion=handoff.motion { DuoTransition(payload:motion,onReady:handoff.effectReady).ignoresSafeArea().allowsHitTesting(false) }
             if handoff.registeredToast { RegisteredToast().padding(.top,124-59).transition(.opacity) }
             if handoff.registeringVisible { RegisteringView(session:handoff.tracker.session,cancel:handoff.cancelRegistration).ignoresSafeArea() }
-        }.onAppear { handoff.attach(model) }
+            ProximityMomentView()  // GENITA_PROXIMITY_HANDOFF: the glide + toast of a move by bringing the iPhone close
+        }.onAppear { handoff.attach(model);PhoneProximity.shared.attach(handoff) }
         .onChange(of:phase) { _,new in if new != .active { handoff.pause() } else { handoff.resume() } }
-        .sheet(isPresented:$handoff.settings) { PhonePairingView().padding(24).presentationDetents([.medium,.large]) }
-        .alert("Mac not responding.",isPresented:$handoff.moveFailed) { Button("OK",role:.cancel) {} } message: { Text("It may be asleep or offline. You can keep talking here.") }
-    }
-}
-
-/// First pairing and position-effect registration. Later moves do not come here.
-struct PhonePairingView: View {
-    @ObservedObject private var handoff = PhoneHandoff.shared
-    var body: some View {
-        VStack(spacing:20) {
-            Text(handoff.isPaired ? "Your Mac" : "Pair with your Mac").font(.title2)
-            if handoff.isPaired {
-                Text(handoff.link.status)
-            } else {
-                Text("Enter the six-digit code shown in Genita on your Mac. You only do this once.").multilineTextAlignment(.center)
-                TextField("Code",text:$handoff.code).keyboardType(.numberPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("pairingCode")
-                Button("Pair",action:handoff.connect).buttonStyle(.borderedProminent)
-                Text(handoff.link.status)
-            }
-            if handoff.link.connected && handoff.proximitySupported {
-                Text(handoff.tracker.status).font(.caption)
-                Button("Set up touch to move",action:handoff.registerScreen).accessibilityIdentifier("setUpTouchToMove")
-                HStack {Text("Center down \(Int(handoff.tracker.centerDownMM)) mm");Slider(value:Binding(get:{handoff.tracker.centerDownMM},set:{handoff.tracker.centerDownMM=$0}),in:0...90,step:1)}
-                HStack {Text("Right \(Int(handoff.tracker.centerRightMM)) mm");Slider(value:Binding(get:{handoff.tracker.centerRightMM},set:{handoff.tracker.centerRightMM=$0}),in:-35...35,step:1)}
-            }
-            Text(handoff.proximitySupported ? "Show this iPhone your Mac’s screen once to set it up. Move to Mac in the menu works without it." : "Use Move to Mac in the menu to move the conversation.").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            if handoff.isPaired { Button("Forget this Mac",role:.destructive,action:handoff.forgetMac) }
-        }
+        .overlay { if handoff.settings { PhonePairingView().transition(.opacity) } }
+        .animation(.easeOut(duration:0.24),value:handoff.settings)
     }
 }
 
@@ -293,8 +353,10 @@ struct RegisteringView: View {
     let cancel: () -> Void
     var body: some View {
         ZStack {
-            Color.black
+            RegisteringPalette.base
             CameraFeed(session: session)
+            // the board's navy shows through the camera so the white corners and Cancel always read
+            RegisteringPalette.base.opacity(0.32).allowsHitTesting(false)
             // viewfinder corners around where the Mac's screen should sit
             ViewfinderCorners().stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round)).frame(width: 300, height: 196).offset(y: -40)
             VStack(spacing: 0) {
@@ -327,10 +389,9 @@ private struct CameraFeed: UIViewRepresentable {
     let session: ARSession
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
-        // Black until the first camera frame (ARKit then draws the camera image as the scene background),
-        // so the light Cancel button and the white corners always have contrast.
-        view.backgroundColor = .black
-        view.scene.background.contents = UIColor.black
+        // The board's navy until the first camera frame (ARKit then draws the camera image as the scene background).
+        view.backgroundColor = RegisteringPalette.baseUI
+        view.scene.background.contents = RegisteringPalette.baseUI
         view.automaticallyUpdatesLighting = false
         view.rendersCameraGrain = false
         // Assigning the session keeps the tracker as its delegate; the view only draws the camera image.
@@ -351,4 +412,10 @@ struct RegisteredToast: View {
         .background(Color(white: 17.0 / 255), in: RoundedRectangle(cornerRadius: 16)).shadow(color: .black.opacity(0.12), radius: 12, y: 8)
         .padding(.horizontal, 24).accessibilityIdentifier("registeredToast")
     }
+}
+
+/// P03 board background (design-flow r01): dark navy, not black.
+enum RegisteringPalette {
+    static let baseUI = UIColor(red: 29.0 / 255, green: 34.0 / 255, blue: 43.0 / 255, alpha: 1)
+    static let base = Color(baseUI)
 }

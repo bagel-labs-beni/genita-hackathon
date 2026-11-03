@@ -32,6 +32,17 @@ struct AliveMotion {
     private var slowOpen = 0.0
     private var lastT: Double?
 
+    /// Per-face gains (map.alive): head sway/drift and the speech nod.
+    var headGain = 1.0, nodGain = 1.0, rollGain = 1.0, nodWidth = 1.0
+    /// Handheld-camera drift (11/3 Chelsea: the background must stay still) — off unless a map asks.
+    var cameraGain = 0.0
+    /// 11/3 pm (Chelsea: "the background is locked but the person bobs up and down"): the person layer
+    /// never moves vertically against the locked still — no speech nod, no vertical drift, no breathing.
+    /// The nod (map nodPx 5 = 2× → ±5 px), the vertical drift (headX 3 → ±3.6 px) and the breathing
+    /// scale (±0.6% about the frame bottom, ±3–4 px at the eyes) summed to 16 px peak-to-peak at the
+    /// eyes on T9. Horizontal sway and the small roll stay (they read as a live selfie, not a bob).
+    var lockVertical = true
+
     init(seed: UInt64) {
         var rng = SplitMix64(seed: seed &+ 0xA11E)
         phases = (0..<30).map { _ in rng.nextUnit() * 2 * .pi }
@@ -59,8 +70,9 @@ struct AliveMotion {
             let h = dt / Double(steps)
             let omega = 14.0
             for _ in 0..<steps {
-                slowOpen += (open - slowOpen) * min(1, h / 0.4)
-                let target = max(0, open - slowOpen) * 1.6
+                slowOpen += (open - slowOpen) * min(1, h / (0.4 * max(0.25, nodWidth)))   // wider pulse, same peak
+                // a wider envelope also raises the peak (~×1.2 at width 2, codex): keep the peak
+                let target = max(0, open - slowOpen) * 1.6 * pow(max(0.25, nodWidth), -0.26)
                 let a = omega * omega * (min(1, target) - nod) - 2 * omega * nodVelocity
                 nodVelocity += a * h
                 nod += nodVelocity * h
@@ -70,10 +82,11 @@ struct AliveMotion {
 
         // Camera (whole frame) about the frame centre.
         let c = CGPoint(x: extent.midX, y: extent.midY)
-        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k
-        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k
-        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t)
-        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t)
+        let cg = cameraGain
+        let camX = (Self.cameraDrift * noise(0, hz: 0.06, t) + Self.cameraJitter * noise(1, hz: 0.33, t)) * k * cg
+        let camY = (Self.cameraDrift * noise(2, hz: 0.05, t) + Self.cameraJitter * noise(3, hz: 0.29, t)) * k * cg
+        let camRoll = Self.cameraRollDegrees * .pi / 180 * noise(4, hz: 0.045, t) * cg
+        let zoom = 1 + Self.cameraZoom * noise(5, hz: 0.04, t) * cg
         let camera = CGAffineTransform(translationX: -c.x, y: -c.y)
             .concatenating(CGAffineTransform(rotationAngle: camRoll))
             .concatenating(CGAffineTransform(scaleX: zoom, y: zoom))
@@ -81,7 +94,7 @@ struct AliveMotion {
         let parallax = CGAffineTransform(translationX: Self.parallax * camX, y: Self.parallax * camY)
 
         // Body: breathing about the bottom of the frame under the face, plus parallax.
-        let breath = sin(2 * .pi * Self.breathingHz * t)
+        let breath = lockVertical ? 0 : sin(2 * .pi * Self.breathingHz * t)
         let bottom = CGPoint(x: face.midX, y: extent.minY)
         let body = CGAffineTransform(translationX: -bottom.x, y: -bottom.y)
             .concatenating(CGAffineTransform(scaleX: 1 + Self.breathingScale * 0.5 * breath, y: 1 + Self.breathingScale * breath))
@@ -90,10 +103,10 @@ struct AliveMotion {
 
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
         let neck = CGPoint(x: face.midX, y: face.minY - face.height * 0.15)
-        let roll = Self.headRollDegrees * .pi / 180 * noise(6, hz: 0.11, t)
-        let dx = Self.headDriftX * noise(7, hz: 0.08, t) * k
-        let dy = (Self.headDriftY * noise(8, hz: 0.13, t) - Self.nodPixels * nod) * k
-        let pitch = 1 - Self.nodPitch * nod
+        let roll = Self.headRollDegrees * rollGain * .pi / 180 * noise(6, hz: 0.11, t)
+        let dx = Self.headDriftX * headGain * noise(7, hz: 0.08, t) * k
+        let dy = lockVertical ? 0 : (Self.headDriftY * headGain * noise(8, hz: 0.13, t) - Self.nodPixels * nodGain * nod) * k
+        let pitch = lockVertical ? 1 : 1 - Self.nodPitch * nod
         let headLocal = CGAffineTransform(translationX: -neck.x, y: -neck.y)
             .concatenating(CGAffineTransform(scaleX: 1, y: pitch))
             .concatenating(CGAffineTransform(rotationAngle: roll))

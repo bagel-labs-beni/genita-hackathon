@@ -39,13 +39,21 @@ enum LipSource: Equatable { case none }
 
 struct CompanionFaceView: View {
     let still: Image
-    /// Silent loop of this companion (Dyno's clip for the demo face). nil → the still breathes (S09-P).
+    /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_CLIP_LOOP_FACE=1.
     let loop: URL?
+    /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
+    var face: FaceDriver? = nil
+    /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
+    var faceStill: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
-            if let loop, !CallMotion.reviewStill { LoopingVideo(url: loop).allowsHitTesting(false) }
+            if let face {
+                FaceFrameView(driver: face, still: faceStill)
+            } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
+                LoopingVideo(url: loop).allowsHitTesting(false)
+            }
             LipLayer(source: lip).allowsHitTesting(false)
         }
     }
@@ -100,7 +108,12 @@ struct CallCueView: View {
         if let content {
             HStack(spacing: 8) {
                 content.icon
-                Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                // the push runs inside the line's own box: the old words leave and the new ones rise within the pill,
+                // never drawn above or below it (a mid-change capture showed three lines stacked, UI sweep 11/3)
+                ZStack {
+                    Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                        .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
+                }.clipped()
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
@@ -113,6 +126,7 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
+            .animation(CallMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0), value: content.text)
             // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
@@ -133,15 +147,40 @@ struct CallCueView: View {
     }
 }
 
+/// CC-1 "Updated: no cilantro" / "Noted: quiet company" for 2.5 s (`profile.updated`), and the softer GK-1
+/// "Getting to know you · {topic}" (`profile.asking`). The status line's pill, smaller, just under it.
+struct ProfileChipView: View {
+    let text: String
+    /// GK-1: lighter pill, a "?" instead of the check
+    var soft = false
+    @State private var shown = false
+    var body: some View {
+        HStack(spacing: 6) {
+            if soft {
+                Image("hisy-question").resizable().renderingMode(.template).foregroundStyle(CallInk.blueOnInk).frame(width: 13, height: 13)
+            } else {
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
+            }
+            Text(text).font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk.opacity(soft ? 0.92 : 1)).lineLimit(1)
+        }
+        .padding(.horizontal, 14).frame(height: 30)
+        .background(soft ? CallInk.ink.opacity(0.5) : CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
+        .onAppear { withAnimation(.fade) { shown = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
+    }
+}
+
 private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }
 
-private struct CueAlert: View {
+struct CueAlert: View {
     var body: some View { Image(systemName: "exclamationmark.circle").font(.system(size: 17, weight: .semibold)).foregroundStyle(CallInk.onInk).frame(width: 20, height: 20) }
 }
 
-private struct CueSpinner: View {
+struct CueSpinner: View {
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -213,6 +252,8 @@ struct CallMoreSheet: View {
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
     var openTextChat: (() -> Void)?
     var openFinds: (() -> Void)?
+    /// RP-1 (D37): the system report sheet
+    var report: (() -> Void)?
     var close: () -> Void
     var body: some View {
         VStack(spacing: 0) {
@@ -230,6 +271,7 @@ struct CallMoreSheet: View {
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
             row("laptopcomputer", "Move to Mac", moveToMacSubtitle, id: "moreMoveToMac") { close(); moveToMac() }
+            if let report { row("flag", "Report", "A reply or picture that's wrong", id: "moreReport") { close(); report() } }
         }
         .padding(.top, 28).padding(.horizontal, 16).padding(.bottom, 40)
         .frame(maxWidth: .infinity)

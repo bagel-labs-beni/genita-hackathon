@@ -46,6 +46,15 @@ struct StartRouterTests {
 }
 
 struct AuthWireTests {
+    @Test func keychainTokenStoresSharingAnItemUseTheSameLock() {
+        let first = KeychainTokenStore(service: "test.session", account: "shared")
+        let second = KeychainTokenStore(service: "test.session", account: "shared")
+        let other = KeychainTokenStore(service: "test.session", account: "other")
+
+        #expect(first.itemLock === second.itemLock)
+        #expect(first.itemLock !== other.itemLock)
+    }
+
     @Test func samplesDecode() throws {
         let m = try JSONDecoder().decode(GenitaMe.self, from: sample("me.json"))
         #expect(m.prepStatus == .running && m.conversation?.activeDevice == "iphone" && m.conversation?.epoch == 3)
@@ -90,6 +99,9 @@ struct AuthWireTests {
 
 final class StubProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) -> (Int, Data))?
+    /// Lets a test replace the session after its request has started but before
+    /// this synthetic server returns a response.
+    nonisolated(unsafe) static var beforeResponse: ((URLRequest) -> Void)?
     nonisolated(unsafe) static var seen: [URLRequest] = []
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -101,6 +113,7 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
             stream.close(); req.httpBody = data
         }
         Self.seen.append(req)
+        Self.beforeResponse?(req)
         let (status, body) = Self.handler?(req) ?? (500, Data())
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: req.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
@@ -118,6 +131,7 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         cfg.protocolClasses = [StubProtocol.self]
         client = GenitaAuthClient(baseURL: URL(string: "https://api.test")!, store: store, session: URLSession(configuration: cfg))
         StubProtocol.seen = []
+        StubProtocol.beforeResponse = nil
     }
 
     @Test func signInStoresTheTokenAndSendsTheRawNonce() async throws {
@@ -130,6 +144,26 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
         #expect(body["nonce"] as? String == "raw" && body["authorizationCode"] as? String == "code" && body["device"] as? String == "iphone")
         #expect((body["fullName"] as? [String: String]) == ["givenName": "Chelsea"])
+    }
+
+    @Test func judgeCodeSignsInWithoutAnAppleToken() async throws {
+        StubProtocol.handler = { _ in (200, try! sample("signin.json")) }
+        let r = try await client.signInWithJudgeCode("  my-code \n")
+        #expect(store.load() == r.token)
+        let req = try #require(StubProtocol.seen.last)
+        #expect(req.url?.path == "/auth/judge" && req.httpMethod == "POST")
+        #expect(req.value(forHTTPHeaderField: "authorization") == nil)
+        let body = try JSONSerialization.jsonObject(with: req.httpBody ?? Data()) as! [String: Any]
+        #expect(body["code"] as? String == "my-code" && body["device"] as? String == "iphone")
+    }
+
+    @Test func wrongJudgeCodeStoresNothingAndTooManyTriesIsTyped() async {
+        StubProtocol.handler = { _ in (401, Data(#"{"error":"auth_failed","reason":"wrong_code"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.unauthorized) { try await client.signInWithJudgeCode("nope") }
+        #expect(store.load() == nil)
+        StubProtocol.handler = { _ in (429, Data(#"{"error":"rate_limited"}"#.utf8)) }
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.signInWithJudgeCode("nope") }
+        #expect(store.load() == nil)
     }
 
     @Test func emailStartSendsTheTrimmedAddressAndStoresNothing() async throws {
@@ -179,6 +213,21 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(store.load() == nil)
         #expect(StubProtocol.seen.last?.value(forHTTPHeaderField: "authorization") == "Bearer old")
         #expect(StartRouter.route(state, device: .iphone) == .signIn)
+    }
+
+    @Test func lateUnauthorizedResponseKeepsANewerSession() async throws {
+        store.save("old")
+        StubProtocol.beforeResponse = { _ in self.store.save("new") }
+        StubProtocol.handler = { _ in (401, Data(#"{"error":"unauthorized"}"#.utf8)) }
+
+        #expect(await client.sessionState() == .expired)
+        #expect(store.load() == "new")
+        #expect(StubProtocol.seen.last?.value(forHTTPHeaderField: "authorization") == "Bearer old")
+
+        StubProtocol.beforeResponse = nil
+        StubProtocol.handler = { _ in (200, try! sample("me.json")) }
+        _ = try await client.me()
+        #expect(StubProtocol.seen.last?.value(forHTTPHeaderField: "authorization") == "Bearer new")
     }
 
     @Test func noTokenIsSignedOutWithoutANetworkCall() async {

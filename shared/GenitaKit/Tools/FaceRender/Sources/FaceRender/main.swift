@@ -31,6 +31,8 @@ struct Options {
     var still = false
     var dumpAmounts: String?
     var amounts: String?
+    var expr: String?          // "tag:intensity:startMs:endMs,…"
+    var tailMs = 300.0         // frames after the audio (the expression's mood hold plays out here)
     var framesDir: String?
     var framesPrefix = "face"
     var bitrate = 1_100_000
@@ -63,6 +65,11 @@ func parse() -> Options {
         case "--dump-amounts": o.dumpAmounts = v()
         case "--amounts": o.amounts = v()
         case "--flow-density": FaceRenderer.flowDensity = Double(v()) ?? 1
+        case "--expr": o.expr = v()   // the expression stills layer (server events), like the app
+        case "--expr-warp": o.expr = v(); FaceRenderer.expressionLayer = true   // + the v29 warp layer (off in the app)
+        case "--no-stills": FaceRenderer.expressionStills = false
+        case "--tail": o.tailMs = Double(v()) ?? 300
+        case "--expr-profile": if !FaceRenderer.useExpressionProfile(v()) { fail("--expr-profile A|B|C") }
         case "--frames-dir": o.framesDir = v()
         case "--frames-prefix": o.framesPrefix = v()
         case "--bitrate": o.bitrate = Int(v()) ?? o.bitrate
@@ -178,6 +185,9 @@ struct JSONWord: Decodable { var w: String; var s: Int; var e: Int }
 // MARK: main
 
 let o = parse()
+// Compare renders: FACE_V59=0 / FACE_V60_LADDERS=0 switch the app's v59 motion and v60 ladders off (v9.3 motion).
+if ProcessInfo.processInfo.environment["FACE_V59"] == "0" { MotionV2Params.v59On = false }
+if ProcessInfo.processInfo.environment["FACE_V60_LADDERS"] == "0" { MotionV2.v60Ladders = false }
 let faceSet: FaceSet
 do { faceSet = try FaceSet(directory: URL(fileURLWithPath: o.face)) } catch { fail("face set: \(error)") }
 print("face set: \(faceSet.patches.count)/10 patches; notes: \(faceSet.notes.joined(separator: "; "))")
@@ -233,6 +243,12 @@ let givenAmounts: [[Float]] = {
     return rows.map { $0.map(Float.init) }
 }()
 if let e = o.emotion { renderer.setEmotion(e, at: 0.3) }
+for item in (o.expr ?? "").split(separator: ",") {
+    let f = item.split(separator: ":")
+    if f.count == 4, let i = Double(f[1]), let a = Int(f[2]), let b = Int(f[3]) {
+        renderer.addExpression(FaceExpressionEvent(tag: String(f[0]), intensity: i, startMs: a, endMs: b), utteranceId: 1)
+    }
+}
 // The A/V metric reads the mouth from a twin without head/camera motion (same mouth, same
 // timeline), so the alive base's motion does not count as mouth movement.
 let metricRenderer = FaceRenderer(faceSet: faceSet, outputSize: size, seed: o.seed, reduceMotion: true)
@@ -240,7 +256,7 @@ if let e = o.emotion { metricRenderer.setEmotion(e, at: 0.3) }
 
 let fps = 25
 let audioMs = Double(pcm.count / 2) / outRate * 1000
-let frameCount = Int((audioMs + 300) / 1000 * Double(fps))
+let frameCount = Int((audioMs + o.tailMs) / 1000 * Double(fps))
 
 // Writer
 let outURL = URL(fileURLWithPath: o.out)
@@ -323,7 +339,9 @@ func renderFrame(_ i: Int) {
     let r0 = Date()
     if i < givenAmounts.count { renderer.overrideNextFlowAmounts(givenAmounts[i]) }
     let ahead = renderer.lipAheadMs > 0 ? timeline.sample(atMs: t * 1000 + renderer.lipLookaheadMs + renderer.lipAheadMs) : nil
-    let image = renderer.image(at: t, lip: lip, ahead: ahead)
+    // like the app: no audio clock once the reply's audio has played out
+    let ctx: LipContext? = t * 1000 <= audioMs ? LipContext(audioMs: t * 1000 + renderer.lipLookaheadMs, timeline: timeline) : nil
+    let image = renderer.image(at: t, lip: lip, ahead: ahead, context: ctx)
     if o.dumpAmounts != nil, let keys = faceSet.flow?.keys { let a = renderer.flowAmounts; amountRows.append(keys.map { a[$0] ?? 0 }) }
     var pbOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &pbOut)
@@ -341,7 +359,7 @@ func renderFrame(_ i: Int) {
     }
     var metricOut: CVPixelBuffer?
     CVPixelBufferPoolCreatePixelBuffer(nil, adaptor.pixelBufferPool!, &metricOut)
-    renderer.ciContext.render(metricRenderer.image(at: t, lip: lip, ahead: ahead), to: metricOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
+    renderer.ciContext.render(metricRenderer.image(at: t, lip: lip, ahead: ahead, context: ctx), to: metricOut!, bounds: CGRect(origin: .zero, size: size), colorSpace: colorSpace)
     let area = mouthArea(metricOut!)
     var d = 0.0
     for k in 0..<min(area.count, restMouth!.count) { d += Double(abs(area[k] - restMouth![k])) }

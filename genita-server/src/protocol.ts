@@ -89,6 +89,8 @@ export type ClientMessage =
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
+  /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
+  | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
   | { type: "mode"; mode: Mode; interpret?: InterpretOptionsWire }
@@ -100,11 +102,17 @@ export type ClientMessage =
 
 // ───────────────────────── Finds (F5-L3, F5-L8, F10) ─────────────────────────
 
-export type FindKind = "recipe" | "outfit" | "link" | "product";
+export type FindKind = "recipe" | "outfit" | "link" | "product" | "answer";
 /** checking → have (Spark YES + SAM box) | maybe (Spark YES, no box: "맞아?") | buy (recipe only) */
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */
 export type NormBox = { x1: number; y1: number; x2: number; y2: number };
+/**
+ * SAM pixel mask over an item's box (GENITA_SAM_MASKS=1): a w x h grid stretched
+ * over `box`, row-major run lengths alternating 0s then 1s (first run may be 0).
+ * sum(rle) === w * h. Long side at most 96 cells.
+ */
+export type NormMask = { w: number; h: number; rle: number[] };
 export type FindItem = {
   id: string;
   name: string;
@@ -142,6 +150,8 @@ export type FindCard = {
   why: string[];
   ask: string[];
   sources: { title: string; url: string; domain: string }[];
+  /** lane 개인화 E: 1–2 chips from the user's own taste lines, e.g. "Your style: clean, minimal clothes", "You said: no cilantro" (source = that line) */
+  reasons?: { text: string; source: string; from: "profile" | "call" }[];
   how: string[];
   page?: { url: string; opened: boolean };
   saved?: boolean;
@@ -185,6 +195,8 @@ export type ServerEvent =
       bargeIn: { minMs: number; minWords: number };
       /** the voice mode actually used for this call */
       tts: TtsMode;
+      /** PERC-1: present (true) only when the server reads face crops; the app sends `perception.frame` then */
+      perception?: boolean;
     }
   | { type: "state"; state: Phase }
   | { type: "speech.start"; turnId: number }
@@ -215,6 +227,8 @@ export type ServerEvent =
    * startMs/endMs on the reply's audio timeline (like audio.offsetMs): the clause's first word start → last word end
    * (aligner timing when on, else the clause's audio span). Sent after the clause's audio. */
   | { type: "expression"; utteranceId: number; sentence: number; tag: ExpressionTag; intensity: number; startMs: number; endMs: number }
+  /** P1 #345 (GENITA_BACKCHANNEL=1, off by default): play a soft listening sound now, mid user turn; never a reply */
+  | { type: "backchannel"; kind: "mm" | "yeah" }
   /** device mode: one sentence for the app to speak, in order. Plain text (no tags); lang is BCP-47. */
   | { type: "say"; utteranceId: number; sentence: number; text: string; emotion: string; lang: string }
   | { type: "reply"; utteranceId: number; text: string; emotion: string; interpret: boolean; final: true }
@@ -246,12 +260,16 @@ export type ServerEvent =
   | { type: "find.progress"; findId: string; detail: string; evidence?: FindEvidence }
   /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
   | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
-  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
+  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox; mask?: NormMask }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
   | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }
   /** F2-L26: the user renamed the companion by voice ("Call yourself Max"); already saved — update every {name} label */
-  | { type: "companion.named"; name: string };
+  | { type: "companion.named"; name: string }
+  /** lane 개인화 B: a correction said in the call was saved ("Updated: no cilantro") — show it as a chip for 2.5 s */
+  | { type: "profile.updated"; text: string; fields: string[] }
+  /** lane 개인화 GK-1: the companion just asked this call's getting-to-know-you question — soft chip "Getting to know you · {topic}" */
+  | { type: "profile.asking"; topic: string };
 
 export type ErrorCode =
   | "spark_unavailable"
@@ -262,7 +280,9 @@ export type ErrorCode =
   | "bad_persona"
   | "bad_message"
   | "unknown_type"
-  | "frame_too_large";
+  | "frame_too_large"
+  /** D41: this account's turns for today are used up (Judge access codes); the call stays open */
+  | "daily_limit";
 
 export type ServerEventType = ServerEvent["type"];
 
@@ -272,10 +292,11 @@ export type ServerEventType = ServerEvent["type"];
  * test in test/protocol.test.ts fails if a type is missing here.
  */
 export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; optional: string[] }> = {
-  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: [] },
+  ready: { required: ["protocol", "sessionId", "mode", "audio", "lip", "voiceId", "bargeIn", "tts"], optional: ["perception"] },
   state: { required: ["state"], optional: [] },
   "speech.start": { required: ["turnId"], optional: [] },
   "speech.end": { required: ["turnId"], optional: [] },
+  backchannel: { required: ["kind"], optional: [] },
   transcript: { required: ["text", "final"], optional: ["turnId", "source"] },
   "interpret.detected": { required: ["from", "to"], optional: [] },
   "interpret.pair": { required: ["user", "other", "source", "by"], optional: ["app"] },
@@ -316,6 +337,8 @@ export const SERVER_EVENT_FIELDS: Record<ServerEventType, { required: string[]; 
   "find.image": { required: ["findId", "slot", "status"], optional: ["url"] },
   "find.failed": { required: ["findId", "reason", "message"], optional: [] },
   "companion.named": { required: ["name"], optional: [] },
+  "profile.updated": { required: ["text", "fields"], optional: [] },
+  "profile.asking": { required: ["topic"], optional: [] },
 };
 
 /** Problems with a server event object; [] = conforms. */
@@ -334,8 +357,12 @@ export function checkServerEvent(o: Record<string, unknown>): string[] {
 // s16le mono 24 kHz (the shared screen's sound, never the mic).
 
 export type WatchClientMessage =
-  | { type: "start"; source?: string }
-  | { type: "frame"; image: string; blank?: boolean }
+  /** title (11/3): the shared window's title, e.g. a browser tab "<YouTube video title> - YouTube" (ScreenCaptureKit window title) */
+  | { type: "start"; source?: string; title?: string }
+  /** context (11/3): the shared window's title changed (another video or page); sent only on change */
+  | { type: "context"; title?: string }
+  /** motion: 0..1 change from the previous sent frame (Mac, 32×18 luma); a spike = a cut or a big move (11/3) */
+  | { type: "frame"; image: string; blank?: boolean; motion?: number }
   | { type: "stop" }
   | { type: "ping"; t?: unknown };
 

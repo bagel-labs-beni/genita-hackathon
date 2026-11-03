@@ -8,10 +8,11 @@
  */
 import type { Db } from "../db/index.ts";
 import { emptyCallState, memoryId, type CallState, type CallStateRepository, type Memory, type MemoryRepository } from "./repository.ts";
+import { SUMMARY_KEEP, type CallSummary, type SummaryRepository } from "./summaries.ts";
 
 const json = (v: unknown) => JSON.stringify(v);
 
-export class PgMemoryRepository implements MemoryRepository, CallStateRepository {
+export class PgMemoryRepository implements MemoryRepository, CallStateRepository, SummaryRepository {
   readonly kind = "pg" as const;
   private readonly db: Db;
   constructor(db: Db) { this.db = db; }
@@ -66,5 +67,40 @@ export class PgMemoryRepository implements MemoryRepository, CallStateRepository
        ON CONFLICT (user_id) DO UPDATE SET state_json = EXCLUDED.state_json, updated_at = now()`,
       [userId, json(state)],
     );
+  }
+
+  /** migration 006_call_summaries. A shorter copy of the same thread (the other device's half) never wins. */
+  async putSummary(userId: string, summary: CallSummary): Promise<void> {
+    await this.db.tx(async (q) => {
+      await q.query(
+        `INSERT INTO call_summaries (user_id, thread_id, turns, summary_json, updated_at) VALUES ($1, $2, $3, $4::jsonb, to_timestamp($5 / 1000.0))
+         ON CONFLICT (user_id, thread_id) DO UPDATE
+           SET turns = EXCLUDED.turns, updated_at = EXCLUDED.updated_at,
+               summary_json = jsonb_set(EXCLUDED.summary_json, '{created_at}', call_summaries.summary_json->'created_at')
+           WHERE call_summaries.turns <= EXCLUDED.turns`,
+        [userId, summary.thread_id, summary.turns, json(summary), summary.updated_at],
+      );
+      await q.query(
+        `DELETE FROM call_summaries WHERE user_id = $1 AND thread_id NOT IN
+           (SELECT thread_id FROM call_summaries WHERE user_id = $1 ORDER BY updated_at DESC, thread_id LIMIT $2)`,
+        [userId, SUMMARY_KEEP],
+      );
+    });
+  }
+
+  async listSummaries(userId: string, limit: number): Promise<CallSummary[]> {
+    const r = await this.db.query<{ summary_json: CallSummary | string }>(
+      "SELECT summary_json FROM call_summaries WHERE user_id = $1 ORDER BY updated_at DESC, thread_id LIMIT $2",
+      [userId, limit],
+    );
+    return r.rows.map((row) => (typeof row.summary_json === "string" ? JSON.parse(row.summary_json) : row.summary_json) as CallSummary);
+  }
+
+  async deleteSummaries(userId: string): Promise<void> {
+    await this.db.query("DELETE FROM call_summaries WHERE user_id = $1", [userId]);
+  }
+
+  async deleteSummary(userId: string, threadId: string): Promise<void> {
+    await this.db.query("DELETE FROM call_summaries WHERE user_id = $1 AND thread_id = $2", [userId, threadId]);
   }
 }

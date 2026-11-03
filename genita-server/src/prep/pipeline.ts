@@ -7,12 +7,13 @@ import { randomUUID } from "node:crypto";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
-import { buildImportRequest, checkPaste, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
+import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
 import { isDeviceVoice, previewLine, renderPreview, voicesForKind, type VoiceOption } from "./voices.ts";
 import type { MediaApi } from "./face.ts";
 import type { CompanionRecord, ImageRecord, PrepStore } from "./store.ts";
+import type { Personalize } from "../personalize/service.ts";
 
 export type PrepLog = (event: string, data: Record<string, unknown>) => void;
 
@@ -28,7 +29,12 @@ export type PrepDeps = {
   media?: MediaApi;
   /** Python with OpenCV for the face-flow step (prep/faceflow.ts); null/undefined = no flow data */
   python?: string | null;
+  /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
+  personalize?: Personalize;
 };
+
+/** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */
+export const STORY_GRACE_MS = 1500;
 
 export const META_MEDIA: MediaApi = { imageEdit: museImageEdit, samDetect };
 export const mediaOf = (d: PrepDeps): MediaApi => d.media ?? META_MEDIA;
@@ -97,10 +103,26 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   if (!p.ok) throw new PrepError(400, `import_${p.reason}`, "I couldn't read this one. Paste the whole reply, or try again.");
   const t0 = performance.now();
   // raw text is redacted before it leaves the server and never stored or logged
-  const raw = await sparkJson<ImportRaw>(d.metaKey, buildImportRequest(redactSensitive(p.text)));
-  const card = toStyleCard(raw, "import");
-  if (card.itemCount === 0) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
-  await d.store.putStyle(userId, card);
+  const redacted = redactSensitive(p.text);
+  // D47: the story is written from the same redacted text in parallel, so I03 has no extra wait
+  const storyJob = d.personalize?.storyFromText(redacted) ?? null;
+  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
+  const raw = await json<ImportRaw>(buildImportRequest(redacted));
+  let card = toStyleCard(raw, "import");
+  // A reply in the prompt's format whose every section says "Not enough information" (a new Claude/ChatGPT user
+  // with no memory) is not unreadable: it is an empty profile. Keep it; the story says "Most of you, I'll learn as
+  // we talk" and the first calls ask (QA 11/3 P1: never "couldn't read" for it). Only text we can't place is 422.
+  if (card.itemCount === 0 && (importFormat(p.text) === "unknown" || (p.text.match(/not enough information/gi) ?? []).length < 3)) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
+  if (storyJob && d.personalize) {
+    const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
+    const s = await Promise.race([storyJob, grace]);
+    if (s && s !== "late") card = d.personalize.withStory(card, s);
+    // still writing: saved when it lands; GET /v1/profile/story waits for this same job (no second Spark call)
+    else if (s === "late") d.personalize.trackLate(userId, storyJob);
+  }
+  // under the personalize lock: a call starting at the same moment can't write the old card back
+  if (d.personalize) await d.personalize.replaceStyle(userId, card);
+  else await d.store.putStyle(userId, card);
   d.log("import.applied", { item_count: card.itemCount, latency_ms: since(t0), chars: p.chars, partial: card.partial, dropped: card.dropped });
   return card;
 }
@@ -125,7 +147,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
+export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).

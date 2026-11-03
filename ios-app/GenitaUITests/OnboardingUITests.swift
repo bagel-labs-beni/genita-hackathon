@@ -17,6 +17,20 @@ final class OnboardingUITests: XCTestCase {
         wait(for: [done], timeout: 10)
     }
 
+    /// D26 V02-F: a well-known person is refused with its own reason row and note (review fixture, no server).
+    func testV02FRefusesAWellKnownPerson() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "fail-public_figure", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V02-F"].waitForExistence(timeout: 10), "V02-F")
+        XCTAssertTrue(app.descendants(matching: .any)["Failed: This looks like a well-known person"].exists, "one red row with the server's reason")
+        XCTAssertEqual(app.descendants(matching: .any)["failHint"].label, "Genita can't bring public figures to life.")
+        Thread.sleep(forTimeInterval: 0.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-V02-F-public-figure"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     func testOnboardingAgainstTheServer() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
@@ -25,6 +39,9 @@ final class OnboardingUITests: XCTestCase {
             "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session",
             "GENITA_FIXTURE_SCRIPT": "none",
             "GENITA_REVIEW_STILL": "1",
+            // C2 without the simulator's mic or a Speech permission prompt; C3 toast long enough for the capture
+            "GENITA_FAKE_DICTATION": "I actually love cilantro. Raw onion is the one I skip.",
+            "GENITA_HISY_TOAST_MS": "6000",
         ]
         // PREP-1e: the stub's face step fails at 7 of 13 images until Try again
         stubPost("/__prep", json: #"{"failAt":7}"#)
@@ -37,7 +54,14 @@ final class OnboardingUITests: XCTestCase {
             add(shot)
         }
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        /// HISY pages slide (0.28 s): let the old page leave before tapping a button both pages have.
+        func tapSettled(_ id: String) { Thread.sleep(forTimeInterval: 0.5); app.buttons.matching(identifier: id).firstMatch.tap() }
         let primary = app.buttons["primaryCTA"]
+        func waitLabel(_ e: XCUIElement, _ label: String, timeout: TimeInterval = 5) -> Bool {
+            let end = Date().addingTimeInterval(timeout)
+            while Date() < end { if e.exists, e.label == label { return true }; Thread.sleep(forTimeInterval: 0.1) }
+            return false
+        }
 
         // F1-L7: /me says signed in, consented, named, no companion → I01
         XCTAssertTrue(app.buttons["copyPrompt"].waitForExistence(timeout: 15), "StartRouter → I01")
@@ -63,15 +87,84 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(primary.waitForExistence(timeout: 5))
         primary.tap()
         capture("I03")
-        let profile = element("profileResult")
-        XCTAssertTrue(profile.waitForExistence(timeout: 15), "I04 after the import")
-        XCTAssertTrue((profile.value as? String ?? "").contains("How Genita can help"), "I04 shows the sixth row")
-        capture("I04")
-        primary.tap()
+        // I03 → D47 HISY v2 (Figma HISY-0~7, C1~C3): the six cards came with the import
+        let dots = element("hisyDots")
+        XCTAssertTrue(element("hisyOpener").waitForExistence(timeout: 15), "HISY-0 after the import")
+        XCTAssertTrue(app.staticTexts["Six short cards. If one is off, tell me."].exists, "HISY-0 counts the real cards")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-0")
+        app.buttons["hisyShowMe"].tap()
+        XCTAssertTrue(waitLabel(dots, "Card 1 of 6"), "HISY-1")
+        XCTAssertTrue(app.staticTexts["You decide by comparing, not by guessing."].exists)
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-1")
+        tapSettled("hisyNext")
+        XCTAssertTrue(waitLabel(dots, "Card 2 of 6"), "Next")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-2")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.32)).tap()   // left tap = back
+        XCTAssertTrue(waitLabel(dots, "Card 1 of 6"), "left tap goes back")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.32)).tap()   // right tap = next
+        XCTAssertTrue(waitLabel(dots, "Card 2 of 6"), "right tap goes on")
+        tapSettled("hisyNext")
+        XCTAssertTrue(waitLabel(dots, "Card 3 of 6"), "HISY-3")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyTag' AND label == 'Under $100'")).firstMatch.exists, "budget as a style tag")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-3")
+
+        // C1 → C2 → C3: mark "Not for you: cilantro", hold the mic, Save → the same card, new texts in blue
+        tapSettled("hisyNotMe")
+        let save = app.buttons["hisyFixSave"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5), "C1")
+        XCTAssertFalse(save.isEnabled, "nothing marked or typed yet")
+        app.buttons["Not for you: cilantro"].tap()
+        XCTAssertTrue(save.isEnabled)
+        Thread.sleep(forTimeInterval: 0.3)
+        capture("HISY-C1")
+        element("hisyMic").press(forDuration: 0.6)
+        XCTAssertTrue(element("hisyFixHint").label.contains("Listening"), "C2 while the mic is held")
+        XCTAssertEqual(element("hisyFixText").value as? String, "I actually love cilantro. Raw onion is the one I skip.")
+        capture("HISY-C2")
+        save.tap()
+        let toast = element("hisyToast")
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "C3 toast")
+        XCTAssertTrue(toast.label.contains("Got it. I’ll remember that."))
+        let onion = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyTag' AND label == 'Not for you: Raw onion'")).firstMatch
+        XCTAssertTrue(onion.exists, "the new dislike")
+        XCTAssertEqual(onion.value as? String, "changed", "blue border on what changed")
+        XCTAssertFalse(save.exists, "the sheet closed")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-C3")
+
+        for (n, name) in [(4, "HISY-4"), (5, "HISY-5"), (6, "HISY-6")] {
+            tapSettled("hisyNext")
+            XCTAssertTrue(waitLabel(dots, "Card \(n) of 6"), name)
+            Thread.sleep(forTimeInterval: 0.4)
+            capture(name)
+        }
+        XCTAssertFalse(element("hisyAlways").exists, "HISY-6: the And-always box is HISY-5's only")
+        tapSettled("hisyNext")
+        XCTAssertTrue(element("hisyFace").waitForExistence(timeout: 5), "HISY-7")
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-7")
+        tapSettled("hisyBackToCards")
+        XCTAssertTrue(waitLabel(dots, "Card 6 of 6"), "Back to the cards")
+        tapSettled("hisySkip")
+        XCTAssertTrue(element("hisyFace").waitForExistence(timeout: 5), "Skip = HISY-7")
+        tapSettled("hisyChoosePhoto")
 
         // V01 (fixture photo) → V03 → V02-T
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         capture("V01")
+        // SUB-8 (#125) / D26: the rights line is on screen and "Use this image" stays off until it is on
+        let rights = app.buttons["rightsAck"]
+        XCTAssertTrue(rights.exists, "V01 shows the rights line")
+        XCTAssertEqual(rights.value as? String, "Off")
+        XCTAssertFalse(primary.isEnabled, "no check without the rights line")
+        rights.tap()
+        XCTAssertEqual(rights.value as? String, "On")
+        XCTAssertTrue(primary.isEnabled)
+        capture("V01-rights-on")
         primary.tap()
         XCTAssertTrue(element("V03").waitForExistence(timeout: 3), "V03 while the check runs")
         capture("V03")
@@ -92,7 +185,7 @@ final class OnboardingUITests: XCTestCase {
         waitForExpectations(timeout: 10)
         XCTAssertFalse(primary.isEnabled, "V04-P: Continue waits for the clip")
         capture("V04-P")
-        // when the 1.6 s clip ends the card stays picked
+        // when the 4 s stub clip ends the card stays picked
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"])
         waitForExpectations(timeout: 10)
         XCTAssertTrue(primary.isEnabled)
@@ -184,7 +277,7 @@ final class OnboardingUITests: XCTestCase {
         add(shot)
     }
 
-    /// I01 "I don't use an AI assistant" → N1 → N2 → N3 → I04-S, for the eye check against Figma N1–N3.
+    /// I01 "I don't use an AI assistant" → N1 → N2 → N3 → HISY-S0 → S1~S4 → HISY-7, for the eye check against Figma.
     /// Named to run before testOnboardingAgainstTheServer: it creates no companion on the stub.
     func testImportSkipPath() throws {
         let app = XCUIApplication()
@@ -198,6 +291,8 @@ final class OnboardingUITests: XCTestCase {
             add(shot)
         }
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        /// HISY pages slide (0.28 s): let the old page leave before tapping a button both pages have.
+        func tapSettled(_ id: String) { Thread.sleep(forTimeInterval: 0.5); app.buttons.matching(identifier: id).firstMatch.tap() }
         let skip = app.buttons["skipImport"]
         XCTAssertTrue(skip.waitForExistence(timeout: 15), "StartRouter → I01")
         skip.tap()
@@ -231,8 +326,32 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertEqual(app.buttons["skipChip-Street"].value as? String, "Not selected")
         capture("N3")
         app.buttons["primaryCTA"].tap()
-        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S after N3")
-        capture("I04-S")
+        // N3 → S0 → S1~S4 (the story is written from the three answers: GET /v1/profile/story)
+        XCTAssertTrue(element("hisyOpener").waitForExistence(timeout: 15), "S0 after N3")
+        let ready = NSPredicate(format: "isEnabled == true")
+        expectation(for: ready, evaluatedWith: app.buttons["hisyShowMe"])
+        waitForExpectations(timeout: 20)
+        XCTAssertTrue(app.staticTexts["Four short cards. I’ll learn the rest in our calls."].waitForExistence(timeout: 5))
+        Thread.sleep(forTimeInterval: 0.4)
+        capture("HISY-S0")
+        app.buttons["hisyShowMe"].tap()
+        let dots = element("hisyDots")
+        for n in 1...4 {
+            if n > 1 { tapSettled("hisyNext") }
+            let end = Date().addingTimeInterval(5)
+            while Date() < end && dots.label != "Card \(n) of 4" { Thread.sleep(forTimeInterval: 0.1) }
+            XCTAssertEqual(dots.label, "Card \(n) of 4", "S\(n)")
+            if n == 2 {
+                // S2 (269:228): N1 tiles, then the N3 rows with likes and dashed "no"s
+                let colorful = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyTag' AND label == 'Not for you: Colorful'")).firstMatch
+                XCTAssertTrue(colorful.exists, "S2: N3 'no' as a dashed tag")
+                XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'hisyEvidence' AND label CONTAINS 'From your answers'")).firstMatch.exists, "S2: N3 rows' chip")
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+            capture("HISY-S\(n)")
+        }
+        tapSettled("hisyNext")
+        XCTAssertTrue(element("hisyFace").waitForExistence(timeout: 5), "S4 → HISY-7")
     }
 
     private func launchToI01(_ app: XCUIApplication) {
@@ -249,15 +368,30 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        XCTAssertTrue(element("promptCopiedToast").waitForExistence(timeout: 3), "Prompt copied")
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
-        // leave the app (ChatGPT or its site opens; home makes sure) and come back
-        XCUIDevice.shared.press(.home)
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 15))
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT (on the simulator, with no ChatGPT app:
+        // chatgpt.com in Safari). Safari can take the foreground before the toast is read (flaky on loaded CI
+        // runners), so the toast is only looked for while Genita is still in front; the open and the copy are then
+        // checked on their own: Safari comes to the front, and back on I02 the paste button pastes the prompt.
+        let toast = element("promptCopiedToast")
+        var sawToast = false
+        let end = Date().addingTimeInterval(3)
+        while Date() < end, app.state == .runningForeground {
+            if toast.exists { sawToast = true; break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
+        // Safari in front is the proof the app left; Genita's own reported state lags on CI (it stayed
+        // .runningForeground for 5 s after Safari came up), so it is not asserted
         app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
+        // the copy: the system paste button puts the I01 prompt into the reply box
+        app.buttons["pasteReply"].tap()
+        let pasted = NSPredicate(format: "value CONTAINS %@", "evidence-based personalization profile for Genita")
+        expectation(for: pasted, evaluatedWith: element("responseInput")); waitForExpectations(timeout: 10)
         let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
     }
 
@@ -271,13 +405,22 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("skipTopics").waitForExistence(timeout: 5)); primary.tap()
         XCTAssertTrue(element("skipReplies").waitForExistence(timeout: 5)); primary.tap()
         XCTAssertTrue(element("skipAvoid").waitForExistence(timeout: 5)); primary.tap()
-        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15), "I04-S"); primary.tap()
+        // N3 → S0 (D47 v2 replaced I04-S) → Skip → HISY-7 → V01
+        XCTAssertTrue(element("hisyOpener").waitForExistence(timeout: 15), "S0")
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["hisyShowMe"]); waitForExpectations(timeout: 20)
+        app.buttons["hisyShowMe"].tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        app.buttons.matching(identifier: "hisySkip").firstMatch.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        app.buttons.matching(identifier: "hisyChoosePhoto").firstMatch.tap()
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         if app.buttons["rightsAck"].exists { app.buttons["rightsAck"].tap() }   // V01 rights line (#197)
         primary.tap()
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
         XCTAssertTrue(app.buttons["play1"].waitForExistence(timeout: 10)); app.buttons["play1"].tap()
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"]); waitForExpectations(timeout: 15)
+        // Continue waits for the clip (V04-P): tap it once it is on, not while the preview still plays
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: primary); waitForExpectations(timeout: 15)
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
@@ -313,9 +456,15 @@ final class OnboardingUITests: XCTestCase {
         app.buttons["Dismiss keyboard"].tap()
         XCTAssertTrue(primary.waitForExistence(timeout: 5))
         primary.tap()
-        XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15))
-        primary.tap()
+        // I03 → HISY-0 → Skip → HISY-7 → V01 (D47 v2 replaced I04)
+        XCTAssertTrue(element("hisyOpener").waitForExistence(timeout: 15))
+        app.buttons["hisyShowMe"].tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        app.buttons.matching(identifier: "hisySkip").firstMatch.tap()
+        Thread.sleep(forTimeInterval: 0.5)
+        app.buttons.matching(identifier: "hisyChoosePhoto").firstMatch.tap()
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        app.buttons["rightsAck"].tap() // SUB-8: "Use this image" stays off until the rights line is on
         primary.tap()
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15))
         primary.tap()

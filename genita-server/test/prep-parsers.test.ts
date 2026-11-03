@@ -33,11 +33,28 @@ test("classify: V02-F reasons map to the right rows", () => {
   assert.deepEqual(interpretCheck({ ...good, well_lit: false }).reasons.map((r) => r.code), ["too_blurry"]);
 });
 
+test("classify: D26 refuses a well-known person with the V02-F reason, ordinary photos still pass", () => {
+  const famous = interpretCheck({ ...good, public_figure: true });
+  assert.equal(famous.passed, false);
+  assert.deepEqual(famous.reasons.map((r) => r.code), ["public_figure"]);
+  assert.equal(famous.reasons[0].label, "This looks like a well-known person");
+  // listed first: a sharper photo of the same person will not pass either
+  assert.deepEqual(interpretCheck({ ...good, public_figure: true, sharp: false }).reasons.map((r) => r.code), ["public_figure", "too_blurry"]);
+  // a caricature of a famous person is refused too
+  assert.equal(interpretCheck({ ...good, subject: "character", public_figure: true }).passed, false);
+  assert.equal(interpretCheck({ ...good, public_figure: false }).passed, true);
+  assert.equal(interpretCheck(good).passed, true, "older answers without the field pass");
+});
+
 test("classify request sends the image and a strict schema", () => {
   const r = buildClassifyRequest("data:image/jpeg;base64,AA");
   assert.equal(r.schemaName, "image_check");
   const content = (r.input as Array<{ content: Array<{ type: string }> }>)[0].content;
   assert.deepEqual(content.map((c) => c.type), ["input_text", "input_image"]);
+  const schema = r.schema as { properties: Record<string, unknown>; required: string[] };
+  assert.ok(schema.properties.public_figure, "D26: Spark judges public figures");
+  assert.ok(schema.required.includes("public_figure"));
+  assert.match((content[0] as unknown as { text: string }).text, /public_figure/);
 });
 
 test("head box: largest SAM box wins, null when none", () => {

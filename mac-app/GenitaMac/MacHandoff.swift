@@ -2,6 +2,17 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// Same presence (11/3, Chelsea OK: on by default): the companion fades in on this Mac as the
+/// iPhone hands over by button, and the waiting sheet fades out when the conversation comes back. On by default;
+/// off with `GENITA_PRESENCE_FADE=0` (launch env) or `defaults write <bundle id> genita.presence.fade -bool YES`.
+enum MacPresenceFade {
+    static var enabled: Bool {
+        if let v = ProcessInfo.processInfo.environment["GENITA_PRESENCE_FADE"] { return ["1", "true", "yes", "on"].contains(v.lowercased()) }
+        return UserDefaults.standard.object(forKey: "genita.presence.fade") as? Bool ?? true // Chelsea 11/3: on by default
+    }
+    static let seconds = 0.35
+}
+
 /// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
 private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {true} }
 
@@ -58,26 +69,42 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var epoch=0
     private var bestRTT=Double.infinity
     private var subscriptions=Set<AnyCancellable>()
+    private var accountScope=HandoffAccountScope()
     /// The iPhone counts as reachable over the local link (pongs) or the server (presence).
     private var phoneReachable:Bool { (link.connected && Date().timeIntervalSince1970-lastPong<3) || server.peerOnline }
     init() {
+        ownership.useAccount(nil) // Never restore the account-agnostic legacy epoch.
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         server.onEffect = { [weak self] in self?.serverEffect($0) }
         server.onConnect = { [weak self] in
-            guard let self else{return}
+            guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":true])
         }
         server.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
-        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {server.start()}
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         link.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
-        link.host()
-        // Not synchronously: the window's views read MacHandoff.shared, which is still initializing here.
-        if ownership.isOwner && ownership.state.epoch>0 {DispatchQueue.main.async { self.showCompanion();MacCall.shared.conversationArrived() }}
+        DispatchQueue.main.async { MacProximity.shared.attach(self) }  // GENITA_PROXIMITY_HANDOFF: bring the iPhone close
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1/30,repeats:true){ [weak self] _ in Task { @MainActor in self?.tick() } }
+    }
+    /// Called only with the verified /me user, or nil on logout/session expiry.
+    func setAccount(_ accountID:String?) {
+        guard accountScope.select(accountID) else{return}
+        server.stop();link.useAccount(accountID)
+        epoch+=1;pending=nil;motion=nil;renderedMotionID=nil;candidate=nil;last=nil;dock=nil
+        lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
+        sharing.stop();sharing.permissionRequired=false;media.stopAll()
+        companion?.orderOut(nil);companionVisible=false;sharingStopped=false;closeRegistration()
+        ownership.useAccount(accountID)
+        status="Waiting for your iPhone"
+        refreshSurface()
+        guard let accountID else{return}
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {
+            link.host(accountID:accountID);server.start()
+        }
+        if ownership.isOwner && ownership.state.epoch>0 {showCompanion()}
     }
     func showRegistration() {
         screen = screen ?? NSScreen.main
@@ -122,11 +149,17 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     /// Once shown, this window stays. The conversation leaving turns it into the waiting screen.
     private func showCompanion() {
-        ensureCompanion();companionVisible=true;companion?.orderFrontRegardless()
+        let first = !companionVisible
+        ensureCompanion();companionVisible=true
+        // Same presence (flag): a move by button (no touch effect) fades the companion in instead of popping up.
+        if first, motion == nil, MacPresenceFade.enabled, let window=companion {
+            window.alphaValue=0;window.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+        } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
     func continueHere() {
-        guard !ownership.isOwner else{return}
+        guard accountScope.accountID != nil,!ownership.isOwner else{return}
         let atEdge=freshAtDock
         server.nextTrigger = atEdge ? "touch" : "continue"
         ownership.claimHere()
@@ -140,11 +173,16 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         status="Moving to your iPhone"
     }
     private func serverEffect(_ effect:PresenceEffect) {
+        guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
             if pending != nil || motion != nil {
-                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+                let generation=accountScope.generation
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
+                    guard let self,self.accountScope.accepts(generation) else{return}
+                    self.ownership.receive(claim)
+                }
             } else {ownership.receive(claim)}
         case .moveRequested:
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
@@ -176,6 +214,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     }
     private var freshAtDock:Bool { nowFresh && last.map { p in dock.map { p.sameDock($0) && p.touchesEdge(phoneHeight:phoneHeight) } ?? false } == true }
     func receive(_ message:[String:Any]) {
+        guard accountScope.accountID != nil else{return}
         let now=Date().timeIntervalSince1970
         switch message["type"] as? String {
         case "connected":
@@ -343,7 +382,93 @@ struct MacHomeView:View {
     private static let blue=Color(red:0,green:162.0/255,blue:1)
     private var paired:Bool { handoff.link.connected }
     private var spacedCode:String { let c=handoff.link.code;return c.count==6 ? String(c.prefix(3))+" "+String(c.suffix(3)) : c }
+    /// MAC-3 v2: "Pair it" opens MAC-P in place (paired users never see a code).
+    @State private var pairing=false
     var body:some View {
+        if MacDesignV2.enabled { v2Body } else { v1Body }
+    }
+    // MARK: Mac v2 (Figma 282:2 · MAC-2 / MAC-P / MAC-3 / MAC-4 / MAC-OFF): title → status row → body → buttons, one rhythm.
+    private enum V2Screen:Equatable { case setup, pair, onPhone, here, offline(String) }
+    private var v2Screen:V2Screen {
+        switch kind {
+        case .noCompanion: .setup
+        case .onPhone: pairing && !paired ? .pair : .onPhone
+        // Mac QA 11/3: a move by button goes through the server (same account = already paired), so the conversation
+        // on this Mac is MAC-4 even without the local link. MAC-P only when the user asks for it (Pair it).
+        case .here: pairing && !paired ? .pair : .here
+        case .offline(let reason): .offline(reason)
+        }
+    }
+    private var v2Title:String {
+        switch v2Screen { case .setup: "Set up on your iPhone."; case .pair: "Pair with your iPhone."; case .onPhone: "\(name) is on your iPhone."; case .here: "\(name) is on this Mac."; case .offline: "Can’t reach Genita." }
+    }
+    private var v2Status:(String,MacV2Status.Kind) {
+        switch v2Screen {
+        case .setup: ("Waiting for your companion",.waiting)
+        case .pair: ("Looking for your iPhone",.waiting)
+        case .onPhone: ("Talking on your iPhone",.live)
+        case .here: (paired || handoff.server.peerOnline ? "Paired with your iPhone" : "Signed in on this Mac",.live)
+        case .offline: ("No connection",.idle)
+        }
+    }
+    private func v2Para(_ text:String)->some View {
+        Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
+    }
+    private var v2Body:some View {
+        VStack(alignment:.leading,spacing:0) {
+            MacV2Title(text:v2Title)
+            MacV2Status(text:v2Status.0,kind:v2Status.1,id:"macHomeStatus").padding(.top,10)
+            switch v2Screen {
+            case .setup:
+                v2Para("Your companion is made on iPhone: face, voice and setup. They’ll show up here when you’re done.").padding(.top,16)
+                MacV2Button(label:"Get Genita for iPhone",style:.secondary,id:"macGetGenita") { if let url=URL(string:"https://testflight.apple.com/join/Ybqh482p") {NSWorkspace.shared.open(url)} }.padding(.top,24)
+            case .pair:
+                MacPairingCode(code:handoff.link.code,connected:paired).padding(.top,16)
+                if kind == .here && handoff.canMoveToPhone {
+                    MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() }.padding(.top,24)
+                }
+                MacV2Button(label:"Not now",style:.text,id:"macPairNotNow") { pairing=false }.frame(maxWidth:.infinity).padding(.top,12)
+            case .onPhone:
+                MacV2Button(label:"Continue on this Mac",id:"macContinueHere") { handoff.continueHere() }.padding(.top,24)
+                if !paired {
+                    Rectangle().fill(Color(white:232.0/255)).frame(height:1).padding(.top,20)
+                    HStack(spacing:6) {
+                        Text("First time with this iPhone?").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
+                        Button("Pair it") { pairing=true }.buttonStyle(.plain).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline()
+                            .padding(.horizontal,4).frame(height:44).contentShape(Rectangle()).accessibilityIdentifier("macPairIt")
+                    }.frame(height:44).padding(.top,4)
+                }
+            case .here:
+                // only what works now (Chelsea 11/3): Show screen needs the local link, Move to iPhone a reachable iPhone
+                if handoff.canMoveToPhone || paired {
+                    HStack(spacing:12) {
+                        if handoff.canMoveToPhone { MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() } }
+                        if paired { MacV2Button(label:"Show screen",style:.secondary,id:"macShowScreen") { handoff.showRegistration() } }
+                    }.padding(.top,24)
+                }
+                if paired {
+                    Text("Show screen helps your iPhone find this display, so you can pass the call across.")
+                        .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(2).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
+                } else {
+                    Rectangle().fill(Color(white:232.0/255)).frame(height:1).padding(.top,20)
+                    HStack(spacing:6) {
+                        Text("First time with this iPhone?").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
+                        Button("Pair it") { pairing=true }.buttonStyle(.plain).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline()
+                            .padding(.horizontal,4).frame(height:44).contentShape(Rectangle()).accessibilityIdentifier("macPairIt")
+                    }.frame(height:44).padding(.top,4)
+                }
+            case .offline(let reason):
+                v2Para(reason).padding(.top,16)
+                MacV2Button(label:"Try again",id:"macTryAgain") { Task { await MacCall.shared.refresh() } }.padding(.top,24)
+            }
+        }
+        .padding(.horizontal,32).padding(.top,24).padding(.bottom,28).frame(width:420,alignment:.topLeading)
+        .background(MacSheetInk.sheet)
+        .animation(.easeOut(duration:0.2),value:v2Screen)
+        // a finished pairing closes MAC-P for good (a later drop of the local link shows MAC-3's link again, not the code)
+        .onChange(of:paired) { _,now in if now { pairing=false } }
+    }
+    private var v1Body:some View {
         VStack(alignment:.leading,spacing:12) {
             Text(title).font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height:34,alignment:.leading)
                 .fixedSize(horizontal:true,vertical:false).accessibilityAddTraits(.isHeader)
@@ -387,6 +512,9 @@ struct MacHomeView:View {
     }
     /// "First time with this iPhone?" + the six digits (MAC-3 88:19 / 88:21).
     @ViewBuilder private var pairingBlock:some View {
+        pairingBlockV1
+    }
+    @ViewBuilder private var pairingBlockV1:some View {
         Text("First time with this iPhone? Enter this code in Genita on your iPhone.")
             .font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute).lineSpacing(3).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,8)
         Text(spacedCode).font(.system(size:15,design:.monospaced)).tracking(4).foregroundStyle(MacSheetInk.ink).textSelection(.enabled)

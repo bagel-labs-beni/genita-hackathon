@@ -10,12 +10,24 @@ struct ConversationView: View {
     private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
+    /// RP-1 (D37): Report from ⋮ More
+    @State private var reportOpen = false
+    #if DEBUG
+    /// #291 probe for UI tests: how many times ✕ Stop interpreting ran its action (the tap reached the button)
+    @State private var debugStopTaps = 0
+    /// same probe for ⋮ More (CallScreenUITests: the sheet did not open after a reconnect)
+    @State private var debugMoreTaps = 0
+    /// taps the face took (call.interrupt) and how often the rail was swapped for the handoff waiting sheet
+    @State private var debugFaceTaps = 0
+    @State private var debugWaitingSeen = 0
+    #endif
     @State private var cameraGuide = false
     @State private var findsTabOpen = false
     @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
     @State private var loopURL: URL?
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The waiting sheet for R1 and R1-E (#2, Dyno). A running effect covers the change of owner until it ends.
     private var waitingCopy: HandoffCopy? { handoffEnabled && !connecting && handoff.motion == nil ? HandoffCopy.phone(handoff.surface) : nil }
     var body: some View {
@@ -40,7 +52,9 @@ struct ConversationView: View {
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
+                            // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
+                            .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -67,7 +81,7 @@ struct ConversationView: View {
                         if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
-                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
                                     .frame(width: full.size.width, height: full.size.height)
                                     .transition(.opacity)
                             }
@@ -81,7 +95,7 @@ struct ConversationView: View {
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
+                        Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
@@ -100,24 +114,34 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
                         }
                         if sheet == .dismissed {
-                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).transition(.opacity.combined(with: .offset(y: -8)))
+                            FindsToast(finds: call.finds).position(x: full.size.width / 2, y: 210 + top).genitaToastTransition()
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
-                        if !findsTabOpen && !connecting && !interpreting && !unclear {
+                        let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                        if moveLine && !findsTabOpen && !interpreting && !unclear {
+                            // MV-1 / MV-E take the call's status line slot
+                            HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
+                        } else if !findsTabOpen && !connecting && !interpreting && !unclear {
                             let findsPill = call.finds.pillText
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        // CC-1 wins over GK-1 (a "Noted: …" answers the question)
+                        if !connecting, let chip = call.profileChip ?? call.askingChip {
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
+                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : (model.callPrepIndicator != nil && !interpreting ? 232 : 184)) + top)
+                        }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
                         }
                         }
@@ -144,8 +168,9 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
-                                              openFinds: { openFindsTab() }) {
+                                // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
+                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
+                                              openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
@@ -162,7 +187,7 @@ struct ConversationView: View {
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
                         menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
-                        menuRow("Setting", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
+                        menuRow("Setting", text: "Settings", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         if waitingCopy == nil && handoffEnabled {
                             moveToMacRow(y: 259, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")
                         }
@@ -173,7 +198,22 @@ struct ConversationView: View {
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
+        #if DEBUG
+        // #291 probe (DEBUG builds only, never in TestFlight): taps that reached ✕ and the call's mode right now
+        .overlay(alignment: .bottomLeading) {
+            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link)) face:\(debugFaceTaps) waiting:\(debugWaitingSeen) surface:\(String(describing: handoff.surface))").font(.system(size: 2)).opacity(0.02)
+                .allowsHitTesting(false).accessibilityIdentifier("debugInterpretProbe")
+                .onChange(of: waitingCopy != nil) { _, on in if on { debugWaitingSeen += 1 } }
+        }
+        #endif
+        // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
+        .onAppear { if !connecting { showFace() } }
+        .onDisappear { if !connecting { call.hideFace() } }
+        .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
+        .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
+        .onChange(of: handoff.surface) { _, surface in let onMac = surface != .active; if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
+        .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
@@ -187,21 +227,44 @@ struct ConversationView: View {
                 model.setup.firstCallPending = false
                 #if DEBUG
                 call.installFindsFixture()
+                call.installProfileChipFixture()
                 installFindsTabFixture()
                 #endif
             }
         }
         .onDisappear { if !connecting { call.end() } }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { call.suspend() } }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: call.sceneActivityChanged(.active)
+            case .inactive: call.sceneActivityChanged(.inactive)
+            case .background: call.sceneActivityChanged(.background)
+            @unknown default: call.sceneActivityChanged(.background)
+            }
+        }
         // #2: the conversation moved to the Mac (R1 waiting sheet): this iPhone stops listening and showing
         .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
+    /// Not while the conversation is on the Mac (this screen is hidden then).
+    private func showFace() {
+        guard !(handoffEnabled && handoff.surface != .active) else { return }
+        call.showFace(reduceMotion: reduceMotion || CallMotion.reviewStill, animate: !CallMotion.reviewStill)
+    }
     /// S07 pill grows for a long {name} (NM01 allows 20 characters); "Connecting to Jin…" keeps the board's 175 pt.
     private func lineWidth(for label: DesignNode) -> CGFloat {
         let line = "Connecting to \(model.companionDisplayName)…"
         return max(label.w, ceil((line as NSString).size(withAttributes: [.font: label.font]).width) + 2)
+    }
+    private func debugNoteMore() {
+        #if DEBUG
+        debugMoreTaps += 1
+        #endif
+    }
+    private func debugNoteStop() {
+        #if DEBUG
+        debugStopTaps += 1
+        #endif
     }
     private var sheetOffline: Bool { call.finds.state != .idle && (call.link == .reconnecting || call.finds.offline) }
 
@@ -212,6 +275,9 @@ struct ConversationView: View {
 
     /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
     private func faceTapped() {
+        #if DEBUG
+        debugFaceTaps += 1
+        #endif
         if withAnimation(.drawer, { call.finds.faceTapped() }) { return }
         call.interrupt()
     }
@@ -228,13 +294,7 @@ struct ConversationView: View {
         }
     }
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
-    private func railShift(_ s: SheetState) -> CGFloat {
-        switch s {
-        case .half, .rising, .full: -440
-        case .peek, .searching: -122
-        default: 0
-        }
-    }
+    private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
 
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
@@ -255,7 +315,9 @@ struct ConversationView: View {
                 Color.clear
                 if let symbol { Image(systemName: symbol).font(.system(size: 18, weight: .regular)).foregroundStyle(CallInk.ink).frame(width: 21, height: 21).position(x: 20, y: 22) }
                 else { Image(resource: icon).resizable().frame(width: title == "Chat" ? 20.7 : 21.7007, height: 20.7).position(x: 20, y: 22) }
-                DesignText(node: label, text: text ?? label.characters).frame(width: label.w, height: label.h).position(x: label.x - 24 + label.w / 2, y: 22)
+                // "Settings" is wider than the Figma "Setting" node: room to 140 pt, as Move to Mac
+                let w = max(label.w, 140)
+                DesignText(node: label, text: text ?? label.characters).frame(width: w, height: label.h).position(x: label.x - 24 + w / 2, y: 22)
                 if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)
@@ -264,11 +326,14 @@ struct ConversationView: View {
     #if DEBUG
     /// Screenshots of the Finds tab without a server: GENITA_FINDS_TAB = list | empty | detail (recorded cards).
     func installFindsTabFixture() {
-        guard let mode = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"] else { return }
+        let configured = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"]
+        // Appetize preview: Finds always reads the recorded cards (the demo has no account), the tab opens by itself only when asked
+        guard let mode = configured ?? (BrowserPreview.isActive ? "list" : nil) else { return }
         let recorded = FixtureFindsAPI.recorded()
         findsList.api = FixtureFindsAPI(cards: mode == "empty" ? [] : recorded.cards)
         findsList.frames = { recorded.frames[$0] ?? [] }
         findsList.purge = { _ in }
+        guard configured != nil else { return }
         Task { @MainActor in
             for _ in 0..<80 where call.link != .live { try? await Task.sleep(for: .milliseconds(100)) }
             try? await Task.sleep(for: .milliseconds(300))

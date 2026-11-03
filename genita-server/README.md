@@ -1,5 +1,85 @@
 # genita-server
 
+## Run locally (one Meta key)
+
+Requires Git and Node.js 22.6+ (with npm). No S3, no GPU, no mail provider and
+no Apple keys are needed. Only Meta models are called. PGlite (Postgres in
+WASM) and plain files keep your data on this machine; Docker is optional.
+
+```sh
+git clone https://github.com/bagel-labs-beni/genita.git
+cd genita
+cd genita-server
+npm ci
+cp ../.env.example ../.env
+```
+
+Open `../.env` in a text editor and set `MODEL_API_KEY` to your Meta API key.
+Never commit that file. Then, in the same `genita-server` directory:
+
+```sh
+npm run local
+```
+
+Keep that terminal open. The startup block shows `http://127.0.0.1:8787`,
+`ws://127.0.0.1:8787/v1/session`, the data directory, the email sign-in hint,
+and `Voice: device voice (no GPU configured)`. In a second terminal:
+
+```sh
+curl http://127.0.0.1:8787/healthz
+```
+
+Expected: HTTP 200 with `{"ok":true,"sessions":0}`.
+
+Next run the [iOS simulator](../ios-app/README.md) first: a new account makes its
+companion there (the Mac app has no setup flow). Then run the
+[Mac app](../mac-app/README.md) and sign in with the same email to call from the Mac.
+Both use their Xcode instructions. In Xcode,
+Edit Scheme → Run → Arguments → Environment Variables, set
+`GENITA_API_URL=http://127.0.0.1:8787` and
+`GENITA_SERVER_URL=ws://127.0.0.1:8787/v1/session` for the app you run.
+The shared `GenitaAuthClient` reads the first setting, then `genita.api.url`
+in UserDefaults; `CallEndpoint` uses the second setting, then
+`genita.server.url` in UserDefaults. The linked app READMEs describe the build steps;
+this paragraph supplies the local server-URL setting. Use the iOS simulator
+or Mac on the server's machine: a physical iPhone cannot reach its loopback.
+
+Choose **Continue with email**, enter an email address, and copy the six-digit
+code from the server terminal's `auth.email_code_dev` log into the app. Nothing
+is mailed and no external account connection is needed. Accept the AI-data
+consent screen before onboarding/calling. Replies use the device's built-in
+voice. A real Meta key is needed for model-dependent onboarding and replies.
+
+Stop with Ctrl-C. Run `npm run local` again to reuse your account and data;
+sign in again with a new printed code (session signing keys change on restart).
+The default data lives in `genita-server/.genita-data/`: `db/` for PGlite and
+`blobs/` for media, `memory.json` for conversation memory. Migrations run automatically on startup.
+
+`npm run dev:local` is an alias. Settings are read from the shell, then
+`genita-server/.env`, then repo-root `.env` (first value wins). Optional settings
+in `.env.example` are `PORT`, `GENITA_DATA_DIR` (relative to `genita-server/`),
+and `DATABASE_URL`. Change the URLs above if you change the port.
+
+Local mode always binds to `127.0.0.1`. It discards inherited cloud/vendor
+configuration, including S3/AWS, Resend, Apple keys and voice endpoints, and
+never reads `~/.config/genita/meta.env` or `GENITA_ENV_FILE`. It accepts only
+PGlite or loopback Postgres URLs without query parameters, preventing accidental
+use of a deployment database. To opt into your own Meta voice GPU, explicitly
+set `GENITA_LOCAL_VOICE=1`, `GENITA_VOICE_URL` and `GENITA_VOICE_TOKEN`; otherwise
+the device voice is used. Keyless loopback WebSocket access rejects requests
+with an Origin header; native apps and authenticated sessions still work.
+
+Optional Docker Postgres (not tested on the development machine; its Docker
+daemon is unavailable), from `genita-server/`:
+
+```sh
+docker compose up -d
+```
+
+Set `DATABASE_URL=postgres://genita:genita@127.0.0.1:5432/genita` in `../.env`,
+then run `npm run local`. Docker uses a named volume; blobs stay in the local
+data directory. Stop Postgres with `docker compose down` (keeps that volume).
+
 Realtime conversation core: Muse Voice Transcribe → Muse Spark 1.3 → Meta SeamlessM4T v2 (or on-device speech), over one WebSocket per call. Protocol: [PROTOCOL.md](PROTOCOL.md). Ticket F0-L3 (#3).
 Onboarding prep (import, image check, scene and face set, Meta voices, persona): [PREP_API.md](PREP_API.md). Uploads should be ≤1024 px JPEG.
 
@@ -26,7 +106,7 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_DEFAULT_VOICE_ID` (`seamless:0`) ·
 `GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_APP_CONFIG_FILE` (JSON overrides for `GET /v1/app-config`, PROTOCOL.md) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
-`GENITA_VOICE_MAX_CALLS` (3; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 3) ·
+`GENITA_VOICE_POST` (unset; `0` = raw voice, no post chain or emotion) · `GENITA_VOICE_EMOTION` (unset; `0` = post chain without emotion moves) · `GENITA_VOICE_MAX_CALLS` (8; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 8) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250).
 
 D46 operational controls (SSM env changes take effect after a server restart):

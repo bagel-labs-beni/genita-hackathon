@@ -13,7 +13,7 @@ in ROI pixels at `size` scale; src(x) ~ dst(x + f(x)); nk = neutral->key), mask.
 lower-face ellipse x below-subnasale ramp = blend AND lock mask), flow.json (manifest `flow` block).
 Above the subnasale line the mask, every flow and every key are exactly neutral (nose/eyes locked).
 """
-import argparse, json, os, sys, time
+import argparse, json, os, re, sys, time
 import cv2
 import numpy as np
 
@@ -112,9 +112,11 @@ def lip_map(kind):
     if isinstance(mo, dict):
         mk = kind if kind in mo else {'cat': 'animal', 'toy': 'character3d', 'character': 'character3d'}.get(kind)
         if mk in mo:
-            m['motion'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}   # v2 runtime coefficients (prototype names)
-            if 'motionV2' not in m and isinstance(m['motion'].get('motionV2'), dict):
-                m['motionV2'] = m['motion']['motionV2']                                # the block GenitaKit reads (#267)
+            # prototype names under their own key: GenitaKit's FlowMap.motion (riseMs / amplitude ...) is a different
+            # block, and its mere presence switches the app's continuous-motion path on (codex P1)
+            m['motionProto'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}
+            if 'motionV2' not in m and isinstance(m['motionProto'].get('motionV2'), dict):
+                m['motionV2'] = m['motionProto']['motionV2']                           # the block GenitaKit reads (#267)
     # cheek field names: the app reads cheekW / nasoW; keep cheek / naso for older readers
     ch = m.get('cheek')
     if isinstance(ch, dict):
@@ -533,6 +535,67 @@ def blink_2d(neutral, key, eyes, thr=40):
     return img, cv2.GaussianBlur(mask, (0, 0), 1.0)
 
 
+SMALL_SPECIES = re.compile(r'\b(cat|kitten|kitty|rabbit|bunny|hare|hamster|guinea|gerbil|mouse|rat|ferret|chinchilla|persian)\b', re.I)
+BIRD_SPECIES = re.compile(r'\b(bird|parrot|parakeet|budgie|cockatiel|cockatoo|macaw|owl|duck|chicken|hen|pigeon|crow|sparrow|canary|penguin)\b', re.I)
+RABBIT_SPECIES = re.compile(r'\b(rabbit|bunny|hare)\b', re.I)
+HORSE_SPECIES = re.compile(r'\b(horse|pony|donkey|mule|zebra|foal)\b', re.I)
+DOG_SPECIES = re.compile(r'\b(dog|puppy|doggo|pup)\b', re.I)
+LONG_SNOUT = re.compile(r'\b(retriever|labrador|collie|shepherd|husky|greyhound|setter|pointer|doberman)\b', re.I)
+
+
+def animal_rules(kind, prof, species, face, mouth):
+    """[(name, sub-profile)] for animals, in apply order: one muzzle rule (bird beak split | long-snout dog | small muzzle |
+    mild dog muzzle), then species runtime add-ons (rabbit-like, horse-like). Each sub-profile may carry `prep` (merged
+    into the prep options) and `map` (merged into the flow map the app reads)."""
+    if kind not in ('animal', 'cat'):
+        return []
+    sp = species or ''
+    sub = lambda k: prof.get(k) if isinstance(prof.get(k), dict) else None
+    if BIRD_SPECIES.search(sp) and sub('bird'):
+        return [('bird', prof['bird'])]
+    out = []
+    sm = sub('smallMuzzle') or {}
+    mwr = (mouth[2] - mouth[0]) / max(1e-6, face[2] - face[0])
+    if LONG_SNOUT.search(sp) and isinstance(sm.get('longSnoutDog'), dict):
+        out.append(('longSnoutDog', sm['longSnoutDog']))
+    elif sm and (mwr < 0.12 or SMALL_SPECIES.search(sp) or kind == 'cat'):
+        out.append(('smallMuzzle', sm))
+    elif DOG_SPECIES.search(sp) and sub('mildMuzzle'):
+        out.append(('mildMuzzle', prof['mildMuzzle']))
+    if RABBIT_SPECIES.search(sp) and sub('rabbitLike'):
+        out.append(('rabbitLike', prof['rabbitLike']))
+    if HORSE_SPECIES.search(sp) and sub('horseLike'):
+        out.append(('horseLike', prof['horseLike']))
+    return out
+
+
+def animal_rule(kind, prof, species, face, mouth):
+    """First rule only (kept for callers / tests): (name, sub-profile) or None."""
+    r = animal_rules(kind, prof, species, face, mouth)
+    return r[0] if r else None
+
+
+def shade_openings(ALN, N, face, mouth, k):
+    """Darken the top 72 % of each key's opening (where it differs from the neutral) by share k; classical."""
+    H, W = N.shape[:2]
+    mw_ = (mouth[2] - mouth[0]) * W; fwp_ = (face[2] - face[0]) * W; rr = max(mw_, 0.12 * fwp_)
+    lim_ = np.zeros((H, W), np.float32)
+    cv2.ellipse(lim_, (int((mouth[0] + mouth[2]) / 2 * W), int((mouth[1] + mouth[3]) / 2 * H + 0.25 * rr)), (int(rr), int(0.8 * rr)), 0, 0, 360, 1.0, -1)
+    Nf_ = N.astype(np.float32); out = {}
+    for nm, al in ALN.items():
+        d = np.abs(cv2.GaussianBlur(al, (0, 0), 2) - cv2.GaussianBlur(Nf_, (0, 0), 2)).max(2)
+        m_ = ((d > 30) & (lim_ > 0)).astype(np.uint8)
+        k_ = max(3, int(0.08 * rr) | 1)
+        m_ = cv2.erode(cv2.morphologyEx(m_, cv2.MORPH_CLOSE, np.ones((k_ * 2, k_ * 2), np.uint8)), np.ones((k_, k_), np.uint8)).astype(np.float32)
+        ys_ = np.where(m_ > 0)[0]
+        if len(ys_):
+            ylo, yhi = ys_.min(), ys_.max()
+            m_ = m_ * np.clip(((yhi - 0.28 * (yhi - ylo)) - np.arange(H, dtype=np.float32)) / max(1.0, 0.15 * (yhi - ylo)), 0, 1)[:, None]
+        wv = cv2.GaussianBlur(m_, (0, 0), 0.6 * k_)[..., None]
+        out[nm] = al * (1 - k * wv)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--neutral', required=True)
@@ -545,13 +608,25 @@ def main():
     ap.add_argument('--jpeg', type=int, default=90)
     ap.add_argument('--blink', help='character2d: Muse blink still -> BLINK.jpg + BLINKMASK.png (eye rect only)')
     ap.add_argument('--eyes', help='character2d: eye boxes x1,y1,x2,y2;x1,y1,x2,y2 (SAM)')
+    ap.add_argument('--species', default='', help='animal species from the image check (bird / small-muzzle / long-snout rules)')
     a = ap.parse_args()
     t0 = time.time()
     kind = 'character3d' if a.kind == 'character' else a.kind
     prof = profile_of(kind) if kind != 'human' else {}
-    prep = prof.get('prep') or {}
+    prep = dict(prof.get('prep') or {})
     os.makedirs(a.out, exist_ok=True)
     face, mouth, nose = box(a.face), box(a.mouth), box(a.nose)
+    rules = animal_rules(kind, prof, a.species, face, mouth)
+    bird_lock, map_extra = None, {}
+    for name_, sub in rules:
+        # non-human lane 11/3: species / geometry sub-rules (profiles animal.bird / smallMuzzle / longSnoutDog / mildMuzzle /
+        # rabbitLike / horseLike): prep options here, runtime values into the flow map
+        map_extra = deep_merge(map_extra, sub.get('map') or {})
+        if name_ == 'bird':                       # SAM's mouth box is the whole beak: upper part locked (nose), lower mandible moves
+            fr = float(sub.get('split', 0.5)); ym = mouth[1] + fr * (mouth[3] - mouth[1])
+            nose, mouth = [mouth[0], mouth[1], mouth[2], ym], [mouth[0], ym, mouth[2], mouth[3]]
+            bird_lock = ym                            # the split line IS the lock line (lock_line's nose test rejects nose[3] == mouth[1])
+        prep.update(sub.get('prep') or {})
     N = cv2.imread(a.neutral, cv2.IMREAD_COLOR)
     if N is None:
         sys.exit('faceflow: unreadable neutral')
@@ -559,6 +634,8 @@ def main():
     s = WORK_H / H                       # full -> work
     w, h = int(round(W * s)), WORK_H
     lock_y, lock_src = lock_line(face, mouth, nose)
+    if bird_lock is not None:
+        lock_y, lock_src = bird_lock, 'bird-split'
     if isinstance(prep.get('mask'), dict):
         mk = prep['mask']; SHAPE[kind] = (mk['rx'], mk['ry'], mk['dy'])
 
@@ -592,8 +669,15 @@ def main():
         diag[name] = {'shift': [round(float(Wf[0, 2]), 2), round(float(Wf[1, 2]), 2)],
                       'scale': round(float(np.sqrt(abs(np.linalg.det(Wm[:, :2])))), 4)}
 
-    # 2) character3d: squash a key's mouth opening toward the upper lip (classical remap, smooth falloff)
-    if prep.get('squash'):
+    for dst, src in (prep.get('derive') or {}).items():      # toy: AH2 = the same felt opening, squashed taller below
+        if src in ALN and dst not in ALN:
+            ALN[dst] = ALN[src].copy(); diag[dst] = dict(diag[src], derivedFrom=src)
+    open_keys = [k for k in ALN if k not in ('MBP', 'BLINK')]
+    per_key = lambda v: {k: float(v) for k in open_keys} if isinstance(v, (int, float)) else {k: float(x) for k, x in (v or {}).items()}
+    squash, widen = per_key(prep.get('squash')), per_key(prep.get('widen'))
+
+    # 2) squash / widen a key's mouth opening about the upper lip / mouth centre (classical remap, smooth falloff)
+    if squash or widen:
         fwp, fhp = (face[2] - face[0]) * W, (face[3] - face[1]) * H
         anc = mouth[1] * H
         mcx_ = (mouth[0] + mouth[2]) / 2 * W
@@ -601,10 +685,16 @@ def main():
         wt = np.zeros((H, W), np.float32)
         cv2.ellipse(wt, (int(mcx_), int(anc + 0.06 * fhp)), (int(0.2 * fwp), int(0.14 * fhp)), 0, 0, 360, 1.0, -1)
         wt = cv2.GaussianBlur(wt, (0, 0), 0.05 * fwp) * (gy_ > anc)
-        for nm, sy in prep['squash'].items():
-            if nm in ALN:
-                my = gy_ + wt * ((anc + (gy_ - anc) / float(sy)) - gy_)
-                ALN[nm] = cv2.remap(ALN[nm], gx_, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        for nm in ALN:
+            sy, sx = squash.get(nm, 1.0), widen.get(nm, 1.0)
+            if sy == 1.0 and sx == 1.0: continue
+            my = gy_ + wt * ((anc + (gy_ - anc) / sy) - gy_)
+            mx = gx_ + wt * ((mcx_ + (gx_ - mcx_) / sx) - gx_)
+            ALN[nm] = cv2.remap(ALN[nm], mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+    # 2a) small animal mouths: darken the upper part of the opening so it reads at phone size (the tongue tip stays pink)
+    if prep.get('shade'):
+        ALN = shade_openings(ALN, N, face, mouth, float(prep['shade']))
 
     # 2b) 3D: lift pitch-black mouth interiors to a dark warm red-brown (profiles prep.interior = B,G,R; classical)
     if prep.get('interior'):
@@ -633,9 +723,19 @@ def main():
         Nl = cv2.cvtColor(N, cv2.COLOR_BGR2GRAY).astype(np.float32)
         lim = np.zeros((H, W), np.uint8)
         cv2.ellipse(lim, (int(mcx), int(mcy + 0.2 * mw)), (int(1.1 * mw), int(0.75 * mw)), 0, 0, 360, 1, -1)
+        dot = prep.get('fitDotMouth') or {}
+        if dot and (mouth[2] - mouth[0]) < 0.08 * (face[2] - face[0]):
+            fit = {k: float(v) for k, v in (dot.get('fit') or {}).items()}          # chibi: dot-sized closed mouth, bigger openings
+            for dst, src in (dot.get('replace') or {}).items():                    # SM := a small open WD (closed < small open < big open)
+                if src in ALN:
+                    ALN[dst] = ALN[src].copy(); diag[dst] = dict(diag.get(src, {}), derivedFrom=src)   # codex P2: SM may have been rejected
         if prep.get('cleanPlate', True):
             skin = np.median(Nl[lim > 0])
-            line = cv2.dilate(((Nl < skin - 35) & (lim > 0)).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+            lim_line = lim.copy()
+            if prep.get('plateLineOnly', True):              # paint out only the real closed-mouth line, never chin / neck lines
+                lim_line = np.zeros((H, W), np.uint8); rmw = (mouth[2] - mouth[0]) * W
+                cv2.ellipse(lim_line, (int(mcx), int(mcy)), (int(0.75 * rmw + 6), int(0.5 * rmw + 6)), 0, 0, 360, 1, -1)
+            line = cv2.dilate(((Nl < skin - 35) & (lim > 0) & (lim_line > 0)).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
             N0 = cv2.inpaint(N, line, 7, cv2.INPAINT_TELEA).astype(np.float32)
         else:
             N0 = base
@@ -656,13 +756,19 @@ def main():
             ys_, xs_ = np.where(reg_ > 0)
             bx1, bx2, by1, by2 = xs_.min(), xs_.max(), ys_.min(), ys_.max()
             bw_, bh_ = bx2 - bx1 + 1, by2 - by1 + 1
-            sc = min(1.0, fit.get(name, 0) * mw / bw_) if fit.get(name, 0) > 0 else 1.0
+            sc = min(float(prep.get('fitMaxUpscale', 1.0)), fit.get(name, 0) * mw / bw_) if fit.get(name, 0) > 0 else 1.0   # tiny drawn mouths may grow
             kcx, kcy = (bx1 + bx2) / 2, (by1 + by2) / 2
             tcx, tcy = mcx, mcy + 0.2 * bh_ * sc
             A = np.float32([[sc, 0, tcx - sc * kcx], [0, sc, tcy - sc * kcy]])
             pk = cv2.dilate(reg_, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))).astype(np.float32)
             pk = cv2.GaussianBlur(cv2.warpAffine(pk, A, (W, H), flags=cv2.INTER_LINEAR), (0, 0), max(1.0, 0.012 * mw))[..., None]
-            ALN[name] = N0 * (1 - pk) + cv2.warpAffine(al, A, (W, H), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE) * pk
+            ak = cv2.warpAffine(al, A, (W, H), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            if prep.get('pasteDrawnOnly', True):            # paste only the drawing; the skin comes from the plate (no light halo)
+                dk_ = np.abs(ak - N0).max(2)
+                inside = cv2.warpAffine(reg_.astype(np.float32), A, (W, H), flags=cv2.INTER_LINEAR) > 0.5      # filled mouth (teeth, tongue)
+                draw = ((dk_ > 45) | inside).astype(np.uint8)    # codex P2: white teeth on light skin stay; only the outside skin is dropped
+                pk = pk * cv2.GaussianBlur(cv2.dilate(draw, np.ones((3, 3), np.uint8)).astype(np.float32), (0, 0), 1.0)[..., None]
+            ALN[name] = N0 * (1 - pk) + ak * pk
             diag[name]['fit'] = {'w_x': round(bw_ / mw, 2), 'scale': round(sc, 2)}
         big, dil, fe, thr = DIFF_MASK['character2d']
         lim2 = np.zeros((H, W), np.float32)
@@ -699,6 +805,7 @@ def main():
 
     # 4) neutral ROI (+ human colour fix, applied identically to the neutral and every key)
     cfx = COLORFIX.get(kind)
+    RIG_RUNTIME = ((lip_map(kind).get('runtime') or {}).get('default') == 'humanV41')
     mouth_px = (int(mouth[0] * W) - X1, int(mouth[1] * H) - Y1, int(mouth[2] * W) - X1, int(mouth[3] * H) - Y1)
     Mr = Mfull[roiF][..., None]
     NR = base[roiF]
@@ -733,7 +840,8 @@ def main():
     files, nbytes = {}, 0
     mask_w3 = Mw[..., None]
     for name, al in ALN.items():
-        off = (base[band] - al[band]).mean(0) if band.any() else np.zeros(3, np.float32)
+        colour_match = prep.get('colourMatch', prep.get('mask') != 'diff')   # 2D: off (the band holds the drawing -> white halo)
+        off = (base[band] - al[band]).mean(0) if (band.any() and colour_match) else np.zeros(3, np.float32)
         comp = base * (1 - m3) + np.clip(al + off, 0, 255) * m3
         cr = comp[roiF]
         if cfx:
@@ -745,11 +853,14 @@ def main():
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
-        if kind == 'human':
-            # 6 px at a 540-wide frame, scaled to this face set's resolution
-            lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
-            cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
-            ent['lip'] = f'{name}.lip.png'
+        if kind == 'human' or RIG_RUNTIME:
+            if kind == 'human':
+                # 6 px at a 540-wide frame, scaled to this face set's resolution. Not for the non-human kinds on the human
+                # rig: a missed lip border on a wide 3D key would hide part of its opening (codex P2) — they keep the
+                # full key texture and only get the teeth-layer interior below.
+                lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
+                cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
+                ent['lip'] = f'{name}.lip.png'
             if name != 'MBP':   # lip rig teeth layer (v41): where this key's teeth / cavity may show, same size as the lip mask
                 im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0, NR)
                 cv2.imwrite(os.path.join(a.out, f'{name}.interior.png'), np.clip(im_ * 255 + 0.5, 0, 255).astype(np.uint8))
@@ -773,7 +884,8 @@ def main():
     flow = {'version': 1, 'roi': [round(X1 / W, 5), round(Y1 / H, 5), round(X2 / W, 5), round(Y2 / H, 5)],
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
-            'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': lip_map(kind)}
+            'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': deep_merge(lip_map(kind), map_extra),
+            **({'rules': [r[0] for r in rules]} if rules else {})}
     if a.blink and a.eyes and kind == 'character2d':
         eyes = [box(e) for e in a.eyes.split(';') if e]
         BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)

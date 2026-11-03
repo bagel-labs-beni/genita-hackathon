@@ -7,6 +7,7 @@ import { tableCounts, testDb } from "./helpers/db.ts";
 const USER_TABLES = [
   "auth_codes",
   "auth_sessions",
+  "call_summaries",
   "clip_jobs",
   "companion_emotions",
   "companion_images",
@@ -31,19 +32,26 @@ const ALL_TABLES = [...USER_TABLES, "email_codes"].sort();
 test("F1-L4: migrations go up and down on an empty database", async () => {
   const db = await testDb(false);
   try {
-    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store"]);
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store", "006_call_summaries", "007_companion_demo"]);
     assert.deepEqual(await migrateUp(db), [], "second up is a no-op");
     assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES);
+    const demoCol = () => db.query("SELECT 1 FROM information_schema.columns WHERE table_name = 'companions' AND column_name = 'demo'").then((r) => r.rows.length);
+    assert.equal(await demoCol(), 1);
+    assert.deepEqual(await migrateDown(db), ["007_companion_demo"]);
+    assert.equal(await demoCol(), 0, "007 down drops only the demo column");
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES);
+    assert.deepEqual(await migrateDown(db), ["006_call_summaries"]);
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES.filter((t) => t !== "call_summaries"));
     assert.deepEqual(await migrateDown(db), ["005_memory_store"]);
-    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES.filter((t) => !t.startsWith("memory_")));
+    assert.deepEqual(Object.keys(await tableCounts(db)), ALL_TABLES.filter((t) => !t.startsWith("memory_") && t !== "call_summaries"));
     assert.deepEqual(await migrateDown(db), ["003_email_login"]);
-    assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES.filter((t) => !t.startsWith("memory_")));
+    assert.deepEqual(Object.keys(await tableCounts(db)), USER_TABLES.filter((t) => !t.startsWith("memory_") && t !== "call_summaries"));
     assert.deepEqual(await migrateDown(db), ["001_init"]);
     assert.deepEqual(Object.keys(await tableCounts(db)), []);
-    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store"], "up again after down");
+    assert.deepEqual(await migrateUp(db), ["001_init", "003_email_login", "005_memory_store", "006_call_summaries", "007_companion_demo"], "up again after down");
     // with email accounts present the down step refuses instead of deleting them (and their data)
     await db.query("INSERT INTO users (provider, provider_sub, email) VALUES ('email', 'a@example.com', 'a@example.com')");
-    assert.deepEqual(await migrateDown(db), ["005_memory_store"], "the memory tables go first");
+    assert.deepEqual(await migrateDown(db, 3), ["007_companion_demo", "006_call_summaries", "005_memory_store"], "the memory tables go first");
     await assert.rejects(migrateDown(db));
     assert.equal((await db.query("SELECT count(*)::int AS n FROM users WHERE provider = 'email'")).rows[0].n, 1);
   } finally {
@@ -79,6 +87,7 @@ test("F1-L4: deleting a user leaves 0 rows in every table (cascade)", async () =
       await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [id]);
       await db.query("INSERT INTO memory_tombstones (user_id, id) VALUES ($1, 'mem_2')", [id]);
       await db.query("INSERT INTO memory_state (user_id, state_json) VALUES ($1, '{}'::jsonb)", [id]);
+      await db.query("INSERT INTO call_summaries (user_id, thread_id, turns, summary_json) VALUES ($1, 't1', 1, '{}'::jsonb)", [id]);
     }
 
     const before = await tableCounts(db, u.id);
@@ -103,6 +112,12 @@ test("005 rollback refuses while memories are stored (a failed multi-step down n
   try {
     const { user } = await new Accounts(db).upsertUser({ provider: "dev", sub: "mem" });
     await db.query("INSERT INTO memory_items (user_id, id, item_json) VALUES ($1, 'mem_1', '{}'::jsonb)", [user.id]);
+    await db.query("INSERT INTO call_summaries (user_id, thread_id, turns, summary_json) VALUES ($1, 't', 1, '{}'::jsonb)", [user.id]);
+    assert.deepEqual(await migrateDown(db), ["007_companion_demo"], "the demo column goes first");
+    await assert.rejects(migrateDown(db), "006 refuses while summaries are stored");
+    assert.equal((await db.query("SELECT count(*)::int AS n FROM call_summaries")).rows[0].n, 1);
+    await db.query("DELETE FROM call_summaries");
+    assert.deepEqual(await migrateDown(db), ["006_call_summaries"]);
     await assert.rejects(migrateDown(db));
     assert.equal((await db.query("SELECT count(*)::int AS n FROM memory_items")).rows[0].n, 1, "rows kept");
     await db.query("DELETE FROM memory_items");

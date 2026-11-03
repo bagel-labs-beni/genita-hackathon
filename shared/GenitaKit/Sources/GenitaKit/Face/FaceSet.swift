@@ -6,6 +6,7 @@
 // shape falls back to its nearest neighbour.
 
 import CoreGraphics
+import CoreImage
 import Foundation
 import ImageIO
 
@@ -56,6 +57,21 @@ public struct FaceManifest: Codable, Equatable, Sendable {
 
 public enum FaceExpression: String, CaseIterable, Sendable {
     case neutral, blink, smile, warm
+    /// Expression layer stills (prep 11/3 night, Muse Image): only shown while a server `expression` event is active.
+    case surprised, concerned
+
+    /// The still a server `expression` tag shows, in preference order (a face prepped before a key existed falls back).
+    /// A soft smile (intensity < 0.55: a warm reply) is the tender `warm` look, a fuller one the `smile`. A laugh is the
+    /// full smile too (a frozen open-mouth laugh still read as fake; half-blended laugh eyes read as sleepy).
+    public static func stills(forTag tag: String, intensity: Double) -> [FaceExpression] {
+        switch tag {
+        case "smile": return intensity < 0.55 ? [.warm, .smile] : [.smile, .warm]
+        case "smileopen", "laugh": return [.smile, .warm]
+        case "surprised": return [.surprised]
+        case "concerned": return [.concerned]
+        default: return []
+        }
+    }
 
     /// The speaking emotion's base face.
     public init(emotion: String?) {
@@ -96,6 +112,10 @@ public final class FaceSet: @unchecked Sendable {
     public let patches: [LipViseme: FaceMouthPatch]
     /// Flow-morph data when prep produced it (option B).
     public let flow: FaceFlowData?
+    /// Person (subject) mask from prep (`images.person`, SAM 3.1): head / body motion stays inside it so
+    /// the background never moves. Absent → a fixed head-and-shoulders ellipse lock (no on-device ML:
+    /// runtime AI is Meta-only).
+    public let personMask: CGImage?
     /// What each shape draws after fallbacks (nil = the expression's own mouth).
     public let resolved: [LipViseme: LipViseme?]
     /// Load decisions worth logging (rejections, fallbacks, shifts).
@@ -212,6 +232,11 @@ public final class FaceSet: @unchecked Sendable {
             do { flowData = try FaceFlowData(manifest: fm, stillSize: pixelSize, load: load) } catch { notes.append("flow: \(error) → key patches") }
         }
         self.flow = flowData
+        var person: CGImage?   // prep only
+        if let ref = manifest.images["person"] {
+            do { person = try Self.decode(try load(ref), name: "person") } catch { notes.append("person: \(error) → ellipse layers") }
+        }
+        personMask = person
         let resolved = Self.resolve(available: Set(patches.keys))
         for v in LipViseme.shapes where resolved[v]! != v {
             notes.append("\(v.rawValue) → \(resolved[v]!.map(\.rawValue) ?? "rest")")

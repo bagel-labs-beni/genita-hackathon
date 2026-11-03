@@ -3,7 +3,7 @@ import Foundation
 
 /// Debug builds only. Puts the Finds sheet into one of the r03 board's states using events recorded from a real
 /// genita-server run (Resources/finds-fixture.json: fridge recipe, outfit, link; `npm run finds:e2e -- --record`).
-///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE
+///   GENITA_FINDS_STATE = 1…19 (r03 frame numbers), 20 = IC-4 "can't see it", 21–24 = PF-1 product search (#120), 25 = fridge pill (#214), 26 = FT-NOSEE, 41 = reason chips (D48 ③), 42 = budget reason chip on a product card (Knows-Me Map)
 /// Pictures point at bundled illustrations ("bundle:finds-step-1") instead of the server.
 extension CallController {
     func installFindsFixture(environment env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -95,6 +95,30 @@ extension FindsModel {
             }
             play([(recipe, failed)]); state = .full
         case 16: play([(recipe, recipe.events)]); state = .half; offline = true
+        case 41:
+            // D48 ③: the same recipe card with reason chips from the user's taste lines
+            let withReasons = recipe.events.map { e -> ServerEvent in
+                guard case var .findCreated(c) = e else { return e }
+                c.card.reasons = [.init(text: "Your taste: quick weeknight food", source: "Quick, simple weeknight cooking.", from: "profile"), .init(text: "You said: no cilantro", source: "no cilantro", from: "call")]
+                return .findCreated(c)
+            }
+            play([(recipe, withReasons)]); state = .half
+        case 42:
+            // Knows-Me Map: the PF-1 product card with the profile's budget chip ("Your budget: under $100"), $89 / $64
+            guard let product else { return }
+            saveRemote = { _, _ in true }
+            let priced = product.events.map { e -> ServerEvent in
+                guard case var .findCreated(c) = e else { return e }
+                let prices = ["$89", "$64"]
+                if var items = c.card.products {
+                    for i in items.indices where i < prices.count { items[i].price = prices[i] }
+                    c.card.products = items
+                }
+                c.card.reasons = [.init(text: "Your style: clean, minimal clothes", source: "Style: Clean, minimal clothes.", from: "profile"),
+                                  .init(text: "Your budget: under $100", source: "Budget: usually under $100 for clothes.", from: "profile")]
+                return .findCreated(c)
+            }
+            play([(product, priced)]); state = .full
         case 17: play([(recipe, recipe.events)]); state = .half; close()
         case 19: play([(recipe, recipe.events)]); state = .full; scrollTarget = "how"
         case 30:
@@ -102,6 +126,16 @@ extension FindsModel {
             Task { [weak self] in
                 for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
                 if let last = recipe.events.last(where: { if case .observeBoxes = $0 { return true }; return false }), case let .observeBoxes(b) = last { self?.boxes.apply(b) }
+            }
+        case 33, 34:
+            // demo S3 · SAM pixel masks (flag GENITA_SAM_MASKS_UI=1): a live #298 observe.boxes with masks, recorded on
+            // the fixture camera frame (33 = fridge, finds-frame-fridge-1; 34 = counter, finds-frame-counter-0, 8 items)
+            let name = n == 33 ? "finds-masks-fixture" : "finds-masks-counter"
+            Task { [weak self] in
+                for _ in 0..<80 where CallController.shared.cameraOn == false { try? await Task.sleep(for: .milliseconds(100)) }
+                guard let url = Bundle.main.url(forResource: name, withExtension: "json"), let data = try? Data(contentsOf: url),
+                      case let .observeBoxes(b)? = try? JSONDecoder().decode(ServerEvent.self, from: data) else { return }
+                self?.boxes.apply(b)
             }
         case 26:
             // FT-NOSEE: boxes on the camera, no sheet, the check card says the rice is not in view
@@ -177,7 +211,10 @@ actor FixtureFindsAPI: FindsAPI {
             m.load(recorded: run.events, frames: run.frames)
             guard var c = m.entries.first?.card else { return }
             let original = c.id
-            c.createdAt = iso.string(from: now.addingTimeInterval(-hoursAgo * 3600))
+            // anchored at noon today, not "now": a run just after midnight put the "today" cards on yesterday and the
+            // "yesterday" one two days back (testFindsListFrame failed every CI run 00:00–03:00 UTC)
+            let noon = Calendar.current.startOfDay(for: now).addingTimeInterval(12 * 3600)
+            c.createdAt = iso.string(from: noon.addingTimeInterval(-hoursAgo * 3600))
             change(&c)
             if cards.contains(where: { $0.id == c.id }) { c.id = UUID().uuidString.lowercased() }
             cards.append(c)

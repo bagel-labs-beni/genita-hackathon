@@ -289,6 +289,33 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dvv "$APP" 2>&1 | grep -E "^(Authority|TeamIdentifier|Runtime|Identifier)" || true
 
+      - name: Notarize and staple the app
+        # The DMG's ticket stays on the DMG: an app copied to /Applications carries none, so Gatekeeper must reach
+        # Apple to open it (offline judge Mac → blocked). Notarize the app itself first and staple it, then pack it.
+        env:
+          ASC_KEY_P8: ${{ secrets.GENITA_ASC_KEY_P8 }}
+          ASC_ISSUER_ID: ${{ secrets.GENITA_ASC_ISSUER_ID }}
+        run: |
+          APP=ios-app/build/Release/GenitaMac.app
+          umask 077
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          ZIP="$RUNNER_TEMP/GenitaMac-notarize.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
+            --wait --timeout 30m --output-format json > "$RUNNER_TEMP/notary-app.json" || true
+          cat "$RUNNER_TEMP/notary-app.json"
+          read -r STATUS ID < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("status","none"), d.get("id","none"))' "$RUNNER_TEMP/notary-app.json" 2>/dev/null || echo "none none")
+          if [ "$ID" != "none" ] && [ "$STATUS" != "Accepted" ]; then
+            xcrun notarytool log "$ID" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" | head -c 8000 || true
+          fi
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$ZIP"
+          test "$STATUS" = "Accepted"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$APP" && xcrun stapler validate "$APP" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
       - name: Build and sign DMG
         run: |
           APP=ios-app/build/Release/GenitaMac.app
@@ -321,8 +348,9 @@ jobs:
           rm -f "$RUNNER_TEMP/AuthKey.p8"
           test "$STATUS" = "Accepted"
           # stapler fetches the ticket from Apple's CDN; retry its network flakes (error 68)
-          for i in 1 2 3 4; do xcrun stapler staple "$DMG" && break; [ "$i" = 4 ] && exit 1; sleep $((i * 15)); done
-          xcrun stapler validate "$DMG"
+          # stapler talks to Apple's ticket CDN (CloudKit): retry staple + validate together on its network flakes (error 68)
+          ok=; for i in 1 2 3 4 5 6; do xcrun stapler staple "$DMG" && xcrun stapler validate "$DMG" && { ok=1; break; }; sleep $((i * 20)); done
+          test -n "$ok"
 
       - name: Verify Gatekeeper
         run: |
@@ -331,16 +359,30 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG" >/dev/null
           spctl -a -t exec -vv "$MNT/GenitaMac.app"
           codesign --verify --deep --strict "$MNT/GenitaMac.app"
+          # the app inside carries its own ticket (opens offline after the copy to /Applications)
+          xcrun stapler validate "$MNT/GenitaMac.app"
           # Sparkle compares versions: the shipped app must carry both, equal to this run's numbers
           V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
           SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
           echo "DMG app: $SV ($V)"
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
-          hdiutil detach "$MNT" >/dev/null
+          # #347: a notarized DMG must also start. Sparkle needs the Frameworks rpath, then a 10 s launch smoke.
+          BIN="$MNT/GenitaMac.app/Contents/MacOS/GenitaMac"
+          otool -l "$BIN" | grep -A2 LC_RPATH | grep -q "@executable_path/../Frameworks" || { echo "::error::GenitaMac has no @executable_path/../Frameworks rpath (Sparkle won't load)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          "$BIN" > "$RUNNER_TEMP/launch.log" 2>&1 &
+          APP=$!
+          sleep 10
+          if kill -0 "$APP" 2>/dev/null; then
+            kill "$APP" 2>/dev/null || true
+            echo "launch smoke: GenitaMac still running after 10 s"
+          else
+            echo "::error::GenitaMac exited within 10 s of launch"; tail -n 40 "$RUNNER_TEMP/launch.log"; hdiutil detach "$MNT" >/dev/null; exit 1
+          fi
+          hdiutil detach "$MNT" >/dev/null || { sleep 2; hdiutil detach -force "$MNT" >/dev/null; }
           shasum -a 256 "$DMG"
           {
             echo "### Genita Mac DMG"
-            echo "$(basename "$DMG"): Developer ID signed, notarized, stapled. Gatekeeper: accepted."
+            echo "$(basename "$DMG"): Developer ID signed, notarized, stapled (DMG and the app inside). Gatekeeper: accepted."
             echo "SHA-256: $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
             echo "Source commit: $GITHUB_SHA"
           } >> "$GITHUB_STEP_SUMMARY"

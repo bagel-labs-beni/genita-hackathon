@@ -133,6 +133,88 @@ function setup(opts: { sparkText?: string; ttsChunks?: number; ttsDelayMs?: numb
 
 const persona = { name: "Mina", kind: "animal", traits: ["warm"] };
 
+for (const [text, expected] of [
+  ["<curious> I'll look that up. Tofu works.", "Tofu works."],
+  ["<curious> 기억을 찾아볼게요. 두부가 좋아요.", "두부가 좋아요."],
+  // conversation engine v1 (prod smoke 11/3): an announcement is never spoken; announcement-only retries, then says it doesn't know
+  ["<curious> I'll look that up.", process.env.GENITA_CONVO_V1 === "0" ? "I'll look that up." : "Hmm, not sure off the top of my head."],
+  ["<warm> Let me think — tofu works.", "Let me think — tofu works."],
+  // an announcement after real content is kept (v1 drops only a leading one, Codex #356 r6)
+  ["<warm> Tofu works. I'll look that up.", "Tofu works. I'll look that up."],
+] as const) test(`first narration only, with more content required: ${text}`, async (t) => {
+  const { session, client } = setup({ sparkText: text });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What works?" }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, expected);
+});
+
+for (const [text, expected] of [
+  ["<curious> One sec, looking that up. Tofu works.", "Tofu works."],
+  ["<curious> 잠시만요, 검색해 볼게요. 두부가 좋아요.", "두부가 좋아요."],
+  ["<curious> I'll look that up — tofu works.", "Tofu works."],
+  ["<warm> One sec, the tofu is burning.", "One sec, the tofu is burning."],
+  ["<warm> One sec,", "One sec,"],
+] as const) test(`eager first clause protects wait prefixes: ${text}`, async (t) => {
+  const { session, client, ttsCalls } = setup({ sparkText: text, deps: { config: { ...config, voice: {
+    url: "http://voice.invalid", token: "fake", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless",
+  } } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "What works?" }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, expected);
+  assert.deepEqual(ttsCalls, [expected]);
+});
+
+test("a web_search after narration also suppresses the first clause", async (t) => {
+  const { session, client, ttsCalls } = setup({ deps: { async *spark(): AsyncGenerator<SparkStreamEvent> {
+    yield { type: "text", delta: "<curious> Let me search the web for that." };
+    yield { type: "tool", name: "web_search", status: "in_progress" };
+    yield { type: "text", delta: "Tofu works." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a recipe." }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, "Tofu works.");
+  assert.deepEqual(ttsCalls, ["Tofu works."]);
+});
+
+test("tool narration with no answer is retried instead of producing an empty reply", async (t) => {
+  const calls: SparkRequest[] = [];
+  const { session, client, ttsCalls } = setup({ deps: { async *spark(req): AsyncGenerator<SparkStreamEvent> {
+    calls.push(req);
+    if (calls.length === 1) {
+      yield { type: "text", delta: "<curious> Let me search the web for that." };
+      yield { type: "tool", name: "web_search", status: "completed" };
+      yield { type: "done", responseId: "r1", text: "", status: "incomplete" };
+      return;
+    }
+    yield { type: "text", delta: "Tofu works." };
+    yield { type: "done", responseId: "r2", text: "Tofu works.", status: "completed" };
+  } } });
+  t.after(() => session.close());
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find a recipe." }));
+  assert.equal((await client.waitFor((m) => m.type === "reply")).text, "Tofu works.");
+  assert.deepEqual(ttsCalls, ["Tofu works."]);
+  assert.equal(calls.length, 2);
+  assert.equal(client.json.filter((m) => m.type === "reply.delta").map((m) => m.text).join(""), "Tofu works.");
+});
+
+test("interpretation preserves a translated tool announcement as content", async (t) => {
+  const text = "I'll look that up. Tofu works.";
+  const { session, client, ttsCalls } = setup({ sparkText: text });
+  t.after(() => session.close());
+  // explicit interpretation mode (chat no longer auto-interprets a Hangul line: English only, 11/3)
+  await session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", interpret: { other: "Korean" }, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "기억을 찾아볼게요. 두부가 좋아요." }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.interpret, true);
+  assert.equal(reply.text, text);
+  assert.deepEqual(ttsCalls, ["I'll look that up.", "Tofu works."]);
+});
+
 test("start → ready with lip plan; a voice turn streams reply text, framed audio and a final reply", async () => {
   const { asr, client, session, ttsCalls } = setup();
   await session.onClientText(JSON.stringify({ type: "start", persona, lip: "atlas" }));
@@ -209,13 +291,29 @@ test("barge-in: two words while speaking cancel Spark+TTS, tell the app, and sto
   session.close();
 });
 
-test("a Korean transcript in chat mode is interpreted, not answered as chat", async () => {
-  const { asr, client, session, sparkCalls } = setup({ sparkText: "<neutral> He's asking how to get to City Hall." });
+test("GENITA_ENGLISH_ONLY=0: a Korean transcript in chat mode is interpreted, not answered as chat", async () => {
+  process.env.GENITA_ENGLISH_ONLY = "0";
+  try {
+    const { asr, client, session, sparkCalls } = setup({ sparkText: "<neutral> He's asking how to get to City Hall." });
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechComplete", turnId: 0, text: "실례합니다, 시청 어떻게 가요?" });
+    await client.waitFor((m) => m.type === "reply");
+    assert.deepEqual(client.json.find((m) => m.type === "interpret.detected"), { type: "interpret.detected", from: "Korean", to: "English" });
+    assert.match(sparkCalls[0].instructions ?? "", /Someone near the user just spoke Korean/);
+    session.close();
+  } finally {
+    delete process.env.GENITA_ENGLISH_ONLY;
+  }
+});
+
+test("English only (default): a Korean transcript in chat mode gets a normal English chat reply, no translation", async () => {
+  const { asr, client, session, sparkCalls } = setup({ sparkText: "<curious> Wait, say that again?" });
   await session.onClientText(JSON.stringify({ type: "start", persona }));
   asr.fire({ type: "speechComplete", turnId: 0, text: "실례합니다, 시청 어떻게 가요?" });
   await client.waitFor((m) => m.type === "reply");
-  assert.deepEqual(client.json.find((m) => m.type === "interpret.detected"), { type: "interpret.detected", from: "Korean", to: "English" });
-  assert.match(sparkCalls[0].instructions ?? "", /Someone near the user just spoke Korean/);
+  assert.equal(client.json.find((m) => m.type === "interpret.detected"), undefined);
+  assert.doesNotMatch(sparkCalls[0].instructions ?? "", /Someone near the user just spoke/);
+  assert.match(sparkCalls[0].instructions ?? "", /Reply in English/);
   session.close();
 });
 
@@ -377,7 +475,7 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   await s2.onClientText(JSON.stringify({ type: "text", text: "What can I make with this?", frames: ["AAAA", "BBBB"] }));
   // ① the short line, not a full answer from the raw photo (which named milk and chicken)
   const ack = await client.waitFor((m) => m.type === "reply", 3000);
-  assert.equal(ack.text, "Let me take a look.");
+  assert.equal(ack.text, "Ooh, nice haul.");
   assert.equal(sparkCalls.length, before, "no full Spark answer about the photo");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
   // ③ only checked items, after their boxes ②
@@ -409,8 +507,9 @@ test("finds: fridge (D23, #122) — short line at once, boxes, then only checked
   s2.close();
 });
 
-test("finds: a product ask by voice alone → 'On it.' at once (no guessed answer), then the card and its line; saved to the account", async () => {
-  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: "<happy> Sure! Try the Acme jacket at acme.example.com." });
+test("finds: a product ask by voice → a quick in-character reaction (no tools, no products), then the card and its line; saved to the account", async () => {
+  const REACT = "<happy> Ooh, a light jacket for the weekend? Love that.";
+  const { client, session, ttsCalls, sparkCalls } = setup({ sparkText: REACT });
   const { MemoryFindsStore, ownerKey } = await import("../src/finds/store.ts");
   const store = new MemoryFindsStore();
   const P = ["https://shop.example.com/products/chore-jacket", "https://store.example.com/product/overshirt-123456.html"];
@@ -418,7 +517,7 @@ test("finds: a product ask by voice alone → 'On it.' at once (no guessed answe
   const vendors = {
     async spark(req: SparkRequest) {
       assert.match(JSON.stringify(req.input), /Clean, minimal clothes/, "the account's own import line");
-      await sleep(5);
+      await sleep(80); // a real search takes 10–30 s; the reaction must not wait for it
       return {
         text: JSON.stringify({ label: "Light jacket", title: "Two for the weekend", style_line: "Clean, minimal clothes.", situation_line: "This weekend", items: P.map((url, i) => ({ name: `Jacket ${i + 1}`, url, store: "Shop", price: "", taste: "Clean, minimal", situation: "For the weekend" })), say: "Two, both simple cuts." }),
         output: P.map((url) => ({ type: "web_search_call", status: "completed", action: { type: "open_page", url } })),
@@ -442,22 +541,63 @@ test("finds: a product ask by voice alone → 'On it.' at once (no guessed answe
   const before = sparkCalls.length;
   await s2.onClientText(JSON.stringify({ type: "text", text: "Jin, can we look for a jacket for this weekend?" }));
   const ack = await client.waitFor((m) => m.type === "reply", 3000);
-  assert.equal(ack.text, "On it.");
-  assert.equal(sparkCalls.length, before, "no full Spark answer for the turn (it would guess products and links)");
+  assert.equal(ack.text, "Ooh, a light jacket for the weekend? Love that.", "demo S5: a natural reaction, not a silent wait or 'On it.'");
+  const asked = sparkCalls.slice(before);
+  assert.equal(asked.length, 1, "one reaction call for the turn");
+  assert.equal(asked[0].tools, undefined, "no web_search or memory tools: nothing to narrate, nothing to guess");
+  assert.match(asked[0].instructions ?? "", /search for this is already running/, "the reaction line is the last instruction");
+  assert.match(asked[0].instructions ?? "", /talk to them as you/);
   const started = await client.waitFor((m) => m.type === "find.started", 3000);
   assert.equal(started.kind, "product");
   const created = await client.waitFor((m) => m.type === "find.created", 3000);
-  const ackDelta = client.json.find((m) => m.type === "reply.delta" && m.text === "On it.")!;
+  const ackDelta = client.json.find((m) => m.type === "reply.delta" && /Ooh/.test(String(m.text)))!;
   assert.ok(client.json.indexOf(ackDelta) < client.json.indexOf(created), "the short line comes before the card");
   const card = created.card as { products: { url: string }[] };
   assert.deepEqual(card.products.map((p) => p.url), P);
   await client.waitFor((m) => m.type === "reply" && m.text === "Two, both simple cuts.", 3000);
-  assert.deepEqual(ttsCalls.slice(-2), ["On it.", "Two, both simple cuts."]);
+  assert.equal(ttsCalls.at(-1), "Two, both simple cuts.");
+  assert.ok(ttsCalls.some((t) => /light jacket for the weekend/.test(t)), "the reaction was spoken");
   await sleep(10);
   assert.deepEqual(likesAsked, ["acct-7"]);
   const saved = await store.list(ownerKey("acct-7"));
   assert.equal(saved.length, 1);
   assert.equal(saved[0].kind, "product");
+  s2.close();
+});
+
+test("finds: demo S5 — if the reaction call fails, the product turn still says the short ack (never silence)", async () => {
+  const { client, session } = setup({ deps: { async *spark() { throw new Error("upstream 503"); } } });
+  const { MemoryFindsStore } = await import("../src/finds/store.ts");
+  const vendors = {
+    async spark() { await sleep(50); return { text: "", output: [] }; },
+    async *sparkStream() { yield { type: "done" as const, responseId: null, text: "", status: "completed" }; },
+    async sam() { return []; }, async image() { return Buffer.from([0xff, 0xd8]); }, async pageFacts() { return null; }, async productImage() { return null; },
+  };
+  const s2 = new Session("fp2", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, userId: "acct-8" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s2.onClientText(JSON.stringify({ type: "text", text: "Can you find me some white sneakers?" }));
+  const ack = await client.waitFor((m) => m.type === "reply" && !!m.text, 3000);
+  assert.equal(ack.text, "On it.");
+  s2.close();
+});
+
+test("finds: demo S5 — an empty reaction (done, no text) still says the short ack, and no tool-carrying retry", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { async *spark(req) { sparkCalls.push(req); yield { type: "done" as const, responseId: "r", text: "", status: "completed" }; } } });
+  const { MemoryFindsStore } = await import("../src/finds/store.ts");
+  const vendors = {
+    async spark() { await sleep(50); return { text: "", output: [] }; },
+    async *sparkStream() { yield { type: "done" as const, responseId: null, text: "", status: "completed" }; },
+    async sam() { return []; }, async image() { return Buffer.from([0xff, 0xd8]); }, async pageFacts() { return null; }, async productImage() { return null; },
+  };
+  const s2 = new Session("fp3", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, userId: "acct-9" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const before = sparkCalls.length;
+  await s2.onClientText(JSON.stringify({ type: "text", text: "Can you find me some white sneakers?" }));
+  const ack = await client.waitFor((m) => m.type === "reply" && !!m.text, 3000);
+  assert.equal(ack.text, "On it.");
+  assert.ok(sparkCalls.slice(before).every((r) => !r.tools?.length), "never a full answer with web_search on a product turn");
   s2.close();
 });
 
@@ -702,5 +842,35 @@ test("D21 (Codex P2): a greeting the window could not deliver (companion busy) i
   await session.onClientText(JSON.stringify({ type: "text", text: "Call yourself Max" }));
   await client.waitFor((m) => m.type === "companion.named");
   assert.equal(asksGreeting(sparkCalls), 0);
+  session.close();
+});
+
+test("GENITA_BACKCHANNEL=1: a long user turn that pauses mid-sentence gets one backchannel event, never a reply", async () => {
+  process.env.GENITA_BACKCHANNEL = "1";
+  let clock = 0;
+  const { asr, client, session, sparkCalls } = setup({ deps: { now: () => clock } });
+  try {
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechStart", turnId: 0 });
+    clock += 4000;
+    asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+    const bc = await client.waitFor((m) => m.type === "backchannel", 3000);
+    assert.equal(bc.kind, "mm");
+    assert.equal(sparkCalls.length, 0, "no reply was started");
+  } finally {
+    delete process.env.GENITA_BACKCHANNEL;
+    session.close();
+  }
+});
+
+test("backchannel is off by default: the same pause sends nothing", async () => {
+  let clock = 0;
+  const { asr, client, session } = setup({ deps: { now: () => clock } });
+  await session.onClientText(JSON.stringify({ type: "start", persona }));
+  asr.fire({ type: "speechStart", turnId: 0 });
+  clock += 4000;
+  asr.fire({ type: "partial", text: "so today at work my manager pulled me into this meeting and then he started" });
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(!client.json.some((m) => m.type === "backchannel"));
   session.close();
 });

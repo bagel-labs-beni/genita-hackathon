@@ -112,22 +112,45 @@ test("recipe summary lines", () => {
     { id: "3", name: "cooked rice", tier: "buy" as const, from: "recipe" as const },
     { id: "4", name: "sesame oil", tier: "buy" as const, from: "recipe" as const, optional: true },
   ];
-  assert.deepEqual(recipeSummary(items, 15), { subtitle: "About 15 min · You have 2, need cooked rice", status: "Need cooked rice" });
-  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "You have 2, nothing to buy", status: "You have it all" });
+  // a maybe is not had (sweep 11/3 P2): "Have 1 · 1 to check"
+  assert.deepEqual(recipeSummary(items, 15), { subtitle: "15 min · 1 to check · Need cooked rice", status: "Need cooked rice" }, "over 38 chars: the count goes first (#215)");
+  assert.deepEqual(recipeSummary(items.slice(0, 2), null), { subtitle: "Have 1 · 1 to check", status: "1 to check" });
+  assert.deepEqual(recipeSummary([items[0]], null), { subtitle: "Have 1 · Nothing to buy", status: "You have it all" });
+  assert.deepEqual(recipeSummary([items[1], { ...items[1], id: "5", name: "egg" }], 10), { subtitle: "10 min · 2 to check", status: "2 to check" });
+  const long = [items[0], items[1], { id: "6", name: "Shaoxing cooking wine", tier: "buy" as const, from: "recipe" as const }, { id: "7", name: "dried shiitake mushrooms", tier: "buy" as const, from: "recipe" as const }];
+  assert.ok(recipeSummary(long, 15).subtitle.length <= 38, recipeSummary(long, 15).subtitle);
+  // still checking: no count at all (it read "You have 0, nothing to buy")
+  assert.deepEqual(recipeSummary([{ ...items[0], tier: "checking" as const }, items[1]], 15), { subtitle: "15 min", status: "" });
+});
+
+test("#215: the recipe line fits beside the picture and the shopping part is never cut", () => {
+  const it = (name: string, tier: "have" | "buy") => ({ id: name, name, tier, from: "recipe" as const });
+  const six = ["eggs", "rice", "garlic", "onion", "kimchi", "spam"].map((n) => it(n, "have"));
+  // the QA case: "About 15 min · You have 6, need soy sa…" at 390 pt
+  assert.equal(recipeSummary([...six, it("soy sauce", "buy")], 15).subtitle, "15 min · Have 6 · Need soy sauce");
+  // two long names: the count goes first, the names stay
+  assert.equal(recipeSummary([...six, it("gochujang", "buy"), it("scallions", "buy")], 15).subtitle, "15 min · Need gochujang and scallions");
+  // too long either way: how many to buy
+  assert.equal(recipeSummary([...six, it("Shaoxing cooking wine", "buy"), it("dried shiitake mushrooms", "buy")], 25).subtitle, "25 min · Have 6 · Need 2 things");
+  assert.equal(recipeSummary([...six, it("a", "buy"), it("b", "buy"), it("c", "buy")], 15).subtitle, "15 min · Have 6 · Need 3 things");
+  for (const n of [["soy sauce"], ["gochujang", "scallions"], ["Shaoxing cooking wine", "dried shiitake mushrooms"], ["x", "y", "z"]]) {
+    const line = recipeSummary([...six, ...n.map((x) => it(x, "buy"))], 120).subtitle;
+    assert.ok(line.length <= 38, `${line} (${line.length})`);
+  }
 });
 
 test("confirm 맞아?: yes → have; no → buy (recipe) or gone (camera only)", () => {
   const card = { items: [
     { id: "a", name: "kimchi", tier: "maybe", from: "both", hint: box },
     { id: "b", name: "jar", tier: "maybe", from: "camera" },
-  ], subtitle: "About 15 min · You have 2, nothing to buy" } as unknown as FindCard;
+  ], subtitle: "15 min · Have 2 · Nothing to buy" } as unknown as FindCard;
   confirmItem(card, "a", true);
   assert.equal(card.items[0].tier, "have");
   assert.equal(card.items[0].confirmed, "yes");
   assert.equal(card.items[0].hint, undefined);
   confirmItem(card, "b", false);
   assert.equal(card.items.length, 1);
-  assert.match(card.subtitle, /^About 15 min · You have 1/);
+  assert.equal(card.subtitle, "15 min · Have 1 · Nothing to buy");
   const c2 = { items: [{ id: "c", name: "rice", tier: "maybe", from: "recipe" }], subtitle: "" } as unknown as FindCard;
   confirmItem(c2, "c", false);
   assert.equal(c2.items[0].tier, "buy");
@@ -161,6 +184,12 @@ test("intent: link wins; camera + cooking → recipe; camera + clothes → outfi
   assert.deepEqual(classifyTurn("냉장고에 있는 걸로 뭐 해 먹지?", true), { kind: "recipe" });
   assert.deepEqual(classifyTurn("Which one should I wear tonight?", true), { kind: "outfit" });
   assert.deepEqual(classifyTurn("뭐 입을까?", true), { kind: "outfit" });
+  // free-play phrasings (functional sweep 11/3): "looks better on me" with the camera on is an outfit ask
+  assert.deepEqual(classifyTurn("Which of these looks better on me today?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Does this look good on me?", true), { kind: "outfit" });
+  assert.deepEqual(classifyTurn("Which suits me better, left or right?", true), { kind: "outfit" });
+  assert.equal(classifyTurn("Which of these looks better on me today?", false), null);
+  assert.equal(classifyTurn("Which of these avocados looks ripe?", true), null);
   assert.deepEqual(classifyTurn("look at https://x.com/a", false), { kind: "link", url: "https://x.com/a" });
   assert.equal(classifyTurn("What can I make for dinner?", false), null);
   assert.equal(classifyTurn("Do you like my cat?", true), null);
@@ -272,7 +301,9 @@ test("recipe pipeline: IC-1 list first, card, 3 tiers, onion merged, staples ski
   assert.ok(!v.calls.some((c) => c.includes("salt")));
   assert.equal(last.items.find((i) => i.name === "kimchi")!.hint !== undefined, true);
   assert.equal(last.items.find((i) => i.name === "sesame oil")!.optional, true);
-  assert.equal(last.status, "You have it all");
+  // two maybes (kimchi, onion) are not had yet (sweep 11/3 P2)
+  assert.equal(last.status, "2 to check");
+  assert.equal(last.subtitle?.endsWith("Have 2 · 2 to check"), true, last.subtitle);
   const card = r.card!;
   assert.equal(card.title, "Kimchi fried rice");
   // demo S3 (Chelsea OK 11/3): ingredients may be on a counter, not in a fridge
@@ -492,4 +523,68 @@ test("fridge pill (#122 follow-up): the shown line is ≤ 28 chars, whole names,
   assert.ok(r.card!.say!.length > 28, "the spoken sentence stays whole");
   const withPill = events.find((e) => e.type === "find.items" && (e as { pill?: string }).pill) as { pill: string } | undefined;
   assert.equal(withPill?.pill, r.card!.pill, "the pill reaches the app with the items");
+});
+
+test("recipe pipeline: GENITA_SAM_MASKS — a SAM mask rides on observe.boxes; a bad mask drops only the mask", async () => {
+  const { encodeOneBit, fromRle } = await import("../src/meta/samMask.ts");
+  // box 10..50 x 20..100 → 41 x 81 raster; an ellipse inside it
+  const W = 41;
+  const H = 81;
+  const bits = Uint8Array.from({ length: W * H }, (_, i) => +(((i % W) - 20) ** 2 / 400 + (Math.floor(i / W) - 40) ** 2 / 1600 <= 1));
+  const good = encodeOneBit(bits, W, H);
+  for (const payload of [good, "!" + good.slice(1, 10) + "?" + good.slice(11)]) {
+    const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+    const sam = v.sam.bind(v);
+    v.samMasks = true;
+    v.sam = async (img, prompt, signal) => (await sam(img, prompt, signal)).map((b) => ({ ...b, score: 0.9, mask: { width: W, height: H, payload } }));
+    const { ctx, events } = ctxFor("recipe", v, { images: false });
+    await runRecipe(ctx);
+    const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+    const eggs = boxes.at(-1)!.items.find((i) => i.label === "Eggs")!;
+    assert.ok(eggs.box, "box always sent");
+    if (payload === good) {
+      assert.ok(eggs.mask, "mask sent");
+      assert.ok(Math.max(eggs.mask!.w, eggs.mask!.h) <= 96);
+      assert.deepEqual(fromRle(eggs.mask!.w, eggs.mask!.h, eggs.mask!.rle), bits);
+    } else assert.equal(eggs.mask, undefined);
+  }
+});
+
+test("recipe pipeline: no mask on the wire when SAM sent none (flag off)", async () => {
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\n", recipe: RECIPE_JSON });
+  const { ctx, events } = ctxFor("recipe", v, { images: false });
+  await runRecipe(ctx);
+  const boxes = events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[];
+  assert.ok(boxes.length);
+  assert.ok(boxes.every((b) => b.items.every((i) => !("mask" in i))));
+});
+
+test("recipe pipeline: GENITA_SAM_MASKS — every match above the score bar is its own item, capped at 12", async () => {
+  const { encodeOneBit } = await import("../src/meta/samMask.ts");
+  const box = (i: number, score: number) => {
+    const x1 = 10 + i * 40;
+    return { x1, y1: 20, x2: x1 + 29, y2: 49, w: 480, h: 854, nx1: x1 / 480, ny1: 20 / 854, nx2: (x1 + 29) / 480, ny2: 49 / 854, score, mask: { width: 30, height: 30, payload: encodeOneBit(new Uint8Array(900).fill(1), 30, 30) } };
+  };
+  const v = fakeVendors({ seen: "eggs | 6 | gray carton\ntofu | 1 | block\n", recipe: RECIPE_JSON });
+  const sam = v.sam.bind(v);
+  v.samMasks = true;
+  v.sam = async (img, prompt, signal) => {
+    const base = await sam(img, prompt, signal);
+    if (!base.length) return [];
+    // eggs: 10 good matches + 1 low score; tofu: 4 matches → 14 > 12, eggs (the bigger group) merge into one
+    if (prompt === "eggs") return [...Array.from({ length: 10 }, (_, i) => box(i, 0.9 - i * 0.01)), box(10, 0.2)];
+    if (prompt === "tofu") return Array.from({ length: 4 }, (_, i) => ({ ...box(i, 0.8), y1: 300, y2: 329, ny1: 300 / 854, ny2: 329 / 854 }));
+    return base.map((b) => ({ ...b, score: 0.9 }));
+  };
+  const { ctx, events } = ctxFor("recipe", v, { images: false });
+  await runRecipe(ctx);
+  const last = (events.filter((e) => e.type === "observe.boxes") as Extract<ServerEvent, { type: "observe.boxes" }>[]).at(-1)!;
+  assert.ok(last.items.length <= 12);
+  const eggs = last.items.filter((i) => i.label === "Eggs");
+  const tofu = last.items.filter((i) => i.label === "Tofu");
+  assert.equal(tofu.length, 4, "each tofu its own item");
+  assert.equal(eggs.length, 1, "eggs merged into one union item");
+  assert.ok(eggs[0].mask && eggs[0].box.x2 > 0.75, "union spans all 10 eggs");
+  assert.ok([...eggs, ...tofu].every((i) => i.mask));
+  assert.ok(last.items.filter((i) => i.label !== "Eggs" && i.label !== "Tofu").every((i) => !i.mask), "no mask sent → box only");
 });
