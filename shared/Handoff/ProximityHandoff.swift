@@ -94,7 +94,7 @@ struct ProximityConfig: Equatable {
 /// - The RSSI is smoothed with the median of the last 3 readings (one spike doesn't count).
 /// - "Close" must hold continuously for `holdSeconds` with at least `minSamples` readings; a reading below
 ///   `enterRSSI` or a gap over `maxGapSeconds` restarts the hold.
-/// - After a trigger nothing triggers again until *that* phone is seen below `exitRSSI` (hysteresis: it really left),
+/// - After a report (unless rejected) nothing triggers again until *that* phone is seen below `exitRSSI` (hysteresis: it really left),
 ///   and not for `cooldownSeconds`. Another phone far away never re-arms it. If that phone's Bluetooth identity goes
 ///   silent for `forgetFiredSeconds` (address rotation, or it left range), the first phone then seen *not* close re-arms. This survives `reset()` and scan restarts, so "Continue here" with the
 ///   iPhone still lying next to the Mac never bounces the call back.
@@ -104,9 +104,11 @@ struct ProximityDetector {
     private struct Track { var recent: [Int] = []; var lastAt: Double; var closeSince: Double?; var samples = 0 }
     private var tracks: [String: Track] = [:]
     private var cooldownUntil = -Double.infinity
+    private var rejectedTokens: [String: Double] = [:]
     /// the peripheral that triggered last, until it is seen leaving
     private var fired: (key: String, lastAt: Double)?
     static let forgetFiredSeconds = 20.0
+    static let rejectedTokenCooldownSeconds = 3.0
 
     init(config: ProximityConfig = ProximityConfig()) { self.config = config }
 
@@ -114,9 +116,14 @@ struct ProximityDetector {
     func smoothed(_ key: String) -> Int? { tracks[key].map { Self.median($0.recent) } }
 
     /// Returns true when this reading completes a hold: report the peripheral's token now.
-    mutating func observe(_ key: String, rssi: Int, at now: Double, canReport: Bool = true) -> Bool {
+    mutating func observe(_ key: String, rssi: Int, at now: Double, canReport: Bool = true, token: String? = nil) -> Bool {
         // 127 = "RSSI not available" in CoreBluetooth; 0 and positives are not real readings either.
         guard rssi < 0 else { return false }
+        rejectedTokens = rejectedTokens.filter { $0.value > now }
+        if let token, rejectedTokens[token] != nil {
+            tracks[key] = nil
+            return false
+        }
         var t = tracks[key] ?? Track(lastAt: now)
         if now - t.lastAt > config.maxGapSeconds { t.recent = []; t.closeSince = nil; t.samples = 0 }
         t.lastAt = now
@@ -148,7 +155,18 @@ struct ProximityDetector {
         return fire
     }
 
-    /// Scan restarted or the server refused a report: forget the readings, keep the cooldown and the
+    /// A refusal did not move the call, so it must not require any phone to leave range.
+    mutating func reject(token: String, reason: String, at now: Double) {
+        tracks = [:]
+        fired = nil
+        if reason == "unknown_token" {
+            rejectedTokens[token] = now + Self.rejectedTokenCooldownSeconds
+            // Let this account's phone try promptly, while respecting the server's 200 ms report rate limit.
+            cooldownUntil = now + 0.25
+        }
+    }
+
+    /// Scan restarted: forget the readings, keep token exclusions, the cooldown and the
     /// "must leave first" latch (the next move needs the phone taken away and brought back).
     mutating func reset() { tracks = [:] }
 
