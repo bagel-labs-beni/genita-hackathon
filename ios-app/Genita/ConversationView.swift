@@ -162,12 +162,13 @@ struct ConversationView: View {
                             ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
-                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine,
+                                          y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine && !findsTabOpen && sheet != .full,
                                                                                          fitsRow: ProfileChipView.width(chip, soft: call.profileChip == nil) <= grid.rowPillWidth,
                                                                                          prepFitsRow: model.callPrepIndicator.map { CallPrepLine.width($0) <= grid.rowPillWidth } ?? true))
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
+                        // never over the Finds tab (its title sits on the menu row and the line under it — Codex P2)
+                        if !connecting && !interpreting && !moveLine && !findsTabOpen && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: grid.prepLineCenterY(status: status, fitsRow: CallPrepLine.width(line) <= grid.rowPillWidth)).transition(.opacity)
                         }
                         }
