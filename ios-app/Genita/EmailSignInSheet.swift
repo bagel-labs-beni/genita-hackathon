@@ -45,7 +45,8 @@ struct EmailSignInSheet: View {
                     TextField("6-digit code", text: $code)
                         .keyboardType(.numberPad).textContentType(.oneTimeCode)
                         .onChange(of: code) { _, v in
-                            let digits = String(v.filter(\.isNumber).prefix(6))
+                            // ASCII 0–9 only: full-width or other scripts' digits pass isNumber and the server says 400 (AU-09)
+                            let digits = String(v.filter { $0.isASCII && $0.isNumber }.prefix(6))
                             if digits != v { code = digits }
                             if digits.count == 6 { verify() }
                         }
@@ -129,7 +130,14 @@ struct EmailSignInSheet: View {
                 step = .code
                 focused = true
             } catch {
-                message = EmailSignInCopy.message(for: error, sendingCode: true)
+                let line = EmailSignInCopy.message(for: error, sendingCode: true)
+                message = line
+                // A02-E (LG-02): offline is a 4 s notice, like the Apple path's, not a line that stays
+                if (error as? GenitaAuthError) == .offline {
+                    sending = false   // Send code works again at once; only the notice waits
+                    try? await Task.sleep(for: .seconds(4))
+                    if message == line { withAnimation(.easeOut(duration: 0.2)) { message = nil } }
+                }
             }
         }
     }
