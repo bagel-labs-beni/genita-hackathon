@@ -1396,6 +1396,34 @@ test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greetin
   session.close();
 });
 
+// ───────────── #345 what landed, read from their face ─────────────
+test("#345: a smile or laugh the camera saw at the last reply keeps that lane (and never mentions the face)", async () => {
+  const { turnHints } = await import("../src/convo/rhythm.ts");
+  const line = turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "ok fine", remembers: false, faceLanded: "smiled" });
+  assert.match(line ?? "", /landed \(they smiled at it\): stay in that lane, and don't mention their face/);
+  assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "ugh today was so bad", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "bad news wins");
+  assert.equal(turnHints({ userText: "ok fine", remembers: false, faceLanded: "smiled" }), null, "no last reply, nothing landed");
+  assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "I want to kill myself.", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "a crisis line never keeps the joke lane");
+});
+
+test("#345 session: a perception smile at the reply reaches the next turn once, within 20 s", { skip: !v1 }, async () => {
+  const { client, session, calls, tick } = setup(["<teasing> Bet you burnt the rice again.", "<teasing> Called it.", "<happy> Sure."]);
+  let cb: ((t: { kind: string; at: number; confidence: number }) => void) | null = null;
+  (session as unknown as { perception: unknown }).perception = { contextLine: () => null, pendingHint: () => null, onTrigger: (f: typeof cb) => { cb = f; return () => {}; } };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what's for dinner" }));
+  await client.waitFor((m) => m.type === "reply");
+  cb!({ kind: "smiled_at_reply", at: 0, confidence: 0.9 });
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok fine" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 2);
+  assert.match(calls[1].instructions!, /they smiled at it/);
+  tick(1000);
+  await session.onClientText(JSON.stringify({ type: "text", text: "anyway" }));
+  await client.waitFor((m) => m.type === "reply" && client.json.filter((x) => x.type === "reply").length === 3);
+  assert.doesNotMatch(calls[2].instructions!, /they smiled at it/, "consumed once");
+  session.close();
+});
+
 // ───────────── #344 mood carried across calls, faces follow it ─────────────
 test("#344: the last call's mood carries (12 h half-life), a Forget voids it, faces scale with energy", async () => {
   const { carriedMood, moodScaledIntensity } = await import("../src/convo/callMood.ts");
