@@ -155,8 +155,8 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// another phone deleted and remade the companion, and this one opened its call on the old cached scene; the
     /// scene URL is the same for every companion, so the key alone can't tell). Either this launch asked the server
     /// and it's the same companion (`sceneCompanionConfirmed`), or the scene was downloaded in this launch (`sceneFresh`).
-    @ObservationIgnored var sceneCompanionConfirmed = false
-    @ObservationIgnored var sceneFresh = false
+    var sceneCompanionConfirmed = false
+    var sceneFresh = false   // both observed: a view that drew the placeholder redraws when trust arrives (Codex P2)
     var sceneTrusted: Bool { sceneCompanionConfirmed || sceneFresh }
     /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for this account.
     var sceneImageData: Data? {
