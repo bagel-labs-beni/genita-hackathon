@@ -453,6 +453,12 @@ export class FindsRunner {
         const reasons = reasonChips(this.taste.length ? this.taste : tasteLines(this.profile), e.card);
         if (reasons.length) e.card.reasons = reasons;
       }
+      // CW-02: an outfit card always carries a taste reason — the model's, else the account's own top taste line
+      if (e.card.kind === "outfit" && !e.card.subtitle && e.card.reasons?.length) {
+        const top = e.card.reasons[0];
+        e.card.subtitle = top.text;
+        e.card.evidence = { style: top.text, situation: e.card.evidence?.situation ?? "" };
+      }
       this.cards.set(e.findId, e.card);
       this.focusId = e.findId;
       void this.persist(e.card);
@@ -502,8 +508,21 @@ export class FindsRunner {
     this.hooks.emit({ type: "find.failed", findId, reason: "stopped", message: "Stopped." });
   }
 
-  focus(findId: string): void {
-    if (this.cards.has(findId)) this.focusId = findId;
+  /**
+   * The card the user is asking about ("Ask about this", "Talk about this on a call"). A card from an earlier call
+   * is read back from this account's Finds (FD-01 F2 → call, AU-70); another account's id is never loaded.
+   */
+  async focus(findId: string): Promise<void> {
+    if (this.cards.has(findId)) {
+      this.focusId = findId;
+      return;
+    }
+    if (!this.owner || this.purged || !/^[A-Za-z0-9-]{8,64}$/.test(findId)) return;
+    const owner = this.owner;
+    const card = await this.deps.store.get(owner, findId).catch(() => null);
+    if (!card || this.purged || this.owner !== owner) return;
+    if (!this.cards.has(findId)) this.cards.set(findId, card);
+    this.focusId = findId;
   }
 
   /** One line for the system prompt about the card on screen, or undefined. Data only. */

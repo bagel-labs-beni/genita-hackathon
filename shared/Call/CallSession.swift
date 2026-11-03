@@ -413,7 +413,7 @@ enum CallStop: Equatable {
     @ObservationIgnored var onCameraChange: (() -> Void)?
 
     func toggleCamera() {
-        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); onCameraChange?(); return }
+        if cameraOn { camera.stop(); cameraOn = false; finds.boxes.clear(); finds.latestFrames = []; onCameraChange?(); return }
         guard !userEnded, ownsConversation else { return }
         cameraDenied = false
         let generation = capturePermissions.generation
@@ -527,6 +527,23 @@ enum CallStop: Equatable {
         answerFailed = false
         guard let text = lastUserText else { return }
         socket?.send(.text(.init(text: text, frames: nil)))
+    }
+
+    /// FD-01 step 6 (AU-71): a link the user pasted (More ▸ Paste link on iPhone, Edit ▸ Paste Link on the Mac) goes
+    /// out as the user's words; the server makes the link card (F10-13 summary / F10-14 couldn't open).
+    /// false = nothing sent (no link in it, the call isn't live, or interpreting, where typed words are translated).
+    @discardableResult func sendLink(_ pasted: String) -> Bool {
+        guard let url = Self.firstLink(in: pasted), link == .live, mode != .interpret, let socket else { return false }
+        socket.send(.text(.init(text: url, frames: nil)))
+        return true
+    }
+
+    /// The first http(s) link in pasted text, trailing punctuation dropped (the server's findUrl reads the same).
+    nonisolated static func firstLink(in text: String) -> String? {
+        guard let r = text.range(of: #"https?://[^\s<>"')]+"#, options: [.regularExpression, .caseInsensitive]) else { return nil }
+        var url = String(text[r])
+        while let last = url.last, ".,!?".contains(last) { url.removeLast() }
+        return url.count > 10 && url.count <= 2000 ? url : nil
     }
 
     /// IC-4 Look again: drop the card, take a fresh frame, ask the same words again (frames go with the next turn).
@@ -693,6 +710,8 @@ enum CallStop: Equatable {
             interpretBoard = InterpretBoard(companionName: companionName)
             link = .live
             if r.sessionId != sessionId {
+                // the old session's searches died with it: no result comes on this one (AU-62, AU-72)
+                if sessionId != nil { finds.interrupted() }
                 // A new session counts utterances from the start: ids of the old one mean nothing now.
                 faceIdBase = faceIdMax + 1
                 cancelled = []; routed = []; seqToUtterance = [:]; faceAudio = [:]; facePending = []; faceDeviceMs = [:]

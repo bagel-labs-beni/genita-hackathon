@@ -53,6 +53,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 | 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
+| 11/4 | Finds audit (additive): new client message `find.focus {findId}` ("Talk about this on a call" names the card, including one from an earlier call; AU-70). Outfit cards: the occasion line ("for this weekend") is the last `why` line and `evidence {style, situation}` is set (CW-02, AU-57). |
 
 ```
 wss://<host>/v1/session
@@ -103,6 +104,7 @@ queues and plays it, and flushes the queue on `utterance.cancelled`.
 | `stop` | — | end the call |
 | `find.confirm` | `findId`, `itemId`, `yes` | the user answered "맞아?" on a maybe ingredient (IC-3): yes → have, no → buy (or gone if no recipe needs it) |
 | `find.stop` | `findId` | Stop on the searching sheet; answered with `find.failed {reason:"stopped"}` |
+| `find.focus` | `findId` | "Talk about this on a call" (FD-01): later turns are about this card. A card from an earlier call is read back from this account's Finds; an unknown id is ignored. No reply. |
 
 `text` may carry `findId` ("Ask about this" chip): that card becomes the context of the reply.
 `start.user` may carry `id` (stable per install until login; owner of saved Finds) and `timeZone` (IANA, for "7:12 PM" in cards).

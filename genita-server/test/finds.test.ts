@@ -4,7 +4,7 @@ import { cleanName, nameKey, sameIngredient, isStaple } from "../src/finds/names
 import { Candidates, tierOf, toWire, recipeSummary } from "../src/finds/tiers.ts";
 import { parseSeenLine, LineSplitter, lastJsonObject, isYes, findUrl } from "../src/finds/parse.ts";
 import { classifyTurn } from "../src/finds/intent.ts";
-import { confirmItem, fridgeLine, fridgePill, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
+import { confirmItem, fridgeLine, fridgePill, occasionOf, runRecipe, runOutfit, runLink, toNormBox, type PipelineCtx } from "../src/finds/pipeline.ts";
 import { MemoryFindsStore, FileFindsStore, UNDO_MS } from "../src/finds/store.ts";
 import { checkServerEvent, type FindCard, type ServerEvent } from "../src/protocol.ts";
 import type { FindsVendors } from "../src/finds/vendors.ts";
@@ -587,4 +587,38 @@ test("recipe pipeline: GENITA_SAM_MASKS — every match above the score bar is i
   assert.ok(eggs[0].mask && eggs[0].box.x2 > 0.75, "union spans all 10 eggs");
   assert.ok([...eggs, ...tofu].every((i) => i.mask));
   assert.ok(last.items.filter((i) => i.label !== "Eggs" && i.label !== "Tofu").every((i) => !i.mask), "no mask sent → box only");
+});
+
+// ───────────── finds audit 11/4 ─────────────
+
+test("AU-57 CW-02: the outfit card names the occasion they asked about (taste + seen + situation)", async () => {
+  const v = fakeVendors({
+    outfit: '{"pick":0,"title":"Wear the navy one.","taste":"You like dark, simple colors","situation":"Easy to wear all weekend","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["The navy coat reads relaxed.","The camel blazer looks like office."],"ask":["What shoes?","Warm enough?"],"say":"Navy."}',
+  });
+  const { ctx } = ctxFor("outfit", v, { question: "Which one for this weekend?" });
+  const card = (await runOutfit(ctx)).card!;
+  assert.equal(card.subtitle, "You like dark, simple colors");
+  assert.deepEqual(card.why, ["The navy coat reads relaxed.", "The camel blazer looks like office.", "Easy to wear all weekend"]);
+  assert.deepEqual(card.evidence, { style: "You like dark, simple colors", situation: "Easy to wear all weekend" });
+  // the model left it out: the occasion from the question still makes the line
+  const bare = fakeVendors({ outfit: '{"pick":1,"title":"Wear the blazer.","taste":"","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["Navy reads relaxed.","Camel looks sharp."],"ask":[],"say":"The blazer."}' });
+  const b = (await runOutfit(ctxFor("outfit", bare, { question: "Which one should I wear to dinner this weekend?" }).ctx)).card!;
+  assert.equal(b.why.at(-1), "Camel blazer for dinner.");
+  assert.equal(b.evidence?.situation, "Camel blazer for dinner.");
+  // prod 11/4 (proxy CW-02, 4/5 runs): a model line that never mentions the weekend doesn't count as the situation
+  const off = fakeVendors({ outfit: '{"pick":0,"title":"Wear the trench.","taste":"clean, minimal, camel - so you","situation":"Classic and polished","options":[{"label":"Beige trench","frame":1},{"label":"Denim jacket","frame":0}],"why":["Classic clean camel, no logos","Casual blue, less your minimal vibe"],"ask":[],"say":"Trench."}' });
+  const t = (await runOutfit(ctxFor("outfit", off, { question: "Which one for this weekend?" }).ctx)).card!;
+  assert.equal(t.why.at(-1), "Beige trench for this weekend.");
+  assert.deepEqual(t.evidence, { style: "clean, minimal, camel - so you", situation: "Beige trench for this weekend." });
+  // no occasion named: no made-up situation line
+  const none = (await runOutfit(ctxFor("outfit", bare, { question: "Which one looks better on me?" }).ctx)).card!;
+  assert.deepEqual(none.why, ["Navy reads relaxed.", "Camel looks sharp."]);
+  assert.equal(none.evidence, undefined);
+});
+
+test("AU-57: occasionOf reads the occasion as said", () => {
+  assert.equal(occasionOf("Which one for this weekend?"), "this weekend");
+  assert.equal(occasionOf("what should I wear to the wedding"), "the wedding");
+  assert.equal(occasionOf("tonight, which one?"), "tonight");
+  assert.equal(occasionOf("which one looks better on me"), null);
 });

@@ -649,7 +649,7 @@ export class Session {
           this.log("finds.ask_ignored_interpreting", { findId: msg.findId.slice(0, 64) });
           return;
         }
-        if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
+        if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
@@ -688,6 +688,10 @@ export class Session {
         return;
       case "find.stop":
         if (typeof msg.findId === "string") this.finds?.stop(msg.findId);
+        return;
+      case "find.focus":
+        // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
+        if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
         return;
       default:
         return this.error("unknown_type", `Unknown message type ${String(type).slice(0, 40)}`, false);

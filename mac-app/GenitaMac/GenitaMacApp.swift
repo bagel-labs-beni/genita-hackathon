@@ -29,7 +29,7 @@ import CoreText
                 #endif
         }
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
-            .commands { MacAccountCommands() }
+            .commands { MacAccountCommands(); MacCallCommands() }
     }
 }
 
@@ -67,6 +67,20 @@ struct MacAccountCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appInfo) {
             Button("Sign Out") { call.signOut() }.disabled(!call.isSignedIn)
+        }
+    }
+}
+/// Edit ▸ Paste Link (⇧⌘V): FD-01 step 6 on the Mac (AU-71). A link copied in the browser goes to the call as the
+/// user's words and comes back as the link card (MAC-RS). Outside a live call it does nothing.
+struct MacCallCommands: Commands {
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Button("Paste Link into Call") {
+                let board = NSPasteboard.general
+                let pasted = board.string(forType: .URL) ?? board.string(forType: .string) ?? ""
+                CallController.shared.sendLink(pasted)
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
         }
     }
 }

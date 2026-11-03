@@ -76,6 +76,11 @@ enum FindFrameStore {
         return out
     }
 
+    /// Account deleted (M02): every kept camera frame goes with it (AU-75).
+    static func removeAll() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
     static func remove(id: String) {
         var i = 0
         while FileManager.default.fileExists(atPath: directory.appending(path: "\(id)-\(i).jpg").path) {
