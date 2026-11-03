@@ -25,10 +25,11 @@
  *            ./_qa-scripts/genita-watch-moments). Per clip: reacted?, delay
  *            after the salient moment, spoken over a video line (must be 0), and a
  *            Spark judge for "fits the action" and "invented details".
- *   --remote=wss://host   run --naming against a deployed server instead of a local one
- *            (bearer from GENITA_SESSION_TOKEN: a session JWT or the shared dev
- *            token; never printed). Server logs aren't available there, so only
- *            --naming (client-side timing + judge) is supported remotely.
+ *   --remote=wss://host   run --naming or --moments against a deployed server instead of
+ *            a local one (bearer from GENITA_SESSION_TOKEN: a session JWT or the shared
+ *            dev token; never printed). No server logs there: --moments takes the
+ *            reaction from the watch socket's `reaction` event + its reply (client
+ *            clock), and via / over-dialogue / memo counts read "n/a".
  * Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -222,7 +223,8 @@ const logs: Record<string, unknown>[] = [];
 const REMOTE = args.find((a) => a.startsWith("--remote="))?.slice(9).replace(/\/+$/, "") ?? null;
 const remoteToken = process.env.GENITA_SESSION_TOKEN?.trim();
 if (REMOTE && !remoteToken) throw new Error("--remote needs GENITA_SESSION_TOKEN (a session JWT or the shared dev token)");
-if (REMOTE && (!args.includes("--naming") || args.some((a) => ["--qa", "--react", "--blank", "--funny"].includes(a) || a.startsWith("--moments")))) throw new Error("--remote supports --naming only (the other modes read server logs)");
+const remoteModes = ["--naming", "--moments"].filter((m) => args.some((a) => a === m || a.startsWith(`${m}=`)));
+if (REMOTE && (remoteModes.length !== 1 || args.some((a) => ["--qa", "--react", "--blank", "--funny"].includes(a)))) throw new Error("--remote runs exactly one of --naming or --moments (the other modes read server logs)");
 const AUTH: Record<string, string> = REMOTE ? { authorization: `Bearer ${remoteToken}` } : {};
 const server = REMOTE ? null : await startServer({ ...config, port: 0 }, (event, data) => {
   logs.push({ t: Math.round(performance.now()), event, ...data });
@@ -476,7 +478,16 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const reply = call.ev.find((e) => e.type === "reply" && (e._t as number) >= playAt);
     if (reply) call.main.send(JSON.stringify({ type: "playback_done", utteranceId: reply.utteranceId }));
     const mine = logs.slice(logFrom);
-    const react = mine.find((l) => l.event === "watch.react");
+    // remote (no server logs): the reaction = the watch socket's `reaction` event + that utterance's reply text,
+    // on the client clock (includes the network); via / over-dialogue / memo counts aren't knowable there
+    const remoteReact = (() => {
+      if (!REMOTE) return null;
+      const ev = call.wev.find((e) => e.type === "reaction" && (e._t as number) >= playAt);
+      if (!ev) return null;
+      const reply = call.ev.find((e) => e.type === "reply" && e.utteranceId === ev.utteranceId);
+      return { event: "watch.react", t: ev._t, utteranceId: ev.utteranceId, moment: ev.moment, line: reply?.text ?? "(reply text not seen)", via: "n/a (remote)", lineOpen: false, talkOver: null } as Record<string, unknown>;
+    })();
+    const react = REMOTE ? remoteReact : mine.find((l) => l.event === "watch.react");
     const startLog = mine.find((l) => l.event === "watch.start");
     // log times are performance.now() of the same process: the reaction's delay after the salient moment
     const playT = playAt;
@@ -531,6 +542,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   const delays = reacted.map((r) => r.delaySec as number).sort((a, b) => a - b);
   const memoMs = rows.flatMap((r) => r.memoMs as number[]).sort((a, b) => a - b);
   result.moments = {
+    remote: !!REMOTE,
     clips: rows.length,
     reacted: reacted.length,
     correct: reacted.filter((r) => r.correct).length,
