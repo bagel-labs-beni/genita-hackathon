@@ -426,6 +426,9 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
     const chipWords = new Set(stems((o.chips ?? []).map((c) => c.label).join(" ")));
     let best: InsightEvidence | null = null, bestHits = 0;
     for (const e of o.evidence) {
+      // a one-word pick ("Street food") can't carry a whole strength: only a quote from what they gave, or a pick
+      // whose words it fully reuses with more besides (eval 11/4 run 6: "You sniff out Street food worth the wait")
+      if (e.source === "answer" && stems(e.quote).length < 3) continue;
       const hits = stems(e.quote).filter((w) => words.has(w)).length + [...chipWords].filter((w) => words.has(w) && e.source === "answer").length;
       if (hits > bestHits) { best = e; bestHits = hits; }
     }
