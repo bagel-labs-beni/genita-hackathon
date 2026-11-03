@@ -489,6 +489,10 @@ export function interimCard(shown: StoryCard, marked: string[], before: StyleCar
   if (!fb) return null;
   // only the lines the correction brought in (the plain wording of facts that were there before stays out)
   const old = fallbackCard(shown.id as SparkStoryId, before);
+  // the correction also replaced facts the user didn't mark (text only: "I want long answers now"): the card as
+  // shown may still say the old thing — answer with the plain card built from the corrected profile instead (Codex)
+  const now = new Set(cardTexts(fb));
+  if (old && cardTexts(old).some((t) => !now.has(t)) && !marked.length) return fb;
   const had = new Set([...cardTexts(shown), ...(old ? cardTexts(old) : [])]);
   const gone = new Set(marked);
   const tagText = (t: StoryTag) => (t.dislike ? `Not for you: ${t.text.toLowerCase()}` : t.text);

@@ -262,7 +262,15 @@ export class Personalize {
     // store moments later (GET /v1/profile/story), other cards the change touched are rewritten on the next read
     if (applied.length && cardId !== "unknowns") {
       const card = interimCard(shown, items, before, latest);
-      void this.rewriteCard(userId, cardId, latest.updatedAt);
+      // the interim card is what the app now shows: store it (still stale) so a second correction on it validates
+      // against the same lines and a re-read shows the same card until the reword lands (Codex)
+      const stored = await this.update(userId, (c) => {
+        if (c.updatedAt !== latest.updatedAt || c.story?.version !== 2) return null;
+        const cards = card ? c.story.cards.map((x) => (x.id === cardId ? card : x)) : c.story.cards.filter((x) => x.id !== cardId);
+        return { card: { ...c, story: { ...c.story, cards, stale: [...new Set([...(c.story.stale ?? []), cardId])] } }, out: true };
+      });
+      void stored;
+      void this.rewriteCard(userId, cardId, latest.updatedAt); // story writes keep updatedAt; only merges move it
       const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
       this.log("profile.corrected", { card: cardId, applied: applied.length, ms: Math.round(performance.now() - t0), rewrite: "background" });
       return { card, ack: ACK, changed, profile: styleProfileText(latest), rows: latest.display };
@@ -280,9 +288,12 @@ export class Personalize {
       if (!latest) return;
       const raw = await this.timedJson<unknown>(buildStoryRequest({ card: latest }, [cardId]));
       await this.update(userId, (c) => {
+        // the profile changed while Spark wrote (a newer correction): this reword is of an older profile — drop it;
+        // the newer correction's own reword (or the next read) writes the card (Codex P1)
+        if (c.updatedAt !== basis) return null;
         const prev = c.story?.version === 2 ? c.story : undefined;
         const { cards, topics } = toStory(raw as { cards?: unknown }, c, prev?.cards, prev ? [cardId] : undefined);
-        const stale = c.updatedAt !== basis ? (prev?.stale ?? []) : (prev?.stale ?? []).filter((id) => id !== cardId);
+        const stale = (prev?.stale ?? []).filter((id) => id !== cardId);
         return { card: { ...c, story: { version: 2, cards, topics, at: this.now().toISOString(), from: prev?.from ?? "card", ...(prev?.ms ? { ms: prev.ms } : {}), stale } }, out: true };
       });
       this.log("story.written", { from: "correction", cards: 1 });

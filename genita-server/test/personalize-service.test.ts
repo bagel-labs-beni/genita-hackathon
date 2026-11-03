@@ -328,3 +328,51 @@ test("S1 perf: PATCH /v1/profile answers after the correction call, not after th
   await h.p.drainRewrites();
   assert.equal((await h.p.story("u1")).cards.find((c) => c.id === "taste")!.headline, "Plain, no logos.");
 });
+
+test("Codex S1: a reword of an older profile never lands over a newer correction; the interim card is stored and correctable", async (t) => {
+  let n = 0;
+  let releaseFirst!: () => void;
+  const gate = new Promise<void>((r) => (releaseFirst = r));
+  let clock = Date.parse("2026-11-03T10:00:00Z");
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") {
+      n++;
+      return n === 1
+        ? { updates: [{ field: "likes", text: "Food: Italian.", replaces: [], chip: "Italian" }], answered: { field: "", text: "", chip: "" } }
+        : { updates: [{ field: "likes", text: "Food: Thai.", replaces: ["Food: Italian."], chip: "Thai" }], answered: { field: "", text: "", chip: "" } };
+    }
+    if (req.schemaName === "story_cards") {
+      const s = JSON.stringify(req.input);
+      if (/only these cards/.test(String(req.instructions)) && /Italian/.test(s) && !/Thai/.test(s)) { await gate; return { cards: [card("taste", "Loves Italian.")], topics: [] }; }
+      if (/Thai/.test(s)) return { cards: [card("taste", "Loves Thai.")], topics: [] };
+      return STORY_RAW;
+    }
+    return null;
+  });
+  t.after(h.cleanup);
+  (h.p as unknown as { now: () => Date }).now = () => new Date((clock += 1000));
+  await withStory(h);
+  const first = await h.p.correct("u1", { cardId: "taste", text: "I love Italian food." });
+  // the interim card is stored: a second correction marking one of its new lines validates
+  const newLine = first.changed[0] ?? cardTexts(first.card!)[0];
+  await h.p.correct("u1", { cardId: "taste", items: [newLine], text: "Actually Thai, not Italian." });
+  releaseFirst();
+  await h.p.drainRewrites();
+  const taste = (await h.p.story("u1")).cards.find((c) => c.id === "taste")!;
+  assert.equal(taste.headline, "Loves Thai.", "the late Italian reword was dropped");
+});
+
+test("Codex S1: a text-only correction that replaced an unmarked fact answers with the plain corrected card", async (t) => {
+  const h = harness((req) => {
+    if (req.schemaName === "profile_correction") return { updates: [{ field: "response", text: "Long, detailed answers.", replaces: ["Short answers first."], chip: "detail" }], answered: { field: "", text: "", chip: "" } };
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "talk", text: "I want long detailed answers now." });
+  const texts = cardTexts(r.card!);
+  assert.ok(texts.some((x) => /Long, detailed/.test(x)), JSON.stringify(texts));
+  assert.ok(!texts.some((x) => /Short answers/.test(x)), "the replaced fact isn't shown next to its replacement");
+  await h.p.drainRewrites();
+});
