@@ -61,8 +61,10 @@ struct ConversationView: View {
                         // stepped-back face) are dark, not the window's white
                         CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
+                        // D22: double-tap my view (the camera stage) → front ↔ back
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top, grid: grid,
-                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, width: statusWidth ?? 0)).blur(radius: unclear ? 8 : 0).transition(.opacity) }
+                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, width: statusWidth ?? 0)).blur(radius: unclear ? 8 : 0).transition(.opacity)
+                            .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
@@ -461,6 +463,8 @@ struct ConversationView: View {
             .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
             .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
             .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
+            // D22: double-tap the self view → the camera on, facing back
+            .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
         }
     }
     /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
