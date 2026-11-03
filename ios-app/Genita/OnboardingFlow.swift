@@ -312,10 +312,10 @@ extension AppState {
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
             switch error as? GenitaAuthError {
             // a refusal comes back the same for this photo: choose another one
-            case .server(422, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
-            case .server(429, "polish_limit")?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
+            case .server(422, _, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
+            case .server(429, "polish_limit", _)?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
             // the failed attempt counts on the server too: three per upload
-            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
+            case .server(502, _, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
             default: polishError = Self.errorLine(error); route(error)
             }
         }
@@ -350,7 +350,7 @@ extension AppState {
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
     static func imageErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(422, "unreadable_image")? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
+        if case GenitaAuthError.server(422, "unreadable_image", _)? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
         return errorLine(error)
     }
 
