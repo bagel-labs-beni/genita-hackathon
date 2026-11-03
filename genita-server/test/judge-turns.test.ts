@@ -14,6 +14,7 @@ import { loadConfig, type Config } from "../src/config.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
 import { startServer, defaultDeps } from "../src/server.ts";
 import { createAccounts } from "../src/auth/index.ts";
+import { OpsLimits } from "../src/ops/limits.ts";
 import { testDb } from "./helpers/db.ts";
 
 const DAY = 86_400_000;
@@ -172,7 +173,7 @@ test("session: no gate (Apple / dev users) → never capped", async () => {
   session.close();
 });
 
-test("session: interpretation lines count too; over the cap the line closes as unknown (no stuck bubble), no Spark call", async () => {
+test("session: interpretation lines count too; over the cap the line is closed (no stuck bubble), no Spark call", async () => {
   const turns = new JudgeDailyTurns(1);
   const { client, session, spark } = setup(turns.gate("alpha"));
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false, mode: "interpret", interpret: { other: "Korean" } }));
@@ -180,12 +181,38 @@ test("session: interpretation lines count too; over the cap the line closes as u
   await client.waitFor((m) => m.type === "reply");
   assert.equal(spark.n, 1);
   await session.onClientText(JSON.stringify({ type: "text", text: "Can we do 3 pm?" }));
-  await client.waitFor((m) => m.type === "reply" && client.of("reply").length === 2);
+  await client.waitFor((m) => m.type === "error" && m.code === "daily_limit");
+  await sleep(30);
   assert.equal(spark.n, 1, "no translation call over the cap");
   assert.ok(client.of("error").some((e) => e.code === "daily_limit"));
   const last = client.of("interpret.bubble").at(-1)!;
-  assert.equal(last.status, "unknown", "the refused line's bubble is closed, not left hearing");
+  assert.equal(last.status, "cancelled", "the refused line's bubble is closed, not left hearing");
   assert.equal(client.closed, null);
+  session.close();
+});
+
+test("session: a turn the judge cap refuses is not charged to the D46 per-user cap (one admission point)", async () => {
+  const turns = new JudgeDailyTurns(1);
+  const ops = new OpsLimits({ userDailyTurns: 2 });
+  const client = new FakeClient();
+  const spark = { n: 0 };
+  const session = new Session("j2", client, {
+    config, openAsr: () => new FakeAsr(), spark: fakeSpark(spark),
+    tts: () => { throw new Error("no server voice in these tests"); },
+    turnGate: turns.gate("alpha"), ops, userId: "u-judge",
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hello" }));
+  await client.waitFor((m) => m.type === "reply");
+  await session.onClientText(JSON.stringify({ type: "text", text: "again" }));
+  const err = await client.waitFor((m) => m.type === "error");
+  assert.equal(err.code, "daily_limit", "the judge cap answers first, not the D46 error");
+  assert.equal(spark.n, 1);
+  // D46 spent exactly one turn for this user: one more is admitted, then the cap of 2 is reached
+  const admitted: boolean[] = [];
+  ops.userTurn("u-judge", () => admitted.push(true), () => admitted.push(false));
+  ops.userTurn("u-judge", () => admitted.push(true), () => admitted.push(false));
+  assert.deepEqual(admitted, [true, false]);
   session.close();
 });
 
