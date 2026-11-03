@@ -81,6 +81,26 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     }
 }
 
+extension MotionV2Params {
+    /// v59 (11/3 pm, Chelsea: "the mouth moves far too little — talking through a slight gap"): applied
+    /// over whatever prep sent for people on the lip rig (already-prepped faces carry v41-era values).
+    /// Lips fully meet between syllables (no idle jaw, deeper consonant dip), stressed vowels open
+    /// further, and the jaw / spring are quicker so open↔closed reads at phone size.
+    /// Rollback: `MotionV2Params.v59On = false` (the map's values as sent).
+    nonisolated(unsafe) public static var v59On = true
+    public func v59() -> MotionV2Params {
+        guard Self.v59On else { return self }
+        var p = self
+        p.idle = 0
+        p.consonantJaw = min(p.consonantJaw, 0.05)
+        p.amp = max(p.amp, 0.5); p.unstressed = min(p.unstressed, 0.45)
+        p.springHz = max(p.springHz, 11)
+        p.jawAttackMs = min(p.jawAttackMs, 40); p.jawReleaseMs = min(p.jawReleaseMs, 50)
+        p.shapeTauMs = min(p.shapeTauMs, 70)
+        return p
+    }
+}
+
 struct MotionV2 {
     static let round: Set<String> = ["AO", "OW", "OY", "UW", "UH", "W"]
     static let spread: Set<String> = ["IY", "IH", "EY", "EH", "Y"]
