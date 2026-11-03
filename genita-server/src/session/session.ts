@@ -53,6 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
+import { cameraOffHint } from "../convo/cameraAsk.ts";
 import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
@@ -1507,7 +1508,7 @@ export class Session {
   }
 
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
-  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
+  private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = "", cameraFrames = 0): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
     let opener: string | undefined;
     if (turn.greeting) {
@@ -1531,6 +1532,8 @@ export class Session {
       perception = this.perception?.contextLine() ?? undefined;
       perceptionHint = turn.greeting || turn.cue ? undefined : this.perception?.pendingHint() ?? undefined;
     } catch { /* the reply never fails on the camera lane */ }
+    // intel eval 11/4: "do I look ok?" with the camera off got an empty reply (the unseen guard dropped "You look great")
+    if (!turn.greeting && !turn.cue && userText) perceptionHint ??= cameraOffHint(userText, cameraFrames > 0 || !!perception) ?? undefined;
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     this.subscribePerception();
@@ -1680,7 +1683,7 @@ export class Session {
       ...this.history.map((h): InputMessage => (h.role === "user" ? { role: "user", content: h.text } : { role: "assistant", content: h.text })),
       { role: "user", content },
     ];
-    const v1 = this.v1 ? this.v1Extras(turn, text) : {};
+    const v1 = this.v1 ? this.v1Extras(turn, text, camera.length) : {};
     const base = buildInstructions({
       persona,
       user: this.user,

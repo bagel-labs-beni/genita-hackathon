@@ -7,6 +7,7 @@
  */
 import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
 import { memoryPrompt } from "../memory/call.ts";
+import { cameraOffHint } from "./cameraAsk.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -81,7 +82,8 @@ export const adapter = {
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
       crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
-    const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
+    // scripted calls send no camera frames: the session's camera-off hint for a "do I look ok?" line
+    const instructions = buildInstructions({ ...base, turn, perceptionHint: cameraOffHint(t.text, false) ?? undefined }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
   },
 

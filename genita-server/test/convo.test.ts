@@ -1577,3 +1577,16 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("intel eval 11/4 camera-off-look: 'do I look ok?' with no camera frames carries the camera-off hint; with frames it doesn't", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<teasing> Camera's off, I'm blind here. Flip it on."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok do i look ok for this date" }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.match(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+  await session.onClientText(JSON.stringify({ type: "text", text: "ok now do i look ok", frames: [jpeg] }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length >= 2);
+  assert.doesNotMatch(calls.at(-1)!.instructions ?? "", /camera is off right now/);
+  session.close();
+});
