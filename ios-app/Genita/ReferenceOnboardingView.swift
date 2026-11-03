@@ -78,9 +78,9 @@ import UniformTypeIdentifiers
                                 Color.clear
                                 DesignText(node: label, color: UIColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1))
                                     .frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
-                            }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
+                            }.frame(width: viewport.width - 77, height: 44).contentShape(Rectangle())   // 44 pt touch, text where I02's is
                         }.buttonStyle(.plain).disabled(model.savingPrefs).opacity(model.savingPrefs ? 0.4 : 1)
-                            .position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel").accessibilityIdentifier("summaryCancel")
+                            .position(x: (viewport.width - 1) / 2, y: footerY + 85).accessibilityLabel("Cancel").accessibilityIdentifier("summaryCancel")
                     }
                 }.frame(width: viewport.width, height: viewport.height).clipped()
             }.ignoresSafeArea(.container)
