@@ -55,12 +55,18 @@ public final class FaceRenderer: @unchecked Sendable {
         let off = max(6, min((eyeY - mouthY) * 0.3, faceWidth * 0.12))
         return (eyeY + off, off * 0.4, eyeY, off * 0.45)
     }
-    /// The eye line (pixel row from the top) where the blink still differs most from the neutral one, between the
-    /// face box top and the mouth; nil when they hardly differ. Classic pixel maths on a ≤160 px wide copy.
-    static func eyeLine(neutral: CGImage, blink: CGImage, face: CGRect, mouthTop: CGFloat) -> CGFloat? {
-        let top = max(0, face.minY), bottom = min(mouthTop, CGFloat(neutral.height))
-        let roi = CGRect(x: max(0, face.minX), y: top, width: min(face.width, CGFloat(neutral.width) - max(0, face.minX)), height: bottom - top).integral
-        guard roi.width >= 8, roi.height >= 8, let a = neutral.cropping(to: roi), let b = blink.cropping(to: roi) else { return nil }
+    /// The eye line (pixel rows from the top: the row the blink still differs most from the neutral one, and the
+    /// span of rows that differ, both eyes of a tilted face included) between the face box top and the mouth; nil
+    /// when they hardly differ. `shift` is the blink's alignment to the neutral still, as the renderer applies it
+    /// (codex P2). Classic pixel maths on a ≤160 px wide copy.
+    static func eyeLine(neutral: CGImage, blink: CGImage, shift: (dx: Int, dy: Int) = (0, 0), face: CGRect, mouthTop: CGFloat) -> (y: CGFloat, top: CGFloat, bottom: CGFloat)? {
+        let bounds = CGRect(x: 0, y: 0, width: neutral.width, height: neutral.height)
+        let shiftedBounds = CGRect(x: 0, y: 0, width: blink.width, height: blink.height).offsetBy(dx: CGFloat(-shift.dx), dy: CGFloat(-shift.dy))
+        let roi = CGRect(x: face.minX, y: face.minY, width: face.width, height: mouthTop - face.minY)
+            .intersection(bounds).intersection(shiftedBounds).integral
+        guard !roi.isNull, roi.width >= 8, roi.height >= 8, let a = neutral.cropping(to: roi),
+              let b = blink.cropping(to: roi.offsetBy(dx: CGFloat(shift.dx), dy: CGFloat(shift.dy))) else { return nil }
+        let top = roi.minY
         let s = min(1, 160 / roi.width), w = max(4, Int(roi.width * s)), h = max(4, Int(roi.height * s))
         func gray(_ img: CGImage) -> [UInt8]? {
             var px = [UInt8](repeating: 0, count: w * h)
@@ -80,14 +86,16 @@ public final class FaceRenderer: @unchecked Sendable {
             for x in 0..<w where abs(Int(ga[y * w + x]) - Int(gb[y * w + x])) > 18 { n += 1 }
             rows[y] = Double(n) / Double(w)
         }
-        var best = -1.0, at = 0
-        for y in 0..<h {
+        let smooth: [Double] = (0..<h).map { y in
             let lo = max(0, y - 2), hi = min(h - 1, y + 2)
-            let m = rows[lo...hi].reduce(0, +) / Double(hi - lo + 1)
-            if m > best { best = m; at = y }
+            return rows[lo...hi].reduce(0, +) / Double(hi - lo + 1)
         }
-        guard best > 0.05 else { return nil }
-        return top + (CGFloat(at) + 0.5) / s
+        guard let best = smooth.max(), best > 0.05, let at = smooth.firstIndex(of: best) else { return nil }
+        // the span: every row within a quarter of the box of the peak that still differs a third as much
+        let reach = max(2, h / 4)
+        let near = (max(0, at - reach)...min(h - 1, at + reach)).filter { smooth[$0] >= best * 0.33 }
+        let px = { (r: Int) in top + CGFloat(r) / s }
+        return (px(at) + 0.5 / s, px(near.first ?? at), px((near.last ?? at) + 1))
     }
     /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
     private let exprUpperMask: CIImage
@@ -200,18 +208,25 @@ public final class FaceRenderer: @unchecked Sendable {
         // brows: a band above the eye line the blink still shows (none without one, nor on animals: 11/4 the band
         // must sit on the brows, not the hairline), the eyes cut out (codex P2: the lift must never move an eye);
         // a 0.3 s lift on stressed words (BrowFlash)
+        let lift = max(1, face.height * 0.012)
+        browLift = lift
         if faceSet.flow?.kind != "animal", let blink = faceSet.expressions[.blink],
-           let eyeRow = Self.eyeLine(neutral: faceSet.image(for: .neutral), blink: blink, face: faceSet.faceBox, mouthTop: faceSet.mouthBox.minY) {
-            let g = Self.browGeometry(eyeY: h - eyeRow, mouthY: mouth.midY, faceWidth: face.width)
+           let eye = Self.eyeLine(neutral: faceSet.image(for: .neutral), blink: blink, shift: faceSet.expressionShift[.blink] ?? (0, 0),
+                                  face: faceSet.faceBox, mouthTop: faceSet.mouthBox.minY) {
+            let g = Self.browGeometry(eyeY: h - eye.y, mouthY: mouth.midY, faceWidth: face.width)
             let brow = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
-            let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+            // eye cut-out (codex P2 ×2): its solid core covers every row the blink changed (both eyes of a tilted
+            // face) plus the lift and a margin, so no eye pixel is ever copied up
+            let eyeTop = h - eye.top, eyeBottom = h - eye.bottom
+            let core = max(g.eyeRy * 0.7, (eyeTop - eyeBottom) / 2 + lift + 3)
+            let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: (eyeTop + eyeBottom) / 2), rx: face.width * 0.5 / 0.85, ry: core / 0.7,
+                                        inner: 0.7, extent: extent)
             // brow alpha × (1 − eye alpha) (codex P2: an inverted mask keeps its own alpha, so a multiply kept only the overlap)
             let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
             browMask = cut.outputImage!.cropped(to: extent)
         } else {
             browMask = nil
         }
-        browLift = max(1, face.height * 0.012)
         blinkMask = faceSet.hasBlink
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),
                                rx: face.width * 0.55, ry: max(4, (bandTop - bandBottom) / 2), inner: 0.6, extent: extent)

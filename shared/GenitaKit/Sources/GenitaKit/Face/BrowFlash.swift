@@ -50,13 +50,21 @@ enum BrowFlash {
     struct Tracker {
         private(set) var shown: [Double] = []
         private var lastT: Double?
+        /// codex P3: onsets are recomputed only when the phoneme list changes (or every `refresh` s while the
+        /// loudness of a streaming reply fills in), not on every frame.
+        private var cache: (count: Int, endMs: Int, at: Double, onsets: [Double])?
+        static let refresh = 0.5
         mutating func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], loudness: (Double) -> Double) -> Double {
             let t = ms / 1000
             // a new reply (cancel / next utterance restarts the clock) or any jump back: forget the old flashes (codex P2)
-            if phonemes.isEmpty || (lastT.map { t < $0 - 0.05 } ?? false) { shown = [] }
+            if phonemes.isEmpty || (lastT.map { t < $0 - 0.05 } ?? false) { shown = []; cache = nil }
             lastT = t
             guard !phonemes.isEmpty else { return 0 }
-            for s in BrowFlash.onsets(phonemes: phonemes, loudness: loudness) where s <= t {
+            let endMs = Int(phonemes.last!.endMs)
+            if cache == nil || cache!.count != phonemes.count || cache!.endMs != endMs || t - cache!.at >= Self.refresh {
+                cache = (phonemes.count, endMs, t, BrowFlash.onsets(phonemes: phonemes, loudness: loudness))
+            }
+            for s in cache!.onsets where s <= t {
                 if shown.contains(where: { abs($0 - s) < 1e-6 }) { continue }
                 if let last = shown.last, s - last < BrowFlash.minGap { continue }
                 if t - s >= BrowFlash.rise + BrowFlash.hold + BrowFlash.fall { continue }   // only flashes still live now

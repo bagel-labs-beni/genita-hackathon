@@ -476,7 +476,7 @@ struct BrowFlashTests {
         // a much louder clause arrives: the started flash keeps going
         let more = first + (4..<8).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
         let loudLater: (Double) -> Double = { ms in ms >= 2000 && Int(ms) % 500 < 150 ? 1.0 : quietLoud(ms) }
-        #expect(tr.weight(atMs: 160, phonemes: more, loudness: loudLater) > 0.9)
+        #expect(tr.weight(atMs: 130, phonemes: more, loudness: loudLater) > 0.9)   // still in the hold (onset −0.06 s)
         #expect(tr.shown.count == 1)
     }
 
@@ -515,19 +515,27 @@ struct BrowFlashTests {
 
     @Test func theEyeLineComesFromTheBlinkStill() throws {
         let w = 300, h = 400
-        func img(eyesShut: Bool) -> CGImage {
+        // lids: (x, row from the top, height) per eye; `down` draws the whole blink still lower (an unaligned still)
+        func img(lids: [(Int, Int, Int)], down: Int = 0) -> CGImage {
             let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             c.setFillColor(gray: 0.7, alpha: 1); c.fill(CGRect(x: 0, y: 0, width: w, height: h))
             c.setFillColor(gray: 0.1, alpha: 1)
-            c.fill(CGRect(x: 60, y: h - 132, width: 180, height: 6))   // brows (row 126–132 from the top), in both
-            if eyesShut { c.setFillColor(gray: 0.35, alpha: 1); c.fill(CGRect(x: 70, y: h - 170, width: 160, height: 12)) }   // lids, rows 158–170
+            c.fill(CGRect(x: 60, y: h - 132 - down, width: 180, height: 6))   // brows (rows 126–132 from the top)
+            c.setFillColor(gray: 0.35, alpha: 1)
+            for (x, row, lh) in lids { c.fill(CGRect(x: x, y: h - row - lh - down, width: 70, height: lh)) }
             return c.makeImage()!
         }
-        let y = FaceRenderer.eyeLine(neutral: img(eyesShut: false), blink: img(eyesShut: true),
-                                     face: CGRect(x: 40, y: 60, width: 220, height: 300), mouthTop: 280)
-        #expect(y != nil && abs(y! - 164) < 6)
-        #expect(FaceRenderer.eyeLine(neutral: img(eyesShut: false), blink: img(eyesShut: false),
-                                     face: CGRect(x: 40, y: 60, width: 220, height: 300), mouthTop: 280) == nil)
+        let face = CGRect(x: 40, y: 60, width: 220, height: 300)
+        let open = img(lids: []), shut = [(70, 158, 12), (160, 158, 12)]
+        let e = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut), face: face, mouthTop: 280))
+        #expect(abs(e.y - 164) < 6 && e.top <= 160 && e.bottom >= 168)
+        #expect(FaceRenderer.eyeLine(neutral: open, blink: open, face: face, mouthTop: 280) == nil)
+        // codex P2: a blink still drawn 8 px lower is read through the renderer's alignment (dy 8), not its brows
+        let low = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: shut, down: 8), shift: (0, 8), face: face, mouthTop: 280))
+        #expect(abs(low.y - 164) < 6)
+        // codex P2: a tilted face (eyes 35 px apart in height): the span takes in both eyes
+        let tilt = try #require(FaceRenderer.eyeLine(neutral: open, blink: img(lids: [(70, 150, 12), (160, 185, 12)]), face: face, mouthTop: 280))
+        #expect(tilt.top <= 152 && tilt.bottom >= 195)
     }
 }
