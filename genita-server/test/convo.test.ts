@@ -1127,7 +1127,7 @@ test("AI sweep (P1 safety): a crisis turn whose Spark calls all fail says the he
 
 test("Codex gate 963e47f: crisis lines ending in … or ? are real; waking up at five is not; save talk after content is dropped; 'Summer is my favorite season' stays", async () => {
   const { nameAsYou } = await import("../src/convo/guard.ts");
-  for (const t of ["i just want it all to end…", "what if i just want it all to end?", "I don't see the point in waking up ever again."]) assert.ok(realCrisisSignal(t), t);
+  for (const t of ["i just want it all to end…", "what if i just want it all to end?", "I don't see the point in waking up ever again.", "I don't see the point in waking up at all anymore."]) assert.ok(realCrisisSignal(t), t);
   assert.ok(!realCrisisSignal("no point in waking up early for that"));
   assert.ok(!realCrisisSignal("There is no point in waking up at five because my flight was canceled."));
   assert.equal(guardSentence("I'll save that detail quietly.", { camera: false, userText: "pistachio is elite" }), "save_talk");
