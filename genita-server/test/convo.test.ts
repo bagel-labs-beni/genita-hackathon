@@ -706,7 +706,8 @@ test("hard fail (demo lane 11/3): a line about being interrupted is never said",
   for (const line of ["You cut me off twice, so one line from now on.", "Okay, you keep cutting me off.", "You talked over me there.", "I'll keep it short from now on.", "Since you interrupted me, quick version."]) {
     assert.equal(guardSentence(line, none), "interruption", line);
   }
-  for (const keep of ["Cut the onions first.", "Short and sweet: go black."]) assert.equal(guardSentence(keep, none), null, keep);
+  assert.equal(guardSentence("You can cut me off and call 911 right now.", { camera: false, userText: "I'm scared for my life, sorry I cut you off." }), null);
+  for (const keep of ["Cut the onions first.", "Short and sweet: go black.", "You interrupted the movie?", "Did your boss interrupt the meeting again?"]) assert.equal(guardSentence(keep, none), null, keep);
   const { client, session } = setup(["<happy> You cut me off twice, so one line from now on. Go with the trench."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "which one" }));
