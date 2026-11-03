@@ -303,7 +303,9 @@ export async function startServer(
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
-      const t = session?.historyForgetRevision === revision ? session.historySnapshot() : null;
+      // a call that already ended (stop handled, socket still closing) is not a live call to continue (Codex 11/3)
+      if (!session || session.isClosed) continue;
+      const t = session.historyForgetRevision === revision ? session.historySnapshot() : null;
       if (t?.length && (!best || t.length >= best.length)) { best = t; thread = session!.threadInfo(); }
     }
     if (best) { handedThread.set(self, thread); return best; }
@@ -328,7 +330,10 @@ export async function startServer(
     const save = () => {
       // a stale copy of the same conversation (the old device closing late) never replaces the fuller one (Codex 11/3)
       const cur = lastTurns.get(userId);
-      if (cur?.thread && thread && cur.thread.threadId === thread.threadId && cur.thread.covered > thread.covered) {
+      // ...nor does the device that no longer owns the thread (it moved on), even with as many pairs
+      const stale = cur?.thread && thread && cur.thread.threadId === thread.threadId
+        && (cur.thread.covered > thread.covered || (deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id)));
+      if (stale) {
         log("history.not_cached", { session: session.id, by: "stale_copy" });
         return;
       }

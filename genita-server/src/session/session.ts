@@ -1080,6 +1080,8 @@ export class Session {
 
   /** Revision of these turns, not the latest revision at socket close (which may arrive after Forget). */
   get historyForgetRevision(): number | null { return this.historyRevision; }
+  /** stopped or closed, even if its socket has not finished closing yet */
+  get isClosed(): boolean { return this.closed; }
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 

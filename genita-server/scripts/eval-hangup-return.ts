@@ -42,7 +42,7 @@ else {
     const repo = new InMemoryMemoryRepository();
     const memory = new MemoryService({ repository: repo, state: repo, extract: metaExtractor(key), summarize: metaSummarizer(key) });
     const logs: string[] = [];
-    const deps: SessionDeps = { config, memory, openAsr: () => asr() as never, spark: (req, opts) => sparkStream(key, req, opts), async *tts() {} };
+    const deps: SessionDeps = { config, memory, log: (e) => { logs.push(e); }, openAsr: () => asr() as never, spark: (req, opts) => sparkStream(key, req, opts), async *tts() {} };
     const server = await startServer(config, (e) => { logs.push(e); }, deps, {}, null);
     const port = (server.address() as AddressInfo).port;
     const user = `eval-hangup-${run}`;
