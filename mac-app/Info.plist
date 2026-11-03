@@ -4,6 +4,16 @@
 <dict>
 	<!-- Sparkle compares these: CFBundleVersion = the CI build number (run×10+attempt, same formula as iOS),
 	     CFBundleShortVersionString = the iOS marketing version. Set via CURRENT_PROJECT_VERSION / MARKETING_VERSION. -->
+	<!-- The name people see is "Genita" (menu bar, About / Quit, Dock, Cmd-Tab, Finder), Chelsea 11/4. The bundle file stays
+	     GenitaMac.app: Sparkle finds the new app in the DMG by the installed bundle's file name or its display name, so an
+	     installed 161/171 ("GenitaMac.app" / "Genita Mac") could not find a "Genita.app". The localized display name
+	     (en.lproj/InfoPlist.strings + LSHasLocalizedDisplayName) shows "Genita" for that file. Bundle id, signing, feed: unchanged. -->
+	<key>CFBundleName</key>
+	<string>Genita</string>
+	<key>CFBundleDisplayName</key>
+	<string>Genita</string>
+	<key>LSHasLocalizedDisplayName</key>
+	<true/>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>

@@ -3,7 +3,7 @@ name: Device test builds
 # Release builds:
 # - iOS: signed Release archive uploaded to TestFlight (internal + external groups).
 #   Build number = run_number * 10 + run_attempt, so every run is a new build.
-# - Mac: GenitaMac.app signed with Developer ID (hardened runtime), packed in a DMG,
+# - Mac: GenitaMac.app (shown as "Genita") signed with Developer ID (hardened runtime), packed in Genita-<version>.dmg,
 #   notarized and stapled; artifact "Genita-Mac-dmg". Same build number as iOS.
 #   Sparkle auto-update: the DMG is EdDSA-signed (sign_update, key GENITA_SPARKLE_ED_PRIVATE = SSM
 #   /genita/apple/sparkle_ed_private) and published with an appcast entry to GitHub Pages
@@ -323,7 +323,7 @@ jobs:
           mkdir -p "$STAGE" build-output
           ditto "$APP" "$STAGE/GenitaMac.app"
           ln -s /Applications "$STAGE/Applications"
-          DMG="build-output/Genita-Mac-$VERSION.dmg"
+          DMG="build-output/Genita-$VERSION.dmg"
           hdiutil create -volname "Genita" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           codesign --force --timestamp --keychain "$KC" --sign "$DEVID_HASH" "$DMG"
           codesign --verify --verbose=2 "$DMG"
@@ -363,6 +363,13 @@ jobs:
           V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$MNT/GenitaMac.app/Contents/Info.plist")"
           SV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MNT/GenitaMac.app/Contents/Info.plist")"
           echo "DMG app: $SV ($V)"
+          # Chelsea 11/4: people see "Genita", never "GenitaMac" (menu bar, About/Quit, Dock, Finder). File name stays (Sparkle).
+          N="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          DN="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$MNT/GenitaMac.app/Contents/Info.plist")"
+          echo "names: CFBundleName=$N CFBundleDisplayName=$DN"
+          test "$N" = Genita && test "$DN" = Genita || { echo "::error::visible app name is '$N' / '$DN', not Genita"; hdiutil detach "$MNT" >/dev/null; exit 1; }
+          plutil -p "$MNT/GenitaMac.app/Contents/Resources/en.lproj/InfoPlist.strings" | grep -q '"CFBundleDisplayName" => "Genita"' \
+            || { echo "::error::en.lproj/InfoPlist.strings (localized display name) missing"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           test "$V" = "$BUILD_NUMBER" && test "$SV" = "$MAC_VERSION" || { echo "::error::DMG Info.plist version $SV ($V) ≠ $MAC_VERSION ($BUILD_NUMBER)"; hdiutil detach "$MNT" >/dev/null; exit 1; }
           # #347: a notarized DMG must also start. Sparkle needs the Frameworks rpath, then a 10 s launch smoke.
           BIN="$MNT/GenitaMac.app/Contents/MacOS/GenitaMac"
@@ -412,7 +419,7 @@ jobs:
       - name: Publish the appcast entry (installed Macs update from here)
         if: env.PUBLISH_UPDATE == 'true' && env.HAS_UPDATE_SECRETS == 'true'
         run: |
-          NAME="Genita-Mac-$BUILD_NUMBER.dmg"
+          NAME="Genita-Mac-$BUILD_NUMBER.dmg"  # appcast download URL only (appcast.mjs keeps this pattern); Sparkle downloads it silently
           ROOT="$PWD"
           cd updates-site
           git config user.name "genita-release-bot"
