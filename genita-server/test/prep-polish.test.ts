@@ -14,10 +14,11 @@ import { POLISH_MAX_ATTEMPTS, POLISH_PROMPT, POLISH_SIZE, canPolish, headsView, 
 import type { PrepDeps } from "../src/prep/pipeline.ts";
 import type { MediaApi } from "../src/prep/face.ts";
 import { checkPhotoInput } from "../src/prep/photoInput.ts";
+import { OpsLimits, rejectGeneration } from "../src/ops/limits.ts";
 
 const ok: ClassifyRaw = {
   subject: "person", face_count: 1, front_facing: true, face_covered: false, sharp: true, well_lit: true, text_on_image: false,
-  public_figure: false, species: "", character_style: "none",
+  public_figure: false, any_public_figure: false, species: "", character_style: "none",
 };
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]);
@@ -30,6 +31,12 @@ test("polish: which checked photos can be polished", () => {
   assert.equal(canPolish(interpretCheck({ ...ok, subject: "animal", species: "dog", front_facing: false })), true);
   // 11/4 (Chelsea): any photo — a group photo (the largest one is kept) and a half-covered face are polished too
   assert.equal(canPolish(interpretCheck({ ...ok, face_count: 3 })), true);
+  // codex P1: a group photo with a well-known person anywhere in it never goes to the image model
+  assert.equal(canPolish(interpretCheck({ ...ok, face_count: 3, any_public_figure: true })), false);
+  assert.equal(canPolish(interpretCheck({ ...ok, any_public_figure: true })), false);
+  const { any_public_figure: _drop, ...older } = ok;
+  assert.equal(canPolish(interpretCheck({ ...older, face_count: 3 })), false, "unknown → a group photo is not polished");
+  assert.equal(canPolish(interpretCheck({ ...older, front_facing: false })), true, "one face: the main-subject rule covers it");
   assert.equal(canPolish(interpretCheck({ ...ok, face_covered: true, well_lit: false, sharp: false })), true);
   // never: a public figure (D26, refused before any edit), no face at all
   assert.equal(canPolish(interpretCheck({ ...ok, public_figure: true })), false);
@@ -278,4 +285,47 @@ test("upload route: with polish on, an unreadable image is refused before the qu
   const j = (await r.json()) as Record<string, string>;
   assert.equal(j.error, "unreadable_image");
   assert.match(j.message, /another photo/);
+});
+
+test("polish route: a 2D drawing that came back 3D fails the re-check (codex P2)", async (t) => {
+  const h = await harness(t, { recheck: () => ({ ...ok, subject: "character", character_style: "3d" }) });
+  await h.put("flat", { ...ok, subject: "character", character_style: "2d" });
+  const r = await h.call("POST", "/v1/companion/image/polish", { imageId: "flat" });
+  assert.equal(r.json.passed, false);
+  assert.deepEqual(r.json.reasons.map((x: { code: string }) => x.code), ["style_changed"]);
+});
+
+test("polish route: a dog that came back a cat fails the re-check (codex P2)", async (t) => {
+  const h = await harness(t, { recheck: () => ({ ...ok, subject: "animal", species: "cat" }) });
+  await h.put("dog", { ...ok, subject: "animal", species: "dog" });
+  assert.equal((await h.call("POST", "/v1/companion/image/polish", { imageId: "dog" })).json.passed, false);
+});
+
+test("polish route: a closer species name is the same animal", async (t) => {
+  const h = await harness(t, { recheck: () => ({ ...ok, subject: "animal", species: "golden retriever dog" }) });
+  await h.put("dog2", { ...ok, subject: "animal", species: "dog" });
+  assert.equal((await h.call("POST", "/v1/companion/image/polish", { imageId: "dog2" })).json.passed, true);
+});
+
+test("polish route: a re-check that throws after the edit is polish_failed with the tries left (codex P2)", async (t) => {
+  const h = await harness(t, { recheck: (n) => { if (n >= 1) throw new Error("spark down"); return ok; } });
+  await h.put("x1", ok);
+  const r = await h.call("POST", "/v1/companion/image/polish", { imageId: "x1" });
+  assert.equal(r.status, 502);
+  assert.equal(r.json.error, "polish_failed");
+  assert.equal(r.json.retriesLeft, 2);
+  assert.equal(r.json.retryable, true);
+});
+
+test("ops: GENITA_PAUSED and the image budget stop the polish route too (codex P1)", () => {
+  const ops = new OpsLimits({ paused: true });
+  let status = 0;
+  const res = { writeHead: (s: number) => { status = s; }, end: () => {} } as unknown as import("node:http").ServerResponse;
+  const req = { method: "POST", url: "/v1/companion/image/polish" } as import("node:http").IncomingMessage;
+  assert.equal(rejectGeneration(req, res, ops), true);
+  assert.equal(status, 503);
+  const budget = new OpsLimits({ metaDailyImages: 1 });
+  budget.consumeMeta(true);
+  assert.equal(rejectGeneration(req, res, budget), true, "an image route: the daily image cap applies");
+  assert.equal(status, 429);
 });

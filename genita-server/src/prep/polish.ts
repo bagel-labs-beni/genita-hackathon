@@ -54,7 +54,21 @@ const POLISH_TIMEOUT_MS = 60_000;
 const FIXABLE = new Set<FailReason>(["side_view", "too_blurry", "text_on_image", "multiple_faces", "face_covered"]);
 
 export function canPolish(check: ImageCheck): boolean {
-  return !!check.type && !check.polishedFrom && check.reasons.every((r) => FIXABLE.has(r.code));
+  if (!check.type || check.polishedFrom || !check.reasons.every((r) => FIXABLE.has(r.code))) return false;
+  // D26 applies to the whole photo before it reaches the image model: a well-known person anywhere refuses the polish;
+  // a group photo needs the answer to be a clear "no"
+  if (check.raw.any_public_figure === true) return false;
+  if (check.reasons.some((r) => r.code === "multiple_faces") && check.raw.any_public_figure !== false) return false;
+  return true;
+}
+
+/** The result must stay the same kind of thing: a flat drawing stays flat, a dog stays a dog (a closer name is fine). */
+function changedLook(orig: ClassifyRaw, now: ClassifyRaw): boolean {
+  const flat = (s?: string) => (s === "2d" ? "2d" : s === "3d" || s === "toy" ? "3d" : "");
+  if (flat(orig.character_style) && flat(now.character_style) && flat(orig.character_style) !== flat(now.character_style)) return true;
+  const a = (orig.species ?? "").trim().toLowerCase();
+  const b = (now.species ?? "").trim().toLowerCase();
+  return !!a && !!b && !a.includes(b) && !b.includes(a);
 }
 
 /** The upload answer's `polish`: the app runs the confirm step only when this is true. */
@@ -121,34 +135,43 @@ export async function polishImage(
   }
   const polishMs = since(t0);
 
-  // the result gets the same check as an upload (public figure included); it must also keep the subject type
-  const t1 = performance.now();
-  const url = `data:image/png;base64,${bytes.toString("base64")}`;
-  const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
-  const [raw, boxes] = await Promise.all([
-    json<ClassifyRaw>(buildClassifyRequest(url)),
-    mediaOf(d).samDetect(d.metaKey, url, headPrompt(orig.check.type)).catch(() => null),
-  ]);
-  const checkMs = since(t1);
-  // species and character style come from the photo the user brought: the edit must not change them
-  const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style };
-  let check: ImageCheck = interpretCheck(merged);
-  if (check.type !== orig.check.type) {
-    check = { ...check, type: orig.check.type, passed: false, reasons: [{ code: "style_changed", label: FAIL_REASONS.style_changed }] };
+  // the result gets the same check as an upload (public figure included); it must also keep the subject type and look.
+  // A failure from here on (Spark, SAM, storage) is the same retryable polish_failed, with the tries left.
+  let rec: ImageRecord;
+  let checkMs: number;
+  try {
+    const t1 = performance.now();
+    const url = `data:image/png;base64,${bytes.toString("base64")}`;
+    const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
+    const [raw, boxes] = await Promise.all([
+      json<ClassifyRaw>(buildClassifyRequest(url)),
+      mediaOf(d).samDetect(d.metaKey, url, headPrompt(orig.check.type)).catch(() => null),
+    ]);
+    checkMs = since(t1);
+    // species and character style stay the upload's (the face profile is chosen from them) once they're known to match
+    const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style };
+    let check: ImageCheck = interpretCheck(merged);
+    if (check.type !== orig.check.type || changedLook(orig.check.raw, raw)) {
+      check = { ...check, type: orig.check.type, passed: false, reasons: [{ code: "style_changed", label: FAIL_REASONS.style_changed }] };
+    }
+    check = { ...check, polishedFrom: orig.id };
+    rec = {
+      id: randomUUID().replace(/-/g, ""),
+      userId,
+      mime: "image/png",
+      bytes: bytes.length,
+      check,
+      headBox: check.passed && boxes ? pickHeadBox(boxes) : null,
+      rightsAck: orig.rightsAck,
+      createdAt: new Date().toISOString(),
+      ms: { check: checkMs, sam: null },
+    };
+    await d.store.putImage(rec, bytes);
+  } catch (err) {
+    d.log("photo.polish_failed", { attempt, ms: since(t0), stage: "recheck", reason: String(err).slice(0, 200) });
+    throw new PolishFailed(retriesLeft);
   }
-  check = { ...check, polishedFrom: orig.id };
-  const rec: ImageRecord = {
-    id: randomUUID().replace(/-/g, ""),
-    userId,
-    mime: "image/png",
-    bytes: bytes.length,
-    check,
-    headBox: check.passed && boxes ? pickHeadBox(boxes) : null,
-    rightsAck: orig.rightsAck,
-    createdAt: new Date().toISOString(),
-    ms: { check: checkMs, sam: null },
-  };
-  await d.store.putImage(rec, bytes);
+  const check = rec.check;
   d.log("photo.polished", { attempt, passed: check.passed, reasons: check.reasons.map((r) => r.code), type: orig.check.type, polish_ms: polishMs, check_ms: checkMs });
   return { rec, source: orig, attempt, retriesLeft, ms: { polish: polishMs, check: checkMs } };
 }
