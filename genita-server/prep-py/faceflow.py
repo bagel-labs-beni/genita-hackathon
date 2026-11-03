@@ -909,7 +909,10 @@ def main():
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
             'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': deep_merge(lip_map(kind), map_extra),
-            **({'rules': [r[0] for r in rules]} if rules else {})}
+            **({'rules': [r[0] for r in rules]} if rules else {}),
+            # 11/4: mask version 2 = a face silhouette was offered (scripts/reflow-masks.ts re-runs faces below 2);
+            # `silhouette` says whether it was applied (a silhouette that misses the mouth is ignored)
+            **({'maskVersion': 2, 'silhouette': 'silhouette' in diag and 'kept' in diag['silhouette']} if a.silhouette else {})}
     if a.blink and a.eyes and kind == 'character2d':
         eyes = [box(e) for e in a.eyes.split(';') if e]
         BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)
