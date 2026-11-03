@@ -2427,7 +2427,14 @@ export class Session {
             this.dispatch({ type: "first_audio", utteranceId });
             noteFirstAudio();
             this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
+          } else if (!voiced) {
+            // a later clip (the recovery line after the hold line and a wait): the user may be talking now (Codex P2)
+            await this.untilUserQuiet(signal);
+            if (signal.aborted) break;
           }
+          // the player sat idle during the wait: this clip's playback starts now (done timer, Codex P1)
+          const idle = this.now() - (reply.firstAudioAt + reply.audioMs);
+          if (idle > 0) reply.firstAudioAt += idle;
           const seq = ++this.seq;
           const durationMs = pcmDurationMs(chunk.audio.length);
           this.client.sendJson({ type: "audio", utteranceId, seq, sentence, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, offset) });

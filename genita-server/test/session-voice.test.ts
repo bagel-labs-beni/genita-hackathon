@@ -268,6 +268,22 @@ test("voice identity (Codex P1): after the hold line and a GPU wait, the reply s
   session.close();
 });
 
+test("voice identity (Codex P1 r2): the recovery line after a hold and a wait keeps the reply 'speaking' while it plays", async () => {
+  const { client, session } = setup({ failCalls: [0, 1, 2], cached: [HOLD_LINE, RECOVER_LINE] });
+  const at = new Map<Record<string, unknown>, number>();
+  const send = client.sendJson.bind(client);
+  client.sendJson = (m) => { at.set(m, Date.now()); send(m); };
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  await client.waitFor((m) => m.type === "reply", 6000);
+  const audio = client.of("audio");
+  assert.equal(audio.length, 2, "hold line + recovery line");
+  const recoverAt = at.get(audio[1])!;
+  const done = await client.waitFor((m) => m.type === "state" && m.state === "listening" && (at.get(m) ?? 0) > recoverAt, 3000);
+  assert.ok(at.get(done)! - recoverAt >= 80, `listening ${at.get(done)! - recoverAt} ms after the 100 ms recovery line started`);
+  session.close();
+});
+
 test("voice identity: nothing cached and the voice service down → no sound, tts_unavailable once, never say", async () => {
   const { client, session, calls } = setup({ failAt: 0 });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
