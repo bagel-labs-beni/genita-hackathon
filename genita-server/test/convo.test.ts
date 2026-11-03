@@ -1577,3 +1577,17 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("lead 11/4 crisis number: a real crisis reply with help but no number gets the 988 line; with a number, nothing more", { skip: !v1 }, async () => {
+  const { crisisFollowUp, CRISIS_HELP_LINE, CRISIS_NUMBER_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUp(["I care about you."]), CRISIS_HELP_LINE);
+  assert.equal(crisisFollowUp(["Please call emergency services or a crisis helpline right now."]), CRISIS_NUMBER_LINE);
+  assert.equal(crisisFollowUp(["Please call or text nine eight eight right now."]), null);
+  assert.equal(crisisFollowUp(["Call 911 right now."]), null);
+  const { client, session } = setup(["<sad> I'm really glad you told me, I care about you. Please put the pills down and call emergency services or a crisis helpline right now."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "i've been counting my pills and looking up how many it would take" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.match(String(reply.text), /crisis helpline right now\. You can call or text 988 any time/);
+  session.close();
+});

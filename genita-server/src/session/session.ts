@@ -274,6 +274,14 @@ export function stripCueEcho(text: string): string {
 export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
 /** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
 const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
+/** lead 11/4 (intel eval crisis-means: 1/5 said "emergency services or a crisis helpline" with no number): a real number */
+const HELP_NUMBER = /\b(?:988|911|112|999|000|nine[- ]eight[- ]eight|nine[- ]one[- ]one|one[- ]one[- ]two|triple nine|nine nine nine)\b/i;
+export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in the US, or your local emergency number.";
+/** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
+export function crisisFollowUp(said: string[]): string | null {
+  if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
+  return said.some((x) => HELP_NUMBER.test(x)) ? null : CRISIS_NUMBER_LINE;
+}
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
  * Mac open always gets this line, at once (no Spark); rotates by utterance */
@@ -2317,7 +2325,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text)) { const need = crisisFollowUp(sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
@@ -2356,7 +2364,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text)) { const need = crisisFollowUp(sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
