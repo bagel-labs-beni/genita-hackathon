@@ -114,3 +114,22 @@ test("config: raw Seamless voice by default (post:false, no emotion pitch/tone s
   assert.equal("post" in bodies[1], false, "GENITA_VOICE_POST=1: the post chain as before");
   assert.equal(bodies[1].emotion, "excited");
 });
+
+test("seamless client: a forced retry that the service answers ends the parked outage, so the next clauses are voiced", async () => {
+  const { createSeamless } = await import("../src/tts/seamless.ts");
+  let n = 0;
+  const f = (async () => {
+    if (n++ === 0) return new Response("upstream", { status: 502 });
+    return new Response(`${JSON.stringify({ audio_base64: Buffer.alloc(480).toString("base64"), alignment: null })}\n{"done":true}\n`, { status: 200 });
+  }) as unknown as typeof fetch;
+  const c = createSeamless(loadConfig({ MODEL_API_KEY: "k", GENITA_VOICE_URL: "https://v", GENITA_VOICE_TOKEN: "t" }).voice!, { fetch: f });
+  const req = (text: string, force?: true) => ({ voiceId: "seamless:19", text, emotion: null, model: "seamless-m4t-v2", lang: "en", ...(force ? { force } : {}) });
+  const drain = async (r: ReturnType<typeof req>) => { for await (const _ of c.speak(r)) void _; };
+  await assert.rejects(drain(req("First clause of the reply.")));
+  assert.equal(c.isDown(), true);
+  await assert.rejects(drain(req("Second clause of the reply.")), /voice_down/, "parked: fails fast");
+  await drain(req("First clause of the reply.", true));
+  assert.equal(c.isDown(), false, "the forced retry got an answer");
+  await drain(req("Second clause of the reply."));
+  assert.equal(n, 3);
+});

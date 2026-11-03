@@ -138,6 +138,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         throw new UpstreamError("voice", null, err instanceof Error ? err.message : "fetch failed");
       }
       if (!r.ok || !r.body) throw new UpstreamError("voice", r.status, (await r.text().catch(() => "")).slice(0, 200));
+      // the service answered: a parked outage is over (a live reply's forced retry gets the next clauses through, 11/4)
+      downUntil = 0;
       const dec = new TextDecoder();
       let buf = "";
       let done = false;
