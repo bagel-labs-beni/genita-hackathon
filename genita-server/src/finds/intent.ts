@@ -20,7 +20,7 @@ const CLOTHES =
 const SHOP_VERB =
   /\b(look(?:ing)? for|find(?:ing)?|search(?:ing)? for|shop(?:ping)? for|buy(?:ing)?|get me|pick out|recommend|suggest|where (?:can|do) i (?:get|buy))\b|찾아|사고\s*싶|살\s*만한|골라\s*줘|추천해/i;
 const PRODUCT_NOUN =
-  /\b(jacket|jackets|coat|coats|blazer|parka|vest|dress|dresses|shirt|shirts|overshirt|t-?shirt|tee|top|tops|sweater|sweaters|cardigan|hoodie|skirt|pants|trousers|jeans|shorts|shoes|sneakers|boots|loafers|sandals|bag|bags|backpack|tote|hat|cap|scarf|belt|watch|sunglasses|outfit|gift|lamp|chair|mug|headphones|earbuds)\b|자켓|재킷|코트|셔츠|바지|신발|가방|원피스|모자|선물/i;
+  /\b(jacket|jackets|coat|coats|blazer|parka|vest|dress|dresses|shirt|shirts|overshirt|t-?shirt|tee|top|tops|sweater|sweaters|cardigan|hoodie|skirt|pants|trousers|jeans|shorts|shoes|sneakers|boots|loafers|sandals|bag|bags|backpack|tote|hat|cap|scarf|belt|watch|sunglasses|outfit|gift|lamp|chair|mug|headphones|earbuds|heels|flats|earrings?|necklaces?|bracelets?|rings|jewelry|jewellery|accessories|wallets?|socks|gloves|perfume)\b|자켓|재킷|코트|셔츠|바지|신발|가방|원피스|모자|선물/i;
 /** links that can only mean shop pages */
 const SHOP_LINKS = /\b(product links?|links? to (?:buy|shop))\b/i;
 /** "send me the links": shop pages only after a product search or with a thing to buy named; otherwise a web
