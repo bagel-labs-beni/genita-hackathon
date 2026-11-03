@@ -39,7 +39,9 @@ public enum GenitaMotion {
     /// UI tests / review screenshots ask for a still app (continuous loops would keep XCUITest from idling).
     public static var reviewStill: Bool {
         #if DEBUG
-        ProcessInfo.processInfo.environment["GENITA_REVIEW_STILL"] == "1" || ProcessInfo.processInfo.arguments.contains("--uitesting")
+        // `--motion-demo` (motion lane evidence recordings): a UI-test launch that keeps every motion running
+        !ProcessInfo.processInfo.arguments.contains("--motion-demo")
+            && (ProcessInfo.processInfo.environment["GENITA_REVIEW_STILL"] == "1" || ProcessInfo.processInfo.arguments.contains("--uitesting"))
         #else
         false
         #endif
