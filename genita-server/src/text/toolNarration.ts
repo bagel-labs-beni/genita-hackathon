@@ -109,7 +109,9 @@ function isNarrationClause(clause: string): boolean {
  */
 /** D13 run (crisis turns use web_search for the local hotline): "I'm going to find the right support resources for you",
  * "let me find support resources you can reach right now" — a promise of the lookup, never the help itself */
-const RESOURCE_PROMISE = /(?:^|,? and )(?:i'?m going to|i'?m gonna|let me|i'?ll|i will|i want to)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:(?:support|crisis|help) ?(?:resources|options|numbers?|lines?|hotlines?)?|resources|options|numbers?|lines?|hotlines?)(?: (?:for you|you can (?:reach|call|use)|right now|now|here|tonight|in korea|near you|where you are))*$/;
+// only a clause that IS the promise: ", and I'll find you support…" after a real instruction ("Please put the pills down")
+// keeps the whole sentence (Codex #450 r2 P1)
+const RESOURCE_PROMISE = /^(?:i'?m going to|i'?m gonna|let me|i'?ll|i will|i want to)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:(?:support|crisis|help) ?(?:resources|options|numbers?|lines?|hotlines?)?|resources|options|numbers?|lines?|hotlines?)(?: (?:for you|you can (?:reach|call|use)|right now|now|here|tonight|in korea|near you|where you are))*$/;
 const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query)|dig (?:deeper|around|more)|look (?:again|harder|deeper))\b/;
 /** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
  * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */

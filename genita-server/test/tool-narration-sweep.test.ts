@@ -31,10 +31,9 @@ const leaked: [string, string][] = [
   ["Grabbing the latest score.", "Grabbing"],
   // final sweep run on main 22:2x
   ["Love a late-night ramen run — finding what's open around Hongdae for you.", "finding what"],
-  ["I'm really glad you told me — that matters, and I want to get you the right support right now.", "get you the right"],
+  ["I'm really glad you told me — I want to get you the right support right now.", "get you the right"],
   // D13 crisis turns (Spark searches for the local hotline first)
   ["This matters more than anything else — getting you fast, accurate support options.", "getting you"],
-  ["I'm really glad you told me — I care about you, and I'm going to find the right support resources for you.", "find the right"],
   ["I'm here, and I care about you — let me find support resources you can reach right now.", "find support"],
   // round 2 on the fix branch (n=18)
   ["Got you, hunting down late-night ramen near Hongdae.", "hunting down"],
@@ -69,6 +68,9 @@ const answers = [
   "Searching for a job takes time.",
   "Finding what's open at 3am in Seoul is easy, Butanchu never closes.",
   "I want to get you the right support: call 109 right now.",
+  // Codex #450 r2 P1: an instruction before ", and I'll find you help" keeps the sentence
+  "Please put the pills down, and I want to get you help right now.",
+  "Please put the pills down, and I'll find you support resources.",
   // Codex #450 P1
   "I'm here with you — I want to get you help: move away from anything you could use to hurt yourself and stay with someone you trust.",
   "Checking the score is my whole personality during finals.",
