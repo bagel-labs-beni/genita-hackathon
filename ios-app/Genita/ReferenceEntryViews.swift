@@ -60,8 +60,14 @@ struct ReferenceSignInView: View {
                     // #217: real Buttons (the old transparent boxes sat on fixed points and did nothing on device).
                     LegalLinks { legalPage = $0 }.position(x: size.width / 2, y: 752.5 + bottom)
                     // D41: a small text link between the provider buttons and the legal line; no new design
-                    Button { if !signingIn { judgeAlert = true } } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
-                        .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
+                    if signingIn {
+                        // AU-11: a Judge code (the server copies the demo companion first) or Apple is still answering
+                        ProgressView().tint(.white).frame(width: 88, height: 44).position(x: size.width / 2, y: 710 + bottom)
+                            .accessibilityLabel("Signing in").accessibilityIdentifier("signingIn")
+                    } else {
+                        Button { judgeAlert = true } label: { Text("Judge access").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(.white.opacity(0.72)).frame(minWidth: 88, minHeight: 44).contentShape(Rectangle()) }
+                            .position(x: size.width / 2, y: 710 + bottom).accessibilityIdentifier("judgeAccessLink")
+                    }
                 }.frame(width: size.width, height: size.height).clipped()
             }.ignoresSafeArea(.container)
         }.preferredColorScheme(.dark)
