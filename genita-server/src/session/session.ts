@@ -770,6 +770,7 @@ export class Session {
       this.memoryCall = new MemoryCall(memory, userId, this.id, (revision) => {
         this.dropSpeculation(); this.dispatch({ type: "client_barge_in" });
         this.history = []; this.recentReplies = []; this.memories = []; this.greeting = null;
+        this.handedPast = false; // Codex #536 r2: after a Forget the other device's turns are gone as a past too
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
@@ -817,6 +818,7 @@ export class Session {
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
           this.greeting = null;
           this.continued = true;
+          this.handedPast = true;
           this.log("history.seeded", { turns: this.history.length, from: server?.length ? "server" : "start" });
         });
       };
@@ -1619,9 +1621,11 @@ export class Session {
   }
 
   /** CV-01: anything from before this call reached the model (memories, notes, last call, recall, the other device's turns) */
+  /** the other device's turns came with this call (cleared by a Forget) */
+  private handedPast = false;
   private hasPast(): boolean {
     // a handoff's turns count only while they're still here (Codex #536 P2: a Forget clears them, the flag stayed)
-    return (this.continued && this.history.length > 0) || this.memories.length > 0 || !!this.memoryCall?.pastShown;
+    return this.handedPast || this.memories.length > 0 || !!this.memoryCall?.pastShown;
   }
 
   /** Session memory: this call's conversation thread, for the account's next device after a handoff. */

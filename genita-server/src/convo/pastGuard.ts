@@ -28,9 +28,13 @@ const CLAIMED_RECALL = new RegExp([
 
 const STOPW = new Set("about that this with your you told said remember when time last were what have just like really then they them there their from been tonight today".split(" "));
 /** a content word of the sentence (≥4 letters) the user really said in this call */
+const WHEN_PAST = /\b(?:last (?:week|month|year|night|time)|yesterday|the other (?:day|night)|weeks? ago|days? ago|a while ago|before)\b/i;
+/** Codex #536 r2: a content word (≥3 letters) they really said in this call, and no "last week"-type time they didn't say */
 function groundedInCall(sentence: string, callText: string): boolean {
-  const said = new Set((callText.toLowerCase().match(/[a-z']{4,}/g) ?? []));
-  return (sentence.toLowerCase().match(/[a-z']{4,}/g) ?? []).some((w) => !STOPW.has(w) && said.has(w));
+  const said = new Set((callText.toLowerCase().match(/[a-z']{3,}/g) ?? []));
+  const when = sentence.match(WHEN_PAST)?.[0];
+  if (when && !callText.toLowerCase().includes(when.toLowerCase())) return false;
+  return (sentence.toLowerCase().match(/[a-z']{3,}/g) ?? []).some((w) => !STOPW.has(w) && !["you", "the", "and", "got", "did", "say", "was", "are", "had", "has", "for", "but", "not", "now"].includes(w) && said.has(w));
 }
 function said(re: RegExp, text: string): boolean { re.lastIndex = 0; return re.test(text); }
 

@@ -47,3 +47,8 @@ test("Codex #536 P2: said in this call → kept; a question about their own past
   assert.equal(unbackedPast("When was the last time you cooked ramen?", none("I feel like ramen tonight.")), "When was the last time you cooked ramen?");
   assert.equal(unbackedPast("You told me about your ex last week.", { past: false, userText: "do you remember?", callText: "hey" }), "");
 });
+
+test("Codex #536 r2: 'you got a job' said this call stays; 'your interview last week' with only 'interview' said today goes", () => {
+  assert.equal(unbackedPast("You told me that you got a job.", { past: false, userText: "What did I say?", callText: "I got a job." }), "You told me that you got a job.");
+  assert.equal(unbackedPast("You told me about your interview last week.", { past: false, userText: "hm", callText: "My interview is tomorrow." }), "");
+});
