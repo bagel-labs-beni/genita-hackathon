@@ -54,6 +54,18 @@ struct FindsRiseModifier: ViewModifier {
     }
 }
 
+/// The picture fading in over its placeholder when `value` (its load status) changes. Flag off / UI tests: nothing added.
+struct FindsPhotoFadeModifier<V: Equatable>: ViewModifier {
+    var value: V
+    func body(content: Content) -> some View {
+        if MotionFinds.fades {
+            content.animation(MotionFinds.photoIn, value: value)
+        } else {
+            content
+        }
+    }
+}
+
 // MARK: - Card 4 · photo placeholder
 
 /// The photo placeholder: `base` with a white band sweeping left → right every 1.2 s (a moving gradient over the
@@ -192,6 +204,8 @@ public extension View {
     /// Card 4: this block lifts 8 pt and fades in on appear, `index` × 40 ms after the first (fade only under
     /// Reduce Motion; drawn at once with the flag off and in UI tests).
     func findsRise(_ index: Int) -> some View { modifier(FindsRiseModifier(index: index)) }
+    /// Card 4: animate the picture's arrival (250 ms) when `value` changes; pair with `.transition(.opacity)` on the picture.
+    func findsPhotoFade<V: Equatable>(_ value: V) -> some View { modifier(FindsPhotoFadeModifier(value: value)) }
     /// Card 5: the symbol swaps with `.symbolEffect(.replace)` when `value` (its name) changes.
     func findsSymbolReplace<V: Equatable>(_ value: V) -> some View { modifier(FindsSymbolReplaceModifier(value: value)) }
     /// Card 6: symbol bounce each time `value` changes.
