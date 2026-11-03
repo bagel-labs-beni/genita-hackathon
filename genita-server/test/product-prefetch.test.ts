@@ -214,6 +214,8 @@ test("Codex P2 (#366 r4): an exclusion, a material, a size or a brand the prefet
     "Find me dark brown shoes in size 8",
     "Find me some Nike shoes that go with this",
     "Find me shoes that aren't too formal, not loafers",
+    "Find me shoes from Nike, preferably dark brown",
+    "Find me some On shoes that go with this",
   ]) {
     const { v, searches } = vendors(10);
     const { r } = runner(v);
