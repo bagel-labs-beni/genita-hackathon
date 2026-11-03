@@ -155,7 +155,9 @@ struct SettingsView: View {
             } catch {
                 // a failure after the companion's rows went (its files, say) still started over (#514 Codex r3 P2):
                 // ask the server what is there now instead of saying nothing was removed
-                if case GenitaAuthError.server(404, _, _)? = await Self.companionLookup(model) {
+                let now = await Self.companionLookup(model)
+                if now == .unauthorized, asked.generation == model.authGeneration { dismiss(); model.signedOut(); return }
+                if case GenitaAuthError.server(404, _, _)? = now {
                     guard asked.accepts(model.launchAuthSnapshot), model.companionResets == resets else { return }
                     CallController.shared.end()
                     dismiss()

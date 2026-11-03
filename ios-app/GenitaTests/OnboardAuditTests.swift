@@ -209,6 +209,7 @@ import UIKit
         let me = me(name: "Summer", hasCompanion: false)
         let (model, storage) = makeModel { req in (req.url?.path ?? "").hasSuffix("/me") ? (200, me) : (404, Data()) }
         storage.set("u1", forKey: AppState.userKey)
+        model.adopt(accountId: "u1")   // this phone's setup belongs to u1, so adopt keeps it (Codex)
         model.setup.name = "Summer"; model.setup.companionName = "Jin"; model.setup.imageId = "img1"
         model.setup.companionCreated = true
         model.complete()
