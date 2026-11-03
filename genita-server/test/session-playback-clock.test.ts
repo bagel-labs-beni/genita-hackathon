@@ -89,7 +89,7 @@ function setup() {
     async *tts(req): AsyncGenerator<TtsChunk> {
       await sleep(1);
       if (req.signal?.aborted) return;
-      yield { audio: pcm(/second one/.test(req.text) ? 3000 : 1500), model: req.model };
+      yield { audio: pcm(/second one/.test(req.text) ? 3000 : 1500), alignment: null, model: req.model };
     },
   };
   const session = new Session("pc1", client, deps);
