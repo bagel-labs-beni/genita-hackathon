@@ -21,7 +21,13 @@ enum CompanionFace {
     }
 
     /// Rendered height in pixels: the 844 pt board at 2×. Never above the face set's own pixels.
+    /// Mac: the call window is the phone's physical size, ~725–760 pt tall on a MacBook = ≤ 1520 px at 2×; rendering
+    /// 1688 there only cost CPU (the flow morph scales with the square of this).
+    #if os(macOS)
+    static let pixelHeight: CGFloat = 1520
+    #else
     static let pixelHeight: CGFloat = 1688
+    #endif
 
     /// Frame size for a face set: its own aspect, `pixelHeight` tall (the view aspect-fills it like the still).
     static func outputSize(for set: FaceSet, pixelHeight: CGFloat = pixelHeight) -> CGSize {
