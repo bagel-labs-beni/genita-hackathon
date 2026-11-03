@@ -61,6 +61,8 @@ import ARKit
     private var subscriptions = Set<AnyCancellable>()
     private var accountScope = HandoffAccountScope()
     private let accountResolver = HandoffAccountResolver()
+    /// a first /me is in flight (set when resolving starts; cleared on adopt, expiry and any setAccount)
+    private var resolving=false
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
@@ -98,13 +100,15 @@ import ARKit
     /// Verified sign-in /me and logout switch the local link and ownership together.
     func setAccount(_ accountID: String?) {
         // Logout must cancel /me even when no scope has been resolved yet.
+        let wasResolving=resolving;resolving=false
         accountResolver.invalidate()
         // P01's digits typed while this sign-in's /me was pending belong to it: the first verified scope keeps them,
         // whichever path verified it (routeOnLaunch or the resolver). An account switch or logout drops them.
         let carry=HandoffPairingInput.carries(from:accountScope.accountID,to:accountID) ? (code:code,settings:settings) : nil
         guard accountScope.select(accountID) else {
             // logout before /me verified anything: still drop what was typed
-            if accountID == nil {pairingAttempt+=1;pairingFailed=false;code="";settings=false}
+            // only a logout that cancels a pending /me: a plain "no account" call at launch must not close P01
+            if accountID == nil,wasResolving {pairingAttempt+=1;pairingFailed=false;code="";settings=false}
             return
         }
         server.stop();link.autoReconnect=false;link.useAccount(accountID)
@@ -133,11 +137,13 @@ import ARKit
         guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
               !model.storage.bool(forKey:AppState.signedOutKey) else { return }
         let auth=model.onboarding.auth
+        resolving=true
         accountResolver.resolve(snapshot:model.launchAuthSnapshot,current:{ model.launchAuthSnapshot },
-            fetch:{ await auth.sessionState() },adopt:{ [weak model] accountID in
+            fetch:{ await auth.sessionState() },adopt:{ [weak self,weak model] accountID in
+                self?.resolving=false
                 // setAccount keeps the code entered while /me was pending and joins once the scope is installed
                 model?.adopt(accountId:accountID)
-            },expired:{ [weak model] in model?.signedOut() })
+            },expired:{ [weak self,weak model] in self?.resolving=false;model?.signedOut() })
     }
     func attach(_ model: AppState) {
         self.model=model
