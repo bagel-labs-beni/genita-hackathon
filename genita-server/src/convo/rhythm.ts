@@ -115,11 +115,11 @@ export function turnHints(t: TurnHintInput): string | null {
   const out: string[] = [];
   const user = t.userText.trim();
   const last = t.lastReply ? plain(t.lastReply) : "";
-  const close = closenessLine(t.callNumber);
+  // a real crisis line never gets "stay in that lane" (Codex #489 P1), nor "a little giddy" / teasing (Codex #505 P1)
+  const crisis = realCrisisSignal(user);
+  const close = crisis ? null : closenessLine(t.callNumber);
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
-  // a real crisis line never gets "stay in that lane" (Codex #489 P1)
-  const crisis = realCrisisSignal(user);
   if (last && !crisis && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   // #345: what landed, read from their face — the same lane, never a word about their face or the camera
   else if (last && !crisis && t.faceLanded && !said(BAD_NEWS, user)) out.push(`Your last line landed (they ${t.faceLanded} at it): stay in that lane, and don't mention their face.`);
