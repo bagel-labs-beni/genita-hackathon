@@ -99,4 +99,8 @@ export class PgMemoryRepository implements MemoryRepository, CallStateRepository
   async deleteSummaries(userId: string): Promise<void> {
     await this.db.query("DELETE FROM call_summaries WHERE user_id = $1", [userId]);
   }
+
+  async deleteSummary(userId: string, threadId: string): Promise<void> {
+    await this.db.query("DELETE FROM call_summaries WHERE user_id = $1 AND thread_id = $2", [userId, threadId]);
+  }
 }

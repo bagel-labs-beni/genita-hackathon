@@ -241,7 +241,8 @@ export class MemoryCall {
     // the tool path may re-rank with Spark (bounded inside recall); the per-reply implicit recall never does
     if (call.name === "recall" && typeof args.query === "string" && args.query.length <= 300) {
       const memories = await within(this.service.recall(this.userId, args.query, { rerank: true }).then((m) => m, () => null), TOOL_BUDGET_MS, null);
-      return memories ? { memories: this.clearOf(memories) } : { error: "memory_unavailable" };
+      // only what the model needs: never recall keys or bookkeeping (Codex 11/3); nothing the user asked to forget
+      return memories ? { memories: this.clearOf(memories).map((m) => ({ id: m.id, text: m.text, ...(m.image_ref ? { seen: true } : {}) })) } : { error: "memory_unavailable" };
     }
     if (call.name === "remember" && typeof args.fact === "string" && (args.kind === "fact" || args.kind === "episode")) {
       // past the budget the save may still land; the companion just doesn't claim it
