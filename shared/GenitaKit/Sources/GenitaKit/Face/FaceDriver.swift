@@ -149,7 +149,9 @@ public final class FaceDriver: ObservableObject {
         link = l; linkTarget = target
         #else
         guard timer == nil else { return }
-        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        // 24 fps on the Mac (QA 171: the call took 80–90 % CPU at 30). The motion is time-based, so only the
+        // number of frames changes; the iPhone keeps its display link at 24–30.
+        let t = Timer(timeInterval: 1.0 / 24, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
