@@ -57,6 +57,13 @@ extension AppState {
         apply(route, me: me, afterSignIn: afterSignIn)
     }
 
+    /// CS01 "Agree and continue", after the server recorded the consent.
+    func consentAgreed() async {
+        consentAccepted()
+        // a judge account already has its ready-made companion: /me sends it straight to the call
+        if serverWired { await routeOnLaunch() }
+    }
+
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
         let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
