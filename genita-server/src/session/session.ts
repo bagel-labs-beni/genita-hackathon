@@ -798,6 +798,12 @@ export class Session {
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
           if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)(), this.moodBase); }
+          // AU-42: a start without a name (the Mac) uses the one the account's iPhone sent; a start with one keeps it fresh
+          if (!abandoned) {
+            const said = this.user.name?.trim();
+            if (!said && state.user_name) this.user = { ...this.user, name: state.user_name };
+            else if (said && state.user_name !== said) { state.user_name = said; await memory.state.putState(userId, state); }
+          }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
