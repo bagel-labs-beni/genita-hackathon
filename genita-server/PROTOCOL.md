@@ -16,6 +16,8 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | `proximity.seen` accepts optional `requestId` (nonempty string, ≤128 characters); all `proximity.result` replies to it echo `requestId` and `token`. Macs match both, ignore superseded/uncorrelated replies, and treat a 5 s timeout as unconfirmed while keeping the leave-range latch. Additive: requests without an ID keep the legacy result shape. |
+| 11/4 | `proximity.result` gets `reason: server_error`: a store failure now answers the Mac's `proximity.seen` (it used to be a bare `error`, which left the Mac's one report in flight until it reconnected). Additive; older Macs treat it as any other refusal. |
 | 11/4 | `/v1/presence` `peer` gets `inCall` (bool): the other device has a started call socket right now (its `start` was handled, until the socket closes). The Mac home says "Talking on your iPhone" only while it is true (QA 171). Additive; older apps ignore it and newer apps fall back when it is missing. |
 | 11/4 | `backchannel.audio?` (base64 PCM, the companion's own "Mm-hm.") — the app plays it quietly beside the reply queue (same engine, so echo cancellation removes it) and stops it when the user's voice is heard or a reply starts; the uplink is never cut; the server drops a stray "mm-hm" from that turn's transcript. Rate: ≥ 20 s apart. Additive. |
 | 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
@@ -616,7 +618,7 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `presence` | `active` | `false` on lock/background, `true` on return. A locked device does not take move requests. |
 | `proximity.arm` | — | iPhone only: "I own the conversation in a live call, give me a Bluetooth token". Re-sent every 30 s to rotate. |
 | `proximity.disarm` | — | iPhone only: the call ended, moved, or the app left the front; its tokens stop counting |
-| `proximity.seen` | `token` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s) |
+| `proximity.seen` | `token`, `requestId?` | Mac only: this account's iPhone token was held close (RSSI over the threshold for 0.5 s). A new ID per attempt (nonempty string, ≤128 characters) correlates replies across timeouts/retries. |
 | `ping` | `t` | → `pong {t}` |
 
 | server → app | fields | meaning |
@@ -629,7 +631,7 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 | `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |
 | `proximity.unavailable` | `reason: not_owner \| not_in_call` | answer to `proximity.arm` (`not_owner` = the Mac has it): don't advertise |
 | `proximity.peer` | `armed` | to Macs: this account's iPhone is (not) advertising a token now. Sent on connect and on every change; the Mac scans (and asks for Bluetooth) only while `armed` |
-| `proximity.result` | `accepted`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited` | answer to `proximity.seen`. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows) |
+| `proximity.result` | `accepted`, `requestId?`, `token?`, `reason: ok \| unknown_token \| expired \| not_owner \| not_in_call \| phone_inactive \| mac_inactive \| cooldown \| rate_limited \| server_error` | answer to `proximity.seen`, always; echoes both ID and token when the request supplied an ID (including refusals and store failures). A store failure is `server_error`: nothing moved, the token is spent, `proximity.peer {armed:false}` follows. `ok` → the server already claimed for the Mac (`ownership` with trigger `proximity` follows). A timeout is unconfirmed: keep the approach latched until a matching refusal or leaving range; a result for another attempt never releases it. |
 | `error` | `code` | `bad_message`, `bad_epoch`, `unknown_type`, `server_error` |
 
 What the server does on a claim that changes the owner: (1) shuts the audio gate and cancels the current
