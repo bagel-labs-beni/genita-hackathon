@@ -66,7 +66,7 @@ const SLANG: [RegExp, string][] = [
 /**
  * 11/3 voice-naturalness pass: Seamless reads an ALL-CAPS word letter by letter ("SO" → "S. O."), so shouted words
  * are said as words; real acronyms stay spelled. Stretched letters ("sooo", "yesss") come out dragged and robotic, so
- * they collapse to the word ("hmmm" keeps its "mm"); "hahahaha" is "haha". Captions keep the written form.
+ * they collapse to the word ("hmmm" keeps its "mm", "goooood" is "good"); "hahahaha" is "haha". Captions keep the written form.
  */
 const ACRONYMS = new Set(["TV", "NASA", "FBI", "CIA", "USA", "US", "UK", "EU", "NYC", "LA", "SF", "DC", "CEO", "CTO", "DM", "DMs", "ID",
   "PM", "AM", "ASAP", "DIY", "BBQ", "FAQ", "GPS", "PDF", "URL", "USB", "VIP", "NBA", "NFL", "BTS", "K", "TBD", "RSVP", "OMG", "LOL", "RN", "FR",
@@ -74,7 +74,7 @@ const ACRONYMS = new Set(["TV", "NASA", "FBI", "CIA", "USA", "US", "UK", "EU", "
 const SHOUTED_2 = new Set(["NO", "SO", "OH", "GO", "MY", "ME", "WE", "DO", "BE", "UP", "IS", "IN", "ON", "TO", "OF", "AT", "HI", "YO", "OK", "AH", "UH", "UM", "HE", "OR"]);
 function speakCaps(t: string): string {
   return t.replace(/\b[A-Z]{2,}\b/g, (w) => {
-    if (ACRONYMS.has(w)) return w;
+    if (ACRONYMS.has(w) || /^[IVXLCDM]+$/.test(w)) return w; // acronyms, Roman numerals ("III")
     if (w.length === 2) return SHOUTED_2.has(w) ? w.toLowerCase() : w;
     return /[AEIOUY]/.test(w) ? w.toLowerCase() : w;
   });
@@ -83,7 +83,10 @@ function unstretch(t: string): string {
   return t
     .replace(/\b(?:ha){3,}h?\b/gi, (w) => (w[0] === "H" ? "Haha" : "haha"))
     .replace(/\b(?:he){3,}\b/gi, (w) => (w[0] === "H" ? "Hehe" : "hehe"))
-    .replace(/(\p{L})\1{2,}/gu, (_, c: string) => (c.toLowerCase() === "m" ? c + c : c));
+    // lower-case runs only ("III" stays a numeral); at a word's end the stretch is one letter ("sooo" → "so",
+    // "yesss" → "yes", "hmmm" keeps "mm"), inside a word two ("goooood" → "good", "cooool" → "cool") — Codex P2
+    .replace(/([a-z])\1{2,}(?![a-z])/g, (_, c: string) => (c === "m" ? c + c : c))
+    .replace(/([a-z])\1{2,}/g, "$1$1");
 }
 
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;

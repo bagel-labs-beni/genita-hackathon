@@ -326,6 +326,9 @@ test("normalize: shouted caps are said as words, known acronyms stay; OK is okay
   assert.equal(normalizeEnglish("Good, cool, coffee, bookkeeper, 2000."), "Good, cool, coffee, bookkeeper, two thousand.");
   assert.equal(normalizeEnglish("hahahaha that's u, and ur cat"), "haha that's you, and your cat");
   assert.equal(normalizeEnglish("Really?? Wow!!"), "Really? Wow!");
+  // Codex P2: a stretch inside a word keeps the double letter, upper-case runs (numerals) are left alone
+  assert.equal(normalizeEnglish("That looks goooood, cooool."), "That looks good, cool.");
+  assert.equal(normalizeEnglish("World War III, Super Bowl XXX."), "World War III, Super Bowl XXX.");
 });
 
 test("pauses: casual gaps — a comma barely stops, a sentence end is shorter than before, '...' still the longest", () => {
