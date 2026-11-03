@@ -540,3 +540,15 @@ test("Codex r9: a voice forget that removed the line up front still updates the 
   assert.ok(!r!.taste.some((x) => /leather/.test(x.text)));
   assert.match(r!.events[0].text, /^Updated: forgot/);
 });
+
+test("Codex P2 #432: a removed line doesn't hide a tag two remaining lines still support together", async (t) => {
+  const h = harness((req) => (req.schemaName === "story_cards" ? new Promise(() => {}) : { updates: [{ field: "likes", text: "Food: noodles.", replaces: ["Food: noodles, tofu and cilantro."], chip: "no cilantro" }, { field: "likes", text: "Food: tofu.", replaces: [], chip: "" }], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  const base = toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Food: noodles, tofu and cilantro.")] } }, "import");
+  const { toStory } = await import("../src/personalize/story.ts");
+  const { cards, topics } = toStory({ cards: [card("taste", "Noodles and tofu.", { tags: [{ group: "food", text: "Noodles and tofu", dislike: false }, { group: "food", text: "Cilantro", dislike: false }] })], topics: [] }, base);
+  await h.store.putStyle("u1", { ...base, story: { version: 2, cards, topics, at: "2026-11-03T00:00:00Z", from: "text" } });
+  await h.p.voiceCorrection("u1", "Actually I don't want cilantro anymore, just noodles and tofu.");
+  const tags = (await h.p.story("u1", 0)).cards.find((c) => c.id === "taste")!.tags!.map((x) => x.text);
+  assert.deepEqual(tags, ["Noodles and tofu"]);
+});

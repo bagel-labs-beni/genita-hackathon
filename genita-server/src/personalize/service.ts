@@ -229,12 +229,13 @@ export class Personalize {
     const since = card.story?.at ?? "";
     const gone = (card.removed ?? []).filter((t) => t.at > since).map((t) => keyWords(t.text));
     if (!gone.length) return cards;
-    // still said by a line that's there now (a correction can rewrite a line without the removed part)
-    const kept = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => keyWords(f.text)));
+    // still said by what's there now — one line or several together ("Food: noodles." + "Food: tofu." keep "Noodles
+    // and tofu", Codex P2 #432); a correction can rewrite a line without the removed part
+    const kept = new Set(Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).flatMap((f) => keyWords(f.text))));
     const hit = (text: string) => {
       const w = keyWords(text);
       const covers = (g: string[]) => w.every((x) => g.includes(x));
-      return w.length > 0 && gone.some(covers) && !kept.some(covers);
+      return w.length > 0 && gone.some(covers) && !w.every((x) => kept.has(x));
     };
     return cards.map((c) => ({
       ...c,
