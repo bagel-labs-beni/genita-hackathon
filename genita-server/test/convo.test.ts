@@ -566,3 +566,22 @@ test("r11: a pick before an announcement stays; a decision is not a plan; a sist
   const { addressUser } = await import("../src/convo/guard.ts");
   assert.equal(addressUser("She's wearing a red dress.", { camera: true, first: true, userText: "Can you describe my screen?", userName: "Summer" }), "She's wearing a red dress.");
 });
+
+test("structural (#354 repro e128827): an 'I'm …ing' opener is held — dropped when a tool follows, spoken when none does; the pick stays", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (tool: boolean) => {
+    const j = new NarrationJudge(true);
+    const out = [...j.push("I'm weighing the trench and denim against what suits you best.").speak];
+    if (tool) out.push(...j.onToolCall().speak);
+    out.push(...j.push("I'd go with the trench tonight, it looks so cozy over that cream sweater.").speak, ...j.finish().speak);
+    return out.join(" ");
+  };
+  assert.equal(run(true), "I'd go with the trench tonight, it looks so cozy over that cream sweater.");
+  assert.match(run(false), /^I'm weighing .* I'd go with the trench/);
+  for (const opener of ["I am pulling your style notes together.", "I'm quickly comparing both.", "My plan is to match it to your coat."]) {
+    const j = new NarrationJudge(true);
+    assert.deepEqual(j.push(opener).speak, [], opener);
+    j.onToolCall();
+    assert.deepEqual(j.push("Go with the black one.").speak, ["Go with the black one."], opener);
+  }
+});
