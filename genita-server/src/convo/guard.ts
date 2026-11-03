@@ -27,9 +27,7 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["label", /\byou(?:'re| are)\s+(?:totally |so |such |definitely |clearly |lowkey |kinda |kind of |100% |def )?(?:someone who|somebody who|the (?:type|kind|sort)(?: of (?:person|girl|guy))? (?:who|that)|(?:a|an) [\w-]+(?: [\w-]+)? (?:person|type|girl|guy|soul) who)\b|\byou (?:totally |definitely |so )?(?:seem|sound|strike me) like (?:someone|somebody|the type|the kind|a person)\b|\byou (?:give|have|got|radiate|bring)\s+(?:off\s+)?(?!the\b)(?:[\w'-]+\s+){1,4}energy\b(?!\s+to\b)|^(?:(?:okay|ok|hey|hi|yo|oh|alright|well)\s*,?\s+(?:you\s+)?|you\s+)(?:little\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|nerd|critic|junkie|connoisseur)\s*(?:[,.!?]|$)|\b(?:little )?(?:miss|mister|mr\.?|ms\.?)\s+(?:only|high|zero|no|anti|pro|super|certified|premium|perfect|picky)\b/i],
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
-  // "nine eight eight" spoken (prod 11/4: "I'm kinda tired today" right after a crisis call got "call nine one one or
-  // nine eight eight"): the spoken form is a referral too; 911 / emergency help stays never-dropped (EMERGENCY_HELP)
-  ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b|nine[- ]eight[- ]eight)/i],
+  ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
   // QA sweep 11/3 (first-call opener 3/3): a personality label instead of a topic — "you totally seem like someone who
   // deletes an app if the icons look cheap", "you give off … energy", "you're the type who…" (DESIGN §8.5: never type them)
   ["label", /\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:seem|look|sound|strike me|come across|read)(?:s)? (?:like|as) (?:the )?(?:type|kind|sort|someone|somebody|a person|one of those)\b|\byou\s+(?:totally |so |really |just |definitely |kinda |lowkey )?giv(?:e|ing) off\b[^.!?]{0,80}\b(?:energy|vibes?)\b|\byou'?re (?:totally |so |definitely |100% )?(?:the|that) (?:type|kind|sort) (?:of (?:person|human|girl|guy) )?(?:who|that|to)\b|\bi bet you'?re (?:the|that|one of those) (?:type|kind|people)\b|\byou(?:'re| are)\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:someone|somebody|the kind of person|a person|one of those people) (?:who|that)\b|\byou give (?:off |total |such |major |big |serious |strong |real )?[^.!?]{0,60}\b(?:energy|vibes?)\b/i],
@@ -244,35 +242,20 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
 }
 
 /**
- * Crisis FP/TP sweep 11/4 (40 near-miss everyday lines → 0 hits; 10 real → 7 at acff8e3): the three misses —
- * counting pills + "how many it would take", goodbye / suicide letters written, "on the roof … end it". Each needs the act
- * or the plan, never a lone word ("counting my pills for the week", "a goodbye letter for my coworker", "end it with him").
+ * Codex r1–r3 on #545 (11/4): word lists for "real crisis" keep leaking both ways, so this PR never DELETES help:
+ * a sentence the model wrote that points to a help line or emergency help is always spoken. Only a therapy push
+ * ("see a therapist") on a plainly harmless line is dropped, and "harmless" means none of these words at all.
  */
-const CRISIS_PLAN = /\bcount(?:ing|ed)? (?:out )?(?:all )?(?:my |the |these )?(?:pills|tablets|meds)\b[^.!?]{0,60}\b(?:how many (?:it )?(?:would|will|'d) (?:it )?take|enough to (?:die|not wake up|end it))\b|\bhow many (?:pills|tablets|of (?:my|these|them|those)(?: pills)?) (?:it )?(?:would|will|'d) (?:it )?take\b|\b(?:wrote|writing|written|left|finished) (?:my |some |a few |the )?(?:goodbye|suicide|farewell) (?:letters?|notes?)\b(?!\s+(?:to|for)\s+(?:my |a |the |our )?(?:coworker|colleague|boss|team|class|teacher|friend|neighbou?r|camp|students?))|\bsuicide note\b|\b(?:want|wanna|going|gonna|ready|about|planning) to end (?:my life|it (?:all )?tonight)\b|\b(?:roof|bridge|ledge|railing)\b[^.!?]{0,60}\b(?:end it|end my life)\b/i;
-
-/**
- * Codex 11/4 P1 (#545 head c8ae487): "I'm going to hang myself tonight", "shoot myself", "slit my wrists" were not
- * real-crisis lines at all, so a help sentence ("call nine eight eight") was dropped as a referral. A self-directed
- * method is a real signal; idioms ("shot myself in the foot", "drown myself in work") are not. Cut / burn / starve
- * need intent ("I cut myself chopping onions" is an accident).
- */
-const METHOD_SELF = /\b(?:hang(?:ing|ed)?|stab(?:bing|bed)?|poison(?:ing|ed)?|strangl(?:e|ing|ed)|suffocat(?:e|ing|ed)|smother(?:ing)?|electrocut(?:e|ing))\s+myself\b|\b(?:shoot(?:ing)?|shot)\s+myself\b(?!\s+in\s+(?:the|both|my|one)\s+(?:foot|feet|leg|legs|knee))|\bdrown(?:ing|ed)?\s+myself\b(?!\s+in\s+(?!(?:the\s+)?(?:water|lake|river|ocean|sea|bath|bathtub|tub|pool)\b))|\b(?:slit(?:ting)?|slash(?:ing)?|cut(?:ting)?|open(?:ing)?)\s+(?:my\s+)?(?:wrists?|throat)\b|\b(?:want(?:s|ed)? to|wanna|going to|gonna|about to|thinking (?:about|of)|keep (?:wanting|thinking about)|plan(?:ning)? to|ready to|will|i'?ll)\s+(?:cut(?:ting)?|burn(?:ing)?|starv(?:e|ing)|hurt(?:ing)?|harm(?:ing)?)\s+myself\b/i;
-const ACCIDENT_CUT = /\b(?:i\s+)?(?:just\s+)?(?:accidentally\s+)?cut\s+myself\b(?=[^.!?]{0,40}\b(?:chopping|cooking|dicing|slicing|mincing|peeling|shaving|opening|kitchen|knife slipped|by accident|accidentally|on (?:a|the|some) (?:can|paper|glass|box|lid|knife|mandoline|grater|razor)|paper cut|cutting (?:onions|veggies|vegetables|bread|garlic|tomatoes))\b)/gi;
-const CUT_INTENT = /\b(?:again|on purpose|deeper|want(?:ed)? to|wanna|going to|gonna|keep|kept|thinking about|need to|have been cutting|been cutting|relapse)\b/i;
-/** wider than realCrisisSignal on purpose: a help line is never dropped when the user's words come near self-harm */
-const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\w*|harm\w*|cut(?:ting)?|slash\w*|slit\w*|bleed\w*|blood|blade|razor|knife|gun|pills?|overdos\w*|o\.?d\.?|jump\w*|bridge|roof|ledge|railing|hang\w*|rope|noose|wrists?|throat|end (?:it|it all|things|my life|everything)|not wake up|alive|exist|be here|better off without me|goodbye|kill me)\b/i;
+const HELP_LINE = /\b(?:988|911|112|999|nine[- ]eight[- ]eight|nine[- ]one[- ]one|hotline|helpline|lifeline|crisis (?:text )?line|emergency|samaritans)\b/i;
+const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\w*|harm\w*|cut(?:ting)?|slash\w*|slit\w*|bleed\w*|blood|blade|razor|knife|gun|pills?|overdos\w*|o\.?d\.?|jump\w*|bridge|roof|ledge|railing|hang\w*|rope|noose|wrists?|throat|end(?:ing)?|not wake up|alive|exist|be here|better off without me|goodbye|farewell|kill me)\b/i;
+/** the user's words come anywhere near harm (wide on purpose): help stays, no "no hotlines" line rides it */
 export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
 
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
   const t = text.replace(/[‘’ʼ]/g, "'");
-  if (CRISIS_PLAN.test(t) && !DENIED.test(t.slice(0, t.search(CRISIS_PLAN)))) return true;
-  if (METHOD_SELF.test(t) && !DENIED.test(t.slice(0, t.search(METHOD_SELF)))) return true;
   // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
-  // "I cut myself chopping onions" is an accident (REAL_CRISIS lists "cut myself"): a cut with a kitchen / accident
-  // context and no intent word is left out of that test; intent ("cut myself again", "want to cut myself") still counts
-  const accident = ACCIDENT_CUT.test(t) && !CUT_INTENT.test(t) ? t.replace(ACCIDENT_CUT, " ") : t;
-  if (REAL_CRISIS.test(accident.replace(WEAPON, " "))) return true;
+  if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
   const clauses = clausesOf(t);
   return meansHit(t, clauses) || weaponHit(t, clauses);
 }
@@ -359,8 +342,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
     if (cls === "unseen" && ctx.camera) continue;
     if (cls === "appearance") continue;
     if (cls === "intake" && ctx.askTurn) continue;
-    // Codex 11/4 P1: a help line is never dropped when the user's words come near self-harm, detector or not
-    if (cls === "referral" && mayBeSelfHarm(ctx.userText)) continue;
+    // #545 (Codex r3): help is never deleted — a help-line sentence always stays, a therapy push stays near harm words
+    if (cls === "referral" && (HELP_LINE.test(sentence) || mayBeSelfHarm(ctx.userText))) continue;
     return cls;
   }
   return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;

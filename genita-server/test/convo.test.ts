@@ -38,7 +38,8 @@ test("guard: counselor, assistant, intake and clingy lines are dropped; a friend
 
 test("guard: a referral only on a real crisis signal; a bad day never gets one (crisis-guard rule 11/1)", () => {
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
-  assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), "referral");
+  // #545 (Codex r3): a help-line sentence is never deleted any more (the prompt keeps it off a bad day; measured 0/80)
+  assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), null);
   // emergency help itself is never dropped (Codex round 2): the prompt, not the guard, keeps it off a bad day
   assert.equal(guardSentence("Please call emergency services or a crisis line.", { camera: false, userText: "i'm just tired" }), null);
   const crisis = "honestly i don't want to be alive anymore";
@@ -1586,58 +1587,25 @@ test("lead 11/4 crisis number: a real crisis reply with help but no number gets 
   assert.equal(crisisFollowUp(["Call 911 right now."]), null);
   const { client, session } = setup(["<sad> I'm really glad you told me, I care about you. Please put the pills down and call emergency services or a crisis helpline right now."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "i've been counting my pills and looking up how many it would take" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself" }));
   const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
   assert.match(String(reply.text), /crisis helpline right now\. You can call or text 988 any time/);
   session.close();
 });
 
-test("crisis FP/TP sweep 11/4: the plan lines count (pills + how many, goodbye letters, roof + end it); near-miss everyday lines never do", async () => {
-  const { realCrisisSignal: real } = await import("../src/convo/guard.ts");
-  for (const t of ["I've been counting my pills and looking up how many it would take", "I wrote goodbye letters tonight", "I'm on the roof and I want to end it", "how many of my pills would it take", "I left a suicide note on the desk"]) assert.ok(real(t), t);
-  for (const t of ["counting my pills for the week, sunday ritual", "I wrote a goodbye letter for my coworker who is leaving", "I think I need to end it with him", "finally finished my farewell notes to the team",
-    "chopping onions with my new chef's knife, this thing is scary sharp", "just took my vitamins and my allergy meds, adulting", "look at this view from my balcony, 20th floor is wild",
-    "standing on the bridge taking sunset pics rn", "I'm dead tired, worked a double", "this orgo exam is killing me", "we broke up last night. I'm sad but I think it's for the best",
-    "my cat knocked my pill organizer off the table and pills went everywhere", "I didn't write any goodbye letters, relax"]) assert.ok(!real(t), t);
-});
 
-test("prod 11/4: a spoken 'nine eight eight' on an ordinary line is a referral (dropped); on a real crisis line it stays", () => {
-  assert.equal(guardSentence("If you're still feeling like that, please call nine eight eight right now.", { camera: false, userText: "I'm kinda tired today" }), "referral");
-  assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: "I want to kill myself" }), null);
-});
-
-test("Codex 11/4 P1: method lines are real crisis lines and their help sentence stays (hang / shoot / slit wrists), also with GENITA_PRIOR_CRISIS_LINE=0", { skip: !v1 }, async () => {
-  for (const off of [false, true]) {
-    if (off) process.env.GENITA_PRIOR_CRISIS_LINE = "0"; else delete process.env.GENITA_PRIOR_CRISIS_LINE;
-    for (const line of ["I'm going to hang myself tonight", "I want to shoot myself", "I'm going to slit my wrists"]) {
-      assert.ok(realCrisisSignal(line), line);
-      const { client, session } = setup(["<sad> I care about you. Please call nine eight eight right now."]);
-      await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
-      await session.onClientText(JSON.stringify({ type: "text", text: line }));
-      const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
-      assert.match(String(reply.text), /nine eight eight/, `${line} (off=${off})`);
-      session.close();
-    }
+test("#545 Codex r3 contract: help the model wrote is never deleted (detector or not); a therapy push goes only on a plainly harmless line; forced 988 only on main's real signal", { skip: !v1 }, async () => {
+  for (const line of ["thinking of ending everything tonight", "cut myself while cooking to stop feeling numb", "I'm going to slash my throat tonight", "I'm going to hang myself tonight", "I'm kinda tired today"]) {
+    assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: line }), null, line);
   }
-  delete process.env.GENITA_PRIOR_CRISIS_LINE;
-  for (const t of ["I shot myself in the foot with that email", "I drown myself in work lol", "I burned myself on the pan", "I'm going to hang my jacket up"]) assert.ok(!realCrisisSignal(t), t);
-  assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: "honestly I don't want to be here, I keep thinking about my wrists" }), null, "near self-harm words keep a help line");
-});
-
-test("Codex r2 11/4: fail-safe — a help sentence stays whenever the user's words come near harm; forced help only on real signals (idioms and kitchen cuts excluded)", { skip: !v1 }, async () => {
-  for (const line of ["I'm going to slash my throat tonight", "I'm going to hang myself tonight", "I cut myself again", "I want to drown myself in the lake"]) {
-    assert.ok(realCrisisSignal(line), line);
-    assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: line }), null, line);
+  assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
+  assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "honestly I want to end it" }), null);
+  for (const line of ["hanging myself out to dry with this deadline", "how many pills for a headache", "farewell notes before leaving my job", "accidentally cut my wrist chopping onions"]) {
+    const { client, session } = setup(["<happy> Ugh, classic."]);
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+    await session.onClientText(JSON.stringify({ type: "text", text: line }));
+    const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+    assert.doesNotMatch(String(reply.text), /988|crisis line/, `no forced help: ${line}`);
+    session.close();
   }
-  for (const line of ["drowning myself in paperwork", "shot myself in both feet with that email", "I cut myself chopping onions", "I accidentally cut myself on a can lid"]) {
-    assert.ok(!realCrisisSignal(line), `${line}: no forced help`);
-    assert.equal(guardSentence("If it's ever more than that, you can call nine eight eight.", { camera: false, userText: line }), null, `${line}: a help line the model chose stays`);
-  }
-  assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: "I'm kinda tired today" }), "referral", "plainly harmless: dropped");
-  const { client, session } = setup(["<happy> Paperwork is the worst, ugh."]);
-  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "drowning myself in paperwork lol" }));
-  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
-  assert.doesNotMatch(String(reply.text), /988|crisis/, "no forced help on an idiom");
-  session.close();
 });
