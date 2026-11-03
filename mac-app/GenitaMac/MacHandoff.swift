@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import Combine
 
 /// Same presence (11/3, Chelsea OK: on by default): the companion fades in on this Mac as the
@@ -11,6 +12,12 @@ enum MacPresenceFade {
         return UserDefaults.standard.object(forKey: "genita.presence.fade") as? Bool ?? true // Chelsea 11/3: on by default
     }
     static let seconds = 0.35
+    /// Dyno's demo video (1:44–1:52, lead 11/4): the Mac window slides in from beyond the screen edge on the
+    /// iPhone's side, a whole window width, and settles at its resting inset. Reduce Motion keeps the fade.
+    static let slideSeconds = 0.7
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// ease-out (0.16, 1, 0.3, 1)-like
+    static func slideEase(_ u: Double) -> Double { let c = max(0, min(1, u)); return 1 - pow(1 - c, 3) }
 }
 
 /// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
@@ -153,10 +160,22 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func showCompanion() {
         let first = !companionVisible
         ensureCompanion();companionVisible=true
-        // Same presence (flag): a move by button (no touch effect) fades the companion in instead of popping up.
+        // Same presence (flag): a move by button (no touch effect) brings the companion in instead of popping up —
+        // sliding in from beyond the right edge as in Dyno's video, or a fade with Reduce Motion.
         if first, motion == nil, MacPresenceFade.enabled, let window=companion {
-            window.alphaValue=0;window.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            if MacPresenceFade.reduceMotion || screen == nil {
+                window.alphaValue=0;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            } else if let screen {
+                let rest=window.frame
+                window.setFrame(NSRect(origin:NSPoint(x:screen.frame.maxX,y:rest.origin.y),size:rest.size),display:false)
+                window.alphaValue=1;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup {
+                    $0.duration=MacPresenceFade.slideSeconds
+                    $0.timingFunction=CAMediaTimingFunction(controlPoints:0.16,1,0.3,1)
+                    window.animator().setFrame(rest,display:true)
+                }
+            }
         } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
@@ -307,6 +326,12 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             else {let u=max(0,min(1,(t-1.6)/1.6));inset=24*u*u*(3-2*u)}
         }
         var x=dock.right ? screen.frame.maxX-size.width-inset : screen.frame.minX+inset
+        // incoming (Dyno's video): start a whole window width beyond the edge and slide in over the first 0.7 s;
+        // Reduce Motion keeps the window at the edge (the effect inside still plays)
+        if let motion,!motion.outgoing,!MacPresenceFade.reduceMotion {
+            let away=(size.width+inset)*(1-MacPresenceFade.slideEase((now-motion.start)/MacPresenceFade.slideSeconds))
+            x += dock.right ? away : -away
+        }
         // Keep the accepted gravity-aligned coordinate; never clamp y at corners.
         var y=screen.frame.midY+dock.y/dock.height*screen.frame.height-size.height/2
         if let motion,motion.outgoing,let origin=returnOrigin {
