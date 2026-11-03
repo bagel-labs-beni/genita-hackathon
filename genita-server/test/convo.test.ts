@@ -34,7 +34,7 @@ test("guard: counselor, assistant, intake and clingy lines are dropped; a friend
   }
 });
 
-test("guard: a referral only on a real crisis signal; a bad day never gets one (rule 11/1)", () => {
+test("guard: a referral only on a real crisis signal; a bad day never gets one (crisis-guard rule 11/1)", () => {
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
   assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), "referral");
   // emergency help itself is never dropped (Codex round 2): the prompt, not the guard, keeps it off a bad day
@@ -539,7 +539,7 @@ test("third person (Codex r10): only when the user's line is about themselves; a
   const { addressUser } = await import("../src/convo/guard.ts");
   const base = { camera: true, first: true, userName: "Summer" };
   assert.equal(addressUser("She's wearing a red dress.", { ...base, userText: "What do you think of Taylor's outfit?" }), "She's wearing a red dress.");
-  assert.equal(addressUser("The user is holding a photo of Alice in her wedding dress.", { ...base, userText: "What do you think of my photo?" }), "You're holding a photo of Alice in her wedding dress.");
+  assert.equal(addressUser("The user is holding a photo of Alice in her wedding dress.", { ...base, userText: "What do you think, should I post this?" }), "You're holding a photo of Alice in her wedding dress.");
   assert.equal(addressUser("She's holding up two jackets.", { ...base, userText: "Which one should I wear?" }), "You're holding up two jackets.");
 });
 
@@ -547,4 +547,157 @@ test("third person (bug-fix lane #354): 'get her a pick' after a dash is never '
   const { addressUser } = await import("../src/convo/guard.ts");
   const out = addressUser("She's holding up the options — I'll get her a pick for tonight.", { camera: true, first: true, userText: "which one should I wear tonight?", userName: "Summer" });
   assert.doesNotMatch(out, /your a pick/);
+});
+
+// ───────────── Codex #356 round 11 (folded judge + guard) ─────────────
+test("r11: a pick before an announcement stays; a decision is not a plan; a sister is not the user; 'suggests' is a result; 'my screen' is not me", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[], tool = false, opts = {}) => {
+    const j = new NarrationJudge(true, opts);
+    const out: string[] = [];
+    for (const [i, l] of lines.entries()) { out.push(...j.push(l).speak); if (tool && i === 0) out.push(...j.onToolCall().speak); }
+    out.push(...j.finish().speak);
+    return out.join(" ");
+  };
+  assert.match(run(["Go with the black one — I'll check my memory.", "It looks sharper."]), /black one/);
+  assert.match(run(["I'll go with the black blazer.", "It suits your style."], true), /black blazer/);
+  assert.match(run(["She's holding up her boarding pass.", "Looks exciting."], false, { thirdPersonIsUser: false }), /boarding pass/);
+  assert.equal(guardSentence("Checking the map suggests the bus.", none), null);
+  const { addressUser } = await import("../src/convo/guard.ts");
+  assert.equal(addressUser("She's wearing a red dress.", { camera: true, first: true, userText: "Can you describe my screen?", userName: "Summer" }), "She's wearing a red dress.");
+});
+
+test("structural (#354 repro e128827): an 'I'm …ing' opener is held — dropped when a tool follows, spoken when none does; the pick stays", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (tool: boolean) => {
+    const j = new NarrationJudge(true);
+    const out = [...j.push("I'm weighing the trench and denim against what suits you best.").speak];
+    if (tool) out.push(...j.onToolCall().speak);
+    out.push(...j.push("I'd go with the trench tonight, it looks so cozy over that cream sweater.").speak, ...j.finish().speak);
+    return out.join(" ");
+  };
+  assert.equal(run(true), "I'd go with the trench tonight, it looks so cozy over that cream sweater.");
+  assert.match(run(false), /^I'm weighing .* I'd go with the trench/);
+  for (const opener of ["I am pulling your style notes together.", "I'm quickly comparing both.", "My plan is to match it to your coat."]) {
+    const j = new NarrationJudge(true);
+    assert.deepEqual(j.push(opener).speak, [], opener);
+    j.onToolCall();
+    assert.deepEqual(j.push("Go with the black one.").speak, ["Go with the black one."], opener);
+  }
+});
+
+test("narration (Codex r13): '… your notes and you should wear the trench' keeps the advice", () => {
+  assert.equal(guardSentence("Let me check your notes and you should wear the trench.", none), null);
+});
+
+test("Codex r14: 'My guess is the blue line' and 'I'm seeing onions' are answers; '… your notes and the black one fits best' keeps the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const line of ["My guess is the blue line is fastest.", "I'm seeing onions, tomatoes and garlic.", "I'm loving the trench on you."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.onToolCall().speak, ...j.push("It takes ten minutes.").speak, ...j.finish().speak];
+    assert.ok(out.join(" ").includes(line), line);
+  }
+  assert.equal(guardSentence("Let me check your notes and the black one fits best.", none), null);
+  assert.equal(guardSentence("I'm weighing the trench and denim against what suits you best.", none), null, "the guard leaves it to the structural hold");
+});
+
+test("Codex r15 + bug-fix fcece2f: a stated choice is never dropped; a wait that promises a lookup is, tool or no tool", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const line of ["I'm going with the trench tonight.", "I'm leaning toward the trench tonight."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.onToolCall().speak, ...j.push("It matches that understated style you like.").speak, ...j.finish().speak];
+    assert.ok(out.join(" ").includes(line), line);
+  }
+  assert.ok(isToolNarration("I'll pick between the two — give me a sec to remember your vibe."));
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick between the two — give me a sec to remember your vibe.").speak, ...j.push("Go with the trench, Chelsea.").speak, ...j.finish().speak];
+  assert.equal(out.join(" "), "Go with the trench, Chelsea.");
+});
+
+test("bug-fix 5784953 outfit 3/6: a choice promised with nothing chosen is an announcement; the actual pick stays", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const line of ["Got it — denim or trench for tonight, I'll pick one for you.", "I'll pick one for you.", "I'll pick a favorite between the trench and denim for tonight.", "Still deciding between the trench and denim — I'll pick the winner for tonight."]) {
+    assert.ok(isToolNarration(line), line);
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.push("Go with the trench.").speak, ...j.finish().speak];
+    // a lone acknowledgement may stay in front ("Got it. Go with the trench.")
+    assert.match(out.join(" "), /^(?:Got it\. )?Go with the trench\.$/, line);
+  }
+  assert.ok(!isToolNarration("I'll pick the trench for you."));
+});
+
+test("Codex r17: a plan with the choice in it stays ('… and it's the trench', 'I'll pick one: the trench')", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  assert.ok(!isToolNarration("I'll pick one for you and it's the trench."));
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick one: the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /the trench/);
+});
+
+test("Codex r18: '… and it's the trench' is never held, even with a tool after it", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick one for you and it's the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /it's the trench/);
+});
+
+test("bug-fix 1c63d32 outfit 1/6: 'I'll pick a favorite — pulling up what I remember about your style.' is dropped before the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick a favorite — pulling up what I remember about your style.").speak, ...j.push("Go with the trench.").speak, ...j.finish().speak];
+  assert.equal(out.join(" "), "Go with the trench.");
+  assert.equal(guardSentence("Pulling up what I remember about your style.", none), "narration");
+});
+
+test("Codex r20: 'Checking your calendar shows dinner is on Thursday.' is the answer", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Checking your calendar shows dinner is on Thursday.").speak, ...j.push("Have a great time.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /Thursday/);
+});
+
+test("bug-fix e1e3608: 'Just plotting your fastest route — one sec.' and '— pulling up what I remember to break the tie' are never voiced; 'let me walk you through' is content", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (first: string) => { const j = new NarrationJudge(true); return [...j.push(first).speak, ...j.push("Take the 2 line.").speak, ...j.finish().speak].join(" "); };
+  assert.equal(run("Just plotting your fastest route to City Hall — one sec."), "Take the 2 line.");
+  assert.doesNotMatch(run("You want me to choose tonight — pulling up what I remember to break the tie."), /pulling up/i);
+  const j = new NarrationJudge(true);
+  assert.deepEqual(j.push("Let me walk you through all of them slowly.").speak, ["Let me walk you through all of them slowly."]);
+});
+
+test("Codex r22: a gerund subject with its own verb is an answer", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Scanning your boarding pass opens the gate.").speak, ...j.push("Give it a try.").speak, ...j.finish().speak];
+  assert.match(out.join(" "), /opens the gate/);
+});
+
+test("bug-fix smoke 11/3: a memory tool's follow-up repeating the pre-tool sentences is said once", { skip: !v1 }, async () => {
+  const text = (t: string): SparkStreamEvent => ({ type: "text", delta: t });
+  const { client, session } = toolSetup([[
+    text("<happy> I knew you'd crush it, Chelsea. We are absolutely celebrating that. "),
+    { type: "tool", name: "remember", status: "in_progress" },
+    { type: "tool", name: "remember", status: "completed" },
+    text("<happy> I knew you'd crush it, Chelsea. We are absolutely celebrating that."),
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ]]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "my presentation went great" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "I knew you'd crush it, Chelsea. We are absolutely celebrating that.");
+  session.close();
+});
+
+test("bug-fix a6df112 outfit 3/8: subject-less gerund openers and 'incoming' promises are never voiced before the pick", async () => {
+  const { NarrationJudge, isToolNarration } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Checking what I remember about your style and that cozy bedroom backdrop.", "Outfit vote incoming.", "Got it — picking your tonight look from what I can see."]) {
+    assert.ok(isToolNarration(first), first);
+    const j = new NarrationJudge(true);
+    const out = [...j.push(first).speak, ...j.push("Go with the trench.").speak, ...j.finish().speak].join(" ");
+    assert.match(out, /^(?:Got it\. )?Go with the trench\.$/, first);
+  }
+  for (const keep of ["Looking good tonight!", "Loving the trench on you.", "Scanning your boarding pass opens the gate."]) {
+    const j = new NarrationJudge(true);
+    assert.ok([...j.push(keep).speak, ...j.push("Ok.").speak, ...j.finish().speak].join(" ").includes(keep), keep);
+  }
 });

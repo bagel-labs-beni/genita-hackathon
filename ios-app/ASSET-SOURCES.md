@@ -18,3 +18,8 @@ No Figma screenshots are used as complete app screens. Layouts, inputs, text and
 
 - `GenitaHandoffApproach.caf`, `GenitaHandoffConnected.caf`: original Genita sounds, synthesized by code for this project. They contain no recorded or third-party audio.
 - `shared/Handoff/EffectSource`: existing Duo blur shader / sampler and Genita payload compositor from the handoff lab. Upstream MIT license retained alongside the sources. `handoff-effect.js` is the locally bundled build, including Three.js (MIT).
+
+## Camera mask fixtures (demo S3)
+
+- `Resources/finds-frame-counter-0.jpg`: a kitchen-counter photo (tomatoes, red bell peppers, onions, garlic) generated with Muse Image for this project; no real person or third-party photo.
+- `Resources/finds-masks-counter.json`, `Resources/finds-masks-fixture.json`: `observe.boxes` events recorded from a live SAM 3.1 run (genita-server #298, GENITA_SAM_MASKS=1) on that frame and on `finds-frame-fridge-1.jpg`.

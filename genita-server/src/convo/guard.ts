@@ -43,7 +43,7 @@ const NARRATION = [
   // a process gerund that says what it's doing ("Figuring out where you mean…", "Pulling up what you told me…"), only
   // with an announcement marker (for you / now / so I can / what you told me / trailing …) or when it is short:
   // a gerund subject with a result ("Looking up the route suggests the blue line") is an answer (Codex #356 r7)
-  new RegExp(String.raw`(?=.*(?:\bfor you\b|\bnow\b|\bso i can\b|\bwhere you mean\b|\bwhat (?:you|i) (?:told|said|mentioned)\b|…\s*$|\.\.\.\s*$)|^[^.!?]{0,40}[.!?]?\s*$)${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking(?: on)? (?!out\b)\S+|pulling (?:up )?the (?:forecast|map|route|address|details)|searching (?:for (?:it|that|this|the (?:address|route|place|way)|where|what)|my|the web|online|up)|digging (?:up|into|through)|mapping (?:it|that|this|the|out|where|your)|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
+  new RegExp(String.raw`(?=.*(?:\bfor you\b|\bnow\b|\bso i can\b|\bwhere you mean\b|\bwhat (?:you|i) (?:told|said|mentioned|remember|know)\b|…\s*$|\.\.\.\s*$)|^[^.!?]{0,40}[.!?]?\s*$)${LEAD}(?:figuring out|pulling (?:up|that up|it up)|bringing up|looking (?:up|into|through|that up|it up)|checking(?: on)? (?!out\b)\S+|pulling (?:up )?the (?:forecast|map|route|address|details)|searching (?:for (?:it|that|this|the (?:address|route|place|way)|where|what)|my|the web|online|up)|digging (?:up|into|through)|mapping (?:it|that|this|the|out|where|your)|scanning|fetching|loading (?:up|the|that|it)|tracking down|hunting down|googling|grabbing (?:that|it|the (?:map|address|route|details))|finding (?:out|where|what|the (?:route|address|way|place)))\b`, "i"),
   // memory plumbing said out loud: "let me see what you told me", "searching my memory"
   /\b(?:let me|i'?ll|lemme)\s+(?:see|check|remember)\s+what (?:you (?:told|said to) me|i (?:remember|have|know) about)\b/i,
   /\b(?:searching|checking|scanning) (?:my|our) (?:memory|memories|notes|past (?:chats|conversations))\b/i,
@@ -66,7 +66,7 @@ const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB}
  * closed today", "…shows it's ten minutes"): that is an answer, never dropped (Codex #356 rounds 4–5). The cost
  * is a few spoken announcements like "Let me look into where that is." — losing an answer is worse.
  */
-const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
+const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|suggests|recommends|lists|gives|puts|estimates|predicts|reads|reports|mentions|indicates|points to|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
 
 /** what is left beside an announcement carries no answer: short, no number, no stated or past-tense result (Codex #356 r6) */
 function noAnswerIn(rest: string): boolean {
@@ -96,8 +96,11 @@ export function isNarration(sentence: string): boolean {
   // "what the weather looks like" is the question being looked up, not a result (real Spark, 11/3 probe)
   const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ").replace(/\b(what|how)\b([^.!?]{0,40}?)\blooks? like\b/gi, "$1$2");
   if (!announcementOnly(s) && !s.split(CONTENT_JOIN).some((p) => announcementOnly(p.trim()))) return false;
+  // "the trench and denim" / "between the white and the black" is one thing being weighed, not two statements
+  // …but never when a subject starts a new clause after "and" ("your notes and you should wear the trench", Codex r13)
+  const joined = s.replace(/\b(between|the|your)\s+([\w'-]+)\s+and\s+(?:the\s+)?(?!(?:you|i|we|they|he|she|it|that|this|there|then)\b)([\w'-]+)(?=\s*(?:[.,!?;:—–]|$)|\s+(?:against|for|with|to|in|on|at|over|from|tonight|today|now|first|later)\b)/gi, "$1 $2-$3");
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
-  const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
+  const parts = joined.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
   return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || bareLookupOnly(p) || FILLER_PART.test(p));
 }
 
@@ -184,9 +187,17 @@ function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
 export type AddressContext = { camera: boolean; first: boolean; userText: string; userName?: string };
 
 /** the user's own line is about themselves ("…better on me", "my outfit", "should I…"), the only evidence that "she" is them (Codex r10) */
-const SELF_REF = /\b(?:me|my|mine|myself|i|i'm|i'?ve|i'?d)\b/i;
+// "my screen" / "my photo" is about a picture, not the user (Codex r11): only me / I / myself count
+const SELF_REF = /\b(?:me|myself|i|i'm|i'?ve|i'?d)\b/i;
 /** a person named in the user's line (Taylor's outfit, a photo of Alice) is someone else */
 const NAMED = /(?:^|[^.!?]\s)([A-Z][a-z]{1,20})\b/;
+
+/** the user's line could make a she/he in the reply the user (no other person named, about themselves) */
+export function thirdPersonCouldBeUser(userText: string, userName?: string): boolean {
+  if (OTHER_PERSON.test(userText) || !SELF_REF.test(userText)) return false;
+  const named = userText.match(NAMED)?.[1];
+  return !(named && named.toLowerCase() !== (userName ?? "").toLowerCase() && !/^(?:I|Is|Are|Do|Does|Can|Could|Should|Would|Which|What|How|Who|Hey|Ok|Okay)$/.test(named));
+}
 
 export function thirdPersonAboutUser(sentence: string, ctx: AddressContext): boolean {
   if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText) || !SELF_REF.test(ctx.userText)) return false;
