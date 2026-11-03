@@ -84,6 +84,19 @@ struct LiveBox: Identifiable, Equatable {
         return CGPoint(x: max(0, rect.minX), y: rect.minY + labelOffsetY(rect, topInset: topInset))
     }
 
+    /// Every label's origin, placed one after another: a placed pill (padded 4 pt) becomes an obstacle for the next,
+    /// so two pills never sit on each other ("Green onion" over "Whole milk", UI sweep 11/3 after the status fix).
+    static func labelOrigins(_ drawn: [(id: String, rect: CGRect, label: CGSize)], view: CGSize, topInset: CGFloat, obstacles: [CGRect]) -> [String: CGPoint] {
+        var placed = obstacles
+        var out: [String: CGPoint] = [:]
+        for d in drawn {
+            let o = labelOrigin(d.rect, label: d.label, view: view, topInset: topInset, obstacles: placed)
+            out[d.id] = o
+            placed.append(CGRect(origin: o, size: d.label).insetBy(dx: -4, dy: -4))
+        }
+        return out
+    }
+
     /// One label pill per label: on its largest match among those actually drawn (a hidden one can't own it).
     /// `drawn` = the boxes on screen with their view rects. Returns the ids that carry a label.
     static func labelOwners(_ drawn: [(item: LiveBox, rect: CGRect)]) -> Set<String> {

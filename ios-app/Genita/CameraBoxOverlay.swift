@@ -71,6 +71,8 @@ struct CameraBoxOverlay: View {
                 let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
                     .filter { !CameraBoxes.hidden($0.rect, avoiding: avoid) && !CameraBoxes.aboveView($0.rect, topInset: topInset) }
                 let labeled = CameraBoxes.labelOwners(drawn)
+                let origins = CameraBoxes.labelOrigins(drawn.filter { labeled.contains($0.item.id) }.map { (id: $0.item.id, rect: $0.rect, label: Self.labelSize($0.item.label)) },
+                                                       view: g.size, topInset: topInset, obstacles: labelObstacles)
                 ForEach(drawn, id: \.item.id) { d in
                     let mask = CameraBoxes.masksEnabled ? boxes.maskImages(for: d.item) : nil
                     PopBox(item: d.item, rect: d.rect, size: g.size, topInset: topInset, lit: boxes.highlighted == d.item.key,
@@ -79,7 +81,7 @@ struct CameraBoxOverlay: View {
                            mask: mask, mirrored: mirrored,
                            // boxes and masks alike: the pill moves off the menu button, the status line and the PiP
                            // (labelOrigin tries the box rule's spot first, so a label in free space doesn't move)
-                           labelAt: CameraBoxes.labelOrigin(d.rect, label: Self.labelSize(d.item.label), view: g.size, topInset: topInset, obstacles: labelObstacles))
+                           labelAt: origins[d.item.id])
                 }
             }
             .opacity(boxes.visible ? 1 : 0)

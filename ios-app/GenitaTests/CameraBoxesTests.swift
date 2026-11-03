@@ -195,4 +195,16 @@ import XCTest
         let open = CGRect(x: 40, y: 420, width: 100, height: 80)
         XCTAssertEqual(CameraBoxes.labelOrigin(open, label: label, view: view, topInset: 96 + top, obstacles: obstacles), CGPoint(x: 40, y: 388), "free space: unchanged")
     }
+
+    /// UI sweep 11/3 (after the status-line fix): a label moved below its box landed on the next box's label.
+    func testLabelsDoNotSitOnEachOther() {
+        let view = CGSize(width: 390, height: 844), top: CGFloat = 59, label = CGSize(width: 90, height: 28)
+        let obstacles = [CameraBoxes.menuRect(top: top), CameraBoxes.statusRect(view: view, top: top)]
+        let a = CGRect(x: 150, y: 210, width: 100, height: 90)   // label pushed below: (150, 304)
+        let b = CGRect(x: 190, y: 340, width: 100, height: 90)   // its own label above: (190, 308) — the same spot
+        let o = CameraBoxes.labelOrigins([(id: "a", rect: a, label: label), (id: "b", rect: b, label: label)], view: view, topInset: 96 + top, obstacles: obstacles)
+        let ra = CGRect(origin: o["a"]!, size: label), rb = CGRect(origin: o["b"]!, size: label)
+        XCTAssertFalse(ra.intersects(rb), "two pills never overlap")
+        XCTAssertFalse(rb.intersects(obstacles[1]))
+    }
 }
