@@ -37,6 +37,18 @@ export function isProductAsk(text: string, afterProduct = false): boolean {
   return false;
 }
 
+/** Wearing words: "what to wear", "pick an outfit" (also "…wear to dinner", which COOK alone would take). */
+const WEAR = /\b(wear|wearing|outfits?)\b|입을|입고|옷/i;
+/** Clothes named without "which one / this or that", which also fit "Python or JavaScript?". */
+const GARMENT =
+  /\b(jacket|coat|blazer|dress|shirt|skirt|pants|jeans|shoes|sweater|hoodie)\b|코트|자켓|재킷|원피스|셔츠|바지|신발/i;
+
+/** "What should I wear?" without a camera: wearing words, or a garment that isn't about cooking; never a product search. */
+export function isOutfitAsk(text: string, afterProduct = false): boolean {
+  if (findUrl(text) || isProductAsk(text, afterProduct)) return false;
+  return WEAR.test(text) || (GARMENT.test(text) && !COOK.test(text));
+}
+
 export type Intent = { kind: FindKind; url?: string } | null;
 
 export function classifyTurn(text: string, hasFrames: boolean, afterProduct = false): Intent {

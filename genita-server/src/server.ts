@@ -45,6 +45,7 @@ import { attachWatchSocket } from "./watch/socket.ts";
 import { createEventsRoute } from "./events/routes.ts";
 import { HandoffHub } from "./handoff/hub.ts";
 import { MemoryOwnershipStore, PgOwnershipStore } from "./handoff/store.ts";
+import { forgetOpenerTopics } from "./convo/openerTopics.ts";
 import { attachPresence, deviceFor, gatedCallDevice, gateCall, handleHandoffHttp, handoffHttpPaths } from "./handoff/routes.ts";
 import { createAppConfigSource, handleAppConfig, isAppConfigRoute } from "./appconfig/appConfig.ts";
 
@@ -128,6 +129,7 @@ export async function startServer(
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
     deletedUsers.add(userId);
     dropLastTurns(userId);
+    forgetOpenerTopics(userId); // #341 in-process copy (the DB copy goes with the memory_state cascade)
     try {
       // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
       // before purging. A late vendor completion must never recreate deleted data.
@@ -280,17 +282,24 @@ export async function startServer(
             return;
           }
           if (!who.consented) return ws.close(4403, "consent_required");
-          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId);
+          attach(ws, who, gatedCallDevice(who.device, url), who.kind === "dev" && !accounts && !req.headers["x-genita-user"] ? null : who.userId, deviceFor(who.device, url));
         });
       },
       () => reject(500, "Internal Server Error"),
     );
   });
 
-  // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
+  // Handoff: this account's most advanced live or recently ended call (in memory,
   // one process — same as the audio gate). Never another account's.
+  // A new user turn gets a process-wide sequence; assistant writes advance only that turn.
+  // Thus a late assistant completion cannot promote an older turn over a newer device's turn.
+  type Progress = { turn: number; update: number };
+  let nextTurn = 0;
+  const progress = new Map<string, Progress>();
+  const zero: Progress = { turn: 0, update: 0 };
+  const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; at: number; device: string; hungUp: boolean; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -298,23 +307,37 @@ export async function startServer(
   // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
   const handedThread = new Map<string, ThreadState | null>();
   function priorTurns(userId: string, self: string, revision: number, device: string): HistoryItem[] | null {
-    let best: HistoryItem[] | null = null;
-    let thread: ThreadState | null = null;
+    let cached = lastTurns.get(userId);
+    if (cached && (cached.revision !== revision || Date.now() - cached.at >= 10 * 60_000)) {
+      dropLastTurns(userId);
+      cached = undefined;
+    }
+    let best: HistoryItem[] | null = cached?.turns ?? null;
+    let thread = cached?.thread ?? null;
+    let bestProgress = cached?.progress ?? zero;
+    let fromCache = !!best;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       // a call that already ended (stop handled, socket still closing) is not a live call to continue (Codex 11/3)
       if (!session || session.isClosed) continue;
       const t = session.historyForgetRevision === revision ? session.historySnapshot() : null;
-      if (t?.length && (!best || t.length >= best.length)) { best = t; thread = session!.threadInfo(); }
+      const p = progress.get(sid) ?? zero;
+      if (t?.length && (!best || newer(p, bestProgress))) {
+        best = t; thread = session.threadInfo(); bestProgress = p; fromCache = false;
+      }
     }
-    if (best) { handedThread.set(self, thread); return best; }
-    const c = lastTurns.get(userId);
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
     // on the OTHER device still continues it, whatever order its stop and the claim arrived in (Codex 11/3).
-    if (c && c.hungUp && c.device === device) { log("history.not_seeded", { session: self, by: "hang_up" }); return null; }
-    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) { handedThread.set(self, c.thread); return c.turns; }
-    dropLastTurns(userId);
+    if (best && fromCache && cached?.hungUp && cached.device === device) {
+      log("history.not_seeded", { session: self, by: "hang_up" });
+      return null;
+    }
+    if (best) {
+      progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
+      handedThread.set(self, thread);
+      return best;
+    }
     return null;
   }
   function priorThread(self: string): ThreadState | null {
@@ -326,20 +349,23 @@ export async function startServer(
     const turns = session.historySnapshot();
     const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
+    const p = progress.get(session.id) ?? zero;
     if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
-      // Late closes never win (Codex 11/3): a call whose conversation another call continued (whatever is cached
-      // now, even another thread), or an older copy of the same thread with fewer pairs.
-      const cur = lastTurns.get(userId);
-      const movedOn = !!thread && !!deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id);
-      const fewer = !!(cur?.thread && thread && cur.thread.threadId === thread.threadId && cur.thread.covered > thread.covered);
-      if (movedOn || fewer) {
-        log("history.not_cached", { session: session.id, by: movedOn ? "moved_on" : "stale_copy" });
+      const cached = lastTurns.get(userId);
+      const now = Date.now();
+      // A call whose conversation another call continued never caches (Codex 11/3), whatever is cached now.
+      if (thread && deps.memory && !deps.memory.ownsThread(userId, thread.threadId, session.id)) {
+        log("history.not_cached", { session: session.id, by: "moved_on" });
         return;
       }
+      // Compare when saving (inside the Forget lock), not before an asynchronous state read.
+      // Only a still-valid newer snapshot can block this save.
+      // An unchanged inherited snapshot still refreshes retention when its call ends.
+      if (cached?.revision === revision && now - cached.at < 10 * 60_000 && newer(cached.progress, p)) return;
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, at: Date.now(), device, hungUp: session.endedByUser, unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, device, hungUp: session.endedByUser, unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
@@ -351,7 +377,7 @@ export async function startServer(
     });
   }
 
-  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null) {
+  function attach(ws: WebSocket, who: Principal, device: ReturnType<typeof gatedCallDevice>, turnUserId: string | null, here: ReturnType<typeof deviceFor>) {
     const id = randomUUID();
     // the device this call is on (a gated call names it; else the principal's)
     const callDevice = device ?? who.device;
@@ -369,8 +395,17 @@ export async function startServer(
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
     // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
     const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
+    // Demo S4: an iPhone call may suggest moving to this account's open Mac app
+    const macNearby = here === "iphone" ? () => handoff.isPresent(who.userId, "mac") : undefined;
     // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id), personalize: deps.personalize ?? prep.deps.personalize });
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId,
+      priorTurns: (revision) => priorTurns(who.userId, id, revision, callDevice), priorThread: () => priorThread(id),
+      personalize: deps.personalize ?? prep.deps.personalize, macNearby,
+      onHistoryChange: (role) => {
+        const p = progress.get(id) ?? zero;
+        progress.set(id, role === "user" ? { turn: ++nextTurn, update: 0 } : { turn: p.turn, update: p.update + 1 });
+      },
+    });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -413,6 +448,7 @@ export async function startServer(
       void cacheTurns(who.userId, session, callDevice)
         .catch(() => log("history.unavailable", { session: id }))
         .finally(() => log("session.close", { session: id, sessions: sessions.size }));
+      progress.delete(id); // cacheTurns captured its immutable progress before its first await
     });
     ws.on("error", () => ws.terminate());
   }

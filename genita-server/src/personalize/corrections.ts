@@ -13,9 +13,19 @@ import { PROFILE_FIELDS, type ProfileField, type ProfileUpdate } from "./merge.t
 const HINT =
   /\b(?:actually|anymore|any more|no longer|these days|from now on|i(?:'m| am) (?:not into|over|done with|vegan|vegetarian|pescatarian)|i (?:don'?t|do not|never|can'?t|cannot) (?:really )?(?:like|eat|drink|want|wear|watch|enjoy|stand|do)|i'd rather|i would rather|forget (?:that|it|about|what i said)|(?:i|i'd|we) (?:usually |normally |rarely |never )?(?:spend|pay)\b|my budget|price range|(?:don'?t|do not) remember (?:that|this|it)|i (?:hate|dislike|prefer|love|want you to|need you to|like it when|like when|don'?t want you to)|not (?:a (?:big )?fan|into|for me|my thing)|stop (?:\w+ing)|(?:please )?don'?t (?:\w+ )?(?:ask|call|joke|give|tell|suggest|comment|remind|bring up|mention|talk)|too (?:long|short|many|much|formal|casual|wordy|chatty)|(?:shorter|longer|fewer) (?:answers|replies|questions)|keep it (?:short|brief)|call me)\b/i;
 
+/**
+ * Adaptive style (memory lane 11/3): how-to-talk-to-me lines the HINT above misses ("be more direct",
+ * "get to the point", "less detail", "one sentence please"). Same path: one Spark call beside the reply,
+ * merged into communication/response, editable in HISY and forgettable. Speech rate is the voice lane's.
+ */
+const STYLE_HINT =
+  /\b(?:(?:can you |could you |please )?be (?:more|less) (?:direct|concise|casual|formal|playful|serious|funny|detailed|blunt|gentle|chatty)|(?:more|less) (?:detail|details|small talk|jokes|questions|chatty|formal|casual|enthusiasm|energy)|get (?:straight )?to the point|skip the (?:small talk|intro|pleasantries|chit ?chat)|just (?:give me )?the (?:short version|gist|bottom line)|(?:in |just )?one (?:sentence|line) (?:please|only|max)|(?:in|just) one (?:sentence|line)|no more (?:\w+ )?(?:questions|jokes|lists|options)|(?:that'?s|that is|you'?re) (?:way )?too (?:long|wordy|much|formal|chatty|serious)|tl;?dr)\b/i;
+
 /** Lines worth one Spark call. Questions alone ("What should I cook?") are not. */
 export function mightBeCorrection(text: string): boolean {
   const t = text.replace(/[’‘]/g, "'").trim();
+  // a short, clear style ask ("Less detail.", "TL;DR please") counts even under three words
+  if (STYLE_HINT.test(t)) return true;
   if (t.split(/\s+/).length < 3) return false;
   return HINT.test(t);
 }
