@@ -57,10 +57,7 @@ struct RootView: View {
     }
 
     /// The curated name of a server voice id ("19" → "Leo"), nil for an unknown id.
-    static func name(forVoiceId id: String?) -> String? {
-        guard let id else { return nil }
-        return fallback(kind: nil).first { $0.id == id }?.name
-    }
+    static func name(forVoiceId id: String?) -> String? { CuratedVoices.name(id) }
 
     /// What V04 shows when the server can't be reached at all: the same curated four per look (greyed).
     static func fallback(kind: String?) -> [OnboardingClient.CompanionVoice] {
