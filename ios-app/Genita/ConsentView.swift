@@ -30,9 +30,9 @@ struct ConsentView: View {
                 }
             }.padding(.top, 32)
             HStack(spacing: 16) {
-                // PRD v12 D16: Genita's own pages
-                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
+                // PRD v12 D16: Genita's own pages; Privacy Policy first, then Terms (Figma 4:2, LG-01 step 5, AU-02)
                 Link("Privacy Policy", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/privacy/")!)
+                Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
             }.font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).underline().padding(.top, 24).frame(minHeight: 44)
             Spacer(minLength: 24)
             Button { agree() } label: {
