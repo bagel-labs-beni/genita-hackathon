@@ -16,7 +16,10 @@ struct FaceScanOverlay: View, Animatable {
     var imageSize: CGSize
     /// when the bar reached 100 % (the hold, the breathing and the fade count from here)
     var doneAt: Date?
+    /// no pops or trims (Reduce Motion, and the still review captures)
     var reduceMotion = false
+    /// the moving scan line and band (off under Reduce Motion: the net then appears in place at the answer)
+    var showLine = true
 
     var animatableData: AnimatablePair<Double, Double> {
         get { AnimatablePair(progress, reveal) }
@@ -99,7 +102,7 @@ struct FaceScanOverlay: View, Animatable {
 
         // the scan line and its band cross the whole card; they fade out over 0.15 s at 100 %
         let lineA = sinceDone >= 0 ? 1 - min(1, sinceDone / Self.lineOut) : (progress > 0.0005 ? 1 : 0)
-        guard lineA > 0.001 else { return }
+        guard showLine, lineA > 0.001 else { return }
         var band = ctx
         band.opacity = outA * lineA
         band.fill(Path(CGRect(x: 0, y: lineY - 24, width: size.width, height: 24)),

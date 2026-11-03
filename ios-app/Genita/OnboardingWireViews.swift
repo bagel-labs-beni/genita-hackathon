@@ -63,6 +63,8 @@ struct ImageCheckView: View {
     @State private var progress = 0.08
     /// V03 face scan: the low-poly net, laid on top-down over 0.4 s when the check answer brings SAM's face points
     @State private var mesh: FaceMesh?
+    /// the sparse net for a face too small on the card (FaceMesh.fitted)
+    @State private var smallMesh: FaceMesh?
     @State private var reveal = 0.0
     /// the uploaded photo's size (orientation applied), for mapping the points onto the `scaledToFill` frame
     @State private var photoSize = CGSize.zero
@@ -100,8 +102,9 @@ struct ImageCheckView: View {
 
     /// The check answer's face points → the net, swept on from the top over 0.4 s.
     private func showMesh() {
-        guard let r = result else { mesh = nil; reveal = 0; return }
+        guard let r = result else { mesh = nil; smallMesh = nil; reveal = 0; return }
         mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
+        smallMesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox, layout: .r02Small)
         guard mesh != nil else { return }
         photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
         if reduceMotion { reveal = 1 } else { withAnimation(Self.finishCurve) { reveal = 1 } }
@@ -130,8 +133,10 @@ struct ImageCheckView: View {
             photo(width: width).frame(width: width - 48, height: 240)
                 .overlay {
                     // V03 face scan: the line follows the bar; the net comes with the check answer
-                    FaceScanOverlay(progress: progress, reveal: reveal, mesh: mesh, imageSize: photoSize, doneAt: doneAt,
-                                    reduceMotion: reduceMotion || model.reviewScan != nil)
+                    FaceScanOverlay(progress: reduceMotion ? (reveal > 0 ? 1 : 0) : progress, reveal: reveal,
+                                    mesh: mesh.map { FaceMesh.fitted(full: $0, small: smallMesh, image: photoSize, in: CGSize(width: width - 48, height: 240)) },
+                                    imageSize: photoSize, doneAt: doneAt,
+                                    reduceMotion: reduceMotion || model.reviewScan != nil, showLine: !reduceMotion)
                         .accessibilityIdentifier("faceScan")
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))

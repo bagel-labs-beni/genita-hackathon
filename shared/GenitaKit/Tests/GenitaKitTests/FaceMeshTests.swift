@@ -40,7 +40,7 @@ struct FaceMeshTests {
     }
 
     @Test func aMaskThatReachesIntoTheHairIsCutAtTheHairline() throws {
-        // an outline from y 0.05 (hair) to 0.65 (chin), eyes at 0.38: hairline = (0.38 − 0.3 × 0.65) / 0.7
+        // an outline from y 0.05 (hair) to 0.65 (chin), eyes at 0.38: hairline = (0.38 − 0.34 × 0.65) / 0.66
         let outline = (0..<32).map { k -> [Double] in
             let a = Double(k) / 32 * 2 * .pi
             return [0.5 + 0.25 * cos(a), 0.35 + 0.3 * sin(a)]
@@ -49,10 +49,22 @@ struct FaceMeshTests {
         let fp = FacePoints(leftEye: eye(0.4), rightEye: eye(0.6), leftBrow: [], rightBrow: [], nose: [],
                             lips: [[0.44, 0.52], [0.5, 0.5], [0.56, 0.52], [0.5, 0.54]])
         let mesh = try #require(FaceMesh.make(outline: outline, points: fp, headBox: nil))
-        #expect(abs(mesh.points[0].y - (0.38 - 0.3 * 0.65) / 0.7) < 0.002, "rim 0 at the hairline, not the hair")
+        #expect(abs(mesh.points[0].y - (0.38 - 0.34 * 0.65) / 0.66) < 0.002, "rim 0 at the hairline, not the hair")
         // no nose from SAM: 60 % of the way from the eye line to the mouth line
         let tip = mesh.points[FaceNetLayout.r02.names.firstIndex(of: "nose tip")!]
         #expect(abs(tip.y - (0.38 + 0.6 * (0.52 - 0.38))) < 0.002)
+    }
+
+    @Test func aSmallFaceOnTheCardGetsTheSparseNet() throws {
+        let c = try check("," + String(companionGeometry.dropFirst().dropLast()))
+        let full = try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox))
+        let small = try #require(FaceMesh.make(outline: c.faceOutline, points: c.facePoints, headBox: c.headBox, layout: .r02Small))
+        #expect(small.points.count == 17 && small.triangles.count == 20)
+        // the review photo on the 342 × 240 V03 card: a big face, the full net
+        let image = CGSize(width: 941, height: 1672)
+        #expect(FaceMesh.fitted(full: full, small: small, image: image, in: CGSize(width: 342, height: 240)) == full)
+        // the same photo on a card a quarter the size: the face is under 90 pt, the sparse net
+        #expect(FaceMesh.fitted(full: full, small: small, image: image, in: CGSize(width: 86, height: 60)) == small)
     }
 
     @Test func aLayoutIsOneSwappableValue() throws {

@@ -76,6 +76,21 @@ public struct FaceNetLayout: Sendable {
         tris: [[0,1,12], [0,11,12], [11,12,13], [1,12,14], [10,11,15], [11,13,15], [12,13,16], [13,15,16], [12,14,17], [12,16,17], [1,2,18], [1,14,18], [14,17,18], [9,10,19], [10,15,19], [15,16,19], [16,19,20], [2,3,22], [2,18,22], [17,18,22], [17,21,22], [16,17,23], [17,21,23], [16,20,23], [19,20,25], [20,23,25], [23,24,25], [21,22,26], [21,23,26], [23,24,26], [7,8,27], [24,26,28], [24,25,28], [25,27,28], [4,5,29], [26,28,29], [7,27,30], [27,28,30], [28,29,30], [8,9,31], [9,19,31], [19,25,31], [25,27,31], [8,27,31], [3,4,32], [3,22,32], [22,26,32], [4,29,32], [26,29,32], [6,7,33], [7,30,33], [5,6,33], [5,29,33], [29,30,33]])
 }
 
+extension FaceNetLayout {
+    /// For a face too small on the card for r02's 34 points (lead 11/4: under 90 pt tall, or two points closer than
+    /// 6 pt): the same 12-point rim, the two eye centres, the nose tip and the mouth corners — 17 points, 20 triangles
+    /// (Delaunay on r02's human layout, pinned).
+    public static let r02Small = FaceNetLayout(
+        names: Array(r02.names.prefix(12)) + ["eye left", "eye right", "nose tip", "mouth left", "mouth right"],
+        place: { a in
+            let full = r02.place(a)
+            let mid = { (i: Int, j: Int) in CGPoint(x: (full[i].x + full[j].x) / 2, y: (full[i].y + full[j].y) / 2) }
+            return Array(full.prefix(12)) + [mid(19, 20), mid(21, 22), full[24], full[27], full[29]]
+        },
+        tris: [[9,10,12],[0,11,12],[10,11,12],[2,3,13],[0,1,13],[0,12,13],[1,2,13],[12,13,14],[6,7,15],[7,8,15],[8,9,15],[9,12,15],
+               [12,14,15],[4,5,16],[3,4,16],[3,13,16],[13,14,16],[5,6,16],[6,15,16],[14,15,16]])
+}
+
 public struct FaceMesh: Equatable, Sendable {
     public struct Edge: Hashable, Sendable {
         public let a: Int
@@ -101,8 +116,11 @@ public struct FaceMesh: Equatable, Sendable {
         return FaceMesh(points: all, triangles: tris, edges: edges)
     }
 
+    /// eye line − this × face height = the hairline, when SAM's face mask reaches into the hair
+    static let hairlineCut: CGFloat = 0.34
+
     /// r02's inputs from the check answer. The oval: SAM's face outline (centre = its centroid, radii = its extent);
-    /// if the mask reached into the hair, its top is cut to eye line − 0.30 × face height. No outline: an oval in the
+    /// if the mask reached into the hair, its top is cut to eye line − 0.34 × face height. No outline: an oval in the
     /// lower SAM head box. No eye / mouth boxes: the r02 human layout's proportions inside the oval.
     static func anchors(outline raw: [[Double]]?, points: FacePoints?, headBox: ImageHeadBox?) -> FaceAnchors? {
         let pts = { (list: [[Double]]?) -> [CGPoint] in
@@ -118,9 +136,10 @@ public struct FaceMesh: Equatable, Sendable {
             var top = outline.map(\.y).min()!
             let bottom = outline.map(\.y).max()!, minX = outline.map(\.x).min()!, maxX = outline.map(\.x).max()!
             if hasFeatures {
-                // hairline = eye line − 0.30 × face height (face height = bottom − hairline)
+                // hairline = eye line − 0.34 × face height (face height = bottom − hairline); r02 said 0.30, the lead
+                // raised it 11/4 03:0x so the net covers more forehead (no hair came back on the four live photos)
                 let eyeY = (mid(le) + mid(re)) / 2
-                top = max(top, (eyeY - 0.3 * bottom) / 0.7)
+                top = max(top, (eyeY - hairlineCut * bottom) / (1 - hairlineCut))
             }
             // centre x = the outline's area centroid (≈ the mask's)
             var a2: CGFloat = 0, sx: CGFloat = 0
@@ -155,6 +174,18 @@ public struct FaceMesh: Equatable, Sendable {
                            eyeL: [at(-0.61, 0.355), at(-0.23, 0.355)], eyeR: [at(0.25, 0.355), at(0.61, 0.355)],
                            nose: at(0, 0.57), mouthL: at(-0.33, 0.74), mouthR: at(0.29, 0.74),
                            mouthT: top + fh * 0.69, mouthB: top + fh * 0.81)
+    }
+
+    /// Small faces read as a blob under r02: on a card smaller than 90 pt of face, or with two points closer than
+    /// 6 pt, the sparse r02Small net is used instead (`full` and `small` from the same answer).
+    public static func fitted(full: FaceMesh, small: FaceMesh?, image: CGSize, in view: CGSize,
+                              minFaceHeight: CGFloat = 90, minGap: CGFloat = 6) -> FaceMesh {
+        guard let small else { return full }
+        let p = full.points.map { aspectFill($0, image: image, in: view) }
+        let faceHeight = (p.map(\.y).max() ?? 0) - (p.map(\.y).min() ?? 0)
+        var gap = CGFloat.infinity
+        for i in 0..<p.count { for j in (i + 1)..<p.count { gap = min(gap, hypot(p[i].x - p[j].x, p[i].y - p[j].y)) } }
+        return faceHeight < minFaceHeight || gap < minGap ? small : full
     }
 
     /// Image fraction → view point for an image shown `scaledToFill` (centered crop) in `view`.
