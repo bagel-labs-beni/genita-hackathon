@@ -1,3 +1,0 @@
-/* Finder, Dock and Cmd-Tab show this instead of the bundle file name (GenitaMac.app). */
-"CFBundleDisplayName" = "Genita";
-"CFBundleName" = "Genita";

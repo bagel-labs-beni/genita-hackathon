@@ -35,7 +35,9 @@ export type ProximityReason =
   | "phone_inactive"
   | "mac_inactive"
   | "cooldown"
-  | "rate_limited";
+  | "rate_limited"
+  /** the store failed: nothing moved, report again (the answer frees the Mac's one report in flight) */
+  | "server_error";
 
 /** 8 symbols × 5 bits from 5 random bytes. */
 export function newToken(bytes: Buffer = randomBytes(5)): string {

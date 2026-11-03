@@ -70,11 +70,19 @@ struct FindsTabView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
             // the art has wide transparent margins: draw it 450 pt wide in an overlay (no layout width) clipped to the 314 × 190 slot
-            Color.clear.frame(width: 314, height: 190)
-                .overlay(Image(resource: "reference-orb-round").resizable().scaledToFill().frame(width: 450, height: 450 * 975 / 748))
-                .clipped().accessibilityHidden(true)
+            Group {
+                if SoulOrbFlag.isOn {
+                    // the live orb (SoulOrb.swift), round in the wide slot
+                    SoulOrbView(stretchWide: false).frame(width: 314, height: 190)
+                } else {
+                    Color.clear.frame(width: 314, height: 190)
+                        .overlay(Image(resource: "reference-orb-round").resizable().scaledToFill().frame(width: 450, height: 450 * 975 / 748))
+                        .clipped()
+                }
+            }.accessibilityHidden(true)
             Text("Nothing here yet.").font(TypeStyle.text(18, .semibold)).foregroundStyle(CallInk.ink).padding(.top, 48)
-            Text("Ask me to look something up on a call, and it stays here.").font(TypeStyle.text(16)).foregroundStyle(CallInk.mute)
+            // two even lines (QA build 7: "…on a call, and / it stays here." left a 3-word orphan); same F1 copy
+            Text("Ask me to look something up\non a call, and it stays here.").font(TypeStyle.text(16)).foregroundStyle(CallInk.mute)
                 .multilineTextAlignment(.center).padding(.top, 4).padding(.horizontal, 6)
             Spacer(minLength: 0)
             Button(action: close) {

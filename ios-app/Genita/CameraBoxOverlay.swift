@@ -10,6 +10,10 @@ struct CameraStage: View {
     let call: CallController
     let size: CGSize
     let topInset: CGFloat
+    /// HUD r01 A: where the menu button, status pill and rail sit (labels keep clear of them)
+    let grid: CallHUDGrid
+    /// the status pill where ConversationView draws it (menu row, or the line under it), from the same placement
+    let statusRect: CGRect
 
     var body: some View {
         ZStack {
@@ -20,9 +24,9 @@ struct CameraStage: View {
                 LinearGradient(colors: [CallInk.dim, .clear], startPoint: .top, endPoint: .bottom).frame(height: 136 + topInset)
                 Spacer(minLength: 0)
             }.allowsHitTesting(false)
-            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect,
+            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: grid.labelFloor, avoid: noSeeRect,
                              // demo S3 option (c): labels keep clear of the menu button, the status line and the self-view PiP
-                             labelObstacles: [CameraBoxes.menuRect(top: topInset), CameraBoxes.statusRect(view: size, top: topInset), CameraBoxes.railRect(view: size, sheet: call.finds.state),
+                             labelObstacles: [CameraBoxes.menuRect(grid: grid), statusRect, CameraBoxes.railRect(grid: grid, sheet: call.finds.state),
                                               CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
         }
         .frame(width: size.width, height: size.height).clipped()
@@ -67,7 +71,7 @@ struct CameraBoxOverlay: View {
             ZStack(alignment: .topLeading) {
                 // r03 `.a[data-sel] img { filter: brightness(.6) }`: the scene steps back behind the lit box
                 Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
-                // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
+                // `topInset` here is the HUD's label floor (safe top + 60); the avoid rect is in the same screen space
                 let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
                     .filter { !CameraBoxes.hidden($0.rect, avoiding: avoid) && !CameraBoxes.aboveView($0.rect, topInset: topInset) }
                 let labeled = CameraBoxes.labelOwners(drawn)
