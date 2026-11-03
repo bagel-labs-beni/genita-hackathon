@@ -1840,6 +1840,11 @@ export class Session {
           const you = nameAsYou(tts, this.user?.name);
           if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
         }
+        // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
+        if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {
+          const once = tts.replace(/,?\s*(?:and\s+)?i'?m (?:really |so |just )?glad you told me(?: that)?(?=\s*[,.!?…]|$)/i, "");
+          if (once !== tts) { tts = once.replace(/\s+([.!?])/, "$1"); this.log("convo.phrase_repeat_dropped", { utteranceId }); }
+        }
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
         const prevSaid = sentences.at(-1)?.display;
