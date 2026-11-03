@@ -243,7 +243,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Opens the real-app link headless (Appetize JS SDK in Chromium on Linux, no Mac needed), taps A01 "Get started",
-  # waits for the A02 sign-in screen and keeps a screenshot, the UI tree and the app's log. One short Appetize session per run.
+  # waits for the A02 sign-in screen and keeps screenshots and the UI tree (no app log: Appetize's debug log needs a signed-in Appetize account). One short
+  # Appetize session per run.
   check:
     needs: appetize
     if: needs.appetize.outputs.key != ''
@@ -272,9 +273,8 @@ jobs:
           await page.waitForFunction(() => window.appetize && window.appetize.getClient, null, { timeout: 60000 });
           const out = await page.evaluate(async (key) => {
             const logs = [];
-            const client = await window.appetize.getClient("#appetize", { buildId: key, device: "iphone17pro", osVersion: "26.0", grantPermissions: true, debug: true });
+            const client = await window.appetize.getClient("#appetize", { buildId: key, device: "iphone17pro", osVersion: "26.0", grantPermissions: true });
             const session = await client.startSession();
-            session.on("log", d => logs.push(d.message));
             const t0 = Date.now();
             const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
             let found = null, lastError = "", welcome = null;
