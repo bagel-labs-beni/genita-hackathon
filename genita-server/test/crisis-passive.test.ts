@@ -44,3 +44,8 @@ test("D13: a bad day is not a crisis turn and still gets no referral", () => {
   for (const t of notCrisis) assert.equal(realCrisisSignal(t), false, t);
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: notCrisis[0] }), "referral");
 });
+
+test("AI sweep 11/3 crisis set: 'want it all to end', 'no point in waking up' are real; a meeting or the rain is not", () => {
+  for (const t of ["i just want it all to end, like for good", "i don't see the point in waking up tomorrow", "no point in waking up"]) assert.ok(realCrisisSignal(t), t);
+  for (const t of ["I want this meeting to end", "I just want this week to end", "i want it to stop raining", "no point in studying for this quiz lol"]) assert.ok(!realCrisisSignal(t), t);
+});
