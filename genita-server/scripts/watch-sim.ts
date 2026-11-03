@@ -562,7 +562,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   // 11/4: --repeat=N runs the whole set N times (clips interleaved), --only=a,b picks clips. Each clip says what it
   // expects: react (a salient moment), quiet (a page, a paused video: any reaction is a false one) or optional.
   const dir = args.find((a) => a.startsWith("--moments="))?.slice(10) ?? join(homedir(), "genita-fixtures/genita-watch-moments");
-  type Clip = { id: string; file: string; kind: string; salientSec: number; truth: string; expect?: "react" | "quiet" | "optional" };
+  type Clip = { id: string; file: string; kind: string; salientSec: number; truth: string; expect?: "react" | "page" | "quiet" | "optional" };
   const spec = JSON.parse(readFileSync(join(dir, "moments.json"), "utf8")) as { clips: Clip[] };
   const only = args.find((a) => a.startsWith("--only="))?.slice(7).split(",").filter(Boolean);
   const clips = spec.clips.filter((c) => !only || only.includes(c.id));
@@ -672,7 +672,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     const memos = mine.filter((l) => l.event === "watch.memo");
     const row = {
       clip: clip.id, kind: clip.kind, expect, run, framesSent: MAC_BIN ? ((macDone as Record<string, unknown> | null)?.framesSent ?? null) : LEGACY_FRAMES ? m.frames.length : m.macSend.filter(Boolean).length, mac: !!MAC_BIN, framesClip: m.frames.length, reacted: !!react, via: react?.via ?? null, line: react?.line ?? null, moment: react?.moment ?? null, delaySec, firstAudioSec,
-      quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => (l.react ? `${l.moment}:${l.line}` : "no")),
+      quickMs: mine.filter((l) => l.event === "watch.quick").map((l) => l.ms), quicks: mine.filter((l) => l.event === "watch.quick").map((l) => `${Math.round(((l.t as number) - (l.ms as number) - playAt) / 100) / 10}s${l.forSpike ? "S" : ""}[${(l.ages as number[] | undefined)?.join(",") ?? ""}] ` + (l.react ? `${l.moment}:${l.line}` : "no") + (l.seen ? ` (${l.seen})` : "")),
       afterLineMs: react?.afterLineMs ?? null, lineOpen: (!!react?.lineOpen && react?.talkOver !== true) || overDialogue, talkOver: react?.talkOver ?? null, held: react?.held ?? false, ...verdict,
       memos: memos.length, memoMs: memos.map((l) => l.ms), salientMemos: memos.filter((l) => l.salient).length,
       moments: memos.map((l) => l.moment), memoReactions: memos.filter((l) => l.moment !== "none").map((l) => l.reaction),
@@ -680,7 +680,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
       shareStartedLogged: !!startLog,
     };
     rows.push(row);
-    const ok = expect === "quiet" ? !react : expect === "optional" ? !react || !verdict.invented : !!react && verdict.correct && !verdict.invented && !row.lineOpen;
+    const ok = expect === "quiet" ? !react : expect === "optional" ? !react || !verdict.invented : expect === "page" ? !!react && !verdict.invented : !!react && verdict.correct && !verdict.invented && !row.lineOpen;
     console.log(`${ok ? "✓" : "✗"} #${run} ${clip.id} (${clip.kind}, ${expect}) ${react ? `"${react.line}" ${delaySec}s after the moment, first audio +${firstAudioSec}s${react.held ? ", held for a pause" : ""}` : "no reaction"}${react ? ` via ${react.via}` : ""}  quick=${JSON.stringify(row.quicks)}  memos=${memos.length} moments=${JSON.stringify(row.moments)} blocked=${JSON.stringify(row.blocked)} ${react ? JSON.stringify(verdict) : ""}`);
     call.close();
     await sleep(500);
@@ -693,6 +693,7 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
   const byClip = Object.fromEntries(clips.map((c) => [c.id, { expect: c.expect ?? "react", ...per(rows.filter((r) => r.clip === c.id)) }]));
   const salient = rows.filter((r) => r.expect === "react");
   const quiet = rows.filter((r) => r.expect === "quiet");
+  const pages = rows.filter((r) => r.expect === "page");
   const reacted = rows.filter((r) => r.reacted);
   const delays = reacted.map((r) => r.delaySec as number).sort((a, b) => a - b);
   const audio = salient.filter((r) => r.reacted && r.firstAudioSec !== null).map((r) => r.firstAudioSec as number).sort((a, b) => a - b);
@@ -707,6 +708,8 @@ if (args.some((a) => a === "--moments" || a.startsWith("--moments="))) {
     salientReacted: `${salient.filter((r) => r.reacted).length}/${salient.length}`,
     invented: `${reacted.filter((r) => r.invented).length}/${reacted.length}`,
     quietFalseReactions: `${quiet.filter((r) => r.reacted).length}/${quiet.length}`,
+    // lead's call 11/4: a new page or product gets one grounded comment
+    pageComments: `${pages.filter((r) => r.reacted).length}/${pages.length}`,
     firstAudioP50Sec: audio.length ? median(audio) : null,
     firstAudioP90Sec: audio.length ? audio[Math.min(audio.length - 1, Math.floor(audio.length * 0.9))] : null,
     reacted: reacted.length,

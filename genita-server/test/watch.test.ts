@@ -986,7 +986,7 @@ test("quick look: a spike gets its own small Spark call on the next frame and re
   assert.equal(imgs.length, 2, "the last second as 2 frames (the spike and after it), newest last");
   assert.match(quick[0].instructions!, /only name what is clearly visible in the last frame/);
   assert.match(quick[0].instructions!, /no clothes slipping or falling off/);
-  assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 900, "small and fast");
+  assert.ok(quick[0].maxOutputTokens! <= 600 && quick[0].instructions!.length < 1000, "small and fast");
   assert.deepEqual(q.reacted, ["<surprised> [surprised] What a dunk!"]);
 });
 
@@ -1374,4 +1374,66 @@ test("watch socket: a replaced uplink's late stop or audio never touches the new
   next.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
   assert.equal(c.isSharing, false, "the current uplink still stops it");
   c.close();
+});
+
+test("page comment (lead's call 11/4): a new page gets one grounded comment once the share's first seconds pass; the same page never again, a new title does", async () => {
+  const page = (line: string) => JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: line, talkOver: false, memo: "A shoe shop page with running shoes.", speakers: [] });
+  const { c, sink, reacted, sparkCalls, at } = controller([page("ooh, those red runners are cute"), page("those blue ones too"), page("oh, bike history")]);
+  c.onMessage({ type: "start", source: "Google Chrome", title: "Running shoes - RUNSHOP" });
+  at(100);
+  c.onMessage({ type: "frame", image: frame, motion: 1 });
+  at(2_200);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 1);
+  assert.deepEqual(reacted, [], "the share's first 6 s: held, not dropped");
+  at(6_500);
+  c.tick();
+  assert.deepEqual(reacted, ["<warm> [smile] ooh, those red runners are cute"]);
+  assert.deepEqual(sink.events.find((e) => e.type === "reaction"), { type: "reaction", utteranceId: 1, moment: "sweet" });
+  // scrolled the same page, past the 25 s gap: no second comment
+  at(40_000);
+  c.onMessage({ type: "frame", image: frame + "B", motion: 0.05 });
+  at(42_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(sparkCalls.length, 2);
+  assert.equal(reacted.length, 1, "same page: no second comment");
+  // another page (the title changed): one comment again
+  c.onMessage({ type: "context", title: "History of the bicycle - Encyclopedia" });
+  at(70_000);
+  c.onMessage({ type: "frame", image: frame + "C", motion: 0.5 });
+  at(72_500);
+  c.tick();
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(reacted.length, 2);
+  assert.equal(reacted[1], "<warm> [smile] oh, bike history");
+});
+
+test("page comment: the memo prompt asks for it once per new page, grounded; the question context gives the reason for a why", () => {
+  const memo = buildMemoRequest({ companion: { name: "Jin", traits: [] }, source: null, memo: [], lines: [], names: new Map(), frames: [], blank: false });
+  assert.match(String(memo.instructions), /page: true only if the frames show a web page, shop or document that the memo so far has not seen yet/);
+  assert.equal((memo.text?.format as { schema: { required: string[] } }).schema.required.join(","), "protectedVideo,moment,page,reaction,talkOver,memo,speakers");
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines: [{ at: 0, label: null, text: "Off the heat, keep stirring, back on the heat." }], names: new Map(), frames: [frame], blank: false });
+  assert.match(q.instructions, /If they ask why or how, give the reason too/);
+});
+
+test("a quick look that fails (Spark timeout) hands its frames to the next look (11/4: the dunk fell between looks)", async () => {
+  let n = 0;
+  const q = quickController((r) => {
+    if ((r.text?.format as { name?: string }).name !== "watch_quick") return memoNone;
+    if (++n === 1) throw new Error("spark first-token timeout");
+    return JSON.stringify({ react: false, moment: "none", line: "", talkOver: true });
+  }, {}, { quickEveryMs: 1_000 });
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  const send = async (ms: number, id: string, motion: number) => { q.at(ms); q.c.onMessage({ type: "frame", image: `${frame}${id}`, motion }); await wait(1); };
+  await send(7_000, "A", 0.2); // the dunk: a spike
+  await send(7_330, "B", 0.03); // its look goes out (A, B) and times out
+  await send(7_660, "C", 0.01);
+  await send(8_000, "D", 0.01);
+  await send(8_400, "E", 0.01); // the next look
+  const looks = q.calls.filter(q.isQuick).map((r) => (r.input as { content: { type: string; image_url?: string }[] }[])[0].content.filter((p) => p.type === "input_image").map((p) => p.image_url!.slice(-1)));
+  assert.equal(looks.length, 2);
+  assert.deepEqual(looks[0], ["A", "B"]);
+  assert.ok(looks[1].includes("A"), `the failed look's moment is looked at again (got ${looks[1]})`);
 });

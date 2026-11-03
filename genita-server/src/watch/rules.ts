@@ -61,6 +61,17 @@ export function isGuessLine(words: string): boolean {
 }
 
 /**
+ * A named play, trick or technique needs context two frames can't show (QA build 6, 11/4: a solo drive-and-dunk was
+ * called an "alley-oop", which needs a lob pass). Such a line is never said as written; the moment's plain line is
+ * said instead, so the reaction still lands on time. The plain action ("he dunked it", "landed it", "flips") stays.
+ */
+const JARGON = /\b(?:alley[- ]?oops?|assists?|no[- ]look|behind[- ]the[- ]back|between[- ]the[- ]legs|crossovers?|fade ?aways?|step[- ]?backs?|euro ?steps?|buzzer[- ]?beaters?|and[- ]one|three[- ]pointers?|from downtown|hat[- ]tricks?|bicycle kicks?|kick ?flips?|heel ?flips?|tre ?flips?|varial\w*|hard ?flips?|n?ollies?|manuals?|grinds?|(?:180|360|540|720|900)s?|tomahawks?|windmills?|reverse (?:dunk|layup)s?|back ?flips?|front ?flips?|moonwalk\w*|head ?spins?)\b/i;
+export function isJargonLine(words: string): boolean {
+  return JARGON.test(words);
+}
+const PLAIN: Record<Exclude<Moment, "none">, string> = { surprising: "Whoa, no way!", funny: "Haha, no way", sweet: "Aww, that's sweet" };
+
+/**
  * The spoken reaction line: Spark writes the words only; the tags are ours.
  * funny → <laugh> [laughs] (the app plays the laugh clip on speaking.emotion
  * "laugh"; spoken normalization removes the bracketed delivery tag).
@@ -68,7 +79,7 @@ export function isGuessLine(words: string): boolean {
 export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
   if (moment === "none" || !clean || isGuessLine(clean)) return null;
-  const capped = clean.split(" ").slice(0, 12).join(" ");
+  const capped = isJargonLine(clean) ? PLAIN[moment] : clean.split(" ").slice(0, 12).join(" ");
   // the face: funny → smileopen (laugh draws as smileopen for now, 11/3), sweet → smile, surprising → surprised
   if (moment === "funny") return `<laugh> [smileopen] [laughs] ${capped}`;
   if (moment === "surprising") return `<surprised> [surprised] ${capped}`;

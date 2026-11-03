@@ -26,3 +26,25 @@ test("watch: quick look and memo prompts say a blurred dance move is still the m
   const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
   assert.match(String(memo.instructions), /mid-move frame is still the move/);
 });
+
+// QA build 6 (11/4): a solo drive-and-dunk was called an "alley-oop" (needs a lob pass two frames can't show)
+test("watch: a named play or trick is never said as written; the plain line goes out on time instead", async () => {
+  const { isJargonLine } = await import("../src/watch/rules.ts");
+  const named = ["What an alley-oop!", "Alley oop slam", "Sick kickflip", "Clean heelflip", "Nice crossover", "Buzzer beater!", "That three-pointer though", "Tomahawk jam", "Did a 360", "Huge backflip"];
+  for (const line of named) {
+    assert.equal(isJargonLine(line), true, line);
+    assert.equal(reactionScript("surprising", line), "<surprised> [surprised] Whoa, no way!", line);
+  }
+  assert.equal(reactionScript("funny", "Alley-oop fail"), "<laugh> [smileopen] [laughs] Haha, no way");
+  for (const line of grounded) assert.equal(isJargonLine(line), false, line);
+  for (const line of ["He dunked it himself", "Landed that flip", "Three of them dancing", "Pan's on fire", "He just threw it down"]) {
+    assert.equal(isJargonLine(line), false, line);
+  }
+});
+
+test("watch: the quick look and the memo are told to say the plain action, never a named play or trick", () => {
+  const quick = buildQuickRequest({ companion: { name: "Juno" }, frames: [], heard: [] });
+  assert.match(String(quick.instructions), /no named play or trick \(alley-oop, kickflip\): say the plain action/);
+  const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
+  assert.match(String(memo.instructions), /never a named play or trick/);
+});

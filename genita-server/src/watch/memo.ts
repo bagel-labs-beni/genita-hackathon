@@ -11,17 +11,18 @@ import type { Moment } from "./rules.ts";
 
 export type MemoEntry = { at: number; text: string };
 export type DialogueLine = { at: number; label: string | null; text: string };
-export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean; talkOver?: boolean; talkOverSeq?: number };
+export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean; talkOver?: boolean; talkOverSeq?: number; page?: boolean };
 
 export const MEMO_SCHEMA = {
   type: "object",
   additionalProperties: false,
   // order matters: the verdict (protectedVideo, moment, reaction) streams first, so a reaction can start before the
   // memo text is written (watch.ts earlyVerdict)
-  required: ["protectedVideo", "moment", "reaction", "talkOver", "memo", "speakers"],
+  required: ["protectedVideo", "moment", "page", "reaction", "talkOver", "memo", "speakers"],
   properties: {
     protectedVideo: { type: "boolean" },
     moment: { type: "string", enum: ["none", "funny", "surprising", "sweet"] },
+    page: { type: "boolean" },
     reaction: { type: "string" },
     talkOver: { type: "boolean" },
     memo: { type: "string" },
@@ -80,10 +81,12 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     "memo: one or two short lines on what is NEW in these frames and lines (who or what is on screen, what happened, what was said). Don't repeat the memo so far. If the frames are black, write \"Screen is black.\"",
     "The frames are a short sequence since the last memo (0.6–1 s apart), oldest first: read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline, the page or video title).",
     "The window title tells you what the page or video is (a YouTube video's title, a site); use it to understand the content, but only the frames and lines say what is happening right now.",
-    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
+    `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and for code, menus or scrolling the same page). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
+    // lead's call 11/4: a page or a product the user opens gets one short grounded comment, like a friend glancing over
+    `page: true only if the frames show a web page, shop or document that the memo so far has not seen yet (a new page or product, not the same one scrolled); then moment is sweet and reaction comments on one specific thing clearly visible on it (a product, a headline), the way a friend glancing over would (\"ooh, those red runners are cute\"), no question.`,
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, said the way a friend in their twenties would say it out loud (casual English, no emojis or texting abbreviations), no question, only what is clearly visible or heard (no guesses about clothes, injuries or intentions). Otherwise empty.`,
     // AI sweep 11/3: a blurred jumpstyle dance became "Oh his shoe flew off" / "he totally dodged that"
-    "A blurred mid-move frame is still the move: people kicking, hopping or spinning to music are dancing, never losing balance, losing a shoe or dodging. Name the move itself, not a story about it.",
+    "A blurred mid-move frame is still the move: people kicking, hopping or spinning to music are dancing, never losing balance, losing a shoe or dodging. Name the move itself, not a story about it, and never a named play or trick (alley-oop, kickflip): say the plain action.",
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
     "talkOver: true if the screen's sound is crowd noise, music, sports commentary or narration (fine to react over); false if people on screen are talking to each other.",
@@ -139,7 +142,8 @@ export function buildQuickRequest(q: { companion: { name: string }; frames: stri
     "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
     "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that (past tense ok), no question, no names.",
     // AI sweep 11/3: jumpstyle kicks blurred mid-move were read as "he's losing balance" / "he totally dodged that" (prod + local, 2/3 runs)
-    "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen.",
+    // QA build 6 (11/4): a solo dunk became "alley-oop"
+    "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen, no named play or trick (alley-oop, kickflip): say the plain action.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
   const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now: ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
@@ -167,7 +171,7 @@ export function parseQuick(raw: string): QuickVerdict | null {
   }
 }
 
-export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string; talkOver: boolean } | null {
+export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; reaction: string; talkOver: boolean; page: boolean } | null {
   if (/"protectedVideo"\s*:\s*true/.test(raw)) return null;
   if (!/"protectedVideo"\s*:\s*false/.test(raw)) return null;
   const m = raw.match(/"moment"\s*:\s*"(funny|surprising|sweet)"/);
@@ -177,7 +181,7 @@ export function earlyVerdict(raw: string): { moment: Exclude<Moment, "none">; re
   let reaction: string;
   try { reaction = JSON.parse(`"${r[1]}"`) as string; } catch { return null; }
   reaction = reaction.trim().slice(0, 120);
-  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction, talkOver: t[1] === "true" } : null;
+  return reaction ? { moment: m[1] as Exclude<Moment, "none">, reaction, talkOver: t[1] === "true", page: /"page"\s*:\s*true/.test(raw) } : null;
 }
 
 export function parseMemoVerdict(raw: string): MemoVerdict | null {
@@ -199,6 +203,7 @@ export function parseMemoVerdict(raw: string): MemoVerdict | null {
       speakers,
       protectedVideo: o.protectedVideo === true,
       talkOver: o.talkOver === true,
+      page: o.page === true,
     };
   } catch {
     return null;
@@ -255,7 +260,8 @@ export function buildQuestionContext(c: {
   if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
   // AI sweep 11/3 (recall with the moment frame): "white twenty two went up", "Twenty eight went way up" — the visible
   // jersey was 25; small blurry numbers get misread
-  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign).");
+  // convo-intel eval 11/4: "why does he keep taking it off the heat?" got the caption read back, never the reason
+  out.push("If the user asks about it, answer in one short sentence. What's on screen: only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign). If they ask why or how, give the reason too: what the video said, or else common knowledge (\"so the eggs stay creamy\"), not the caption read back.");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }
