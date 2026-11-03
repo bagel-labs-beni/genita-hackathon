@@ -52,6 +52,17 @@ const ABBR: [RegExp, string][] = [
   [/\bAI\b/g, "A.I."], [/&/g, " and "], [/\+/g, " plus "], [/=/g, " equals "], [/@/g, " at "],
 ];
 
+/**
+ * Texting slang said the way people say it (11/3 tone pass): the voice model spells "ngl" / "rn" letter by letter or
+ * garbles them. Captions keep the written form. "rn" / "fr" only in lower case ("RN" is a nurse, "FR" a code).
+ */
+const SLANG: [RegExp, string][] = [
+  [/\bngl\b/gi, "not gonna lie"], [/\btbh\b/gi, "to be honest"], [/\bidk\b/gi, "I don't know"], [/\bimo\b/gi, "in my opinion"],
+  [/\bimho\b/gi, "in my honest opinion"], [/\bbtw\b/gi, "by the way"], [/\bomg\b/gi, "oh my god"], [/\bnvm\b/gi, "never mind"],
+  [/\bikr\b/gi, "I know, right"], [/\biykyk\b/gi, "if you know, you know"], [/\brn\b/g, "right now"], [/\bfr\b/g, "for real"],
+  [/\b(?:lol|lmao|lmfao|rofl)\b/gi, "haha"], [/\b(?:pls|plz)\b/gi, "please"], [/\btho\b/gi, "though"], [/\bw\/(?=\s)/gi, "with"],
+];
+
 const EMOJI = /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
 
 /** Shared clean-up: markdown, URLs, emojis, tags, brackets. */
@@ -78,6 +89,7 @@ function clean(t: string): string {
 export function normalizeEnglish(text: string): string {
   let t = clean(text);
   for (const [re, w] of ABBR) t = t.replace(re, w);
+  for (const [re, w] of SLANG) t = t.replace(re, w);
   // times: 3:30pm, 10:05 AM, 7pm
   t = t.replace(/\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b/gi, (_, h, m, ap) => `${numberToWords(+h)} ${m === "00" ? "" : +m < 10 ? `oh ${numberToWords(+m)} ` : numberToWords(+m) + " "}${ap.toUpperCase()}.M.`.replace(/\s+/g, " "));
   t = t.replace(/\b(\d{1,2}):(\d{2})\b/g, (_, h, m) => `${numberToWords(+h)} ${m === "00" ? "o'clock" : +m < 10 ? `oh ${numberToWords(+m)}` : numberToWords(+m)}`);
@@ -157,11 +169,13 @@ export function spokenText(text: string, lang: "eng" | "kor"): string {
 
 /** Pause after a clause, by how it ends (Seamless gives none between separate requests). */
 export function pauseAfterMs(text: string): number {
+  // 11/3 tone pass: casual talk runs clauses together; the old gaps (110 ms after every comma, 220 after every
+  // sentence) made each clause sound read out one by one. Before → after, same 10 lines: pause per line 689 → see PR.
   const t = text.trim();
-  if (/(\.\.\.|…)$/.test(t)) return 320;
-  if (/[?？]$/.test(t)) return 260;
-  if (/[!！]$/.test(t)) return 220;
-  if (/[.。]$/.test(t)) return 220;
-  if (/[,;:，]$/.test(t)) return 110;
-  return 160;
+  if (/(\.\.\.|…)$/.test(t)) return 280;
+  if (/[?？]$/.test(t)) return 200;
+  if (/[!！]$/.test(t)) return 160;
+  if (/[.。]$/.test(t)) return 170;
+  if (/[,;:，]$/.test(t)) return 50;
+  return 120;
 }
