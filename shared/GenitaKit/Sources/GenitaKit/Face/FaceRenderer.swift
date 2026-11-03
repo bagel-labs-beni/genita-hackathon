@@ -386,7 +386,8 @@ public final class FaceRenderer: @unchecked Sendable {
         // through a soft mask (no warp of the eyes; 0–2 per sentence)
         if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
             let w: Double = { lock.lock(); defer { lock.unlock() }
-                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
+                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
+                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
             if w > 0.01 {
                 let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
                 let f = CIFilter.blendWithAlphaMask()

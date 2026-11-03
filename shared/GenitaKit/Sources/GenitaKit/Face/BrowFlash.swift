@@ -50,19 +50,20 @@ enum BrowFlash {
     struct Tracker {
         private(set) var shown: [Double] = []
         private var lastT: Double?
-        /// codex P3: onsets are recomputed only when the phoneme list changes (or every `refresh` s while the
-        /// loudness of a streaming reply fills in), not on every frame.
-        private var cache: (count: Int, endMs: Int, at: Double, onsets: [Double])?
+        /// codex P3: onsets are recomputed only when the phoneme list or the received audio changes (`audioRevision`:
+        /// more PCM re-ranks the loudness, codex P2), at most every `refresh` s otherwise, not on every frame.
+        private var cache: (count: Int, endMs: Int, audio: Int, at: Double, onsets: [Double])?
         static let refresh = 0.5
-        mutating func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], loudness: (Double) -> Double) -> Double {
+        mutating func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], audioRevision: Int = 0, loudness: (Double) -> Double) -> Double {
             let t = ms / 1000
             // a new reply (cancel / next utterance restarts the clock) or any jump back: forget the old flashes (codex P2)
             if phonemes.isEmpty || (lastT.map { t < $0 - 0.05 } ?? false) { shown = []; cache = nil }
             lastT = t
             guard !phonemes.isEmpty else { return 0 }
             let endMs = Int(phonemes.last!.endMs)
-            if cache == nil || cache!.count != phonemes.count || cache!.endMs != endMs || t - cache!.at >= Self.refresh {
-                cache = (phonemes.count, endMs, t, BrowFlash.onsets(phonemes: phonemes, loudness: loudness))
+            if cache == nil || cache!.count != phonemes.count || cache!.endMs != endMs || cache!.audio != audioRevision
+                || t - cache!.at >= Self.refresh {
+                cache = (phonemes.count, endMs, audioRevision, t, BrowFlash.onsets(phonemes: phonemes, loudness: loudness))
             }
             for s in cache!.onsets where s <= t {
                 if shown.contains(where: { abs($0 - s) < 1e-6 }) { continue }

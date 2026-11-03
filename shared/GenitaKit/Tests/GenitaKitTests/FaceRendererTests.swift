@@ -480,6 +480,18 @@ struct BrowFlashTests {
         #expect(tr.shown.count == 1)
     }
 
+    /// codex P2 (cdeb8965): more audio with the same phonemes re-ranks the loudness; the onset cache follows it
+    @Test func moreAudioRefreshesTheStressOnsets() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<6).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 100, endMs: $0 * 100 + 60) }
+        let early: (Double) -> Double = { ms in ms < 60 ? 0.9 : 0.3 }        // vowel 0 loudest
+        let later: (Double) -> Double = { ms in ms >= 200 && ms < 260 ? 1.0 : 0.02 }   // after more PCM: vowel 2 loudest
+        _ = tr.weight(atMs: -100, phonemes: ph, audioRevision: 300, loudness: early)
+        // same phonemes, new audio, 10 ms later: vowel 0 (onset −0.06 s) is no longer stressed, nothing has started
+        #expect(tr.weight(atMs: -90, phonemes: ph, audioRevision: 900, loudness: later) == 0)
+        #expect(tr.weight(atMs: 250, phonemes: ph, audioRevision: 900, loudness: later) == 1)   // vowel 2's flash
+    }
+
     @Test func aClockJumpBackForgetsTheOldFlashes() {
         var tr = BrowFlash.Tracker()
         let ph = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
