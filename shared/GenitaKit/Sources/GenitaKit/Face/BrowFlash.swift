@@ -52,7 +52,8 @@ enum BrowFlash {
         private var lastT: Double?
         mutating func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], loudness: (Double) -> Double) -> Double {
             let t = ms / 1000
-            if phonemes.isEmpty || (lastT.map { t < $0 - 0.5 } ?? false) { shown = [] }   // a new reply / a jump back
+            // a new reply (cancel / next utterance restarts the clock) or any jump back: forget the old flashes (codex P2)
+            if phonemes.isEmpty || (lastT.map { t < $0 - 0.05 } ?? false) { shown = [] }
             lastT = t
             guard !phonemes.isEmpty else { return 0 }
             for s in BrowFlash.onsets(phonemes: phonemes, loudness: loudness) where s <= t {

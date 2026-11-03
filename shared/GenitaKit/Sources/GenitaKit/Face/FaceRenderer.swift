@@ -48,11 +48,46 @@ public final class FaceRenderer: @unchecked Sendable {
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
     private var browTracker = BrowFlash.Tracker()
-    /// Brow band and the eye cut-out inside the eye band (image coordinates, y up): the brow ellipse ends above the
-    /// eye line, the eyes are masked out besides.
-    static func browGeometry(bandTop: CGFloat, bandBottom: CGFloat) -> (browY: CGFloat, browRy: CGFloat, eyeY: CGFloat, eyeRy: CGFloat) {
-        let band = max(8, bandTop - bandBottom)
-        return (bandTop - band * 0.2, max(3, band * 0.16), bandTop - band * 0.58, max(3, band * 0.24))
+    /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
+    /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
+    /// a band hung from its top lifted the hairline, not the brows). The brow ellipse ends above the eye cut-out.
+    static func browGeometry(eyeY: CGFloat, mouthY: CGFloat, faceWidth: CGFloat) -> (browY: CGFloat, browRy: CGFloat, eyeY: CGFloat, eyeRy: CGFloat) {
+        let off = max(6, min((eyeY - mouthY) * 0.3, faceWidth * 0.12))
+        return (eyeY + off, off * 0.4, eyeY, off * 0.45)
+    }
+    /// The eye line (pixel row from the top) where the blink still differs most from the neutral one, between the
+    /// face box top and the mouth; nil when they hardly differ. Classic pixel maths on a ≤160 px wide copy.
+    static func eyeLine(neutral: CGImage, blink: CGImage, face: CGRect, mouthTop: CGFloat) -> CGFloat? {
+        let top = max(0, face.minY), bottom = min(mouthTop, CGFloat(neutral.height))
+        let roi = CGRect(x: max(0, face.minX), y: top, width: min(face.width, CGFloat(neutral.width) - max(0, face.minX)), height: bottom - top).integral
+        guard roi.width >= 8, roi.height >= 8, let a = neutral.cropping(to: roi), let b = blink.cropping(to: roi) else { return nil }
+        let s = min(1, 160 / roi.width), w = max(4, Int(roi.width * s)), h = max(4, Int(roi.height * s))
+        func gray(_ img: CGImage) -> [UInt8]? {
+            var px = [UInt8](repeating: 0, count: w * h)
+            let ok = px.withUnsafeMutableBytes { buf -> Bool in
+                guard let c = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+                c.interpolationQuality = .medium
+                c.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+                return true
+            }
+            return ok ? px : nil
+        }
+        guard let ga = gray(a), let gb = gray(b) else { return nil }
+        var rows = [Double](repeating: 0, count: h)
+        for y in 0..<h {   // bitmap row 0 = the image's top
+            var n = 0
+            for x in 0..<w where abs(Int(ga[y * w + x]) - Int(gb[y * w + x])) > 18 { n += 1 }
+            rows[y] = Double(n) / Double(w)
+        }
+        var best = -1.0, at = 0
+        for y in 0..<h {
+            let lo = max(0, y - 2), hi = min(h - 1, y + 2)
+            let m = rows[lo...hi].reduce(0, +) / Double(hi - lo + 1)
+            if m > best { best = m; at = y }
+        }
+        guard best > 0.05 else { return nil }
+        return top + (CGFloat(at) + 0.5) / s
     }
     /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
     private let exprUpperMask: CIImage
@@ -108,7 +143,7 @@ public final class FaceRenderer: @unchecked Sendable {
     nonisolated(unsafe) public static var laughAsSmileOpen = true
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
     /// on screen relaxes smoothly; its reply's events are dropped).
-    public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); lock.unlock() }
+    public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
@@ -162,14 +197,20 @@ public final class FaceRenderer: @unchecked Sendable {
         // Eye band: from 12% below the face top down to a quarter of the way above the mouth.
         let bandTop = face.maxY - face.height * 0.12
         let bandBottom = mouth.maxY + (face.maxY - mouth.maxY) * 0.22
-        // brows: the top of the eye band, the face's width, the eyes cut out (codex P2: the lift must never move an
-        // eye); a 0.3 s lift on stressed words (BrowFlash)
-        let g = Self.browGeometry(bandTop: bandTop, bandBottom: bandBottom)
-        let brow = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
-        let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
-        let keep = CIFilter.colorInvert(); keep.inputImage = eyes
-        let cut = CIFilter.multiplyCompositing(); cut.inputImage = brow; cut.backgroundImage = keep.outputImage!
-        browMask = cut.outputImage!.cropped(to: extent)
+        // brows: a band above the eye line the blink still shows (none without one, nor on animals: 11/4 the band
+        // must sit on the brows, not the hairline), the eyes cut out (codex P2: the lift must never move an eye);
+        // a 0.3 s lift on stressed words (BrowFlash)
+        if faceSet.flow?.kind != "animal", let blink = faceSet.expressions[.blink],
+           let eyeRow = Self.eyeLine(neutral: faceSet.image(for: .neutral), blink: blink, face: faceSet.faceBox, mouthTop: faceSet.mouthBox.minY) {
+            let g = Self.browGeometry(eyeY: h - eyeRow, mouthY: mouth.midY, faceWidth: face.width)
+            let brow = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+            let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+            // brow alpha × (1 − eye alpha) (codex P2: an inverted mask keeps its own alpha, so a multiply kept only the overlap)
+            let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
+            browMask = cut.outputImage!.cropped(to: extent)
+        } else {
+            browMask = nil
+        }
         browLift = max(1, face.height * 0.012)
         blinkMask = faceSet.hasBlink
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),

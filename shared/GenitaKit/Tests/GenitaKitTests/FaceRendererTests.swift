@@ -1,4 +1,6 @@
 import CoreGraphics
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import Foundation
 import Testing
 @testable import GenitaKit
@@ -478,8 +480,54 @@ struct BrowFlashTests {
         #expect(tr.shown.count == 1)
     }
 
+    @Test func aClockJumpBackForgetsTheOldFlashes() {
+        var tr = BrowFlash.Tracker()
+        let ph = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loud: (Double) -> Double = { ms in ms < 150 ? 0.9 : 0.1 }
+        _ = tr.weight(atMs: 0, phonemes: ph, loudness: loud); _ = tr.weight(atMs: 200, phonemes: ph, loudness: loud)
+        #expect(tr.shown.count == 1)
+        _ = tr.weight(atMs: 20, phonemes: [], loudness: loud)   // the next reply starts
+        #expect(tr.shown.isEmpty)
+    }
+
+    @Test func theBrowMaskLiftsTheBrowsButNotTheEyes() throws {
+        let face = CGRect(x: 100, y: 300, width: 400, height: 500), extent = CGRect(x: 0, y: 0, width: 600, height: 1000)
+        let g = FaceRenderer.browGeometry(eyeY: 640, mouthY: 420, faceWidth: 400)
+        let brow = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+        let eyes = FaceRenderer.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+        let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
+        let m = cut.outputImage!.cropped(to: extent)
+        let ctx = CIContext()
+        func alpha(_ p: CGPoint) -> Float {
+            var px = [UInt8](repeating: 0, count: 4)
+            ctx.render(m, toBitmap: &px, rowBytes: 4, bounds: CGRect(x: p.x, y: p.y, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+            return Float(px[3]) / 255
+        }
+        #expect(alpha(CGPoint(x: face.midX - 50, y: g.browY)) > 0.9)    // the brow centre moves
+        #expect(alpha(CGPoint(x: face.midX - 80, y: g.eyeY)) < 0.05)    // the eye stays
+    }
+
     @Test func theBrowBandEndsAboveTheEyes() {
-        let g = FaceRenderer.browGeometry(bandTop: 600, bandBottom: 400)
+        let g = FaceRenderer.browGeometry(eyeY: 600, mouthY: 400, faceWidth: 400)
         #expect(g.browY - g.browRy > g.eyeY + g.eyeRy * 0.5)   // brow ellipse bottom above the eye cut-out's core
+        #expect(g.browY - g.eyeY <= 48 + 0.001)                 // capped at 0.12 face widths (a hair-wide face box)
+    }
+
+    @Test func theEyeLineComesFromTheBlinkStill() throws {
+        let w = 300, h = 400
+        func img(eyesShut: Bool) -> CGImage {
+            let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            c.setFillColor(gray: 0.7, alpha: 1); c.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            c.setFillColor(gray: 0.1, alpha: 1)
+            c.fill(CGRect(x: 60, y: h - 132, width: 180, height: 6))   // brows (row 126–132 from the top), in both
+            if eyesShut { c.setFillColor(gray: 0.35, alpha: 1); c.fill(CGRect(x: 70, y: h - 170, width: 160, height: 12)) }   // lids, rows 158–170
+            return c.makeImage()!
+        }
+        let y = FaceRenderer.eyeLine(neutral: img(eyesShut: false), blink: img(eyesShut: true),
+                                     face: CGRect(x: 40, y: 60, width: 220, height: 300), mouthTop: 280)
+        #expect(y != nil && abs(y! - 164) < 6)
+        #expect(FaceRenderer.eyeLine(neutral: img(eyesShut: false), blink: img(eyesShut: false),
+                                     face: CGRect(x: 40, y: 60, width: 220, height: 300), mouthTop: 280) == nil)
     }
 }
