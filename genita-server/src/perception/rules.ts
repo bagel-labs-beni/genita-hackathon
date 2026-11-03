@@ -122,8 +122,8 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
   }
 
   // sustained states: one trigger per continuous run
-  // an unsure read neither extends nor breaks a tired run
-  let tired: Run = !sure ? base.tired : s.expression === "tired" && s.confidence >= TIRED_CONF ? { since: base.tired.since ?? at, fired: base.tired.fired } : NO_RUN;
+  // only sure tired reads build a tired run; anything else (an unsure read too) ends it (Codex P2, round 4)
+  let tired: Run = sure && s.expression === "tired" && s.confidence >= TIRED_CONF ? { since: base.tired.since ?? at, fired: base.tired.fired } : NO_RUN;
   const silent = !c.userSpeaking && (c.lastUserSpeechAt === null || at - c.lastUserSpeechAt >= TIRED_SILENCE_MS);
   if (tired.since !== null && !tired.fired && at - tired.since >= TIRED_MIN_MS && silent && fire("looks_tired")) tired = { ...tired, fired: true };
 
@@ -131,14 +131,15 @@ export function observe(t: Tracker, s: PerceptionSample, at: number, c: Convo): 
   // so "down" never counts as looking away or as low engagement: it ends those runs like looking at the screen
   const looksAway = s.gaze === "away";
   let away: Run = looksAway ? { since: base.away.since ?? at, fired: base.away.fired } : NO_RUN;
-  if (away.since !== null && !away.fired && at - away.since >= AWAY_MIN_MS && !c.userSpeaking && fire("looked_away")) away = { ...away, fired: true };
+  // unsure reads (0.4–0.6) extend the run, but the trigger waits for a sure read: the engine drops triggers < 0.6
+  if (sure && away.since !== null && !away.fired && at - away.since >= AWAY_MIN_MS && !c.userSpeaking && fire("looked_away")) away = { ...away, fired: true };
 
   let low: Run;
   if (s.gaze === "down") low = NO_RUN;
   else if (s.engagement < LOW_ENGAGEMENT) low = { since: base.low.since ?? at, fired: base.low.fired };
   else if (s.engagement >= ENGAGEMENT_REARM) low = NO_RUN;
   else low = { since: null, fired: base.low.fired };
-  if (low.since !== null && !low.fired && at - low.since >= LOW_ENGAGEMENT_MIN_MS && fire("engagement_drop")) low = { ...low, fired: true };
+  if (sure && low.since !== null && !low.fired && at - low.since >= LOW_ENGAGEMENT_MIN_MS && fire("engagement_drop")) low = { ...low, fired: true };
 
   return { tracker: { kept, state, lastFired, tired, away, low, lastAt: at }, triggers };
 }
