@@ -433,7 +433,7 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   // "forget that…" / "That's not me": the model must not know-and-say it. Listed only as do-not-mention, never as a
   // fact, and never acknowledged ("you told me to forget …" in the next call, QA post-deploy 11/3)
   // only what they asked to forget; a corrected line is simply replaced (its new line is the fact now)
-  const gone = (card.removed ?? []).filter((t) => t.forget && !looksLikeInjection(t.text) && redactSensitive(t.text) === t.text).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
+  const gone = (card.removed ?? []).filter((t) => t.forget && !looksLikeInjection(t.text) && redactSensitive(t.text) === t.text && !/@|\b\d{3,}\b/.test(t.text)).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
   if (gone.length) parts.push("Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:", ...gone.map((t) => `- ${t}`));
   if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
   let out = parts.join("\n");

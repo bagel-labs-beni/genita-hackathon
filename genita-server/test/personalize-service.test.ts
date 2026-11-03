@@ -451,3 +451,16 @@ test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing o
   const removed = (await h.store.getStyle("u1"))!.removed ?? [];
   assert.deepEqual(removed.map((r) => [r.text, r.forget]), [["leather accessories", true]]);
 });
+
+test("Codex P1 r2: a sensitive sheet correction is never stored or shown; an email hidden by punctuation stripping is never kept", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have diabetes." });
+  assert.deepEqual(r.changed, []);
+  const stored = (await h.store.getStyle("u1"))!;
+  assert.ok(!JSON.stringify(stored).includes("diabetes"));
+  await h.p.voiceCorrection("u1", "Forget that my email is alice@example.com.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("alice"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /alice|example/);
+});

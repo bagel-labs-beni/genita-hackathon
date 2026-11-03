@@ -281,6 +281,12 @@ export class Personalize {
     const texts = cardTexts(shown);
     if (items.some((i) => !texts.includes(i))) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     const t0 = performance.now();
+    // a sensitive or identifying text (health, money, an email …) is never stored, shown or sent to Spark (Codex P1):
+    // the card stays as it was, the user still gets the ack
+    if (text && (isSensitiveDetail(text) || redactSensitive(text) !== text || looksLikeInjection(text))) {
+      this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "dropped_sensitive" });
+      return { card: shown, ack: ACK, changed: [], profile: styleProfileText(before), rows: before.display };
+    }
     // S1 (≤ 1 s, Spark or not): the save answers now with the card as the user left it — the marked lines out, their
     // own words in — stored (stale) so a re-read or a second correction sees the same card. Spark turns it into
     // profile updates and rewords the card in the background (queued per user, newest wins by asOf).
@@ -472,7 +478,8 @@ export class Personalize {
     const t0 = performance.now();
     const asOf = this.now().toISOString();
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
-    if (isForgetRequest(line)) {
+    // checked on the whole line too: stripping punctuation can hide an email ("alice@example com", Codex P1)
+    if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       if (target && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
