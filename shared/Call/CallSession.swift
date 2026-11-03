@@ -345,7 +345,7 @@ enum CallStop: Equatable {
         playing = false; awaitingFirstAudio = false; reconnectSince = nil
         phase = .listening
         connect()
-        if Self.micWasOn && mode == .chat && !micOn { toggleMic() }
+        if !micOn && (Self.micWasOn || mode == .interpret) { toggleMic() }
     }
 
     /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
@@ -404,7 +404,8 @@ enum CallStop: Equatable {
         for answer in answers { applyCapturePermission(answer) }
         if activity == .active, let grace = graceTask {
             grace.cancel(); graceTask = nil
-            if !userEnded, micBeforeBackground, mode == .chat, !micOn { toggleMic() }
+            // interpretation keeps its mic too (its screen has no mic button)
+            if !userEnded, micBeforeBackground, !micOn { toggleMic() }
             micBeforeBackground = false
         }
     }
@@ -437,12 +438,14 @@ enum CallStop: Equatable {
 
     /// GATE-A (AU-82): the companion is heard only on the device that holds the conversation. Audio and `say` lines
     /// that reach this iPhone after the conversation moved to the Mac (the rest of a reply, a search card's line)
-    /// are dropped here. The Mac closes its call when the conversation leaves it.
+    /// are dropped here. The Mac closes its call when the conversation leaves it. Nothing plays while a call is
+    /// paused in the background either (a greeting that lands during the grace stays silent).
     private var mayPlayHere: Bool {
+        guard graceTask == nil else { return false }
         #if os(iOS)
-        ownsConversation
+        return ownsConversation
         #else
-        true
+        return true
         #endif
     }
 

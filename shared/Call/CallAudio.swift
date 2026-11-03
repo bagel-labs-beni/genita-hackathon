@@ -215,7 +215,9 @@ import os
     /// (some simulators), the mic still works without it and `voiceProcessing` says so.
     private func buildEngine(withMic: Bool) {
         // AU-48: what is still to be heard survives the rebuild (the greeting goes on when the mic turns on)
-        let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample())
+        // the render clock runs ahead of the speaker by the output latency: only what reached the speaker was heard
+        let latency = AVAudioFramePosition((engine.outputNode.presentationLatency * playFormat.sampleRate).rounded())
+        let carry = PlaybackCarry.remaining(scheduled, playedTo: nowSample().map { max(0, $0 - max(0, latency)) })
         let startOf = utteranceStart
         scheduled.removeAll()
         generation += 1

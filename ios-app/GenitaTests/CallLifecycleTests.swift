@@ -30,6 +30,23 @@ import XCTest
         XCTAssertEqual(socket.sent.filter { if case .start = $0 { return true }; return false }.count, starts, "no new start, no greeting")
     }
 
+    // Codex P2: a greeting or reply that arrives while the call is paused in the background stays silent.
+    func testNothingPlaysDuringTheBackgroundGrace() {
+        CallController.backgroundGraceMs = 10_000
+        let (call, sockets, audio) = begin(micOn: false)
+        defer { call.end() }
+        let socket = sockets.connections[0]
+        socket.onMessage?(.text(ready("s1")))
+        call.sceneActivityChanged(.background)
+        socket.onMessage?(.text(timing(id: 1, seq: 1)))
+        socket.onMessage?(.binary(frame(seq: 1)))
+        XCTAssertEqual(audio.enqueued, [])
+        call.sceneActivityChanged(.active)
+        socket.onMessage?(.text(timing(id: 2, seq: 2)))
+        socket.onMessage?(.binary(frame(seq: 2)))
+        XCTAssertEqual(audio.enqueued, [2])
+    }
+
     // RV-01 step 2: past the grace the paused call hangs up with `stop` (the next call greets as a new one).
     func testPastTheGraceTheCallHangsUpWithStop() async throws {
         CallController.backgroundGraceMs = 50
