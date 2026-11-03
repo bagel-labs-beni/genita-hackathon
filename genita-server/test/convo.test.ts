@@ -920,3 +920,24 @@ test("session v1 (Codex review): 'Well. Well water needs testing.' keeps the wor
   assert.equal(reply.text, "Well. Well water needs testing.");
   session.close();
 });
+
+// ───────────── personality labels (personalization lane, import v4 opener 11/3; hackathon bans personality analyzers) ─────────────
+test("hard fail: a personality label is never said; an either/or preference intake is dropped outside the ask turn", async () => {
+  for (const line of [
+    "You're totally someone who judges a product by its face first.",
+    "You give total Apple-store-polish energy, Chelsea.",
+    "You totally seem like someone who deletes an app the second it gets cluttered.",
+    "You're the type who reads the reviews twice.",
+    "You're such a clean-desk person who hates clutter.",
+    "Chelsea, you look way too polished for a Tuesday night, straight premium app energy.",
+    "Okay miss only premium pixels allowed, what are we judging tonight?",
+    "Okay design snob, what tiny perfect detail are we obsessing over tonight.",
+    "Okay you pixel perfectionist, what are we roasting tonight.",
+  ]) assert.equal(guardSentence(line, none), "label", line);
+  assert.equal(guardSentence("Are you more clean and minimal or bold when it comes to how clothes should look?", none), "intake");
+  assert.equal(guardSentence("Are you more clean and minimal or bold when it comes to how clothes should look?", { ...none, askTurn: true }), null);
+  for (const keep of ["That jacket has serious main-street energy.", "You're going to love this one.", "Okay, that trench is very you."]) assert.equal(guardSentence(keep, none), null, keep);
+  const { openerBlock, profileHooks } = await import("../src/convo/opener.ts");
+  assert.match(openerBlock({ hasProfile: true, sinceLastMs: null, hasItem: false, hook: "Film photography" }), /never about who they are/);
+  assert.deepEqual(profileHooks(["- Interests: Film photography", "How they come across with you (match it; never describe or label them with it):", "- Interests: Playful humor", "Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", "- Likes: Streaming series"].join("\n")), ["Film photography"]);
+});

@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -21,7 +21,10 @@ export type GuardContext = {
 const CLASSES: Array<[GuardClass, RegExp]> = [
   ["assistant", /\b(?:as an ai\b|(?:an? )?(?:ai )?language model|how can i (?:help|assist)|is there anything else|let me know if|great question|i'?m (?:just )?here to (?:help|chat|listen|assist))/i],
   ["counselor", /\b(?:i'?m (?:always )?here for you|that (?:sounds|must be|must have been) (?:really |so |super )?(?:tough|hard|rough|exhausting|difficult|frustrating|overwhelming|stressful)|it'?s (?:completely |totally |perfectly )?(?:okay|ok|normal|understandable|valid) to (?:feel|be)|i hear you\b|how (?:does|did) (?:that|it) make you feel|take (?:good )?care of yourself|self-care|be gentle with yourself|you'?re not alone|your feelings are valid|it'?s important to (?:remember|take|rest)|take your time|^\s*i'?m (?:still |right )?here(?: (?:for you|with you))?[.!]*\s*$)/i],
-  ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into))/i],
+  ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into)|^\s*are you (?:more |a |an )?[\w' -]{1,30} or (?:more )?[\w' -]{1,30}(?:\?| when| person| type| kind| about))/i],
+  // a personality read ("You're totally someone who…", "You give Apple-store-polish energy"): the hackathon bans
+  // personality analyzers and it reads as a label, not a friend (personalization lane, import v4 opener 11/3)
+  ["label", /\byou(?:'re| are)\s+(?:totally |so |such |definitely |clearly |lowkey |kinda |kind of |100% |def )?(?:someone who|somebody who|the (?:type|kind|sort)(?: of (?:person|girl|guy))? (?:who|that)|(?:a|an) [\w-]+(?: [\w-]+)? (?:person|type|girl|guy|soul) who)\b|\byou (?:totally |definitely |so )?(?:seem|sound|strike me) like (?:someone|somebody|the type|the kind|a person)\b|\byou (?:give|have|got|radiate|bring)\s+(?:off\s+)?(?:total(?:ly)?\s+|major\s+|big\s+|such\s+)?(?:[\w'-]+\s+){0,4}energy\b|\bvery (?:main character|[\w-]+ core)\b|\b(?:straight|pure|total|major|big|giving|such)\s+(?:[\w'-]+\s+){0,3}energy\b|^(?:(?:okay|ok|hey|hi|yo|oh|alright|well)\s*,?\s*)?(?:you\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\byou\s+(?:little\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\b(?:little )?(?:miss|mister|mr\.?|ms\.?)\s+(?:only|high|zero|no|anti|pro|super|certified|premium|perfect|picky)\b/i],
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
@@ -159,7 +162,7 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration" || cls === "interruption";
+  return cls === "narration" || cls === "interruption" || cls === "label";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {
