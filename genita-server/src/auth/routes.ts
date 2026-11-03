@@ -500,6 +500,10 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         throw new HttpError(401, "unauthorized");
       }
       log("report.received", { reason, surface, device: who.device, note: record.note.length > 0 });
+      // D37 / AU-10: and the feedback mail (never holds up the answer; a failed mail leaves the stored report)
+      core.reportMail
+        ?.send({ at: record.at, userId: who.userId, device: who.device, reason, surface, hasNote: record.note.length > 0, key })
+        .catch((e) => log("report.mail_failed", { message: String(e).slice(0, 120) }));
       return send(res, 200, { ok: true, message: "Thanks, noted" });
     }
 

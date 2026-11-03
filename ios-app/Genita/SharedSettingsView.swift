@@ -118,13 +118,15 @@ struct SettingsView: View {
                 _ = try await model.onboarding.auth.deleteAccount()
                 dismiss()
                 model.accountDeleted()
+            } catch GenitaAuthError.unauthorized {
+                // the session had already expired: nothing was deleted, sign in again (A02)
+                dismiss(); model.signedOut()
             } catch {
                 // AU-06: a slow answer (or a step that failed after the files went) may still have deleted the
-                // account. If the session is gone now, it was: nothing of it stays here either (M02-X).
-                switch await model.onboarding.auth.sessionState() {
-                case .expired, .signedOut: dismiss(); model.accountDeleted()
-                default: accountError = "Try again in a moment."
-                }
+                // account. If the server no longer knows this session (401 on /me), it was: nothing of it stays here
+                // either (M02-X).
+                if case .expired = await model.onboarding.auth.sessionState() { dismiss(); model.accountDeleted() }
+                else { accountError = "Try again in a moment." }
             }
         }
     }

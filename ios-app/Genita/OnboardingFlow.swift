@@ -29,7 +29,7 @@ extension AppState {
         // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
         if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
-        let state = await onboarding.auth.sessionState()
+        var state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
         // request must never sign out a newer login or re-adopt a logged-out account's handoff.
         guard launchRequest.generation == authGeneration, !Task.isCancelled,
@@ -41,13 +41,14 @@ extension AppState {
         }
         guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
-        var state = state
         if case .active(var m) = state {
             // AU-05 (LG-03): A03's name never reached the server (offline at Next) but this account already has its
             // companion: send the name this phone kept again and go on to the call, never back to A03
             let kept = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
             if (m.user.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, m.hasCompanion, !kept.isEmpty {
                 if let saved = try? await onboarding.auth.setName(kept) { m = saved } else { m.user.displayName = kept }
+                // another sign-in (or sign-out) happened meanwhile: this answer is for an account that's gone (Codex P2)
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 state = .active(m)
             }
             me = m; adopt(accountId: m.user.id)

@@ -14,6 +14,8 @@ struct EmailSignInSheet: View {
     @State private var code = ""
     @State private var sending = false
     @State private var message: String?
+    /// clears the A02-E offline notice after 4 s
+    @State private var messageTimer: Task<Void, Never>?
     /// "Resend code" waits until this moment (server: one code per 60 s per address)
     @State private var resendAt = Date.distantPast
     @State private var now = Date()
@@ -132,11 +134,14 @@ struct EmailSignInSheet: View {
             } catch {
                 let line = EmailSignInCopy.message(for: error, sendingCode: true)
                 message = line
-                // A02-E (LG-02): offline is a 4 s notice, like the Apple path's, not a line that stays
+                // A02-E (LG-02): offline is a 4 s notice, like the Apple path's, not a line that stays. Its own timer:
+                // this request ends now, a new Send code isn't held by it (Codex P2)
                 if (error as? GenitaAuthError) == .offline {
-                    sending = false   // Send code works again at once; only the notice waits
-                    try? await Task.sleep(for: .seconds(4))
-                    if message == line { withAnimation(.easeOut(duration: 0.2)) { message = nil } }
+                    messageTimer?.cancel()
+                    messageTimer = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(4))
+                        if !Task.isCancelled, message == line { withAnimation(.easeOut(duration: 0.2)) { message = nil } }
+                    }
                 }
             }
         }
