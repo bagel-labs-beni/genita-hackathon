@@ -13,11 +13,17 @@ import CoreGraphics
 import Combine
 import Foundation
 import QuartzCore
+import os
 
 @MainActor
 public final class FaceDriver: ObservableObject {
     /// The latest rendered frame (outputSize pixels).
     @Published public private(set) var frame: CGImage?
+    /// Frames actually shown per second (5 s window), for device QA; also logged as `FACE_FPS live=…`
+    /// (subsystem ai.genita, category face) every 5 s while the face animates.
+    @Published public private(set) var liveFPS: Double = 0
+    private var fpsCount = 0, fpsSince = CACurrentMediaTime()
+    private static let log = Logger(subsystem: "ai.genita", category: "face")
 
     public let timeline = LipTimeline()
     /// Lip lookahead of this face (read once; the renderer itself lives on the render queue).
@@ -154,6 +160,15 @@ public final class FaceDriver: ObservableObject {
 
     private func now() -> Double { CACurrentMediaTime() - startedAt }
 
+    private func countFrame() {
+        fpsCount += 1
+        let now = CACurrentMediaTime(), span = now - fpsSince
+        guard span >= 5 else { return }
+        liveFPS = Double(fpsCount) / span
+        Self.log.notice("FACE_FPS live=\(self.liveFPS, format: .fixed(precision: 1), privacy: .public)")
+        fpsCount = 0; fpsSince = now
+    }
+
     private func tick() {
         guard !rendering else { return }   // drop a frame rather than queue them up
         rendering = true
@@ -167,7 +182,7 @@ public final class FaceDriver: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.rendering = false
-                if let image { self.frame = image }
+                if let image { self.frame = image; self.countFrame() }
             }
         }
     }
