@@ -246,7 +246,7 @@ test("server TTS on: default stays server; start.tts:device switches this call t
 });
 
 test("say.lang: Hangul text → ko-KR; else the reply language (interpretation: the target)", async () => {
-  // a Korean turn in chat mode is interpreted to English → en-US
+  // a Korean turn in chat mode gets an English reply (English only, 11/3; with the F8 auto-switch it was interpreted) → en-US
   const en = setup({ sparkText: "<neutral> He's asking how to get to City Hall." });
   await en.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await en.session.onClientText(JSON.stringify({ type: "text", text: "실례합니다, 시청 어떻게 가요?" }));
