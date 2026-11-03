@@ -193,26 +193,29 @@ struct MacLaunchHost<Content: View>: View {
     }
 
     var body: some View {
-        Group {
-            if done { content() }
-            else {
-                TimelineView(.animation(minimumInterval: nil, paused: done)) { ctx in
-                    let t = Self.frozenAt ?? ctx.date.timeIntervalSince(start) * 1000
-                    let f = MacSplashFrame.at(t, handoff: handoffMs, reduceMotion: reduceMotion)
-                    ZStack(alignment: .top) {
-                        if !checking && f.content > 0 {
-                            content().opacity(f.content).offset(y: 8 * (1 - f.content))
-                        } else {
-                            Color.clear.frame(width: 420, height: 296)
-                        }
-                        if !f.done {
-                            MacLaunchSplashView(frame: f, timeSeconds: t / 1000)
-                                .contentShape(Rectangle())
-                                .onTapGesture { if answered != nil && skipped == nil { skipped = Date() } }
-                        }
-                    }
+        // One structure for the whole life of the window: the first screen is created as soon as /me answers (so it
+        // sees every account / call event) and keeps its identity after the splash ends (open sheets survive);
+        // the timeline pauses when the hand-off is over.
+        TimelineView(.animation(minimumInterval: nil, paused: done)) { ctx in
+            let t = done ? 1e9 : (Self.frozenAt ?? ctx.date.timeIntervalSince(start) * 1000)
+            let f = MacSplashFrame.at(t, handoff: handoffMs, reduceMotion: reduceMotion)
+            ZStack(alignment: .top) {
+                if checking {
+                    Color.clear.frame(width: 420, height: 296)
+                } else {
+                    content().opacity(f.content).offset(y: 8 * (1 - f.content)).allowsHitTesting(f.content > 0.5)
+                        .accessibilityHidden(f.content < 0.5)
+                }
+                if !f.done {
+                    MacLaunchSplashView(frame: f, timeSeconds: reduceMotion ? 0 : t / 1000)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if answered != nil && skipped == nil { skipped = Date() } }
                 }
             }
+            // the window keeps the splash's 420 × 296 until the colour has turned, then takes the first screen's size
+            // (not clipped: the splash background runs up under the title bar; the hidden screen is at opacity 0)
+            .frame(height: f.splashClear ? nil : 296, alignment: .top)
+            .background { if f.splashClear { MacSheetInk.sheet.ignoresSafeArea() } }
         }
         .onAppear { if !checking && answered == nil { answered = Date() } }
         .onChange(of: checking) { _, now in if !now && answered == nil { answered = Date() } }
@@ -238,10 +241,11 @@ struct MacLaunchReviewFrame<Content: View>: View {
         let x = max(MacSplash.minimumMs(signedIn: signedIn), me)
         let f = MacSplashFrame.at(t, handoff: t >= me ? x : nil, reduceMotion: false)
         ZStack(alignment: .top) {
-            if f.content > 0 { content().opacity(f.content).offset(y: 8 * (1 - f.content)) }
+            if t >= me { content().opacity(f.content).offset(y: 8 * (1 - f.content)) }
             else { Color.clear.frame(width: 420, height: 296) }
             if !f.done { MacLaunchSplashView(frame: f, timeSeconds: t / 1000) }
         }
+        .frame(height: f.splashClear ? nil : 296, alignment: .top)
         .background(f.splashClear ? MacSheetInk.sheet : Color.clear)
     }
 }
