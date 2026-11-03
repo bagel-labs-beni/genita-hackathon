@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { loadConfig } from "../src/config.ts";
 import { Session, type SessionDeps, type ClientSink } from "../src/session/session.ts";
-import { MemoryFindsStore } from "../src/finds/store.ts";
+import { MemoryFindsStore, ownerKey } from "../src/finds/store.ts";
 import { sparkStream, type SparkRequest, type SparkStreamEvent } from "../src/meta/spark.ts";
 import { answerPoints, webAnswerCard } from "../src/finds/webAnswer.ts";
 import type { FindCard, ServerEvent } from "../src/protocol.ts";
@@ -57,6 +57,7 @@ test("the card: the spoken answer without the 'let me check' line, one source pe
   assert.deepEqual(answerPoints("You got it — I'll check who leads Nintendo right now.Hey, it's Shuntaro Furukawa! He's been president since June 2018."), ["Hey, it's Shuntaro Furukawa!", "He's been president since June 2018."]);
   assert.deepEqual(answerPoints("Catching you up on Artemis — pulling the latest now.Hey, so Artemis III is now an Earth-orbit test."), ["Hey, so Artemis III is now an Earth-orbit test."]);
   assert.deepEqual(answerPoints("Hey — checking who won the latest World Series for you.The Brewers won it all! They beat the Rays 4–1."), ["The Brewers won it all!", "They beat the Rays 4–1."]);
+  assert.deepEqual(answerPoints("Sure, the current president is Shuntaro Furukawa. He has held the role since 2018."), ["Sure, the current president is Shuntaro Furukawa.", "He has held the role since 2018."], "a leading 'Sure' keeps the answer (Codex P2)");
   assert.deepEqual(answerPoints("The U.S. Army band played. They're looking at a 2027 launch."), ["The U.S. Army band played.", "They're looking at a 2027 launch."], "facts stay, abbreviations stay whole");
   const card = webAnswerCard({ id: "f1", question: "Who is the CEO of Nintendo?", said: "It's Shuntaro Furukawa.", searches: [{ query: SEARCH.action.query, urls: SEARCH.action.sources.map((s) => s.url) }] })!;
   assert.equal(card.kind, "answer");
@@ -133,4 +134,48 @@ test("no card: an answer without a search, and a turn whose own card (link) runs
   assert.ok(client.events.some((e) => e.type === "find.started" && e.kind === "link"), "the link turn ran its own card");
   assert.equal(client.events.filter((e) => e.type === "find.started" && e.kind === "answer").length, 0);
   s.close();
+});
+
+const ANSWER = (): SparkStreamEvent[] => [
+  { type: "text", delta: "It's Shuntaro Furukawa. He's been president since 2018." },
+  { type: "sources", query: "current CEO of Nintendo", urls: ["https://www.nintendo.co.jp/ir"] },
+  { type: "done", responseId: "r", text: "", status: "completed" },
+];
+const answerCards = (c: Client) => c.events.filter((e) => e.type === "find.started" && e.kind === "answer").length;
+
+test("Codex P2: a barge-in cancels the card of the answer it cut off", async () => {
+  const { client, deps } = setup(ANSWER);
+  const s = new Session("w3", client, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await waitFor(() => client.events.some((e) => e.type === "reply"));
+  await s.onClientText(JSON.stringify({ type: "barge_in" }));
+  await new Promise((r) => setTimeout(r, 5500)); // past the playback estimate
+  assert.equal(answerCards(client), 0);
+  s.close();
+});
+
+test("Codex P2: playback_done shows the card at once, and ending the call right after keeps it in Finds", async () => {
+  const { client, deps, store } = setup(ANSWER);
+  const s = new Session("w4", client, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await waitFor(() => client.events.some((e) => e.type === "reply"));
+  const utteranceId = (client.events.find((e) => e.type === "reply") as { utteranceId: number }).utteranceId;
+  await s.onClientText(JSON.stringify({ type: "playback_done", utteranceId }));
+  assert.equal(answerCards(client), 1, "no wait for the estimate");
+  s.close();
+  await waitFor(() => false, 50).catch(() => {});
+  assert.equal((await store.list(ownerKey("acct"))).filter((c) => c.kind === "answer").length, 1);
+});
+
+test("ending the call while the looked-up answer still plays keeps its card", async () => {
+  const { deps, store, client } = setup(ANSWER);
+  const s = new Session("w5", client, deps);
+  await s.onClientText(JSON.stringify({ type: "start", persona: { name: "Rio" }, mic: false }));
+  await s.onClientText(JSON.stringify({ type: "text", text: "Who's the CEO of Nintendo now?" }));
+  await waitFor(() => client.events.some((e) => e.type === "reply"));
+  s.close();
+  await waitFor(() => false, 50).catch(() => {});
+  assert.equal((await store.list(ownerKey("acct"))).filter((c) => c.kind === "answer").length, 1);
 });

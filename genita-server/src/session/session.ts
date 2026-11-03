@@ -178,6 +178,8 @@ type Reply = {
   chars: number;
   /** server mode: GPU capacity or a voice failure sent this reply to the app as `say` */
   fellBack: boolean;
+  /** Chelsea 11/3: the sources card of a web-searched answer, shown once the answer has played (never after a barge-in) */
+  webAnswer?: (() => void) | null;
 };
 
 /** server clock (ms) for the latency breakdown; logged with turn.answered as `stages` */
@@ -898,6 +900,11 @@ export class Session {
     this.perceptionUnsub?.();
     this.dropSpeculation();
     if (this.reply) {
+      // the call ended while a looked-up answer was still playing: it was said, so it is kept in Finds
+      // (an account delete purges right after)
+      const card = this.reply.webAnswer;
+      this.reply.webAnswer = null;
+      if (card && reason !== "account_deleted" && !this.reply.abort.signal.aborted) card();
       this.reply.abort.abort();
       if (this.reply.doneTimer) clearTimeout(this.reply.doneTimer);
     }
@@ -2049,16 +2056,15 @@ export class Session {
     const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
-    // speech first, sheet after: the sources card when the answer has been played
+    // speech first, sheet after: the sources card when the answer has played (finishReply: playback_done or the estimate)
     if (searches.length && full && !interpret && !self && !synthetic && !cardTurn && !sparkError && this.finds) {
       const finds = this.finds;
       const looked = searches;
-      const timer = setTimeout(() => {
-        if (this.closed || this.finds !== finds) return;
+      reply.webAnswer = () => {
+        if (this.finds !== finds) return;
         const findId = finds.webAnswer({ utteranceId, question: text, said: full, searches: looked });
         if (findId) this.log("finds.web_answer", { utteranceId, findId, searches: looked.length });
-      }, wait);
-      timer.unref?.();
+      };
     }
   }
 
@@ -2090,6 +2096,9 @@ export class Session {
     reply.doneTimer = null;
     if (this.reply !== reply) return;
     this.reply = null;
+    const card = reply.webAnswer;
+    reply.webAnswer = null;
+    if (card && !reply.abort.signal.aborted && !this.closed && this.mode !== "interpret") card();
     this.initiative?.activity(this.now());
     if (reply.firstAudioAt !== null) this.client.sendJson({ type: "speaking", on: false, utteranceId: reply.utteranceId });
     this.dispatch({ type: "reply_done", utteranceId: reply.utteranceId });
