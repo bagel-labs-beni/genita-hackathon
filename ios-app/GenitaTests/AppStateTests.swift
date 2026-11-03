@@ -112,6 +112,31 @@ import UIKit
         model.consentAccepted()
         XCTAssertNotEqual(model.stage, .consent)
     }
+    /// V01 "Use a test photo" (device QA): off unless the server listed the account at sign-in; sign-out clears it.
+    func testQASamplePhotosOnlyForAListedAccount() {
+        let model = AppState(storage: store)
+        model.routeAfterSignIn = {}
+        XCTAssertFalse(model.qaSamplePhotos, "off by default")
+        XCTAssertFalse(QASamplePhotos.visible(for: model))
+        model.signedIn(userId: "user-a", consented: true)
+        XCTAssertFalse(model.qaSamplePhotos, "a normal sign-in never turns it on")
+        model.signedOut()
+        model.signedIn(userId: "qa-f", consented: true, qaSamplePhotos: true)
+        XCTAssertTrue(QASamplePhotos.visible(for: model))
+        model.signedOut()
+        XCTAssertFalse(model.qaSamplePhotos, "the next account on this phone starts without it")
+        model.signedIn(userId: "user-b", consented: false)
+        XCTAssertFalse(model.qaSamplePhotos)
+        XCTAssertFalse(AppState(storage: store).qaSamplePhotos, "never saved: a relaunch asks /me again")
+    }
+    func testQASamplePhotosAreBundledJPEGsTheUploadAccepts() {
+        XCTAssertEqual(QASamplePhotos.samples.map(\.id), ["human", "dog", "clay", "anime", "drawing"])
+        for s in QASamplePhotos.samples {
+            let data = QASamplePhotos.data(s)
+            XCTAssertNotNil(data, s.id)
+            XCTAssertNotNil(data.flatMap { AppState.uploadJPEG($0) }, "\(s.id) passes the same JPEG step as a library pick")
+        }
+    }
     func testAnotherAccountStartsWithAFreshLocalProfile() {
         let model = AppState(storage: store)
         model.signedIn(userId: "user-a", consented: true)
@@ -457,6 +482,14 @@ import UIKit
         signedIn.onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("token")))
         signedIn.go(.name)
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
+    }
+
+    /// QA build 7 (LG-03): a system alert over the launch (iPhone Mirroring's microphone sheet) used up the 0.9 s
+    /// relaunch splash unseen. On iPhone an inactive scene holds the splash clock.
+    func testSplashClockHoldsWhileTheSceneIsNotActive() {
+        XCTAssertTrue(GenitaSplash.holds(.inactive))
+        XCTAssertTrue(GenitaSplash.holds(.background))
+        XCTAssertFalse(GenitaSplash.holds(.active))
     }
 
     /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.

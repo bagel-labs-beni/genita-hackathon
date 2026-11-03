@@ -25,6 +25,9 @@ struct ConversationView: View {
     @State private var findsTabOpen = false
     @State private var findsList = FindsListModel(api: CallController.shared.findsAPI)
     @State private var loopURL: URL?
+    /// card 10: S09 stops waiting for the generated face after 2.5 s (a photo-only companion never gets one)
+    @State private var faceWaitOver = false
+    @State private var connectedTaps = 0
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -58,13 +61,17 @@ struct ConversationView: View {
                         // stepped-back face) are dark, not the window's white
                         CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
+                        // D22: double-tap my view (the camera stage) → front ↔ back
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top, grid: grid,
-                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, width: statusWidth ?? 0)).blur(radius: unclear ? 8 : 0).transition(.opacity) }
+                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, width: statusWidth ?? 0)).blur(radius: unclear ? 8 : 0).transition(.opacity)
+                            .onTapGesture(count: 2) { if call.canFlipCamera { call.flipCamera() } } }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
-                            .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
+                            // motion details card 10: veiled until the generated face (poster or live) is there, then clears
+                            // once (blur 14, 520 ms) with one medium tap; flag off → the catalog reveal as before
+                            .modifier(CallFaceVeil(connecting: connecting, faceReady: call.facePoster != nil || faceWaitOver, enabled: handoffEnabled))
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -75,7 +82,7 @@ struct ConversationView: View {
                         if waitingCopy != nil { handoffScrim.frame(width: full.size.width, height: full.size.height).allowsHitTesting(false) }
                         Button { withAnimation(.easeInOut(duration: 0.22)) { model.menuOpen.toggle() } } label: {
                             CallGlassControl(icon: "glass-menu-icon", size: CallHUDGrid.button)
-                        }.buttonStyle(.plain).disabled(connecting).position(grid.menuCenter)
+                        }.buttonStyle(.plain).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 0)).position(grid.menuCenter)
                             .accessibilityLabel(connecting ? "Menu unavailable while connecting" : "Open menu").accessibilityIdentifier(connecting ? "openMenuConnecting" : "openMenu")
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full)
                         if call.cameraOn && sheet != .full {
@@ -95,7 +102,7 @@ struct ConversationView: View {
                         if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
-                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                InterpretOverlay(board: call.interpretBoard, top: top, level: { call.inputLevel }, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
                                     .frame(width: full.size.width, height: full.size.height)
                                     .transition(.opacity)
                             }
@@ -112,13 +119,18 @@ struct ConversationView: View {
                         }.frame(width: full.size.width, height: full.size.height)
                             .animation(reduceMotion || CallMotion.reviewStill ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 1)).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: grid.railX, y: grid.railY(.mic, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                        // motion details card 2: pressed to 0.92, a light tap on toggle, a blue ring that follows the user's voice
+                        Button { call.toggleMic() } label: {
+                            CallToggleGlass(icon: "glass-mic-icon", on: call.micOn)
+                                .background { MotionVoiceRing(active: call.micOn && !connecting, diameter: CallHUDGrid.button, color: CallInk.blueOnInk, level: { call.inputLevel }) }
+                        }
+                            .buttonStyle(MotionPressStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 2))
+                            .sensoryFeedback(trigger: call.micOn) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .light) : nil }.accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: grid.railX, y: grid.railY(.mic, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: CallHUDGrid.button) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: grid.railX, y: grid.railY(.more, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).modifier(CallControlEntrance(shown: !connecting, index: 3)).accessibilityLabel("More").accessibilityIdentifier("more").position(x: grid.railX, y: grid.railY(.more, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
                         if findsTabOpen && !connecting {
@@ -150,7 +162,7 @@ struct ConversationView: View {
                             // MV-1 / MV-E take the call's status line slot
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
-                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth)
+                            CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth, level: { call.outputLevel })
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 // HUD r01 A: on the menu row (same centre line) when it fits between the menu button and its
                                 // mirror, else centred on the line just under it; beside the face window when the sheet is full.
@@ -163,7 +175,7 @@ struct ConversationView: View {
                         // CC-1 wins over GK-1 (a "Noted: …" answers the question)
                         // not over the Finds tab (its back button and title sit on the menu row)
                         if !connecting && !findsTabOpen, let chip = call.profileChip ?? call.askingChip {
-                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(call.profileChip == nil ? chip : "\(chip)#\(call.profileChipSerial)")
                                 .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2,
                                           y: sheet == .full ? 122 + top : grid.chipCenterY(status: status, prepLine: model.callPrepIndicator != nil && !interpreting && !moveLine && !findsTabOpen && sheet != .full,
@@ -247,12 +259,22 @@ struct ConversationView: View {
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // card 10: one medium tap when this call first goes live (not on a cached face alone, not on reconnects)
+        .sensoryFeedback(trigger: connectedTaps) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(weight: .medium) : nil }
+        .onChange(of: call.link == .live, initial: true) { _, live in if live && !connecting && connectedTaps == 0 { connectedTaps = 1 } }
+        .task(id: connecting) {
+            guard !connecting, !faceWaitOver else { return }
+            try? await Task.sleep(for: .seconds(2.5))
+            if !Task.isCancelled { faceWaitOver = true }
+        }
         // the prep call scene is the still under the face (also after a relaunch, when PREP-1 didn't load it)
         .task(id: model.prep?.sceneURL) { await model.loadScene() }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
         .task(id: "\(connecting) \(model.prep?.status ?? "")") { if !connecting { await model.followPrep(every: 5) } }
+        // AU-25 (D28 reveal): prep finished mid-call → fetch the face set now (the call's own retry is the fallback)
+        .onChange(of: model.prep?.isReady == true) { _, ready in if ready && !connecting && scenePhase == .active { showFace() } }
         .onAppear {
             if !connecting {
                 call.companionName = model.companionDisplayName
@@ -441,6 +463,8 @@ struct ConversationView: View {
             .overlay(shape.strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
             .frame(width: CallHUDGrid.selfOff.width, height: CallHUDGrid.selfOff.height)
             .accessibilityElement().accessibilityLabel("Your camera is off").accessibilityIdentifier("selfViewOff")
+            // D22: double-tap the self view → the camera on, facing back
+            .onTapGesture(count: 2) { call.useBackCamera() }.accessibilityAction(named: "Use back camera") { call.useBackCamera() }
         }
     }
     /// The still under the face: the prep call scene (the generated face, same framing as the face set). The upload
@@ -449,6 +473,29 @@ struct ConversationView: View {
     var companionImage: Image? {
         if let data = model.companionFaceData, let image = UIImage(data: data) { return Image(uiImage: image) }
         return model.serverWired ? nil : Image(resource: "companion")
+    }
+}
+
+/// Motion details card 10 with the flag on (veil until the face is ready), the catalog face reveal with it off.
+private struct CallFaceVeil: ViewModifier {
+    var connecting: Bool
+    var faceReady: Bool
+    var enabled: Bool
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled {
+            content.motionCallReveal(veiled: connecting || !faceReady, enabled: enabled)
+        } else {
+            content.genitaFaceReveal(veiled: connecting, enabled: enabled)
+        }
+    }
+}
+
+/// Motion details card 10: S07 keeps the controls back; they rise in 40 ms apart once connected. Flag off: as before.
+private struct CallControlEntrance: ViewModifier {
+    var shown: Bool
+    var index: Int
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionControlRise(shown: shown, index: index) } else { content }
     }
 }
 

@@ -32,6 +32,7 @@ struct CameraStage: View {
         .frame(width: size.width, height: size.height).clipped()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Your camera")
+        .accessibilityValue(call.cameraFront ? "front" : "back")
         .accessibilityIdentifier("cameraStage")
     }
 

@@ -68,6 +68,8 @@ jobs:
             -only-testing:GenitaUITests/UpdateBannerUITests \
             -only-testing:GenitaUITests/OnboardingUITests \
             -only-testing:GenitaUITests/InsightReportUITests \
+            -only-testing:GenitaUITests/QASamplePhotoUITests \
+            -only-testing:GenitaUITests/CompanionKindsUITests \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
             -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \
@@ -178,6 +180,7 @@ jobs:
               -destination "platform=iOS Simulator,id=$ID" -derivedDataPath build-output/dd \
               -only-testing:GenitaUITests/OnboardingUITests/testV03Motion$kind \
               CODE_SIGNING_ALLOWED=NO | grep -E "^Test Case .*(passed|failed)|error:|\*\* TEST" | cut -c1-240 || true
+            sleep 3   # let the recorder flush the last frames (the 11/4 Character clip stopped at 41 %)
             kill -INT $REC; wait $REC || true
           done
           ls -la build-output/v03

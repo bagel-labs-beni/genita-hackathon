@@ -58,8 +58,9 @@ import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
+import { backchannelOn, convoV1, englishOnly, eotHoldOn, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
+import { EOT, eotTuning, joinSegments, judgeEndOfTurn, type EotKind, type EotVerdict } from "../convo/endOfTurn.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -145,6 +146,11 @@ export type SessionDeps = {
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
    */
   companionVoiceId?: () => Promise<string | null | undefined>;
+  /**
+   * AU-53: the name saved on this account's companion (prep store; a voice rename writes it there). It wins over
+   * start.persona.name, so a device with a cached older name still calls the companion by its current one.
+   */
+  companionName?: () => Promise<string | null | undefined>;
 };
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
@@ -228,6 +234,8 @@ const PLAYBACK_SLACK_MS = 250;
 const PLAYBACK_MAX_WAIT_MS = 60_000;
 /** longest a ready reply waits for the user to stop talking before its first sound (ASR lost a speechEnd) */
 const HOLD_MAX_MS = 3000;
+/** CA-14: a held turn whose resumed segment never got its final (ASR dropped) commits after this much ASR silence */
+const HOLD_WATCHDOG_MS = 5000;
 /** re-open vendor connections when the user starts a turn after this much quiet (keep-alive is 60 s) */
 const WARM_AGAIN_MS = 45_000;
 const DEVICE_MS_PER_CHAR = 70;
@@ -443,7 +451,8 @@ export class Session {
   private backchannel: Backchannel | null = backchannelOn()
     ? new Backchannel({
         now: () => this.now(),
-        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.turn.userSpeaking,
+        // CA-14: a turn the end-of-turn hold keeps open is still the user's turn
+        stillListening: () => this.mode === "chat" && !this.interp && !this.watch && !this.reply && this.turn.phase === "listening" && this.userTurnOpen(),
         send: (kind) => void this.sendBackchannel(kind),
       })
     : null;
@@ -459,6 +468,28 @@ export class Session {
   private bcGen = 0;
   /** a cue played during this user turn: a stray "mm-hm" in its transcript is the cue's echo, not the user */
   private cuedTurn = false;
+  /**
+   * CA-14 (11/4): a Transcribe final that looked unfinished ("…and then he started."), held until `timer` commits it
+   * (src/convo/endOfTurn.ts). The user resuming clears the timer and the next final is joined to `text`. Never set
+   * in interpretation, while a reply runs, or with the mic off. null = no held turn.
+   */
+  private held: { text: string; turnId: number; kind: EotKind; since: number; segments: number; timer: NodeJS.Timeout | null } | null = null;
+
+  /**
+   * CA-14: a chat segment started and its final has not been handled yet (the user is talking, or Transcribe is still
+   * closing it), or a final waits on the watch echo check. Either way a final is on its way and re-decides a held turn,
+   * so neither the silence clock nor muting commits it first (Codex r2). lastAsrAt: a watchdog for a lost final.
+   */
+  private segmentOpen = false;
+  /** the open segment's latest partial; a watchdog commit keeps it, and then that segment's late final is dropped */
+  private segmentPartial = "";
+  private dropLateFinal = false;
+  private echoPending = 0;
+  private lastAsrAt = 0;
+  /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
+  private userTurnOpen(): boolean {
+    return this.turn.userSpeaking || this.held !== null;
+  }
 
   private async sendBackchannel(kind: "mm" | "yeah"): Promise<void> {
     const gen = this.bcGen;
@@ -471,7 +502,7 @@ export class Session {
         if (pcm.length && pcm.length <= 24_000 * 2 * 1.5) audio = pcm.toString("base64");
       } catch { /* no cue audio: the event still goes (the app plays nothing) */ }
     }
-    if (this.closed || this.mode !== "chat" || this.reply || !this.turn.userSpeaking || gen !== this.bcGen) return;
+    if (this.closed || this.mode !== "chat" || this.reply || !this.userTurnOpen() || gen !== this.bcGen) return;
     this.client.sendJson({ type: "backchannel", kind, ...(audio ? { audio } : {}) });
     // the app sends the uplink untouched; whatever of the cue survives echo cancellation is dropped from this turn
     this.cuedTurn = true;
@@ -492,6 +523,8 @@ export class Session {
   private seatsOver = false;
   /** the account's saved companion voice (same presence), looked up as the socket opens */
   private readonly ownedVoice: Promise<string | null>;
+  /** AU-53: the stored companion name, looked up as the socket opens (bounded) */
+  private readonly ownedName: Promise<string | null>;
   private history: HistoryItem[] = [];
   private historyRevision: number | null = null;
   private recentReplies: string[] = [];
@@ -569,6 +602,7 @@ export class Session {
     this.voiceId = deps.config.defaultVoiceId;
     // looked up from the socket's open, so `start` rarely waits for it (Codex P2: no input window)
     this.ownedVoice = this.companionVoice();
+    this.ownedName = this.boundedLookup(deps.companionName, 80);
     this.bargeCfg = { bargeInMinMs: deps.config.bargeInMinMs, bargeInMinWords: deps.config.bargeInMinWords };
     if (deps.config.perception) {
       this.perceptionCtl = new PerceptionController({
@@ -577,7 +611,7 @@ export class Session {
         convo: () => ({
           companionSpeaking: this.turn.phase === "speaking",
           lastReplyEndAt: this.lastReplyEndAt,
-          userSpeaking: this.turn.userSpeaking,
+          userSpeaking: this.userTurnOpen(),
           lastUserSpeechAt: this.lastUserSpeechAt,
         }),
         log: (event, data) => this.log(event, data),
@@ -622,6 +656,19 @@ export class Session {
     }
   }
 
+  /** A start lookup that never holds the call up: null when unset, failed, blank, or slower than COMPANION_VOICE_WAIT_MS. */
+  private async boundedLookup(lookup: (() => Promise<string | null | undefined>) | undefined, max: number): Promise<string | null> {
+    if (!lookup) return null;
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<null>((r) => { timer = setTimeout(() => r(null), COMPANION_VOICE_WAIT_MS); });
+    try {
+      const v = await Promise.race([Promise.resolve().then(lookup).catch(() => null), late]);
+      return str(v, max) ?? null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * F6-L7: the conversation moved to another device. Stop this device's reply now, the same way a
    * tap on the face does (`utterance.cancelled` reason `client`, so every app build flushes its queue).
@@ -654,10 +701,16 @@ export class Session {
         this.micOn = false;
         // ~0.8 s of silence lets endpointing finish a sentence cut by the mute
         this.asr?.sendAudio(Buffer.alloc(Math.round(PCM_SAMPLE_RATE * 0.8) * 2));
+        // muting ends the turn: a held one is answered now (CA-14). If the user had resumed it, the final the 0.8 s of
+        // silence brings joins it and commits at once (no hold with the mic off) — one turn, not two (Codex P2)
+        if (!this.finalOnItsWay()) this.commitHeld("mic_off");
         return;
       case "text": {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
+        // a held voice turn ends here, as before CA-14: its reply starts and the typed line cuts it (reducer `text`).
+        // First, so the typed line's own frames / card focus go with the typed line, not the held one (Codex P2)
+        this.commitHeld("text");
         this.skipPendingGreeting("text");
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
         if (this.interp && typeof msg.findId === "string") {
@@ -858,6 +911,17 @@ export class Session {
     // One voice per reply: if something already started speaking (input raced the lookup), this call keeps it.
     if (owned && this.turn.utteranceId === 0 && !this.reply) this.pickVoice(owned, persona.kind);
     else if (owned) this.log("voice.owned_late", {});
+    const ownedName = await this.ownedName;
+    if (this.closed) return;
+    // AU-53: the stored companion name is the current one (a voice rename saved it); a device's cached start may be older.
+    // Unlike the voice, a name can switch even if a first input raced the lookup: like a voice rename, a reply already
+    // under way keeps its prompt and the next one uses the stored name (Codex AU-53 P2).
+    let nameSynced = false;
+    if (ownedName && ownedName !== this.persona!.name) {
+      this.log("companion.name_synced", { chars: [...ownedName].length, raced: this.turn.utteranceId !== 0 || !!this.reply });
+      this.persona = { ...this.persona!, name: ownedName };
+      nameSynced = true;
+    }
     // lane 개인화: the stored profile (with corrections) replaces the app's copy; this call's one question
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
@@ -915,6 +979,8 @@ export class Session {
       ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    // AU-53: the app's labels (and its reconnect start) follow the stored name, the same event as a voice rename
+    if (nameSynced) this.client.sendJson({ type: "companion.named", name: this.persona!.name });
     this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
@@ -943,7 +1009,7 @@ export class Session {
     this.greetTimer = (this.deps.greetScheduler ?? schedule)(() => {
       this.greetTimer = null;
       if (!this.greeting || this.closed) return;
-      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
+      if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.userTurnOpen()) {
         // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
         this.greeting = null;
         this.dropPreGreet();
@@ -1002,6 +1068,7 @@ export class Session {
       this.skipPendingGreeting("mode");
       // a chat reply in progress is cut; the interpreter owns the voice now
       if (this.turn.phase !== "listening") this.dispatch({ type: "client_barge_in" });
+      this.dropHeld();
       this.dropSpeculation();
       this.mode = "interpret";
       this.client.sendJson({ type: "mode.changed", mode, by });
@@ -1170,6 +1237,7 @@ export class Session {
     this.dropPreGreet();
     if (this.initiativeTimer) clearInterval(this.initiativeTimer);
     this.perceptionUnsub?.();
+    this.dropHeld();
     this.dropSpeculation();
     if (this.reply) {
       // the call ended while a looked-up answer was still playing: it was said, so it is kept in Finds
@@ -1219,24 +1287,36 @@ export class Session {
     if (e.type === "speechStart") this.warm();
     // interpretation speech counts as talking too: returning to chat never starts on a stale silence (Codex P2)
     if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
-    if (this.interp) return this.onInterpretAsr(e);
+    if (this.interp) { this.segmentOpen = false; this.dropLateFinal = false; return this.onInterpretAsr(e); }
+    this.lastAsrAt = t;
     if (this.cuedTurn && (e.type === "partial" || e.type === "speechComplete")) e = { ...e, text: stripCueEcho(e.text) };
-    if (e.type === "speechComplete") this.cuedTurn = false;
     switch (e.type) {
-      case "speechStart":
+      case "speechStart": {
         this.metrics = {};
         this.bcGen++;
-        this.backchannel?.start();
+        this.segmentOpen = true;
+        this.segmentPartial = "";
+        this.dropLateFinal = false; // a new segment: the lost one's final is not coming
+        // the user goes on inside a held turn (CA-14): no commit while they talk (the hold's clock waits for their
+        // final, see holdTimerFired); their next final joins it
+        const resumed = this.held !== null;
+        if (this.held) this.log("turn.resumed", { afterMs: Math.round(this.now() - this.held.since), segments: this.held.segments });
+        this.backchannel?.start(resumed);
         this.skipPendingGreeting("speech");
         this.client.sendJson({ type: "speech.start", turnId: e.turnId });
         return this.dispatch({ type: "speech_start" });
-      case "partial":
+      }
+      case "partial": {
         this.metrics.lastPartialAt = t;
+        this.segmentPartial = e.text;
         this.bcGen++;
-        this.backchannel?.partial(e.text);
-        this.client.sendJson({ type: "transcript", final: false, text: e.text });
-        this.dispatch({ type: "partial", text: e.text });
-        return this.considerSpeculation(e.text);
+        // inside a held turn the partial continues it: the bubble, the cue's word count and the guess see the whole turn
+        const text = this.held ? joinSegments(this.held.text, e.text) : e.text;
+        this.backchannel?.partial(text);
+        this.client.sendJson({ type: "transcript", final: false, text });
+        this.dispatch({ type: "partial", text });
+        return this.considerSpeculation(text);
+      }
       case "speechEnd":
         this.bcGen++;
         this.backchannel?.stop();
@@ -1245,20 +1325,32 @@ export class Session {
         return this.dispatch({ type: "speech_end" });
       case "speechComplete":
         this.bcGen++;
+        this.segmentOpen = false;
+        this.segmentPartial = "";
+        if (this.dropLateFinal) {
+          // the watchdog already answered this segment with its partial (Codex r3): one reply, not two
+          this.dropLateFinal = false;
+          this.log("turn.late_final_dropped", { words: e.text.split(/\s+/).filter(Boolean).length });
+          return;
+        }
         this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
         // exactly one final transcript goes out either way
         if (interpretCommand(e.text) === "start") {
+          this.cuedTurn = false;
+          this.dropHeld();
           this.client.sendJson({ type: "transcript", final: true, text: e.text, turnId: e.turnId, source: "voice" });
           // INT-0 by voice: "Can you interpret for me?"
           this.switchMode("interpret", "model");
           (this.interp as Interpreter | null)?.say(INTERPRET_ON_LINE);
           return;
         }
-        if (this.watch?.isSharing && e.text.trim()) {
-          // in order: a slow echo check must not let a later utterance go first (Codex 11/2)
-          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {});
+        if (this.watch?.isSharing && (e.text.trim() || this.echoPending > 0)) {
+          // in order: a slow echo check must not let a later utterance go first (Codex 11/2) — an empty final too, while
+          // one is pending (Codex CA-14 r2)
+          this.echoPending++;
+          this.echoChain = this.echoChain.then(() => this.completeUnlessEcho(e.turnId, e.text)).catch(() => {}).finally(() => { this.echoPending--; });
           return;
         }
         return this.completeTurn(e.turnId, e.text);
@@ -1286,22 +1378,113 @@ export class Session {
     }
   }
 
+  /**
+   * A Transcribe final. CA-14 (11/4): it is a candidate end of turn, not a commit. An unfinished-looking turn
+   * (src/convo/endOfTurn.ts) is held open — the backchannel cue may play inside the hold, Spark may already guess —
+   * and only a long enough silence commits it; if the user resumes, the next final is joined to it.
+   */
   private completeTurn(turnId: number, text: string): void {
+    const whole = this.held ? joinSegments(this.held.text, text) : text;
+    const v = this.holdVerdict(whole);
+    if (v) return this.holdTurn(turnId, whole, v);
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    const h = this.held;
+    this.held = null;
+    if (h) this.log("turn.commit", { reason: "final", heldMs: Math.round(this.now() - h.since), segments: h.segments + 1, kind: h.kind });
+    this.commitTurn(turnId, whole);
+  }
+
+  private commitTurn(turnId: number, text: string): void {
+    this.cuedTurn = false;
+    this.backchannel?.stop();
     this.client.sendJson({ type: "transcript", final: true, text, turnId, source: "voice" });
     this.dispatch({ type: "speech_complete", text });
     // not consumed by a reply (backchannel / empty): stop the guess
     this.dropSpeculation();
   }
 
+  /** hold this final? Only a plain chat turn to a quiet companion, with the mic on; null = commit now */
+  private holdVerdict(text: string): EotVerdict | null {
+    if (!eotHoldOn() || this.closed || this.mode !== "chat" || this.interp || !this.micOn || !text.trim()) return null;
+    if (this.turn.phase !== "listening" || this.turn.backchannel || this.turn.pendingBargeIn) return null;
+    const v = judgeEndOfTurn(text, eotTuning());
+    return v.holdMs > 0 ? v : null;
+  }
+
+  private holdTurn(turnId: number, text: string, v: EotVerdict): void {
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    const prev = this.held;
+    const timer = setTimeout(() => this.holdTimerFired(), v.holdMs);
+    this.held = { text, turnId, kind: v.kind, since: prev?.since ?? this.now(), segments: (prev?.segments ?? 0) + 1, timer };
+    // the cue only for a turn that looks unfinished; a missing "." alone just waits a little
+    if (v.kind === "incomplete") this.backchannel?.held(text, EOT.cueAfterMs, v.holdMs);
+    // the bubble keeps the whole turn (the final goes out on commit)
+    this.client.sendJson({ type: "transcript", final: false, text });
+    // Spark may start on it now (it is buffered until the commit; a resumed turn makes it a miss)
+    if (this.deps.config.speculate && !(this.frames && this.now() - this.frames.at <= FRAMES_TTL_MS)) {
+      if (this.specTimer) clearTimeout(this.specTimer);
+      this.specTimer = null;
+      void this.startSpeculation(text);
+    }
+    this.log("turn.hold", { kind: v.kind, why: v.why, holdMs: v.holdMs, segment: this.held.segments, words: text.split(/\s+/).length });
+  }
+
+  /** a final is still coming (the user went on, Transcribe is closing their segment, or an echo check runs) */
+  private finalOnItsWay(): boolean {
+    return this.segmentOpen || this.echoPending > 0;
+  }
+
+  /**
+   * The hold's silence ran out. If a final is on its way it re-decides (the user went on — Codex P1/r2): check again
+   * shortly. A final lost with its ASR stream never holds the turn more than HOLD_WATCHDOG_MS past the last ASR event.
+   */
+  private holdTimerFired(): void {
+    const h = this.held;
+    if (!h || this.closed) return;
+    h.timer = null;
+    if (this.finalOnItsWay() && this.now() - this.lastAsrAt < HOLD_WATCHDOG_MS) {
+      h.timer = setTimeout(() => this.holdTimerFired(), 250);
+      return;
+    }
+    // the watchdog: a segment still open after HOLD_WATCHDOG_MS of ASR silence lost its final; its words so far go
+    // with the turn, and if the final turns up after all it is dropped (Codex r3)
+    if (this.segmentOpen) {
+      h.text = joinSegments(h.text, this.segmentPartial);
+      this.dropLateFinal = true;
+      this.segmentOpen = false;
+    }
+    this.commitHeld("silence");
+  }
+
+  /** the held turn ends now (silence ran out, the mic went off, the user typed) */
+  private commitHeld(reason: "silence" | "mic_off" | "text"): void {
+    const h = this.held;
+    if (!h) return;
+    if (h.timer) clearTimeout(h.timer);
+    this.held = null;
+    if (this.closed) return;
+    this.log("turn.commit", { reason, heldMs: Math.round(this.now() - h.since), segments: h.segments, kind: h.kind });
+    this.commitTurn(h.turnId, h.text);
+  }
+
+  /** the held turn is dropped unanswered (the call closed or switched to interpretation) */
+  private dropHeld(): void {
+    if (this.held?.timer) clearTimeout(this.held.timer);
+    this.held = null;
+  }
+
   /** While sharing, the video's own lines leaking into the mic are not a user turn (F5-L13). */
   private echoChain: Promise<void> = Promise.resolve();
 
   private async completeUnlessEcho(turnId: number, text: string): Promise<void> {
-    const echo = (await this.watch?.isEcho(text)) ?? false;
+    const echo = text.trim() ? ((await this.watch?.isEcho(text)) ?? false) : false;
     // re-check after the wait: the call may have closed or switched to interpretation meanwhile
     if (this.closed || this.mode === "interpret") return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
+    // a held turn waits again from here (the video's line was not the user going on); if the user went on meanwhile,
+    // the hold's clock waits for their final (holdTimerFired)
+    if (this.held) return this.completeTurn(turnId, "");
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }
@@ -1314,7 +1497,7 @@ export class Session {
     this.watch ??= new WatchController(
       {
         companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
-        conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        conversationQuiet: () => this.turn.phase === "listening" && !this.userTurnOpen() && !this.turn.pendingBargeIn,
         react: (script) => {
           // interpretation owns the voice: no watch reactions over it
           if (this.mode === "interpret") return null;
@@ -1382,7 +1565,7 @@ export class Session {
   private announce(text: string): void {
     // interpretation owns the voice: a card that lands mid-interpretation stays on the sheet, unspoken
     if (this.closed || this.mode === "interpret") return;
-    if (this.turn.phase === "listening" && !this.turn.userSpeaking) return this.dispatch({ type: "self_speak", text, origin: "card" });
+    if (this.turn.phase === "listening" && !this.userTurnOpen()) return this.dispatch({ type: "self_speak", text, origin: "card" });
     if (!this.turn.userSpeaking) this.pendingAnnounce = { text, at: this.now() };
   }
 
@@ -1619,7 +1802,7 @@ export class Session {
 
   private initiativeIdle(): boolean {
     return !this.closed && this.mode === "chat" && this.micOn && !this.reply && !this.cueTurn && !this.greeting && !this.greetTimer
-      && !this.pendingAnnounce && this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn && !this.watch?.isSharing;
+      && !this.pendingAnnounce && this.turn.phase === "listening" && !this.userTurnOpen() && !this.turn.pendingBargeIn && !this.watch?.isSharing;
   }
 
   /** test seam: one governor check now */

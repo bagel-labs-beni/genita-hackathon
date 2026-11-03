@@ -17,6 +17,8 @@ import UniformTypeIdentifiers
     @State private var progress = 0.0
     @State private var importing = false
     @State private var pickingPhoto = false
+    /// V01 "Use a test photo" sheet (device QA accounts only, QASamplePhotos.swift)
+    @State private var pickingSample = false
     @State private var imageError: String?
     @State private var player = VoicePlayer()
     @FocusState private var nameFocused: Bool
@@ -123,6 +125,9 @@ import UniformTypeIdentifiers
         .sheet(isPresented: $pickingPhoto) {
             ReferencePhotoPicker(isPresented: $pickingPhoto) { data in if let data { accept(data) } else { imageError = "This image could not be opened." } }
         }
+        .sheet(isPresented: $pickingSample) {
+            QASamplePhotoSheet { data in pickingSample = false; if let data { accept(data) } else { imageError = "This image could not be opened." } }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
             do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; accept(try Data(contentsOf: url)) } catch { imageError = "This image could not be opened." }
         }
@@ -145,6 +150,7 @@ import UniformTypeIdentifiers
             }
             ZStack {
                 DesignText(node: title, text: stage == .image ? "Bring an image" : nil)
+                    .motionBandLineReveal(pitch: title.lineHeight ?? title.font.lineHeight, key: stage)   // motion details card 8
                 if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
                     Button {
                         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }
@@ -171,7 +177,7 @@ import UniformTypeIdentifiers
                         // I01 → AI app → back: open I02 with the paste button ready (only after the app really left)
                         guard stage == .prompt, openedAI else { return }
                         if phase == .background { leftApp = true }
-                        else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+                        else if phase == .active, leftApp { backFromAI() }
                     }
             case .preparing: processing(width: width, top: bodyTop, shift: orb.map { Self.readingFit(orb: $0, nodes: nodes, limit: contentBottom - bodyTop).shift } ?? 0)
             case .image: imageContent(width: width, top: bodyTop)
@@ -306,6 +312,8 @@ import UniformTypeIdentifiers
             }
         }
     }
+    /// Back from the AI app: I02 with the paste button ready.
+    func backFromAI() { openedAI = false; leftApp = false; copiedToast = false; model.pasteFocusRequested = true; model.go(.paste) }
     /// I01: opens the AI app, or its website when the app isn't installed.
     func appButton(_ title: String, app: String, web: String) -> some View {
         Button {
@@ -315,6 +323,12 @@ import UniformTypeIdentifiers
             copied = true; openedAI = true; leftApp = false
             model.setup.importAI = title == "Open ChatGPT" ? "ChatGPT" : "Claude"
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
+            #if DEBUG
+            // UI tests (`--stub-external-apps`): nothing opens (no Safari round trip on a loaded CI runner) and the
+            // toast stays until the test leaves and comes back (Home → activate), so neither depends on timing; the
+            // return goes through the real scene-phase path below
+            if ProcessInfo.processInfo.arguments.contains("--stub-external-apps") { return }
+            #endif
             Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
         } label: {
@@ -360,7 +374,8 @@ import UniformTypeIdentifiers
     }
     func accept(_ data: Data) {
         // B7: one companion, the face can't change once it's made
-        guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
+        // … nor while it is being made (AU-37: a photo picked then left the call face on the first one)
+        guard model.setup.companionCreated != true, !model.creatingCompanion else { imageError = "Their face is already set."; return }
         guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
         // a new photo needs a new check (V03); the old result and suggestion don't apply
         model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil; model.rightsAcked = false
@@ -393,6 +408,15 @@ import UniformTypeIdentifiers
                 .position(x: width - 48, y: 250 + top).accessibilityLabel("Remove image").accessibilityIdentifier("removeImage")
         }
         rightsRow(width: width, top: top)
+        // device QA only (server-listed accounts): bundled sample pictures, so QA never opens a real photo library.
+        // Same accept() → V03 check → polish path as a library pick. Never in the reference / screenshot viewport.
+        if QASamplePhotos.visible(for: model) && !referenceViewport {
+            Button { pickingSample = true } label: {
+                Text("Use a test photo").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink.opacity(0.55)).underline()
+                    .frame(width: width - 48, height: 36).contentShape(Rectangle())
+            }.buttonStyle(.plain).position(x: width / 2, y: 590 + top)
+                .accessibilityLabel("Use a test photo").accessibilityIdentifier(QASamplePhotos.entryID)
+        }
         // Alternate import uses the same upload surface; no extra product button is invented.
         Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
     }
@@ -526,8 +550,8 @@ import UniformTypeIdentifiers
             let cardWidth = (width - 90) / 2
             let left = label.x < 200 ? CGFloat(38) : 51 + cardWidth
             Button {
-                var updated = selectedIDs
-                if updated.contains(key) { updated.remove(key) } else { updated.insert(key) }
+                let updated = PresenceChips.toggle(selectedIDs, key)
+                guard updated != selectedIDs else { return }
                 model.setup.presenceCardIDs = updated
                 model.setup.presence = Set(labels.filter { updated.contains("\($0.x)-\($0.y)") }.compactMap(\.characters))
             } label: {
@@ -730,5 +754,16 @@ struct ReferencePhotoPicker: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.received(data) }
             }
         }
+    }
+}
+
+/// P "Describe their presence" (PRD B10): at most two chips. A third tap while two are on does nothing (AU-31: the
+/// server kept only two, so SUM listed a third that the persona never got).
+enum PresenceChips {
+    static let max = 2
+    static func toggle(_ selected: Set<String>, _ key: String) -> Set<String> {
+        var updated = selected
+        if updated.contains(key) { updated.remove(key) } else if updated.count < max { updated.insert(key) }
+        return updated
     }
 }

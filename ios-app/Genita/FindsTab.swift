@@ -22,7 +22,7 @@ struct FindsTabView: View {
                 }.buttonStyle(PressScale(scale: 0.94)).accessibilityLabel("Back").accessibilityIdentifier("findsBack")
                     .padding(.leading, 16).padding(.top, 52 + top).padding(.bottom, 2)
                 Text("Finds").font(TypeStyle.title(35)).tracking(-0.35).foregroundStyle(CallInk.ink).padding(.horizontal, 31).accessibilityAddTraits(.isHeader)
-                Text("What I looked up on our calls.").font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).padding(.horizontal, 31).padding(.top, 2)
+                Text("What I looked up on our calls.").font(TypeStyle.text(16)).foregroundStyle(CallInk.mute).padding(.horizontal, 31).padding(.top, 2)
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -41,6 +41,8 @@ struct FindsTabView: View {
         }
         .animation(.fade, value: sheetOpen)
         .animation(.fade, value: list.removed?.id)
+        // Dynamic Type: the list and its header grow up to AX2; the result sheet over it keeps its own fixed layout
+        .dynamicTypeSize(TextScale.screen)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("findsTab")
         .task { await list.load() }
@@ -52,8 +54,8 @@ struct FindsTabView: View {
             Color.clear.frame(maxHeight: .infinity)
         case .failed:
             VStack(spacing: 8) {
-                Text("Couldn’t load your Finds.").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink)
-                Text("Check your connection and try again.").font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
+                Text("Couldn’t load your Finds.").font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink)
+                Text("Check your connection and try again.").font(TypeStyle.text(16)).foregroundStyle(CallInk.mute)
                 Button("Try again") { Task { await list.load() } }.buttonStyle(SmallChipStyle(filled: true)).padding(.top, 8).accessibilityIdentifier("findsRetry")
             }.multilineTextAlignment(.center).frame(maxWidth: .infinity, maxHeight: .infinity).padding(.horizontal, 38)
         case .loaded where list.isEmpty:
@@ -78,13 +80,13 @@ struct FindsTabView: View {
                         .clipped()
                 }
             }.accessibilityHidden(true)
-            Text("Nothing here yet.").font(TypeStyle.body(18, .semibold)).foregroundStyle(CallInk.ink).padding(.top, 48)
+            Text("Nothing here yet.").font(TypeStyle.text(18, .semibold)).foregroundStyle(CallInk.ink).padding(.top, 48)
             // two even lines (QA build 7: "…on a call, and / it stays here." left a 3-word orphan); same F1 copy
-            Text("Ask me to look something up\non a call, and it stays here.").font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
+            Text("Ask me to look something up\non a call, and it stays here.").font(TypeStyle.text(16)).foregroundStyle(CallInk.mute)
                 .multilineTextAlignment(.center).padding(.top, 4).padding(.horizontal, 6)
             Spacer(minLength: 0)
             Button(action: close) {
-                Text("Back to our call").font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
+                Text("Back to our call").font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk).frame(maxWidth: .infinity).frame(height: 50)
                     .background(GlassCTA(color: CallInk.ink))
             }.buttonStyle(PressScale()).accessibilityIdentifier("findsBackToCall").padding(.bottom, 62)
         }.padding(.horizontal, 38).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -94,7 +96,7 @@ struct FindsTabView: View {
     private var rows: some View {
         List {
             ForEach(list.sections) { section in
-                Text(section.title).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute)
+                Text(section.title).font(TypeStyle.text(14)).foregroundStyle(CallInk.mute)
                     .padding(.top, 16).padding(.bottom, 4).frame(maxWidth: .infinity, alignment: .leading)
                     .listRowInsets(EdgeInsets(top: 0, leading: 31, bottom: 0, trailing: 31)).listRowSeparator(.hidden).listRowBackground(Color.clear)
                     .accessibilityAddTraits(.isHeader).accessibilityIdentifier("findsDay-\(section.title)")
@@ -125,8 +127,8 @@ struct FindsTabView: View {
 
     private func undoToast(_ card: FindCard) -> some View {
         HStack(spacing: 12) {
-            Text("Deleted").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk)
-            Button("Undo") { Task { await list.undoDelete() } }.font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.onInk)
+            Text("Deleted").font(TypeStyle.text(14, .medium)).foregroundStyle(CallInk.onInk)
+            Button("Undo") { Task { await list.undoDelete() } }.font(TypeStyle.text(14, .medium)).underline().foregroundStyle(CallInk.onInk)
                 .padding(.horizontal, 8).frame(minHeight: 44).accessibilityIdentifier("findsUndo")
         }
         .padding(.leading, 16).padding(.trailing, 8)
@@ -151,8 +153,8 @@ struct FindRowView: View {
         HStack(spacing: 12) {
             thumb.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 0) {
-                Text(row.title).font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                Text(row.subtitle).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).lineLimit(1)
+                Text(row.title).font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.ink).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Text(row.subtitle).font(TypeStyle.text(14)).foregroundStyle(CallInk.mute).lineLimit(1)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 72)
