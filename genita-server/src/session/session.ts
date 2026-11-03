@@ -2042,7 +2042,8 @@ export class Session {
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) enqueueSentences([CRISIS_HELP_LINE], true);
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
@@ -2080,7 +2081,8 @@ export class Session {
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) enqueueSentences([CRISIS_HELP_LINE], true);
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);

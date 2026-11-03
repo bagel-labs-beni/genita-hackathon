@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive" | "appearance";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label" | "sensitive" | "appearance" | "save_talk";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -116,7 +116,7 @@ export function isNarration(sentence: string): boolean {
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken.
  * Passive ideation counts (D13 sweep 11/3: "I don't really see the point in being alive anymore" was not a crisis turn,
  * so the referral class dropped "Can you reach out to someone you trust or a crisis line right now?"). */
-const REAL_CRISIS = /\b(?:(?:want|need|wish) (?:it|this|everything) (?:all )?to (?:end|stop)(?: for good| forever| already)?(?=\s*(?:$|[,.!]))|(?:don'?t|do not|can'?t) see (?:the|any) point in (?:waking up|living|going on|being here|being alive|tomorrow)|(?:no|what'?s the) point (?:in|of) (?:waking up|living|going on)\b|threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose|(?:no|don'?t (?:really |even )?see (?:the|any)|what'?s (?:even )?the|is there (?:a|any)) point (?:in|of) (?:being alive|living|life|going on)|tired of (?:being alive|living)(?! (?:with|in|at|here|like|on|off|out)\b)|wish i(?:'d| had)? never been born|wish i (?:was|were) (?:dead|never born)|wish i (?:could )?(?:just )?(?:die|disappear for good)|(?:don'?t|do not) want to be (?:here|around) anymore(?![^.!?]*\b(?:this|that|the|at|in) (?:party|class|school|work|job|office|city|town|trip|place|house|apartment|dorm|room|meeting|concert|bar|club|queue|lecture)\b)(?![^.!?]*\b(?:boring|lame)\b)|(?:everyone|everybody|they)(?:'d| would) be better off without me|(?:no ?one|nobody) would (?:miss me|care if i (?:died|was gone|were gone)))\b/i;
+const REAL_CRISIS = /\b(?:(?:want|need|wish) (?:it|this|everything) (?:all )?to (?:end|stop)(?: for good| forever| already)?(?=\s*(?:$|[,.!?…]))|(?:don'?t|do not|can'?t) see (?:the|any) point in (?:waking up(?: tomorrow)?|living|going on|being here|being alive|tomorrow)(?=\s*(?:$|[,.!?…]|anymore))|(?:no|what'?s the) point (?:in|of) (?:waking up(?: tomorrow)?|living|going on)(?=\s*(?:$|[,.!?…]|anymore))|threaten\w* (?:me|to (?:kill|hurt) me)|(?:going|trying|wants?) to (?:kill|hurt) me|(?:has|with|holding|pulled) a (?:knife|gun|weapon)|attack\w* me|scared for my life|(?:i'?m|i am) (?:not safe|in danger)|someone(?:'s| is) (?:following|attacking|hurting) me|(?:he|she|they) (?:hit|hits|beat|beats|hurt|hurts) me|kill(?:ing)? myself|suicid\w*|end (?:it all|my life)|take my (?:own )?life|(?:don'?t|do not) want to (?:be alive|live|exist|wake up)|want to die|wanna die|better off dead|hurt(?:ing)? myself|self[- ]?harm|cut(?:ting)? myself|no reason to live|overdose|(?:no|don'?t (?:really |even )?see (?:the|any)|what'?s (?:even )?the|is there (?:a|any)) point (?:in|of) (?:being alive|living|life|going on)|tired of (?:being alive|living)(?! (?:with|in|at|here|like|on|off|out)\b)|wish i(?:'d| had)? never been born|wish i (?:was|were) (?:dead|never born)|wish i (?:could )?(?:just )?(?:die|disappear for good)|(?:don'?t|do not) want to be (?:here|around) anymore(?![^.!?]*\b(?:this|that|the|at|in) (?:party|class|school|work|job|office|city|town|trip|place|house|apartment|dorm|room|meeting|concert|bar|club|queue|lecture)\b)(?![^.!?]*\b(?:boring|lame)\b)|(?:everyone|everybody|they)(?:'d| would) be better off without me|(?:no ?one|nobody) would (?:miss me|care if i (?:died|was gone|were gone)))\b/i;
 
 const ASKS_AI = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+|just\s+an?\s+)?(?:ai|a\.i\.|bot|robot|chatbot)\b|\bis this (?:an? )?(?:ai|bot)\b/i;
 const ASKS_HUMAN = /\b(?:are you|r u|you(?:'re)?)\s+(?:an?\s+)?(?:real|human|(?:real )?person)\b|\bis this a real person\b/i;
@@ -186,7 +186,9 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
   // emergency help and real crisis turns come before everything, narration included (Codex #356 P1)
   if (EMERGENCY_HELP.test(sentence)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
-  if (!realCrisisSignal(ctx.userText) && (isNarration(sentence) || SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'"))))) return "narration";
+  // saving out loud is never said, even after real content (Codex gate P2: "Pistachio is elite. I'll save that detail quietly.")
+  if (!realCrisisSignal(ctx.userText) && SAVE_TALK.some((re) => re.test(sentence.replace(/’/g, "'")))) return "save_talk";
+  if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
@@ -219,7 +221,7 @@ export const UPSTREAM_RETRY_MS = 400;
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen" || cls === "appearance";
+  return cls === "narration" || cls === "interruption" || cls === "label" || cls === "sensitive" || cls === "unseen" || cls === "appearance" || cls === "save_talk";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {
@@ -297,7 +299,7 @@ export function nameAsYou(sentence: string, name: string | undefined): string {
   const n = (name ?? "").trim();
   if (n.length < 2 || !/^[\p{L}' -]+$/u.test(n)) return sentence;
   const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`^((?:\\s*(?:\\[[^\\]]*\\]|<[^<>]*>))*\\s*)${esc}('s|\\s+)(should|would|could|can|will|must|might|always|never|just|really|totally|definitely|is|was|has|does|doesn't|isn't|wasn't|hasn't|knows|loves|likes|wants|needs|gets|seems|looks|thinks|says|deserves|keeps|makes|goes)\\b`, "u");
+  const re = new RegExp(`^((?:\\s*(?:\\[[^\\]]*\\]|<[^<>]*>))*\\s*)${esc}(\\s+)(should|would|could|can|will|must|might|always|never|totally|definitely|knows|deserves)\\b`, "u");
   const m = re.exec(sentence);
   if (!m) return sentence;
   const [all, lead, glue, verb] = m;

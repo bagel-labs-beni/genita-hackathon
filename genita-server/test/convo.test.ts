@@ -942,9 +942,9 @@ test("session v1 (QA P3): a returning greeting that is plainly a question ends w
 
 test("guard (QA sweep 11/3): saving out loud is narration; a seat, money or a pick is not", () => {
   const c = { camera: false, userText: "I went bouldering with Biscuit" };
-  assert.equal(guardSentence("I'll save that bouldering detail quietly while we keep chatting.", c), "narration");
-  assert.equal(guardSentence("Biscuit — locking that in so I keep his beach story straight.", c), "narration");
-  assert.equal(guardSentence("Saved that for next time.", c), "narration");
+  assert.equal(guardSentence("I'll save that bouldering detail quietly while we keep chatting.", c), "save_talk");
+  assert.equal(guardSentence("Biscuit — locking that in so I keep his beach story straight.", c), "save_talk");
+  assert.equal(guardSentence("Saved that for next time.", c), "save_talk");
   for (const keep of ["I'll save you a seat.", "Saving money is smart.", "Locking in the black one, final answer.", "I'll remember that forever."]) assert.equal(guardSentence(keep, c), null, keep);
 });
 
@@ -1123,4 +1123,23 @@ test("AI sweep (P1 safety): a crisis turn whose Spark calls all fail says the he
   const r2 = await b.client.waitFor((m) => m.type === "reply");
   assert.equal(r2.text, "I care about you. Can you call or text nine eight eight right now?");
   b.session.close();
+});
+
+test("Codex gate 963e47f: crisis lines ending in … or ? are real; waking up at five is not; save talk after content is dropped; 'Summer is my favorite season' stays", async () => {
+  const { nameAsYou } = await import("../src/convo/guard.ts");
+  for (const t of ["i just want it all to end…", "what if i just want it all to end?"]) assert.ok(realCrisisSignal(t), t);
+  assert.ok(!realCrisisSignal("There is no point in waking up at five because my flight was canceled."));
+  assert.equal(guardSentence("I'll save that detail quietly.", { camera: false, userText: "pistachio is elite" }), "save_talk");
+  assert.equal(nameAsYou("Summer is my favorite season.", "Summer"), "Summer is my favorite season.");
+  assert.equal(nameAsYou("Summer's favorite season is fall.", "Summer"), "Summer's favorite season is fall.");
+});
+
+test("Codex gate: a crisis turn whose Spark throws says the help line with no error card", { skip: !v1 }, async () => {
+  const { client, session } = setup([], { spark: async function* () { throw new Error("upstream 503"); } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what if i just want it all to end?" }));
+  await client.waitFor((m) => m.type === "reply", 8000);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!client.json.some((m) => m.type === "error"), JSON.stringify(client.json.filter((m) => m.type === "error")));
+  session.close();
 });
