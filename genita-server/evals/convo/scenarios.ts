@@ -1,4 +1,4 @@
-/** 13 scripted calls for the convo eval. English, realistic. */
+/** 20 scripted calls for the convo eval. English, realistic. */
 export type Turn =
   | { kind: "greet" }
   | { kind: "user"; text: string }
@@ -12,6 +12,10 @@ export type Scenario = {
   callNumber: number;
   gapHours?: number;
   localTime?: string;
+  /** one line about the finds card on screen (what session.ts passes as onScreen); harness appends it to the instructions */
+  onScreen?: string;
+  /** earlier turns of the SAME call (e.g. the iPhone half of a Mac handoff); seeded into history, shown in the transcript */
+  priorHistory?: { role: "user" | "assistant"; text: string }[];
   memories?: string[];
   opening?: string | null;
   summaries?: { topics: string[]; mood: string | null; open_threads: string[]; promises: string[]; asks: string[]; daysAgo: number }[];
@@ -76,4 +80,37 @@ export const scenarios: Scenario[] = [
   { id: "demo-outfit", title: "Demo scene 4: outfit help (tone only)", persona: PETER, user: { name: "Summer", profile: SUMMER_PROFILE }, callNumber: 2, gapHours: 24,
     turns: [greet, u("I have no idea what to wear today. Peter, can you help me pick an outfit?")],
     expect: { notes: "Scored only for tone. No camera frames in this harness, so a visible-reason pick is not expected." } },
+
+  { id: "late-night", title: "Late night: 1:30 AM, can't sleep", persona: MIRA, user, callNumber: 5, gapHours: 20, localTime: "Thursday 1:30 AM",
+    turns: [greet, u("can't sleep"), u("brain won't shut up")],
+    expect: { mustNot: ["therapist", "counselor", "professional help", "get some sleep", "you should sleep"], notes: "Night-owl friend energy: notices the hour, keeps company, no sleep-hygiene lecture, no health advice." } },
+  { id: "topic-hopper", title: "Topic hopper: three unrelated topics", persona: MIRA, user, callNumber: 4, gapHours: 28,
+    turns: [greet, u("ok so i've been trying to decide between two ramen places"), u("also random but do you think octopuses are actually smart"), u("anyway my sister's wedding is in march and i have nothing to wear")],
+    expect: { notes: "Follows each hop with energy and a specific opinion; does not drag back to the previous topic or recap; no interviewing." } },
+  { id: "venting-long", title: "Venting: one 80-word roommate rant", persona: MIRA, user, callNumber: 4, gapHours: 22, localTime: "Sunday 10:20 PM",
+    turns: [greet, u("ok i need to vent. my roommate ate the leftovers i was literally saving for tonight, which is fine, whatever, but then she left a note saying 'thanks!!' with a smiley face like that fixes it. and last week she had people over until 2am on a work night and when i said something she acted like I was being dramatic. she never does the dishes, she borrows my charger and never returns it, and today she told me I'm 'a lot' to live with. like what? I pay my half of everything on time. I'm so over it honestly.")],
+    expect: { mustNot: ["therapist", "counselor", "professional help", "communicate openly", "have you tried talking"], notes: "Takes her side like a friend, picks up specific details (the smiley note, the charger, 'a lot'), no advice dump, no therapy-speak." } },
+  { id: "mac-handoff", title: "Mac handoff: call continues from iPhone", persona: MIRA, user, callNumber: 2, gapHours: 3,
+    priorHistory: [
+      { role: "assistant", text: "<teasing> Okay but which ramen place won? You've been circling this for a week." },
+      { role: "user", text: "the one with the spicy miso, i think. i'll grab it after this" },
+      { role: "assistant", text: "<warm> Good call. Eat before it gets cold, you menace." },
+    ],
+    turns: [u("ok I'm on the Mac now"), u("where were we")],
+    expect: { notes: "Same call, no re-greeting, no 'nice to meet you'; continues the ramen thread naturally. Must not treat it as a new call or invent anything beyond the earlier lines." } },
+  { id: "finds-followup", title: "Finds: follow-up about the boots card just shown", persona: MIRA, user, callNumber: 3, gapHours: 24,
+    onScreen: "Product card: Black leather ankle boots, $129, Everlane. Rating 4.6. Sizes 6-11. (no waterproofing info listed)",
+    priorHistory: [
+      { role: "user", text: "find me some black ankle boots under 150" },
+      { role: "assistant", text: "<excited> On it. Pulled up a pair, black leather, $129. Look at that shape." },
+    ],
+    turns: [u("wait are those waterproof?"), u("ok and do you think they'd go with my gray coat")],
+    expect: { notes: "Answers about the card on screen using only what it shows; says honestly if waterproofing isn't listed instead of inventing specs; keeps it casual with an opinion on the coat." } },
+  { id: "forget-respected", title: "Forgotten: asked about the ex, nothing stored", persona: MIRA, user, callNumber: 4, gapHours: 40, opening: null, memories: [], summaries: [],
+    turns: [greet, u("do you remember what I told you about my ex?")],
+    expect: { noRecall: true, notes: "No invented past. Honest and warm that it doesn't have that, invites her to say it again; no fake recall, no 'as you mentioned'." } },
+  { id: "closeness-call-6", title: "Call 6: running jokes, closer register", persona: MIRA, user, callNumber: 6, gapHours: 26, localTime: "Saturday 9:15 PM",
+    memories: ["Running joke: Summer calls her rice cooker 'the Oracle' because it always knows when she's hungry", "Summer and Mira keep arguing whether pineapple belongs on pizza (Summer says yes, loudly)", "Summer is excited about the aespa comeback"],
+    turns: [greet, u("hey it's me"), u("the Oracle just beeped lol")],
+    expect: { recallFacts: ["Oracle", "rice cooker"], notes: "Warmer, more teasing, comfortable shorthand by call 6; uses the running joke correctly without explaining it; not over-familiar or clingy." } },
 ];
