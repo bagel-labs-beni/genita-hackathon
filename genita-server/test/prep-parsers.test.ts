@@ -217,8 +217,12 @@ test("skip card: validation and control chars", () => {
   bad({ avoid: ["x".repeat(61)] });
   bad({ avoid: [5] });
   bad({ replies: "Whatever" });
-  bad({});
-  bad({ interests: ["", "  "] });
+  // AU-14: nothing picked (or only blank picks) is an empty card, not an error
+  for (const empty of [{}, { interests: ["", "  "] }]) {
+    const e = skipStyleCard(empty);
+    assert.ok(e.ok, JSON.stringify(empty));
+    if (e.ok) assert.equal(e.card.itemCount, 0);
+  }
   const r = skipStyleCard({ interests: ["De\u0000si\ngn\u202e"], replies: null, avoid: [] });
   assert.ok(r.ok);
   if (r.ok) assert.equal(r.card.display[3].items[0].text, "De si gn");

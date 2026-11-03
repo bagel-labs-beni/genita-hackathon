@@ -130,7 +130,7 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
       case "proximity.disarm":
         return handle.proximityDisarm();
       case "proximity.seen":
-        return void handle.proximitySeen(m.token).catch(fail);
+        return void handle.proximitySeen(m.token, m.requestId).catch(fail);
       case "ping":
         return send({ type: "pong", t: m.t ?? null });
       default:

@@ -33,6 +33,9 @@ struct DesignNode: Decodable, Identifiable {
         if let lineHeight { paragraph.minimumLineHeight = lineHeight; paragraph.maximumLineHeight = lineHeight }
         paragraph.alignment = align == "CENTER" ? .center : align == "RIGHT" ? .right : .left
         paragraph.lineBreakMode = .byWordWrapping
+        // live text (answers, names): no one-word last line ("…without / approval" → "…actions / without approval");
+        // Figma's own copy keeps its hand-set breaks
+        if text != nil { paragraph.lineBreakStrategy = .standard }
         var attributes: [NSAttributedString.Key:Any] = [.font:font, .foregroundColor:override ?? color?.ui ?? UIColor(white: 0.067, alpha: 1), .paragraphStyle:paragraph]
         // Zero tracking must leave the font's built-in kerning enabled.
         if let spacing = letterSpacing, spacing != 0 { attributes[.kern] = spacing }

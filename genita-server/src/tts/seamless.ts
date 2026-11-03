@@ -10,8 +10,8 @@
  * - Text is turned into spoken form first (normalize.ts); captions keep the written text.
  * - Each clause gets a short pause at its end (Seamless trims silence; separate requests would run together).
  * - Short clauses ("Hmm,", "Oh!", "Yeah.") are cached per speaker+lang and prefetched for each speaker.
- * - After a failure the client stays "down" for 30 s and fails fast, so replies go to the app's
- *   own voice (`say`) instead of waiting on a dead service; then it tries again.
+ * - After a failure the client stays "down" for 30 s and fails fast (a live reply's one retry, `force`, still
+ *   asks); the reply then shows captions without a voice, never another voice (11/4); then it tries again.
  */
 import { UpstreamError } from "../meta/http.ts";
 import type { VoiceConfig } from "../config.ts";
@@ -23,6 +23,11 @@ import { g2pOn, relabelPhonemes } from "../lips/g2p.ts";
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
 const CACHE_MAX_CHARS = 14;
+/**
+ * 11/4: when the voice service stays down for a whole reply, this line is said in the companion's own voice from the
+ * cache (prefetched per speaker with the fillers) instead of the phone's system voice. Kept short and neutral.
+ */
+export const RECOVER_LINE = "Sorry, my voice cut out. Say that again?";
 const CACHE_MAX = 1200; // fillers x (neutral + VOICE_EMOTIONS) x the 4 V04 speakers fits
 
 /** Labels the voice GPU moves (deploy/modal-voice/post.py SHIFT_ST). neutral / curious / unknown send no emotion. */
@@ -41,6 +46,8 @@ export const NEUTRAL_FILLERS = new Set<string>([
   "Oh!|whisper", "Oh wow,|whisper",
 ]);
 const DOWN_MS = 30_000;
+/** first-byte budget for the prefetch warmup clause: a cold GPU container (min_containers 0) starts in 25-40 s */
+export const WARMUP_MS = 45_000;
 /** D27: the GPU's queue was full (503 {"error":"busy"}): park briefly so the next sentences go straight to the device */
 const BUSY_DOWN_MS = 2_000;
 
@@ -114,10 +121,11 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
   let downUntil = 0;
   const modelName = cfg.model === "mms" ? "mms-tts" : SEAMLESS_MODEL;
 
-  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}): AsyncGenerator<TtsChunk> {
+  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal, extra: Record<string, unknown> = {}, firstByteMs = cfg.timeoutMs): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
-    // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
-    let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
+    // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk); the
+    // prefetch warmup waits longer for its first byte (a cold GPU container starts in 25-40 s)
+    let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), firstByteMs);
     const progress = () => {
       clearTimeout(timer);
       timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
@@ -138,6 +146,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         throw new UpstreamError("voice", null, err instanceof Error ? err.message : "fetch failed");
       }
       if (!r.ok || !r.body) throw new UpstreamError("voice", r.status, (await r.text().catch(() => "")).slice(0, 200));
+      // the service answered: a parked outage is over (a live reply's forced retry gets the next clauses through, 11/4)
+      downUntil = 0;
       const dec = new TextDecoder();
       let buf = "";
       let done = false;
@@ -204,7 +214,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     cache.set(k, chunks);
   };
 
-  async function* speak(req: SeamlessRequest, quiet = false): AsyncGenerator<TtsChunk> {
+  async function* speak(req: SeamlessRequest, quiet = false, firstByteMs = cfg.timeoutMs): AsyncGenerator<TtsChunk> {
     const lang = seamlessLang(req.lang, req.text);
     const text = spokenText(req.text, lang);
     if (!text || !/[\p{L}\p{N}]/u.test(text)) return; // nothing to say (emoji-only, punctuation)
@@ -223,7 +233,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       yield* hit;
       return;
     }
-    if (now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
+    if (req.cachedOnly) throw new UpstreamError("voice", null, "not_cached");
+    if (!req.force && now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
     const got: TtsChunk[] = [];
     // normalisation can grow a sentence past the service's 400-char cap: send it in pieces, pause only after
     // the last, and shift each piece's timing onto the sentence's own timeline
@@ -232,7 +243,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let offsetSec = 0;
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
-        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra)) {
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal, extra, firstByteMs)) {
           let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;
@@ -255,19 +266,29 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       }
       throw err;
     }
-    if (text.length <= CACHE_MAX_CHARS && got.length) remember(k, got);
+    if ((text.length <= CACHE_MAX_CHARS || req.text === RECOVER_LINE) && got.length) remember(k, got);
   }
 
   function prefetch(speaker: number): void {
     const p = `${speaker}`;
-    if (prefetched.has(p) || now() < downUntil) return;
+    // no down check: the warmup below is how a parked voice finds out the GPU is back (an answer clears it)
+    if (prefetched.has(p)) return;
     prefetched.add(p);
     void (async () => {
-      for (const f of FILLERS) {
-        try {
-          for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: null, model: SEAMLESS_MODEL, lang: "en" })) void _;
-        } catch {
+      // 11/4 (audit AU-98): a prefetch never parks the voice for every call (quiet), and its first clause is the
+      // warmup: it waits up to WARMUP_MS for a cold container and is tried twice. Was: a cold GPU timed out the first
+      // filler at 4 s, marked the whole server's voice down for 30 s, and every call fell back to the phone's voice.
+      for (const [k, f] of [...FILLERS, RECOVER_LINE].entries()) {
+        let ok = false;
+        for (let attempt = 0; attempt < (k === 0 ? 2 : 1) && !ok; attempt++) {
+          try {
+            for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: null, model: SEAMLESS_MODEL, lang: "en", ...(k === 0 ? { force: true } : {}) }, true, k === 0 ? WARMUP_MS : cfg.timeoutMs)) void _;
+            ok = true;
+          } catch { /* next attempt, or give up below */ }
+        }
+        if (!ok) {
           prefetched.delete(p);
+          opts.log?.("voice.prefetch_failed", { speaker, clause: k });
           return;
         }
       }
