@@ -45,7 +45,6 @@ import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { PerceptionController } from "../perception/controller.ts";
-import type { PerceptionSource } from "../perception/types.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { fallbackLine, guardSentence, type GuardClass } from "../convo/guard.ts";
@@ -286,8 +285,7 @@ export class Session {
   private finds: FindsRunner | null = null;
   /** a card's line waiting for the current reply to finish (dropped if the user talks first) */
   private pendingAnnounce: { text: string; at: number } | null = null;
-  /** PERC-1 (#319): the conversation engine's seam (contextLine / pendingHint / onTrigger); null with GENITA_PERCEPTION off */
-  perception: PerceptionSource | null = null;
+  /** PERC-1 (#319): sets `perception` (declared above) when GENITA_PERCEPTION is on */
   private perceptionCtl: PerceptionController | null = null;
   /** for perception timing: when the companion's last reply ended / the user last stopped speaking */
   private lastReplyEndAt: number | null = null;
