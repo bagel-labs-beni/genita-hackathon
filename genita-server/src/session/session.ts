@@ -1304,7 +1304,7 @@ export class Session {
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
       const hooks = rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
-      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
+      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
       opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });

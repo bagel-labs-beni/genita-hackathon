@@ -7,7 +7,7 @@
  * The caller never lets the guard empty a reply: if every sentence is dropped, the first one is spoken
  * (the same fallback as the repeated-opener guard).
  */
-export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption";
+export type GuardClass = "counselor" | "assistant" | "intake" | "guilt" | "referral" | "unseen" | "denies_ai" | "narration" | "interruption" | "label";
 
 export type GuardContext = {
   /** camera (or shared-screen) frames are attached to this turn */
@@ -25,7 +25,10 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
-  ["unseen", /\b(?:you look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
+  // QA sweep 11/3 (first-call opener 3/3): a personality label instead of a topic — "you totally seem like someone who
+  // deletes an app if the icons look cheap", "you give off … energy", "you're the type who…" (DESIGN §8.5: never type them)
+  ["label", /\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey |100% )?(?:seem|look|sound|strike me|come across|read)(?:s)? (?:like|as) (?:the )?(?:type|kind|sort|someone|somebody|a person|one of those)\b|\byou(?:'re| are)?\s+(?:totally |so |really |just |definitely |kinda |lowkey )?(?:giv(?:e|es|ing) off|have(?: such)? an?)\b[^.!?]{0,80}\b(?:energy|vibes?)\b|\byou'?re (?:totally |so |definitely |100% )?(?:the|that) (?:type|kind|sort) (?:of (?:person|human|girl|guy) )?(?:who|that|to)\b|\bi bet you'?re (?:the|that|one of those) (?:type|kind|people)\b/i],
+  ["unseen", /\b(?:you (?:totally |really |so |just |kinda )?look(?:s|ing)?\b|i can see (?:you|that you)|you seem (?:tired|sleepy|exhausted|sad|happy) (?:on|from) (?:camera|here))/i],
 ];
 
 /**
@@ -173,7 +176,7 @@ export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {
-  return cls === "narration" || cls === "interruption";
+  return cls === "narration" || cls === "interruption" || cls === "label";
 }
 
 export function fallbackLine(cls: GuardClass): string | null {

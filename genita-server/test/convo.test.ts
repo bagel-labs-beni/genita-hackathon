@@ -947,3 +947,18 @@ test("guard (QA sweep 11/3): saving out loud is narration; a seat, money or a pi
   assert.equal(guardSentence("Saved that for next time.", c), "narration");
   for (const keep of ["I'll save you a seat.", "Saving money is smart.", "Locking in the black one, final answer.", "I'll remember that forever."]) assert.equal(guardSentence(keep, c), null, keep);
 });
+
+test("guard (QA sweep 11/3, first-call opener 3/3): a personality label is never said; talk about things is kept", () => {
+  for (const t of ["Okay you totally seem like someone who deletes an app if the icons look cheap.", "You totally look like someone who reads the reviews first.", "you totally give off I will delete this app if it looks cheap energy.", "You're the type who alphabetizes spices."]) assert.equal(guardSentence(t, none), "label", t);
+  for (const t of ["That kimchi pasta is a crime and I want the recipe.", "Your fit gives off main character energy.", "That song has such good energy.", "You seem like you had a long day."]) assert.equal(guardSentence(t, none), null, t);
+});
+
+test("session v1: a first-call opener that only labels the user is retried, never said", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<teasing> Okay you totally seem like someone who deletes an app if the icons look cheap.", "<teasing> Kimchi pasta at midnight is elite and I will not be taking questions."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 0, user: { name: "Summer", profile: "Into: cooking Korean-Western fusion." } }));
+  const reply = await client.waitFor((m) => m.type === "reply", 4000);
+  assert.equal(reply.text, "Kimchi pasta at midnight is elite and I will not be taking questions.");
+  assert.ok(calls.length >= 2);
+  assert.match(calls[0].instructions!, /Talk about the thing, never about what kind of person they are\./);
+  session.close();
+});
