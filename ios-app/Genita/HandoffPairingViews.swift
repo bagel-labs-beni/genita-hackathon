@@ -86,7 +86,7 @@ struct PhonePairingView: View {
         VStack(alignment: .leading, spacing: 0) {
             title("Paired with your Mac.").padding(.top, 12)
             Text(handoff.proximitySupported
-                 ? "You can also move by touching your Mac’s screen edge. Show this iPhone your Mac’s screen once to set it up."
+                 ? "You can also move by touching your Mac’s\u{00A0}screen edge. Show this iPhone your Mac’s\u{00A0}screen once to set it up."   // "Mac’s / screen" never splits (pixel QA)
                  : "Use Move to Mac in the menu to move the conversation.")
                 .font(.custom("PretendardVariable-Regular", fixedSize: 16)).foregroundStyle(ink).fixedSize(horizontal: false, vertical: true).padding(.top, 16)
             if handoff.proximitySupported {
@@ -134,18 +134,21 @@ struct HandoffMoveStatusLine: View {
     @ObservedObject private var handoff = PhoneHandoff.shared
     var body: some View {
         Group {
-            if handoff.moving { pill(icon: AnyView(CueSpinner()), text: "Moving to your Mac…", id: "moveStatusMoving") }
-            else if handoff.moveFailed { pill(icon: AnyView(CueAlert()), text: "Mac not responding. Still here.", id: "moveStatusFailed") }
+            if handoff.moving { pill(icon: AnyView(CueSpinner()), text: Self.text(moving: true), id: "moveStatusMoving") }
+            else if handoff.moveFailed { pill(icon: AnyView(CueAlert()), text: Self.text(moving: false), id: "moveStatusFailed") }
         }
         .animation(.easeOut(duration: 0.2), value: handoff.moving).animation(.easeOut(duration: 0.2), value: handoff.moveFailed)
     }
+    static func text(moving: Bool) -> String { moving ? "Moving to your Mac…" : "Mac not responding. Still here." }
     private func pill(icon: AnyView, text: String, id: String) -> some View {
-        HStack(spacing: 8) {
+        // the same pill box as the call cue (HUD r01 A, CallPillMetrics)
+        HStack(spacing: CallPillMetrics.iconSpacing) {
             icon
             Text(text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
         }
-        .padding(.horizontal, 16).padding(.vertical, 8).frame(minHeight: 36)
-        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.leading, CallPillMetrics.leading).padding(.trailing, CallPillMetrics.trailing).padding(.vertical, CallPillMetrics.vertical)
+        .frame(minHeight: CallPillMetrics.height)
+        .background(CallInk.pill, in: RoundedRectangle(cornerRadius: CallPillMetrics.radius))
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently).accessibilityIdentifier(id)
     }
 }

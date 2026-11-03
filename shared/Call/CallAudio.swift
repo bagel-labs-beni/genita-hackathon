@@ -21,6 +21,32 @@ import os
     private(set) var voiceProcessing = false
     var isPlaying: Bool { queuedBuffers > 0 }
 
+    // MARK: voice levels (motion details cards 1, 2: the pill's bars follow the reply, the mic ring follows the user)
+
+    /// The user's voice 0…1 right now (the last mic buffer), 0 while the mic is off. Read every frame by the UI.
+    var inputLevel: Float { micOpen ? inputMeter.value : 0 }
+    /// The reply's loudness 0…1 at the playhead (20 ms steps of the queued audio), 0 when nothing plays.
+    var outputLevel: Float {
+        guard let now = nowSample() else { return 0 }
+        pruneOutputSpans(now: now)
+        guard let span = outputSpans.first(where: { $0.start <= now }) else { return 0 }
+        let i = Int((now - span.start) / AVAudioFramePosition(OutputSpan.stepSamples))
+        return span.levels.indices.contains(i) ? span.levels[i] : 0
+    }
+    /// Drops levels already played (also from the playback path, so a call nobody draws the meter for stays small).
+    private func pruneOutputSpans(now: AVAudioFramePosition? = nil) {
+        guard let now = now ?? nowSample() else { return }
+        outputSpans.removeAll { $0.end <= now }
+    }
+    private let inputMeter = VoiceLevelMeter()
+    private var outputSpans: [OutputSpan] = []
+    private struct OutputSpan {
+        static let stepSamples = GenitaProtocol.sampleRate / 50
+        let start: AVAudioFramePosition
+        let levels: [Float]
+        var end: AVAudioFramePosition { start + AVAudioFramePosition(levels.count * Self.stepSamples) }
+    }
+
     private var engine = AVAudioEngine()
     private var player = AVAudioPlayerNode()
     /// Convo P1 #345: a soft listening cue ("mm-hm") played beside the reply queue — never a reply, never counted
@@ -100,6 +126,7 @@ import os
         if !player.isPlaying { player.play() }
         let begin = max(scheduledEnd, nowSample() ?? 0)
         if utteranceStart[utteranceId] == nil { utteranceStart[utteranceId] = begin }
+        outputSpans.append(OutputSpan(start: begin, levels: VoiceLevel.steps(floats, stepSamples: OutputSpan.stepSamples)))
         scheduledEnd = begin + AVAudioFramePosition(buffer.frameLength)
         let gen = generation
         queuedBuffers += 1
@@ -163,6 +190,7 @@ import os
         queuedByUtterance.removeAll()
         completeUtterances.removeAll()
         utteranceStart.removeAll()
+        outputSpans.removeAll()
         scheduledEnd = 0
         if engine.isRunning { player.play() }
         releaseMicIfIdle()
@@ -170,6 +198,7 @@ import os
 
     private func played(utteranceId: Int, generation gen: Int) {
         guard gen == generation else { return }
+        pruneOutputSpans()
         queuedBuffers = max(0, queuedBuffers - 1)
         queuedByUtterance[utteranceId, default: 1] -= 1
         checkDone(utteranceId)
@@ -209,6 +238,7 @@ import os
         player = AVAudioPlayerNode()
         cuePlayer = AVAudioPlayerNode()
         utteranceStart.removeAll()
+        outputSpans.removeAll()
         scheduledEnd = 0
         queuedBuffers = 0
         queuedByUtterance.removeAll()
@@ -225,7 +255,7 @@ import os
             }
             let format = input.outputFormat(forBus: 0)
             if format.sampleRate > 0, format.channelCount > 0 {
-                let pipeline = MicPipeline(input: format)
+                let pipeline = MicPipeline(input: format, meter: inputMeter)
                 pipeline.enabled = micOpen
                 // the user spoke up over a cue: stop the cue at once (Codex #475 P1)
                 pipeline.onSpeechDuringCue = { [weak self] in Task { @MainActor in self?.stopCue() } }
@@ -307,7 +337,11 @@ final class MicPipeline: @unchecked Sendable {
     /// RMS (int16 units) above which a frame in the cue window counts as the user's voice (stops the cue)
     static let cueVoiceRMS: Double = 500
 
-    init(input: AVAudioFormat) {
+    /// The mic level for the UI (motion details card 2), set from every converted buffer.
+    private let meter: VoiceLevelMeter?
+
+    init(input: AVAudioFormat, meter: VoiceLevelMeter? = nil) {
+        self.meter = meter
         converter = AVAudioConverter(from: input, to: output)
         // Voice processing can report several channels; channel 0 is the processed voice.
         if input.channelCount > 1 { converter?.channelMap = [0] }
@@ -328,6 +362,7 @@ final class MicPipeline: @unchecked Sendable {
         }
         guard error == nil, out.frameLength > 0, let samples = out.int16ChannelData?[0] else { return [] }
         let chunk = Array(UnsafeBufferPointer(start: samples, count: Int(out.frameLength)))
+        if let meter { meter.value = VoiceLevel.level(int16: chunk) }
         var resumed = false
         let frames: [Data] = lock.withLock {
             if ProcessInfo.processInfo.systemUptime < silencedUntil {
@@ -339,5 +374,39 @@ final class MicPipeline: @unchecked Sendable {
         }
         if resumed { onSpeechDuringCue?() }
         return frames
+    }
+}
+
+// MARK: - Voice levels (motion details)
+
+/// Loudness 0…1 on a dB scale: −50 dBFS → 0, −10 dBFS → 1 (speech sits around 0.4–0.8).
+enum VoiceLevel {
+    static func normalized(rms: Float) -> Float {
+        let db = 20 * log10(max(rms, 1e-6))
+        return max(0, min(1, (db + 50) / 40))
+    }
+    static func level(int16 samples: [Int16]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var sum: Float = 0
+        for s in samples { let f = Float(s) / 32768; sum += f * f }
+        return normalized(rms: (sum / Float(samples.count)).squareRoot())
+    }
+    /// One level per `stepSamples` of float PCM (the last step may be shorter).
+    static func steps(_ floats: [Float], stepSamples: Int) -> [Float] {
+        stride(from: 0, to: floats.count, by: max(1, stepSamples)).map { i in
+            let slice = floats[i..<min(floats.count, i + stepSamples)]
+            let sum = slice.reduce(Float(0)) { $0 + $1 * $1 }
+            return normalized(rms: (sum / Float(slice.count)).squareRoot())
+        }
+    }
+}
+
+/// The last mic level, written on the audio thread and read on the main thread.
+final class VoiceLevelMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Float = 0
+    var value: Float {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
     }
 }

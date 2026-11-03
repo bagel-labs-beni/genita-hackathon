@@ -99,6 +99,40 @@ final class FindsTabUITests: XCTestCase {
 
     private let camera = ["GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-1", "GENITA_CALL_AUTOCAMERA": "1", "GENITA_FIXTURE_SCRIPT": "none"]
 
+    /// PRD D22 (WT-09): double-tap my view → back camera; ⋮ → Flip camera → front again.
+    func testDoubleTapMyViewFlipsToTheBackCamera() throws {
+        let app = launch(camera)
+        let stage = any(app, "cameraStage")
+        XCTAssertTrue(stage.waitForExistence(timeout: 25), "camera on")
+        XCTAssertEqual(stage.value as? String, "front", "starts on the front camera")
+        stage.doubleTap()
+        let end = Date().addingTimeInterval(5)
+        while Date() < end, (stage.value as? String) != "back" { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertEqual(stage.value as? String, "back", "double-tap → back camera")
+        capture(app, "cam-d22-back")
+        app.buttons["more"].tap()
+        XCTAssertTrue(app.buttons["moreFlip"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["moreFlip"].isEnabled)
+        app.buttons["moreFlip"].tap()
+        let end2 = Date().addingTimeInterval(5)
+        while Date() < end2, (stage.value as? String) != "front" { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertEqual(stage.value as? String, "front", "⋮ Flip camera → front again")
+    }
+
+    /// Chelsea P1 (build 7): with the camera on, the small window is the live talking face, and no face layer on the
+    /// call is ever the upload photo (live > poster > still = scene/fixture > ground; "upload" doesn't exist).
+    func testCameraPipIsTheLiveFace() throws {
+        let faceSet = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path
+        let app = launch(camera.merging(["GENITA_FACE_SET_DIR": faceSet]) { $1 })
+        let pip = any(app, "cameraPip")
+        XCTAssertTrue(pip.waitForExistence(timeout: 25), "camera on: the face is the small window")
+        let end = Date().addingTimeInterval(15)
+        while Date() < end, (pip.value as? String) != "live" { Thread.sleep(forTimeInterval: 0.2) }
+        XCTAssertEqual(pip.value as? String, "live", "the PiP draws the face driver, not a still")
+        capture(app, "cam-pip-live-face")
+    }
+
     /// Boxes pop on the live preview, then fade (the board's 4 s).
     func testBoxesOverLivePreviewThenFade() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "30"]) { $1 })

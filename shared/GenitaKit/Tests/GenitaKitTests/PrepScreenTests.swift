@@ -31,6 +31,17 @@ struct MetaOnlyPrepTests {
         #expect(expr.stages[.expressions] == .failed && expr.stages[.mouth] == .pending && expr.failedStage == .expressions)
     }
 
+    /// AU-29 PP-01 step 6: eight keys settled but only one expression → Expressions still running; all five → done.
+    @Test func expressionsRowFollowsTheExpressionKeysNotAnyKeys() throws {
+        func prep(_ settled: Int, _ expr: Int) -> String {
+            serverPrep(settled: settled).replacingOccurrences(of: #""settled":\#(settled),"#, with: #""settled":\#(settled),"expressionsSettled":\#(expr),"expressionsTotal":5,"#)
+        }
+        let early = try decode(prep(8, 1))
+        #expect(early.stages[.expressions] == .running && early.stages[.mouth] == .pending)
+        let done = try decode(prep(9, 5))
+        #expect(done.stages[.expressions] == .done && done.stages[.mouth] == .running)
+    }
+
     @Test func faceNotStartedYetIsPending() throws {
         let p = try decode(serverPrep(scene: "running", face: nil))
         #expect(p.stages == [.scene: .running, .expressions: .pending, .mouth: .pending])

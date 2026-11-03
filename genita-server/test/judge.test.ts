@@ -90,6 +90,17 @@ test("11/4: wrong guesses on one code prefix wait longer and longer; another pre
   assert.equal((await judge({ code: "correct-horse-1" }, { "x-forwarded-for": "203.0.113.99" })).status, 200, "another IP with the right code is never locked (Codex P1)");
 });
 
+test("AU-04: a judge typing the right code behind the same IP passes another judge's backoff on that prefix", async (t) => {
+  const { judge: raw } = await boot(t, undefined, { GENITA_TRUST_PROXY: "1" });
+  const venue = { "x-forwarded-for": "203.0.113.20" };
+  const judge = (body: unknown) => raw(body, venue);
+  // judges share the code on the submission form (same prefix) and the venue Wi-Fi (same IP); one mistypes it
+  for (const typo of ["correct-hors-1", "correct-horse-l", "correct-horse-11"]) assert.notEqual((await judge({ code: typo })).status, 200);
+  const wrongAgain = await judge({ code: "correct-horse-7" });
+  assert.equal(wrongAgain.status, 429, "a wrong code still waits out the backoff");
+  assert.equal((await judge({ code: "correct-horse-1" })).status, 200, "the right code is never held by the backoff");
+});
+
 test("60 concurrent wrong tries from one IP: at most 50 get checked", async (t) => {
   const { judge } = await boot(t);
   const rs = await Promise.all(Array.from({ length: 60 }, (_, i) => judge({ code: miss(i) })));

@@ -17,6 +17,8 @@ import UniformTypeIdentifiers
     @State private var progress = 0.0
     @State private var importing = false
     @State private var pickingPhoto = false
+    /// V01 "Use a test photo" sheet (device QA accounts only, QASamplePhotos.swift)
+    @State private var pickingSample = false
     @State private var imageError: String?
     @State private var player = VoicePlayer()
     @FocusState private var nameFocused: Bool
@@ -49,7 +51,8 @@ import UniformTypeIdentifiers
             GeometryReader { full in
                 let viewport = referenceViewport ? CGSize(width: 390, height: stage == .name ? 519 : 844) : full.size
                 let top = referenceViewport ? CGFloat(0) : safe.safeAreaInsets.top - 44
-                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing ? 140 : 108)
+                // SUM: room for Cancel under Continue, same footer as I02's Cancel processing
+                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing || stage == .summary ? 140 : 108)
                 let stretch = max(0, viewport.height - 844 - top)
                 ZStack(alignment: .topLeading) {
                     Color("Canvas")
@@ -67,6 +70,19 @@ import UniformTypeIdentifiers
                                 DesignText(node: label).frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
                             }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
                         }.buttonStyle(.plain).position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel processing")
+                    }
+                    if stage == .summary {
+                        // PRD F4: SUM Cancel = back to the first question, answers kept (Figma summary* "Cancel", Pretendard
+                        // Medium 16; ink on the light sheet — the Figma layer is white under the button)
+                        Button { model.cancelSummary() } label: {
+                            let label = texts.first { $0.characters == "Cancel" }!
+                            ZStack(alignment: .topLeading) {
+                                Color.clear
+                                DesignText(node: label, color: UIColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1))
+                                    .frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
+                            }.frame(width: viewport.width - 77, height: 44).contentShape(Rectangle())   // 44 pt touch, text where I02's is
+                        }.buttonStyle(.plain).disabled(model.savingPrefs).opacity(model.savingPrefs ? 0.4 : 1)
+                            .position(x: (viewport.width - 1) / 2, y: footerY + 85).accessibilityLabel("Cancel").accessibilityIdentifier("summaryCancel")
                     }
                 }.frame(width: viewport.width, height: viewport.height).clipped()
             }.ignoresSafeArea(.container)
@@ -92,7 +108,7 @@ import UniformTypeIdentifiers
                 // I03: Spark takes 4–8 s; the bar eases toward 90 % and the answer (AppState.startImport) moves on
                 while !Task.isCancelled && model.stage == .preparing {
                     do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
-                    progress = min(0.9, progress + (0.92 - progress) * 0.03)
+                    if !model.readingDone { progress = min(0.9, progress + (0.92 - progress) * 0.03) }
                 }
                 return
             }
@@ -100,10 +116,17 @@ import UniformTypeIdentifiers
                 do { try await Task.sleep(for: .milliseconds(70)) } catch { return }
                 progress = Double(step) / 20
             }
+            // 100 %: the orb's short pulse, then the next screen
+            do { try await Task.sleep(for: .milliseconds(AppState.readingPulseMs)) } catch { return }
             if model.stage == .preparing { model.go(.preferences) }
         }
+        // I03: the answer is in: the bar fills to 100 % while the orb pulses
+        .onChange(of: model.readingDone) { _, done in if done { withAnimation(.easeOut(duration: 0.2)) { progress = 1 } } }
         .sheet(isPresented: $pickingPhoto) {
             ReferencePhotoPicker(isPresented: $pickingPhoto) { data in if let data { accept(data) } else { imageError = "This image could not be opened." } }
+        }
+        .sheet(isPresented: $pickingSample) {
+            QASamplePhotoSheet { data in pickingSample = false; if let data { accept(data) } else { imageError = "This image could not be opened." } }
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image]) { result in
             do { let url = try result.get(); let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }; accept(try Data(contentsOf: url)) } catch { imageError = "This image could not be opened." }
@@ -115,10 +138,19 @@ import UniformTypeIdentifiers
         let bodyTop = top + extra
         ZStack(alignment: .topLeading) {
             if let orb {
-                DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round").designSlot(orb, width: width, top: bodyTop)
+                let resource = orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round"
+                if stage == .preparing {
+                    // I03: the orb moves while the profile is read (Chelsea 11/4); it sits 24 pt under the subtitle
+                    // and shrinks on short screens instead of running into the CTA (I03 spacing, Chelsea 11/4)
+                    let fit = Self.readingFit(orb: orb, nodes: nodes, limit: contentBottom - bodyTop)
+                    ReadingOrb(node: fit.orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(fit.orb, width: width, top: bodyTop)
+                } else {
+                    SoulOrbSlot(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
+                }
             }
             ZStack {
                 DesignText(node: title, text: stage == .image ? "Bring an image" : nil)
+                    .motionBandLineReveal(pitch: title.lineHeight ?? title.font.lineHeight, key: stage)   // motion details card 8
                 if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
                     Button {
                         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }
@@ -145,9 +177,9 @@ import UniformTypeIdentifiers
                         // I01 → AI app → back: open I02 with the paste button ready (only after the app really left)
                         guard stage == .prompt, openedAI else { return }
                         if phase == .background { leftApp = true }
-                        else if phase == .active, leftApp { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+                        else if phase == .active, leftApp { backFromAI() }
                     }
-            case .preparing: processing(width: width, top: bodyTop)
+            case .preparing: processing(width: width, top: bodyTop, shift: orb.map { Self.readingFit(orb: $0, nodes: nodes, limit: contentBottom - bodyTop).shift } ?? 0)
             case .image: imageContent(width: width, top: bodyTop)
             case .voice: voiceContent(width: width, top: bodyTop, stretch: stretch)
             case .summary: summaryContent(width: width, top: bodyTop, stretch: stretch)
@@ -169,13 +201,23 @@ import UniformTypeIdentifiers
     func primary(width: CGFloat) -> some View {
         let source = texts.first { $0.characters == primaryTitle && $0.y > 400 }!
         let sourceY: CGFloat = stage == .name ? 454 : stage == .preparing ? 704 : 736
+        // SUM while the card is written (up to ~8 s): the #111 CTA stays lit with a white spinner (R1 #543 / D105: SUM's CTA
+        // is #111 like every onboarding CTA, no longer blue), instead of a dead grey button; Cancel stays under it
+        let busy = stage == .summary && model.savingPrefs
+        let lit = enabled || busy
         return Button(action: advance) {
             ZStack(alignment: .topLeading) {
-                GlassCTA(color: enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
-                DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
-                    .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
+                GlassCTA(color: lit ? Color("Ink") : Color(white: 0.8))
+                if busy {
+                    ProgressView().tint(.white).frame(width: width - 77, height: source.h).position(x: (width - 77) / 2, y: source.y - sourceY + source.h / 2)
+                        .accessibilityIdentifier("primaryCTABusy")
+                } else {
+                    DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
+                        .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
+                }
             }
-        }.buttonStyle(ReferenceButtonStyle()).disabled(!enabled).accessibilityLabel(primaryTitle).accessibilityIdentifier("primaryCTA")
+        }.buttonStyle(ReferenceButtonStyle()).disabled(!enabled).allowsHitTesting(!busy)
+            .accessibilityLabel(primaryTitle).accessibilityIdentifier("primaryCTA")
     }
     func advance() {
         switch stage {
@@ -270,6 +312,8 @@ import UniformTypeIdentifiers
             }
         }
     }
+    /// Back from the AI app: I02 with the paste button ready.
+    func backFromAI() { openedAI = false; leftApp = false; copiedToast = false; model.pasteFocusRequested = true; model.go(.paste) }
     /// I01: opens the AI app, or its website when the app isn't installed.
     func appButton(_ title: String, app: String, web: String) -> some View {
         Button {
@@ -278,6 +322,12 @@ import UniformTypeIdentifiers
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
+            #if DEBUG
+            // UI tests (`--stub-external-apps`): nothing opens (no Safari round trip on a loaded CI runner) and the
+            // toast stays until the test leaves and comes back (Home → activate), so neither depends on timing; the
+            // return goes through the real scene-phase path below
+            if ProcessInfo.processInfo.arguments.contains("--stub-external-apps") { return }
+            #endif
             Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
         } label: {
@@ -285,20 +335,46 @@ import UniformTypeIdentifiers
                 .background(.white, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityIdentifier(title == "Open ChatGPT" ? "openChatGPT" : "openClaude")
     }
-    @ViewBuilder func processing(width: CGFloat, top: CGFloat) -> some View {
+    @ViewBuilder func processing(width: CGFloat, top: CGFloat, shift: CGFloat = 0) -> some View {
+        // the reading block (title, line, bar, %) follows the orb down by `shift`; the heading stays
         ForEach(texts.filter { $0.id != title.id && $0.y < 650 }) { n in
-            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top)
+            DesignText(node: n, text: n.characters == "62%" ? "\(Int(progress * 100))%" : nil).designSlot(n, width: width, top: top + (n.y >= Self.readingBlockTop ? shift : 0))
         }
         let track = nodes.first { $0.name == "Rectangle 305" }!
         let fill = nodes.first { $0.name == "Rectangle 306" }!
         let trackWidth = width - 117
-        DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + track.h / 2)
+        DesignShape(node: track).frame(width: trackWidth, height: track.h).position(x: (width + 1) / 2, y: track.y + top + shift + track.h / 2)
         let fillWidth = referenceViewport ? fill.w : trackWidth * CGFloat(progress)
-        DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + fill.h / 2)
+        DesignShape(node: fill).frame(width: fillWidth, height: fill.h).position(x: 59 + fillWidth / 2, y: fill.y + top + shift + fill.h / 2)
+    }
+
+    /// I03 spacing (Chelsea 11/4, deviates from the Figma soul-orb node): the orb's frame starts 24 pt under the subtitle
+    /// ("Using the profile you chose to share."), the reading block keeps its Figma distance below the orb, and when
+    /// the block would pass `limit` (the content bottom above the CTA, in body coordinates) the orb shrinks evenly
+    /// about its centre line instead of overlapping. Returns the placed orb node and how far the reading block moves.
+    static let orbGapBelowSubtitle: CGFloat = 24
+    static let readingBlockTop: CGFloat = 400
+    nonisolated(unsafe) static var orbSpacing = true
+    static func readingFit(orb: DesignNode, nodes: [DesignNode], limit: CGFloat) -> (orb: DesignNode, shift: CGFloat, scale: CGFloat) {
+        guard orbSpacing,
+              let subtitle = nodes.first(where: { $0.type == "text" && $0.y > 150 && $0.y < orb.y + 40 && $0.fontFamily != "KMU80 TTF" }),
+              let reading = nodes.filter({ $0.type == "text" && $0.y >= readingBlockTop && $0.y < 650 }).min(by: { $0.y < $1.y }),
+              let blockBottom = nodes.filter({ $0.type == "text" && $0.y >= readingBlockTop && $0.y < 650 }).map({ $0.y + $0.h }).max()
+        else { return (orb, 0, 1) }
+        let orbTop = subtitle.y + subtitle.h + orbGapBelowSubtitle
+        let toReading = reading.y - orb.y            // Figma: the reading title sits this far below the orb's top
+        let block = blockBottom - reading.y           // title … % label
+        let scale = max(0.05, min(1, (limit - orbTop - block) / toReading))
+        var placed = orb
+        placed.w = orb.w * scale; placed.h = orb.h * scale
+        placed.x = orb.x + (orb.w - placed.w) / 2
+        placed.y = orbTop
+        return (placed, orbTop + toReading * scale - reading.y, scale)
     }
     func accept(_ data: Data) {
         // B7: one companion, the face can't change once it's made
-        guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
+        // … nor while it is being made (AU-37: a photo picked then left the call face on the first one)
+        guard model.setup.companionCreated != true, !model.creatingCompanion else { imageError = "Their face is already set."; return }
         guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
         // a new photo needs a new check (V03); the old result and suggestion don't apply
         model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil; model.rightsAcked = false
@@ -331,6 +407,15 @@ import UniformTypeIdentifiers
                 .position(x: width - 48, y: 250 + top).accessibilityLabel("Remove image").accessibilityIdentifier("removeImage")
         }
         rightsRow(width: width, top: top)
+        // device QA only (server-listed accounts): bundled sample pictures, so QA never opens a real photo library.
+        // Same accept() → V03 check → polish path as a library pick. Never in the reference / screenshot viewport.
+        if QASamplePhotos.visible(for: model) && !referenceViewport {
+            Button { pickingSample = true } label: {
+                Text("Use a test photo").font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink.opacity(0.55)).underline()
+                    .frame(width: width - 48, height: 36).contentShape(Rectangle())
+            }.buttonStyle(.plain).position(x: width / 2, y: 590 + top)
+                .accessibilityLabel("Use a test photo").accessibilityIdentifier(QASamplePhotos.entryID)
+        }
         // Alternate import uses the same upload surface; no extra product button is invented.
         Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
     }
@@ -401,7 +486,8 @@ import UniformTypeIdentifiers
         let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
         return ZStack {
             RoundedRectangle(cornerRadius: 12).fill(.white)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
+                // Figma voice.json: 1 pt #E3E3E3 edge (white card on #FDFDFD had no visible edge on device, design review 11/4)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(picked || playing ? Color("Ink") : Color(red: 0xE3 / 255, green: 0xE3 / 255, blue: 0xE3 / 255), lineWidth: picked || playing ? 1.5 : 1))
             Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
                 .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
             VStack(alignment: .leading, spacing: 4) {
@@ -463,8 +549,8 @@ import UniformTypeIdentifiers
             let cardWidth = (width - 90) / 2
             let left = label.x < 200 ? CGFloat(38) : 51 + cardWidth
             Button {
-                var updated = selectedIDs
-                if updated.contains(key) { updated.remove(key) } else { updated.insert(key) }
+                let updated = PresenceChips.toggle(selectedIDs, key)
+                guard updated != selectedIDs else { return }
                 model.setup.presenceCardIDs = updated
                 model.setup.presence = Set(labels.filter { updated.contains("\($0.x)-\($0.y)") }.compactMap(\.characters))
             } label: {
@@ -497,11 +583,30 @@ import UniformTypeIdentifiers
         UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 0.996)).shadow(color: .black.opacity(0.04), radius: 25.9)
             .frame(width: width, height: 551 + stretch).position(x: width / 2, y: 291 + top + (551 + stretch) / 2)
         RoundedRectangle(cornerRadius: 3.5).fill(Color(white: 0.859)).frame(width: 47, height: 5).position(x: width / 2, y: 305.5 + top)
-        ForEach(texts.filter { $0.y >= 345 && $0.y < 700 }) { n in
+        ForEach(summaryRows(width: width), id: \.node.id) { row in
+            DesignText(node: row.node, text: row.text).designSlot(row.node, width: width, top: top)
+                .accessibilityIdentifier(row.key)
+        }
+    }
+    /// SUM rows at the Figma spacing (label → value 8 pt, value → next label 26 pt) for the real answers: Figma
+    /// reserves 2 lines for Why and Never, so a 1-line answer used to leave a 21 pt hole (and a long one overlapped).
+    func summaryRows(width: CGFloat) -> [(node: DesignNode, text: String?, key: String)] {
+        var shift: CGFloat = 0
+        return texts.filter { $0.y >= 345 && $0.y < 700 }.sorted { $0.y < $1.y }.map { n in
+            var placed = n
+            placed.y += shift
             let key = n.characters ?? ""
-            let replacement: String? = n.fontSize == 18 ? summaryValue(y: n.y) : nil
-            DesignText(node: n, text: referenceViewport ? nil : replacement).designSlot(n, width: width, top: top)
-                .accessibilityIdentifier(key)
+            guard n.fontSize == 18, !referenceViewport else { return (placed, nil, key) }
+            // the last two words stay together: never a one-word last line ("… without / approval"); DesignLabel draws
+            // its own lines, so the paragraph's push-out strategy alone didn't do it (CI onb-SUM after #525 r1)
+            var value = summaryValue(y: n.y)
+            if let r = value.range(of: " ", options: .backwards), value.split(separator: " ").count > 2 { value.replaceSubrange(r, with: "\u{00A0}") }
+            let margin = 390 - n.x - n.w
+            let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w   // DesignPlacement's width
+            let used = ceil(n.attributed(value).boundingRect(with: CGSize(width: w + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
+            placed.h = used
+            shift += used - n.h
+            return (placed, value, key)
         }
     }
     func summaryValue(y: CGFloat) -> String {
@@ -648,5 +753,16 @@ struct ReferencePhotoPicker: UIViewControllerRepresentable {
                 DispatchQueue.main.async { self.parent.received(data) }
             }
         }
+    }
+}
+
+/// P "Describe their presence" (PRD B10): at most two chips. A third tap while two are on does nothing (AU-31: the
+/// server kept only two, so SUM listed a third that the persona never got).
+enum PresenceChips {
+    static let max = 2
+    static func toggle(_ selected: Set<String>, _ key: String) -> Set<String> {
+        var updated = selected
+        if updated.contains(key) { updated.remove(key) } else if updated.count < max { updated.insert(key) }
+        return updated
     }
 }

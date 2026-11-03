@@ -1,4 +1,4 @@
-import { type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
+import { type CallState, type CallStateRepository, type MemoryRepository, type Memory, type MemoryKind, type MemorySettings, memoryId } from "./repository.ts";
 import { cleanKeys, safeMemoryText, type Extractor, type KeyMaker, type Turn } from "./extract.ts";
 import { validSeen, type SeenCandidate, type SeenContext } from "./seen.ts";
 import { within } from "../util/within.ts";
@@ -222,13 +222,22 @@ export class MemoryService {
     }));
     return ranked;
   }
-  async forget(userId: string, id?: string): Promise<void> {
+  /**
+   * `relationship: true` (companion reset, AU-90): also when they last talked and the carried mood go, so the new
+   * companion meets them for the first time (no "back" opener, no mood from the old companion's calls).
+   */
+  async forget(userId: string, id?: string, opts: { relationship?: boolean } = {}): Promise<void> {
     await this.serial(userId, async () => {
       const items = (await this.repository.list(userId)).filter((m) => !id || m.id === id);
       // Session summaries are free text across many topics: any Forget (one item or all) drops them all,
       // the same rule as the handoff turn cache. First, so no call can load them after the notification.
       await this.summaryStore?.deleteSummaries(userId);
-      const s = await this.state.getState(userId); s.revision++; s.recent_openers = []; await this.state.putState(userId, s);
+      const s = await this.state.getState(userId); s.revision++; s.recent_openers = [];
+      if (opts.relationship) {
+        s.last_message_at = null; s.last_opener_day = null;
+        delete (s as CallState & { call_mood?: unknown }).call_mood;
+      }
+      await this.state.putState(userId, s);
       for (const fn of this.listeners.get(userId) ?? []) fn(s.revision);
       for (const m of items) if (m.image_ref) await this.options.deleteCrop?.(userId, m.image_ref);
       // Retain the row if blob deletion fails so a retry can find and erase it.

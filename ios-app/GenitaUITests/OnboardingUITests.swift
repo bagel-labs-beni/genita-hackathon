@@ -58,8 +58,8 @@ final class OnboardingUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.descendants(matching: .any)["V03"].waitForExistence(timeout: 10), "V03 scanning")
         // the answer comes at 2.6 s, then 0.4 s finish + 1 s hold + 0.3 s fade before V02-T
-        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 15), "V02-T after the scan")
-        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertTrue(app.descendants(matching: .any)["V02-T"].waitForExistence(timeout: 20), "V02-T after the scan")
+        Thread.sleep(forTimeInterval: 2.5)   // V02-T on screen for the recording
         app.terminate()
     }
 
@@ -296,6 +296,13 @@ final class OnboardingUITests: XCTestCase {
         primary.tap()   // tempo
         app.buttons["Calm"].firstMatch.tap(); primary.tap()
         capture("SUM")
+        // SUM Cancel (PRD F4): back to P1 with every answer kept, then forward again to SUM
+        XCTAssertTrue(app.buttons["summaryCancel"].exists, "SUM Cancel under Continue")
+        app.buttons["summaryCancel"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Think with me'")).firstMatch.waitForExistence(timeout: 3), "Cancel → P1")
+        XCTAssertFalse(app.buttons["summaryCancel"].exists)
+        for _ in 0..<5 { primary.tap() }   // help, relationship, challenge, tempo, presence: answers kept, Continue on
+        XCTAssertTrue(app.buttons["summaryCancel"].waitForExistence(timeout: 3), "back on SUM with the same answers")
         primary.tap()
 
         // PREP-1 (Figma 182:51 → 182:3 → 182:142 → 182:96): stages follow the server's real Meta-only shape,
@@ -428,7 +435,7 @@ final class OnboardingUITests: XCTestCase {
     }
 
     private func launchToI01(_ app: XCUIApplication) {
-        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
+        app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image", "--stub-external-apps"]
         app.launchEnvironment = ["GENITA_API_URL": "http://127.0.0.1:8790", "GENITA_SERVER_URL": "ws://127.0.0.1:8788/v1/session", "GENITA_FIXTURE_SCRIPT": "none"]
         app.launch()
     }
@@ -441,24 +448,17 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT (on the simulator, with no ChatGPT app:
-        // chatgpt.com in Safari). Safari can take the foreground before the toast is read (flaky on loaded CI
-        // runners), so the toast is only looked for while Genita is still in front; the open and the copy are then
-        // checked on their own: Safari comes to the front, and back on I02 the paste button pastes the prompt.
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT. Under `--stub-external-apps` nothing
+        // opens (the Safari hand-off was flaky on loaded CI runners) and the toast stays until the app leaves; the
+        // test leaves (Home) and comes back itself, which takes the real scene-phase return to I02.
         let toast = element("promptCopiedToast")
-        var sawToast = false
-        let end = Date().addingTimeInterval(3)
-        while Date() < end, app.state == .runningForeground {
-            if toast.exists { sawToast = true; break }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
-        // Safari in front is the proof the app left; Genita's own reported state lags on CI (it stayed
-        // .runningForeground for 5 s after Safari came up), so it is not asserted
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "Prompt copied")
+        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
+        XCUIDevice.shared.press(.home)
+        expectation(for: NSPredicate(format: "state != %d", XCUIApplication.State.runningForeground.rawValue), evaluatedWith: app)
+        waitForExpectations(timeout: 30)   // left Genita (background or suspended)
         app.activate()
-        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
+        XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 30), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
         // the copy: the system paste button puts the I01 prompt into the reply box

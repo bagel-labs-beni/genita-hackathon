@@ -356,7 +356,7 @@ test("searching lines fit one line at 390 pt: short title, whole-word labels, sh
   assert.equal(shortLabel("Light jacket"), "Light jacket");
   assert.equal(shortLabel("Featherless quilted utility jacket"), "Featherless");
   // every failure message is "Title. Body" with a title that fits next to Stop/Retry (≤ 28 chars) and a body ≤ 40
-  for (const m of ["Couldn’t find a good match. Try a color or a price, or ask me again.", "Something went wrong. Ask me again in a moment.", "Couldn’t find a recipe. Ask me again in a moment.", "Can’t tell them apart. Hold them up one at a time?", "Couldn’t read that link. Check it, or send another one.", "I couldn't look just now. Ask me again?"]) {
+  for (const m of ["Couldn’t find a good match. Try a color or a price.", "Something went wrong. Ask me again in a moment.", "Couldn’t find a recipe. Ask me again in a moment.", "Can’t tell them apart. Hold them up one at a time?", "Couldn’t read that link. Check it, or send another one.", "I couldn't look just now. Ask me again?"]) {
     const [title, body] = [m.slice(0, m.indexOf(". ")), m.slice(m.indexOf(". ") + 2)];
     assert.ok(title.length <= 28 && body.length <= 40, m);
   }
@@ -423,4 +423,35 @@ test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless a
   assert.equal(offOccasion("Leather slide buckle belt", "find me a black belt"), false, "a belt, not a shoe (Codex P2)");
   assert.equal(offOccasion("Leather slide buckle belt", ask), false);
   assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
+});
+
+test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot while a brown one is there; brown shades and plain names stay", async () => {
+  const { askedColors, offColor } = await import("../src/finds/product.ts");
+  const brown = askedColors("Can we look for dark brown boots for my trench?");
+  assert.deepEqual([...brown], ["brown"]);
+  assert.equal(offColor("Black Chelsea Boot", brown), true);
+  assert.equal(offColor("Highwood Boot in Tan", brown), true);
+  assert.equal(offColor("Espresso Suede Chelsea Boot", brown), false, "a brown shade");
+  assert.equal(offColor("Heritage Chelsea Boot", brown), false, "no color named");
+  assert.equal(offColor("Black / Brown two-tone boot", brown), false, "names the asked color too");
+  // Codex r1: what they rule out or already own is not the color asked for; the latest color change wins
+  assert.equal(askedColors("Find boots, but no black ones").size, 0);
+  assert.equal(askedColors("Find boots that go with my brown trench").size, 0);
+  assert.deepEqual([...askedColors("Another one in brown instead")], ["brown"]);
+  assert.deepEqual([...askedColors("Find a couple that match my style", "Find black boots. Another one in brown instead")], ["brown"]);
+  assert.equal(askedColors("boots for my trench").size, 0);
+  // through the pipeline: the black one goes last, the brown ones take the two slots
+  const P3x = "https://shop3.example.com/products/chestnut-boot";
+  const v = vendors({
+    items: [{ ...ITEM1, name: "Black Chelsea Boot" }, { ...ITEM2, name: "Dark Brown Chelsea Boot" }, { ...ITEM1, url: P3x, name: "Chocolate Suede Boot" }],
+    output: [SEARCH, OPEN(P1), OPEN(P2), OPEN(P3x)],
+    facts: { [P1]: { kind: "product" }, [P2]: { kind: "product" }, [P3x]: { kind: "product" } },
+  });
+  const { ctx } = ctxFor(v, { question: "Can we look for dark brown boots for my trench?" });
+  const card = (await runProduct(ctx)).card!;
+  assert.deepEqual(card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Chocolate Suede Boot"]);
+  // Codex r1: a brand with a color word (Red Wing) never sinks the card when it's all there is
+  const one = vendors({ items: [{ ...ITEM1, name: "Red Wing Classic Moc" }], output: [SEARCH, OPEN(P1)], facts: { [P1]: { kind: "product" } } });
+  const c2 = (await runProduct(ctxFor(one, { question: "Can we look for brown boots?" }).ctx)).card;
+  assert.ok(c2, "still a card");
 });

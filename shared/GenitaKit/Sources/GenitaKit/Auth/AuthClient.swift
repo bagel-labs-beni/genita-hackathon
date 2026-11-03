@@ -122,7 +122,8 @@ public final class GenitaAuthClient: @unchecked Sendable {
 
     /// Server revokes Apple, deletes files and rows. Clears the token on success.
     public func deleteAccount() async throws -> GenitaDeleteResult {
-        let r: GenitaDeleteResult = try await send("DELETE", "/me")
+        // the server revokes Apple (≤10 s), waits for a running prep and drains finds before it answers (AU-06)
+        let r: GenitaDeleteResult = try await send("DELETE", "/me", timeout: 60)
         store.clear()
         return r
     }

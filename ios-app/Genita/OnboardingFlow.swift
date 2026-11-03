@@ -29,7 +29,7 @@ extension AppState {
         // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
         if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
-        let state = await onboarding.auth.sessionState()
+        var state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
         // request must never sign out a newer login or re-adopt a logged-out account's handoff.
         guard launchRequest.generation == authGeneration, !Task.isCancelled,
@@ -41,7 +41,23 @@ extension AppState {
         }
         guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
-        if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
+        if case .active(var m) = state {
+            // AU-05 (LG-03): A03's name never reached the server (offline at Next) but this account already has its
+            // companion: send the name this phone kept again and go on to the call, never back to A03
+            let kept = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (m.user.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, m.hasCompanion, !kept.isEmpty {
+                if let saved = try? await onboarding.auth.setName(kept) { m = saved } else { m.user.displayName = kept }
+                // another sign-in (or sign-out) happened meanwhile: this answer is for an account that's gone (Codex P2);
+                // the PATCH's own 401 cleared this lifetime's token: A02, as for an expired /me (Codex re-review P2)
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else {
+                    if launchRequest.generation == authGeneration, !Task.isCancelled, onboarding.auth.token == nil,
+                       ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
+                    return
+                }
+                state = .active(m)
+            }
+            me = m; adopt(accountId: m.user.id); qaSamplePhotos = m.qaSamplePhotos == true
+        }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
@@ -55,6 +71,23 @@ extension AppState {
             return
         }
         apply(route, me: me, afterSignIn: afterSignIn)
+    }
+
+    /// CS01 "Agree and continue", after the server recorded the consent.
+    /// AU-03 (JG-01): right after a sign-in, `/me` picks the next screen while CS01's button spins. A judge's
+    /// ready-made companion goes straight to the call, never through an empty A03 whose Next would start the
+    /// onboarding instead. A new account gets A03 as before; no answer (offline) moves on to A03 too.
+    func consentAgreed() async {
+        let returning = history.contains(.conversation) || setup.hasOnboarded
+        guard serverWired, !returning else {
+            consentAccepted()
+            // a returning account (4403 mid-call) is back in its call; /me still checks where it stands
+            if serverWired { await routeOnLaunch() }
+            return
+        }
+        consentRecorded()
+        await routeOnLaunch(afterSignIn: true)
+        if stage == .consent { consentAccepted() }
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
@@ -82,11 +115,52 @@ extension AppState {
     }
 
     /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
-    func loadScene() async {
-        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
-              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
-        // the account or companion may have changed while the image was on its way
-        if sceneKey == key { sceneImage = (key, data) }
+    /// The companion's face wherever it's drawn after V02 (call, PiP, NM01, PREP-1, the Mac via the handoff hello):
+    /// the generated scene, else nothing (the caller draws a neutral placeholder). The upload photo is never drawn
+    /// after V02 (Chelsea 11/4). Unwired builds (UI tests, Appetize preview) keep their bundled fixture.
+    var companionFaceData: Data? {
+        if let scene = sceneImageData { return scene }
+        return serverWired ? nil : setup.imageData
+    }
+
+    /// `upcoming` = a prep answer not shown yet: its scene is fetched first so the screen never says ready over the
+    /// uploaded photo.
+    func loadScene(for upcoming: PrepProgress? = nil) async {
+        let p = upcoming ?? prep
+        guard serverWired, let url = p?.sceneURL else { return }
+        let account = setup.accountId ?? "-", key = "\(account)|\(url.absoluteString)"
+        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+              !Task.isCancelled else { return }
+        // the account or companion may have changed while the image was on its way: keep it only for the same
+        // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
+        // applied by the caller right after this, so its scene always wins)
+        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
+        sceneImage = (key, data)
+    }
+
+    /// `loadScene`, given up after `seconds` (a slow or hanging image download never holds a screen).
+    func loadScene(for upcoming: PrepProgress? = nil, within seconds: Double) async {
+        guard seconds > 0 else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.loadScene(for: upcoming) }
+            group.addTask { try? await Task.sleep(for: .seconds(seconds)) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    static let sceneWaitSeconds: Double = 4
+
+    /// PREP-1 ready: hold S07 until the call scene is on screen, at most `sceneWaitSeconds` in all (download
+    /// included), then go on with what there is. No scene URL (photo face) = nothing to wait for.
+    func waitForScene() async {
+        guard serverWired, prep?.sceneURL != nil else { return }
+        let deadline = Date().addingTimeInterval(Self.sceneWaitSeconds)
+        while sceneImageData == nil, !Task.isCancelled, deadline.timeIntervalSinceNow > 0 {
+            await loadScene(within: deadline.timeIntervalSinceNow)
+            let left = deadline.timeIntervalSinceNow
+            if sceneImageData == nil, left > 0 { try? await Task.sleep(for: .seconds(min(0.5, left))) }
+        }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
@@ -151,7 +225,13 @@ extension AppState {
                 guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 applyStyle(style)
                 importing = false
-                if stage == .preparing { go(.preferences) }
+                if stage == .preparing {
+                    // I03 at 100 %: the bar fills and the orb pulses once, then I04/HISY (Chelsea 11/4)
+                    readingDone = true
+                    try? await Task.sleep(for: .milliseconds(Self.readingPulseMs))
+                    readingDone = false
+                    if !Task.isCancelled, ownsOnboardingResponse(request), stage == .preparing { go(.preferences) }
+                }
             } catch {
                 let expiredCurrentSession = (error as? GenitaAuthError) == .unauthorized
                 guard !Task.isCancelled,
@@ -179,13 +259,36 @@ extension AppState {
     func finishSkip() {
         guard serverWired else { go(.preferences); return }
         importing = true
+        let ownerBefore = setup.skipOwner
         Task {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
-                applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
+                // marked as this account's before they go (saved on disk): if the app dies mid-send they never move to
+                // another account; a sure "not saved" below takes the mark back (Codex #516 AU-20 r2)
+                setup.skipOwner = setup.accountId ?? "unknown"
+                let style = try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3)
+                // only a saved send makes them this account's (AU-20): a 401 / offline / 400 leaves them unsent, so the
+                // next N3 tap keeps N1/N2 and signing in again carries them (the case #516 is for)
+                setup.skipSent = true
+                applyStyle(style)
                 go(.preferences)
-            } catch { flowError = Self.errorLine(error); route(error) }
+            } catch {
+                // the server may have saved them (no answer, or a 5xx): they stay this account's, never carried to
+                // another sign-in; a 401 / 403 / 4xx is a sure "not saved" (Codex #516 AU-20 r1)
+                if !Self.maybeSaved(error) { setup.skipOwner = ownerBefore }
+                flowError = Self.errorLine(error); route(error)
+            }
+        }
+    }
+
+    /// A failed send whose outcome is unknown: no answer at all (`offline` includes timeouts and dropped
+    /// connections), a 5xx, or an unreadable answer. A 401 / consent / 4xx answer means nothing was saved.
+    static func maybeSaved(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .unauthorized?, .consentRequired?, .cancelled?: return false
+        case .server(let status, _, _)?: return status >= 500
+        default: return true
         }
     }
 
@@ -282,13 +385,13 @@ extension AppState {
     /// V01 "Use this image" → V03 → V02-T / V02-F.
     func checkImage() {
         // the face is fixed once the companion exists (B7): no second check, no new face
-        if setup.companionCreated == true { go(.voice); return }
+        if setup.companionCreated == true || creatingCompanion { go(.voice); return }   // AU-37: also while it's made
         guard let data = setup.imageData, rightsAcked else { return }
-        imageCheck = nil; imageCheckError = nil
+        imageCheck = nil; imageCheckError = nil; imageCheckRetryable = false
         polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
-        go(.imageCheck)
+        if stage != .imageCheck { go(.imageCheck) }   // V02-F "Try again" (AU-26) checks again in place
         guard serverWired else {
             // screen review / UI tests without a server: V02-T as a passed person
             imageCheck = ImageCheck(imageId: "local", passed: true, type: "human",
@@ -311,7 +414,9 @@ extension AppState {
                 } else if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
             } catch {
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-                imageCheckError = Self.imageErrorLine(error); route(error)
+                imageCheckError = Self.imageErrorLine(error)
+                imageCheckRetryable = Self.isTransient(error)
+                route(error)
             }
         }
     }
@@ -324,6 +429,13 @@ extension AppState {
             polishAttempts += 1
             let p = try await onboarding.polishImage(imageId: source)
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            // AU-32: a Try again that fails its re-check never takes away a polished picture that already passed;
+            // V02-T keeps it (Use this image still works) with the new attempt's reason on one line
+            if !p.passed, let kept = polished, kept.passed, polishedImage != nil, setup.imageId == kept.imageId {
+                polishRetriesLeft = p.retriesLeft
+                polishError = p.reasons.first?.label ?? "Couldn't polish this photo."
+                return
+            }
             // kept before the download: a failed download only reloads the picture, it never costs a polish
             polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
             setup.imageId = p.passed ? p.imageId : nil
@@ -367,6 +479,15 @@ extension AppState {
         }
         guard polishRetriesLeft > 0 else { return }
         imageCheckTask = Task { await polish(source: source, ticket: ticket) }
+    }
+
+    /// The request failed on the way, not on the photo: offline, a timeout or a server error (AU-26).
+    static func isTransient(_ error: Error) -> Bool {
+        switch error as? GenitaAuthError {
+        case .offline?: return true
+        case let .server(status, _, _)?: return status >= 500
+        default: return false
+        }
     }
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
@@ -472,8 +593,21 @@ extension AppState {
                 setupSummary = r.summary
                 if let p = r.session?.persona { setup.serverPersona = p }
             } catch { route(error) }
+            // PREP-1 opens on the real state: a prep that is already ready draws "ready" from the first frame
+            // (no 0.5 s of empty "Bringing … to life" rows), with its scene already in
+            if let p = try? await onboarding.prep() {
+                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
+                prep = p
+            }
             if stage == .summary { go(.bringing) }
         }
+    }
+
+    /// SUM Cancel (PRD F4): back to the first question (P1, after D01), every answer kept.
+    func cancelSummary() {
+        guard stage == .summary, !savingPrefs else { return }
+        // back through the history (P1's Back goes to D01, not to SUM)
+        returnTo(setup.depth.path.first { $0 != .depth } ?? .help)
     }
 
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
@@ -484,6 +618,8 @@ extension AppState {
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
+                // ready is shown with the made face already in place, never over the uploaded photo
+                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
                 prep = p
                 if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {
