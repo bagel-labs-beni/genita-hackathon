@@ -769,3 +769,34 @@ test("Codex 11/3 (#447 r2): a forget request early in the call (outside the last
   assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
   for (const w of sockets) w.terminate();
 });
+
+test("Codex 11/3 (#447 r3): a forget request travels with the conversation to the other device", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = (device: string) => new Promise<{ ws: WebSocket; replies: () => number; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    sockets.push(ws);
+    let n = 0; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, replies: () => n, ready: () => ok })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const say = async (c: { ws: WebSocket; replies: () => number }, text: string) => { const n = c.replies(); c.ws.send(JSON.stringify({ type: "text", text })); await waitFor(() => c.replies() > n); };
+  const phone = await open("iphone"); start(phone); await waitFor(() => phone.replies() >= 1);
+  await say(phone, "Don't remember anything from this call.");
+  for (let i = 0; i < 8; i++) await say(phone, i === 7 ? "I bought an amber pendant." : `Small talk line ${i}.`);
+  const mac = await open("mac"); start(mac); await waitFor(mac.ready); // inherits; the request is outside its kept lines
+  await say(mac, "On the Mac now.");
+  phone.ws.send(JSON.stringify({ type: "stop" }));
+  mac.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.filter((e) => e === "session.close").length >= 2);
+  requests.length = 0;
+  const back = await open("mac"); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});

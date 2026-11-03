@@ -375,6 +375,8 @@ export async function startServer(
       return null;
     }
     if (best) {
+      // the conversation carries its forget request with it to the next device (Codex 11/3 #447 r3)
+      if (forgetAsked) { const me = sessions.get(self); if (me) me.forgetAsked = true; }
       progress.set(self, bestProgress); // inherit the snapshot's order; seeding is not a new turn
       handedThread.set(self, thread);
       return best;
