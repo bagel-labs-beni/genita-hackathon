@@ -410,3 +410,11 @@ test("narration (Codex #356): an answer joined to the announcement stays; emerge
   assert.equal(guardSentence("Let me find the nearest crisis line for you.", { camera: false, userText: "i want to kill myself" }), null);
   assert.equal(guardSentence("Let me pull that up real quick.", none), "narration");
 });
+
+test("narration (Codex #356 round 2): an answer after a colon or comma stays; a subject-less joined lookup is still narration", () => {
+  assert.equal(guardSentence("Let me check my memory: tofu works.", none), null);
+  assert.equal(guardSentence("Let me check my memory, tofu works.", none), null);
+  assert.equal(guardSentence("Let me pull that up and check the route for you.", none), "narration");
+  assert.equal(guardSentence("Okay, let me pull that up.", none), "narration");
+  assert.equal(guardSentence("Hang on, figuring out the route for you.", none), "narration");
+});

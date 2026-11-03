@@ -50,14 +50,16 @@ const NARRATION = [
 
 /** a clause that carries an answer after the announcement ("… but tofu works") keeps the whole sentence (Codex #356 P1) */
 const FILLER_PART = /^(?:ok(?:ay)?|alright|sure|hm+|yeah|yep|one sec(?:ond)?|hang on|hold on|real quick|for you|now|right now)[.!,…]*$/i;
-const CONTENT_JOIN = /(?:,\s*|\s+)(?:but|and|though|because|plus)\s+|\s+[—–]\s+|;\s+/i;
+const CONTENT_JOIN = /(?:,\s*|\s+)(?:but|and|though|because|plus|then)\s+|\s+[—–]\s+|[;:,]\s+/i;
+/** inside an announcement, a joined clause with its subject dropped is still the lookup ("… and check the route for you") */
+const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB})\b`, "i");
 
 export function isNarration(sentence: string): boolean {
   const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ");
   if (!NARRATION.some((re) => re.test(s))) return false;
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => NARRATION.some((re) => re.test(p)) || FILLER_PART.test(p));
+  return parts.every((p) => NARRATION.some((re) => re.test(p)) || BARE_LOOKUP.test(p) || FILLER_PART.test(p));
 }
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
