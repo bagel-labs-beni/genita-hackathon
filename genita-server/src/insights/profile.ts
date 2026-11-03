@@ -28,8 +28,9 @@ export type Observation = {
 /** `basis` = ids of the observations it comes from */
 export type InsightType = { name: string; line: string; signature: string[]; basis: string[] };
 export type InsightMix = { id: string; left: string; right: string; position: number; evidence: InsightEvidence };
-export type InsightStrength = { text: string; basis: string };
-export type InsightWatchout = { text: string; fix: string; basis: string };
+/** `evidence`: the quote or pick it comes from (one of its trait's receipts) — every one has it */
+export type InsightStrength = { text: string; basis: string; evidence: InsightEvidence };
+export type InsightWatchout = { text: string; fix: string; basis: string; evidence: InsightEvidence };
 export type InsightChain = { you_are: string; so_you: string; so_ill: string };
 export type InsightSettings = { why: string; energy: string; initiative: string; never: string };
 export type InsightReport = {
