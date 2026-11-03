@@ -50,6 +50,15 @@ export const POLISH_MAX_ATTEMPTS = 3;
  */
 export const POLISH_BUDGET_MS = 45_000;
 const POLISH_RETRY_MIN_MS = 10_000;
+/** The whole polish request (edit, retry, re-check) answers by this, inside CloudFront's 60 s (Codex r3). */
+export const POLISH_DEADLINE_MS = 55_000;
+/** `p`, or a rejection once `ms` has passed (≤ 0: at once). */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  if (ms <= 0) return Promise.reject(new Error("polish_deadline"));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("polish_deadline")), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
 /** Time the automatic retry may take after the first edit failed `elapsedMs` in, or null (no retry). */
 export function polishRetryBudgetMs(elapsedMs: number): number | null {
   const left = POLISH_BUDGET_MS - elapsedMs;
@@ -156,10 +165,13 @@ export async function polishImage(
     const t1 = performance.now();
     const url = `data:image/png;base64,${bytes.toString("base64")}`;
     const json = d.spark ?? (<T>(req: Parameters<NonNullable<PrepDeps["spark"]>>[0]) => sparkJson<T>(d.metaKey, req));
-    const [raw, boxes] = await Promise.all([
+    // the re-check gets what is left of the request's 55 s: an answer CloudFront would drop after 60 s is a
+    // retryable polish_failed instead of a 504 for an attempt the server already counted
+    const left = POLISH_DEADLINE_MS - since(t0);
+    const [raw, boxes] = await withDeadline(Promise.all([
       json<ClassifyRaw>(buildClassifyRequest(url)),
       mediaOf(d).samDetect(d.metaKey, url, headPrompt(orig.check.type)).catch(() => null),
-    ]);
+    ]), left);
     checkMs = since(t1);
     // species and character style stay the upload's (the face profile is chosen from them) once they're known to match
     const merged: ClassifyRaw = { ...raw, species: orig.check.raw.species || raw.species, character_style: orig.check.raw.character_style ?? raw.character_style };

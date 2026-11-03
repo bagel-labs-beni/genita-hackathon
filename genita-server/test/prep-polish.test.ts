@@ -347,3 +347,11 @@ test("AU-34: the edit and its automatic retry fit under CloudFront's 60 s; no re
   assert.equal(polishRetryBudgetMs(1_000), POLISH_BUDGET_MS - 1_000);
   assert.equal(polishRetryBudgetMs(POLISH_BUDGET_MS - 5_000), null);
 });
+
+test("AU-34 (Codex r3): the re-check gets only what is left of the 55 s; past it the polish fails retryably", async () => {
+  const { POLISH_DEADLINE_MS, POLISH_BUDGET_MS, withDeadline } = await import("../src/prep/polish.ts");
+  assert.ok(POLISH_BUDGET_MS < POLISH_DEADLINE_MS && POLISH_DEADLINE_MS < 60_000);
+  assert.equal(await withDeadline(Promise.resolve(7), 1_000), 7);
+  await assert.rejects(withDeadline(new Promise(() => {}), 20), /polish_deadline/);
+  await assert.rejects(withDeadline(Promise.resolve(1), 0), /polish_deadline/);
+});
