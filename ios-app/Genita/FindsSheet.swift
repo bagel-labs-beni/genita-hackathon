@@ -818,9 +818,17 @@ struct FindCardPage: View {
     // r03 #19 "How I found this"; D4: a product card says it in one line instead of a colour legend
     @ViewBuilder private var howSection: some View {
         if card.kind == .product && card.evidence != nil {
-            Text(ProductPicks.sourceLine(card)).font(TypeStyle.body(13)).lineSpacing(5).foregroundStyle(FindsInk.sourceLine)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 8).accessibilityIdentifier("findHow")
+            // one line when it fits; else the sites on their own line (3x check: "…what you said ·" ended a line)
+            let parts = ProductPicks.sourceParts(card)
+            ViewThatFits(in: .horizontal) {
+                Text(ProductPicks.sourceLine(card)).lineLimit(1)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(parts.from)
+                    if let sites = parts.sites { Text(sites) }
+                }
+            }
+            .font(TypeStyle.body(13)).foregroundStyle(FindsInk.sourceLine)
+            .padding(.top, 8).accessibilityElement(children: .combine).accessibilityIdentifier("findHow")
         } else {
             howList
         }
