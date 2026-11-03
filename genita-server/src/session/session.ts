@@ -65,6 +65,7 @@ import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
 import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMood.ts";
+import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -394,12 +395,17 @@ export class Session {
   private lastMessageAt: number | null | undefined = undefined;
   /** #341: profile things recent greetings opened on (oldest → newest); undefined = not read yet */
   private openerRecent: string[] | undefined = undefined;
-  /** #344: where this call's mood starts (the last call's ending mood, faded); baseline when unknown */
-  private startMood: Mood = { valence: 0, energy: 0 };
-  /** the mood so far this call (user lines folded on the start mood) */
+  /** #344: where this call's mood starts (the last call's ending mood, faded); null = the persona's baseline */
+  private startMood: Mood | null = null;
+  /** #344: where this companion's mood rests (moodState.ts, from its traits / speaking style) */
+  private get moodBase(): Mood {
+    return personaBaseline(this.persona);
+  }
+  /** the mood so far this call (user lines folded on the start mood, decaying toward the persona baseline) */
   private callMood(extra?: string): Mood {
     const lines = this.history.filter((h) => h.role === "user").map((h) => h.text);
-    return moodFrom(extra ? [...lines, extra] : lines, this.startMood);
+    const base = this.moodBase;
+    return moodFrom(extra ? [...lines, extra] : lines, this.startMood ?? base, base);
   }
   /** the companion speaks first mid-call (src/convo/initiative.ts); null = off for this call */
   private initiative: InitiativeGovernor | null = null;
@@ -731,7 +737,7 @@ export class Session {
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
-        this.startMood = { valence: 0, energy: 0 };
+        this.startMood = null;
         forgetOpenerTopics(userId, memory, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       });
       // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
@@ -754,7 +760,7 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)()); }
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)(), this.moodBase); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -1463,12 +1469,11 @@ export class Session {
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
     if (!turn.greeting && !turn.cue && userText) {
-      const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
       turnLine = turnHints({
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
-        mood: moodLine(moodFrom(userLines, this.startMood)),
+        mood: moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
       }) ?? undefined;
@@ -2092,10 +2097,7 @@ export class Session {
         // one on its first clause instead of snapping back to neutral
         if (this.v1 && !interpret && !self && replyMood) {
           if (face && face.tag !== "laugh") face = { ...face, intensity: moodScaledIntensity(face.intensity, replyMood) };
-          else if (!face && !sentences.length && !emotion) {
-            if (replyMood.valence >= 0.35) face = { tag: "smile", intensity: 0.35 };
-            else if (replyMood.valence <= -0.3) face = { tag: "concerned", intensity: 0.4 };
-          }
+          else if (!face && !sentences.length && !emotion) face = restingFace(replyMood);
         }
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;

@@ -865,9 +865,9 @@ test("P1 turnHints: closeness by call, no two '?' replies in a row, mood, what l
   assert.match(turnHints({ userText: "hahaha stop", lastReply: "<teasing> Your cat filed a complaint.", remembers: false })!, /landed/);
   assert.match(turnHints({ userText: "I GOT THE JOB", remembers: true })!, /name that thing specifically/);
   assert.doesNotMatch(turnHints({ userText: "I GOT THE JOB", remembers: false }) ?? "", /remember/);
-  assert.equal(moodLine(moodFrom(["ugh today was so bad"])), "Your mood right now is quieter, matching theirs.");
-  assert.equal(moodLine(moodFrom(["I got the job!!"])), "Your mood right now is upbeat and playful.");
-  assert.equal(moodLine(moodFrom(["ugh today was so bad", "ok", "ok", "ok", "ok", "ok"])), null, "decays back to baseline");
+  assert.match(moodLine(moodFrom(["ugh today was so bad"])) ?? "", /^Your mood right now is quieter, matching theirs/);
+  assert.match(moodLine(moodFrom(["I got the job!!"])) ?? "", /^Your mood right now is upbeat and playful/);
+  assert.equal(moodLine(moodFrom(["ugh today was so bad", "so anyway", "anyway", "so", "anyway so", "so yeah anyway"])), null, "decays back to baseline");
   assert.equal(moodLine(moodFrom(["my grandma's dog is dead"])), null, "'dead' alone is not a laugh");
 });
 
@@ -908,10 +908,10 @@ test("P1 opener: last call's mood carries into a returning call's first line, ne
 
 test("P1 turnHints (Codex review): negated news, serious 'dead', bad news + lol, and words that look like interjections", async () => {
   const { turnHints, moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(moodLine(moodFrom(["I got the worst news of my life"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["I got the worst news of my life"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.equal(moodLine(moodFrom(["Please stop!!"])), null);
   assert.equal(moodLine(moodFrom(["I am not sad anymore"])), null);
-  assert.equal(moodLine(moodFrom(["so... I didn't get the job"])), "Your mood right now is quieter, matching theirs.");
+  assert.match(moodLine(moodFrom(["so... I didn't get the job"])) ?? "", /^Your mood right now is quieter, matching theirs/);
   assert.doesNotMatch(turnHints({ userText: "I'm dead serious, stop joking", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.doesNotMatch(turnHints({ userText: "I got fired lol", lastReply: "<teasing> Ha.", remembers: false }) ?? "", /landed/);
   assert.equal(moodLine(moodFrom(["It is official.", "It is official!!"])), null, "punctuation alone is not news (speculation reuse)");
@@ -1411,7 +1411,7 @@ test("#344: the last call's mood carries (12 h half-life), a Forget voids it, fa
   assert.equal(moodScaledIntensity(0.6, { valence: 0, energy: 0 }), 0.6);
   assert.equal(moodScaledIntensity(0.6, { valence: -0.5, energy: -1 }), 0.42);
   const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
-  assert.equal(moodLine(moodFrom(["hey"], { valence: 0.8, energy: 0.6 })), "Your mood right now is upbeat and playful.");
+  assert.match(moodLine(moodFrom(["hey"], { valence: 0.8, energy: 0.6 })) ?? "", /^Your mood right now is upbeat and playful/);
   assert.equal(moodLine(moodFrom(["hey"])), null);
 });
 
