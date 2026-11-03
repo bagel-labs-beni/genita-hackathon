@@ -23,6 +23,24 @@ struct ReadingOrb: View {
     static func breath(_ t: Double) -> Double { 1 + 0.02 * (1 - cos(2 * .pi * t / 3)) }
 
     var body: some View {
+        if SoulOrbFlag.isOn {
+            // Dyno's live orb (SoulOrb.swift); 100 %: its "response complete" reaction plus the same short pulse
+            SoulOrbView(reaction: finished ? 1 : 0)
+                .frame(width: node.w, height: node.h)
+                .scaleEffect(pulse ? 1.07 : 1)
+                .onChange(of: finished) { _, done in
+                    guard done else { return }
+                    withAnimation(.easeOut(duration: 0.16)) { pulse = true }
+                    withAnimation(.easeIn(duration: 0.2).delay(0.16)) { pulse = false }
+                }
+                .accessibilityHidden(true)
+        } else {
+            stillOrb
+        }
+    }
+
+    /// #508's motion on the PNG: the fallback when the live orb is off (GENITA_LIVE_ORB=0) or Metal is missing
+    private var stillOrb: some View {
         let transform = node.paintsRaw?.first?.imageTransform
         let sx = transform?[0][0] ?? 1, sy = transform?[1][1] ?? 1
         let tx = transform?[0][2] ?? 0, ty = transform?[1][2] ?? 0

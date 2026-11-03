@@ -83,6 +83,27 @@ jobs:
             ls build-output/screens
           fi
 
+      # I03 live soul orb: ~9 s simulator video + the app's own fps / GPU-time log (GENITA_ORB_STATS=1)
+      - name: Record the I03 orb
+        if: always()
+        continue-on-error: true
+        run: |
+          SIM="${{ steps.simulator.outputs.id }}"
+          APP="$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 6 -path '*Debug-iphonesimulator/Genita.app' | head -1)"
+          BID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")"
+          mkdir -p build-output/screens
+          xcrun simctl boot "$SIM" 2>/dev/null || true
+          xcrun simctl install "$SIM" "$APP"
+          SIMCTL_CHILD_GENITA_REVIEW_STAGE=preparing SIMCTL_CHILD_GENITA_ORB_STATS=1 SIMCTL_CHILD_GENITA_SERVER_URL=ws://127.0.0.1:9/v1/session \
+            xcrun simctl launch --terminate-running-process "$SIM" "$BID" --uitesting
+          sleep 6
+          xcrun simctl io "$SIM" recordVideo --codec=h264 --force build-output/screens/i03-live-orb.mp4 & REC=$!
+          sleep 9
+          kill -INT "$REC"; wait "$REC" || true
+          cp "$(xcrun simctl get_app_container "$SIM" "$BID" data)/tmp/soul-orb-stats.txt" build-output/screens/ || true
+          cat build-output/screens/soul-orb-stats.txt || true
+          ls -la build-output/screens/i03-live-orb.mp4
+
       - name: Mac build
         working-directory: ios-app
         run: |

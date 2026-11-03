@@ -124,7 +124,7 @@ import UniformTypeIdentifiers
                     // I03: the orb moves while the profile is read (Chelsea 11/4)
                     ReadingOrb(node: orb, resource: resource, progress: progress, finished: progress >= 1 || model.readingDone).designSlot(orb, width: width, top: bodyTop)
                 } else {
-                    DesignImage(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
+                    SoulOrbSlot(node: orb, resource: resource).designSlot(orb, width: width, top: bodyTop)
                 }
             }
             ZStack {
