@@ -64,6 +64,8 @@ struct InsightReportView: View {
     @State private var fixing: InsightObservation?
     @State private var setupOpen = false
     @State private var appeared = false
+    /// scrolled past the header: the inline title bar shows
+    @State private var scrolled = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var report: InsightReport? { model.insightReport }
@@ -82,6 +84,19 @@ struct InsightReportView: View {
                     }
                     .frame(width: w - 48, alignment: .leading)
                     .padding(.horizontal, 24)
+                }
+                .onScrollGeometryChange(for: Bool.self) { $0.contentOffset.y + $0.contentInsets.top > 90 } action: { _, now in
+                    withAnimation(.easeOut(duration: 0.2)) { scrolled = now }
+                }
+                if scrolled {
+                    VStack(spacing: 0) {
+                        Text("\(name)’s read on you").insightText(15, .semibold, line: 20).frame(maxWidth: .infinity).frame(height: 44)
+                            .padding(.top, safe.safeAreaInsets.top)
+                            .background(.ultraThinMaterial).background(Color.white.opacity(0.92))
+                            .accessibilityAddTraits(.isHeader).accessibilityIdentifier("insightTitleBar")
+                        Spacer(minLength: 0)
+                    }
+                    .ignoresSafeArea(edges: .top).transition(.opacity)
                 }
                 if showsCTA {
                     LinearGradient(stops: [.init(color: InsightInk.canvas.opacity(0), location: 0), .init(color: InsightInk.canvas, location: 0.45)], startPoint: .top, endPoint: .bottom)
