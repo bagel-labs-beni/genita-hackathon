@@ -66,6 +66,8 @@ export type WatchDeps = {
 };
 
 type Frame = { at: number; url: string };
+/** a react-worthy moment a quick look or memo saw (spoken or not), for "did you see that dunk?" a bit later */
+type SeenMoment = { at: number; moment: string; line: string; frame: string | null };
 
 const FRAME_KEEP_MS = 20_000;
 /** ~20 s at the Mac's 3 fps (motion-aware vision, 11/3) */
@@ -75,6 +77,23 @@ const MAX_MEMO = 20;
 const LINES_KEEP_MS = 5 * 60_000;
 const MAX_LINES = 60;
 const QUESTION_LINES_MS = 90_000;
+/** moments stay askable this long; the moment's own frame rides along while it is older than the "now" frames */
+const SEEN_KEEP_MS = 60_000;
+const MAX_SEEN = 6;
+/** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
+const SEEN_SAME_MS = 4_000;
+const SEEN_TWIN_MS = 1_000;
+const momentWords = (t: string) => new Set(t.toLowerCase().split(/[^\p{L}]+/u).filter((w) => w.length >= 4));
+/** one event seen twice (quick look + memo): the same kind close in time with a shared word, or ≤1 s apart */
+function sameMoment(a: { at: number; moment: string; line: string }, b: { at: number; moment: string; line: string }): boolean {
+  const dt = Math.abs(a.at - b.at);
+  if (dt <= SEEN_TWIN_MS) return true;
+  if (dt > SEEN_SAME_MS || a.moment !== b.moment) return false;
+  const wa = momentWords(a.line);
+  return [...momentWords(b.line)].some((w) => wa.has(w));
+}
+/** the turn's own frames cover ~1.4 s; a moment older than this gets its frame attached */
+const SEEN_FRAME_AFTER_MS = 2_500;
 /**
  * Realtime (11/3): a turn sees the screen as it is now — the newest frame (≤1 s old while a video plays) plus
  * one from ~2 s before for motion. Older context comes from the memo, which keeps up every few seconds.
@@ -139,6 +158,7 @@ export class WatchController {
   private blank = false;
   private blankSpoken = false;
   private frames: Frame[] = [];
+  private seen: SeenMoment[] = [];
   private lastMemoAt = 0;
   private memo: MemoEntry[] = [];
   private lines: DialogueLine[] = [];
@@ -306,6 +326,7 @@ export class WatchController {
     this.asr?.end();
     this.asr = null;
     this.frames = []; // never kept past the share
+    this.seen = this.seen.map((m) => ({ ...m, frame: null }));
     this.title = null;
     this.dialogueActive = false;
     this.openLine = "";
@@ -512,6 +533,7 @@ export class WatchController {
       raw = await this.memoRace(req, abort.signal, (this.deps.memoLanes ?? MEMO_LANES) > 1 ? undefined : (e) => {
         early = true;
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
+        this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
         this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq }, contentAt);
       });
     } catch (err) {
@@ -543,7 +565,10 @@ export class WatchController {
       return v;
     }
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
-    if (v.moment !== "none" && !early) this.tryReact({ ...v, talkOverSeq: memoSeq }, contentAt);
+    if (v.moment !== "none" && !early) {
+      this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
+      this.tryReact({ ...v, talkOverSeq: memoSeq }, contentAt);
+    }
     return v;
   }
 
@@ -616,7 +641,22 @@ export class WatchController {
     if (abort.signal.aborted || !this.sharing) return;
     const q = parseQuick(raw);
     this.log("watch.quick", { ms: Math.round(this.deps.now() - at), react: !!q, moment: q?.moment ?? "none", line: q?.line ?? "", talkOver: q?.talkOver ?? null, frames: frames.length });
-    if (q) this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
+    if (q) {
+      this.noteMoment(q.moment, q.line, spikeAt, frames.at(-1) ?? null);
+      this.tryReact({ memo: "", moment: q.moment, reaction: q.line, speakers: [], talkOver: q.talkOver, talkOverSeq: seq }, spikeAt, false, "quick");
+    }
+  }
+
+  /** Keeps what a look found react-worthy even when the reaction can't go out (gap, talk, dialogue). */
+  private noteMoment(moment: string, line: string, at: number, frame: string | null): void {
+    const text = line.replace(/<[^>]*>|\[[^\]]*\]/g, "").trim().slice(0, 120);
+    if (moment === "none" || !text || !this.sharing) return;
+    const now = this.deps.now();
+    this.seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
+    if (this.seen.some((m) => sameMoment(m, { at, moment, line: text }))) return;
+    this.seen.push({ at, moment, line: text, frame });
+    this.seen.sort((a, b) => a.at - b.at);
+    this.seen = this.seen.slice(-MAX_SEEN);
   }
 
   private tryReact(v: MemoVerdict, verdictAt: number, retry = false, via: "memo" | "quick" = "memo"): void {
@@ -679,10 +719,17 @@ export class WatchController {
 
   /** Watch context for the user's question, or null when nothing has been watched. */
   questionContext(): QuestionContext | null {
-    if (!this.sharing && !this.memo.length) return null;
     const now = this.deps.now();
+    if (!this.sharing && !this.memo.length && !this.seen.some((m) => now - m.at <= SEEN_KEEP_MS)) return null;
     const frames = this.sharing ? pickFrames(this.frames, QUESTION_FRAMES, QUESTION_FRAME_SPACING_MS).map((f) => f.url) : [];
+    const seen = this.seen.filter((m) => now - m.at <= SEEN_KEEP_MS);
+    // "did you see that dunk?" a few seconds later: the newest moment's own frame, when the "now" frames have moved on
+    const last = seen.at(-1);
+    const momentFrame = this.sharing && !this.blank && last?.frame && now - last.at > SEEN_FRAME_AFTER_MS && !frames.includes(last.frame)
+      ? { url: last.frame, agoSec: Math.round((now - last.at) / 1000) } : null;
     return buildQuestionContext({
+      moments: seen.map((m) => ({ agoSec: Math.round((now - m.at) / 1000), moment: m.moment, line: m.line })),
+      momentFrame,
       source: this.source,
       title: this.title,
       memo: this.memo,
