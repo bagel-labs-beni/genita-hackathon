@@ -171,6 +171,23 @@ test("hub: the Mac hears peer.inCall only while the iPhone has a started call (Q
   end2();
 });
 
+test("hub: a Mac that connects mid-call hears inCall at once, even with the iPhone's presence socket closed (Codex P2 #480)", () => {
+  const hub = new HandoffHub(new MemoryOwnershipStore());
+  const end = hub.callStarted("u", "iphone"); // call socket up, presence socket dropped / reconnecting
+  const mac = device(hub, "u", "mac");
+  assert.deepEqual(mac.last("peer"), { type: "peer", device: "iphone", online: false, active: false, inCall: true });
+  end();
+  assert.equal(mac.last("peer")?.inCall, false);
+  // two iPhone presence sockets: the joining Mac gets the iPhone's state once, not once per socket
+  device(hub, "u", "iphone");
+  device(hub, "u", "iphone");
+  const mac2 = device(hub, "u", "mac");
+  assert.equal(mac2.got.filter((m) => m.type === "peer").length, 1);
+  // nothing open on the other side: no peer message at all (unchanged)
+  const lone = device(hub, "solo", "mac");
+  assert.equal(lone.last("peer"), undefined);
+});
+
 test("hub: move request is relayed to the other device; offline or locked target fails at once", async () => {
   const hub = new HandoffHub(new MemoryOwnershipStore());
   const phone = device(hub, "u", "iphone");

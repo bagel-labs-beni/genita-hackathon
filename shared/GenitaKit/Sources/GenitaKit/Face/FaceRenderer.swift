@@ -42,6 +42,61 @@ public final class FaceRenderer: @unchecked Sendable {
     private let framingZoom: CGFloat
     private let framingCenter: CGPoint
     private let blinkMask: CIImage?
+    /// 11/4 brow flash: a soft band over the brows (moved up a little on stressed words) and its lift at full flash (still px)
+    private let browMask: CIImage?
+    private let browLift: CGFloat
+    /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
+    nonisolated(unsafe) public static var browFlash = true
+    private var browTracker = BrowFlash.Tracker()
+    /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
+    /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
+    /// a band hung from its top lifted the hairline, not the brows). The brow ellipse ends above the eye cut-out.
+    static func browGeometry(eyeY: CGFloat, mouthY: CGFloat, faceWidth: CGFloat) -> (browY: CGFloat, browRy: CGFloat, eyeY: CGFloat, eyeRy: CGFloat) {
+        let off = max(6, min((eyeY - mouthY) * 0.3, faceWidth * 0.12))
+        return (eyeY + off, off * 0.4, eyeY, off * 0.45)
+    }
+    /// The eye line (pixel rows from the top: the row the blink still differs most from the neutral one, and the
+    /// span of rows that differ, both eyes of a tilted face included) between the face box top and the mouth; nil
+    /// when they hardly differ. `shift` is the blink's alignment to the neutral still, as the renderer applies it
+    /// (codex P2). Classic pixel maths on a ≤160 px wide copy.
+    static func eyeLine(neutral: CGImage, blink: CGImage, shift: (dx: Int, dy: Int) = (0, 0), face: CGRect, mouthTop: CGFloat) -> (y: CGFloat, top: CGFloat, bottom: CGFloat)? {
+        let bounds = CGRect(x: 0, y: 0, width: neutral.width, height: neutral.height)
+        let shiftedBounds = CGRect(x: 0, y: 0, width: blink.width, height: blink.height).offsetBy(dx: CGFloat(-shift.dx), dy: CGFloat(-shift.dy))
+        let roi = CGRect(x: face.minX, y: face.minY, width: face.width, height: mouthTop - face.minY)
+            .intersection(bounds).intersection(shiftedBounds).integral
+        guard !roi.isNull, roi.width >= 8, roi.height >= 8, let a = neutral.cropping(to: roi),
+              let b = blink.cropping(to: roi.offsetBy(dx: CGFloat(shift.dx), dy: CGFloat(shift.dy))) else { return nil }
+        let top = roi.minY
+        let s = min(1, 160 / roi.width), w = max(4, Int(roi.width * s)), h = max(4, Int(roi.height * s))
+        func gray(_ img: CGImage) -> [UInt8]? {
+            var px = [UInt8](repeating: 0, count: w * h)
+            let ok = px.withUnsafeMutableBytes { buf -> Bool in
+                guard let c = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+                c.interpolationQuality = .medium
+                c.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+                return true
+            }
+            return ok ? px : nil
+        }
+        guard let ga = gray(a), let gb = gray(b) else { return nil }
+        var rows = [Double](repeating: 0, count: h)
+        for y in 0..<h {   // bitmap row 0 = the image's top
+            var n = 0
+            for x in 0..<w where abs(Int(ga[y * w + x]) - Int(gb[y * w + x])) > 18 { n += 1 }
+            rows[y] = Double(n) / Double(w)
+        }
+        let smooth: [Double] = (0..<h).map { y in
+            let lo = max(0, y - 2), hi = min(h - 1, y + 2)
+            return rows[lo...hi].reduce(0, +) / Double(hi - lo + 1)
+        }
+        guard let best = smooth.max(), best > 0.05, let at = smooth.firstIndex(of: best) else { return nil }
+        // the span: every row within a quarter of the box of the peak that still differs a third as much
+        let reach = max(2, h / 4)
+        let near = (max(0, at - reach)...min(h - 1, at + reach)).filter { smooth[$0] >= best * 0.33 }
+        let px = { (r: Int) in top + CGFloat(r) / s }
+        return (px(at) + 0.5 / s, px(near.first ?? at), px((near.last ?? at) + 1))
+    }
     /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
     private let exprUpperMask: CIImage
     /// Surprise: forehead and brows only (the eyes stay the photo's — wide-open eyes read as a stare).
@@ -104,7 +159,7 @@ public final class FaceRenderer: @unchecked Sendable {
     nonisolated(unsafe) public static var laughAsSmileOpen = true
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame (an expression
     /// on screen relaxes smoothly; its reply's events are dropped).
-    public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); lock.unlock() }
+    public func resetMouth() { lock.lock(); flowMorph?.reset(); stills.cancel(); browTracker = BrowFlash.Tracker(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
     public func overrideNextFlowAmounts(_ a: [Float]) { lock.lock(); flowMorph?.amountsOverride = a; lock.unlock() }
     /// Key amounts of the last flow-morph frame (empty without flows).
@@ -158,6 +213,28 @@ public final class FaceRenderer: @unchecked Sendable {
         // Eye band: from 12% below the face top down to a quarter of the way above the mouth.
         let bandTop = face.maxY - face.height * 0.12
         let bandBottom = mouth.maxY + (face.maxY - mouth.maxY) * 0.22
+        // brows: a band above the eye line the blink still shows (none without one, nor on animals: 11/4 the band
+        // must sit on the brows, not the hairline), the eyes cut out (codex P2: the lift must never move an eye);
+        // a 0.3 s lift on stressed words (BrowFlash)
+        let lift = max(1, face.height * 0.012)
+        browLift = lift
+        if faceSet.flow?.kind != "animal", let blink = faceSet.expressions[.blink],
+           let eye = Self.eyeLine(neutral: faceSet.image(for: .neutral), blink: blink, shift: faceSet.expressionShift[.blink] ?? (0, 0),
+                                  face: faceSet.faceBox, mouthTop: faceSet.mouthBox.minY) {
+            let g = Self.browGeometry(eyeY: h - eye.y, mouthY: mouth.midY, faceWidth: face.width)
+            let brow = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+            // eye cut-out (codex P2 ×2): its solid core covers every row the blink changed (both eyes of a tilted
+            // face) plus the lift and a margin, so no eye pixel is ever copied up
+            let eyeTop = h - eye.top, eyeBottom = h - eye.bottom
+            let core = max(g.eyeRy * 0.7, (eyeTop - eyeBottom) / 2 + lift + 3)
+            let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: (eyeTop + eyeBottom) / 2), rx: face.width * 0.5 / 0.85, ry: core / 0.7,
+                                        inner: 0.7, extent: extent)
+            // brow alpha × (1 − eye alpha) (codex P2: an inverted mask keeps its own alpha, so a multiply kept only the overlap)
+            let cut = CIFilter.sourceOutCompositing(); cut.inputImage = brow; cut.backgroundImage = eyes
+            browMask = cut.outputImage!.cropped(to: extent)
+        } else {
+            browMask = nil
+        }
         blinkMask = faceSet.hasBlink
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),
                                rx: face.width * 0.55, ry: max(4, (bandTop - bandBottom) / 2), inner: 0.6, extent: extent)
@@ -312,6 +389,22 @@ public final class FaceRenderer: @unchecked Sendable {
             // A blink is a cut (half-dissolved lids read as glass), held while it is more than 30% closed.
             f.maskImage = blink > 0.3 ? mask : Self.withOpacity(mask, 0)
             img = f.outputImage!.cropped(to: extent)
+        }
+
+        // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
+        // through a soft mask (no warp of the eyes; 0–2 per sentence)
+        if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
+            let w: Double = { lock.lock(); defer { lock.unlock() }
+                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings,
+                                      audioRevision: ctx.timeline.receivedAudioEndMs, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
+            if w > 0.01 {
+                let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
+                let f = CIFilter.blendWithAlphaMask()
+                f.inputImage = lifted
+                f.backgroundImage = img
+                f.maskImage = bm
+                img = f.outputImage!.cropped(to: extent)
+            }
         }
 
         // 5. aspect fill (with overscan while the camera drifts), then 6. the alive base at output
