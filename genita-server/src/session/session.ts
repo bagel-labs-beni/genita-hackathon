@@ -313,6 +313,8 @@ export class Session {
   private asr: AsrLike | null = null;
   /** the languages `asr` was opened with (joined), so a mode switch can tell whether it must reopen */
   private asrLanguagesKey: string | null = null;
+  /** set while `start` runs: `mode` only becomes "interpret" in enterInterpret, after the mic ASR is opened */
+  private startingMode: Mode | null = null;
   /** F8 · set while mode is "interpret" */
   private interp: Interpreter | null = null;
   /** F8 · Mac call interpretation: a second ASR stream for the call's sound */
@@ -557,6 +559,8 @@ export class Session {
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
+    // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
+    this.startingMode = startMode;
     this.language = str(msg.language, 40) ?? "English";
     this.pickVoice(str(msg.voiceId, 64) ?? persona.voice?.id, persona.kind);
     const lip = (msg.lip && typeof msg.lip === "object" ? msg.lip : { mode: msg.lip }) as Record<string, unknown>;
@@ -686,6 +690,7 @@ export class Session {
       ...(this.perceptionCtl ? { perception: true } : {}),
     });
     this.client.sendJson({ type: "state", state: "listening" });
+    this.startingMode = null;
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
@@ -816,7 +821,7 @@ export class Session {
     let asr: AsrLike | null = null;
     try {
       // the call's sound is only listened to for interpretation
-      const languages = this.asrLanguages(source === "call" ? "interpret" : this.mode);
+      const languages = this.asrLanguages(source === "call" ? "interpret" : this.startingMode ?? this.mode);
       asr = this.deps.openAsr(languages);
       const stream = asr;
       if (source === "mic") { this.asr = stream; this.asrLanguagesKey = languages.join(","); }
@@ -873,7 +878,7 @@ export class Session {
   private retuneMicAsr(): void {
     const stream = this.asr;
     if (this.closed || !stream || this.asrRetry.mic.connecting) return;
-    const want = this.asrLanguages(this.mode).join(",");
+    const want = this.asrLanguages(this.startingMode ?? this.mode).join(",");
     if (this.asrLanguagesKey === want) return;
     this.log("asr.retune", { mode: this.mode, languages: want });
     this.asr = null;

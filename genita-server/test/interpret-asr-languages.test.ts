@@ -65,9 +65,9 @@ test("a call that starts in interpretation listens in English and Korean", async
   try {
     await h.send({ type: "start", persona: { name: "Jin" }, mode: "interpret" });
     await tick();
-    const live = h.opened.filter((o) => !o.stream.ended);
-    assert.equal(live.length, 1);
-    assert.deepEqual(live[0].languages, ["English", "Korean"]);
+    assert.equal(h.opened.length, 1, "opened once in the right languages, no stream to replace (no lost first words)");
+    assert.deepEqual(h.opened[0].languages, ["English", "Korean"]);
+    assert.ok(h.opened[0].stream.isOpen);
   } finally {
     h.session.close();
   }
