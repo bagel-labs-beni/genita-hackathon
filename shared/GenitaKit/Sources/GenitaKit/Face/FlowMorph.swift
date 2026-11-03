@@ -326,8 +326,12 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// continuously instead of only on syllables; plus a loudness-envelope micro-motion (px) that
         /// carries on between syllables
         public var lpfMs = 0.0, microPx = 0.0
+        /// v57c: on spread vowels the lips thin — rows within the lip band (opening half-height +
+        /// lipThinPx × frame height) are pulled toward the opening by lipThin × spread; the teeth layer
+        /// keeps its own coordinates (only its alpha follows), so teeth are revealed, never stretched
+        public var lipThin = 0.0, lipThinPx = 0.014
         public init() {}
-        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, spreadPx, roundInPx, jawDropPx, mbpChinPx, lpfMs, microPx }
+        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, spreadPx, roundInPx, jawDropPx, mbpChinPx, lpfMs, microPx, lipThin, lipThinPx }
         public init(from decoder: Decoder) throws {
             self.init()
             guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
@@ -343,16 +347,19 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .mbpChinPx) { mbpChinPx = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lpfMs) { lpfMs = max(0, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .microPx) { microPx = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .lipThin) { lipThin = min(0.95, max(0, v)) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .lipThinPx) { lipThinPx = max(0, v) }
         }
         /// Release values for people on the lip rig when prep sends no perioral block: the human lane's
         /// v56 (critic 8.5; jawDrop 0 — 5 px made the jaw 1.34× too fast), plus the app's ring follow.
         public static let release: Perioral = {
             var p = Perioral()
             p.follow = 0.2; p.philtrumPx = 1.6; p.spreadPx = 5; p.roundInPx = 3; p.jawDropPx = 0; p.roundBulgePx = 1.2
-            p.mbpChinPx = 1.3; p.lpfMs = 150; p.microPx = 0
+            p.mbpChinPx = 1.1; p.lpfMs = 150; p.microPx = 0      // MBP chin 1.3 → 1.1 (critic: jawspd 1.5)
+            p.lipThin = 0.8; p.lipThinPx = 0.014                  // v57c
             return p
         }()
-        var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 }
+        var isOff: Bool { follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 && lipThin == 0 }
     }
     public var perioral: Perioral? = nil
     /// Continuous motion (11/3, "robotic a-e-i-o-u" review): geometry follows a critically damped
@@ -594,6 +601,12 @@ final class FlowMorph: @unchecked Sendable {
         if let face { faceNorm = min(1.2, max(0.6, 356 / max(1, Double(face.height) * 960 / Double(neutralStill.height)))) }
         nkF = data.nk; knF = data.kn
         let v2p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil)
+        stillH = Double(neutralStill.height)
+        if let mouth {
+            let kxs = Double(width) / Double(data.roi.width), kys = Double(height) / Double(data.roi.height)
+            rigMouth = CGRect(x: (Double(mouth.minX) - Double(data.roi.minX)) * kxs, y: (Double(mouth.minY) - Double(data.roi.minY)) * kys,
+                              width: Double(mouth.width) * kxs, height: Double(mouth.height) * kys)
+        }
         if let rg = data.map.rig, let mouth, data.map.drive != "snap" {
             // lip rig: raw flows; the chin's share is split off per row at render time (slow, × chinGain)
             let H = Double(neutralStill.height)
@@ -662,6 +675,9 @@ final class FlowMorph: @unchecked Sendable {
     /// Lip rig teeth-layer textures (teethTop.tone); keys without one use their own texture.
     private var teethTex: [String: [Float]] = [:]
     private var rigLo: [Float] = []
+    /// mouth box in working px (lip thinning)
+    private var rigMouth: CGRect?
+    private var stillH: Double = 0
     /// per flow cell: slow share and its gain (chin rows, skin ring)
     private var rigLoC: [Float] = [], rigGC: [Float] = []
     private var rigN1: [Float] = [], rigN2: [Float] = [], rigLipMask: [Float] = []
@@ -1207,15 +1223,50 @@ final class FlowMorph: @unchecked Sendable {
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
+        // v57c lip thinning (spread vowels): band around the opening, centre column scanned on the teeth layer
+        var thin: (yc: Float, R: Float, cx: Float, hw: Float, k: Float)? = nil
+        if rg != nil, let pr = cheekRig?.perioral, pr.lipThin > 0, let mb = rigMouth, !(usedV2 && v2Closed) {
+            let ewT = (context.map { expressionWeights(atMs: $0.audioMs) }) ?? [:]
+            let swT = max(ewT["smile"] ?? 0, ewT["smileopen"] ?? 0, 0.8 * (ewT["laugh"] ?? 0))
+            let spreadN = min(1, Double(["EH", "EI"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] }) / 0.45) * (1 - swT)
+            let k = Float(pr.lipThin * spreadN)
+            if k > 0.01 {
+                var yc = Float(mb.midY), dop: Float = 1
+                if let tl = teethL {
+                    let cx = Float(mb.midX), fxc = (cx + 0.5) * sx - 0.5
+                    var lo = Float.infinity, hi = -Float.infinity
+                    let y0 = max(0, Int(mb.minY - 2 * mb.height)), y1 = min(h - 1, Int(mb.maxY + 2 * mb.height))
+                    if y0 < y1 { for yy in y0...y1 {
+                        let dk = Self.bilinear2(tl.field, fw, fh, fxc, (Float(yy) + 0.5) * sy - 0.5)
+                        if Self.bilinear1(tl.int, w, h, cx + dk.0, Float(yy) + dk.1) > 0.5 { lo = min(lo, Float(yy)); hi = max(hi, Float(yy)) }
+                    } }
+                    if hi >= lo { yc = (lo + hi) / 2; dop = max(1, (hi - lo) / 2) }
+                }
+                let R = dop + Float(pr.lipThinPx * stillH) * Float(h) / Float(data.roi.height)
+                thin = (yc, R, Float(mb.midX), Float(mb.width / 2 * 1.05), k)
+            }
+        }
         for y in 0..<h {
-            let fy = (Float(y) + 0.5) * sy - 0.5
+            let fy0 = (Float(y) + 0.5) * sy - 0.5
             for x in 0..<w {
                 let i = y * w + x
                 let m = maskW[i]
                 var r = neutral[i * 3], g = neutral[i * 3 + 1], b = neutral[i * 3 + 2]
                 if m > 0.002, !act.isEmpty || !drawn.isEmpty || shG != nil {
                     let fx = (Float(x) + 0.5) * sx - 0.5
-                    let px = Float(x), py = Float(y)
+                    let px = Float(x), py0 = Float(y)
+                    var py = py0, fy = fy0
+                    if let th = thin {
+                        let d = abs(py0 - th.yc)
+                        if d < th.R {
+                            let u = (px - th.cx) / th.hw, u2 = u * u
+                            let kx = th.k * exp(-(u2 * u2 * u2))
+                            if kx > 0.002 {
+                                py = th.yc + (py0 >= th.yc ? 1 : -1) * (d - kx * d * (th.R - d) / th.R)
+                                fy = (py + 0.5) * sy - 0.5
+                            }
+                        }
+                    }
                     let d = Self.bilinear2(gn, fw, fh, fx, fy)
                     let c0 = Self.bilinear3(neutral, w, h, px + d.0, py + d.1)
                     r = a0 * c0.0; g = a0 * c0.1; b = a0 * c0.2
@@ -1234,10 +1285,16 @@ final class FlowMorph: @unchecked Sendable {
                         r += k.w * c.0; g += k.w * c.1; b += k.w * c.2
                     }
                     if let tl = teethL {
-                        let dk = Self.bilinear2(tl.field, fw, fh, fx, fy)
-                        let al = min(1, Self.bilinear1(tl.int, w, h, px + dk.0, py + dk.1) * tl.s)
+                        // teeth texture in its own (pre-thinning) coordinates; the alpha grows with the map
+                        let dk = Self.bilinear2(tl.field, fw, fh, fx, fy0)
+                        var al = Self.bilinear1(tl.int, w, h, px + dk.0, py0 + dk.1)
+                        if py != py0 {
+                            let dm = Self.bilinear2(tl.field, fw, fh, fx, fy)
+                            al = max(al, Self.bilinear1(tl.int, w, h, px + dm.0, py + dm.1))
+                        }
+                        al = min(1, al * tl.s)
                         if al > 0.002 {
-                            let c = Self.bilinear3(tl.key, w, h, px + dk.0, py + dk.1)
+                            let c = Self.bilinear3(tl.key, w, h, px + dk.0, py0 + dk.1)
                             r = r * (1 - al) + c.0 * al; g = g * (1 - al) + c.1 * al; b = b * (1 - al) + c.2 * al
                         }
                     }
@@ -1397,6 +1454,26 @@ final class FlowMorph: @unchecked Sendable {
                 let bw = clip((band - dx) / 0.1) * (1 - 0.4 * clip(dx / band))
                 teeth[k] = up * bw * clip((0.4 - sat) / 0.1) * clip((mx - thr) / 15)
             }
+        }
+        // v57c: the upper teeth read as one row — close horizontal gaps in the teeth band (kernel 2 % of the
+        // ROI width) on the upper half of the interior, lifted at 70 %
+        do {
+            let kw = max(1, Int((0.02 * Double(w)).rounded()) / 2)
+            var bin = [Bool](repeating: false, count: w * h), dil = bin
+            for k in 0..<(w * h) { bin[k] = teeth[k] > 0.3 }
+            for y in y0...y1 { for x in x0...x1 {
+                var any = false
+                for dx in -kw...kw { let xx = x + dx; if xx >= 0, xx < w, bin[y * w + xx] { any = true; break } }
+                dil[y * w + x] = any
+            } }
+            let ymid = y0 + (y1 - y0) / 2
+            for y in y0...ymid { for x in x0...x1 {
+                let k = y * w + x
+                guard dil[k], !bin[k], interior[k] > 0.5 else { continue }
+                var all = true
+                for dx in -kw...kw { let xx = x + dx; if xx < 0 || xx >= w || !dil[y * w + xx] { all = false; break } }
+                if all { teeth[k] = max(teeth[k], 0.7) }
+            } }
         }
         var o = p
         let white: (Float, Float, Float) = (242, 240, 238), lift = Float(tone.teethLift), dark = Float(tone.cavityDark)

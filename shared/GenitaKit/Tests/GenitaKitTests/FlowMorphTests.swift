@@ -400,3 +400,11 @@ struct StillBackgroundAndPerioralTests {
         #expect(a != b)
     }
 }
+
+struct LipThinTests {
+    @Test func lipThinDecodesAndIsInTheRelease() throws {
+        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"lipThin":2,"lipThinPx":0.02}"#.utf8))
+        #expect(pr.lipThin == 0.95 && pr.lipThinPx == 0.02 && !pr.isOff)
+        #expect(FlowMap.Perioral.release.lipThin == 0.8 && FlowMap.Perioral.release.mbpChinPx == 1.1)
+    }
+}
