@@ -9,7 +9,7 @@ enum MacResultFixture {
     static let started = #"{"type":"find.started","findId":"mac-rs-fixture","utteranceId":3,"kind":"product","title":"Finding 2 for your style…","detail":"Light jacket · searching shops"}"#
     static let created = card(id: findId)
     /// PF-1d: the server's search_failed line (product.ts), split "Title. Body" by the shared model.
-    static let failed = #"{"type":"find.failed","findId":"mac-rs-fixture","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price, or ask me again."}"#
+    static let failed = #"{"type":"find.failed","findId":"mac-rs-fixture","reason":"search_failed","message":"Couldn’t find a good match. Try a color or a price."}"#
     /// An earlier product answer in the same call — MF-1 shows what a refine ("match my style") stands on.
     static let earlier = card(id: "mac-rs-earlier")
     /// FindsModel keeps a card only after its own find.started.

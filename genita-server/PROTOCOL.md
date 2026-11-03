@@ -225,7 +225,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
-| `backchannel` | `kind: mm \| yeah`, `audio?` (base64 PCM s16le 24 kHz mono, server voice) | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 20 s apart): play `audio` quietly beside the reply queue (stop it when the user speaks or a reply starts); not a reply, no state change; the uplink is never cut. Only with `GENITA_BACKCHANNEL=1` |
+| `backchannel` | `kind: mm \| yeah`, `audio?` (base64 PCM s16le 24 kHz mono, server voice) | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 20 s apart): play `audio` quietly beside the reply queue (stop it when the user speaks or a reply starts); not a reply, no state change; the uplink is never cut. On by default; `GENITA_BACKCHANNEL=0` turns it off (rollback) |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
 | `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
 | `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |

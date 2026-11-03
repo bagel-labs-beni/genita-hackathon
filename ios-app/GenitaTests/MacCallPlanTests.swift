@@ -166,6 +166,8 @@ final class MacCallPlanTests: XCTestCase {
     func testJudgeCodeAnswersBecomeOneLine() {
         XCTAssertEqual(JudgeAccess.message(status: 401), "That code didn’t work. Check it and try again.")
         XCTAssertEqual(JudgeAccess.message(status: 429), "Too many tries. Wait 10 minutes and try again.")
+        XCTAssertEqual(JudgeAccess.message(status: 429, retryAfterSec: 125), "Too many tries. Try again in 3 min.", "the server's wait (11/4)")
+        XCTAssertEqual(JudgeAccess.message(status: 429, retryAfterSec: 2), "Too many tries. Try again in 1 min.")
         XCTAssertEqual(JudgeAccess.message(status: 404), "Judge access isn’t available right now.")
         XCTAssertEqual(JudgeAccess.message(status: nil), "Couldn’t reach the server. Check your connection.")
         XCTAssertNil(JudgeAccess.message(status: 200))

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuartzCore
 import Combine
 
 /// Same presence (11/3, Chelsea OK: on by default): the companion fades in on this Mac as the
@@ -11,6 +12,11 @@ enum MacPresenceFade {
         return UserDefaults.standard.object(forKey: "genita.presence.fade") as? Bool ?? true // Chelsea 11/3: on by default
     }
     static let seconds = 0.35
+    /// Dyno's demo video (1:44–1:52, lead 11/4): on a move by button the Mac window slides in from beyond the right
+    /// screen edge, a whole window width, and settles at its resting inset. Reduce Motion (or another display on that
+    /// edge) keeps the fade. Touch moves keep the DUO effect's own motion.
+    static let slideSeconds = 0.7
+    static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 }
 
 /// A borderless window that still takes clicks and keyboard focus for its controls and sheets.
@@ -26,6 +32,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     let server = ServerOwnershipLink(device:.mac)
     private var fanout: OwnershipFanout?
     @Published var status = "Waiting for your iPhone"
+    /// Older-server fallback for "Talking on your iPhone": the iPhone take this Mac watched happen (PhoneCallLatch).
+    @Published private(set) var phoneCallSeen = PhoneCallLatch()
     @Published fileprivate(set) var surface = HandoffSurface.active
     @Published private(set) var companionVisible = false
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
@@ -99,7 +107,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
         sharing.stop();sharing.permissionRequired=false;media.stopAll()
         companion?.orderOut(nil);companionVisible=false;sharingStopped=false;closeRegistration()
-        ownership.useAccount(accountID)
+        ownership.useAccount(accountID);phoneCallSeen.reset()
         status="Waiting for your iPhone"
         refreshSurface()
         guard let accountID else{return}
@@ -153,10 +161,26 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private func showCompanion() {
         let first = !companionVisible
         ensureCompanion();companionVisible=true
-        // Same presence (flag): a move by button (no touch effect) fades the companion in instead of popping up.
+        // Same presence (flag): a move by button (no touch effect) brings the companion in instead of popping up —
+        // sliding in from beyond the right edge as in Dyno's video, or a fade with Reduce Motion.
         if first, motion == nil, MacPresenceFade.enabled, let window=companion {
-            window.alphaValue=0;window.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            // the slide starts just past the right edge; if another display sits there the window would show up on it
+            // first, so fade instead (Codex P2)
+            let rest=window.frame
+            let start=screen.map { NSRect(origin:NSPoint(x:$0.frame.maxX,y:rest.origin.y),size:rest.size) }
+            let neighbour=start.map { s in NSScreen.screens.contains { $0 != screen && $0.frame.intersects(s) } } ?? true
+            if MacPresenceFade.reduceMotion || neighbour {
+                window.alphaValue=0;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup { $0.duration=MacPresenceFade.seconds;window.animator().alphaValue=1 }
+            } else if let start {
+                window.setFrame(start,display:false)
+                window.alphaValue=1;window.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup {
+                    $0.duration=MacPresenceFade.slideSeconds
+                    $0.timingFunction=CAMediaTimingFunction(controlPoints:0.16,1,0.3,1)
+                    window.animator().setFrame(rest,display:true)
+                }
+            }
         } else {companion?.alphaValue=1;companion?.orderFrontRegardless()}
     }
     /// Continue here on R2 or R2-E. The tap wins immediately; the effect is only an extra.
@@ -178,22 +202,29 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
+            let trigger=server.lastOwnershipTrigger
             // Same as the iPhone: never let the server's copy of a claim land in the middle of the effect.
             if pending != nil || motion != nil {
                 let generation=accountScope.generation
                 DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
                     guard let self,self.accountScope.accepts(generation) else{return}
-                    self.ownership.receive(claim)
+                    self.receiveServerClaim(claim,trigger:trigger)
                 }
-            } else {ownership.receive(claim)}
+            } else {receiveServerClaim(claim,trigger:trigger)}
         case .moveRequested:
             if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
         case .moveFailed:
             status="Your iPhone isn’t available. Still on this Mac."
-        case .peerChanged: refreshSurface()
+        case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
         }
     }
+    /// The trigger of the server claim being applied now (`current`/`sync` on connect are not a watched take).
+    private var applyingTrigger:String?
+    private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
+        applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
+    }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
+        phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
             sharingStopped=false;showCompanion()
             MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
@@ -419,7 +450,7 @@ struct MacHomeView:View {
         #if DEBUG
         if let review=handoff.reviewPhoneInCall {return review}
         #endif
-        return PhoneCallPresence.live(owner:handoff.ownership.state.owner,epoch:handoff.ownership.state.epoch,peerActive:handoff.server.peerActive,peerInCall:handoff.server.peerInCall)
+        return PhoneCallPresence.live(owner:handoff.ownership.state.owner,epoch:handoff.ownership.state.epoch,peerActive:handoff.server.peerActive,peerInCall:handoff.server.peerInCall,seen:handoff.phoneCallSeen)
     }
     private func v2Para(_ text:String)->some View {
         Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)

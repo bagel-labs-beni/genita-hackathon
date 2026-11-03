@@ -68,6 +68,7 @@ import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMoo
 import { holdsSteady, personaBaseline, restingFace } from "../convo/moodState.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
+import { cueRhythm } from "../convo/rhythm.ts";
 import type { PerceptionSource } from "../convo/types.ts";
 
 export { PROTOCOL_VERSION, FRAME_HEADER_BYTES, FRAME_KIND_TTS_PCM } from "../protocol.ts";
@@ -736,6 +737,8 @@ export class Session {
         if (text && (item.role === "user" || item.role === "assistant")) this.history.push({ role: item.role, text });
       }
       this.recentReplies = this.history.filter((h) => h.role === "assistant").map((h) => h.text).slice(-3);
+      // the whole claimed history, not just the kept 16 (Codex #502 P1 r5)
+      if (claimedCrisis(msg.history)) this.crisisInCall = true;
     }
     const startMode: Mode = msg.mode === "interpret" ? "interpret" : "chat";
     // the mic ASR opened during start listens in the start mode's languages (no English-only stream to replace)
@@ -805,6 +808,9 @@ export class Session {
           if (!seed.length) return;
           // a "forget that…" turn and the reply to it are never carried to the next device (QA post-deploy 11/3)
           this.history = scrubHistory(seed, []).slice(-MAX_HISTORY);
+          // a crisis anywhere in the handed-over turns stays with the call: server turns carry the flag (server.ts);
+          // a client-claimed history is read whole, not just the kept 16 (Codex #502 P1 r4/r5)
+          if (server?.length ? seed.some((h) => h.role === "user" && realCrisisSignal(h.text)) : claimedCrisis(msg.history)) this.crisisInCall = true;
           // a handoff is the same conversation: one thread, one summary (iPhone and Mac write the same row)
           this.memoryCall?.continueThread(server?.length ? this.deps.priorThread?.(revision) ?? null : null, this.history);
           this.recentReplies = [...this.recentReplies, ...this.history.filter((h) => h.role === "assistant").map((h) => h.text)].slice(-3);
@@ -1479,6 +1485,27 @@ export class Session {
     ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
+  /** #345: a smile / laugh the camera saw at the last reply, until the next user turn reads it */
+  private faceLanded: { kind: "smiled" | "laughed"; at: number } | null = null;
+
+  /** one perception subscription per call: feeds the initiative governor (if on) and what-landed (#345) */
+  private subscribePerception(): void {
+    if (!this.perception || this.perceptionUnsub) return;
+    try {
+      this.perceptionUnsub = this.perception.onTrigger((t) => {
+        if (t.kind === "smiled_at_reply" || t.kind === "laughed") this.faceLanded = { kind: t.kind === "laughed" ? "laughed" : "smiled", at: this.now() };
+        this.initiative?.perception(t);
+      });
+    } catch { this.perceptionUnsub = () => {}; }
+  }
+
+  /** the landed face for this turn, if it was seen in the last 20 s; consumed once */
+  private takeFaceLanded(): "smiled" | "laughed" | null {
+    const f = this.faceLanded;
+    this.faceLanded = null;
+    return f && this.now() - f.at <= 20_000 ? f.kind : null;
+  }
+
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
   private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
@@ -1506,15 +1533,19 @@ export class Session {
     } catch { /* the reply never fails on the camera lane */ }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
+    this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
       turnLine = turnHints({
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
         // never an upbeat / playful mood hint on a real crisis line (Codex #490 P1)
-        mood: realCrisisSignal(userText) ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
+        mood: realCrisisSignal(userText) || this.crisisInCall ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
+        faceLanded: this.takeFaceLanded(),
+        recentReplies: this.recentReplies,
+        crisisInCall: this.crisisInCall,
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1546,7 +1577,7 @@ export class Session {
     const gov = this.initiative;
     if (!gov || this.initiativeBusy || this.closed) return;
     if (this.perception && !this.perceptionUnsub) {
-      try { this.perceptionUnsub = this.perception.onTrigger((t) => gov.perception(t)); } catch { this.perceptionUnsub = () => {}; }
+      this.subscribePerception();
     }
     const d = gov.decide(this.now(), this.initiativeIdle());
     if (!d.fire) return;
@@ -1563,7 +1594,7 @@ export class Session {
       if (!again.fire) return;
       gov.markFired(this.now());
       const input = initiativeInput(again.source);
-      this.cueTurn = { source: again.source, block: initiativeBlock(again.source, threads), input };
+      this.cueTurn = { source: again.source, block: cueRhythm(initiativeBlock(again.source, threads), again.source, this.recentReplies), input };
       this.log("convo.initiative", { source: again.source, threads: threads.length, n: gov.count });
       this.dispatch({ type: "text", text: input });
     } finally {
@@ -1603,6 +1634,9 @@ export class Session {
   get isClosed(): boolean { return this.closed; }
   /** the user asked to forget something at any point in this call (#447) */
   forgetAsked = false;
+  /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
+   * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
+  crisisInCall = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
@@ -1610,6 +1644,7 @@ export class Session {
     // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
     // either detector: #442's (personalize, drives the do-not-mention scrub) or memory's broader one (#443)
     if (role === "user" && (isForgetRequest(text) || isMemoryForgetRequest(text))) this.forgetAsked = true;
+    if (role === "user" && realCrisisSignal(text)) this.crisisInCall = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);
@@ -2108,7 +2143,10 @@ export class Session {
         // a hold beat is audio only: the caption's previous sentence is the model's own (#427)
         const prevEnd = [...sentences].reverse().find((x) => !x.beat)?.display.trim();
         // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
-        if ((droppedOpener && !sentences.some((x) => !x.beat)) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // …and a plain word Spark itself wrote lower case at a sentence start ("finally, you did it"; r3 sweep), never a
+        // command or code ("npm install ws.")
+        const plainLower = /^(?:\s*\[[^\]]*\]\s*)*[a-z][a-z']+\b/.test(tts) && !/[`/\\_=<>{}]|\b(?:npm|npx|git|cd|ls|pip|brew|yarn|node|python|sudo|curl|https?|www)\b/i.test(tts);
+        if ((droppedOpener && !sentences.some((x) => !x.beat)) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText || plainLower) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
         // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
         // capitalised goes back to how Spark wrote it
         if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {
@@ -2670,6 +2708,15 @@ export class Session {
 }
 
 /** `start.history` from the app: role + text only, capped. */
+/** a real crisis line anywhere in a claimed start.history (the whole list, before the 16-line trim; Codex #502 P1 r5) */
+function claimedCrisis(v: unknown): boolean {
+  if (!Array.isArray(v)) return false;
+  return v.slice(-200).some((h) => {
+    const item = h as Record<string, unknown>;
+    return item?.role === "user" && typeof item.text === "string" && realCrisisSignal(item.text.slice(0, 1000));
+  });
+}
+
 function parseHistory(v: unknown): HistoryItem[] {
   if (!Array.isArray(v)) return [];
   const out: HistoryItem[] = [];
