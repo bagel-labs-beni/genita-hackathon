@@ -12,8 +12,12 @@ import CoreText
     }
     var body: some Scene {
         WindowGroup("Genita", id: "companion") {
-            // Figma MAC-1~4: the window bar has the traffic lights only, no title text
+            // Figma MAC-1~4: the window bar has the traffic lights only, no title text — and no bar of its own:
+            // build 4 drew a white title band with a hairline over the #FEFEFE window (Mac UI polish 11/3). Hiding the
+            // toolbar background lets the window's own sheet colour run up under the traffic lights (Apple's
+            // "Customizing window styles" sample does the same). The call window is a separate borderless window.
             MacStartView().preferredColorScheme(.light).toolbar(removing: .title)
+                .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .genitaSplash() // launch splash B+ at window open (motion lane)
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
