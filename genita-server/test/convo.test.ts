@@ -488,3 +488,15 @@ test("narration (real Spark probe 11/3): 'I'll check what tomorrow's weather loo
   assert.equal(guardSentence("I'll check what tomorrow's weather looks like in Seoul.", none), "narration");
   assert.equal(guardSentence("Checking now, it looks like rain at five.", none), null);
 });
+
+test("narration (Codex #356 round 7): a gerund subject with a result is an answer", () => {
+  assert.equal(guardSentence("Looking up the route suggests taking the blue line.", none), null);
+  assert.equal(guardSentence("Mapping the route to City Hall now.", none), "narration");
+});
+
+test("narration (real Spark probe 11/3, round 2): 'Checking Seoul's forecast for tomorrow.' is an announcement; checking out the fridge is not", () => {
+  assert.equal(guardSentence("Checking Seoul's forecast for tomorrow.", none), "narration");
+  assert.equal(guardSentence("Checking tomorrow's Seoul skies for you.", none), "narration");
+  assert.equal(guardSentence("Checking out your fridge, I see onions and garlic.", none), null);
+  assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
+});
