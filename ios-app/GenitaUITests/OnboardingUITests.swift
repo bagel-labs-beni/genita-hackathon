@@ -246,11 +246,11 @@ final class OnboardingUITests: XCTestCase {
         capture("V02-T")
         primary.tap()
 
-        // V04: the server's four voices (Figma "voice model" frames): nothing picked, Continue off
+        // V04: the server's four voices (Figma "voice model" frames); 11/4: the top match for the face is pre-selected
         XCTAssertTrue(app.buttons["voice0"].waitForExistence(timeout: 10))
         XCTAssertTrue(element("voiceHint").exists, "V04 hint line")
-        XCTAssertTrue((app.buttons["voice0"].label).hasPrefix("Tara"), "first voice is the recommended human default")
-        XCTAssertFalse(primary.isEnabled, "V04: nothing picked yet")
+        XCTAssertTrue((app.buttons["voice0"].label).hasPrefix("Tara, Selected"), "the recommended voice is pre-selected (stub photo: no voice_fit → Tara)")
+        XCTAssertTrue(primary.isEnabled, "V04: Continue saves the pre-selected voice")
         capture("V04")
         // play Leah: the clip comes from the server, the card turns to "Playing · …" and Continue stays off
         app.buttons["play1"].tap()

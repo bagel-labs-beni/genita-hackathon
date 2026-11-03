@@ -7,6 +7,7 @@
 // Rules mirror the prototype (genita-mouth-proto/proto.py): amounts ladder, attack/release
 // smoothing, focus³, S-curve colour weights.
 
+import Accelerate
 import CoreGraphics
 import Foundation
 
@@ -265,8 +266,14 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var lipTone = 1.0
         /// lip saturation ceiling: × the neutral texture's mean lip saturation (v9.0 review: magenta closed lips); 0 = off
         public var lipSatMax = 1.05
+        /// 11/4 mouth inside (Chelsea, build 6 Listening: a flat white teeth band at rest): lips together while
+        /// listening (idle drift ≤ restOpen, no teeth layer without a reply) and teeth lit like the face
+        /// (`toneTeethLit`). Map `interior: 0` = the build 6 mouth (rollback without an app build).
+        public var interior = true
+        /// the largest idle opening while listening (amount of the first jaw key)
+        public var restOpen = 0.05
         public init() {}
-        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, skinShare, skinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop }
+        enum CodingKeys: String, CodingKey { case chinLpHz, chinGain, skinShare, skinGain, chinRamp, blendFloor, noTex, teethHyst, teethMin, teethAlpha, lipFlowPx, lipFlowSigma, lipTex, lipTone, lipSatMax, teethTop, interior, restOpen }
         enum TeethKeys: String, CodingKey { case hyst, min, alpha, tone, exitBeforeClose }
         public init(from decoder: Decoder) throws {
             self.init()
@@ -286,6 +293,9 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTex) { lipTex = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipTone) { lipTone = v }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .lipSatMax) { lipSatMax = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .interior) { interior = v >= 0.5 }
+            else if let v = try? c.decodeIfPresent(Bool.self, forKey: .interior) { interior = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .restOpen), v.isFinite { restOpen = min(0.2, max(0, v)) }
             // prep #266 nests the teeth rules: teethTop {hyst, min, alpha, fade, cavity}
             if let t = try? c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop) {
                 if let v = try? t.decodeIfPresent(Double.self, forKey: .hyst) { teethHyst = v }
@@ -302,6 +312,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             try c.encode(blendFloor, forKey: .blendFloor); try c.encode(noTex, forKey: .noTex)
             try c.encode(teethHyst, forKey: .teethHyst); try c.encode(teethMin, forKey: .teethMin); try c.encode(teethAlpha, forKey: .teethAlpha)
             try c.encode(lipFlowPx, forKey: .lipFlowPx); try c.encode(lipFlowSigma, forKey: .lipFlowSigma); try c.encode(lipTex, forKey: .lipTex); try c.encode(lipTone, forKey: .lipTone); try c.encode(lipSatMax, forKey: .lipSatMax)
+            try c.encode(interior ? 1.0 : 0.0, forKey: .interior); try c.encode(restOpen, forKey: .restOpen)
             var t = c.nestedContainer(keyedBy: TeethKeys.self, forKey: .teethTop)
             try t.encode(teethHyst, forKey: .hyst); try t.encode(teethMin, forKey: .min); try t.encode(teethAlpha, forKey: .alpha)
             try t.encodeIfPresent(teethTone, forKey: .tone); try t.encode(teethExitBeforeClose ? 1.0 : 0.0, forKey: .exitBeforeClose)
@@ -642,8 +653,21 @@ final class FlowMorph: @unchecked Sendable {
         }
         maskW = mw
         order = data.keys
+        let lit = data.kind == "human" && data.map.rig != nil && (FaceRenderer.mouthInterior ?? data.map.rig?.interior ?? false)
+        var mx: (cx: Float, hw: Float)? = nil
+        if lit, let mouth, data.roi.width > 0 {
+            let kxs = Double(width) / Double(data.roi.width)
+            mx = (Float((Double(mouth.midX) - Double(data.roi.minX)) * kxs), Float(Double(mouth.width) / 2 * kxs))
+        }
         if let tone = data.map.rig?.teethTone {
-            for (k, inn) in ip { if let p = keyPix[k] { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) } }
+            for (k, inn) in ip { if let p = keyPix[k] {
+                if lit {
+                    let r = Self.toneTeethLitW(p, interior: inn, width: width, height: height, tone: tone, mouthX: mx)
+                    teethTex[k] = r.tex; teethIn[k] = r.inside
+                } else { teethTex[k] = Self.toneTeeth(p, interior: inn, width: width, height: height, tone: tone) }
+            } }
+        } else if lit {
+            for (k, inn) in ip { teethIn[k] = Self.insideWeight(inn, width: width, height: height, mouthX: mx) }
         }
         if let rg = data.map.rig, rg.lipTone > 0, data.neutralROI != nil, let closedLip = lm["MBP"] {
             // the photo's own lip tone (prep's colour fix greyed the lips toward lilac, v8.8 review)
@@ -741,11 +765,15 @@ final class FlowMorph: @unchecked Sendable {
     private let intPix: [String: [Float]]
     /// Lip rig teeth-layer textures (teethTop.tone); keys without one use their own texture.
     private var teethTex: [String: [Float]] = [:]
+    /// 11/4: per key, how surely a teeth-layer pixel is inside the mouth (narrow-gap shade only there)
+    private var teethIn: [String: [Float]] = [:]
     private var rigLo: [Float] = []
     /// mouth box in working px (lip thinning)
     private var rigMouth: CGRect?
     /// The blend mask fades out across the chin line (rollback: false)
     nonisolated(unsafe) public static var chinStop = true
+    /// Lip rig with the 11/4 mouth inside on (people only).
+    var interiorOn: Bool { data.kind == "human" && data.map.rig.map { FaceRenderer.mouthInterior ?? $0.interior } ?? false }
     /// how far below the neutral chin (share of the face height) an open jaw may still move
     nonisolated(unsafe) public static var jawRoom = 0.10
     /// v60: the magnifier's strength, low-passed (its peaks jumped: jerk 1.8 vs the reference 0.8)
@@ -932,7 +960,9 @@ final class FlowMorph: @unchecked Sendable {
         if !closing, mo.idleJaw > 0, let j0 = order.firstIndex(of: data.map.ladder.steps.first?.key ?? "MID") {
             let w = 2 * Double.pi * t
             let n = 0.5 + 0.5 * (sin(w * 0.37 + 1.3) * 0.6 + sin(w * 0.83 + 0.4) * 0.4)
-            target[j0] += Float(mo.idleJaw * n) * (1 - min(1, op * 3))
+            // 11/4: a listening mouth keeps its lips together (0.2 parted them and showed the teeth band)
+            let idle = interiorOn ? min(mo.idleJaw, data.map.rig?.restOpen ?? mo.idleJaw) : mo.idleJaw
+            target[j0] += Float(idle * n) * (1 - min(1, op * 3))
         }
         // critically damped spring per key (closing m/b/p rises faster)
         if motionX.count != order.count { motionX = target; motionV = target.map { _ in 0 } }
@@ -1292,11 +1322,18 @@ final class FlowMorph: @unchecked Sendable {
             drawn.append((keyPix[order[idx]]!, cw[idx], g, lipPix[order[idx]], nil, u, lf))
         }
         // Teeth layer (rig): the top key's mouth inside, opaque, alpha = its warped interior × opening.
-        var teethL: (key: [Float], field: [Float], int: [Float], s: Float)? = nil
+        var teethL: (key: [Float], field: [Float], int: [Float], s: Float, lit: Float, inside: [Float]?)? = nil
         if let rg, let j = rigTop, let ip = intPix[order[j]] {
             let s = Float(min(1, max(0, (Double(am[j]) - rg.teethAlpha[0]) / max(1e-3, rg.teethAlpha[1]))))
             let leaving = rg.teethExitBeforeClose && usedV2 && (v2?.preClose ?? false)
-            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s) }
+            // 11/4: less light reaches a narrow gap (a closure releasing squeezed full-bright teeth into a white wire)
+            var lit: Float = 1
+            if interiorOn {
+                let open = Double(am[j]) - Double(order.firstIndex(of: "MBP").map { am[$0] } ?? 0)
+                let u = min(1, max(0, (open - 0.1) / 0.35))
+                lit = Float(0.55 + 0.45 * u * u * (3 - 2 * u))
+            }
+            if s > 0, !leaving { teethL = (teethTex[order[j]] ?? keyPix[order[j]]!, fieldOf[j] ?? keyField(j), ip, s, lit, teethIn[order[j]]) }
         }
         var out = [UInt8](repeating: 0, count: width * height * 4)
         let w = width, h = height
@@ -1462,6 +1499,10 @@ final class FlowMorph: @unchecked Sendable {
                         al = min(1, al * tl.s)
                         if al > 0.002 {
                             var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
+                            if tl.lit < 1 {
+                                let k = 1 - (1 - tl.lit) * (tl.inside.map { Self.bilinear1($0, w, h, px + dk.0, tY + dk.1) } ?? 1)
+                                c = (c.0 * k, c.1 * k, c.2 * k)
+                            }
                             // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
                             if let ow = openW, tY < ow.yc {
                                 let l = (c.0 + c.1 + c.2) / 3, bw = min(1, max(0, (l - 120) / 60)) * 0.18
@@ -1603,7 +1644,119 @@ final class FlowMorph: @unchecked Sendable {
         return (dx, dy)
     }
 
-    /// Bilinear single-channel sample; 0 outside (a warped mask has nothing beyond its edge).
+    /// 11/4 (Chelsea, build 6: "the teeth look pasted"): the teeth layer keeps the key's own light — no lift toward a
+    /// fixed white, no gap-filled slab. The whole mouth inside falls into shadow toward the corners and under the
+    /// upper lip, the lower teeth sit a little darker, bright unsaturated (teeth) pixels take a touch of the skin's
+    /// colour (same light), and the dark cavity is warmed and darkened as in v44 (`cavityDark`).
+    static func toneTeethLit(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone, mouthX: (cx: Float, hw: Float)? = nil) -> [Float] {
+        toneTeethLitW(p, interior: interior, width: w, height: h, tone: tone, mouthX: mouthX).tex
+    }
+
+    /// Distance in px (capped at 3) from the inside mask's rim, 0 outside: the rim holds lip / skin pixels the mask caught.
+    static func rimDistance(_ interior: [Float], width w: Int, height h: Int, box: (Int, Int, Int, Int)) -> [Float] {
+        let (x0, y0, x1, y1) = box
+        var ed = [Float](repeating: 0, count: w * h)
+        for y in y0...y1 { for x in x0...x1 where interior[y * w + x] > 0.5 { ed[y * w + x] = 3 } }
+        for _ in 0..<3 {
+            var nx = ed
+            for y in y0...y1 { for x in x0...x1 where ed[y * w + x] > 0 {
+                let l = x > 0 ? ed[y * w + x - 1] : 0, r = x + 1 < w ? ed[y * w + x + 1] : 0
+                let u = y > 0 ? ed[(y - 1) * w + x] : 0, d = y + 1 < h ? ed[(y + 1) * w + x] : 0
+                nx[y * w + x] = min(ed[y * w + x], min(l, r, u, d) + 1)
+            } }
+            ed = nx
+        }
+        return ed
+    }
+
+    /// Codex P2 (no `teethTop.tone`): the narrow-gap shade still needs to know what is inside the mouth — rim and
+    /// past-the-corner pixels weigh 0 (no colour test without the tone pass).
+    static func insideWeight(_ interior: [Float], width w: Int, height h: Int, mouthX: (cx: Float, hw: Float)?) -> [Float] {
+        var xs0 = w, xs1 = -1, ys0 = h, ys1 = -1
+        for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 { xs0 = min(xs0, x); xs1 = max(xs1, x); ys0 = min(ys0, y); ys1 = max(ys1, y) } }
+        var o = [Float](repeating: 0, count: w * h)
+        guard xs1 >= xs0, ys1 >= ys0 else { return o }
+        let ed = rimDistance(interior, width: w, height: h, box: (xs0, ys0, xs1, ys1))
+        for y in ys0...ys1 { for x in xs0...xs1 {
+            var e = min(1, max(0, (ed[y * w + x] - 1) / 2))
+            if let m = mouthX { let u = min(1, max(0, (abs(Float(x) - m.cx) / max(1, m.hw) - 1) / 0.15)); e *= 1 - u * u * (3 - 2 * u) }
+            o[y * w + x] = e
+        } }
+        return o
+    }
+
+    /// `toneTeethLit` plus each pixel's "really inside the mouth" weight (0 on the mask's rim and past the mouth's
+    /// corners, where a prep mask can leak onto the cheek) — the narrow-gap shade uses it too.
+    static func toneTeethLitW(_ p: [Float], interior: [Float], width w: Int, height h: Int, tone: FlowMap.Rig.TeethTone, mouthX: (cx: Float, hw: Float)? = nil) -> (tex: [Float], inside: [Float]) {
+        var ys: [Int] = [], xs: [Int] = [], vs: [Float] = []
+        for y in 0..<h { for x in 0..<w where interior[y * w + x] > 0.5 {
+            let i = (y * w + x) * 3
+            ys.append(y); xs.append(x); vs.append(max(p[i], p[i + 1], p[i + 2]))
+        } }
+        var inside = [Float](repeating: 0, count: w * h)
+        guard ys.count > 20, let y0 = ys.min(), let y1 = ys.max(), let x0 = xs.min(), let x1 = xs.max() else { return (p, inside) }
+        vs.sort(); let thr = vs[min(vs.count - 1, max(0, Int(Double(vs.count - 1) * min(100, max(0, tone.thrPct.isFinite ? tone.thrPct : 50)) / 100)))]
+        func clip(_ v: Float) -> Float { min(1, max(0, v)) }
+        func sstep(_ a: Float, _ b: Float, _ v: Float) -> Float { let u = clip((v - a) / (b - a)); return u * u * (3 - 2 * u) }
+        // skin colour around the mouth (a band above and below the inside, same columns): the light's tint
+        let pad = max(2, (y1 - y0 + 1) / 2)
+        var sr: Float = 0, sg: Float = 0, sb: Float = 0, sn: Float = 0
+        for y in max(0, y0 - 3 * pad)..<min(h, y1 + 3 * pad + 1) where y < y0 - pad || y > y1 + pad {
+            for x in x0...x1 where interior[y * w + x] < 0.5 { let i = (y * w + x) * 3; sr += p[i]; sg += p[i + 1]; sb += p[i + 2]; sn += 1 }
+        }
+        var tint: (Float, Float, Float) = (1, 1, 1), skin: (Float, Float, Float)? = nil
+        if sn > 0 { let m = (sr + sg + sb) / (3 * sn); skin = (sr / sn, sg / sn, sb / sn); if m > 1 { tint = (sr / sn / m, sg / sn / m, sb / sn / m) } }
+        // corners: the mouth box's (a mask leaking past a corner must not move the falloff), else the inside's extent
+        let cx = mouthX?.cx ?? Float(x0 + x1) / 2, hw = max(1, mouthX?.hw ?? Float(x1 - x0) / 2), split = Float(tone.split), dark = Float(min(1, max(0, tone.cavityDark)))
+        let ed = Self.rimDistance(interior, width: w, height: h, box: (x0, y0, x1, y1))
+        var o = p
+        for x in x0...x1 {
+            // this column's inside: top row (under the upper lip) and height
+            var top = -1, bot = -1
+            for y in y0...y1 where interior[y * w + x] > 0.5 { if top < 0 { top = y }; bot = y }
+            guard top >= 0 else { continue }
+            let colH = Float(bot - top + 1), shadeRows = max(2, 0.25 * colH)
+            let dx = abs(Float(x) - cx) / hw
+            let corner = 1 - 0.45 * sstep(0.5, 1.0, dx)
+            for y in top...bot where interior[y * w + x] > 0.5 {
+                let i = (y * w + x) * 3, mx = max(p[i], p[i + 1], p[i + 2]), mn = min(p[i], p[i + 1], p[i + 2])
+                let sat = mx > 0 ? (mx - mn) / mx : 0
+                let lipShadow = 1 - 0.32 * (1 - clip(Float(y - top) / shadeRows))
+                let r = Float(y - y0) / Float(max(1, y1 - y0))
+                let toothy = clip((0.4 - sat) / 0.1) * clip((mx - thr) / 15)
+                let lower = 1 - 0.18 * clip((r - split) / 0.15) * toothy
+                // only teeth and the dark inside take the shade: lip pixels caught by the inside mask keep their colour
+                // skin the inside mask caught (pale faces: a prep mask past the mouth's edge) looks like the skin around the
+                // mouth — leave it as the key has it (shading it drew grey blotches on p6)
+                var skinLike: Float = 0
+                if let sk = skin {
+                    let d = (abs(p[i] - sk.0) + abs(p[i + 1] - sk.1) + abs(p[i + 2] - sk.2)) / 3, sL = max(1, (sk.0 + sk.1 + sk.2) / 3)
+                    skinLike = 1 - clip((d / sL - 0.08) / 0.1)
+                }
+                let sw = max(toothy, clip((thr + 25 - mx) / 20) * clip((0.42 - sat) / 0.1), clip((70 - mx) / 25)) * (1 - skinLike)
+                let k = 1 - (1 - corner * lipShadow * lower) * sw
+                var c = (p[i] * k, p[i + 1] * k, p[i + 2] * k)
+                if toothy > 0 {
+                    // same light as the skin: keep the luminance, lean the colour 8 % toward the skin's tint
+                    let l = (c.0 + c.1 + c.2) / 3, a = 0.08 * toothy
+                    c = (c.0 + (l * tint.0 - c.0) * a, c.1 + (l * tint.1 - c.1) * a, c.2 + (l * tint.2 - c.2) * a)
+                }
+                let cav = (1 - toothy) * clip((0.35 - sat) / 0.1) * clip((thr + 25 - mx) / 20)
+                if cav > 0 {
+                    // warmer, a little darker (v44 took ×0.5 and drew black holes in dim photos): 40 % of cavityDark
+                    let dk = 1 - (1 - dark) * 0.4
+                    c = (c.0 * (1 - cav) + c.0 * min(1, dk * 1.1) * cav, c.1 * (1 - cav) + c.1 * dk * 0.82 * cav, c.2 * (1 - cav) + c.2 * dk * 0.8 * cav)
+                }
+                // the rim, and anything past the mouth's corners (cheek skin a prep mask leaked onto: shading it drew grey
+                // blotches on pale faces), keeps the key's own pixels
+                let e = clip((ed[y * w + x] - 1) / 2) * (mouthX == nil ? 1 : 1 - sstep(1.0, 1.15, dx))
+                inside[y * w + x] = e * sw      // the narrow-gap shade: teeth and the dark inside only, never lip or skin
+                o[i] = p[i] + (c.0 - p[i]) * e; o[i + 1] = p[i + 1] + (c.1 - p[i + 1]) * e; o[i + 2] = p[i + 2] + (c.2 - p[i + 2]) * e
+            }
+        }
+        return (o, inside)
+    }
+
     /// Teeth-layer texture (v44 teethTop.tone): inside the interior, low-saturation pixels darker than
     /// the interior's V percentile + 25 become a darker, warmer cavity; an upper band (rows above
     /// `split`, |dx| < `band`, fading 40 % toward the sides) of bright unsaturated pixels is lifted
@@ -1741,6 +1894,7 @@ final class FlowMorph: @unchecked Sendable {
         return b
     }
 
+    /// Bilinear single-channel sample; 0 outside (a warped mask has nothing beyond its edge).
     @inline(__always) static func bilinear1(_ v: [Float], _ w: Int, _ h: Int, _ x: Float, _ y: Float) -> Float {
         guard x > -1, y > -1, x < Float(w), y < Float(h) else { return 0 }
         let xc = min(Float(w - 1), max(0, x)), yc = min(Float(h - 1), max(0, y))
@@ -1802,6 +1956,17 @@ final class CheekRig: @unchecked Sendable {
     private var wRing: [Float] = [], wSideL: [Float] = [], wLower: [Float] = [], wPhil: [Float] = [], wChin: [Float] = [], wSpread: [[Float]] = [], wJaw: [Float] = []
     /// Expression layer fields per tag (dx, dy in still px per unit weight, working res), when enabled.
     private(set) var exprFields: [String: [Float]] = [:]
+    /// Products of the perioral fields, fixed per face (render's vDSP warp): ring×side, ring×(1−side), ring + phil/2, spread R−L.
+    private lazy var derived: (ringSide: [Float], ringOther: [Float], lw: [Float], spreadDiff: [Float]) = {
+        let n = wRing.count
+        guard n > 0, wSideL.count == n, wPhil.count == n else { return ([], [], [], []) }
+        var rs = [Float](repeating: 0, count: n), ro = rs, lw = rs, sd = rs
+        for k in 0..<n {
+            rs[k] = wRing[k] * wSideL[k]; ro[k] = wRing[k] * (1 - wSideL[k]); lw[k] = wRing[k] + wPhil[k] * 0.5
+        }
+        if wSpread.count == 2, wSpread[0].count == n, wSpread[1].count == n { for k in 0..<n { sd[k] = wSpread[1][k] - wSpread[0][k] } }
+        return (rs, ro, lw, sd)
+    }()
 
     init(rules: FlowMap.Cheek, data: FaceFlowData, neutralStill: CGImage, scale s: Double, face: CGRect, mouth: CGRect, stillWidth: Double,
          expressions: Bool = false, perioral: FlowMap.Perioral? = nil) {
@@ -2002,45 +2167,44 @@ final class CheekRig: @unchecked Sendable {
         let sprPx = ((pr?.spreadPx ?? 0) * peri.ee - (pr?.roundInPx ?? 0) * peri.round) / stillToOut
         let jawPx = (pr?.jawDropPx ?? 0) * peri.open / stillToOut
         let mx = micro.0 / stillToOut, my = micro.1 / stillToOut
-        var out = [UInt8](repeating: 0, count: width * height * 4)
-        // Mac CPU (QA 171: 80–90 % in a call, this loop ≈ 60 % of it). Same arithmetic in the same order, so the pixels
-        // are identical; only (1) pixels whose coverage rounds every channel to 0 are left at 0 without the warp,
-        // and (2) no nested-array reads / per-write uniqueness checks.
-        let wCheek0 = self.wCheek[0], wCheek1 = self.wCheek[1], wCorner0 = self.wCorner[0], wCorner1 = self.wCorner[1]
-        let wSpread0: [Float] = pr != nil && sprPx != 0 ? self.wSpread[0] : [], wSpread1: [Float] = pr != nil && sprPx != 0 ? self.wSpread[1] : []
-        let wRing = self.wRing, wSideL = self.wSideL, wLower = self.wLower, wPhil = self.wPhil, wChin = self.wChin, wJaw = self.wJaw, alpha = self.alpha
+        // Mac CPU (QA: a call at 80 % on build 6, this loop ≈ half of it). The warp is linear in the weight fields with
+        // per-frame coefficients, so it is built with vDSP (one multiply-add pass per field) instead of ~12 array reads
+        // and ~40 Double ops per pixel; the per-pixel loop only samples. Float accumulation: differences ≤ 1e-5 px.
+        let n = width * height
+        var fx = [Float](repeating: 0, count: n), fy = [Float](repeating: 0, count: n)
+        func add(_ w: [Float], _ c: Double, _ into: inout [Float]) {
+            guard c != 0, w.count == n else { return }
+            var s = Float(c)
+            into.withUnsafeMutableBufferPointer { o in vDSP_vsma(w, 1, &s, o.baseAddress!, 1, o.baseAddress!, 1, vDSP_Length(n)) }
+        }
         let d0 = d[0], d1 = d[1], p0 = dPrev[0], p1 = dPrev[1], pull = rules.pull
+        add(wCheek[0], spreadK * p0.0 - bulge, &fx); add(wCorner[0], -pull * d0.0, &fx)
+        add(wCheek[1], spreadK * p1.0 + bulge, &fx); add(wCorner[1], -pull * d1.0, &fx)
+        add(wCheek[0], spreadK * p0.1 - up, &fy); add(wCorner[0], -pull * d0.1, &fy)
+        add(wCheek[1], spreadK * p1.1 - up, &fy); add(wCorner[1], -pull * d1.1, &fy)
+        if pr != nil {
+            let dv = derived
+            add(dv.ringSide, follow * d0.0, &fx); add(dv.ringOther, follow * d1.0, &fx); add(dv.lw, mx, &fx)
+            if sprPx != 0 { add(dv.spreadDiff, sprPx, &fx) }
+            add(dv.ringSide, follow * d0.1, &fy); add(dv.ringOther, follow * d1.1, &fy); add(dv.lw, my, &fy)
+            add(wLower, lowerPx, &fy); add(wPhil, -philPx, &fy); add(wChin, -chinPx, &fy); add(wJaw, jawPx, &fy)
+        }
+        for (f, w) in active where f.count == 2 * n {
+            var s = w
+            f.withUnsafeBufferPointer { fp in
+                fx.withUnsafeMutableBufferPointer { o in vDSP_vsma(fp.baseAddress!, 2, &s, o.baseAddress!, 1, o.baseAddress!, 1, vDSP_Length(n)) }
+                fy.withUnsafeMutableBufferPointer { o in vDSP_vsma(fp.baseAddress! + 1, 2, &s, o.baseAddress!, 1, o.baseAddress!, 1, vDSP_Length(n)) }
+            }
+        }
+        var out = [UInt8](repeating: 0, count: n * 4)
+        let alpha = self.alpha
         out.withUnsafeMutableBufferPointer { out in
         for j in 0..<height {
             for i in 0..<width {
                 let k = j * width + i
                 let a = alpha[k]
                 if a < 0.0001 { continue }   // every channel rounds to 0 (c·a < 0.5 for any c < 5000) = the buffer's zeros
-                var vx = 0.0, vy = 0.0
-                do {
-                    let wk = Double(wCheek0[k]), wc = Double(wCorner0[k])
-                    vx += wk * (spreadK * p0.0 + -bulge) - wc * pull * d0.0
-                    vy += wk * (spreadK * p0.1 - up) - wc * pull * d0.1
-                }
-                do {
-                    let wk = Double(wCheek1[k]), wc = Double(wCorner1[k])
-                    vx += wk * (spreadK * p1.0 + bulge) - wc * pull * d1.0
-                    vy += wk * (spreadK * p1.1 - up) - wc * pull * d1.1
-                }
-                if pr != nil {
-                    let r = Double(wRing[k]), sl = Double(wSideL[k])
-                    vx += follow * r * (sl * d0.0 + (1 - sl) * d1.0)
-                    vy += follow * r * (sl * d0.1 + (1 - sl) * d1.1) + Double(wLower[k]) * lowerPx
-                        - Double(wPhil[k]) * philPx - Double(wChin[k]) * chinPx
-                    let lw = r + Double(wPhil[k]) * 0.5
-                    vx += lw * mx; vy += lw * my
-                    if sprPx != 0 {
-                        let a = Double(wSpread0[k]), b = Double(wSpread1[k])
-                        vx += sprPx * (b - a)
-                    }
-                    vy += Double(wJaw[k]) * jawPx
-                }
-                for (f, w) in active { vx += Double(f[k * 2] * w); vy += Double(f[k * 2 + 1] * w) }
+                let vx = Double(fx[k]), vy = Double(fy[k])
                 var c: (Float, Float, Float)
                 if abs(vx) + abs(vy) < 0.01 { c = (frame[k * 3], frame[k * 3 + 1], frame[k * 3 + 2]) }
                 else { c = FlowMorph.bilinear3(frame, width, height, Float(Double(i) - vx * scale), Float(Double(j) - vy * scale)) }

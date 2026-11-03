@@ -67,6 +67,8 @@ extension AppState {
         setup.imageType = c.type
         setup.companionCreated = true
         setup.companionDemo = c.demo
+        // the saved voice (Settings → Voice); the name comes from this phone's pick or the curated list
+        if let v = c.voiceId, v != setup.voiceId { setup.voiceId = v; setup.voiceName = VoicePlayer.name(forVoiceId: v) }
         if let p = c.session?.persona { setup.serverPersona = p }
         if let profile = c.session?.user?.profile, !profile.isEmpty { setup.styleProfile = profile }
         prep = c.prep
@@ -80,6 +82,14 @@ extension AppState {
     }
 
     /// PREP-1: the server's call scene once it exists; the screen crossfades the uploaded photo to it (400 ms).
+    /// The companion's face wherever it's drawn after V02 (call, PiP, NM01, PREP-1, the Mac via the handoff hello):
+    /// the generated scene, else nothing (the caller draws a neutral placeholder). The upload photo is never drawn
+    /// after V02 (Chelsea 11/4). Unwired builds (UI tests, Appetize preview) keep their bundled fixture.
+    var companionFaceData: Data? {
+        if let scene = sceneImageData { return scene }
+        return serverWired ? nil : setup.imageData
+    }
+
     func loadScene() async {
         guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
               let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
