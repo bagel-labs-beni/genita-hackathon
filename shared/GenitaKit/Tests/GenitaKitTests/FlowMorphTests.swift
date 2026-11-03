@@ -353,6 +353,18 @@ struct LipRigTests {
         #expect(Double(narrow) < 0.95 * Double(wide))
     }
 
+    /// p6 regression in #539: a prep inside mask leaking past the mouth corner showed the key's inside on the cheek.
+    /// The teeth layer fades out toward the closed mouth's corners (centre unchanged).
+    @Test func theTeethLayerFadesAtTheMouthCorners() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)
+        m.amountsOverride = [0, 0.6]
+        let p = pixels(m.render(.rest, at: 1))
+        let centre = Int(p[(14 * m.width + 16) * 4]), corner = Int(p[(14 * m.width + 21) * 4])
+        #expect(centre > 200)          // the teeth layer in the middle
+        #expect(corner < 120)          // near the corner: the key's own (dark) inside, not the teeth layer
+    }
+
     /// Rollback (map rig.interior = 0): the old idle drift and teeth layer are back.
     @Test func interiorOffRestoresTheOldRest() throws {
         let set = try Synth.faceSet(keys: ["MBP", "MID", "AH2"], rig: true, interior: false)
