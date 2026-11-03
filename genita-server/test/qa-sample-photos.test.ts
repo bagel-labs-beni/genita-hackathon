@@ -32,13 +32,13 @@ test("QA photos: /me has no qaSamplePhotos key unless the account is listed (nor
   }
 });
 
-test("QA photos: a dev (judge / shared-token) row never matches by email", async () => {
+test("QA photos: a judge account never gets it, by email or even listed by id", async () => {
   const db = await testDb();
   try {
     const plain = new Accounts(db);
     const { user: dev } = await plain.upsertUser({ provider: "dev", sub: "judge:j2", email: "qa@example.com", emailVerified: true });
-    const qa = new Accounts(db, { qaSamplePhotos: "qa@example.com" });
-    assert.equal("qaSamplePhotos" in (await qa.meView(dev.id))!, false);
+    const qa = new Accounts(db, { qaSamplePhotos: `qa@example.com,${dev.id}` });
+    assert.equal("qaSamplePhotos" in (await qa.meView(dev.id))!, false, "a judge account listed by id (by mistake) still never gets it");
   } finally {
     await db.close();
   }
