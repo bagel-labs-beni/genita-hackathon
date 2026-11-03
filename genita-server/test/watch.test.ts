@@ -1526,14 +1526,37 @@ const feed = (c: { c: { onMessage: (m: Record<string, unknown>) => void }; at: (
 test("nonverbal: two frames that out-move the last 2 s → brows + inhale once; a pan that moves this much all along does not", () => {
   const q = nvController();
   q.c.onMessage({ type: "start", source: "YouTube" });
-  feed(q, 7_000, [0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // a quiet court, then the dunk
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // a quiet court, then the dunk
   assert.equal(q.nv.length, 1);
-  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 2 s later: inside the 25 s gap
+  feed(q, 9_400, [0.03, 0.04, 0.2, 0.22]); // another big move 0.7 s later: inside the 25 s gap
   assert.equal(q.nv.length, 1);
   const pan = nvController();
   pan.c.onMessage({ type: "start", source: "YouTube" });
-  feed(pan, 7_000, [0.12, 0.13, 0.12, 0.14, 0.12, 0.15, 0.14]); // a broadcast pan: no frame out-moves the rest 1.5×
-  assert.equal(pan.nv.length, 0);
+  feed(pan, 7_000, [0.12, 0.13, 0.12, 0.14, 0.12, 0.15, 0.14, 0.13, 0.12, 0.14]); // a broadcast pan from its first frame
+  assert.equal(pan.nv.length, 0, "no history at first, then nothing out-moves the pan 1.5×");
+});
+
+test("Codex #613 P2: the page guard holds through the page's next memos; another scene's spoken line waits out the nonverbal's gap", async () => {
+  const verdicts = [
+    JSON.stringify({ protectedVideo: false, moment: "sweet", page: true, reaction: "ooh, red runners", talkOver: false, memo: "A shop page.", speakers: [] }),
+    JSON.stringify({ protectedVideo: false, moment: "none", page: false, reaction: "", talkOver: false, memo: "Still the shop page.", speakers: [] }),
+  ];
+  const page = nvController(verdicts);
+  page.c.onMessage({ type: "start", source: "Google Chrome" });
+  page.at(7_000); page.c.onMessage({ type: "frame", image: frame, motion: 1 });
+  page.at(9_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5));
+  page.at(12_000); page.c.onMessage({ type: "frame", image: frame + "x", motion: 0.03 });
+  page.at(14_100); page.c.tick(); await new Promise((r) => setTimeout(r, 5)); // the next memo: page false
+  feed(page, 40_000, [0.01, 0.02, 0.17, 0.13]); // scrolling the same page much later
+  assert.equal(page.nv.length, 0);
+  const funny = JSON.stringify({ protectedVideo: false, moment: "funny", page: false, reaction: "He fell", talkOver: false, memo: "x", speakers: [] });
+  const q = nvController([funny]);
+  q.c.onMessage({ type: "start", source: "YouTube" });
+  feed(q, 5_400, [0.03, 0.04, 0.03, 0.04, 0.03, 0.03, 0.04, 0.03, 0.04, 0.03, 0.17, 0.19]); // nonverbal at ~9 s
+  assert.equal(q.nv.length, 1);
+  q.at(15_000); q.c.onMessage({ type: "frame", image: frame + "later", motion: 0.03 });
+  q.at(15_100); q.c.tick(); await new Promise((r) => setTimeout(r, 5)); // another scene's line at 15 s
+  assert.equal(q.reacted.length, 0, "the gap holds both ways");
 });
 
 test("nonverbal: a cut (one whole-picture change), the share's first 6 s, a page and reactions off never fire it", async () => {

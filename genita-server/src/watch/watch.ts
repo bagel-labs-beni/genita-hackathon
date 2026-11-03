@@ -101,6 +101,8 @@ const NV_CUT = 0.35;
 const NV_RATIO = 1.5;
 const NV_PAIR_MS = 500;
 const NV_BASE_MS = 2_500;
+/** a spoken reaction this close to the nonverbal one is the same moment's line (allowed); farther, the gap holds */
+const NV_SAME_MS = 3_000;
 /** one moment seen by both the quick look and a memo (or two quick looks) within this window counts once */
 const SEEN_SAME_MS = 4_000;
 const SEEN_TWIN_MS = 1_000;
@@ -250,8 +252,11 @@ export class WatchController {
   private pageSpoken = false;
   private stoppedAt: number | null = null;
   private lastNonverbalAt: number | null = null;
-  /** the newest memo said this is a page (scrolling a page is not a moment) */
+  /** this page is a page (a memo said so): scrolling it is not a moment, until another page or a video moment
+   *  (Codex #613 P2: the next memo of the same page says page: false) */
   private lastMemoPage = false;
+  /** the share's first frame: the nonverbal needs ~2.5 s of history to know what "out-moves" means (Codex #613 P2) */
+  private firstFrameAt: number | null = null;
   private protectedPending = false;
   private protectedSince = 0;
   /** a funny moment waiting for the video's line (or the conversation) to pause */
@@ -395,6 +400,7 @@ export class WatchController {
       return this.emitState();
     }
     this.sharing = true;
+    this.firstFrameAt = null;
     this.source = source;
     this.sharingSince = this.deps.now();
     this.lastMemoAt = this.sharingSince;
@@ -478,7 +484,7 @@ export class WatchController {
     this.stats.frames++;
     if (!blank) {
       if (motion !== null) this.motionAware = true;
-      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; if (this.held?.v.page) this.held = null; }
+      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; this.lastMemoPage = false; if (this.held?.v.page) this.held = null; }
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
@@ -486,6 +492,7 @@ export class WatchController {
       this.frames.push({ at: now, url, ...(motion !== null ? { motion } : {}) });
       // the newest frame stays even when old: a paused screen sends no new frames
       this.frames = this.frames.filter((f, i, all) => i === all.length - 1 || now - f.at <= FRAME_KEEP_MS).slice(-MAX_FRAMES_KEPT);
+      this.firstFrameAt ??= now;
       this.maybeNonverbal(now);
       this.maybeQuick();
     }
@@ -689,7 +696,8 @@ export class WatchController {
       this.memo = this.memo.filter((e) => now - e.at <= MEMO_KEEP_MS).slice(-MAX_MEMO);
     }
     for (const s of v.speakers) if (s.label && !this.names.has(s.label)) this.names.set(s.label, s.name);
-    this.lastMemoPage = v.page === true;
+    if (v.page) this.lastMemoPage = true;
+    else if (v.moment !== "none") this.lastMemoPage = false;
     this.log("watch.memo", { ms, memo: v.memo.slice(0, 160), moment: v.moment, reaction: v.reaction, frames: frames.length, lines: lines.length, salient, protectedVideo: v.protectedVideo === true, page: v.page === true });
     if (v.protectedVideo) {
       this.speakProtected();
@@ -742,6 +750,9 @@ export class WatchController {
     const m1 = prev.motion ?? 0;
     const m2 = cur.motion ?? 0;
     if (cur.at - prev.at > NV_PAIR_MS || m1 < NV_MIN || m2 < NV_MIN || m1 > NV_CUT || m2 > NV_CUT) return;
+    // no history yet (the share just started moving): no baseline to compare with. A still screen sends no frames, so
+    // an empty window after ≥ 2.5 s of sharing is a real still (baseline 0)
+    if (this.firstFrameAt === null || prev.at - this.firstFrameAt < NV_BASE_MS) return;
     // the motion before the pair: a pan or a dance that moves this much all along is not a moment
     const before = this.frames.slice(0, -2).filter((f) => prev.at - f.at <= NV_BASE_MS).map((f) => f.motion ?? 0).sort((a, b) => a - b);
     const base = before.length ? before[Math.floor(before.length / 2)] : 0;
@@ -871,7 +882,9 @@ export class WatchController {
       sharing: this.sharing,
       blank: this.blank,
       sharingSince: this.sharingSince,
-      lastReactionAt: this.lastReactionAt,
+      // the nonverbal shares the gap (Codex #613 P2): its own moment's line may follow, another scene's may not
+      lastReactionAt: this.lastNonverbalAt !== null && Math.abs(verdictAt - this.lastNonverbalAt) > NV_SAME_MS
+        ? Math.max(this.lastReactionAt ?? -Infinity, this.lastNonverbalAt) : this.lastReactionAt,
       conversationQuiet: this.host.conversationQuiet(),
       dialogueActive: this.dialogueActive && words(this.openLine) >= 1,
       lastDialogueEndAt: this.lastDialogueEndAt,
