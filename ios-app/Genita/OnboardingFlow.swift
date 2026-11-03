@@ -20,19 +20,30 @@ extension AppState {
     /// no name → A03, no companion → I01 or the onboarding step the user left, companion → S07 → S09).
     /// Offline keeps the saved screen; a 401 clears the token and shows A02.
     func routeOnLaunch() async {
-        guard serverWired, onboarding.auth.isSignedIn else { return }
+        let request = launchAuthSnapshot
+        guard serverWired, request.token != nil else { return }
         let state = await onboarding.auth.sessionState()
+        // A current 401 clears its token in the auth client. It still routes to A02, but an old
+        // request must never sign out a newer login or re-adopt a logged-out account's handoff.
+        guard request.generation == authGeneration else { return }
+        if case .expired = state {
+            guard onboarding.auth.token == nil else { return }
+            signedOut()
+            return
+        }
+        guard request.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
-        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion() }
+        if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
+        guard request.accepts(launchAuthSnapshot) else { return }
         apply(route, me: me)
     }
 
-    func restoreCompanion() async {
-        guard let c = try? await onboarding.companion() else { return }
+    func restoreCompanion(for request: LaunchAuthSnapshot) async {
+        guard let c = try? await onboarding.companion(), request.accepts(launchAuthSnapshot) else { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
         setup.imageType = c.type
@@ -44,7 +55,7 @@ extension AppState {
         // the face on this phone: the companion's call scene (the original photo isn't downloadable)
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
-           let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil {
+           let data = try? await onboarding.sceneImage(url), request.accepts(launchAuthSnapshot), UIImage(data: data) != nil {
             setup.imageData = data
         }
     }

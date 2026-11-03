@@ -73,6 +73,14 @@ struct SavedSetup: Codable {
         companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
+/// A launch response belongs to the token and authentication lifetime that requested it.
+struct LaunchAuthSnapshot: Equatable, Sendable {
+    let token: String?
+    let generation: Int
+
+    func accepts(_ current: LaunchAuthSnapshot) -> Bool { token != nil && self == current }
+}
+
 @MainActor @Observable final class AppState {
     var setup: SavedSetup { didSet { if oldValue.imageData != setup.imageData { saveImage() }; save() } }
     var history: [Stage] = []
@@ -115,6 +123,8 @@ struct SavedSetup: Codable {
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
     @ObservationIgnored var onboarding = OnboardingClient()
+    @ObservationIgnored private(set) var authGeneration = 0
+    var launchAuthSnapshot: LaunchAuthSnapshot { LaunchAuthSnapshot(token: onboarding.auth.token, generation: authGeneration) }
     var storage: UserDefaults
     @ObservationIgnored private let onHandoffAccountChange: ((String?) -> Void)?
     let imageURL: URL
@@ -201,6 +211,7 @@ struct SavedSetup: Codable {
     static let userKey = "genita.userId"
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        authGeneration += 1
         onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
         prep = nil; sceneImage = nil
@@ -210,6 +221,7 @@ struct SavedSetup: Codable {
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     func signedIn(userId: String? = nil, consented: Bool = true) {
+        authGeneration += 1
         onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {

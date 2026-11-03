@@ -81,6 +81,22 @@ import UIKit
         model.consentAccepted()
         XCTAssertEqual(AppState(storage: store).stage, .conversation)
     }
+    func testAuthCallbacksInvalidateLaunchSnapshotsEvenWithTheSameToken() {
+        let tokens = InMemoryTokenStore("token-a")
+        let model = AppState(storage: store)
+        model.onboarding = OnboardingClient(auth: GenitaAuthClient(store: tokens))
+        let request = model.launchAuthSnapshot
+        XCTAssertTrue(request.accepts(model.launchAuthSnapshot))
+        model.signedOut()
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot), "Logout invalidates /me even before the token is cleared")
+        model.signedIn(userId: "b")
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
+        let bRequest = model.launchAuthSnapshot
+        model.signedOut()
+        model.signedIn(userId: "a")
+        XCTAssertFalse(request.accepts(model.launchAuthSnapshot))
+        XCTAssertFalse(bRequest.accepts(model.launchAuthSnapshot))
+    }
     func testReturnToEditorDoesNotReplayProcessing() {
         let model = AppState(storage: store)
         model.go(.prompt); model.go(.paste); model.go(.preparing); model.go(.preferences)
