@@ -13,7 +13,7 @@ const SELF_HARM_WORDS = /\b(?:pills?|overdose|o\.?d\.?|kill (?:myself|me)|hurt (
 
 const WORK = /\b(?:how (?:much|many|long|far|do i|should i|to)|when (?:do|should) i (?:leave|go|start|get)|what time should|help me (?:plan|decide|figure|pick|choose)|plan (?:my|our|out|for)|explain|why (?:is|are|does|do|did)|what(?:'s| is) the difference|step by step|quick math|split|recipe|which (?:one )?(?:is|would be) (?:better|faster|cheaper)|\d+ (?:minutes|mins|hours|hrs) (?:before|until|to)\b)|\bgo$/i;
 const PRONOUN_ASK = /\b(?:should i|do i|can i|is it (?:weird|ok|okay|bad) (?:if|to)|would you)\b[^.?!]*\b(?:him|her|he|she)\b/i;
-const PERSON = /\b(?:he|she|him|her|his|guy|girl|boy|man|woman|boyfriend|girlfriend|bf|gf|ex|crush|date|coworker|boss|friend|roommate|sister|brother|mom|dad|husband|wife|partner)\b|\b[a-z]+ from (?:work|class|school|the gym|tinder|hinge|bumble|the app)\b|(?:^|[^.!?]\s)(?!(?:Okay|Should|What|How|Why|When|Where|Who|The|And|But|Ugh|Lol|Hey|Yeah|Wait|Honestly|Also|Anyway|Just|Not|This|That|Its|Our|You|Your|Like|Well|Then|Today|Tonight|Can|Could|Would|Will|Did|Does|Are|Was|Were|Have|Has|Had|Let|Maybe|Please|Thanks|Sorry|Nah|Yes|Yep|Nope|Omg|Bro|Girl|Dude)\b)[A-Z][a-z]{2,}\b/;
+const PERSON = /\b(?:he|she|him|her|his|guy|girl|boy|man|woman|boyfriend|girlfriend|bf|gf|ex|crush|date|coworker|boss|friend|roommate|sister|brother|mom|dad|husband|wife|partner)\b|\b[A-Za-z]+ from (?:work|class|school|the gym|tinder|hinge|bumble|the app)\b|(?:^|\s)(?!(?:Hello|Hi|Hey|Thanks|Thank|Good|Morning|Night|Okay|Should|What|How|Why|When|Where|Who|The|And|But|Ugh|Lol|Hey|Yeah|Wait|Honestly|Also|Anyway|Just|Not|This|That|Its|Our|You|Your|Like|Well|Then|Today|Tonight|Can|Could|Would|Will|Did|Does|Are|Was|Were|Have|Has|Had|Let|Maybe|Please|Thanks|Sorry|Nah|Yes|Yep|Nope|Omg|Bro|Girl|Dude)\b)[A-Z][a-z]{2,}\b/;
 const STOP = new Set(["about", "again", "being", "could", "doing", "every", "going", "gonna", "great", "really", "right", "should", "still", "thats", "there", "thing", "think", "those", "today", "tonight", "would", "yeah", "honestly", "literally", "okay", "totally", "summer", "you're", "that's", "what's", "it's", "don't", "can't", "i'm"]);
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ");
@@ -30,7 +30,7 @@ export function repeatedWords(history: Line[]): string[] {
 }
 
 // Codex #546 P2: only a death ("lost my dog at the park" is a missing dog, "miss my mom" may just be far away)
-const LOSS = /\b(?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:just |recently )?(?:died|passed(?: away)?)\b|\bfuneral\b|\bwould'?ve been (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s birthday\b|\bmy (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s (?:birthday|anniversary) would'?ve been\b|\b(?:since|after) (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:died|passed)\b/i;
+const LOSS = /\b(?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:just |recently )?(?:died|passed away|passed on)\b|\bfuneral\b|\bwould'?ve been (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s birthday\b|\bmy (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet)'?s (?:birthday|anniversary) would'?ve been\b|\b(?:since|after) (?:my|our) (?:\w+ )?(?:mom|dad|mother|father|grandma|grandpa|grandmother|grandfather|nana|brother|sister|aunt|uncle|cousin|friend|best friend|dog|cat|pet) (?:died|passed)\b/i;
 // a food constraint said earlier in the call (ctx-vegan-sister 3/5: egg, cheese and fish sauce in a "vegan" pick)
 const CONSTRAINT = /\b(?:vegan|vegetarian|pescatarian|gluten[- ]free|dairy[- ]free|lactose[- ]intolerant|halal|kosher|keto|(?:nut|peanut|shellfish|egg|dairy|gluten) allergy|allergic to [a-z]+|(?:doesn'?t|don'?t|can'?t|won'?t) eat [a-z]+(?: [a-z]+)?|no (?:pork|beef|meat|dairy|gluten|nuts|shellfish))\b/i;
 const FOOD_ASK = /\b(?:make|cook|eat|order|dinner|lunch|breakfast|brunch|recipe|snack|bake|grab food|food)\b/i;
@@ -38,6 +38,8 @@ export function constraintFrom(userText: string, history: Line[]): string | null
   if (!FOOD_ASK.test(userText)) return null;
   for (const h of [...history.slice(-10).filter((x) => x.role === "user").map((x) => x.text), userText].reverse()) {
     const m = CONSTRAINT.exec(h);
+    // Codex #546 r2: the newest mention decides — a later "not vegan anymore" cancels an earlier "I'm vegan"
+    if (m && (/\b(?:not|no longer|isn'?t|aren'?t|wasn'?t|never|stopped being|quit|gave up|used to be)\b[^.!?]{0,20}$/i.test(h.slice(0, m.index)) || /\banymore\b/i.test(h.slice(m.index)))) return null;
     // Codex #546 P2: "I am not vegan", "she's no longer vegetarian", "I quit keto" are not constraints
     if (m && !/\b(?:not|no longer|isn'?t|aren'?t|wasn'?t|never|stopped being|quit|gave up|used to be|anymore)\b[^.!?]{0,20}$/i.test(h.slice(0, m.index)) && !/\banymore\b/i.test(h.slice(m.index))) return m[0].toLowerCase();
   }
@@ -57,8 +59,9 @@ export function taskHint(userText: string, history: Line[], crisisInCall = histo
   if (need) out.push(`They said "${need}" earlier: whatever you pick has to fit that, every ingredient.`);
   if (WORK.test(t)) out.push("They want you to work something out: give the real answer with the actual numbers, times or steps in order (up to four short spoken sentences), then your take.");
   // Codex #546 P2: "My boyfriend Jake forgot… should I text him?" names him in this very line
-  const beforeAsk = t.slice(0, t.search(PRONOUN_ASK));
-  if (PRONOUN_ASK.test(t) && !PERSON.test(beforeAsk) && !history.slice(-8).some((h) => h.role === "user" && PERSON.test(h.text))) {
+  // Codex #546 r2: anywhere in this line ("Should I text him? Jake from work…"), minus the ask's own him/her
+  const rest = t.replace(PRONOUN_ASK, " ");
+  if (PRONOUN_ASK.test(t) && !PERSON.test(rest) && !history.slice(-8).some((h) => h.role === "user" && PERSON.test(h.text))) {
     out.push("You don't know who they mean yet: don't guess or advise blind; ask one short question about who or what happened.");
   }
   const rep = repeatedWords(history);

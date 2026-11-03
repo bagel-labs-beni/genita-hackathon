@@ -63,3 +63,10 @@ test("Codex #546 P2: a person named in this line, a missing (not dead) dog, a ne
   assert.doesNotMatch(taskHint("I miss my mom so much since she moved to Spain", []) ?? "", /someone they lost/);
   assert.doesNotMatch(taskHint("I am not vegan. What should I cook?", []) ?? "", /vegan/);
 });
+
+test("Codex #546 r2: 'passed her driving test', a later 'not vegan anymore', a name after the ask, 'Hello!' is no name", () => {
+  assert.doesNotMatch(taskHint("My sister passed her driving test, how should I celebrate?", []) ?? "", /someone they lost/);
+  assert.doesNotMatch(taskHint("What should I cook?", [h("user", "I am vegan"), h("assistant", "Nice."), h("user", "I am not vegan anymore")]) ?? "", /vegan/);
+  assert.doesNotMatch(taskHint("Should I text him? Jake from work has been ignoring me.", []) ?? "", /who they mean/);
+  assert.match(taskHint("Should I text him?", [h("user", "Hello!")]) ?? "", /who they mean/);
+});
