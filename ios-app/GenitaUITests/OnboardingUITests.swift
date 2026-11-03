@@ -17,6 +17,20 @@ final class OnboardingUITests: XCTestCase {
         wait(for: [done], timeout: 10)
     }
 
+    /// D26 V02-F: a well-known person is refused with its own reason row and note (review fixture, no server).
+    func testV02FRefusesAWellKnownPerson() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launchEnvironment = ["GENITA_REVIEW_STAGE": "imageCheck", "GENITA_REVIEW_VARIANT": "fail-public_figure", "GENITA_REVIEW_STILL": "1"]
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any)["V02-F"].waitForExistence(timeout: 10), "V02-F")
+        XCTAssertTrue(app.descendants(matching: .any)["Failed: This looks like a well-known person"].exists, "one red row with the server's reason")
+        XCTAssertEqual(app.descendants(matching: .any)["failHint"].label, "Genita can't bring public figures to life.")
+        Thread.sleep(forTimeInterval: 0.5)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "onb-V02-F-public-figure"; shot.lifetime = .keepAlways; add(shot)
+    }
+
     func testOnboardingAgainstTheServer() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--stub-signin", "--fixture-image"]
