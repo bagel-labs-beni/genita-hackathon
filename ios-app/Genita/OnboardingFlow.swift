@@ -47,8 +47,13 @@ extension AppState {
             let kept = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
             if (m.user.displayName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, m.hasCompanion, !kept.isEmpty {
                 if let saved = try? await onboarding.auth.setName(kept) { m = saved } else { m.user.displayName = kept }
-                // another sign-in (or sign-out) happened meanwhile: this answer is for an account that's gone (Codex P2)
-                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else { return }
+                // another sign-in (or sign-out) happened meanwhile: this answer is for an account that's gone (Codex P2);
+                // the PATCH's own 401 cleared this lifetime's token: A02, as for an expired /me (Codex re-review P2)
+                guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) else {
+                    if launchRequest.generation == authGeneration, !Task.isCancelled, onboarding.auth.token == nil,
+                       ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
+                    return
+                }
                 state = .active(m)
             }
             me = m; adopt(accountId: m.user.id)

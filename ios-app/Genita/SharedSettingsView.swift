@@ -119,13 +119,15 @@ struct SettingsView: View {
                 dismiss()
                 model.accountDeleted()
             } catch GenitaAuthError.unauthorized {
-                // the session had already expired: nothing was deleted, sign in again (A02)
-                dismiss(); model.signedOut()
+                // the session is gone: the account may have been deleted (an earlier try) or the session expired.
+                // Either way A02, and this phone keeps nothing of an account its owner asked to delete; no "deleted"
+                // notice, that needs the server's answer.
+                dismiss(); model.leftAfterDeleteRequest()
             } catch {
                 // AU-06: a slow answer (or a step that failed after the files went) may still have deleted the
-                // account. If the server no longer knows this session (401 on /me), it was: nothing of it stays here
-                // either (M02-X).
-                if case .expired = await model.onboarding.auth.sessionState() { dismiss(); model.accountDeleted() }
+                // account. A 401 on /me now means the session is gone (deleted or expired, the server can't say
+                // which): as above. Otherwise the account is still there.
+                if case .expired = await model.onboarding.auth.sessionState() { dismiss(); model.leftAfterDeleteRequest() }
                 else { accountError = "Try again in a moment." }
             }
         }

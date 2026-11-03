@@ -274,9 +274,8 @@ public final class OnboardingClient: @unchecked Sendable {
     /// Photo polish: one Muse Image edit + the same check on the result (≈15–20 s). "Try again" sends the same upload id.
     /// 422 not_polishable / polish_refused = choose another photo · 429 polish_limit · 502 polish_failed (retryable).
     public func polishImage(imageId: String) async throws -> PolishedImage {
-        // AU-34: the server's worst case is an edit (60 s), its one automatic retry (60 s) and the re-check, so the
-        // phone waits longer than that instead of calling a slow polish "offline" while the server still counts it
-        try await auth.send("POST", "/v1/companion/image/polish", json: ["imageId": imageId], timeout: 150)
+        // AU-34: the server keeps the edit and its retry within 45 s plus the re-check, under CloudFront's 60 s
+        try await auth.send("POST", "/v1/companion/image/polish", json: ["imageId": imageId], timeout: 90)
     }
 
     /// The user's own uploaded or polished image (V02-T shows the polished one).

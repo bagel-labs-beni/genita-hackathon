@@ -323,10 +323,14 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     }
     /// M02 account deleted: nothing of it stays on this iPhone.
     func accountDeleted() {
+        leftAfterDeleteRequest()
+        accountDeletedNotice = true
+    }
+    /// M02-D asked, then the session was gone before the server confirmed (AU-06): A02, nothing kept, no notice.
+    func leftAfterDeleteRequest() {
         resetLocalProfile()
         storage.removeObject(forKey: Self.userKey)
         signedOut()
-        accountDeletedNotice = true
     }
     func resetLocalProfile() {
         storage.removeObject(forKey: Self.storageKey)

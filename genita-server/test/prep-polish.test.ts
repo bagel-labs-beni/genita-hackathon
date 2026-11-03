@@ -340,3 +340,10 @@ test("prep: a polished dog with its mouth closed is still found by its species (
   assert.deepEqual(MOUTH_PROMPTS("animal", "dog's\" <x>"), ["the animal's mouth", "the animal's muzzle", "mouth"], "only plain words go into a prompt");
   assert.deepEqual(MOUTH_PROMPTS("human", "dog"), ["the person's mouth", "the person's lips", "mouth"]);
 });
+
+test("AU-34: the edit and its automatic retry fit under CloudFront's 60 s; no retry with under 10 s left", async () => {
+  const { POLISH_BUDGET_MS, polishRetryBudgetMs } = await import("../src/prep/polish.ts");
+  assert.ok(POLISH_BUDGET_MS <= 45_000, "room for the re-check under 60 s");
+  assert.equal(polishRetryBudgetMs(1_000), POLISH_BUDGET_MS - 1_000);
+  assert.equal(polishRetryBudgetMs(POLISH_BUDGET_MS - 5_000), null);
+});

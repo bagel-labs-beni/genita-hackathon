@@ -44,7 +44,17 @@ export const POLISH_PROMPT = [
 export const POLISH_SIZE = "1024x1820";
 /** The first polish + two "Try again" per uploaded photo. */
 export const POLISH_MAX_ATTEMPTS = 3;
-const POLISH_TIMEOUT_MS = 60_000;
+/**
+ * AU-34: CloudFront drops an origin answer after 60 s (deploy/aws README), and the re-check follows the edit, so
+ * the edit (with its one automatic retry) fits in 45 s. A retry only starts with at least 10 s of that left.
+ */
+export const POLISH_BUDGET_MS = 45_000;
+const POLISH_RETRY_MIN_MS = 10_000;
+/** Time the automatic retry may take after the first edit failed `elapsedMs` in, or null (no retry). */
+export function polishRetryBudgetMs(elapsedMs: number): number | null {
+  const left = POLISH_BUDGET_MS - elapsedMs;
+  return left >= POLISH_RETRY_MIN_MS ? left : null;
+}
 
 /**
  * What the edit can fix (11/4, Chelsea: users bring any photo). A group photo keeps its largest subject (the app can
@@ -119,14 +129,17 @@ export async function polishImage(
   const retriesLeft = POLISH_MAX_ATTEMPTS - attempt;
 
   const t0 = performance.now();
-  const edit = () => mediaOf(d).imageEdit(d.metaKey, src.bytes, variant.prompt, { size: variant.size, mime: orig.mime, signal: AbortSignal.timeout(POLISH_TIMEOUT_MS) });
+  const edit = (ms: number) => mediaOf(d).imageEdit(d.metaKey, src.bytes, variant.prompt, { size: variant.size, mime: orig.mime, signal: AbortSignal.timeout(ms) });
   let bytes: Buffer;
   try {
-    // an empty answer or a 5xx is usually a one-off: one automatic retry (not counted as the user's "Try again")
-    bytes = await edit().catch((err) => {
+    // an empty answer or a 5xx is usually a one-off: one automatic retry (not counted as the user's "Try again"),
+    // only while the request still fits CloudFront's 60 s (AU-34)
+    bytes = await edit(POLISH_BUDGET_MS).catch((err) => {
       if (isRefusal(err)) throw err;
+      const budget = polishRetryBudgetMs(since(t0));
+      if (budget === null) throw err;
       d.log("photo.polish_retry", { attempt, reason: String(err).slice(0, 120) });
-      return edit();
+      return edit(budget);
     });
   } catch (err) {
     d.log("photo.polish_failed", { attempt, ms: since(t0), refused: isRefusal(err), reason: String(err).slice(0, 200) });
