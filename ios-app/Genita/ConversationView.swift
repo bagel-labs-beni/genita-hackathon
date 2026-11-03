@@ -10,6 +10,8 @@ struct ConversationView: View {
     private var denied: LocalCallMedia.Kind? { media.denied ?? (call.cameraDenied ? .camera : call.micDenied ? .microphone : nil) }
     private let call = CallController.shared
     @State private var moreOpen = false
+    /// RP-1 (D37): Report from ⋮ More
+    @State private var reportOpen = false
     #if DEBUG
     /// #291 probe for UI tests: how many times ✕ Stop interpreting ran its action (the tap reached the button)
     @State private var debugStopTaps = 0
@@ -168,7 +170,7 @@ struct ConversationView: View {
                                 Spacer(minLength: 0)
                                 // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
                                 CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
-                                              openFinds: { openFindsTab() }) {
+                                              openFinds: { openFindsTab() }, report: { reportOpen = true }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
                             }.frame(width: full.size.width, height: full.size.height).transition(.move(edge: .bottom))
@@ -211,6 +213,7 @@ struct ConversationView: View {
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
         .onChange(of: handoff.surface) { _, surface in let onMac = surface != .active; if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
+        .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.

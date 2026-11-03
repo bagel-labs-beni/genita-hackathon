@@ -320,6 +320,8 @@ import Foundation
 /// MAC-1 / MAC-2 on the Mac's control window: the account the call uses.
 struct MacAccountRow: View {
     @ObservedObject private var call = MacCall.shared
+    /// RP-1 (D37): Report on the Mac
+    @State private var reportOpen = false
     var body: some View {
         Group {
             switch call.account {
@@ -335,11 +337,13 @@ struct MacAccountRow: View {
             case .ready(let plan):
                 HStack(spacing: 8) {
                     Text("Calling with \(plan.name)").foregroundStyle(.secondary)
+                    Button("Report…") { reportOpen = true }.buttonStyle(.link).accessibilityIdentifier("macReport")
                     Button("Sign out") { call.signOut() }.buttonStyle(.link)
                 }
             }
         }
         .font(.custom("PretendardVariable-Regular", fixedSize: 13)) // Figma: Pretendard everywhere but the serif titles
+        .reportFlow(isPresented: $reportOpen, surface: "mac", auth: call.auth) { CallController.shared.lastReplyText }
         .task { if call.account == .checking { await call.refresh() } }
         // 4401 → MAC-1, 4403 → MAC-2 (the control window is always there, so this sees every stop)
         .onChange(of: CallController.shared.stopped) { _, stop in if let stop { call.callStopped(stop) } }
