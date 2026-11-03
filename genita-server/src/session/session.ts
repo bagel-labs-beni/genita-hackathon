@@ -7,6 +7,7 @@
 import { getOps, type OpsLimits } from "../ops/limits.ts";
 import type { Config } from "../config.ts";
 import type { AsrEvent } from "../meta/transcribe.ts";
+import type { WebSearch } from "../finds/webAnswer.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
@@ -1574,12 +1575,16 @@ export class Session {
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
+    // Chelsea 11/3: a web-searched answer also lands in the sheet with its sources (not when a card runs for this turn)
+    let cardTurn = false;
+    let searches: WebSearch[] = [];
     // Demo S4: the suggest turn makes no outfit card from the phone's (maybe still kitchen) frames
     if (!interpret && !self && !synthetic && this.finds && !built.suggestMac) {
       const said = new Promise<string | null>((r) => (resolveSaid = r));
       // history already holds this turn (remember above): the lines before it
       const recent = this.history.slice(-7, -1).map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`);
       const started = this.finds.onTurn({ text, frames: built.images, utteranceId, replyText: said, recent });
+      cardTurn = !!started;
       signal.addEventListener("abort", () => resolveSaid(null), { once: true });
       if (started?.ack) {
         // PF-1: a short line now instead of a full answer (a full answer would guess products and links);
@@ -1772,6 +1777,8 @@ export class Session {
                 }
                 if (m.firstTokenAt === undefined) m.toolsBeforeText = (m.toolsBeforeText ?? 0) + 1;
                 this.client.sendJson({ type: "tool", utteranceId, name: ev.name, status: ev.status });
+              } else if (ev.type === "sources") {
+                if (!interpret && searches.length < 4) searches.push({ query: ev.query, urls: ev.urls.slice(0, 10) });
               } else if (ev.type === "done") status = ev.status;
             }
           } catch (err) {
@@ -1797,6 +1804,7 @@ export class Session {
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
+          searches = [];
           onlyOpener = null;
           guarded.first = null;
           laughs = 0;
@@ -2041,6 +2049,17 @@ export class Session {
     const playEnd = reply.firstAudioAt === null ? 0 : reply.firstAudioAt + reply.audioMs + (device ? 0 : PLAYBACK_SLACK_MS);
     const wait = Math.max(0, playEnd - this.now());
     reply.doneTimer = setTimeout(() => this.finishReply(reply), wait);
+    // speech first, sheet after: the sources card when the answer has been played
+    if (searches.length && full && !interpret && !self && !synthetic && !cardTurn && !sparkError && this.finds) {
+      const finds = this.finds;
+      const looked = searches;
+      const timer = setTimeout(() => {
+        if (this.closed || this.finds !== finds) return;
+        const findId = finds.webAnswer({ utteranceId, question: text, said: full, searches: looked });
+        if (findId) this.log("finds.web_answer", { utteranceId, findId, searches: looked.length });
+      }, wait);
+      timer.unref?.();
+    }
   }
 
   /**
