@@ -193,8 +193,10 @@ public struct FlowMap: Codable, Equatable, Sendable {
         public var camera = 0.0
         /// 11/3 pm: the person never moves vertically against the locked still (false = the old nod / drift / breathing)
         public var lockY = true
+        /// 11/4: speech-coupled rigid head sway gain (AliveMotion.swayGain); 0 = the still head
+        public var sway = 1.0
         public init() {}
-        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY }
+        enum CodingKeys: String, CodingKey { case headGain, nodGain, cheekGain, lipLifePx, rollGain, nodWidth, headX, headRoll, nodPx, camera, lockY, sway }
         public init(from decoder: Decoder) throws {
             self.init()
             cheekGain = 1      // a prep that sends alive sends its cheek values as meant
@@ -207,6 +209,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .nodWidth) { nodWidth = max(0.25, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .camera) { camera = max(0, v) }
             if let v = try? c.decodeIfPresent(Bool.self, forKey: .lockY) { lockY = v }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .sway) { sway = min(2, max(0, v)) }
             if let v = try c.decodeIfPresent(Double.self, forKey: .headGain) { headGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .nodGain) { nodGain = v }
             if let v = try c.decodeIfPresent(Double.self, forKey: .cheekGain) { cheekGain = v }
@@ -216,7 +219,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(headGain, forKey: .headGain); try c.encode(nodGain, forKey: .nodGain); try c.encode(cheekGain, forKey: .cheekGain)
             try c.encode(lipLifePx, forKey: .lipLifePx); try c.encodeIfPresent(rollGain, forKey: .rollGain); try c.encode(nodWidth, forKey: .nodWidth); try c.encode(camera, forKey: .camera)
-            try c.encode(lockY, forKey: .lockY)
+            try c.encode(lockY, forKey: .lockY); try c.encode(sway, forKey: .sway)
         }
     }
     public var alive: Alive? = nil

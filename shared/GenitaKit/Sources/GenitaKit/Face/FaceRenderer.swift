@@ -14,7 +14,7 @@ import Foundation
 public final class FaceRenderer: @unchecked Sendable {
     public static let expressionFade = 0.25        // s
     public static let blinkLength = 0.12           // s
-    public static let blinkGap = 2.0...6.0         // s between blinks
+    public static let blinkGap = 2.5...6.0         // s between blinks (11/4: 2.5–6 s)
     /// Chin drop at full openness, as a fraction of the face height.
     public static let jawDrop = 0.035
     static let jawStrips = 28
@@ -113,6 +113,7 @@ public final class FaceRenderer: @unchecked Sendable {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
             motion.lockVertical = a.lockY
+            motion.swayGain = a.sway
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom

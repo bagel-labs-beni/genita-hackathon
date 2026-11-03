@@ -475,7 +475,8 @@ struct StillnessGateTests {
         var flow = try #require(m["flow"] as? [String: Any])
         var map = try #require(flow["map"] as? [String: Any])
         // what the server serves (prep face.ts STILL_FACE)
-        map["alive"] = ["headX": 0, "headRoll": 0, "nodPx": 0, "browPx": 0, "lockY": true]
+        // the local gate (11/4: the rigid speech sway is measured on its own, see FaceRendererTests)
+        map["alive"] = ["headX": 0, "headRoll": 0, "nodPx": 0, "browPx": 0, "lockY": true, "sway": 0]
         map["brow"] = ["px": 0]
         map["cheek"] = ["spread": 0, "pull": 0, "lift": 0, "cheek": 0, "cheekW": 0, "naso": 0, "nasoW": 0]
         flow["map"] = map; m["flow"] = flow
