@@ -907,16 +907,33 @@ struct CameraFrame: View {
 
     private func box(_ b: NormBox, label: String, w: CGFloat, h: CGFloat, oy: CGFloat, on: Bool, dashed: Bool = false) -> some View {
         let rect = CGRect(x: b.x1 * w, y: b.y1 * h - oy, width: (b.x2 - b.x1) * w, height: (b.y2 - b.y1) * h)
-        return ZStack(alignment: .bottomLeading) {
-            RoundedRectangle(cornerRadius: 3).fill(on ? FindsInk.blueTint : .clear)
-            RoundedRectangle(cornerRadius: 3).strokeBorder(on ? FindsInk.blue : FindsInk.boxLine, style: StrokeStyle(lineWidth: on ? 2 : 1.5, dash: dashed ? [5, 4] : []))
+        // the label sits at the box's bottom-left, pulled back inside the window when the box is at its edge
+        // (a box at the top of the frame cut "Egg" in half, pixel QA 11/4)
+        let labelX = min(max(rect.minX + 4, 4), w - 4 - Self.labelWidth(label))
+        let labelY = min(max(rect.maxY - 4 - Self.labelHeight, 4), height - 4 - Self.labelHeight)
+        return ZStack(alignment: .topLeading) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 3).fill(on ? FindsInk.blueTint : .clear)
+                RoundedRectangle(cornerRadius: 3).strokeBorder(on ? FindsInk.blue : FindsInk.boxLine, style: StrokeStyle(lineWidth: on ? 2 : 1.5, dash: dashed ? [5, 4] : []))
+            }
+            .frame(width: max(8, rect.width), height: max(8, rect.height))
+            .offset(x: rect.minX, y: rect.minY)
             if on {
                 Text(label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 3)).fixedSize().padding(4)
+                    .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 3)).fixedSize()
+                    .offset(x: labelX, y: labelY)
             }
         }
-        .frame(width: max(8, rect.width), height: max(8, rect.height))
-        .offset(x: rect.minX, y: rect.minY)
+    }
+    /// The box label pill: 12 pt medium + 2 pt top/bottom padding.
+    static let labelHeight: CGFloat = 20
+    private static func labelWidth(_ label: String) -> CGFloat {
+        #if canImport(UIKit)
+        let font = UIFont(name: "PretendardVariable-Medium", size: 12) ?? .systemFont(ofSize: 12, weight: .medium)
+        return ceil((label as NSString).size(withAttributes: [.font: font]).width) + 12
+        #else
+        return CGFloat(label.count) * 7 + 12
+        #endif
     }
 }
 
