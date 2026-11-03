@@ -48,3 +48,14 @@ test("watch: the quick look and the memo are told to say the plain action, never
   const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
   assert.match(String(memo.instructions), /never a named play or trick/);
 });
+
+// camera proxy 11/4: a TV dunk in two camera frames got "caught it midair" (a lob the frames never showed)
+test("camera turns (both prompt styles) say: name only actions seen in the frames, never infer a play", async () => {
+  const { buildInstructions } = await import("../src/prompt/persona.ts");
+  const mina = { name: "Mina", kind: "human", traits: ["warm"], speakingStyle: "short" } as never;
+  for (const style of ["v1", "legacy"] as const) {
+    const s = buildInstructions({ persona: mina, mode: "chat", style, cameraAttached: true } as never);
+    assert.match(s, /Name only actions you can see happening in the frames; never infer what happened before or between them/, style);
+    assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style } as never), /Name only actions you can see/, `${style} without camera`);
+  }
+});

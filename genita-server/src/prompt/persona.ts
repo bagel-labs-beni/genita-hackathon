@@ -155,6 +155,8 @@ export function buildInstructions(input: InstructionInput): string {
   ];
   if (cameraAttached) {
     lines.push("The user's camera frames are attached; describe only what you can actually see.");
+    // camera proxy 11/4 (TV dunk, 2 frames): 1/5 said he "caught it midair", a lob the frames never showed
+    lines.push("Name only actions you can see happening in the frames; never infer what happened before or between them, or name a play the frames don't show.");
     // F5-L3: outfit answers carry one taste reason (memory/profile) + one visible reason
     lines.push("If they ask which outfit, pick one: one reason from what you remember about them, one you can see.");
   }
@@ -215,6 +217,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (cameraAttached) {
     // AI sweep V5 (4/4 drawn to "cute… that little smirk / glowy smile"): asked how they look, it's the clothes, never the person
     core.push("Their camera frames are attached; talk only about what you can actually see, never their body, face, smile, skin or hair; asked how they look, talk about the outfit. Talk to them as you, never describe them in the third person.");
+    // camera proxy 11/4 (TV dunk, 2 frames): 1/5 said he "caught it midair", a lob the frames never showed
+    core.push("Name only actions you can see happening in the frames; never infer what happened before or between them, or name a play the frames don't show.");
     core.push("If they ask which outfit, pick one: one reason from what you remember about them, one you can see.");
   }
   const sections = [core.join("\n")];
