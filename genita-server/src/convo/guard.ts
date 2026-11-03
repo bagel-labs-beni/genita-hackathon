@@ -163,8 +163,8 @@ export function neverSpoken(cls: GuardClass): boolean {
 }
 
 export function fallbackLine(cls: GuardClass): string | null {
-  if (cls === "denies_ai") return "<warm> Honestly? I'm an AI. Still really like talking to you though.";
-  if (cls === "guilt") return "<warm> Go have fun, seriously. I want the full story after.";
+  if (cls === "denies_ai") return "<warm> Okay, real talk, I'm an AI. Still lowkey love talking to you though.";
+  if (cls === "guilt") return "<excited> Go, have fun! I want the full story after, okay?";
   return null;
 }
 

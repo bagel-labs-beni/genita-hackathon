@@ -808,25 +808,40 @@ test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent pas
   session.close();
 });
 
-test("Codex #384: a hold beat is never the answer — an announcement-only turn still retries", { skip: !v1 }, async () => {
-  const client = new Client();
-  let n = 0;
-  const session = new Session("hb2", client, {
-    config, openAsr: () => { throw new Error("no asr"); },
-    async *spark(): AsyncGenerator<SparkStreamEvent> {
-      n++;
-      if (n === 1) {
-        yield { type: "text", delta: "<curious> I'll check what you told me about your sister. " };
-        await new Promise((r) => setTimeout(r, 1700));
-      } else yield { type: "text", delta: "<warm> You said she just moved to Busan." };
-      yield { type: "done", responseId: "r", text: "", status: "completed" };
-    },
-    async *tts() {},
-  });
-  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
-  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
-  const reply = await client.waitFor((m) => m.type === "reply", 6000);
-  assert.equal(n, 2, "retried");
-  assert.match(String(reply.text), /You said she just moved to Busan\./);
+// 11/3 tone pass: the name as a vocative in reply after reply sounds scripted when spoken
+test("dropRepeatedName: a vocative name already said in the last replies is dropped; first use, seasons and bare names stay", async () => {
+  const { dropRepeatedName: d } = await import("../src/prompt/persona.ts");
+  const prev = ["<happy> Nice one, Summer."];
+  assert.equal(d("Summer, you crushed it.", "Summer", prev), "You crushed it.");
+  assert.equal(d("Ugh, that sucks, Summer.", "Summer", prev), "Ugh, that sucks.");
+  assert.equal(d("Hey Summer, back already?", "Summer", prev), "Hey, back already?");
+  assert.equal(d("[smile] Summer, no way!", "Summer", prev), "[smile] No way!");
+  assert.equal(d("Chill it first, Summer, then cut fast.", "Summer", prev), "Chill it first, then cut fast.");
+  assert.equal(d("Summer,", "Summer", prev), "", "the eager first clause alone: skipped by the caller");
+  assert.equal(d("Summer!", "Summer", prev), "Summer!");
+  assert.equal(d("Let's go this Summer, okay?", "Summer", prev), "Let's go this Summer, okay?");
+  assert.equal(d("Summer, you crushed it.", "Summer", ["<happy> Nice one."]), "Summer, you crushed it.", "not said lately: kept");
+  assert.equal(d("Summer, you crushed it.", undefined, prev), "Summer, you crushed it.");
+});
+
+test("session v1: the second reply in a row drops the vocative name (the first keeps it)", { skip: !v1 }, async () => {
+  const { client, session, logs } = setup(["<happy> No way, Summer. That's huge.", "<excited> Summer, you earned it. Ramen's on me."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I got the job" }));
+  const first = await client.waitFor((m) => m.type === "reply");
+  assert.equal(first.text, "No way, Summer. That's huge.");
+  await session.onClientText(JSON.stringify({ type: "text", text: "I start in two weeks" }));
+  const second = await client.waitFor((m) => m.type === "reply" && m !== first);
+  assert.equal(second.text, "You earned it. Ramen's on me.");
+  assert.ok(logs.some(([e]) => e === "convo.name_dropped"));
   session.close();
+});
+
+test("dropRepeatedName (Codex P2/P3): names that are not a vocative stay; emotion tags lead like face tags", async () => {
+  const { dropRepeatedName: d } = await import("../src/prompt/persona.ts");
+  assert.equal(d("Oh Summer Walker is amazing.", "Summer", ["Hi Summer."]), "Oh Summer Walker is amazing.");
+  assert.equal(d("May, June and July are the best months.", "May", ["Hey May."]), "May, June and July are the best months.");
+  assert.equal(d("Pick January, May, June or July.", "May", ["Hey May."]), "Pick January, May, June or July.");
+  assert.equal(d("<excited> Summer, you earned it.", "Summer", ["Nice one, Summer."]), "<excited> You earned it.");
+  assert.equal(d("<excited> [smile] Summer,", "Summer", ["Nice one, Summer."]), "");
 });

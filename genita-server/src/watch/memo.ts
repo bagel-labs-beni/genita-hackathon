@@ -81,7 +81,7 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     "The frames are a short sequence since the last memo (0.6–1 s apart), oldest first: read the motion across them — a dance move, a fall, a reveal, a cut to someone laughing or reacting — and any on-screen text (captions, a punchline, the page or video title).",
     "The window title tells you what the page or video is (a YouTube video's title, a site); use it to understand the content, but only the frames and lines say what is happening right now.",
     `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
-    `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, casual English, no question. Otherwise empty.`,
+    `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, said the way a friend in their twenties would say it out loud (casual English, no emojis or texting abbreviations), no question. Otherwise empty.`,
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
     "talkOver: true if the screen's sound is crowd noise, music, sports commentary or narration (fine to react over); false if people on screen are talking to each other.",
@@ -135,7 +135,7 @@ export function buildQuickRequest(q: { companion: { name: string }; frames: stri
   const instructions = [
     `${q.companion.name} watches a video with a friend. These frames are the last ~1 s, oldest first.`,
     "react: true if something a friend would blurt about is happening in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
-    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
+    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 words about exactly that, blurted the way a friend in their twenties would say it out loud (casual English, no emojis or texting abbreviations), no question, no names.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
   const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now: ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];

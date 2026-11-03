@@ -46,6 +46,21 @@ export function splitForService(text: string, max = 380): string[] {
 
 export type SeamlessRequest = TtsRequest & { lang?: string };
 
+/**
+ * The reply's <emotion> → speaking rate (11/3 tone pass). Seamless has no style or emotion input; its one prosody
+ * knob is speed (the service scales the unit durations). Excited and teasing lines run a little quicker, sad and
+ * whisper a little slower, so a reply's mood is heard and not only seen. Short clauses (≤ CACHE_MAX_CHARS, the
+ * prefetched fillers like "Oh wow,") stay at the base rate so the filler cache still answers the first sound.
+ */
+export const EMOTION_SPEED: Record<string, number> = {
+  excited: 1.1, surprised: 1.08, teasing: 1.06, happy: 1.05, curious: 1.03, neutral: 1.03, warm: 1, sad: 0.94, whisper: 0.95,
+};
+export function speedFor(base: number, emotion: string | null | undefined, text: string): number {
+  if (text.length <= CACHE_MAX_CHARS) return base;
+  const f = EMOTION_SPEED[(emotion ?? "").toLowerCase()] ?? 1;
+  return Math.round(Math.min(1.3, Math.max(0.8, base * f)) * 100) / 100;
+}
+
 /** BCP-47 / Spark language → Seamless lang code (the two the app uses). */
 export function seamlessLang(lang: string | undefined, text: string): "eng" | "kor" {
   if (lang?.toLowerCase().startsWith("ko")) return "kor";
@@ -80,7 +95,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
   let downUntil = 0;
   const modelName = cfg.model === "mms" ? "mms-tts" : SEAMLESS_MODEL;
 
-  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, signal?: AbortSignal): AsyncGenerator<TtsChunk> {
+  async function* request(text: string, lang: "eng" | "kor", speaker: number, tailMs: number, speed: number, signal?: AbortSignal): AsyncGenerator<TtsChunk> {
     const ctl = new AbortController();
     // no first byte, or a stalled stream: give up after timeoutMs without progress (reset on every chunk)
     let timer = setTimeout(() => ctl.abort(new Error("voice_timeout")), cfg.timeoutMs);
@@ -96,7 +111,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
         r = await doFetch(`${cfg.url}/v1/tts`, {
           method: "POST",
           headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json" },
-          body: JSON.stringify({ text, lang, speaker, speed: cfg.speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}) }),
+          body: JSON.stringify({ text, lang, speaker, speed, tail_ms: tailMs, model: cfg.model, ...(cfg.align ? { align: true } : {}) }),
           signal: ctl.signal,
         });
       } catch (err) {
@@ -157,7 +172,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     }
   }
 
-  const key = (lang: string, speaker: number, text: string, tail: number) => `${lang}|${speaker}|${tail}|${text}`;
+  const key = (lang: string, speaker: number, text: string, tail: number, speed: number) => `${lang}|${speaker}|${tail}|${speed}|${text}`;
   const remember = (k: string, chunks: TtsChunk[]) => {
     if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string);
     cache.set(k, chunks);
@@ -170,7 +185,8 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     const speaker = speakerOf(req.voiceId);
     const spk = Number.isFinite(speaker) ? speaker : 0;
     const tail = pauseAfterMs(text);
-    const k = key(lang, spk, text, tail);
+    const speed = speedFor(cfg.speed, req.emotion, text);
+    const k = key(lang, spk, text, tail, speed);
     const hit = cache.get(k);
     if (hit) {
       yield* hit;
@@ -185,7 +201,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       let offsetSec = 0;
       for (const [n, piece] of pieces.entries()) {
         let pieceSec = 0;
-        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, req.signal)) {
+        for await (const c of request(piece, lang, spk, n === pieces.length - 1 ? tail : 0, speed, req.signal)) {
           let shifted = offsetSec && c.alignment
             ? { ...c, alignment: { ...c.alignment, startsSec: c.alignment.startsSec.map((t) => t + offsetSec), endsSec: c.alignment.endsSec.map((t) => t + offsetSec) } }
             : c;
