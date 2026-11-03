@@ -39,6 +39,14 @@ test("person matte: largest SAM mask lands at the still's size and coordinates (
   assert.ok([...new Set(r)].every((v) => v === 0 || v === 255), "hard matte");
 });
 
+test("person matte (live SAM 11/3): a raster smaller than its box is stretched over the whole box", () => {
+  const b = discBox(0, 0, 49, 89, 100, 180);                 // 50 x 90 raster ...
+  const big: SamBox = { ...b, x2: 99, y2: 179 };              // ... over a 100 x 180 box (the full frame)
+  const r = personRaster([big], [200, 360])!;
+  assert.equal(r[180 * 200 + 100], 255, "frame centre = raster centre");
+  assert.equal(r[350 * 200 + 100], 255, "bottom middle of the disc is covered (an unscaled raster would stop half way)");
+});
+
 test("person matte: no mask / undecodable mask / tiny match → null (never throws)", () => {
   const noMask: SamBox = { ...discBox(20, 40, 80, 170, 100, 180), mask: undefined };
   assert.equal(personRaster([noMask], [200, 360]), null);
@@ -65,7 +73,7 @@ test("makePersonMatte: one SAM 3.1 call with masks, kind noun prompt, PNG out", 
   };
   const png = await makePersonMatte({ media, metaKey: "k", sceneDataUrl: "data:image/png;base64,", size: [200, 360], kind: "animal" });
   assert.ok(png);
-  assert.deepEqual(calls, [{ prompt: "the animal", opts: { masks: true } }]);
+  assert.deepEqual(calls, [{ prompt: "the animal", opts: { masks: true } }], "one call when the kind noun hits");
   assert.equal(personPrompt("human"), "the person");
   assert.equal(personPrompt("character"), "the character");
   const g = readGrey(png!);
@@ -77,4 +85,13 @@ test("face manifest: images.person only when the matte was stored", () => {
   const url = (k: string) => `/v1/companion/face/${k}`;
   assert.equal(faceManifest(s, url).images.person, undefined);
   assert.equal(faceManifest({ ...s, person: true }, url).images.person, "/v1/companion/face/person");
+});
+
+test("makePersonMatte: a character miss retries once with \"the toy\" (plush, live 11/3), other kinds give up", async () => {
+  const prompts: string[] = [];
+  const media = { imageEdit: async () => Buffer.alloc(0), samDetect: async (_k: string, _u: string, p: string) => (prompts.push(p), p === "the toy" ? [discBox(20, 40, 80, 170, 100, 180)] : []) };
+  assert.ok(await makePersonMatte({ media, metaKey: "k", sceneDataUrl: "", size: [200, 360], kind: "character" }));
+  assert.deepEqual(prompts, ["the character", "the toy"]);
+  const none = { imageEdit: async () => Buffer.alloc(0), samDetect: async () => [] };
+  assert.equal(await makePersonMatte({ media: none, metaKey: "k", sceneDataUrl: "", size: [200, 360], kind: "human" }), null);
 });

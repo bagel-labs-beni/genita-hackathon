@@ -26,15 +26,19 @@ export function personRaster(boxes: readonly SamBox[], size: [number, number]): 
       continue; // a bad payload: try the next box
     }
     const out = new Uint8Array(W * H);
-    // the mask raster covers the box in SAM's pixel space (b.w x b.h); map every still pixel back into it
+    // the mask raster is stretched over the box in SAM's pixel space (b.w x b.h); on big boxes SAM sends a raster
+    // smaller than the box, so map every still pixel into the box first, then into the raster
     const sx = b.w! / W, sy = b.h! / H;
+    const bw = b.x2 - b.x1 + 1, bh = b.y2 - b.y1 + 1;
     let on = 0;
     for (let y = 0; y < H; y++) {
-      const my = Math.floor((y + 0.5) * sy) - b.y1;
-      if (my < 0 || my >= m.height) continue;
+      const fy = ((y + 0.5) * sy - b.y1) / bh;
+      if (fy < 0 || fy >= 1) continue;
+      const my = Math.min(m.height - 1, Math.floor(fy * m.height));
       for (let x = 0; x < W; x++) {
-        const mx = Math.floor((x + 0.5) * sx) - b.x1;
-        if (mx < 0 || mx >= m.width) continue;
+        const fx = ((x + 0.5) * sx - b.x1) / bw;
+        if (fx < 0 || fx >= 1) continue;
+        const mx = Math.min(m.width - 1, Math.floor(fx * m.width));
         if (m.bits[my * m.width + mx]) {
           out[y * W + x] = 255;
           on++;
@@ -86,7 +90,11 @@ export async function makePersonMatte(o: {
   kind: CompanionKind;
   signal?: AbortSignal;
 }): Promise<Buffer | null> {
-  const boxes = await o.media.samDetect(o.metaKey, o.sceneDataUrl, personPrompt(o.kind), o.signal, { masks: true });
-  const r = personRaster(boxes, o.size);
-  return r ? greyPng(r, o.size[0], o.size[1]) : null;
+  // live 11/3: "the character" (and "the main subject") miss plush toys, "the toy" hits; tried only on a miss
+  for (const prompt of o.kind === "character" ? [personPrompt(o.kind), "the toy"] : [personPrompt(o.kind)]) {
+    const boxes = await o.media.samDetect(o.metaKey, o.sceneDataUrl, prompt, o.signal, { masks: true });
+    const r = personRaster(boxes, o.size);
+    if (r) return greyPng(r, o.size[0], o.size[1]);
+  }
+  return null;
 }
