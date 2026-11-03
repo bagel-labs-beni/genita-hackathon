@@ -1458,3 +1458,11 @@ test("page comment: a YouTube page with its video playing is not commented on as
   }
   assert.deepEqual(reacted, [], "still playing, then stale: dropped");
 });
+
+test("English-only transcriber (11/4): every place the video's lines show up says a non-English video comes out garbled, react from frames", () => {
+  const lines = [{ at: 0, label: null, text: "ah so de su ne" }];
+  const memo = buildMemoRequest({ companion: { name: "Jin", traits: [] }, source: null, memo: [], lines, names: new Map(), frames: [frame], blank: false });
+  assert.match(JSON.stringify(memo.input), /English only: a video in another language comes out garbled or empty, then react from the frames and never claim to understand/);
+  const q = buildQuestionContext({ source: "YouTube", memo: [], lines, names: new Map(), frames: [frame], blank: false });
+  assert.match(q.instructions, /never claim to understand what is said/);
+});

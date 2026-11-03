@@ -43,6 +43,9 @@ export const MEMO_SCHEMA = {
  * ScreenCaptureKit's window title (no extra permission, no OCR). It is untrusted text from a web page: control
  * characters out, short, and always handed to Spark as quoted data, never as instructions.
  */
+/** the watch transcriber is English-only (product decision 11/4): what a non-English video's lines look like */
+export const ENGLISH_ONLY = "auto-transcribed in English only: a video in another language comes out garbled or empty, then react from the frames and never claim to understand what is said";
+
 export function cleanTitle(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const t = raw.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
@@ -97,7 +100,8 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     m.source ? `Shared: ${m.source}.` : "",
     titleLine(m.title),
     m.memo.length ? `Memo so far:\n${m.memo.map((e) => `- ${e.text}`).join("\n")}` : "Memo so far: (start)",
-    m.lines.length ? `New lines heard from the screen:\n${dialogueText(m.lines, m.names)}` : "No new lines heard.",
+    // the video's sound is transcribed in English only (product decision 11/4)
+    m.lines.length ? `New lines heard from the screen (${ENGLISH_ONLY}):\n${dialogueText(m.lines, m.names)}` : "No new lines heard.",
     m.blank ? "The new frames are black (the app could not capture them)." : `New frames, oldest first: ${m.frames.length}.`,
   ]
     .filter(Boolean)
@@ -146,7 +150,7 @@ export function buildQuickRequest(q: { companion: { name: string }; frames: stri
     "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen, no named play or trick (alley-oop, kickflip): say the plain action.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
-  const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now: ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
+  const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now (${ENGLISH_ONLY}): ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
   for (const f of q.frames) parts.push({ type: "input_image", image_url: f });
   return {
     instructions,
@@ -245,7 +249,7 @@ export function buildQuestionContext(c: {
   const tl = titleLine(c.title);
   if (tl) out.push(`${tl} It is what the page or video is called; you may use it ("this is the one about…") and any name written in it.`);
   if (c.memo.length) out.push(`What you've seen so far, oldest first:\n${c.memo.map((e) => `- ${e.text}`).join("\n")}`);
-  if (c.lines.length) out.push(`Lines just heard from the screen, oldest first:\n${dialogueText(c.lines, c.names)}`);
+  if (c.lines.length) out.push(`Lines just heard from the screen, oldest first (${ENGLISH_ONLY}):\n${dialogueText(c.lines, c.names)}`);
   if (c.moments?.length) {
     out.push(`Moments you noticed in the last minute (what you'd have blurted out, said or not), oldest first:\n${c.moments.map((m) => `- ${m.agoSec} s ago (${m.moment}): ${JSON.stringify(m.line)}`).join("\n")}`);
     out.push(`If the user asks about something that just happened ("did you see that?", "that dunk"), it is most likely one of these: answer from it even if the screen has moved on.`);
