@@ -14,7 +14,7 @@
  * GENITA_INSIGHTS=0: no Spark call, GET → none, the app keeps the old SUM.
  */
 import type { SparkRequest } from "../meta/spark.ts";
-import { sparkJson } from "../meta/spark.ts";
+import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
@@ -68,7 +68,9 @@ export class Insights {
   constructor(o: { personalize: Personalize; store: Pick<PrepStore, "getStyle">; json?: JsonFn; metaKey?: string; log?: (event: string, data: Record<string, unknown>) => void; now?: () => Date; enabled?: boolean }) {
     this.personalize = o.personalize;
     this.store = o.store;
-    this.json = o.json ?? (<T>(req: Parameters<JsonFn>[0], signal?: AbortSignal) => sparkJson<T>(o.metaKey ?? "", req, signal));
+    // one Muse Spark call per send, no hidden retry or fallback hop: every send (and our own retry) checks for a
+    // forget first (Codex r9: sparkJson's inner retry re-sent the paste after a forget)
+    this.json = o.json ?? (<T>(req: Parameters<JsonFn>[0], signal?: AbortSignal) => museJson<T>(o.metaKey ?? "", req, signal, { retry: false }));
     this.log = o.log ?? (() => {});
     this.now = o.now ?? (() => new Date());
     this.enabled = o.enabled ?? process.env.GENITA_INSIGHTS !== "0";
@@ -130,6 +132,10 @@ export class Insights {
       const stillOk = async () => {
         if (this.seq.get(userId) !== mine) return false;
         const latest = await this.store.getStyle(userId);
+        // again after the read: a forget() / newer write may have landed while it ran (Codex r10); a card that is
+        // gone ("Forget all of this") stops a non-import write too
+        if (this.seq.get(userId) !== mine) return false;
+        if (!latest && !opts.gate) return false;
         return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
       };
       const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
