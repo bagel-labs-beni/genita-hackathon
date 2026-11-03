@@ -4,13 +4,15 @@
  *
  * startDemoTemplate() runs in the background after the accounts DB is migrated and never blocks startup.
  * Each template version gets its own reserved account (provider "dev", sub `demo:template:<v>`), so a
- * new template is built next to the old one and nothing a judge may be copying is ever deleted. Only a
+ * new template is built next to the old one; templates are never deleted by this module. Only a
  * ready build moves the pointer `demo/template-current.json` ({userId, companionId, version}); judge
  * sign-in copies whatever the pointer names (else the legacy `demo:template` account, prep/demo.ts).
  *   - pointer already on a ready template of this version → kept (demo.template.current)
  *   - this version ready but not pointed at (another process built it) → pointer moved (demo.template.seeded)
  *   - this version being built by another process (running, < STALE_MS old) → left alone (demo.template.busy)
- *   - missing / failed / stale in this version's own account → (re)built via the prep routes (demo.template.seeded)
+ *   - missing → built via the prep routes (demo.template.seeded)
+ *   - failed / stale → never deleted; this process builds in a fresh account of its own for this version
+ *     (demo.template.recover), so two processes recovering at once cannot remove each other's work
  *   - ops pause (GENITA_PAUSED / pause file) → nothing generated (demo.template.failed reason paused)
  * Any failure is only logged (demo.template.failed) and retried once after RETRY_MS.
  *
@@ -23,7 +25,7 @@
  * Threat line: no endpoint; the loopback HTTP listener used to reuse the prep routes binds
  * 127.0.0.1 on a random port only for the length of the build and serves only the template account.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -104,7 +106,7 @@ async function run(d: DemoTemplateDeps): Promise<DemoTemplateResult> {
         return { status: "current", companionId: c.id, version, ms: ms() };
       }
     }
-    const tpl = await d.templateUser(templateSub(version));
+    let tpl = await d.templateUser(templateSub(version));
     let cur = await store.getCompanion(tpl);
     if (cur?.prep.status === "running" && d.prep.runner.isRunning(tpl)) {
       await d.prep.runner.run(tpl); // this process resumed it at boot: let it finish
@@ -116,10 +118,11 @@ async function run(d: DemoTemplateDeps): Promise<DemoTemplateResult> {
         d.log("demo.template.busy", { companionId: cur.id, version, ageMs: age });
         return { status: "busy", companionId: cur.id, version, ms: ms() };
       }
-      // failed, or a crashed/stale build in this version's own account (never pointed at, nobody copies it)
-      await d.prep.runner.stop(tpl);
-      await store.deleteCompanion(tpl);
-      d.log("demo.template.dropped", { companionId: cur.id, status: cur.prep.status, version });
+      // failed, or a crashed/stale build: never deleted (another process may be recovering it right now);
+      // this process builds in a fresh account of its own for this version instead
+      const retrySub = `${templateSub(version)}:r${Date.now().toString(36)}${randomBytes(3).toString("hex")}`;
+      d.log("demo.template.recover", { companionId: cur.id, status: cur.prep.status, version });
+      tpl = await d.templateUser(retrySub);
       cur = null;
     }
     let companionId = cur?.id;

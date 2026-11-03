@@ -127,10 +127,19 @@ test("a failed template in this version's account is rebuilt", async (t) => {
   const { accounts, deps, builds } = await boot(t);
   await ensureDemoTemplate(deps());
   const tpl = (await readDemoPointer(accounts.blobs))!.userId;
-  // crashed build: failed status in this version's own account → rebuilt
+  // crashed build: failed status in this version's own account → rebuilt in a fresh account, the failed one kept
   await accounts.prepStore.patchCompanion(tpl, (c) => ({ ...c, prep: { ...c.prep, status: "failed" } }));
   assert.equal((await ensureDemoTemplate(deps())).status, "seeded");
   assert.equal(builds(), 2);
+  const now = (await readDemoPointer(accounts.blobs))!;
+  assert.notEqual(now.userId, tpl, "recovery builds in its own account");
+  assert.equal((await accounts.prepStore.getCompanion(tpl))!.id, "tpl1", "nothing deleted (another process may be recovering it)");
+  // two recoveries at once both finish; the pointer names a ready template either way
+  await accounts.prepStore.patchCompanion(now.userId, (c) => ({ ...c, prep: { ...c.prep, status: "failed" } }));
+  const [a, b] = await Promise.all([ensureDemoTemplate(deps()), ensureDemoTemplate(deps())]);
+  assert.equal(a.status, "seeded"); assert.equal(b.status, "seeded");
+  const p = (await readDemoPointer(accounts.blobs))!;
+  assert.equal((await accounts.prepStore.getCompanion(p.userId))!.prep.status, "ready");
 });
 
 test("a failed build is only logged (no throw), leaves no stamp, and the boot hook retries once", async (t) => {
