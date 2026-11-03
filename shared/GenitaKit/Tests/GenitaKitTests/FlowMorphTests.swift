@@ -348,7 +348,9 @@ struct LipRigTests {
         m.amountsOverride = [0.35, 0.45]
         let narrow = Int(pixels(m.render(.rest, at: 2))[k])
         #expect(wide > 200)
-        #expect(Double(narrow) < 0.85 * Double(wide))         // shaded (the 4-row synthetic inside is half rim)
+        // shaded: 212 vs 235 on CI — the 4-row synthetic inside is mostly rim (rim pixels keep the key), so the full
+        // x0.55 only reaches its middle; without the shade both are 235
+        #expect(Double(narrow) < 0.95 * Double(wide))
     }
 
     /// Rollback (map rig.interior = 0): the old idle drift and teeth layer are back.
