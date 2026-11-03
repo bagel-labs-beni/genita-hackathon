@@ -428,9 +428,10 @@ import UniformTypeIdentifiers
     /// Opens V04: the server's list, then the earlier pick (or the default while the voice service wakes).
     func loadVoices() async {
         await player.load(client: model.onboarding, imageId: model.setup.imageId, kind: model.setup.imageType)
+        // 11/4: no earlier pick → the server's top match for the face (the list comes ordered by the photo's voice_fit)
+        // is pre-selected, so Continue saves the voice the user sees ticked; they can still change it
         if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { selectVoice(i) }
-        else if !player.available { selectVoice(0) }
-        else { model.setup.voice = nil }
+        else { selectVoice(0) }
         // voice service cold: ask again every 4 s for up to 60 s, then the normal list replaces the greyed one
         var waited = 0
         while !player.available && waited < 60 && !Task.isCancelled {
