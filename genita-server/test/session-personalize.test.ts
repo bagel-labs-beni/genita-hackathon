@@ -710,3 +710,15 @@ test("AU-92 r4: a profile read that timed out lands later — applied (with Find
   b.session.close();
   await sleep(10);
 });
+
+test("AU-92 r6: an interpretation start still takes the server's profile, so a switch to chat never uses the app's old copy", { timeout: 15_000 }, async () => {
+  const s = setup({ async startCall() { return { profile: "", taste: [] }; } });
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", user: { profile: "- Taste: Old secret." } }));
+  await sleep(50);
+  await s.session.onClientText(JSON.stringify({ type: "mode", mode: "chat" }));
+  await sleep(50);
+  await say(s, "Hi.", 1);
+  assert.doesNotMatch(s.sparkCalls.at(-1)!.instructions!, /Old secret/);
+  s.session.close();
+  await sleep(10);
+});

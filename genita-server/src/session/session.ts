@@ -907,6 +907,18 @@ export class Session {
         this.log("profile.unavailable", { message: String(err).slice(0, 120) });
       }
       if (this.closed) return;
+    } else if (this.deps.personalize && this.deps.userId) {
+      // an interpretation start: no call plan, but the profile is still the server's, never the app's copy — a switch
+      // to chat later must not use what they asked to forget (Codex #583 r6). Profile only (plan: false), off the path.
+      const personalize = this.deps.personalize, userId = this.deps.userId;
+      const gen = personalize.generation?.(userId);
+      if (personalize.isForgotten?.(userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+      void personalize.startCall(userId, { plan: false }).then((p) => {
+        if (!p || this.closed || personalize.generation?.(userId) !== gen) return;
+        this.user = { ...this.user, profile: p.profile || undefined };
+        this.taste = p.taste ?? [];
+        if (this.started) this.finds?.configure({ owner: userId, memories: this.memories, profile: this.user.profile, userName: this.user.name, timeZone: this.timeZone, taste: this.taste });
+      }).catch(() => {});
     }
     // owner = the authenticated account (server.ts); start.user.id is not trusted for ownership
     this.timeZone = str(u.timeZone, 40);
