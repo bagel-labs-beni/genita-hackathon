@@ -1668,8 +1668,8 @@ final class FlowMorph: @unchecked Sendable {
         for y in max(0, y0 - 3 * pad)..<min(h, y1 + 3 * pad + 1) where y < y0 - pad || y > y1 + pad {
             for x in x0...x1 where interior[y * w + x] < 0.5 { let i = (y * w + x) * 3; sr += p[i]; sg += p[i + 1]; sb += p[i + 2]; sn += 1 }
         }
-        var tint: (Float, Float, Float) = (1, 1, 1)
-        if sn > 0 { let m = (sr + sg + sb) / (3 * sn); if m > 1 { tint = (sr / sn / m, sg / sn / m, sb / sn / m) } }
+        var tint: (Float, Float, Float) = (1, 1, 1), skin: (Float, Float, Float)? = nil
+        if sn > 0 { let m = (sr + sg + sb) / (3 * sn); skin = (sr / sn, sg / sn, sb / sn); if m > 1 { tint = (sr / sn / m, sg / sn / m, sb / sn / m) } }
         // corners: the mouth box's (a mask leaking past a corner must not move the falloff), else the inside's extent
         let cx = mouthX?.cx ?? Float(x0 + x1) / 2, hw = max(1, mouthX?.hw ?? Float(x1 - x0) / 2), split = Float(tone.split), dark = Float(min(1, max(0, tone.cavityDark)))
         // edge weight: 0 on the inside mask's rim → 1 two px in (the rim holds lip / skin pixels the mask caught)
@@ -1701,7 +1701,14 @@ final class FlowMorph: @unchecked Sendable {
                 let toothy = clip((0.4 - sat) / 0.1) * clip((mx - thr) / 15)
                 let lower = 1 - 0.18 * clip((r - split) / 0.15) * toothy
                 // only teeth and the dark inside take the shade: lip pixels caught by the inside mask keep their colour
-                let sw = max(toothy, clip((thr + 25 - mx) / 20) * clip((0.42 - sat) / 0.1), clip((70 - mx) / 25))
+                // skin the inside mask caught (pale faces: a prep mask past the mouth's edge) looks like the skin around the
+                // mouth — leave it as the key has it (shading it drew grey blotches on p6)
+                var skinLike: Float = 0
+                if let sk = skin {
+                    let d = (abs(p[i] - sk.0) + abs(p[i + 1] - sk.1) + abs(p[i + 2] - sk.2)) / 3, sL = max(1, (sk.0 + sk.1 + sk.2) / 3)
+                    skinLike = 1 - clip((d / sL - 0.08) / 0.1)
+                }
+                let sw = max(toothy, clip((thr + 25 - mx) / 20) * clip((0.42 - sat) / 0.1), clip((70 - mx) / 25)) * (1 - skinLike)
                 let k = 1 - (1 - corner * lipShadow * lower) * sw
                 var c = (p[i] * k, p[i + 1] * k, p[i + 2] * k)
                 if toothy > 0 {
@@ -1718,7 +1725,7 @@ final class FlowMorph: @unchecked Sendable {
                 // the rim, and anything past the mouth's corners (cheek skin a prep mask leaked onto: shading it drew grey
                 // blotches on pale faces), keeps the key's own pixels
                 let e = clip((ed[y * w + x] - 1) / 2) * (mouthX == nil ? 1 : 1 - sstep(1.0, 1.15, dx))
-                inside[y * w + x] = e
+                inside[y * w + x] = e * sw      // the narrow-gap shade: teeth and the dark inside only, never lip or skin
                 o[i] = p[i] + (c.0 - p[i]) * e; o[i + 1] = p[i + 1] + (c.1 - p[i + 1]) * e; o[i + 2] = p[i + 2] + (c.2 - p[i + 2]) * e
             }
         }
