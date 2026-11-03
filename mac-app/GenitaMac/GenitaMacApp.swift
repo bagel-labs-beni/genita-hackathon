@@ -5,6 +5,7 @@ import CoreText
 @main struct GenitaMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     init() {
+        MacBundleName.fixOnLaunch() // an updated GenitaMac.app becomes Genita.app (reopens from there), before anything starts
         MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["ttf", "otf"].contains(url.pathExtension.lowercased()) { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
