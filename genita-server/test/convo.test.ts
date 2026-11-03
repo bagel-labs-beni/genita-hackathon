@@ -1515,3 +1515,21 @@ test("Codex #502 P1 r4: a crisis line in a handed-over start.history stays with 
   assert.doesNotMatch(calls.at(-1)!.instructions!, /own take/);
   session.close();
 });
+
+test("Codex #502 P1 r6: after a crisis line, later turns of the call get no giddy closeness, playful mood or 'stay in that lane'", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<warm> Okay."]);
+  let cb: ((t: { kind: string; at: number; confidence: number }) => void) | null = null;
+  (session as unknown as { perception: unknown }).perception = { contextLine: () => null, pendingHint: () => null, onTrigger: (f: typeof cb) => { cb = f; return () => {}; } };
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  (session as unknown as { callNumber: number }).callNumber = 1;
+  const lines = ["I got the job! lol", "I want to kill myself.", "Yes, I have the pills beside me lol"];
+  for (let i = 0; i < lines.length; i++) {
+    if (i === 2) cb!({ kind: "smiled_at_reply", at: 0, confidence: 0.9 });
+    await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
+    await client.waitFor(() => client.json.filter((m) => m.type === "reply").length >= i + 1);
+  }
+  const last = calls.at(-1)!.instructions!;
+  assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
+  session.close();
+});

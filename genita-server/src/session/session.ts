@@ -1540,7 +1540,7 @@ export class Session {
         lastReply: this.recentReplies.at(-1),
         userText,
         // never an upbeat / playful mood hint on a real crisis line (Codex #490 P1)
-        mood: realCrisisSignal(userText) ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
+        mood: realCrisisSignal(userText) || this.crisisInCall ? null : moodLine(this.callMood(userText), { steady: holdsSteady(this.persona) }),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
         faceLanded: this.takeFaceLanded(),

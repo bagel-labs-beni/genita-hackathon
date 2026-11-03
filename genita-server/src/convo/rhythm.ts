@@ -118,8 +118,9 @@ export function turnHints(t: TurnHintInput): string | null {
   const out: string[] = [];
   const user = t.userText.trim();
   const last = t.lastReply ? plain(t.lastReply) : "";
-  // a real crisis line never gets "stay in that lane" (Codex #489 P1), nor "a little giddy" / teasing (Codex #505 P1)
-  const crisis = realCrisisSignal(user);
+  // a real crisis line never gets "stay in that lane" (Codex #489 P1), nor "a little giddy" / teasing (Codex #505 P1);
+  // nor does any later turn of a call that had one (crisisInCall, Codex #502 P1 r6)
+  const crisis = realCrisisSignal(user) || !!t.crisisInCall;
   const close = crisis ? null : closenessLine(t.callNumber);
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
