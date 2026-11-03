@@ -25,7 +25,7 @@ import type { SamBox } from "../meta/sam.ts";
  * here looks at the type. Written for Genita's face set, not for a pretty picture: the call screen's 9:16 frame, the
  * face a little above the middle, eyes open, mouth closed (the mouth keys are edits of it), nothing over the face, hair
  * off the mouth and chin and a clear jawline against the background (the SAM mouth/jaw mask; ghosting otherwise),
- * soft even light, a simple blurred background. Muse Image answers ~1.6k px whatever `size` says; 9:16 is honored.
+ * soft even light, a simple blurred background. Muse Image keeps the asked shape at its own size (11/4: 9:16 → 1152×2048).
  */
 export const POLISH_PROMPT = [
   "Redraw this image as a clean reference portrait for a face-animation video call, keeping the same subject.",
