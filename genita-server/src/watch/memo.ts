@@ -11,7 +11,7 @@ import type { Moment } from "./rules.ts";
 
 export type MemoEntry = { at: number; text: string };
 export type DialogueLine = { at: number; label: string | null; text: string };
-export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean; talkOver?: boolean; talkOverSeq?: number; page?: boolean };
+export type MemoVerdict = { memo: string; moment: Moment; reaction: string; speakers: { label: string; name: string }[]; protectedVideo?: boolean; talkOver?: boolean; talkOverSeq?: number; page?: boolean; pageGen?: number };
 
 export const MEMO_SCHEMA = {
   type: "object",

@@ -225,6 +225,11 @@ export class WatchController {
   private lastQuickAt = -Infinity;
   /** the newest frame the last quick look saw: the next one picks from what came after */
   private lastLookedAt = -Infinity;
+  /** a look that failed (Spark timeout): its frames get the next look, even past the 3 s lookback (Codex #542 r2 P2) */
+  private retryLook: { frames: Frame[]; spikeAt: number } | null = null;
+  /** bumped when the page changes (new share/title/source, or most of the screen changed): a page comment from a
+   *  memo that started on the old page is dropped (Codex #542 r2 P2) */
+  private pageGen = 0;
   private motionAware = false;
   private protectedSpoken = false;
   /** this page (share / window / title) already got its one comment (lead's call 11/4) */
@@ -333,6 +338,7 @@ export class WatchController {
     // results of looks started on the old video must not land in the new one (Codex #445 P2)
     this.clipGen++;
     this.pageSpoken = false;
+    this.pageGen++;
     for (const m of this.memosInFlight) m.abort();
     this.memosInFlight.clear();
     for (const q of this.quickInFlight) q.abort();
@@ -454,7 +460,7 @@ export class WatchController {
     this.stats.frames++;
     if (!blank) {
       if (motion !== null) this.motionAware = true;
-      if (motion !== null && motion >= PAGE_NEW_MOTION) this.pageSpoken = false;
+      if (motion !== null && motion >= PAGE_NEW_MOTION) { this.pageSpoken = false; this.pageGen++; if (this.held?.v.page) this.held = null; }
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt ??= now; // the first pending spike; the quick look takes the newest frames anyway
@@ -610,6 +616,7 @@ export class WatchController {
     const salient = this.salientAt !== null && this.salientAt > since;
     const lines = this.lines.filter((l) => l.at > since);
     const memoSeq = this.speechSeq;
+    const memoPageGen = this.pageGen;
     // how fresh the moment is = its newest frame or line, not when this memo started (Codex P2: a memo started late
     // after a long talk must not react to a scene from 20 s ago)
     const contentAt = Math.max(fresh.at(-1)?.at ?? this.frames.at(-1)?.at ?? at, lines.at(-1)?.at ?? -Infinity);
@@ -638,7 +645,7 @@ export class WatchController {
         this.log("watch.memo.early", { ms: Math.round(this.deps.now() - at), moment: e.moment });
         if (!e.page) this.noteMoment(e.moment, e.reaction, contentAt, frames.at(-1) ?? null);
         // a page stays on screen: its comment is as fresh as this verdict
-        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq, page: e.page }, e.page ? this.deps.now() : contentAt);
+        this.tryReact({ memo: "", moment: e.moment, reaction: e.reaction, speakers: [], talkOver: e.talkOver, talkOverSeq: memoSeq, page: e.page, pageGen: memoPageGen }, e.page ? this.deps.now() : contentAt);
       });
     } catch (err) {
       if (!abort.signal.aborted) this.log("watch.memo.error", { message: String(err).slice(0, 200) });
@@ -671,7 +678,7 @@ export class WatchController {
     this.protectedPending = false; // a clear picture now: an older "protected" no longer applies
     if (v.moment !== "none" && !early) {
       if (!v.page) this.noteMoment(v.moment, v.reaction, contentAt, frames.at(-1) ?? null);
-      this.tryReact({ ...v, talkOverSeq: memoSeq }, v.page ? now : contentAt);
+      this.tryReact({ ...v, talkOverSeq: memoSeq, pageGen: memoPageGen }, v.page ? now : contentAt);
     }
     return v;
   }
@@ -731,7 +738,11 @@ export class WatchController {
     const at = this.deps.now();
     const gen = this.clipGen;
     this.lastQuickAt = at;
-    const picked = quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    // a failed look's frames first, while its moment can still be reacted to
+    const retry = this.retryLook && at - this.retryLook.spikeAt <= REACT_MAX_STALE_MS - 3_000 ? this.retryLook : null;
+    this.retryLook = null;
+    const picked = retry ? retry.frames : quickFrames(this.frames, spikeAt, this.lastLookedAt);
+    if (retry) spikeAt = retry.spikeAt;
     // eval: how old the look's frames are when it starts, and what it was for (a pending spike or the cadence)
     const ages = picked.map((f) => Math.round(at - f.at));
     const forSpike = spikeAt < (this.frames.at(-1)?.at ?? at) - 50;
@@ -754,7 +765,11 @@ export class WatchController {
         // 11/4: a look that timed out saw nothing: the next look picks from its frames again
         // (min: two looks failing in a row both get their frames back, Codex #542 P2; a frame seen twice costs a look,
         // a moment said twice can't happen: the 25 s gap and the seen list)
-        if (gen === this.clipGen) this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
+        if (gen === this.clipGen) {
+          this.lastLookedAt = Math.min(this.lastLookedAt, lookedBefore);
+          // only the first retry: a look that fails twice is let go
+          if (!retry && picked.length) this.retryLook = { frames: picked, spikeAt };
+        }
       }
       return;
     } finally {
@@ -783,6 +798,11 @@ export class WatchController {
 
   private tryReact(v: MemoVerdict, verdictAt: number, retry = false, via: "memo" | "quick" = "memo"): void {
     if (this.deps.reactions === false) return;
+    // a comment on a page that is no longer on screen
+    if (v.page && v.pageGen !== undefined && v.pageGen !== this.pageGen) {
+      if (this.held?.v === v) this.held = null;
+      return;
+    }
     // one comment per page: scrolling the same page, or the next memo of it, says nothing more
     if (v.page && this.pageSpoken) {
       if (!retry) this.log("watch.react.blocked", { why: "page_seen", moment: v.moment, reaction: v.reaction, held: false });
