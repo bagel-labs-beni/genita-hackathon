@@ -16,6 +16,12 @@ import Foundation
     func flush()
     func resetSession()
     func playbackPositionMs(utteranceId: Int) -> Double?
+    /// Convo P1 #345: a soft backchannel cue while the user talks (default: ignored)
+    func playCue(pcm: Data)
+}
+
+extension CallAudioPlaying {
+    func playCue(pcm: Data) {}
 }
 
 @MainActor protocol CallVoiceRendering: AnyObject {
