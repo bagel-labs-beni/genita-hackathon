@@ -482,7 +482,8 @@ export class Personalize {
     if (isForgetRequest(line) && !isSensitiveDetail(line) && redactSensitive(line) === line && !looksLikeInjection(line)) {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
-      if (target && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+      // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
+      if (target && !/\d/.test(target) && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
     }
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;

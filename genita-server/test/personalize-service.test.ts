@@ -470,10 +470,13 @@ test("Codex P1 r3: an address is never stored (voice forget or sheet), 'lives in
   assert.ok(isSensitiveDetail("Forget that I live at 12 Example Street."));
   assert.ok(isSensitiveDetail("My address is 123 Example Street, Apt 4."));
   assert.ok(!isSensitiveDetail("Lives in hoodies and plain sneakers."));
+  assert.ok(isSensitiveDetail("My home is 42 5th Avenue."));
   const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
   t.after(h.cleanup);
   await withStory(h);
   await h.p.voiceCorrection("u1", "Forget that I live at 12 Example Street.");
   await h.p.correct("u1", { cardId: "taste", text: "My address is 123 Example Street, Apt 4." });
+  await h.p.voiceCorrection("u1", "Forget that my home is 42 5th Avenue.");
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("Example"));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("5th Avenue"));
 });

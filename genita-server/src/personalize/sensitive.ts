@@ -20,7 +20,7 @@ const BUDGET = /^\s*budget:/i;
  * general boundaries ("No unsolicited health advice.", "Don't bring up politics.") never match.
  */
 /** where someone lives, an address (identifying) — "lives in hoodies" is a taste and stays */
-const PLACE = /\b(?:address|home address|zip ?code|postcode|post code|apartment|apt\b|unit \d|lives? at|my place is at|\d{1,5}\s+[a-z]+(?:\s+[a-z]+)?\s+(?:street|st|avenue|ave|road|rd|lane|ln|boulevard|blvd|drive|dr|way|place|pl|court|ct)\b)/i;
+const PLACE = /\b(?:address|home address|zip ?code|postcode|post code|apartment|apt\b|unit \d|lives? at|my place is at|my home is|i live on|\d{1,5}\s+[a-z0-9]+(?:\s+[a-z0-9]+)?\s+(?:street|st|avenue|ave|road|rd|lane|ln|boulevard|blvd|drive|dr|way|place|pl|court|ct)\b)/i;
 
 export function isSensitiveDetail(text: string): boolean {
   return TOPIC.test(text) || PLACE.test(text);
