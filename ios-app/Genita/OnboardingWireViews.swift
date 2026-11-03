@@ -122,7 +122,8 @@ struct ImageCheckView: View {
                  }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 289)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(alignment: .topLeading) { if passed { typeChips.padding(12) } }
+                // one polish path, no type: the chips stay on today's V02-T only
+                .overlay(alignment: .topLeading) { if passed && !polishFlow { typeChips.padding(12) } }
                 .position(x: width / 2, y: 226 + 144.5 + top)
             if passed && canRetry && model.polishRetriesLeft > 0 {
                 // V02-T: the polished picture can be made again (same text-link style as NM01 "Use Jin")
@@ -193,8 +194,11 @@ struct ImageCheckView: View {
 
     @ViewBuilder private func photo(width: CGFloat) -> some View {
         if !analyzing, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
-            // the whole polished 9:16 picture, as the call will show it
-            ZStack { Color(white: 0.93); Image(uiImage: image).resizable().scaledToFit() }.accessibilityIdentifier("polishedImage")
+            // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
+            ZStack {
+                Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55)
+                Image(uiImage: image).resizable().scaledToFit()
+            }.clipped().accessibilityIdentifier("polishedImage")
         } else if let data = model.setup.imageData, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFill()
         } else { Color(white: 0.93) }
