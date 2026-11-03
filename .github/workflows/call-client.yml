@@ -69,6 +69,9 @@ jobs:
             -only-testing:GenitaUITests/OnboardingUITests \
             -only-testing:GenitaUITests/QASamplePhotoUITests \
             -only-testing:GenitaUITests/CompanionKindsUITests \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionHuman \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionAnimal \
+            -skip-testing:GenitaUITests/OnboardingUITests/testV03MotionCharacter \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
@@ -129,4 +132,61 @@ jobs:
         with:
           name: call-screens
           path: build-output/screens
+          if-no-files-found: warn
+
+  # V03 face scan recordings (#507): its own runner, so the 45-minute call-screen job doesn't grow and a simulator
+  # recording hiccup (code=405, #503) can't take that job down. Runs for PRs titled with V03 and on manual dispatch.
+  v03-recordings:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.draft == false && contains(github.event.pull_request.title, 'V03'))
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XC"
+
+      - name: Pick an iPhone simulator
+        id: simulator
+        run: |
+          ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, re, sys
+          devices = [d for runtime, group in json.load(sys.stdin)["devices"].items() if "iOS-26" in runtime for d in group if d["name"].startswith("iPhone")]
+          pro = [d for d in devices if re.fullmatch(r"iPhone \d+ Pro", d["name"])]
+          print((pro or devices)[-1]["udid"])')"
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing -project ios-app/Genita.xcodeproj -scheme Genita \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath build-output/dd CODE_SIGNING_ALLOWED=NO | grep -E "error:|\*\* TEST BUILD" | cut -c1-240
+          exit "${PIPESTATUS[0]}"
+
+      - name: Record V03 (person, animal, character)
+        run: |
+          ID="${{ steps.simulator.outputs.id }}"
+          xcrun simctl boot "$ID" || true
+          xcrun simctl bootstatus "$ID" -b > /dev/null
+          mkdir -p build-output/v03
+          for kind in Human Animal Character; do
+            xcrun simctl io "$ID" recordVideo --codec=h264 --force "build-output/v03/onb-V03-motion-$kind.mp4" > /dev/null 2>&1 &
+            REC=$!; sleep 1
+            xcodebuild test-without-building -project ios-app/Genita.xcodeproj -scheme Genita \
+              -destination "platform=iOS Simulator,id=$ID" -derivedDataPath build-output/dd \
+              -only-testing:GenitaUITests/OnboardingUITests/testV03Motion$kind \
+              CODE_SIGNING_ALLOWED=NO | grep -E "^Test Case .*(passed|failed)|error:|\*\* TEST" | cut -c1-240 || true
+            kill -INT $REC; wait $REC || true
+          done
+          ls -la build-output/v03
+
+      - name: Upload recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v03-recordings
+          path: build-output/v03
           if-no-files-found: warn

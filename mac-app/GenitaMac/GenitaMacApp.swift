@@ -3,6 +3,7 @@ import AppKit
 import CoreText
 
 @main struct GenitaMacApp: App {
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     init() {
         MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
@@ -13,7 +14,7 @@ import CoreText
     var body: some Scene {
         // One window only (QA 171: launch showed two "Genita" windows — a restored one plus a new one from the
         // WindowGroup). `Window` is a single-instance scene: relaunch, reopen and restore all bring back the same one.
-        Window("Genita", id: "companion") {
+        Window("Genita", id: MacHomeWindow.id) {
             // Figma MAC-1~4: the window bar has the traffic lights only, no title text — and no bar of its own:
             // build 4 drew a white title band with a hairline over the #FEFEFE window (Mac UI polish 11/3). Hiding the
             // toolbar background lets the window's own sheet colour run up under the traffic lights (Apple's
@@ -22,6 +23,7 @@ import CoreText
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 // MAC-0 is MacLaunchSplash ("A · Eclipse", 11/4) inside MacStartView; the iPhone splash board only for v1
                 .genitaSplash(!MacDesignV2.enabled)
+                .modifier(MacHomeWindowOpener())
                 #if DEBUG
                 .task { await MacHandoff.shared.renderReviewScreens() }
                 #endif
@@ -29,6 +31,34 @@ import CoreText
             .windowResizability(.contentSize).defaultSize(width: 420, height: 320)
             .commands { MacAccountCommands() }
     }
+}
+
+/// Closing the home window must not quit Genita (Codex P2 on #480): a single `Window` scene quits the app with its
+/// window, which closed the presence socket, so the iPhone's Move to Mac failed with `peer_offline`. The app keeps
+/// running with the window closed; the Dock icon and opening Genita again bring the home window back.
+@MainActor final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !MacHomeWindow.isVisible { MacHomeWindow.show() }
+        return true
+    }
+}
+/// The home window ("companion"): SwiftUI owns it, so it is reopened through `openWindow` (kept from the first time it
+/// was shown; the action stays valid after the window closes).
+@MainActor enum MacHomeWindow {
+    static let id = "companion"
+    static var open: OpenWindowAction?
+    /// SwiftUI gives its windows the scene id as identifier ("companion" or "companion-AppWindow-1").
+    static var window: NSWindow? { NSApp.windows.first { !($0 is NSPanel) && $0.identifier?.rawValue.hasPrefix(id) == true } }
+    static var isVisible: Bool { window?.isVisible == true }
+    static func show() {
+        if let window { window.makeKeyAndOrderFront(nil) } else { open?(id: id) }
+        NSApp.activate()
+    }
+}
+private struct MacHomeWindowOpener: ViewModifier {
+    @Environment(\.openWindow) private var openWindow
+    func body(content: Content) -> some View { content.onAppear { MacHomeWindow.open = openWindow } }
 }
 
 /// Genita ▸ Sign Out (the home windows carry no sign-out link, as in Figma MAC-2/3/4).

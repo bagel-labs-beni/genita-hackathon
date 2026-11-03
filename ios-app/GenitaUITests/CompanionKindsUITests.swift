@@ -99,10 +99,19 @@ final class CompanionKindsUITests: XCTestCase {
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 20)
         capture("PREP1-scene-done")
-        if app.buttons["prepRetry"].waitForExistence(timeout: 20) { capture("PREP1-failed"); app.buttons["prepRetry"].tap() }
-        expectation(for: NSPredicate(format: "label ENDSWITH 'is ready.'"), evaluatedWith: element("PREP-1"))
-        waitForExpectations(timeout: 25)
-        capture("PREP1-ready")
+        // The stub's face step is ready ~16 s after PREP-1's first poll and nothing is set to fail (no /__prep), so
+        // don't sit 20 s waiting for a Try again that never comes: by then "is ready." has shown and the app has
+        // moved on to S07 (CI 41699633249: all four timed out here). Watch for ready, a failure, or the call.
+        let prep = element("PREP-1"), retry = app.buttons["prepRetry"], mic = app.buttons["micToggle"]
+        let end = Date().addingTimeInterval(40)
+        var sawReady = false
+        while Date() < end {
+            if retry.exists { capture("PREP1-failed"); retry.tap() }
+            if prep.exists, prep.label.hasSuffix("is ready.") { sawReady = true; capture("PREP1-ready"); break }
+            if mic.exists { break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        XCTAssertTrue(sawReady || mic.exists, "PREP-1 reaches ready (or the call already opened)")
         if element("connectingPill").waitForExistence(timeout: 6) { capture("S07") }
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 25), "S09")
         Thread.sleep(forTimeInterval: 1.5)

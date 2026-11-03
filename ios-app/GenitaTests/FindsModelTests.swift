@@ -69,6 +69,29 @@ import XCTest
         XCTAssertEqual(m.current?.card?.steps.first?.image?.url, "/v1/finds/a/images/step-1")
     }
 
+    /// ui-deferred: the PF-1 jacket card in the debug fixture showed the link card's suitcase illustration.
+    /// Every fixture picture is bundled, and a product's picture is a product shot no other card reuses.
+    func testFixturePicturesExistAndProductsDontBorrowAnotherCardsPicture() throws {
+        let runs = FindsFixtureRun.load()
+        XCTAssertFalse(runs.isEmpty, "finds-fixture.json is bundled")
+        var usedBy: [String: Set<String>] = [:]
+        for run in runs {
+            for case let .findImage(i) in run.events {
+                guard let url = i.url, url.hasPrefix("bundle:") else { continue }
+                let name = String(url.dropFirst(7))
+                XCTAssertNotNil(Bundle.main.url(forResource: name, withExtension: "jpg"), "\(name).jpg is bundled")
+                usedBy[name, default: []].insert(run.kind.rawValue)
+            }
+        }
+        let product = try XCTUnwrap(runs.first { $0.kind == .product })
+        let shots = product.events.compactMap { e -> String? in
+            guard case let .findImage(i) = e, i.slot.hasPrefix("product-"), let url = i.url else { return nil }
+            return String(url.dropFirst(7))
+        }
+        XCTAssertEqual(shots, ["finds-product-jacket"], "the jacket card shows the jacket")
+        for name in shots { XCTAssertEqual(usedBy[name], ["product"], "\(name) belongs to the product card only") }
+    }
+
     func testReopenedRecipeSubtitleUsesPastTense() {
         XCTAssertEqual(
             FindCardPage.reopenedSubtitle("About 15 min · You have 4, need cooked rice"),

@@ -868,7 +868,8 @@ test("GENITA_BACKCHANNEL=1: a long user turn that pauses mid-sentence gets one b
   }
 });
 
-test("backchannel is off by default: the same pause sends nothing", async () => {
+test("GENITA_BACKCHANNEL=0 (rollback): the same pause sends nothing", async () => {
+  process.env.GENITA_BACKCHANNEL = "0";
   let clock = 0;
   const { asr, client, session } = setup({ deps: { now: () => clock } });
   await session.onClientText(JSON.stringify({ type: "start", persona }));
@@ -878,6 +879,7 @@ test("backchannel is off by default: the same pause sends nothing", async () => 
   await new Promise((r) => setTimeout(r, 1500));
   assert.ok(!client.json.some((m) => m.type === "backchannel"));
   session.close();
+  delete process.env.GENITA_BACKCHANNEL;
 });
 
 test("GENITA_BACKCHANNEL=1, server voice: the cue carries the companion's own 'Mm-hm.' as base64 PCM (11/4)", async () => {

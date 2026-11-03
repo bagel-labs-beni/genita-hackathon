@@ -37,7 +37,9 @@ struct EmailSignInSheet: View {
             Group {
                 if step == .address {
                     TextField("Email address", text: $email)
-                        .keyboardType(.emailAddress).textContentType(.emailAddress).textInputAutocapitalization(.never).autocorrectionDisabled()
+                        // `.username`, not `.emailAddress`: a code sign-in wants the person's own address, and
+                        // `.emailAddress` raised the system "Hide My Email" callout (QA build 5)
+                        .keyboardType(.emailAddress).textContentType(.username).textInputAutocapitalization(.never).autocorrectionDisabled()
                         .submitLabel(.send).accessibilityIdentifier("emailField")
                 } else {
                     TextField("6-digit code", text: $code)
@@ -76,7 +78,7 @@ struct EmailSignInSheet: View {
                 }
                 .font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(height: 44).padding(.top, 4)
             } else {
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { close() }
                     .font(TypeStyle.body(16, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 50)
                     .disabled(sending).accessibilityIdentifier("emailCancel")
             }
@@ -90,11 +92,23 @@ struct EmailSignInSheet: View {
         // a request in flight finishes on this sheet: a late answer must not sign in after it closed
         .interactiveDismissDisabled(sending)
         .onAppear { focused = true }
+        // the field lets go when the sheet goes, however it goes (QA build 5: the "Hide My Email" callout stayed on
+        // CS01 → A03 → I01 → N3 → V01 because the email field was still first responder)
+        .onDisappear { releaseKeyboard() }
         .onReceive(tick) { now = $0 }
     }
 
     private var canContinue: Bool { step == .address ? GenitaAuthClient.looksLikeEmail(email) : code.count == 6 }
     private var resendLeft: Int { max(0, Int(resendAt.timeIntervalSince(now).rounded(.up))) }
+
+    private func releaseKeyboard() {
+        focused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+    private func close() {
+        releaseKeyboard()
+        dismiss()
+    }
 
     private func back() {
         step = .address; code = ""; message = nil; focused = true
@@ -128,7 +142,7 @@ struct EmailSignInSheet: View {
             defer { sending = false }
             do {
                 let r = try await GenitaAuthClient().signInWithEmailCode(email: sentTo, code: code)
-                dismiss()
+                close()
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented, qaSamplePhotos: r.me.qaSamplePhotos == true)
             } catch {
                 message = EmailSignInCopy.message(for: error, sendingCode: false)
