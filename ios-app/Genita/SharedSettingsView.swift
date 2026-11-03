@@ -68,7 +68,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(Self.styleLines(styleText).enumerated()), id: \.offset) { i, line in
                                 Text(line.text)
-                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: line.heading ? 13 : 15))
+                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", size: line.heading ? 13 : 15, relativeTo: line.heading ? .footnote : .subheadline))
                                     .foregroundStyle(line.heading ? .secondary : .primary)
                                     .padding(.top, line.heading && i > 0 ? 10 : 0)
                                     .fixedSize(horizontal: false, vertical: true)
