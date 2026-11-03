@@ -108,6 +108,21 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public struct Jaw: Codable, Equatable, Sendable {
         public var floor: Double; public var gain: Double; public var gamma: Double?; public var mbpClose: Double?
         public var steps: [FlowKeyValue]; public var vowel: [String: Double]?
+        enum CodingKeys: String, CodingKey { case floor, gain, gamma, mbpClose, steps, vowel }
+        public init(floor: Double = 0, gain: Double = 1, gamma: Double? = nil, mbpClose: Double? = nil, steps: [FlowKeyValue], vowel: [String: Double]? = nil) {
+            self.floor = floor; self.gain = gain; self.gamma = gamma; self.mbpClose = mbpClose; self.steps = steps; self.vowel = vowel
+        }
+        /// 11/3 pm: a jaw block without `floor` (or `gain`) decoded to nil and the mouth never opened (a cat export with
+        /// one key C2); missing numbers now take their defaults, only `steps` is required.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            floor = (try? c.decodeIfPresent(Double.self, forKey: .floor)) ?? 0
+            gain = (try? c.decodeIfPresent(Double.self, forKey: .gain)) ?? 1
+            gamma = try? c.decodeIfPresent(Double.self, forKey: .gamma)
+            mbpClose = try? c.decodeIfPresent(Double.self, forKey: .mbpClose)
+            steps = try c.decode([FlowKeyValue].self, forKey: .steps)
+            vowel = try? c.decodeIfPresent([String: Double].self, forKey: .vowel)
+        }
     }
     public var jaw: Jaw? = nil
     /// Per-key amount ceiling after focus (the flow pulls the shape back toward neutral).
@@ -377,7 +392,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             return p
         }()
         /// v58 open magnifier strength for the release block (rollback: 0).
-        nonisolated(unsafe) public static var releaseOpenMag = 1.0
+        nonisolated(unsafe) public static var releaseOpenMag = 0.0   // 11/3 18:46 Chelsea: "looks synthetic when the mouth opens" — off (v9.3 mouth); was 1.0 in v60b
         var isOff: Bool { openMag == 0 && follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 && lipThin == 0 }
     }
     public var perioral: Perioral? = nil
@@ -1063,7 +1078,7 @@ final class FlowMorph: @unchecked Sendable {
             if v2 == nil {
                 let rigHuman = data.map.rig != nil && data.kind == "human"
                 v2 = MotionV2(params: rigHuman ? p.v59() : p, faceNorm: faceNorm)
-                v2!.useV60 = rigHuman && MotionV2.v60Ladders
+                v2!.useV60 = rigHuman && MotionV2.v60Ladders && p.preset != "v93"
             }
             if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { ctx.timeline.loudness(atMs: $0) },
                                 order: order, resolve: resolve) {
