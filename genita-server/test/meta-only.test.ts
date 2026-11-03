@@ -59,8 +59,8 @@ test("full human and animal prep only requests Meta hosts", async (t) => {
     await new PrepRunner(d).run("u1");
     const view = prepView((await d.store.getCompanion("u1"))!);
     assert.equal(view.status, "ready");
-    // human: 18 face keys; animal (dog profile): expressions + visemes + AH/AH2 = 15; + the scene
-    const n = kind === "human" ? 19 : 16;
+    // human: 20 face keys; animal (dog profile): expressions + visemes + AH/AH2 = 17; + the scene
+    const n = kind === "human" ? 21 : 18;
     assert.deepEqual(view.progress, { done: n, total: n });
     assert.equal(Object.keys(view.face!.visemes).length, 10);
     assert.equal(models.filter((m) => m === "muse-image-1.0").length, n);
