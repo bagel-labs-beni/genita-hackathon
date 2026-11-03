@@ -80,3 +80,18 @@ test("AU-92 r2: a paste's late story from before the forget is dropped; a timed-
   await new Promise((r) => setTimeout(r, 20));
   assert.equal((await store.getStyle("u1"))?.story, undefined, "the old paste's story never lands on the new profile");
 });
+
+test("AU-92 r11: after 'Forget all of this', new things learned in calls are kept again (onto the empty profile)", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "profile-forget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  const p = new Personalize({ store, json: (async () => null) as never });
+  await p.forgetAll("u1");
+  await new Promise((r) => setTimeout(r, 5));   // said after the forget
+  const r = await p.noteShorter("u1");
+  assert.ok(r, "learned");
+  const card = await store.getStyle("u1");
+  assert.equal(card?.forgotten, undefined, "a profile again");
+  assert.match(JSON.stringify(card?.sections.response), /Short replies/);
+  assert.match((await p.startCall("u1"))?.profile ?? "", /Short replies/);
+});

@@ -120,10 +120,14 @@ export class Personalize {
   private async update<T>(userId: string, fn: (card: StyleCard) => Promise<{ card: StyleCard; out: T } | null> | { card: StyleCard; out: T } | null): Promise<T | null> {
     return this.serial(userId, async () => {
       const card = await this.store.getStyle(userId);
-      if (!card || card.forgotten) return null;   // forgotten (AU-92): nothing to update, nothing written back
+      if (!card) return null;
+      // forgotten (AU-92): new things they say after it are learned onto the empty profile; what was said before it is
+      // dropped by the merge (an update older than the card's importedAt — the forget's time — belongs to the old
+      // profile), and story writes check the generation (Codex #583 r11)
       const r = await fn(card);
       if (!r) return null;
-      await this.store.putStyle(userId, r.card);
+      const learned = card.forgotten && Object.values(r.card.sections ?? {}).some((v) => Array.isArray(v) && v.length > 0);
+      await this.store.putStyle(userId, learned ? { ...r.card, forgotten: undefined } : r.card);
       return r.out;
     });
   }
