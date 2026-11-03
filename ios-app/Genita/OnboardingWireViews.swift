@@ -127,6 +127,8 @@ struct ImageCheckView: View {
     private var rows: [(String, Bool)] {
         if let error = model.imageCheckError { return [(error, false)] }
         guard let r = result else { return [] }
+        // D26: a well-known person is refused whatever the photo quality; one red row with the server's reason
+        if let famous = publicFigure { return [(famous, false)] }
         let reason = { (codes: [String], fallback: String) in r.reasons.first { codes.contains($0.code) }?.label ?? fallback }
         let c = r.checks
         return [
@@ -135,7 +137,12 @@ struct ImageCheckView: View {
             (c?.noText == false ? reason(["text_on_image"], "No text on the image") : "No text on the image", c?.noText ?? r.passed),
         ]
     }
-    private var note: String { passed ? "Use an image you have the right to use." : "Try one taken in good light, facing the camera." }
+    private var publicFigure: String? { result?.reasons.first { $0.code == "public_figure" }?.label }
+    private var note: String {
+        if passed { return "Use an image you have the right to use." }
+        // PRD v12 D26 V02-F: "This looks like a well-known person. Genita can't bring public figures to life."
+        return publicFigure != nil ? "Genita can't bring public figures to life." : "Try one taken in good light, facing the camera."
+    }
 
     private var typeChips: some View {
         HStack(spacing: 4) {
