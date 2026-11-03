@@ -10,7 +10,7 @@ import { loadConfig } from "../src/config.ts";
 import { openDb } from "../src/db/index.ts";
 import { createAccounts } from "../src/auth/index.ts";
 import { startServer } from "../src/server.ts";
-import { Session, type SessionDeps, type ClientSink } from "../src/session/session.ts";
+import { Session, RECONNECT_LINE, type SessionDeps, type ClientSink } from "../src/session/session.ts";
 import type { ServerEvent } from "../src/protocol.ts";
 import type { SparkRequest } from "../src/meta/spark.ts";
 import { InMemoryMemoryRepository, mergeSummary } from "../src/memory/repository.ts";
@@ -384,7 +384,70 @@ test("server (Codex 11/3): a Mac → iPhone move that ends the Mac call with sto
   phone.ws.send(JSON.stringify({ type: "text", text: "Still with me on the phone?" }));
   await waitFor(() => requests.some((r) => /Still with me on the phone/.test(JSON.stringify(r.input))));
   assert.match(JSON.stringify(requests.find((r) => /Still with me on the phone/.test(JSON.stringify(r.input)))!.input), /navy jacket, size medium/);
+  assert.ok(!logs.includes("call.reconnect_line"), "a move to the other device goes on silently");
   phone.ws.close();
+});
+
+/** WT-06 follow-up (11/4): a dropped call that comes back is met with one short line, not silence */
+async function dropAndReturn(t: import("node:test").TestContext, o: { from: string; to: string; hangUp?: boolean; gapMs?: number }) {
+  const { memory, deps } = setup(fakeSummarizer().fn);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const open = (device: string) => new Promise<{ ws: WebSocket; lines: string[]; ready: () => boolean }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=${device}`, { headers });
+    const lines: string[] = []; let ok = false;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") lines.push(String(m.text ?? "")); if (m.type === "ready") ok = true; });
+    ws.once("open", () => resolve({ ws, lines, ready: () => ok })); ws.once("error", reject);
+  });
+  const first = await open(o.from);
+  first.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(() => first.lines.length >= 1);
+  first.ws.send(JSON.stringify({ type: "text", text: "The navy jacket, size medium." }));
+  await waitFor(() => first.lines.length >= 2);
+  if (o.hangUp) first.ws.send(JSON.stringify({ type: "stop" }));
+  first.ws.close(); // no stop: the network dropped
+  await waitFor(() => logs.includes("session.close"));
+  await waitFor(() => logs.includes("history.cached"));
+  await memory.drain();
+  // the time the user was away (the server reads Date.now)
+  if (o.gapMs) { const real = Date.now; const gap = o.gapMs; Date.now = () => real() + gap; t.after(() => { Date.now = real; }); }
+  // the app on the other device takes the conversation when its call starts (like Move / Call here)
+  if (o.to !== o.from) {
+    const claim = await fetch(`http://127.0.0.1:${addr.port}/v1/handoff/claim`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ device: o.to, trigger: "button" }) });
+    assert.equal(claim.status, 200);
+  }
+  const back = await open(o.to);
+  back.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  await waitFor(back.ready);
+  await new Promise((r) => setTimeout(r, 700)); // the switch's 250 ms lease, then the line
+  back.ws.close();
+  return { logs, lines: back.lines };
+}
+
+test("reconnect: the same device coming back after a drop says the short line (seeded, no full greeting)", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "iphone", to: "iphone" });
+  assert.ok(logs.includes("history.seeded"), "the conversation goes on");
+  assert.ok(logs.includes("call.reconnect_line"));
+  assert.deepEqual(lines, [RECONNECT_LINE]);
+});
+
+test("reconnect: the other device more than 10 s after a drop says the short line", { timeout: 20_000 }, async (t) => {
+  const { logs, lines } = await dropAndReturn(t, { from: "mac", to: "iphone", gapMs: 11_000 });
+  assert.ok(logs.includes("history.seeded"));
+  assert.deepEqual(lines, [RECONNECT_LINE]);
+});
+
+test("reconnect: the other device within 10 s of a drop, or after hanging up there, goes on silently (a move)", { timeout: 30_000 }, async (t) => {
+  const quick = await dropAndReturn(t, { from: "mac", to: "iphone" });
+  assert.ok(quick.logs.includes("history.seeded"));
+  assert.ok(!quick.logs.includes("call.reconnect_line"));
+  assert.deepEqual(quick.lines, []);
+  const hungUp = await dropAndReturn(t, { from: "mac", to: "iphone", hangUp: true, gapMs: 11_000 });
+  assert.ok(hungUp.logs.includes("history.seeded"));
+  assert.ok(!hungUp.logs.includes("call.reconnect_line"));
 });
 
 test("server (Codex 11/3): the Mac's stop arriving BEFORE the iPhone's claim still hands over; a stale iPhone copy never replaces the Mac's fuller one", { timeout: 20_000 }, async (t) => {

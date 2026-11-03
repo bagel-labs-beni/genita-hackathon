@@ -44,7 +44,10 @@ export type ClassifyRaw = {
   species?: string;
   /** 11/3, mouth profiles: drawn / flat ("2d") or rendered / clay / toy ("3d"); "none" for photos */
   character_style?: "2d" | "3d" | "toy" | "none";
+  /** 11/4 voice match: which companion voice suits the main face ("either" when unclear); optional for older checks */
+  voice_fit?: VoiceFit;
 };
+export type VoiceFit = "male" | "female" | "either";
 
 export const CLASSIFY_SCHEMA = {
   type: "object",
@@ -60,8 +63,9 @@ export const CLASSIFY_SCHEMA = {
     any_public_figure: { type: "boolean" },
     species: { type: "string" },
     character_style: { type: "string", enum: ["2d", "3d", "toy", "none"] },
+    voice_fit: { type: "string", enum: ["male", "female", "either"] },
   },
-  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image", "public_figure", "any_public_figure", "species", "character_style"],
+  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image", "public_figure", "any_public_figure", "species", "character_style", "voice_fit"],
   additionalProperties: false,
 } as const;
 
@@ -76,6 +80,7 @@ const CLASSIFY_PROMPT = [
   "public_figure: true only if the main subject is a real, well-known person most people would recognize (a celebrity, actor, musician, politician, athlete or famous online creator), including a photo, film still, edited picture, drawing or caricature of one. False for ordinary people, animals and invented or fictional characters. Do not name the person.",
   "any_public_figure: true if any person anywhere in the image, not only the main subject, is a real, well-known person as defined above. Do not name anyone.",
   "species: for an animal, its species in one or two plain words (e.g. dog, cat, rabbit); otherwise an empty string.",
+  "voice_fit: the voice this face would most naturally speak with in a video call: male (a man's voice) or female (a woman's voice); either if it is not clear from the face (many animals, toys, babies).",
   "character_style: for a character, 2d = flat drawn / anime / cartoon / illustration with line art; toy = plush, stuffed animal, figurine or doll without a movable jaw; 3d = 3D render, clay or CGI; if unsure, 3d. For a person or an animal: none.",
 ].join("\n");
 

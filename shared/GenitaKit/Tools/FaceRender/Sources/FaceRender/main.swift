@@ -188,6 +188,8 @@ let o = parse()
 // Compare renders: FACE_V59=0 / FACE_V60_LADDERS=0 switch the app's v59 motion and v60 ladders off (v9.3 motion).
 if ProcessInfo.processInfo.environment["FACE_V59"] == "0" { MotionV2Params.v59On = false }
 if ProcessInfo.processInfo.environment["FACE_V60_LADDERS"] == "0" { MotionV2.v60Ladders = false }
+// FACE_MOUTH_INTERIOR=0 / 1: the 11/4 mouth inside off (build 6) / on, whatever the map says (before/after renders)
+if let v = ProcessInfo.processInfo.environment["FACE_MOUTH_INTERIOR"] { FaceRenderer.mouthInterior = v != "0" }
 let faceSet: FaceSet
 do { faceSet = try FaceSet(directory: URL(fileURLWithPath: o.face)) } catch { fail("face set: \(error)") }
 print("face set: \(faceSet.patches.count)/10 patches; notes: \(faceSet.notes.joined(separator: "; "))")

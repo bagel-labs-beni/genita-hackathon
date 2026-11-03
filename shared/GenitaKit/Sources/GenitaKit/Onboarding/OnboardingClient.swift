@@ -143,9 +143,10 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
     }
 
     private struct Step: Decodable { var status: String? }
-    private struct FaceStep: Decodable { var status: String?; var settled: Int? }
-    /// face.ts FACE_EXPRESSIONS (blink, smile, warm) come before the visemes
-    static let faceExpressionCount = 3
+    private struct FaceStep: Decodable { var status: String?; var settled: Int?; var expressionsSettled: Int?; var expressionsTotal: Int? }
+    /// face.ts FACE_EXPRESSIONS (blink, smile, warm, surprised, concerned): a server without `expressionsSettled`
+    /// is only trusted once this many keys settled
+    static let faceExpressionCount = 5
     private struct Progress: Decodable { var done: Int?; var total: Int? }
     private enum Keys: String, CodingKey { case status, progress, steps, lips, face, sceneUrl }
 
@@ -178,7 +179,9 @@ public struct PrepProgress: Decodable, Equatable, Sendable {
         // (`settled` of `total`), so it drives both the Expressions and the Mouth rows.
         if steps["expressions"] == nil, steps["mouth"] == nil,
            let raw = try? c.decode([String: FaceStep?].self, forKey: .steps), let face = raw["face"] ?? nil, let st = Self.stepStatus(face.status) {
-            let exprDone = (face.settled ?? 0) >= Self.faceExpressionCount
+            // AU-29: the server counts the expression keys apart (all keys run at once, any order)
+            let exprDone = face.expressionsSettled.map { $0 >= max(1, face.expressionsTotal ?? Self.faceExpressionCount) }
+                ?? ((face.settled ?? 0) >= Self.faceExpressionCount)
             switch st {
             case .done: steps["expressions"] = .done; steps["mouth"] = .done
             case .pending: steps["expressions"] = .pending; steps["mouth"] = .pending
@@ -271,6 +274,7 @@ public final class OnboardingClient: @unchecked Sendable {
     /// Photo polish: one Muse Image edit + the same check on the result (≈15–20 s). "Try again" sends the same upload id.
     /// 422 not_polishable / polish_refused = choose another photo · 429 polish_limit · 502 polish_failed (retryable).
     public func polishImage(imageId: String) async throws -> PolishedImage {
+        // AU-34: the server keeps the edit and its retry within 45 s plus the re-check, under CloudFront's 60 s
         try await auth.send("POST", "/v1/companion/image/polish", json: ["imageId": imageId], timeout: 90)
     }
 
@@ -364,6 +368,18 @@ public final class OnboardingClient: @unchecked Sendable {
 
     /// PREP-1e Try again: the server redoes only the steps that didn't finish (`202` + the new progress).
     public func retryPrep() async throws -> PrepProgress { try await auth.send("POST", "/v1/companion/prep/retry", timeout: 30) }
+
+    public struct ResetResult: Decodable, Sendable, Equatable {
+        public var ok: Bool
+        /// false = there was no companion to remove (the reset is still done)
+        public var removed: Bool
+    }
+
+    /// M02 "Make a new companion": the server removes the companion (face, voice, name, chats and call memory) and
+    /// keeps the account and what Genita knows about the user. Afterwards `/me` has no companion (→ V01).
+    /// `429 rate_limited` after 10 a day; `409` while one is running; `502` = try again.
+    @discardableResult
+    public func resetCompanion() async throws -> ResetResult { try await auth.send("POST", "/v1/companion/reset", json: [:], timeout: 30) }
 
     public struct PrefsResult: Decodable, Sendable {
         public struct Session: Decodable, Sendable { public var persona: ClientMessage.Persona? }

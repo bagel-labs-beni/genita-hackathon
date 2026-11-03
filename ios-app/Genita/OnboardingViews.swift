@@ -9,7 +9,11 @@ struct RootView: View {
         NavigationStack {
             Group {
                 switch model.stage {
+                // PRD A01 → A02: after the launch splash (A01) the static welcome doesn't wait for a tap; it hands
+                // straight to A02 under the splash (QA Appetize build 7: stuck 90 s+, no cue to tap). UI tests
+                // (no splash) keep the tappable welcome; Back from A02 shows it again without bouncing.
                 case .welcome: ReferenceWelcomeView { model.go(.signIn) }
+                    .task { if WelcomeAutoAdvance.shouldAdvance() { model.go(.signIn) } }
                 case .signIn: ReferenceSignInView(model: model)
                 case .consent: ConsentView(model: model)
                 // D47 HISY v2: I03 / N3 → HISY-0 (S0) → cards → HISY-7 (the six I04 rows are still saved)
@@ -45,6 +49,11 @@ struct RootView: View {
     private var task: Task<Void, Never>?
     private var endTimer: Task<Void, Never>?
     private var generation = 0
+    /// AU-35: the photo the list was asked for, and the quiet re-ask after a failed preview greyed the list
+    private var listImageId: String?
+    private var recovery: Task<Void, Never>?
+    /// seconds between re-asks after a failed preview (tests shorten it)
+    var recoveryInterval: Duration = .seconds(5)
 
     /// Where a call's device speech reads the silent fallback voice (shared/Call device TTS, lane L4).
     static let deviceFallbackKey = "genita.voice.device"
@@ -56,6 +65,9 @@ struct RootView: View {
         return (ranked.first ?? AVSpeechSynthesisVoice(language: "en-US"))?.identifier
     }
 
+    /// The curated name of a server voice id ("19" → "Leo"), nil for an unknown id.
+    static func name(forVoiceId id: String?) -> String? { CuratedVoices.name(id) }
+
     /// What V04 shows when the server can't be reached at all: the same curated four per look (greyed).
     static func fallback(kind: String?) -> [OnboardingClient.CompanionVoice] {
         func v(_ id: String, _ name: String, _ blurb: String) -> OnboardingClient.CompanionVoice { .init(id: id, name: name, blurb: blurb) }
@@ -65,6 +77,7 @@ struct RootView: View {
     }
 
     func load(client: OnboardingClient, imageId: String?, kind: String?) async {
+        listImageId = imageId
         loading = true
         defer { loading = false }
         do {
@@ -100,7 +113,7 @@ struct RootView: View {
                 let p = try AVAudioPlayer(data: data)
                 p.delegate = self
                 // UI tests run on a simulator with no audio route: play() can say no there, the clip length still drives the state
-                guard p.play() || ProcessInfo.processInfo.arguments.contains("--uitesting") else { fetching = nil; available = false; return }
+                guard p.play() || ProcessInfo.processInfo.arguments.contains("--uitesting") else { fetching = nil; previewFailed(client: client); return }
                 audio = p
                 fetching = nil
                 playing = voice.id
@@ -111,10 +124,36 @@ struct RootView: View {
             } catch {
                 if Task.isCancelled { return }
                 fetching = nil
-                available = false
+                previewFailed(client: client)
             }
+        }
+    }
+
+    /// A preview that failed greys the list ("waking up") and asks again quietly every few seconds for up to a
+    /// minute, so the list comes back by itself (AU-35: it used to stay grey for good).
+    func previewFailed(client: OnboardingClient) {
+        available = false
+        guard recovery == nil else { return }
+        recovery = Task { [weak self] in
+            var waited = Duration.zero
+            while let self, !self.available, waited < .seconds(60), !Task.isCancelled {
+                try? await Task.sleep(for: self.recoveryInterval)
+                waited += self.recoveryInterval
+                await self.refresh(client: client, imageId: self.listImageId)
+            }
+            self?.recovery = nil
         }
     }
     func stop() { generation += 1; endTimer?.cancel(); task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in if self.audio === player { self.playing = nil } } }
+}
+
+/// A01 → A02 once per launch, only when the launch splash ran (that splash is A01 and lands on A02).
+enum WelcomeAutoAdvance {
+    @MainActor private static var done = false
+    @MainActor static func shouldAdvance() -> Bool {
+        guard !done, GenitaSplash.shouldShowAtLaunch else { return false }
+        done = true
+        return true
+    }
 }

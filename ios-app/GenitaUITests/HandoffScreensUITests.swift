@@ -114,7 +114,7 @@ final class HandoffScreensUITests: XCTestCase {
         XCTAssertFalse(app.alerts.firstMatch.exists, "A failed move is a status line, never a system alert")
         capture(app, "MVE-move-failed")
         XCTAssertTrue(app.buttons["cameraToggle"].isHittable, "The call stays usable")
-        XCTAssertTrue(app.staticTexts["Mac not responding. Still here."].waitForNonExistence(timeout: 6))
+        // the fixture pins the line; its 3 s clear is a unit test (PhoneHandoffMoveLineTests)
     }
     func testPermissionDeniedSheets() {
         var app = open(["--media-state", "camera-denied"])
