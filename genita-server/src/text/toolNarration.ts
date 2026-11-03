@@ -92,6 +92,8 @@ function isNarrationClause(clause: string): boolean {
   const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "").replace(/\band (?:that|the|your|this|those|these|my)\s+(?!(?:is|are|was|one)\b)(?![a-z' -]*\b\w+s$)[a-z' -]{1,40}$/, "");
   // a clause that already states its result ("Checking your calendar shows dinner is on Thursday", Codex r20) is the answer
   if (/\b(?:shows|says|is|are|was|were|confirms|suggests|has|it'?s|that'?s|takes|costs)\b|\d/.test(s)) return false;
+  // a finished lookup stated in the past ("Checking the route confirmed the last train already left", Codex #371 r2)
+  if (/\b(?:\w{3,}ed|found|left|came|went)\b/.test(s.replace(/\bwhat (?:i|you|we)(?:'ve)? (?:remember|know|told|said|shared|mentioned|liked|got)\b/g, " ").replace(/\b(?:need|needed|based|used)\b/g, " "))) return false;
   // a gerund subject with its own verb ("Scanning your boarding pass opens the gate", Codex r22): a verb in -s followed
   // by an object word is a statement, not a lookup in progress
   if (/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|it|you|up|out|in|on|off|into)\b/.test(s.replace(/\b(?:what (?:i|you) (?:remember|know|told|said)|your (?:notes|options|favorites|faves|details|plans|messages))\b/g, " "))) return false;
@@ -141,7 +143,7 @@ export function stripNarrationClauses(raw: string): string {
  * (the judge drops a "process" line at EOF too, so a reply that is only this says nothing and retries).
  */
 const PROCESS_ACK = /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
-const PROCESS_ING = /^(?:just )?(?:picking (?:something|one|a)|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|a|between)|scrolling|loading|grabbing (?:something|a few))\b/;
+const PROCESS_ING = /^(?:just )?(?:picking (?:something|one)\b|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|between)\b|scrolling|loading|grabbing (?:something|a few))\b/;
 const OPINION_ING = /^(?:loving|seeing|feeling|liking|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening)\b/;
 export function isProcessLine(sentence: string): boolean {
   const s = normalize(sentence);

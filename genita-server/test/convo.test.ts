@@ -764,3 +764,11 @@ test("Codex #371: an ack + a real choice or result stays; a pick named by its fe
   assert.match(run(["I'll pick the one that has the red buttons.", "It matches your understated style."]), /red buttons/);
   assert.doesNotMatch(run(["I'll pick the one that fits tonight best.", "Go with the trench."]), /I'll pick the one/);
 });
+
+test("Codex #371 r2: a concrete pick after an ack and a past-tense lookup result stay", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — picking a black blazer over the denim jacket.", "It matches your understated style."]), /black blazer/);
+  assert.match(run(["Checking the route confirmed the last train already left.", "Take a taxi instead."]), /last train already left/);
+  assert.doesNotMatch(run(["You got it — thinking back on what you shared about your sister.", "Try asking her."]), /thinking back/);
+});
