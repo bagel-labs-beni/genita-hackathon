@@ -452,10 +452,13 @@ export class Personalize {
       const all = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
       if (!all.length) return true;
       if (Date.now() >= end) return false;
+      // the timer is ref'd on purpose: with a job that never answers it is the only thing keeping the event loop up, and an
+      // unref'd one let node end the test file mid-wait (CI #577 "cancelledByParent"); cleared as soon as the jobs settle
+      let timer: NodeJS.Timeout | undefined;
       const settled = await Promise.race([
         Promise.allSettled(all).then(() => true),
-        new Promise<false>((r) => setTimeout(() => r(false), Math.max(0, end - Date.now())).unref?.()),
-      ]);
+        new Promise<false>((r) => { timer = setTimeout(() => r(false), Math.max(0, end - Date.now())); }),
+      ]).finally(() => clearTimeout(timer));
       if (!settled) return false;
       // settled: anything new they started is picked up on the next pass; nothing new → done
       const again = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
