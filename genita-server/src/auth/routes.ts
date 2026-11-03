@@ -413,8 +413,10 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
         throw e;
       });
       if (r === "ok") giveBack();
-      else {
-        if (r === "too_many") {
+      // nothing was compared (no live code / already burned): the address keeps its slot, the IP one stays counted
+      if (r === "no_code" || r === "burned") emailFailsByEmail.give(email);
+      if (r !== "ok") {
+        if (r === "too_many" || r === "burned") {
           log("auth.failed", { provider: "email", reason: "too_many_attempts" });
           return send(res, 429, { error: "too_many_attempts", message: "Too many tries. Ask for a new code." });
         }

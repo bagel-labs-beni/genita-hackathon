@@ -237,6 +237,13 @@ test("email login 11/4: a shared NAT (venue, judges' office) — 50 people sign 
   for (let i = 0; i < 50; i++) assert.equal((await s.verify(`p${i}@example.com`, s.sent[i].code, ip)).status, 200, `verify ${i + 1}`);
 });
 
+test("email login (Codex P1 #492): wrong codes for an address with no live code don't lock its owner out", async (t) => {
+  const s = await boot(t, { trustProxy: true });
+  for (let i = 0; i < 15; i++) await s.verify("victim@example.com", String(100000 + i), { "x-forwarded-for": "198.51.100.66" });
+  await s.start("victim@example.com", { "x-forwarded-for": "203.0.113.50" });
+  assert.equal((await s.verify("victim@example.com", s.sent.at(-1)!.code, { "x-forwarded-for": "203.0.113.50" })).status, 200);
+});
+
 test("email login 11/4: per-address limits — resend cooldown and wrong codes across resends; 429 carries Retry-After and 'Try again in N min'", async (t) => {
   const s = await boot(t, { trustProxy: true });
   const ip = { "x-forwarded-for": "203.0.113.9" };
