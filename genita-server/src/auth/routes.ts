@@ -5,13 +5,15 @@
  *   GET    /auth/apple/start      ?challenge=<b64url sha256(verifier)>&device=mac                Mac: 302 to Apple
  *   POST   /auth/apple/callback   Apple form_post (code, id_token, state, user)                  302 genita://auth?code=…
  *   POST   /auth/exchange         {code, verifier}                                                Mac: one-time code → session
- *   POST   /auth/judge            {code, device?}                                                 Judge access (D41): demo-account session, no Apple ID
+ *   POST   /auth/judge            {code, device?}                                                 Judge access (D41): demo-account session, no Apple ID;
+ *                                                                                                 a companion-less judge account gets the demo "Jin" (prep/demo.ts)
  *   POST   /auth/email/start      {email}                                                         mails a 6-digit code (also /v1/auth/email/start)
  *   POST   /auth/email/verify     {email, code, device?}                                          code → session (also /v1/auth/email/verify)
  *   POST   /auth/logout           (session)                                                       revokes this session
- *   GET    /me                    {user, consented, hasCompanion, prepStatus, conversation}
+ *   GET    /me                    {user, consented, hasCompanion, prepStatus, companionDemo, conversation}
  *   PATCH  /me                    {displayName}                                                   blank → 400
  *   POST   /me/consent            {kind?: "ai_data", version?}
+ *   POST   /me/report             RP-1 (D37) {reason, note?, surface?, utteranceId?, text?}  → stored under users/<id>/reports/
  *   DELETE /me                    Apple revoke → blobs users/<id>/ + avatars/<companion>/ → rows (cascade)
  *
  * Threat line: callers are the Genita iOS/macOS apps, plus Apple's form_post
@@ -24,6 +26,10 @@
  * 20 wrong codes/10 min per IP (the last X-Forwarded-For entry behind CloudFront),
  * 60 sends/min overall, and start answers the same whether or not an account
  * exists. Exposes only the caller's own user row.
+ * Report (RP-1, D37): session only; reason is one of four, note ≤ 280 and the
+ * reported text ≤ 600 characters; 10 reports per user per hour; stored in the
+ * caller's own blob prefix (erased with the account); the log line carries the
+ * reason and surface only, never the note or text.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -33,6 +39,10 @@ import type { AccountsCore, Principal } from "./index.ts";
 import { CODE_TTL_SEC, RESEND_AFTER_SEC, maskEmail, normalizeEmail } from "./email.ts";
 
 const BODY_LIMIT = 64 * 1024;
+/** RP-1 reasons (PRD D37), in the sheet's order */
+export const REPORT_REASONS = ["inappropriate_image", "harmful_answer", "someone_elses_photo", "other"] as const;
+const REPORT_SURFACES = new Set(["call", "card", "settings", "mac"]);
+const REPORTS_PER_USER_HOUR = 10;
 const EMAIL_SENDS_PER_IP_HOUR = 20;
 const EMAIL_FAILS_PER_IP_10MIN = 20;
 /** all addresses together: caps what any number of IPs can make the mail provider send */
@@ -175,6 +185,7 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
   const emailSends = windowCounter(EMAIL_SENDS_PER_IP_HOUR, 60 * 60_000);
   const emailFails = windowCounter(EMAIL_FAILS_PER_IP_10MIN, 10 * 60_000);
   const emailSendsAll = windowCounter(EMAIL_SENDS_PER_MIN, 60_000);
+  const reports = windowCounter(REPORTS_PER_USER_HOUR, 60 * 60_000);
   const hits = new Map<string, { n: number; reset: number }>();
   const limited = (ip: string) => {
     const now = Date.now();
@@ -306,6 +317,8 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       }
       const { user, isNew } = await accounts.upsertUser({ provider: "dev", sub: `judge:${label}`, displayName: "Judge" });
       log("auth.judge", { ok: true, label, device, ip });
+      // first sign-in (or no companion): the ready-made demo companion, so the first call needs no prep wait
+      await core.seedDemo?.(user.id);
       return send(res, 200, await issue(user.id, device, isNew, "judge"));
     }
 
@@ -415,6 +428,39 @@ export function createAccountRoutes(core: AccountsCore): AccountRoutes {
       await accounts.consent(who.userId, kind, version, who.device);
       if (kind === "ai_data") log("consent.accepted", { version });
       return send(res, 200, await accounts.meView(who.userId));
+    }
+
+    // RP-1 (D37): report a reply, a card or a picture. Kept with the account's own files; "Thanks, noted" in the app.
+    if (m === "POST" && p === "/me/report") {
+      const b = await readJson(req);
+      const reason = (REPORT_REASONS as readonly string[]).includes(b.reason as string) ? (b.reason as string) : null;
+      if (!reason) throw new HttpError(400, "bad_reason");
+      const clean = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max) : "");
+      const surface = typeof b.surface === "string" && REPORT_SURFACES.has(b.surface) ? b.surface : "other";
+      if (!reports.take(who.userId)) throw new HttpError(429, "rate_limited");
+      const at = new Date();
+      const record = {
+        at: at.toISOString(), userId: who.userId, device: who.device, reason, surface,
+        note: clean(b.note, 280),
+        text: clean(b.text, 600),
+        utteranceId: Number.isInteger(b.utteranceId) ? b.utteranceId : null,
+        findId: clean(b.findId, 64) || null,
+      };
+      const key = `users/${who.userId}/reports/${at.toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}.json`;
+      try {
+        await blobs.put(key, Buffer.from(JSON.stringify(record)), "application/json");
+      } catch (e) {
+        reports.give(who.userId);
+        log("report.failed", { message: String(e).slice(0, 120) });
+        throw new HttpError(502, "report_failed", "Couldn't send that. Try again.");
+      }
+      // an account deleted while this was being written leaves nothing behind (Codex P2)
+      if (!(await accounts.meView(who.userId))) {
+        await blobs.deletePrefix(key).catch(() => 0);
+        throw new HttpError(401, "unauthorized");
+      }
+      log("report.received", { reason, surface, device: who.device, note: record.note.length > 0 });
+      return send(res, 200, { ok: true, message: "Thanks, noted" });
     }
 
     if (m === "DELETE" && p === "/me") {

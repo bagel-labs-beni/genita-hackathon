@@ -15,6 +15,8 @@ import type { SamBox } from "../meta/sam.ts";
 import type { CompanionKind } from "./prompts.ts";
 
 export const FAIL_REASONS = {
+  // D26: well-known people are refused at V02 (PRD v12 V02-F copy; the app adds the second sentence)
+  public_figure: "This looks like a well-known person",
   no_face: "No face found",
   multiple_faces: "More than one face",
   face_covered: "Face is covered",
@@ -32,6 +34,8 @@ export type ClassifyRaw = {
   sharp: boolean;
   well_lit: boolean;
   text_on_image: boolean;
+  /** D26: a recognizable well-known real person (celebrity, politician, athlete, famous creator); optional for older fixtures */
+  public_figure?: boolean;
   /** 11/3, mouth profiles: the animal's species in one or two words ("dog", "cat"); "" otherwise */
   species?: string;
   /** 11/3, mouth profiles: drawn / flat ("2d") or rendered / clay / toy ("3d"); "none" for photos */
@@ -48,10 +52,11 @@ export const CLASSIFY_SCHEMA = {
     sharp: { type: "boolean" },
     well_lit: { type: "boolean" },
     text_on_image: { type: "boolean" },
+    public_figure: { type: "boolean" },
     species: { type: "string" },
     character_style: { type: "string", enum: ["2d", "3d", "toy", "none"] },
   },
-  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image", "species", "character_style"],
+  required: ["subject", "face_count", "front_facing", "face_covered", "sharp", "well_lit", "text_on_image", "public_figure", "species", "character_style"],
   additionalProperties: false,
 } as const;
 
@@ -63,6 +68,7 @@ const CLASSIFY_PROMPT = [
   "face_covered: true if a mask, hand, object, hair or heavy shadow hides the eyes, nose or mouth.",
   "sharp: false if the face is noticeably blurry or out of focus. well_lit: false if the face is too dark to see its features.",
   "text_on_image: true if there is a caption, watermark, sticker text or large printed text over the image.",
+  "public_figure: true only if the main subject is a real, well-known person most people would recognize (a celebrity, actor, musician, politician, athlete or famous online creator), including a photo, film still, edited picture, drawing or caricature of one. False for ordinary people, animals and invented or fictional characters. Do not name the person.",
   "species: for an animal, its species in one or two plain words (e.g. dog, cat, rabbit); otherwise an empty string.",
   "character_style: for a character, 2d = flat drawn / anime / cartoon / illustration with line art; toy = plush, stuffed animal, figurine or doll without a movable jaw; 3d = 3D render, clay or CGI; if unsure, 3d. For a person or an animal: none.",
 ].join("\n");
@@ -91,6 +97,8 @@ const KIND: Record<ClassifyRaw["subject"], CompanionKind | null> = { person: "hu
 export function interpretCheck(raw: ClassifyRaw): ImageCheck {
   const type = KIND[raw.subject] ?? null;
   const reasons: FailReason[] = [];
+  // D26: a hard refusal, listed first — another photo of the same person will not pass either
+  if (raw.public_figure === true) reasons.push("public_figure");
   if (!type || raw.face_count < 1) reasons.push("no_face");
   else {
     if (raw.face_count > 1) reasons.push("multiple_faces");

@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var confirmDelete = false
     @State private var working = false
     @State private var accountError: String?
+    /// RP-1 (D37): Report on M02
+    @State private var reportOpen = false
     /// model.onboarding.auth (not a fresh GenitaAuthClient) so the --stub-signin UI-test session counts too
     private var signedIn: Bool { model.onboarding.auth.isSignedIn }
     static let labels = ["help": "Help with", "relationship": "Relationship", "challenge": "Challenge", "tempo": "Tempo", "initiative": "Reach out", "presenceDescription": "Presence"]
@@ -46,6 +48,7 @@ struct SettingsView: View {
                 if signedIn {
                     // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
                     Section("Account") {
+                        Button("Report a problem") { reportOpen = true }.accessibilityIdentifier("settingsReport")
                         Button("Sign out") { signOut() }.disabled(working).accessibilityIdentifier("signOut")
                         Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working).accessibilityIdentifier("deleteAccount")
                     }
@@ -55,6 +58,7 @@ struct SettingsView: View {
                     Link("Terms", destination: URL(string: "https://bagel-labs-beni.github.io/genita-legal/terms/")!)
                 }
             }.navigationTitle("Settings")
+            .reportFlow(isPresented: $reportOpen, surface: "settings", auth: model.onboarding.auth) { CallController.shared.lastReplyText }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

@@ -82,6 +82,8 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     "The window title tells you what the page or video is (a YouTube video's title, a site); use it to understand the content, but only the frames and lines say what is happening right now.",
     `moment: funny, surprising or sweet only if something new here would make a friend watching react out loud right now; otherwise none (most of the time, and always for documents, code, menus or browsing). funny = a punchline, a fail, people on screen cracking up. surprising = a reveal, or something impressive: a dunk, a trick landed, a big dance move. sweet = a tender moment.`,
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, said the way a friend in their twenties would say it out loud (casual English, no emojis or texting abbreviations), no question, only what is clearly visible or heard (no guesses about clothes, injuries or intentions). Otherwise empty.`,
+    // AI sweep 11/3: a blurred jumpstyle dance became "Oh his shoe flew off" / "he totally dodged that"
+    "A blurred mid-move frame is still the move: people kicking, hopping or spinning to music are dancing, never losing balance, losing a shoe or dodging. Name the move itself, not a story about it.",
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
     "talkOver: true if the screen's sound is crowd noise, music, sports commentary or narration (fine to react over); false if people on screen are talking to each other.",
@@ -136,7 +138,8 @@ export function buildQuickRequest(q: { companion: { name: string }; frames: stri
     `${q.companion.name} watches a video with a friend. These frames are the last second, oldest first; the last one is now.`,
     "react: true if something a friend would blurt about is happening in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
     "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
-    "The line may only name what is clearly visible in the last frame (the move, the landing, the dunk, the face). No guesses: no clothes slipping or falling off, no injuries, no intentions, nothing about to happen.",
+    // AI sweep 11/3: jumpstyle kicks blurred mid-move were read as "he's losing balance" / "he totally dodged that" (prod + local, 2/3 runs)
+    "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
   const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now: ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
@@ -228,19 +231,29 @@ export function buildQuestionContext(c: {
   names: Map<string, string>;
   frames: string[];
   blank: boolean;
+  /** react-worthy moments seen in the last minute (spoken or not), oldest first */
+  moments?: { agoSec: number; moment: string; line: string }[];
+  /** the newest moment's frame, when it is older than `frames` */
+  momentFrame?: { url: string; agoSec: number } | null;
 }): QuestionContext {
   const out = [`You and the user are watching their shared screen together${c.source ? ` (${c.source})` : ""}.`];
   const tl = titleLine(c.title);
   if (tl) out.push(`${tl} It is what the page or video is called; you may use it ("this is the one about…") and any name written in it.`);
   if (c.memo.length) out.push(`What you've seen so far, oldest first:\n${c.memo.map((e) => `- ${e.text}`).join("\n")}`);
   if (c.lines.length) out.push(`Lines just heard from the screen, oldest first:\n${dialogueText(c.lines, c.names)}`);
+  if (c.moments?.length) {
+    out.push(`Moments you noticed in the last minute (what you'd have blurted out, said or not), oldest first:\n${c.moments.map((m) => `- ${m.agoSec} s ago (${m.moment}): ${JSON.stringify(m.line)}`).join("\n")}`);
+    out.push(`If the user asks about something that just happened ("did you see that?", "that dunk"), it is most likely one of these: answer from it even if the screen has moved on.`);
+  }
   if (c.blank) {
     out.push("The shared screen shows up black to you right now (some apps block capture). You can't see it: say so and don't guess what's on it.");
     return { instructions: out.join("\n"), images: [] };
   }
-  if (c.frames.length) out.push(`The attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
+  const moment = c.momentFrame ?? null;
+  if (moment) out.push(`The first attached image is the shared screen at that last moment, ${moment.agoSec} s ago.`);
+  if (c.frames.length) out.push(`The ${moment ? "other " : ""}attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
   if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
   out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
   if (c.frames.length) out.push(NAMING_RULE);
-  return { instructions: out.join("\n"), images: c.frames };
+  return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }

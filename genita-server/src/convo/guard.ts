@@ -156,6 +156,10 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
  */
 /** a narration-only reply after the retry: an honest "don't know offhand" instead of an announcement or an error */
 export const NO_ANSWER_LINE = "<curious> Hmm, not sure off the top of my head.";
+/** Spark down (504 / empty) for a whole turn, retry included: stay in the call, in character (11/3 outage) */
+export const LOST_LINE = "<warm> Sorry, I lost you for a sec. Say that again?";
+/** pause before the retry when the first try failed upstream (a 504 spike) */
+export const UPSTREAM_RETRY_MS = 400;
 
 /** classes that are never spoken, not even as a reply's only sentence (the turn retries instead) */
 export function neverSpoken(cls: GuardClass): boolean {

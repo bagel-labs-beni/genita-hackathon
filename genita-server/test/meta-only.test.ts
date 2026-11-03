@@ -144,23 +144,23 @@ test("scene retries Muse Image once, with no alternate model or host; second fai
 
 test("voice preview uses Meta PCM as WAV and a new cache version; no voice service fails without I/O", async (t) => {
   const d = fixture(t);
-  await d.store.putVoicePreview("0", "v1", Buffer.from("old-cache"));
+  await d.store.putVoicePreview("19", "meta-v2", Buffer.from("old-cache"));
   let calls = 0;
   globalThis.fetch = (async (url, init) => {
     calls++;
     assert.equal(String(url), "https://voice.test/v1/tts");
     const body = JSON.parse(String(init?.body));
     assert.equal(body.model, "seamless");
-    assert.equal(body.speaker, 0);
+    assert.equal(body.speaker, 19);
     return new Response(JSON.stringify({ audio_base64: Buffer.alloc(480, 1).toString("base64") }) + '\n' + JSON.stringify({ done: true }) + '\n');
   }) as typeof fetch;
-  await assert.rejects(() => voicePreview(d, "0"), /voice_unavailable/);
+  await assert.rejects(() => voicePreview(d, "19"), /voice_unavailable/);
   assert.equal(calls, 0);
-  const wav = await voicePreview({ ...d, voice }, "0");
+  const wav = await voicePreview({ ...d, voice }, "19");
   assert.equal(wav.subarray(0, 4).toString(), "RIFF");
   assert.equal(wav.subarray(8, 12).toString(), "WAVE");
   assert.equal(wav.readUInt32LE(24), 24000);
   assert.equal(wav.readUInt32LE(40), 480);
-  assert.deepEqual(await voicePreview({ ...d, voice }, "0"), wav);
+  assert.deepEqual(await voicePreview({ ...d, voice }, "19"), wav);
   assert.equal(calls, 1);
 });

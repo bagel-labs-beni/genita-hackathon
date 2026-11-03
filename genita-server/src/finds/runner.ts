@@ -5,6 +5,7 @@
  * "맞아?" answers, and gives the session one line of context about the card
  * on screen so "Ask about this" follow-ups make sense.
  */
+import { webAnswerCard, type WebSearch } from "./webAnswer.ts";
 import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
@@ -24,7 +25,7 @@ export type FindsDeps = {
   likes?: (userId: string) => Promise<string[] | undefined>;
   /** F7: where to shop ("US" default, GENITA_SHOP_REGION) */
   shopRegion?: string;
-  /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 2; 1 = off) */
+  /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 3; 1 = off) */
   productHedge?: number;
   /** demo S5: start the "goes with" search when an outfit card lands (GENITA_PRODUCT_PREFETCH=0 turns it off) */
   productPrefetch?: boolean;
@@ -264,6 +265,23 @@ export class FindsRunner {
     }
     if (ACK[intent.kind]) this.acked.add(findId);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
+  }
+
+  /**
+   * Chelsea 11/3: a spoken answer that searched the web lands in the sheet with its sources,
+   * after the answer was said (no line of its own). Returns the find id, or null.
+   */
+  webAnswer(o: { utteranceId: number; question: string; said: string; searches: WebSearch[] }): string | null {
+    if (this.closed || this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return null;
+    const findId = randomUUID();
+    const card = webAnswerCard({ id: findId, question: o.question, said: o.said, searches: o.searches });
+    if (!card) return null;
+    this.onEvent({ type: "find.started", findId, utteranceId: o.utteranceId, kind: "answer", title: "Looked it up", detail: card.subtitle });
+    // never taste chips on a looked-up fact
+    card.reasons = [];
+    this.onEvent({ type: "find.created", findId, card });
+    this.hooks.log("find.done", { findId, kind: "answer", ok: true, sources: card.sources.length });
+    return findId;
   }
 
   /** Waits for every running pipeline (tests, e2e script). */

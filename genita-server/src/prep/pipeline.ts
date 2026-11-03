@@ -144,7 +144,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v2"; // v2: V04 voices renamed (id 0 was Jin, now Coco)
+export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).

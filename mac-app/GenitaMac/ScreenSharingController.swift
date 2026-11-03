@@ -6,6 +6,9 @@ import CoreMedia
     @Published var permissionRequired = false
     @Published var isSharing = false
     @Published var error: String?
+    /// The alert's title: a share that ran and then ended (the system stopped the stream, the uplink dropped) is not
+    /// "could not start" (Mac QA 11/3: macOS ended a live share and the alert said it never started).
+    @Published var errorTitle = "Screen sharing could not start"
     /// MS-1, the first time Share is pressed.
     @Published var noticeVisible = false
     /// "Sharing Safari": the shared app's name, nil for a whole display.
@@ -161,7 +164,7 @@ import CoreMedia
                 guard captureRequest.isStarting(request) else { return }
                 captureRequest.cancelCapture(request)
                 stopStartingCapture()
-                self.error = error.localizedDescription
+                self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription
             }
         }
     }
@@ -273,7 +276,7 @@ import CoreMedia
         case .waitForCall:
             connectionMessage = "Screen sharing is waiting for the call."
         case .stop:
-            stop(); error = "Screen sharing disconnected. Try sharing again."
+            stop(); errorTitle = "Screen sharing stopped"; error = "Screen sharing disconnected. Try sharing again."
         case .retry(let delay):
             reconnectAttempt += 1
             connectionMessage = "Reconnecting screen sharing…"
@@ -338,18 +341,18 @@ import CoreMedia
 extension ScreenSharingController: SCContentSharingPickerObserver {
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didCancelFor stream: SCStream?) { Task { @MainActor in if stream == nil { self.cancelPicker() } } }
     nonisolated func contentSharingPicker(_ picker: SCContentSharingPicker, didUpdateWith filter: SCContentFilter, for stream: SCStream?) { Task { @MainActor in self.start(filter, replacing: stream) } }
-    nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) { Task { @MainActor in self.error = error.localizedDescription } }
+    nonisolated func contentSharingPickerStartDidFailWithError(_ error: Error) { Task { @MainActor in self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription } }
 }
 extension ScreenSharingController: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor in
             if self.startingCapture?.stream === stream {
                 if let request = self.startingCapture?.output.request { self.captureRequest.cancelCapture(request) }
-                self.stopStartingCapture(); self.error = error.localizedDescription
+                self.stopStartingCapture(); self.errorTitle = "Screen sharing could not start"; self.error = error.localizedDescription
                 return
             }
             guard self.activeCapture?.stream === stream else { return }
-            self.stop(); self.error = error.localizedDescription
+            self.stop(); self.errorTitle = "Screen sharing stopped"; self.error = "\(error.localizedDescription) Share again when you’re ready."
         }
     }
 }

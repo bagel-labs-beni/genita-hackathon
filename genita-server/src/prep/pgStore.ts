@@ -97,17 +97,18 @@ export class PgPrepStore implements PrepStore {
     };
     if (row.depth) out.prefs = { depth: row.depth, answers: row.answers_json, updatedAt: iso(row.prefs_updated_at)! };
     if (row.persona_card) out.persona = row.persona_card;
+    if (row.demo) out.demo = true;
     return out;
   }
 
   private async write(q: Queryable, rec: CompanionRecord) {
     const prep = { ...rec.prep, updatedAt: new Date().toISOString() };
     await q.query(
-      `INSERT INTO companions (id, user_id, image_id, type, source_image, voice_id, name, prep_status, persona_card, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+      `INSERT INTO companions (id, user_id, image_id, type, source_image, voice_id, name, prep_status, persona_card, created_at, demo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
        ON CONFLICT (id) DO UPDATE SET voice_id = EXCLUDED.voice_id, name = EXCLUDED.name, prep_status = EXCLUDED.prep_status,
-         persona_card = EXCLUDED.persona_card, updated_at = now()`,
-      [rec.id, rec.userId, rec.imageId, rec.type, imageKey(rec.userId, rec.imageId), rec.voiceId, rec.name, prep.status, json(rec.persona), rec.createdAt],
+         persona_card = EXCLUDED.persona_card, demo = EXCLUDED.demo, updated_at = now()`,
+      [rec.id, rec.userId, rec.imageId, rec.type, imageKey(rec.userId, rec.imageId), rec.voiceId, rec.name, prep.status, json(rec.persona), rec.createdAt, rec.demo === true],
     );
     await q.query(
       `INSERT INTO clip_jobs (companion_id, user_id, status, attempts, state_json, started_at, ready_at)
@@ -158,6 +159,43 @@ export class PgPrepStore implements PrepStore {
 
   putVoicePreview(voiceId: string, version: string, audio: Buffer) {
     return this.blobs.put(`cache/voices/${voiceId}-${version}.wav`, audio, "audio/wav");
+  }
+
+  /** Rows first (cascade: clip_jobs, prefs, emotions), then the photo and the companion's files. */
+  async deleteCompanion(userId: string) {
+    const gone = await this.db.tx(async (q) => {
+      const r = await q.query("DELETE FROM companions WHERE user_id = $1 RETURNING id, image_id", [userId]);
+      const row = r.rows[0];
+      if (row) await q.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [row.image_id, userId]);
+      return row ? { id: String(row.id), imageId: String(row.image_id) } : null;
+    });
+    if (!gone) return false;
+    await this.blobs.deletePrefix(imageKey(userId, gone.imageId));
+    await this.blobs.deletePrefix(`users/${userId}/companions/${gone.id}/`);
+    return true;
+  }
+
+  /** One transaction: delete the demo row (only if it is still the user's demo companion), insert `rec`. Files after commit. */
+  async replaceDemoCompanion(demoId: string, rec: CompanionRecord) {
+    const oldImage = await this.db.tx(async (q) => {
+      const r = await q.query("DELETE FROM companions WHERE user_id = $1 AND id = $2 AND demo RETURNING image_id", [rec.userId, demoId]);
+      if (!r.rows[0]) return null;
+      await this.write(q, rec);
+      const img = String(r.rows[0].image_id);
+      if (img === rec.imageId) return "";
+      await q.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [img, rec.userId]);
+      return img;
+    });
+    if (oldImage === null) return false;
+    // leftovers on a storage hiccup stay under users/<id>/, which DELETE /me removes
+    if (oldImage) await this.blobs.deletePrefix(imageKey(rec.userId, oldImage)).catch(() => 0);
+    await this.blobs.deletePrefix(`users/${rec.userId}/companions/${demoId}/`).catch(() => 0);
+    return true;
+  }
+
+  async deleteImage(userId: string, imageId: string) {
+    await this.db.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [imageId, userId]);
+    await this.blobs.deletePrefix(imageKey(userId, imageId));
   }
 
   putAsset(userId: string, companionId: string, name: string, bytes: Buffer) {

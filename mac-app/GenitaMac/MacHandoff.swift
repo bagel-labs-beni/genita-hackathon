@@ -393,7 +393,9 @@ struct MacHomeView:View {
         switch kind {
         case .noCompanion: .setup
         case .onPhone: pairing && !paired ? .pair : .onPhone
-        case .here: paired ? .here : .pair
+        // Mac QA 11/3: a move by button goes through the server (same account = already paired), so the conversation
+        // on this Mac is MAC-4 even without the local link. MAC-P only when the user asks for it (Pair it).
+        case .here: pairing && !paired ? .pair : .here
         case .offline(let reason): .offline(reason)
         }
     }
@@ -405,7 +407,7 @@ struct MacHomeView:View {
         case .setup: ("Waiting for your companion",.waiting)
         case .pair: ("Looking for your iPhone",.waiting)
         case .onPhone: ("Talking on your iPhone",.live)
-        case .here: ("Paired with your iPhone",.live)
+        case .here: (paired || handoff.server.peerOnline ? "Paired with your iPhone" : "Signed in on this Mac",.live)
         case .offline: ("No connection",.idle)
         }
     }
@@ -425,9 +427,7 @@ struct MacHomeView:View {
                 if kind == .here && handoff.canMoveToPhone {
                     MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() }.padding(.top,24)
                 }
-                if kind == .onPhone {
-                    MacV2Button(label:"Not now",style:.text,id:"macPairNotNow") { pairing=false }.frame(maxWidth:.infinity).padding(.top,12)
-                }
+                MacV2Button(label:"Not now",style:.text,id:"macPairNotNow") { pairing=false }.frame(maxWidth:.infinity).padding(.top,12)
             case .onPhone:
                 MacV2Button(label:"Continue on this Mac",id:"macContinueHere") { handoff.continueHere() }.padding(.top,24)
                 if !paired {
@@ -439,12 +439,24 @@ struct MacHomeView:View {
                     }.frame(height:44).padding(.top,4)
                 }
             case .here:
-                HStack(spacing:12) {
-                    if handoff.canMoveToPhone { MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() } }
-                    MacV2Button(label:"Show screen",style:.secondary,id:"macShowScreen") { handoff.showRegistration() }
-                }.padding(.top,24)
-                Text("Show screen helps your iPhone find this display, so you can pass the call across.")
-                    .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(2).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
+                // only what works now (Chelsea 11/3): Show screen needs the local link, Move to iPhone a reachable iPhone
+                if handoff.canMoveToPhone || paired {
+                    HStack(spacing:12) {
+                        if handoff.canMoveToPhone { MacV2Button(label:"Move to iPhone",style:.secondary,id:"macMoveToPhone") { handoff.moveToPhone() } }
+                        if paired { MacV2Button(label:"Show screen",style:.secondary,id:"macShowScreen") { handoff.showRegistration() } }
+                    }.padding(.top,24)
+                }
+                if paired {
+                    Text("Show screen helps your iPhone find this display, so you can pass the call across.")
+                        .font(MacSheetInk.sans(13)).foregroundStyle(MacSheetInk.mute).lineSpacing(2).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading).padding(.top,16)
+                } else {
+                    Rectangle().fill(Color(white:232.0/255)).frame(height:1).padding(.top,20)
+                    HStack(spacing:6) {
+                        Text("First time with this iPhone?").font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.mute)
+                        Button("Pair it") { pairing=true }.buttonStyle(.plain).font(MacSheetInk.sans(14)).foregroundStyle(MacSheetInk.ink).underline()
+                            .padding(.horizontal,4).frame(height:44).contentShape(Rectangle()).accessibilityIdentifier("macPairIt")
+                    }.frame(height:44).padding(.top,4)
+                }
             case .offline(let reason):
                 v2Para(reason).padding(.top,16)
                 MacV2Button(label:"Try again",id:"macTryAgain") { Task { await MacCall.shared.refresh() } }.padding(.top,24)

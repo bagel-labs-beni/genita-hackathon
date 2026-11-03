@@ -440,9 +440,9 @@ export function confirmItem(card: FindCard, itemId: string, yes: boolean): FindI
   else if (item.from === "camera") card.items = card.items.filter((i) => i.id !== itemId);
   else item.tier = "buy";
   delete item.hint;
-  const sum = recipeSummary(card.items, null);
-  const minutes = card.subtitle.match(/^About (\d+) min/);
-  card.subtitle = (minutes ? `About ${minutes[1]} min · ` : "") + sum.subtitle;
+  const minutes = card.subtitle.match(/^(?:About )?(\d+) min/);
+  const sum = recipeSummary(card.items, minutes ? Number(minutes[1]) : null);
+  card.subtitle = sum.subtitle;
   card.status = sum.status;
   return item;
 }

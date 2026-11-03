@@ -145,9 +145,9 @@ struct UpdateReadyPill: View {
         HStack(spacing: 10) {
             Image(systemName: "sparkles").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.9))
                 .symbolEffect(.bounce, options: .nonRepeating, value: shown)
-            Text("\(title) · \(version)").font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
+            Text("\(title) · \(version)").font(.custom("PretendardVariable-Medium", fixedSize: 12.5)).foregroundStyle(.white)
             Button(action: restart) {
-                Text(action).font(.system(size: 12.5, weight: .semibold)).padding(.horizontal, 11).padding(.vertical, 5)
+                Text(action).font(.custom("PretendardVariable-SemiBold", fixedSize: 12.5)).padding(.horizontal, 11).padding(.vertical, 5)
                     .background(.white, in: Capsule()).foregroundStyle(.black)
             }.buttonStyle(.plain).accessibilityIdentifier("macUpdateRestart")
             Button(action: later) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.7)) }

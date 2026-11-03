@@ -3,6 +3,7 @@ dist/
 .env
 .env.*
 !.env.example
+genita-server/.genita-data/
 .DS_Store
 
 # Native Apple app build and local review artifacts

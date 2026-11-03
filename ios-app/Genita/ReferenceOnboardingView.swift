@@ -165,7 +165,7 @@ import UniformTypeIdentifiers
         let sourceY: CGFloat = stage == .name ? 454 : stage == .preparing ? 704 : 736
         return Button(action: advance) {
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 12).fill(enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
+                GlassCTA(color: enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
                 DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
                     .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
             }
