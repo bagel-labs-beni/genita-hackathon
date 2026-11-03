@@ -300,7 +300,8 @@ export class Personalize {
     if (!before) return;
     // a hard timeout per try, so a hung call can't hold the user's queue (Codex P2)
     const once = async <T>(req: Parameters<JsonFn>[0]) => {
-      try { return await this.timedJson<T>(req); } catch { await new Promise((r) => setTimeout(r, CORRECTION_RETRY_MS).unref?.()); return this.timedJson<T>(req); }
+      // not unref: a pending save must keep the process (and a test) alive until its retry ran (CI 11/3)
+      try { return await this.timedJson<T>(req); } catch { await new Promise((r) => setTimeout(r, CORRECTION_RETRY_MS)); return this.timedJson<T>(req); }
     };
 
     // C1: the marked lines + what's right → explicit updates (newer wins)
