@@ -2332,11 +2332,14 @@ export class Session {
             if (!sentAudio) {
               if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
               if (signal.aborted) break;
-              sayOnDevice(i, s);
+              // the device fallback is judged too: a question watch together took back is never said (Codex #401 r2)
+              if (askedAt(i) || sentences[i]?.drop) continue;
+              sayOnDevice(i, sentences[i]);
             }
             else {
               // the voice died mid-sentence: the device says the words that were not voiced yet
               // Timing chars are of the spoken form, so count against that; no timing (MMS) → say it all again.
+              if (sentences[i]?.drop) continue; // a dropped question is not finished on the device either
               if (!s.beat) reply.spoken.push(s.display);
               const spoken = spokenText(s.display, seamlessLang(speechLang(s.display, lang), s.display));
               const rest = sentChars.trim() ? unspokenRest(spoken, sentChars) : s.display;
