@@ -205,7 +205,11 @@ export class WatchController {
 
   onMessage(msg: Record<string, unknown>): void {
     if (this.closed) return;
-    switch (msg.type) {
+    const type = msg.type;
+    if (typeof type !== "string") {
+      return this.sink?.send({ type: "error", code: "bad_message", message: "Watch message type must be a string" });
+    }
+    switch (type) {
       case "start":
         return this.start(typeof msg.source === "string" ? msg.source.slice(0, 60) : null);
       case "frame":
@@ -215,7 +219,7 @@ export class WatchController {
       case "ping":
         return this.sink?.send({ type: "pong", t: msg.t ?? null });
       default:
-        return this.sink?.send({ type: "error", code: "unknown_type", message: `Unknown watch message ${String(msg.type).slice(0, 40)}` });
+        return this.sink?.send({ type: "error", code: "unknown_type", message: `Unknown watch message ${type.slice(0, 40)}` });
     }
   }
 

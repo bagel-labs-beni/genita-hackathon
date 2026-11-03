@@ -11,6 +11,7 @@ import { initialTurnState, reduceTurn } from "../src/session/turnMachine.ts";
 import { isVideoEcho, pickFrames, reactionAllowed, reactionScript, speakerChipEnabled, type ReactGate } from "../src/watch/rules.ts";
 import { buildMemoRequest, buildQuestionContext, parseMemoVerdict } from "../src/watch/memo.ts";
 import { WatchController, type WatchDeps, type WatchHost, type WatchSink } from "../src/watch/watch.ts";
+import { attachWatchSocket } from "../src/watch/socket.ts";
 
 // ───────────────────────── rules ─────────────────────────
 
@@ -183,6 +184,55 @@ function controller(verdicts: string[], hostOpts: { quiet?: boolean } = {}, extr
 }
 
 const frame = "data:image/jpeg;base64,/9j/AAAA";
+
+test("watch socket: malformed message types reject only their socket and keep the call alive", () => {
+  const { c } = controller([]);
+  const { c: otherCall } = controller([]);
+  const sent: WatchServerEvent[] = [];
+  const otherSent: WatchServerEvent[] = [];
+  const ws = Object.assign(new EventEmitter(), {
+    OPEN: 1,
+    readyState: 1,
+    send: (data: string) => sent.push(JSON.parse(data)),
+    close: () => {},
+    terminate: () => {},
+  });
+  attachWatchSocket(ws as never, {
+    id: "synthetic-watch",
+    attachWatch(sink: WatchSink) {
+      c.attach(sink);
+      return c;
+    },
+  } as never, () => {});
+  const otherWs = Object.assign(new EventEmitter(), {
+    OPEN: 1,
+    readyState: 1,
+    send: (data: string) => otherSent.push(JSON.parse(data)),
+    close: () => {},
+    terminate: () => {},
+  });
+  attachWatchSocket(otherWs as never, {
+    id: "other-synthetic-watch",
+    attachWatch(sink: WatchSink) {
+      otherCall.attach(sink);
+      return otherCall;
+    },
+  } as never, () => {});
+
+  const deeplyNested = JSON.parse(`${"[".repeat(128)}null${"]".repeat(128)}`);
+  for (const type of [{ toString: null }, [], null, deeplyNested]) {
+    assert.doesNotThrow(() => ws.emit("message", Buffer.from(JSON.stringify({ type })), false));
+    assert.deepEqual(sent.at(-1), { type: "error", code: "bad_message", message: "Watch message type must be a string" });
+  }
+
+  ws.emit("message", Buffer.from(JSON.stringify({ type: "start", source: "Safari" })), false);
+  assert.equal(c.isSharing, true, "a valid follow-up on this call still works");
+  otherWs.emit("message", Buffer.from(JSON.stringify({ type: "start", source: "Safari" })), false);
+  assert.equal(otherCall.isSharing, true, "another active call is unaffected");
+  assert.equal(otherSent.some((event) => event.type === "error"), false);
+  c.close();
+  otherCall.close();
+});
 
 test("watch: start opens a DIARIZATION transcriber; audio only flows while sharing", () => {
   const { c, asr, sink } = controller([]);
