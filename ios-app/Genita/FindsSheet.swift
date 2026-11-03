@@ -447,7 +447,7 @@ struct FindCardPage: View {
         .scrollDisabled(!full)
         .scrollIndicators(.hidden)
         // motion card 6: saving (bookmark or Save to Finds) sends one blue shine across the card + a success haptic
-        .onChange(of: entry.saved) { old, new in if !old && new { saveTick += 1 } }
+        .onChange(of: finds.savePulse) { _, _ in if finds.current?.id == entry.id { saveTick += 1 } }
         .findsShine(saveTick, color: FindsInk.blue.opacity(0.16))
         .findsHaptic(.success, trigger: saveTick)
         .accessibilityElement(children: .contain)
