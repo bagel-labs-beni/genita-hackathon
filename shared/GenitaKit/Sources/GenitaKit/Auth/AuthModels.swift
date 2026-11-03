@@ -81,6 +81,7 @@ public enum GenitaAuthError: Error, Equatable, Sendable {
     case offline
     /// Mac web login: the user closed the sheet
     case cancelled
-    case server(status: Int, code: String?)
+    /// `retryAfterSec`: a 429's wait (body `retryAfterSec`, else the Retry-After header), nil when the server gave none
+    case server(status: Int, code: String?, retryAfterSec: Int? = nil)
     case badResponse
 }

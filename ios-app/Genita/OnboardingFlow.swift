@@ -245,7 +245,7 @@ extension AppState {
     }
 
     static func importErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(let status, _) = error, status == 400 || status == 422 {
+        if case GenitaAuthError.server(let status, _, _) = error, status == 400 || status == 422 {
             return "I couldn’t read this one. Paste the whole reply, or try again."
         }
         return errorLine(error)
@@ -331,10 +331,10 @@ extension AppState {
             guard imageCheckTicket == ticket, !Task.isCancelled else { return }
             switch error as? GenitaAuthError {
             // a refusal comes back the same for this photo: choose another one
-            case .server(422, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
-            case .server(429, "polish_limit")?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
+            case .server(422, _, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
+            case .server(429, "polish_limit", _)?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
             // the failed attempt counts on the server too: three per upload
-            case .server(502, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
+            case .server(502, _, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
             default: polishError = Self.errorLine(error); route(error)
             }
         }
@@ -369,7 +369,7 @@ extension AppState {
 
     /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
     static func imageErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(422, "unreadable_image")? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
+        if case GenitaAuthError.server(422, "unreadable_image", _)? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
         return errorLine(error)
     }
 
@@ -386,7 +386,7 @@ extension AppState {
                 let c = try await onboarding.createCompanion(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
-            } catch GenitaAuthError.server(409, _) {
+            } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
@@ -443,7 +443,7 @@ extension AppState {
                     setup.companionCreated = true
                 }
                 go(.depth)
-            } catch GenitaAuthError.server(400, _) {
+            } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
             } catch { nameError = Self.errorLine(error); route(error) }
         }
@@ -488,7 +488,7 @@ extension AppState {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
-            } catch GenitaAuthError.server(404, _) {
+            } catch GenitaAuthError.server(404, _, _) {
                 return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
             try? await Task.sleep(for: .seconds(seconds))
