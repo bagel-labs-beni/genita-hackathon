@@ -31,6 +31,7 @@ import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
+import { DEMO_TEMPLATE_SUB, demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -122,6 +123,14 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
+  // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
+  const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)
+    ? startDemoTemplate({
+      templateUser: async () => (await accounts.accounts.upsertUser({ provider: "dev", sub: DEMO_TEMPLATE_SUB, displayName: "Demo template" })).user.id,
+      prep, blobs: accounts.blobs, log,
+    })
+    : null;
   const events = createEventsRoute(log);
   // F7 product search: the reason chip comes from the account's own import (I04 Likes & dislikes)
   if (deps.finds && !deps.finds.likes) deps = { ...deps, finds: { ...deps.finds, likes: async (userId) => likesFromStyle(await prep.deps.store.getStyle(userId)) } };
@@ -510,5 +519,6 @@ export async function startServer(
     void accounts?.close().catch(() => {});
   });
   http.once("close", stopSparkOpenProbe);
+  if (demoTemplate) http.once("close", () => demoTemplate.stop());
   return new Promise((resolve) => http.listen(config.port, config.host, () => resolve(http)));
 }
