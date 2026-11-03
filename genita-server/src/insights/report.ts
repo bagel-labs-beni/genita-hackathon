@@ -390,8 +390,12 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
     const o = observations.find((x) => x.id === id);
     if (!o) return false;
     const own = new Set(stems([o.claim, ...o.evidence.map((e) => e.quote), ...(o.chips ?? []).map((c) => c.label)].join(" ")));
+    // no number the material doesn't have ("You outlast 4 hours")
+    const nums = text.match(/\d+/g) ?? [];
+    if (nums.some((n) => !haystack.includes(n))) return false;
     return stems(text).some((w) => own.has(w));
   };
+  const sure = (id: string) => observations.find((x) => x.id === id)?.confidence === "high";
   const strengths: InsightStrength[] = [];
   for (const n of Array.isArray(r.strengths) ? r.strengths : []) {
     const x = n && typeof n === "object" ? (n as Record<string, unknown>) : {};
@@ -402,7 +406,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   for (const n of Array.isArray(r.watchouts) ? r.watchouts : []) {
     const x = n && typeof n === "object" ? (n as Record<string, unknown>) : {};
     const text = line(x.text, WATCH_MAX), fix = useOf(x.fix), basis = basisOf(x.trait);
-    if (text && fix && fix.length <= FIX_MAX && basis && tied(`${text} ${fix}`, basis) && !copied(text) && !watchouts.some((y) => sameish(y.text, text))) watchouts.push({ text, fix, basis });
+    if (text && fix && fix.length <= FIX_MAX && basis && sure(basis) && tied(`${text} ${fix}`, basis) && !copied(text) && !watchouts.some((y) => sameish(y.text, text))) watchouts.push({ text, fix, basis });
   }
   let type: InsightType | null = null;
   const t = r.type && typeof r.type === "object" ? (r.type as Record<string, unknown>) : {};
@@ -419,7 +423,7 @@ export function toReport(raw: unknown, inputs: InsightInputs, meta: { at: string
   if (observations.length && youAre && soYou && soIll && soIll.length + 4 <= CHAIN_ILL_MAX && ![youAre, soYou, `So ${soIll}`].some(copied)) chain = { you_are: youAre, so_you: soYou, so_ill: `So ${soIll}` };
 
   return {
-    version: 1, headline, observations, type, mix: mixFrom(inputs.picks), strengths: strengths.slice(0, 3), watchouts: watchouts.slice(0, 2), chain,
+    version: 1, headline, observations, type, mix: mixFrom(inputs.picks), strengths: strengths.slice(0, 3), watchouts: watchouts.slice(0, 1), chain,
     share: type ? { title: `{name} is ${type.name}`, lines: type.signature } : null,
     learning: learning.slice(0, LEARNING_MAX), usage: sentence(usage), settings: meta.settings ?? null, at: meta.at, from: meta.from, ...(meta.ms !== undefined ? { ms: meta.ms } : {}),
   };

@@ -296,7 +296,7 @@ test("report: the type read (춘식이 r02) — type, strengths, watch-outs, cha
     ...RAW,
     type: { name: "The Playful Editor", line: "You shortlist fast, joke about prices, and sign off last.", signature: ["Options", "Light", "Final say"], basis: [0, 1, 7] },
     strengths: [{ text: "Two or three options and you're already deciding.", trait: 0 }, { text: "You value deep connections.", trait: 1 }, { text: "Ghost trait strength here.", trait: 9 }],
-    watchouts: [{ text: "A third option can turn into thirty.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
+    watchouts: [{ text: "A long menu of options can freeze the whole night.", fix: "I'll stop at two options and name my favorite.", trait: 0 }, { text: "Menus are your villain origin story.", fix: "Pick one.", trait: 0 }],
     chain: { you_are: "You line options up before you commit.", so_you: "So you want a shortlist, not a lecture.", so_ill: "So I'll bring a shortlist and my favorite." },
   };
   const inputs = { ...INPUTS, picks: [...INPUTS.picks, { question: "How you like replies", label: "Show me options" }, { question: "pace", label: "Quick-leaning" }] };
@@ -467,4 +467,19 @@ test("codex r4: a fact only in a not-me correction is forgotten too (off the lis
   const card = (await h.store.getStyle("u1"))!;
   assert.ok(!/fountain/i.test(JSON.stringify(card.insights!.denied ?? [])), JSON.stringify(card.insights!.denied));
   assert.ok((card.removed ?? []).some((r) => r.forget && /fountain/.test(r.text)), JSON.stringify(card.removed));
+});
+
+test("codex r6: forgetting a fact only the report holds removes it from the report and the call profile", async (t) => {
+  const FP = "Collects fountain pens and inks every letter by hand.";
+  const raw = { ...RAW, observations: [...RAW.observations, obs({ category: "interest", claim: "You write slow on purpose, ink and all.", evidence: [ev("import", FP)], surprise: 1, use_in_call: "I'll ask about your fountain pens." })] };
+  const h = harness((req) => (req.schemaName === "insight_report" ? raw : { updates: [], answered: false }));
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", `${PASTE}\n- ${FP}`);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  const r = (await h.ins.get("u1", 3000)).report!;
+  assert.ok(JSON.stringify(r).includes("fountain pens"));
+  await h.p.voiceCorrection("u1", "Forget about fountain pens.", "");
+  const card = (await h.store.getStyle("u1"))!;
+  assert.ok(!JSON.stringify(card.insights).toLowerCase().includes("fountain"), JSON.stringify(card.insights?.observations.map((o) => o.claim)));
+  assert.ok(!insightProfileLines(card).join(" ").toLowerCase().includes("fountain"), "not in the call profile's noticed block");
 });
