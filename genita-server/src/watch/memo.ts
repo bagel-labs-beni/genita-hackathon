@@ -140,7 +140,15 @@ export const QUICK_SCHEMA = {
 
 export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talkOver: boolean };
 
-export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
+/**
+ * The quick look's fast shape (lead's call 11/4, GENITA_WATCH_QUICK_FAST=1): one image (the newest of the pair), low
+ * detail, plain-text JSON instead of a strict schema — 4.3 s vs 5.0 s p50 on the dunk pair (n=8). Shipped only if the
+ * 12-clip eval shows no accuracy loss.
+ */
+export const QUICK_FAST = process.env.GENITA_WATCH_QUICK_FAST === "1";
+
+export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[]; fast?: boolean }): SparkRequest {
+  const fast = q.fast ?? QUICK_FAST;
   const instructions = [
     `${q.companion.name} watches a video with a friend. These frames are from the last few seconds, oldest first.`,
     "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights, stunts and people dancing count as soon as you see them. False for ordinary walking, talking, menus or pages.",
@@ -151,6 +159,16 @@ export function buildQuickRequest(q: { companion: { name: string }; frames: stri
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
   const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now (${ENGLISH_ONLY}): ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
+  if (fast) {
+    const last = q.frames.at(-1);
+    if (last) parts.push({ type: "input_image", image_url: last, detail: "low" });
+    return {
+      instructions: `${instructions}\nReply with JSON only: {"react":bool,"moment":"none|funny|surprising|sweet","line":string,"talkOver":bool}`,
+      input: [{ role: "user", content: parts }],
+      effort: "minimal",
+      maxOutputTokens: 600,
+    };
+  }
   for (const f of q.frames) parts.push({ type: "input_image", image_url: f });
   return {
     instructions,

@@ -46,6 +46,7 @@ import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { isOutfitAsk, isProductAsk } from "../finds/intent.ts";
+import { inhalePcmBase64 } from "../watch/breath.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { PerceptionController } from "../perception/controller.ts";
 import { detectRename } from "./rename.ts";
@@ -1265,6 +1266,13 @@ export class Session {
       {
         companion: () => ({ name: this.persona!.name, traits: this.persona!.traits }),
         conversationQuiet: () => this.turn.phase === "listening" && !this.turn.userSpeaking && !this.turn.pendingBargeIn,
+        nonverbal: () => {
+          // lead's call 11/4: brows up + a small inhale, no words, beside (never as) a reply; the app's face part
+          // follows `backchannel.kind: "inhale"` (PROTOCOL.md 11/4)
+          if (this.mode !== "chat" || this.interp || this.reply || this.turn.phase !== "listening" || this.turn.userSpeaking) return false;
+          this.client.sendJson({ type: "backchannel", kind: "inhale", audio: inhalePcmBase64() });
+          return true;
+        },
         react: (script) => {
           // interpretation owns the voice: no watch reactions over it
           if (this.mode === "interpret") return null;

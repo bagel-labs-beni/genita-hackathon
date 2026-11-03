@@ -68,3 +68,15 @@ test("question context: a joke never adds an event, object or line; the memo not
   const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
   assert.match(String(memo.instructions), /who comes in or leaves/);
 });
+
+test("quick look fast shape (GENITA_WATCH_QUICK_FAST=1): one low-detail image, plain JSON, same parse", async () => {
+  const { parseQuick } = await import("../src/watch/memo.ts");
+  const r = buildQuickRequest({ companion: { name: "Juno" }, frames: ["data:a", "data:b"], heard: [], fast: true });
+  const imgs = (r.input as { content: { type: string; image_url?: string; detail?: string }[] }[])[0].content.filter((p) => p.type === "input_image");
+  assert.deepEqual(imgs, [{ type: "input_image", image_url: "data:b", detail: "low" }]);
+  assert.equal(r.text, undefined);
+  assert.match(String(r.instructions), /Reply with JSON only/);
+  assert.deepEqual(parseQuick('{"react":true,"moment":"surprising","line":"He dunked it","talkOver":true}'), { moment: "surprising", line: "He dunked it", talkOver: true });
+  const slow = buildQuickRequest({ companion: { name: "Juno" }, frames: ["data:a", "data:b"], heard: [], fast: false });
+  assert.equal((slow.text?.format as { name: string }).name, "watch_quick");
+});
