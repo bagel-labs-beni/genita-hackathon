@@ -171,6 +171,11 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         bytes = await readBody(req, MAX_IMAGE_BYTES + 1);
         uploadedAt = Date.now();
       }
+      // D26 / SUB-8 (#125): the V01 line "I have the right to use this image" must be on; no ack, no check, nothing stored.
+      if (!rights) {
+        d.log("face.rejected", { reason: "rights_required" });
+        throw new PrepError(400, "rights_required", "Confirm you have the right to use this image.");
+      }
       const uploadAt = new Date(uploadedAt).toISOString();
       if (!await getOps().reserveUpload(user)) return send(res, 429, { error: "limit_reached", limit: "user_uploads" });
       const rec = await checkImage(d, user, bytes, rights, uploadAt);
