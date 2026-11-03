@@ -90,11 +90,44 @@ extension AppState {
         return serverWired ? nil : setup.imageData
     }
 
-    func loadScene() async {
-        guard serverWired, sceneImageData == nil, let url = prep?.sceneURL, let key = sceneKey,
-              let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil else { return }
-        // the account or companion may have changed while the image was on its way
-        if sceneKey == key { sceneImage = (key, data) }
+    /// `upcoming` = a prep answer not shown yet: its scene is fetched first so the screen never says ready over the
+    /// uploaded photo.
+    func loadScene(for upcoming: PrepProgress? = nil) async {
+        let p = upcoming ?? prep
+        guard serverWired, let url = p?.sceneURL else { return }
+        let account = setup.accountId ?? "-", key = "\(account)|\(url.absoluteString)"
+        guard sceneImage?.key != key, let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
+              !Task.isCancelled else { return }
+        // the account or companion may have changed while the image was on its way: keep it only for the same
+        // account, and never over a newer scene already loaded for the prep on screen (an `upcoming` answer is
+        // applied by the caller right after this, so its scene always wins)
+        guard (setup.accountId ?? "-") == account, upcoming != nil || prep?.sceneURL == url || sceneImageData == nil else { return }
+        sceneImage = (key, data)
+    }
+
+    /// `loadScene`, given up after `seconds` (a slow or hanging image download never holds a screen).
+    func loadScene(for upcoming: PrepProgress? = nil, within seconds: Double) async {
+        guard seconds > 0 else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.loadScene(for: upcoming) }
+            group.addTask { try? await Task.sleep(for: .seconds(seconds)) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    static let sceneWaitSeconds: Double = 4
+
+    /// PREP-1 ready: hold S07 until the call scene is on screen, at most `sceneWaitSeconds` in all (download
+    /// included), then go on with what there is. No scene URL (photo face) = nothing to wait for.
+    func waitForScene() async {
+        guard serverWired, prep?.sceneURL != nil else { return }
+        let deadline = Date().addingTimeInterval(Self.sceneWaitSeconds)
+        while sceneImageData == nil, !Task.isCancelled, deadline.timeIntervalSinceNow > 0 {
+            await loadScene(within: deadline.timeIntervalSinceNow)
+            let left = deadline.timeIntervalSinceNow
+            if sceneImageData == nil, left > 0 { try? await Task.sleep(for: .seconds(min(0.5, left))) }
+        }
     }
 
     func apply(_ route: StartRoute, me: GenitaMe? = nil, afterSignIn: Bool = false) {
@@ -486,8 +519,21 @@ extension AppState {
                 setupSummary = r.summary
                 if let p = r.session?.persona { setup.serverPersona = p }
             } catch { route(error) }
+            // PREP-1 opens on the real state: a prep that is already ready draws "ready" from the first frame
+            // (no 0.5 s of empty "Bringing … to life" rows), with its scene already in
+            if let p = try? await onboarding.prep() {
+                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
+                prep = p
+            }
             if stage == .summary { go(.bringing) }
         }
+    }
+
+    /// SUM Cancel (PRD F4): back to the first question (P1, after D01), every answer kept.
+    func cancelSummary() {
+        guard stage == .summary, !savingPrefs else { return }
+        // back through the history (P1's Back goes to D01, not to SUM)
+        returnTo(setup.depth.path.first { $0 != .depth } ?? .help)
     }
 
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
@@ -498,6 +544,8 @@ extension AppState {
         while !Task.isCancelled {
             do {
                 let p = try await onboarding.prep()
+                // ready is shown with the made face already in place, never over the uploaded photo
+                if p.isReady { await loadScene(for: p, within: Self.sceneWaitSeconds) }
                 prep = p
                 if p.isReady || p.isFailed { return }
             } catch GenitaAuthError.unauthorized {

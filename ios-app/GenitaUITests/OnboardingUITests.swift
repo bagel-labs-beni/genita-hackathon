@@ -296,6 +296,13 @@ final class OnboardingUITests: XCTestCase {
         primary.tap()   // tempo
         app.buttons["Calm"].firstMatch.tap(); primary.tap()
         capture("SUM")
+        // SUM Cancel (PRD F4): back to P1 with every answer kept, then forward again to SUM
+        XCTAssertTrue(app.buttons["summaryCancel"].exists, "SUM Cancel under Continue")
+        app.buttons["summaryCancel"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Think with me'")).firstMatch.waitForExistence(timeout: 3), "Cancel → P1")
+        XCTAssertFalse(app.buttons["summaryCancel"].exists)
+        for _ in 0..<5 { primary.tap() }   // help, relationship, challenge, tempo, presence: answers kept, Continue on
+        XCTAssertTrue(app.buttons["summaryCancel"].waitForExistence(timeout: 3), "back on SUM with the same answers")
         primary.tap()
 
         // PREP-1 (Figma 182:51 → 182:3 → 182:142 → 182:96): stages follow the server's real Meta-only shape,

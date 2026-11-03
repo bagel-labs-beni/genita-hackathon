@@ -49,7 +49,8 @@ import UniformTypeIdentifiers
             GeometryReader { full in
                 let viewport = referenceViewport ? CGSize(width: 390, height: stage == .name ? 519 : 844) : full.size
                 let top = referenceViewport ? CGFloat(0) : safe.safeAreaInsets.top - 44
-                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing ? 140 : 108)
+                // SUM: room for Cancel under Continue, same footer as I02's Cancel processing
+                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing || stage == .summary ? 140 : 108)
                 let stretch = max(0, viewport.height - 844 - top)
                 ZStack(alignment: .topLeading) {
                     Color("Canvas")
@@ -67,6 +68,19 @@ import UniformTypeIdentifiers
                                 DesignText(node: label).frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
                             }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
                         }.buttonStyle(.plain).position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel processing")
+                    }
+                    if stage == .summary {
+                        // PRD F4: SUM Cancel = back to the first question, answers kept (Figma summary* "Cancel", Pretendard
+                        // Medium 16; ink on the light sheet — the Figma layer is white under the button)
+                        Button { model.cancelSummary() } label: {
+                            let label = texts.first { $0.characters == "Cancel" }!
+                            ZStack(alignment: .topLeading) {
+                                Color.clear
+                                DesignText(node: label, color: UIColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1))
+                                    .frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
+                            }.frame(width: viewport.width - 77, height: 44).contentShape(Rectangle())   // 44 pt touch, text where I02's is
+                        }.buttonStyle(.plain).disabled(model.savingPrefs).opacity(model.savingPrefs ? 0.4 : 1)
+                            .position(x: (viewport.width - 1) / 2, y: footerY + 85).accessibilityLabel("Cancel").accessibilityIdentifier("summaryCancel")
                     }
                 }.frame(width: viewport.width, height: viewport.height).clipped()
             }.ignoresSafeArea(.container)
@@ -181,13 +195,23 @@ import UniformTypeIdentifiers
     func primary(width: CGFloat) -> some View {
         let source = texts.first { $0.characters == primaryTitle && $0.y > 400 }!
         let sourceY: CGFloat = stage == .name ? 454 : stage == .preparing ? 704 : 736
+        // SUM while the card is written (up to ~8 s): the #111 CTA stays lit with a white spinner (R1 #543 / D105: SUM's CTA
+        // is #111 like every onboarding CTA, no longer blue), instead of a dead grey button; Cancel stays under it
+        let busy = stage == .summary && model.savingPrefs
+        let lit = enabled || busy
         return Button(action: advance) {
             ZStack(alignment: .topLeading) {
-                GlassCTA(color: enabled ? stage == .summary ? Color(red: 0, green: 0.6352941176, blue: 1) : Color("Ink") : Color(white: 0.8))
-                DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
-                    .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
+                GlassCTA(color: lit ? Color("Ink") : Color(white: 0.8))
+                if busy {
+                    ProgressView().tint(.white).frame(width: width - 77, height: source.h).position(x: (width - 77) / 2, y: source.y - sourceY + source.h / 2)
+                        .accessibilityIdentifier("primaryCTABusy")
+                } else {
+                    DesignText(node: source, color: enabled ? UIColor(white: 0.99215686, alpha: 1) : UIColor(white: 0.65, alpha: 1))
+                        .frame(width: source.w, height: source.h).position(x: (width - 77) / 2 + 1, y: source.y - sourceY + source.h / 2)
+                }
             }
-        }.buttonStyle(ReferenceButtonStyle()).disabled(!enabled).accessibilityLabel(primaryTitle).accessibilityIdentifier("primaryCTA")
+        }.buttonStyle(ReferenceButtonStyle()).disabled(!enabled).allowsHitTesting(!busy)
+            .accessibilityLabel(primaryTitle).accessibilityIdentifier("primaryCTA")
     }
     func advance() {
         switch stage {
@@ -438,7 +462,8 @@ import UniformTypeIdentifiers
         let detailColor = playing ? Color(red: 0, green: 99.0 / 255, blue: 159.0 / 255) : picked ? Color(white: 115.0 / 255) : Color(white: 183.0 / 255)
         return ZStack {
             RoundedRectangle(cornerRadius: 12).fill(.white)
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color("Ink"), lineWidth: picked || playing ? 1.5 : 0))
+                // Figma voice.json: 1 pt #E3E3E3 edge (white card on #FDFDFD had no visible edge on device, design review 11/4)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(picked || playing ? Color("Ink") : Color(red: 0xE3 / 255, green: 0xE3 / 255, blue: 0xE3 / 255), lineWidth: picked || playing ? 1.5 : 1))
             Button { player.stop(); selectVoice(i) } label: { Color.clear.contentShape(Rectangle()) }.disabled(waking)
                 .accessibilityLabel("\(v.name), \(detail)").accessibilityAddTraits(picked ? .isSelected : []).accessibilityIdentifier("voice\(i)")
             VStack(alignment: .leading, spacing: 4) {
@@ -534,11 +559,30 @@ import UniformTypeIdentifiers
         UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 0.996)).shadow(color: .black.opacity(0.04), radius: 25.9)
             .frame(width: width, height: 551 + stretch).position(x: width / 2, y: 291 + top + (551 + stretch) / 2)
         RoundedRectangle(cornerRadius: 3.5).fill(Color(white: 0.859)).frame(width: 47, height: 5).position(x: width / 2, y: 305.5 + top)
-        ForEach(texts.filter { $0.y >= 345 && $0.y < 700 }) { n in
+        ForEach(summaryRows(width: width), id: \.node.id) { row in
+            DesignText(node: row.node, text: row.text).designSlot(row.node, width: width, top: top)
+                .accessibilityIdentifier(row.key)
+        }
+    }
+    /// SUM rows at the Figma spacing (label → value 8 pt, value → next label 26 pt) for the real answers: Figma
+    /// reserves 2 lines for Why and Never, so a 1-line answer used to leave a 21 pt hole (and a long one overlapped).
+    func summaryRows(width: CGFloat) -> [(node: DesignNode, text: String?, key: String)] {
+        var shift: CGFloat = 0
+        return texts.filter { $0.y >= 345 && $0.y < 700 }.sorted { $0.y < $1.y }.map { n in
+            var placed = n
+            placed.y += shift
             let key = n.characters ?? ""
-            let replacement: String? = n.fontSize == 18 ? summaryValue(y: n.y) : nil
-            DesignText(node: n, text: referenceViewport ? nil : replacement).designSlot(n, width: width, top: top)
-                .accessibilityIdentifier(key)
+            guard n.fontSize == 18, !referenceViewport else { return (placed, nil, key) }
+            // the last two words stay together: never a one-word last line ("… without / approval"); DesignLabel draws
+            // its own lines, so the paragraph's push-out strategy alone didn't do it (CI onb-SUM after #525 r1)
+            var value = summaryValue(y: n.y)
+            if let r = value.range(of: " ", options: .backwards), value.split(separator: " ").count > 2 { value.replaceSubrange(r, with: "\u{00A0}") }
+            let margin = 390 - n.x - n.w
+            let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w   // DesignPlacement's width
+            let used = ceil(n.attributed(value).boundingRect(with: CGSize(width: w + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
+            placed.h = used
+            shift += used - n.h
+            return (placed, value, key)
         }
     }
     func summaryValue(y: CGFloat) -> String {
