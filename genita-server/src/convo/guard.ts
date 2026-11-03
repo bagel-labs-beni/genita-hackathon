@@ -139,7 +139,7 @@ function deniesAi(sentence: string, userText: string): boolean {
  * rule 11/1): "these pills are huge lol", "the bridge was packed", a rooftop bar, a knife for the onions.
  */
 // a quantity no routine dose comes in ("all my meds" alone is a routine; see the "all" lines below)
-const QTY = String.raw`(?:a bunch of|a handful of|a whole (?:bottle|pack|box|strip) of|the whole (?:bottle|pack|box|strip)(?: of)?|the rest of|too many|way too many|so many|all of|\d{2,}|twenty|thirty|forty|fifty|a hundred)`;
+const QTY = String.raw`(?:a bunch of|a handful of|a whole (?:bottle|pack|box|strip) of|the whole (?:bottle|pack|box|strip)(?: of)?|the rest of|too many|way too many|so many|\d{2,}|twenty|thirty|forty|fifty|a hundred)`;
 /** "gonna take all my meds before bed" is a routine, not a crisis */
 const ROUTINE = String.raw`(?![^.!?]*\b(?:before bed|at night|with (?:food|breakfast|lunch|dinner|water)|this morning|in the morning|for the (?:day|week|trip)|on time|like (?:a good|i'?m supposed)|prescribed|prescription|refill|pharmacy|vitamins?|organi[sz]er|pill ?box|dose|doses|dosage|weekly|daily|travel|trip)\b)`;
 const PILLS = String.raw`(?:(?:these|those|the|my|his|her)\s+)?(?:(?:mom|dad|mother|father|grandma|grandpa|roommate|sister|brother)'?s\s+)?(?:sleeping\s+)?(?:pills|tablets|meds|medication|medicine|painkillers|tylenol|advil|xanax|ambien|benadryl)`;
@@ -180,6 +180,8 @@ const AIMED = /\b(?:at|on|to|against)\s+(?:me|my)\b|\bthreaten/i;
 /** somebody else as the clause's subject: their weapon is a threat, whatever the kitchen or the screen around it */
 const OTHERS = String.raw`(?:he|she|they|someone|somebody|guy|man|woman|person|people|intruder|stranger|robber|burglar|attacker|stalker|mugger|gunman|shooter|ex|husband|wife|boyfriend|girlfriend|bf|gf|partner|dad|father|stepdad|stepfather|mom|mother|stepmom|roommate|neighbou?r|brother|sister|uncle|cousin|boss|coworker|teacher|kid|teen|student|cop|officer)`;
 const SOMEONE = new RegExp(String.raw`^\s*(?:there(?:'s| is| are)\s+)?(?:(?:my|his|her|their|a|an|the|this|that|some)\s+)?(?:[a-z]+\s+)?${OTHERS}\b`, "i");
+/** somebody else named before the weapon anywhere in the clause ("I see my stalker coming in with a knife", Codex r6) */
+const SOMEONE_BEFORE = new RegExp(String.raw`\b(?:(?:my|his|her|their|a|an|the|this|that|some)\s+(?:[a-z]+\s+)?${OTHERS}|he|she|they|someone|somebody)\b`, "i");
 
 /** each clause on its own, so a kitchen or a screen in one never cancels a real threat in another (Codex 11/4) */
 type Clause = { text: string; start: number; end: number; screen: boolean; newSentence: boolean };
@@ -231,7 +233,8 @@ function weaponHit(t: string, clauses: Clause[]): boolean {
     if (!c.text.match(WEAPON) || c.screen) return false;
     // whose weapon: this clause's subject, or the one before for "…is outside and holding a knife"
     const owner = SUBJECT.test(c.text) || SOMEONE.test(c.text) || i === 0 ? c.text : clauses[i - 1].text;
-    if (AIMED.test(c.text) || SOMEONE.test(owner)) return true;
+    const before = c.text.slice(0, c.text.search(new RegExp(WEAPON.source, "i")));
+    if (AIMED.test(c.text) || SOMEONE.test(owner) || SOMEONE_BEFORE.test(before)) return true;
     // only the user's own knife: first person in the clause, or a clause that starts at the act ("holding a knife, …")
     const own = /\b(?:i|i'?m|i am|my)\b/i.test(c.text) || /^\s*(?:holding|gripping|with)\b/i.test(c.text);
     return !(own && /\bknife\b/i.test(c.text) && (KITCHEN_KNIFE.test(t) || PURPOSE.test(c.text)));
