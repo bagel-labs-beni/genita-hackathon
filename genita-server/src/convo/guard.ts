@@ -98,7 +98,7 @@ export function isNarration(sentence: string): boolean {
   if (!announcementOnly(s) && !s.split(CONTENT_JOIN).some((p) => announcementOnly(p.trim()))) return false;
   // "the trench and denim" / "between the white and the black" is one thing being weighed, not two statements
   // …but never when a subject starts a new clause after "and" ("your notes and you should wear the trench", Codex r13)
-  const joined = s.replace(/\b(between|the|your)\s+([\w'-]+)\s+and\s+(?:the\s+)?(?!(?:you|i|we|they|he|she|it|that|this|there|then)\b)([\w'-]+)/gi, "$1 $2-$3");
+  const joined = s.replace(/\b(between|the|your)\s+([\w'-]+)\s+and\s+(?:the\s+)?(?!(?:you|i|we|they|he|she|it|that|this|there|then)\b)([\w'-]+)(?=\s*(?:[.,!?;:—–]|$)|\s+(?:against|for|with|to|in|on|at|over|from|tonight|today|now|first|later)\b)/gi, "$1 $2-$3");
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = joined.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
   return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || bareLookupOnly(p) || FILLER_PART.test(p));

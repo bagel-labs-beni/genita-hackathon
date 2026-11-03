@@ -589,3 +589,14 @@ test("structural (#354 repro e128827): an 'I'm …ing' opener is held — droppe
 test("narration (Codex r13): '… your notes and you should wear the trench' keeps the advice", () => {
   assert.equal(guardSentence("Let me check your notes and you should wear the trench.", none), null);
 });
+
+test("Codex r14: 'My guess is the blue line' and 'I'm seeing onions' are answers; '… your notes and the black one fits best' keeps the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const line of ["My guess is the blue line is fastest.", "I'm seeing onions, tomatoes and garlic.", "I'm loving the trench on you."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(line).speak, ...j.onToolCall().speak, ...j.push("It takes ten minutes.").speak, ...j.finish().speak];
+    assert.ok(out.join(" ").includes(line), line);
+  }
+  assert.equal(guardSentence("Let me check your notes and the black one fits best.", none), null);
+  assert.equal(guardSentence("I'm weighing the trench and denim against what suits you best.", none), null, "the guard leaves it to the structural hold");
+});

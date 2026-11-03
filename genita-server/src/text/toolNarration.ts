@@ -145,7 +145,8 @@ export type NarrationDecision = {
  */
 // any first-person present-progressive opener ("I'm weighing…", "I am pulling…") or a line about our own process is held
 // until the stream shows whether a tool follows (main 11/3: close the pattern, not a word list)
-const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? \w+ing\b|^(?:my (?:plan|guess|first step)|first,? i'?ll|okay,? so i'?m)\b|\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
+// …but an opinion or an observation in that form is content: "I'm seeing onions", "I'm loving the trench" (Codex r14)
+const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|thinking|guessing|betting|getting|hearing|sensing|noticing|spotting)\b)\w+ing\b|^(?:my (?:plan|first step)|first,? i'?ll|okay,? so i'?m)\b|\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick|take|choose|vote for|say|recommend|bet on|stick with)\b|\b(?:go with|pick|wear) the\b/;
 const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
