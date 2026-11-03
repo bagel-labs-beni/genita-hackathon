@@ -904,6 +904,7 @@ function quickController(reply: (req: SparkRequest) => string, hostOpts: { quiet
   const calls: SparkRequest[] = [];
   const ctl = controller([], hostOpts, {
     quick: true,
+    quickEveryMs: 60_000, // spikes only here; the cadence has its own test
     async *spark(req): AsyncGenerator<SparkStreamEvent> {
       calls.push(req);
       const text = reply(req);
@@ -987,4 +988,31 @@ test("crowd noise / a stray word is not dialogue: it never holds a reaction (the
   r.c.onMessage({ type: "frame", image: `${frame}d` });
   await wait(5);
   assert.equal(r.reacted.length, 1);
+});
+
+test("quick look cadence: a motion-aware share gets a quick look every 1.5 s even without a spike (small subjects)", async () => {
+  const calls: SparkRequest[] = [];
+  const { c, at } = controller([], {}, {
+    quick: true,
+    async *spark(req): AsyncGenerator<SparkStreamEvent> {
+      calls.push(req);
+      const text = (req.text?.format as { name?: string }).name === "watch_quick" ? '{"react":false,"moment":"none","line":"","talkOver":false}' : '{"protectedVideo":false,"moment":"none","reaction":"","talkOver":false,"memo":"x","speakers":[]}';
+      yield { type: "text", delta: text };
+      yield { type: "done", responseId: null, text, status: "completed" };
+    },
+  });
+  const quicks = () => calls.filter((r) => (r.text?.format as { name?: string }).name === "watch_quick").length;
+  c.onMessage({ type: "start", source: "YouTube" });
+  for (let ms = 7_000; ms <= 10_000; ms += 333) {
+    at(ms);
+    c.onMessage({ type: "frame", image: `${frame}${ms}`, motion: 0.03 });
+    await wait(1);
+  }
+  assert.equal(quicks(), 2, "7.0 s, then 8.67 s (≥1.5 s later); 10.0 s is only 1.33 s after");
+  // an older Mac (no motion field) gets spikes only, never the cadence
+  const old = controller([], {}, { quick: true, async *spark(req): AsyncGenerator<SparkStreamEvent> { calls.push(req); yield { type: "done", responseId: null, text: "{}", status: "completed" }; } });
+  const before = quicks();
+  old.c.onMessage({ type: "start" });
+  for (let ms = 7_000; ms <= 10_000; ms += 1_000) { old.at(ms); old.c.onMessage({ type: "frame", image: `${frame}${ms}` }); }
+  assert.equal(quicks(), before);
 });

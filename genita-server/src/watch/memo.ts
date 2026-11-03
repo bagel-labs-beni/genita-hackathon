@@ -116,7 +116,7 @@ export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talk
 export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
   const instructions = [
     `${q.companion.name} watches a video with a friend. These frames are the last ~1 s, oldest first.`,
-    "react: true only if something a friend would blurt about just happened here: a dunk, a trick landed, a fall, a big dance move, a reveal, a punchline, people cracking up.",
+    "react: true if something a friend would blurt about is happening in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
     "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");

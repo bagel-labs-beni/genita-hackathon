@@ -59,6 +59,7 @@ export type WatchDeps = {
   memoConcurrency?: number;
   /** quick look on motion spikes (default on; GENITA_WATCH_QUICK=0 turns it off) */
   quick?: boolean;
+  quickEveryMs?: number;
   log?: (event: string, data: Record<string, unknown>) => void;
   /** test hook: no timers */
   manualTick?: boolean;
@@ -102,6 +103,9 @@ const SPIKE_SETTLE_MS = 400;
 /** quick look (11/3, visual moments ≤5 s): a spike's own small Spark call on the last ~1 s, one at a time */
 const QUICK_AFTER_SPIKE_MS = 250;
 const QUICK_MIN_GAP_MS = 700;
+/** …and every 1.5 s while the picture changes: small subjects (a dunk far away, a skateboard trick) barely move the
+ *  32×18 luma, so a spike alone misses them */
+const QUICK_EVERY_MS = 1_500;
 /** quick looks in flight at once: a second spike (the trick right after a cut) doesn't wait for the first */
 const QUICK_CONCURRENCY = 2;
 /** a sound counts as dialogue for the reaction gate only once it has words: crowd noise and cheers transcribe
@@ -151,6 +155,7 @@ export class WatchController {
   private quickSpikeAt: number | null = null;
   private quickInFlight = new Set<AbortController>();
   private lastQuickAt = -Infinity;
+  private motionAware = false;
   private protectedSpoken = false;
   private protectedPending = false;
   private protectedSince = 0;
@@ -229,6 +234,7 @@ export class WatchController {
     this.source = source;
     this.sharingSince = this.deps.now();
     this.lastMemoAt = this.sharingSince;
+    this.lastQuickAt = this.sharingSince;
     this.blank = false;
     this.blankSpoken = false;
     this.protectedSpoken = false;
@@ -301,6 +307,7 @@ export class WatchController {
     const now = this.deps.now();
     this.stats.frames++;
     if (!blank) {
+      if (motion !== null) this.motionAware = true;
       if (motion !== null && motion >= MOTION_SPIKE) {
         this.salientAt = now;
         this.quickSpikeAt = now; // the latest spike: its frames are what the quick look sees
@@ -540,15 +547,19 @@ export class WatchController {
 
   /** A spike with one frame after it (or 0.4 s of stillness) gets a quick look right away — no memo wait. */
   private maybeQuick(): void {
-    const spike = this.quickSpikeAt;
-    if (spike === null || !QUICK_ON || this.deps.quick === false || this.deps.reactions === false || !this.sharing || this.closed) return;
+    if (!QUICK_ON || this.deps.quick === false || this.deps.reactions === false || !this.sharing || this.closed) return;
     const now = this.deps.now();
-    const after = this.frames.some((f) => f.at > spike + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400;
-    if (!after || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
+    let spike = this.quickSpikeAt;
+    const after = spike !== null && (this.frames.some((f) => f.at > spike! + QUICK_AFTER_SPIKE_MS - 50) || now - spike >= 400);
+    const newest = this.frames.at(-1)?.at ?? -Infinity;
+    // the cadence needs a motion-aware Mac (frames carry `motion`, ≤3 fps); older builds get spikes only
+    const cadence = spike === null && this.motionAware && newest > this.lastQuickAt && now - this.lastQuickAt >= (this.deps.quickEveryMs ?? QUICK_EVERY_MS);
+    if (!(after || cadence) || this.quickInFlight.size >= QUICK_CONCURRENCY || now - this.lastQuickAt < QUICK_MIN_GAP_MS) return;
+    if (cadence) spike = newest;
     this.quickSpikeAt = null;
     // no point looking when a reaction couldn't go out anyway
     if (this.blank || !this.host.conversationQuiet() || (this.lastReactionAt !== null && now - this.lastReactionAt < REACT_MIN_GAP_MS)) return;
-    void this.runQuick(spike);
+    void this.runQuick(spike!);
   }
 
   async runQuick(spikeAt: number): Promise<void> {
