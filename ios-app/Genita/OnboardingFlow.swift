@@ -25,6 +25,9 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        // no session but the phone remembers a later screen (a cleared/expired token, a sign-out that didn't reach
+        // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
+        if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
         let state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
@@ -105,6 +108,16 @@ extension AppState {
     }
 
     // MARK: A03
+
+    /// Screens that work without an account: A01 and A02. Everything after needs a session on a wired build.
+    static let beforeSignIn: Set<Stage> = [.welcome, .signIn]
+    var needsSignInFirst: Bool { serverWired && onboarding.auth.token == nil && !Self.beforeSignIn.contains(stage) }
+
+    /// A03 "Not you? Sign out": back to A02 to use another account.
+    func signOutFromName() async {
+        await onboarding.auth.logout()
+        signedOut()
+    }
 
     func saveDisplayName() {
         let name = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
