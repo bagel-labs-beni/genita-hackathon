@@ -25,6 +25,7 @@ import { domainOf, lastJsonObject, str } from "./parse.ts";
 import { userMessage, type FindsVendors, type OutputItem } from "./vendors.ts";
 import type { PageFacts } from "./fetchPage.ts";
 import type { PipelineCtx, PipelineResult } from "./pipeline.ts";
+import { colorsOf } from "./productCache.ts";
 
 export const PRODUCT_COUNT = 2;
 /** PF-1 searching line: one line at 390 pt next to Stop (≈ 32 characters of Pretendard 16 medium) */
@@ -253,6 +254,35 @@ export function offOccasion(product: string, asked: string): boolean {
   return HOUSE_SHOES.test(name) && !HOUSE_SHOES.test(asked);
 }
 
+/** Color words that are the same color to someone asking for it ("dark brown" → a chocolate or espresso boot). */
+const COLOR_FAMILY: Record<string, string> = {
+  brown: "brown", chocolate: "brown", espresso: "brown", mocha: "brown", cognac: "brown",
+  tan: "tan", camel: "tan", beige: "tan", sand: "tan", khaki: "tan", taupe: "tan", oatmeal: "tan", nude: "tan",
+  black: "black",
+  grey: "grey", gray: "grey", charcoal: "grey", stone: "grey",
+  white: "white", ivory: "white", cream: "white", bone: "white", ecru: "white",
+  navy: "blue", blue: "blue", indigo: "blue", denim: "blue", teal: "blue", turquoise: "blue",
+  red: "red", burgundy: "red", wine: "red", maroon: "red", oxblood: "red", cherry: "red", rust: "red",
+  green: "green", olive: "green", mint: "green",
+  pink: "pink", coral: "pink", purple: "purple", plum: "purple", lavender: "purple", lilac: "purple",
+  yellow: "yellow", mustard: "yellow", orange: "orange", silver: "silver", gold: "gold", copper: "gold", bronze: "gold",
+};
+const families = (text: string) => new Set(colorsOf(text).map((c) => COLOR_FAMILY[c] ?? c));
+/** The colors asked for: this turn's, else the search it refines ("find a couple that match my style" keeps "dark brown"). */
+export function askedColors(question: string, previous?: string): Set<string> {
+  const now = families(question);
+  return now.size ? now : families(previous ?? "");
+}
+/**
+ * FD-02 "color request match 100%" (AU-78): a product whose name or URL names only other colors than the one asked
+ * for ("Black Chelsea Boot" for "dark brown boots"). A name with no color word is kept (the page may still be it).
+ */
+export function offColor(product: string, asked: Set<string>): boolean {
+  if (!asked.size) return false;
+  const has = families(product.replace(/[-_/]+/g, " "));
+  return has.size > 0 && ![...has].some((c) => asked.has(c));
+}
+
 export function productPrompt(o: { question: string; recent: string[]; taste: string[]; previous?: string; city: string | null; region: string; today: string; seeing?: boolean; oneSearch?: boolean }): string {
   return [
     `The user asked out loud: "${o.question.slice(0, 300)}"`,
@@ -439,7 +469,8 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const raw = (Array.isArray(j?.items) ? (j!.items as ItemJson[]) : []).slice(0, 4);
   const seen = new Set<string>();
   const cands: { item: ItemJson; url: string; inTrace: boolean }[] = [];
-  const dropped: { notOpened: number; notProduct: number; offOccasion?: number } = { notOpened: 0, notProduct: 0 };
+  const dropped: { notOpened: number; notProduct: number; offOccasion?: number; offColor?: number } = { notOpened: 0, notProduct: 0 };
+  const colors = askedColors(ctx.question, ctx.previous);
   for (const item of raw) {
     const claimed = str(item?.url, 600);
     const hit = matchOpened(claimed, opened);
@@ -453,6 +484,11 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
     // QA 11/3: a trench outfit's shoes came back as slippers / sandals / mules (3/8): never unless asked for
     if (offOccasion(`${str(item?.name, 200)} ${url}`, `${ctx.question} ${ctx.previous ?? ""}`)) {
       dropped.offOccasion = (dropped.offOccasion ?? 0) + 1;
+      continue;
+    }
+    // FD-02: never a black boot for "dark brown boots" (prod 11/3 S5), on every search, not only the prefetch
+    if (offColor(`${str(item?.name, 200)} ${new URL(url).pathname}`, colors)) {
+      dropped.offColor = (dropped.offColor ?? 0) + 1;
       continue;
     }
     seen.add(k);

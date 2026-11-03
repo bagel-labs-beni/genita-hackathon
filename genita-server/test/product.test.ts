@@ -424,3 +424,26 @@ test("QA 11/3: shoes for an outfit are never slippers / sandals / mules unless a
   assert.equal(offOccasion("Leather slide buckle belt", ask), false);
   assert.match(productPrompt({ question: ask, recent: [], taste: [], city: null, region: "US", today: "Tuesday, November 3" }), /never slippers, sandals, slides, flip-flops or mules unless they asked/);
 });
+
+test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot; brown shades and plain names stay", async () => {
+  const { askedColors, offColor } = await import("../src/finds/product.ts");
+  const brown = askedColors("Can we look for dark brown boots for my trench?");
+  assert.deepEqual([...brown], ["brown"]);
+  assert.equal(offColor("Black Chelsea Boot /products/black-chelsea-boot", brown), true);
+  assert.equal(offColor("Highwood Boot in Tan /p/highwood-tan", brown), true);
+  assert.equal(offColor("Espresso Suede Chelsea Boot /p/12345", brown), false, "a brown shade");
+  assert.equal(offColor("Heritage Chelsea Boot /p/12345", brown), false, "no color named: kept");
+  assert.equal(offColor("Black / Brown two-tone boot", brown), false, "names the asked color too");
+  assert.equal(askedColors("Find a couple that match my style", "dark brown boots").has("brown"), true, "a refine keeps the color");
+  assert.equal(askedColors("boots for my trench").size, 0);
+  // through the pipeline: the black one is dropped, the next brown one fills the slot
+  const P3x = "https://shop3.example.com/products/chestnut-boot";
+  const v = vendors({
+    items: [{ ...ITEM1, name: "Black Chelsea Boot" }, { ...ITEM2, name: "Dark Brown Chelsea Boot" }, { ...ITEM1, url: P3x, name: "Chocolate Suede Boot" }],
+    output: [SEARCH, OPEN(P1), OPEN(P2), OPEN(P3x)],
+    facts: { [P1]: { kind: "product" }, [P2]: { kind: "product" }, [P3x]: { kind: "product" } },
+  });
+  const { ctx } = ctxFor(v, { question: "Can we look for dark brown boots for my trench?" });
+  const card = (await runProduct(ctx)).card!;
+  assert.deepEqual(card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Chocolate Suede Boot"]);
+});
