@@ -53,7 +53,7 @@ import type { CallStart, VoiceUpdate } from "../personalize/service.ts";
 import type { CallTurn } from "../personalize/extract.ts";
 import { ASK_TURNS, replyAsks } from "../personalize/unknowns.ts";
 import { mightBeCorrection } from "../personalize/corrections.ts";
-import { avoidKeys, forgetTarget, isForgetRequest, scrubHistory, type Removed } from "../personalize/forgotten.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, scrubHistory, type Removed } from "../personalize/forgotten.ts";
 import { isForgetRequest as isMemoryForgetRequest } from "../memory/extract.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
@@ -252,6 +252,11 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** Codex #585 r2 P1: a last opener topic the user since asked to forget is never named, even as "don't open on X" */
+function lastSafeHook(recent: string[], removed: Removed[]): string | null {
+  const last = recent.at(-1) ?? null;
+  return last && removed.length && mentionsAvoided(last, avoidKeys(removed)) ? null : last;
+}
 /** AU-44: notes-based follow-up greetings, like the memory opener (memory/service.ts revisitGapHours) */
 const NOTES_OPENER_GAP_MS = 6 * 3_600_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
@@ -1537,7 +1542,7 @@ export class Session {
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
-      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: lastSafeHook(recent, this.removedLines), lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
       if (hook || o.hasItem) this.personalUsed++;
     }

@@ -1625,3 +1625,20 @@ test("AU-44: notes make a follow-up greeting only after 6 h (or right after a ha
   s.memoryCall = null;
   session.close();
 });
+
+test("Codex #585 r2: 'You said,85.' is still a number said back; a forgotten last opener topic is never named", async () => {
+  const { echoesSensitiveNumber } = await import("../src/convo/guard.ts");
+  assert.ok(echoesSensitiveNumber("You said,85.", "My salary is 85k"));
+  assert.ok(!echoesSensitiveNumber("That's 1.85 miles.", "My salary is 85k"));
+});
+
+test("Codex #585 r2 P1: the last opener topic the user asked to forget is not named as 'don't open on…'", { skip: !v1 }, async () => {
+  const { session } = setup(["<happy> Hey."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999, user: { name: "Summer", profile: "Into: ramen, aespa." } }));
+  const s = session as unknown as { openerRecent: string[]; removedLines: unknown[]; lastMessageAt: number | null; v1Extras(t: unknown): { opener?: string } };
+  s.openerRecent = ["pottery glaze"]; s.lastMessageAt = Date.now() - 30 * 3_600_000;
+  assert.match(s.v1Extras({ greeting: { item: null } }).opener ?? "", /pottery glaze/, "control: named while not forgotten");
+  s.openerRecent = ["pottery glaze"]; s.removedLines = [{ text: "pottery glaze", forget: true }];
+  assert.doesNotMatch(s.v1Extras({ greeting: { item: null } }).opener ?? "", /pottery/);
+  session.close();
+});
