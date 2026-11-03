@@ -27,7 +27,7 @@ import { avoidKeys, forgetTarget, isForgetRequest, type Removed } from "./forgot
 import { isSensitiveDetail } from "./sensitive.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
-export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
+export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion" | "deleteStyle">;
 
 export const ACK = "Got it. I'll remember that.";
 export const CORRECTION_TEXT_MAX = 200;
@@ -93,6 +93,19 @@ export class Personalize {
   }
 
   /** Read-modify-write the latest card under the user's lock. fn returns null = no change. */
+  /**
+   * "Forget all of this" (AU-92): what Genita knows about them — the import, HISY, corrections, insights, call growth —
+   * goes; the companion and the account stay. Inside the per-user lock, so a queued correction or story write that
+   * runs after it finds no card and writes nothing.
+   */
+  async forgetAll(userId: string): Promise<void> {
+    if (!this.store.deleteStyle) throw new PersonalizeError(501, "not_supported");
+    await this.serial(userId, () => this.store.deleteStyle!(userId));
+    this.storyFailedAt.delete(userId);
+    for (const k of [...this.lastSave.keys()]) if (k.startsWith(`${userId}\u0000`)) this.lastSave.delete(k);
+    this.log("profile.forgot_all", {});
+  }
+
   private async update<T>(userId: string, fn: (card: StyleCard) => Promise<{ card: StyleCard; out: T } | null> | { card: StyleCard; out: T } | null): Promise<T | null> {
     return this.serial(userId, async () => {
       const card = await this.store.getStyle(userId);

@@ -443,6 +443,18 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       return send(res, 200, await d.personalize.story(user, waitMs));
     }
 
+    // About you → "Forget all of this" (AU-92): what Genita knows about them goes, the companion stays
+    if (m === "DELETE" && p === "/v1/profile") {
+      if (!d.personalize) throw new PrepError(404, "not_found");
+      if (!allowCorrect(user)) throw new PrepError(429, "rate_limited", "try again in a minute");
+      try { await d.personalize.forgetAll(user); } catch (err) {
+        if (err instanceof PersonalizeError) throw new PrepError(err.status, err.code, err.message);
+        throw err;
+      }
+      await d.onProfileForgotten?.(user);
+      return send(res, 200, { ok: true });
+    }
+
     if (m === "PATCH" && p === "/v1/profile") {
       if (!d.personalize) throw new PrepError(404, "not_found");
       const raw = await readBody(req, PROFILE_JSON_LIMIT);

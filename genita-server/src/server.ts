@@ -125,6 +125,14 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // About you → "Forget all of this" (AU-92): after the profile row, call memory and summaries, the handed-off turns,
+  // opener topics and the product cards made from the old taste go too; the companion stays
+  prep.deps.onProfileForgotten = async (userId) => {
+    dropLastTurns(userId);
+    forgetOpenerTopics(userId);
+    forgetProductCache(ownerKey(userId), { block: false });
+    await deps.memory?.forget(userId);
+  };
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
   // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
   const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)

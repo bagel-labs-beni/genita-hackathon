@@ -38,6 +38,10 @@ export class PgPrepStore implements PrepStore {
     );
   }
 
+  async deleteStyle(userId: string) {
+    await this.db.query("DELETE FROM user_styles WHERE user_id = $1", [userId]);
+  }
+
   async putImage(rec: ImageRecord, bytes: Buffer) {
     const key = imageKey(rec.userId, rec.id);
     await this.blobs.put(key, bytes, rec.mime);

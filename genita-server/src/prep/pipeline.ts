@@ -35,6 +35,8 @@ export type PrepDeps = {
   photoPolish?: boolean;
   /** lane 개인화: HISY story (in parallel with the import), corrections, call growth; unset = none */
   personalize?: Personalize;
+  /** after DELETE /v1/profile (AU-92): the server forgets call memory and summaries too */
+  onProfileForgotten?: (userId: string) => Promise<void>;
 };
 
 /** how long the import response waits for a story that's still being written after the parse (then it's saved when it lands) */

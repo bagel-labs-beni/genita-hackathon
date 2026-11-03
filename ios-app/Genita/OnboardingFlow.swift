@@ -238,6 +238,27 @@ extension AppState {
         }
     }
 
+    /// About you → "Forget all of this" (AU-92): the server forgets what Genita knows about the user (import, HISY,
+    /// corrections, insights, call memory); the companion stays. Returns the error line to show (nil = done).
+    func forgetProfile() async -> String? {
+        do {
+            try await onboarding.forgetProfile()
+            profileForgotten()
+            return nil
+        } catch {
+            route(error)
+            if case GenitaAuthError.server(status: 429, _, _) = error { return "Try again in a minute." }
+            return "Couldn’t forget it just now. Nothing was removed."
+        }
+    }
+
+    /// The phone drops its copy too: the I04 rows, the call's profile text, the story cards, the skip picks.
+    func profileForgotten() {
+        setup.styleRows = nil; setup.stylePartial = nil; setup.styleProfile = nil
+        setup.skipInterests = nil; setup.skipReplies = nil; setup.skipAvoid = nil; setup.skipLikes = nil
+        story = nil; storySource = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+    }
+
     /// I04: the six rows as read-only text (I04-P rows say "Not enough information yet.").
     var styleText: String {
         guard let rows = setup.styleRows, !rows.isEmpty else { return setup.response }
