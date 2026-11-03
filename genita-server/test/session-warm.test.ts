@@ -55,7 +55,7 @@ test("warm-up: a turn that just used the vendors counts as warm; device speech n
   tick(40_000);
   asr.fire({ type: "speechStart", turnId: 0 });
   asr.fire({ type: "speechEnd", turnId: 0 });
-  asr.fire({ type: "speechComplete", turnId: 0, text: "hi there" });
+  asr.fire({ type: "speechComplete", turnId: 0, text: "hi there." });
   await new Promise((r) => setTimeout(r, 20));
   tick(20_000); // 60 s after the start, 20 s after a reply used the sockets
   asr.fire({ type: "speechStart", turnId: 1 });

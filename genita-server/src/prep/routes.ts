@@ -36,7 +36,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
-import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
+import { ResetBusy, needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
 import { ALL_FACE_KEYS, type FaceKey } from "./face.ts";
 import { flowAssetAllowed } from "./faceflow.ts";
 import { sniffImage } from "./classify.ts";
@@ -292,8 +292,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/voices") {
       const imageId = url.searchParams.get("imageId");
       const img = imageId ? await d.store.getImage(imageId).catch(() => null) : null;
-      const kind = img && img.rec.userId === user ? img.rec.check.type : null;
-      const r = await orderedVoices(d, user, kind);
+      const own = img && img.rec.userId === user ? img : null;
+      const r = await orderedVoices(d, user, own?.rec.check.type ?? null, own?.rec.check.raw?.voice_fit);
       return send(res, 200, {
         voices: r.voices.map((v) =>
           v.locale
@@ -335,6 +335,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
 
     if (m === "POST" && p === "/v1/companion") {
       const b = await readJson(req);
+      // a create and POST /v1/companion/reset never overlap (Codex r3 P2): during a reset this answers 409, and a reset
+      // waits for a create already under way (then removes that companion too, photo and all)
+      const made = await runner.creating(user, async () => {
       const existing = await d.store.getCompanion(user);
       if (existing && !existing.demo) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
       const img = typeof b.imageId === "string" ? await d.store.getImage(b.imageId).catch(() => null) : null;
@@ -374,7 +377,12 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       d.log("companion.named", { companionId: c.id, userId: user });
       d.log("companion.created", { companionId: c.id, userId: user, imageId: c.imageId });
       void runner.run(user);
-      return send(res, 201, companionView(c, await d.store.getStyle(user)));
+      return c;
+      }).catch((err) => {
+        if (err instanceof ResetBusy) throw new PrepError(409, "reset_in_progress", "Starting over. Try again in a moment.");
+        throw err;
+      });
+      return send(res, 201, companionView(made, await d.store.getStyle(user)));
     }
 
     if (m === "POST" && p === "/v1/companion/name/suggest") {

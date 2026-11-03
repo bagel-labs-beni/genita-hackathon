@@ -22,6 +22,9 @@ import UniformTypeIdentifiers
         return Self.device(front: true) != nil
     }
     var canFlip: Bool {
+        #if DEBUG
+        if fixture != nil { return isOn } // the stand-in camera "flips" too, so UI tests can drive D22
+        #endif
         #if os(iOS)
         return isOn && Self.device(front: true) != nil && Self.device(front: false) != nil
         #else
@@ -48,6 +51,9 @@ import UniformTypeIdentifiers
     func flip() {
         guard canFlip else { return }
         front.toggle()
+        #if DEBUG
+        if fixture != nil { return }
+        #endif
         worker.switchDevice(session: session, device: Self.device(front: front))
     }
 

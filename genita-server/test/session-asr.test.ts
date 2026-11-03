@@ -160,7 +160,7 @@ async function scenario(source: "mic" | "call", kind: string) {
     assert.ok(recovered.isOpen);
     assert.equal(recovered.audio, 4800, "next frame after recovery reaches the replacement ASR");
     const before = h.events.filter((e) => e.type === "reply").length;
-    recovered.turn(source === "mic" ? "Voice is back" : "이거 얼마예요?");
+    recovered.turn(source === "mic" ? "Voice is back." : "이거 얼마예요?");
     for (let i = 0; i < 20; i++) await tick();
     assert.equal(h.events.filter((e) => e.type === "reply").length, before + 1, "voice turns resume");
     recovered.disconnect();

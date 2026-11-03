@@ -12,6 +12,7 @@ import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isLinksAsk, isProductAsk } from "./intent.ts";
 import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
+import { cacheGet, cacheKey, cachePut, cardFitsColors, cardIsKind, categoryOf, claimWarm, colorPhrases, colorsOf, plainAsk, releaseWarm, type CachedProducts } from "./productCache.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
 
@@ -29,6 +30,8 @@ export type FindsDeps = {
   productHedge?: number;
   /** demo S5: start the "goes with" search when an outfit card lands (GENITA_PRODUCT_PREFETCH=0 turns it off) */
   productPrefetch?: boolean;
+  /** S5 product cache + background warm-up (GENITA_PRODUCT_CACHE=0 turns it off) */
+  productCache?: boolean;
   /** demo S5: a product search with nothing on screen by then gets one "still hunting" line (default 30 s) */
   stillSearchingMs?: number;
 };
@@ -51,6 +54,16 @@ export function namesPick(said: string): boolean {
   // a color of what it recommends ("dark brown shoes", "black leather belt") is not the pick (Codex P2)
   const goesWith = /^(shoes?|boots?|loafers?|sneakers?|heels?|flats|sandals?|bags?|belts?|watch|scarf|hat|accessories|leather|suede|jewelry|socks)$/;
   return words.some((w, i) => COLOR.test(w) && !words.slice(i + 1, i + 4).some((n) => goesWith.test(n)));
+}
+/** the account's colors with their modifier ("dark brown"), at most 3, for the cache warm-up */
+export function warmColors(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.toLowerCase().matchAll(/\b((?:dark|light|deep|pale) )?(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy)\b/g)) {
+    const c = `${m[1] ?? ""}${m[2]}`;
+    if (!out.includes(c)) out.push(c);
+    if (out.length >= 3) break;
+  }
+  return out;
 }
 export function prefetchFrames(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.GENITA_PREFETCH_FRAMES === "1";
@@ -150,6 +163,8 @@ export class FindsRunner {
   private focusId: string | null = null;
   private closed = false;
   private prefetched: Prefetch | null = null;
+  /** cache warm-up / refresh searches of this call (stopped when it ends) */
+  private readonly backgroundStops = new Set<() => void>();
 
   constructor(deps: FindsDeps, hooks: RunnerHooks) {
     this.deps = deps;
@@ -165,6 +180,50 @@ export class FindsRunner {
     this.timeZone = o.timeZone && /^[A-Za-z_+\-/0-9]{1,40}$/.test(o.timeZone) ? o.timeZone : undefined;
     // the account's style card, read once per call (a failure just means no blue chip)
     this.likes = o.owner && this.deps.likes ? this.deps.likes(o.owner).catch(() => undefined) : Promise.resolve(undefined);
+    // S5: shoes in each color this account likes, searched in the background before anyone asks (11/4)
+    if (this.deps.productCache === true) void this.warmProducts();
+  }
+
+  /**
+   * What a cached card is kept under: this account and its taste text. Never shared between accounts: a search's
+   * taste chips and evidence can quote the account's own memories (Codex #522 r3 P1).
+   */
+  private tasteText(): string {
+    return `account:${this.owner ?? "none"}|${(this.profile ?? "").trim()}`;
+  }
+
+  private async warmProducts(): Promise<void> {
+    if (!(this.profile ?? "").trim() || this.closed) return;
+    const taste = this.tasteText();
+    // all colors at once: background searches yield to calls, and the ask comes ~20 s after the call starts
+    await Promise.all(warmColors(taste).map(async (phrase) => {
+      const key = cacheKey("shoes", colorPhrases(phrase), taste);
+      if (cacheGet(key, Date.now()) || !claimWarm(key, Date.now())) return;
+      const card = await this.searchInBackground(`Find ${phrase} shoes that match their style.`, `warm-${randomUUID()}`).catch(() => null);
+      if (card && this.tasteText() === taste && cardIsKind(card.card, "shoes") && cardFitsColors(card.card, colorsOf(phrase))) cachePut(key, card);
+      else releaseWarm(key);
+    }));
+  }
+
+  /** A product search nobody waits for (cache warm-up / refresh): no events out, pictures kept in memory. */
+  private async searchInBackground(question: string, findId: string): Promise<CachedProducts | null> {
+    const images = new Map<string, Buffer>();
+    const abort = new AbortController();
+    const stop = () => abort.abort();
+    this.backgroundStops.add(stop);
+    try {
+      const ctx: PipelineCtx = {
+        findId, utteranceId: -1, kind: "product", question, frames: [], memories: this.memories, profile: this.profile, userName: this.userName,
+        replyText: Promise.resolve(null), timeZone: this.timeZone, vendors: this.deps.vendors, signal: abort.signal, now: this.hooks.now, log: this.hooks.log, images: this.deps.images,
+        emit: () => {},
+        putImage: async (slot, bytes) => { images.set(slot, bytes); return `cache:${slot}`; },
+      };
+      const r = await runProduct({ ...ctx, likes: await this.likes, recent: [], region: this.deps.shopRegion, hedge: 1, background: true });
+      this.hooks.log("product.cache_search", { ok: !!r.card, ms: r.timings.cardMs ?? null });
+      return r.card ? { at: Date.now(), card: r.card, images } : null;
+    } finally {
+      this.backgroundStops.delete(stop);
+    }
   }
 
   /** A product search of this call is still open for refines ("another one in black"). `recent` as in TurnInput. */
@@ -235,9 +294,10 @@ export class FindsRunner {
       }
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
-      const pre = prev ? null : this.takePrefetch(t.text, now);
+      const cached = prev || this.deps.productCache !== true ? null : this.cacheFor(t.text);
+      const pre = prev || cached ? null : this.takePrefetch(t.text, now);
       if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
-      run = pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
+      run = cached ? (c) => this.replayCache(cached, c, t) : pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
@@ -256,6 +316,7 @@ export class FindsRunner {
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
     const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
+    const tasteAtStart = this.tasteText(); // a profile change while it searched: not cached (Codex #522 r5 P1)
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
         this.onEvent({ type: "find.failed", findId, reason: "error", message: "Something went wrong. Ask me again in a moment." });
@@ -264,6 +325,12 @@ export class FindsRunner {
       return { card: null, timings: {} } as PipelineResult;
     }).then(async (r) => {
       if (r.card) await this.persist(r.card);
+      // a real search's card answers the same ask next time at once (same taste only)
+      if (r.card && intent.kind === "product" && !r.timings.cached && this.deps.productCache === true) {
+        const cat = categoryOf(t.text);
+        const colors = colorsOf(t.text);
+        if (cat && colors.length && tasteAtStart === this.tasteText() && plainAsk(t.text) && cardIsKind(r.card, cat) && cardFitsColors(r.card, colors)) cachePut(cacheKey(cat, colorPhrases(t.text), tasteAtStart), { at: Date.now(), card: r.card, sourceFindId: findId });
+      }
       this.hooks.log("find.done", { findId, kind: intent.kind, ok: !!r.card, ...r.timings });
       return r;
     }).finally(() => {
@@ -338,6 +405,64 @@ export class FindsRunner {
     void likes.then((l) => { p.inView = [question, ...(l ?? []), this.profile ?? ""].join(" ").toLowerCase(); });
     this.prefetched = p;
     this.hooks.log("product.prefetch", { wants: [...wants].slice(0, 6) });
+  }
+
+  /** A cached card for this ask: same category, its colors proven, nothing narrower asked (price, brand, material…). */
+  private cacheFor(text: string): CachedProducts | null {
+    const cat = categoryOf(text);
+    if (!cat || !plainAsk(text)) return null;
+    const lower = text.toLowerCase();
+    const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
+    if (EXCLUDE.test(lower) || named.some((w) => MATERIAL.test(w)) || /\$\s?\d|\bunder \d|\bcheap|\bsize\b|\b\d{1,2}(\.5)?\b|\b(wide|narrow|petite|plus)\b/.test(lower) || brandsIn(text).length) return null;
+    const colors = colorsOf(text);
+    // no color word we know ("teal" once was none): never served from the cache (Codex #522 r3)
+    if (!colors.length) return null;
+    const hit = cacheGet(cacheKey(cat, colorPhrases(text), this.tasteText()), Date.now());
+    return hit && cardIsKind(hit.card, cat) && cardFitsColors(hit.card, colors) ? hit : null;
+  }
+
+  /**
+   * S5 at once: the cached card under this ask's own id (pictures copied over), then a fresh search behind it that
+   * only refreshes the cache — the card on screen never changes under the user.
+   */
+  private async replayCache(entry: CachedProducts, c: PipelineCtx, t: TurnInput): Promise<PipelineResult> {
+    const t0 = c.now();
+    const label = guessLabel(t.text, "Things");
+    c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(label)} · from earlier` });
+    const products = [];
+    for (const p of entry.card.products ?? []) {
+      // another call's situation (what someone said there) never travels with the card
+      const q = { ...p, situation: "" };
+      // the picture's bytes, wherever the card's own status stopped (a background search sends no image events, so
+      // its card still says "pending" — Codex #522 r3): there → ready here; not there → failed (nothing will follow)
+      if (p.image) {
+        const bytes = entry.images?.get(p.image.slot) ?? (entry.sourceFindId ? (await this.deps.store.getImage(entry.sourceFindId, p.image.slot).catch(() => null))?.bytes : undefined);
+        if (bytes) {
+          try { q.image = { slot: p.image.slot, status: "ready", url: await c.putImage(p.image.slot, bytes) }; } catch { q.image = { slot: p.image.slot, status: "failed" }; }
+        } else q.image = { slot: p.image.slot, status: "failed" };
+      }
+      products.push(q);
+    }
+    // only the public product facts and the shared taste line travel; the words of the call they were found in
+    // (title, subtitle, say, reason chips) are rebuilt for this one (Codex P1 #522)
+    const n = products.length;
+    const card: FindCard = {
+      ...entry.card, id: c.findId, createdAt: new Date().toISOString(), products, saved: false,
+      title: n === 1 ? `One ${shortLabel(label).toLowerCase()} pick` : `${n} ${shortLabel(label).toLowerCase()} picks`,
+      subtitle: `${shortLabel(label)}, matched to your style.`,
+      reasons: undefined, say: undefined, pill: undefined, status: `${n} link${n === 1 ? "" : "s"}`,
+      ...(entry.card.evidence ? { evidence: { ...entry.card.evidence, situation: "" } } : {}),
+    };
+    delete card.reasons; delete card.say; delete card.pill;
+    if (c.signal.aborted) return { card: null, timings: {} };
+    c.emit({ type: "find.created", findId: c.findId, card });
+    const cardMs = Math.round(c.now() - t0);
+    // refresh behind it (yields to calls), for the next ask
+    const kind = categoryOf(t.text) ?? "shoes";
+    const taste = this.tasteText();
+    const key = cacheKey(kind, colorPhrases(t.text), taste);
+    void this.searchInBackground(t.text, `refresh-${randomUUID()}`).then((fresh) => { if (fresh && this.tasteText() === taste && cardIsKind(fresh.card, kind) && cardFitsColors(fresh.card, colorsOf(t.text))) cachePut(key, fresh); }).catch(() => {});
+    return { card, timings: { cardMs, cached: 1 } };
   }
 
   /** The prefetch fits this ask: fresh, and the ask names nothing it didn't look for. */
@@ -538,6 +663,7 @@ export class FindsRunner {
     if (opts.purge) this.purged = true;
     this.prefetched?.abort.abort();
     this.prefetched = null;
+    for (const stop of this.backgroundStops) stop();
     for (const [id, r] of this.running) if (opts.purge || !this.cards.has(id)) r.abort.abort();
   }
   private purged = false;

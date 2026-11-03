@@ -130,7 +130,7 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
       case "proximity.disarm":
         return handle.proximityDisarm();
       case "proximity.seen":
-        return void handle.proximitySeen(m.token).catch(fail);
+        return void handle.proximitySeen(m.token, m.requestId).catch(fail);
       case "ping":
         return send({ type: "pong", t: m.t ?? null });
       default:
@@ -145,24 +145,66 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
   return () => ws.close(4401, "account_deleted");
 }
 
+/** the most a call waits for its start claim before its first sound is judged anyway */
+export const START_CLAIM_WAIT_MS = 1500;
+
 /**
  * The call socket's side of the gate. Audio frames (and their `audio` timing events) and device-voice
  * `say` lines (#157: the app speaks those itself) reach the device only while it owns the conversation; the mic is ignored while it doesn't. Everything
  * else (captions, state) still flows so the app stays in sync.
+ *
+ * Between `ready` and the call's start claim (`started()`), everything the session sends is held in order and
+ * judged when the claim lands: the greeting's opener comes from a cache in ~5 ms, before the claim, and was
+ * dropped as "not the owner" (prod a5e2c4c 11/4: "Hey, Q!" shown, first sound only ~3 s later).
  */
 export function gateCall(hub: HandoffHub, userId: string, device: HandoffDevice, sink: ClientSink, stop: () => void): { sink: ClientSink; call: CallHandle } {
   const call = hub.attachCall(userId, device, { stop, send: (m) => sink.sendJson(m as never) });
+  type Held = { json: Parameters<ClientSink["sendJson"]>[0] } | { bin: Buffer };
+  let held: Held[] | null = null; // non-null: waiting for the start claim
+  let readySeen = false;
+  let waitTimer: NodeJS.Timeout | null = null;
+  const passJson = (m: Parameters<ClientSink["sendJson"]>[0]) => {
+    if ((m.type === "audio" || m.type === "say") && !call.mayPlay()) return;
+    sink.sendJson(m);
+  };
+  const passBin = (b: Buffer) => {
+    if (call.mayPlay()) sink.sendBinary(b);
+  };
+  const release = () => {
+    if (waitTimer) { clearTimeout(waitTimer); waitTimer = null; }
+    const list = held;
+    held = null;
+    for (const h of list ?? []) "bin" in h ? passBin(h.bin) : passJson(h.json);
+  };
   return {
-    call,
+    call: {
+      ...call,
+      mayPlay: () => call.mayPlay(),
+      started: async () => {
+        try { await call.started(); } finally { release(); }
+      },
+      close: () => { release(); call.close(); },
+    },
     sink: {
       sendJson: (m) => {
-        if ((m.type === "audio" || m.type === "say") && !call.mayPlay()) return;
-        sink.sendJson(m);
+        if (held) { held.push({ json: m }); return; }
+        if (m.type === "ready" && !readySeen) {
+          readySeen = true;
+          sink.sendJson(m);
+          if (!call.mayPlay()) {
+            held = [];
+            waitTimer = setTimeout(release, START_CLAIM_WAIT_MS);
+            waitTimer.unref?.();
+          }
+          return;
+        }
+        passJson(m);
       },
       sendBinary: (b) => {
-        if (call.mayPlay()) sink.sendBinary(b);
+        if (held) { held.push({ bin: b }); return; }
+        passBin(b);
       },
-      close: (code, reason) => sink.close(code, reason),
+      close: (code, reason) => { release(); sink.close(code, reason); },
     },
   };
 }
