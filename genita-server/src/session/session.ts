@@ -1422,6 +1422,27 @@ export class Session {
     ).finally(() => { if (this.correcting === abort) this.correcting = null; done(); });
   }
 
+  /** #345: a smile / laugh the camera saw at the last reply, until the next user turn reads it */
+  private faceLanded: { kind: "smiled" | "laughed"; at: number } | null = null;
+
+  /** one perception subscription per call: feeds the initiative governor (if on) and what-landed (#345) */
+  private subscribePerception(): void {
+    if (!this.perception || this.perceptionUnsub) return;
+    try {
+      this.perceptionUnsub = this.perception.onTrigger((t) => {
+        if (t.kind === "smiled_at_reply" || t.kind === "laughed") this.faceLanded = { kind: t.kind === "laughed" ? "laughed" : "smiled", at: this.now() };
+        this.initiative?.perception(t);
+      });
+    } catch { this.perceptionUnsub = () => {}; }
+  }
+
+  /** the landed face for this turn, if it was seen in the last 20 s; consumed once */
+  private takeFaceLanded(): "smiled" | "laughed" | null {
+    const f = this.faceLanded;
+    this.faceLanded = null;
+    return f && this.now() - f.at <= 20_000 ? f.kind : null;
+  }
+
   /** Conversation engine v1 inputs for this turn: style, the greeting's opener, an initiative block, the camera lines. */
   private v1Extras(turn: { greeting?: { item: Memory | null } | null; cue?: { block: string } | null }, userText = ""): Partial<Parameters<typeof buildInstructions>[0]> {
     const last = this.lastMessageAt;
@@ -1449,6 +1470,7 @@ export class Session {
     } catch { /* the reply never fails on the camera lane */ }
     // P1: closeness, question rhythm, mood, what landed, recall — one "This turn:" line on a user turn (never a greeting / cue)
     let turnLine: string | undefined;
+    this.subscribePerception();
     if (!turn.greeting && !turn.cue && userText) {
       const userLines = [...this.history.filter((h) => h.role === "user").map((h) => h.text), userText];
       turnLine = turnHints({
@@ -1458,6 +1480,7 @@ export class Session {
         mood: moodLine(moodFrom(userLines)),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
+        faceLanded: this.takeFaceLanded(),
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1489,7 +1512,7 @@ export class Session {
     const gov = this.initiative;
     if (!gov || this.initiativeBusy || this.closed) return;
     if (this.perception && !this.perceptionUnsub) {
-      try { this.perceptionUnsub = this.perception.onTrigger((t) => gov.perception(t)); } catch { this.perceptionUnsub = () => {}; }
+      this.subscribePerception();
     }
     const d = gov.decide(this.now(), this.initiativeIdle());
     if (!d.fire) return;

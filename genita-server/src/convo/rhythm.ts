@@ -68,6 +68,8 @@ export type TurnHintInput = {
   remembers: boolean;
   /** K-test 11/3: this call already brought up one personal thing on its own (MENTION_RULE budget) */
   mentionSpent?: boolean;
+  /** #345: the camera saw them smile or laugh at the last reply (perception trigger since that reply) */
+  faceLanded?: "smiled" | "laughed" | null;
 };
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
@@ -86,6 +88,8 @@ export function turnHints(t: TurnHintInput): string | null {
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
   if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
+  // #345: what landed, read from their face — the same lane, never a word about their face or the camera
+  else if (last && t.faceLanded && !said(BAD_NEWS, user)) out.push(`Your last line landed (they ${t.faceLanded} at it): stay in that lane, and don't mention their face.`);
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
   // a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
