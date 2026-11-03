@@ -34,7 +34,7 @@ test("guard: counselor, assistant, intake and clingy lines are dropped; a friend
   }
 });
 
-test("guard: a referral only on a real crisis signal; a bad day never gets one (rule 11/1)", () => {
+test("guard: a referral only on a real crisis signal; a bad day never gets one (crisis-guard rule 11/1)", () => {
   assert.equal(guardSentence("Maybe talk to a therapist about it.", { camera: false, userText: "ugh today was so bad" }), "referral");
   assert.equal(guardSentence("Maybe a crisis line could help.", { camera: false, userText: "i'm just tired" }), "referral");
   // emergency help itself is never dropped (Codex round 2): the prompt, not the guard, keeps it off a bad day

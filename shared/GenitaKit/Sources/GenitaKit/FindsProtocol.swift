@@ -23,6 +23,49 @@ public struct NormBox: Codable, Equatable, Hashable, Sendable {
     public init(x1: Double, y1: Double, x2: Double, y2: Double) { self.x1 = x1; self.y1 = y1; self.x2 = x2; self.y2 = y2 }
 }
 
+/// SAM 3.1 pixel mask over an item's box (server GENITA_SAM_MASKS=1, #298): a `w`×`h` grid stretched over the box,
+/// row-major run lengths alternating 0s and 1s, starting with 0s (the first run may be 0); sum(rle) == w*h, long side ≤ 96.
+public struct NormMask: Codable, Equatable, Hashable, Sendable {
+    public var w: Int
+    public var h: Int
+    public var rle: [Int]
+    public init(w: Int, h: Int, rle: [Int]) { self.w = w; self.h = h; self.rle = rle }
+    public static let maxSide = 96
+
+    /// One byte per cell, 255 = inside. nil when the runs don't add up (a bad mask is dropped, the box still draws).
+    public func bitmap() -> [UInt8]? {
+        guard w > 0, h > 0, w <= Self.maxSide, h <= Self.maxSide else { return nil }
+        // summed run by run so a huge run can't overflow (Codex P2): each must fit in what is left
+        var total = 0
+        for run in rle {
+            guard run >= 0, run <= w * h - total else { return nil }
+            total += run
+        }
+        guard total == w * h else { return nil }
+        var out = [UInt8](repeating: 0, count: w * h)
+        var i = 0
+        for (k, run) in rle.enumerated() {
+            if k % 2 == 1 { for j in i..<(i + run) { out[j] = 255 } }
+            i += run
+        }
+        return out
+    }
+
+    /// The outline: inside cells with an outside (or off-grid) 4-neighbour. Same layout as `bitmap()`.
+    public func edgeBitmap() -> [UInt8]? {
+        guard let b = bitmap() else { return nil }
+        var out = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w where b[y * w + x] != 0 {
+                let edge = x == 0 || y == 0 || x == w - 1 || y == h - 1
+                    || b[y * w + x - 1] == 0 || b[y * w + x + 1] == 0 || b[(y - 1) * w + x] == 0 || b[(y + 1) * w + x] == 0
+                if edge { out[y * w + x] = 255 }
+            }
+        }
+        return out
+    }
+}
+
 public struct FindItem: Codable, Equatable, Identifiable, Sendable {
     public enum From: String, Codable, Sendable { case camera, recipe, both }
     public enum Confirmed: String, Codable, Sendable { case yes, no }
@@ -78,6 +121,14 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
         public var url: String
         public var domain: String
     }
+    /// `from` profile = blue "Your style/taste: …" (import, HISY corrections) · call = grey "You said: …" (this call)
+    public struct Reason: Codable, Equatable, Sendable {
+        public var text: String
+        /// the profile line it comes from
+        public var source: String
+        public var from: String?
+        public init(text: String, source: String, from: String? = nil) { self.text = text; self.source = source; self.from = from }
+    }
     public struct Page: Codable, Equatable, Sendable {
         public var url: String
         public var opened: Bool
@@ -100,6 +151,8 @@ public struct FindCard: Codable, Equatable, Identifiable, Sendable {
     public var why: [String]
     public var ask: [String]
     public var sources: [Source]
+    /// Lane 개인화: 1–2 reason chips (optional: older servers and cards without a matching taste line send none)
+    public var reasons: [Reason]?
     public var how: [String]
     public var page: Page?
     public var saved: Bool?
@@ -162,6 +215,9 @@ extension ServerEvent {
         public struct Item: Codable, Equatable, Sendable {
             public var label: String
             public var box: NormBox
+            /// GENITA_SAM_MASKS=1: the item's pixel mask; then the same label may repeat (one item per match)
+            public var mask: NormMask?
+            public init(label: String, box: NormBox, mask: NormMask? = nil) { self.label = label; self.box = box; self.mask = mask }
         }
         public var findId: String
         public var frame: Int
