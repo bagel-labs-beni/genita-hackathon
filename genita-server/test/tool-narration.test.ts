@@ -40,6 +40,18 @@ const positives = [
   "잠시만요; 검색해 볼게요.",
   "잠시만요: 검색해 볼게요.",
   "잠시만요 — 검색해 볼게요.",
+  // #354: real Spark lines on main after #269 (smoke + finds:e2e outfit, 11/3)
+  "Trying to map your route to City Hall — give me just a moment.",
+  "I'll quickly recall what you shared about your sister.",
+  "I'll note that win.",
+  "Let me check what I've got on you so I can keep up.",
+  "I'll pull what I remember to pick one.",
+  "I'll pull up what I remember about your style to help pick tonight's outfit.",
+  "She's holding up the trench and denim — I'll pull what I remember to pick one.",
+  "She's asking me to pick a jacket — I'll check what I remember to choose one.",
+  "She's holding up the trench and denim —",
+  "She's asking me to pick a jacket,",
+  "Give me just a moment while I look that up.",
 ];
 const negatives = [
   "Let me think — tofu works.",
@@ -66,6 +78,15 @@ const negatives = [
   "Hmm, I remember you love tofu.",
   "Well, I'll check the oven.",
   "One sec; the tofu is burning.",
+  // #354 neighbours that are real content
+  "Your presentation went well — I'll note that win.",
+  "Your day sounded long — let me check what I've got on you so I can keep up.",
+  "She's lucky to have you.",
+  "She's asking for help with her move?",
+  "I'll pull a chair up and listen.",
+  "Let me see what you've got in there.",
+  "Trying to make it work is all you can do.",
+  "I'll note the time and we can talk later.",
   ...["，", "、", "；", "："].flatMap((separator) => [
     `One sec${separator} the tofu is burning.`,
     `Let me check my memory${separator} tofu works.`,
@@ -141,6 +162,13 @@ const judgeCases = [
   { name: "keep real content after eager wait", input: ["One sec;", "the tofu is burning.", TOOL], speak: ["One sec; the tofu is burning."], answer: true },
   { name: "keep real content after eager filler", input: ["Hmm,", realSentence, TOOL], speak: [`Hmm, ${realSentence}`], answer: true },
   { name: "preserve raw tags", input: ["<curious> Hmm,", "[whispers] I'll look that up.", TOOL, "<warm> [whispers] Tofu works."], speak: ["<warm> [whispers] Tofu works."], answer: true },
+  // #354: the demo S4 outfit line and its neighbours (real Spark, 11/3)
+  { name: "#354 third-person plan + memory announcement before the pick", input: ["She's holding up the trench and denim — I'll pull what I remember to pick one.", TOOL, "Go with the trench, Chelsea."], speak: ["Go with the trench, Chelsea."], answer: true },
+  { name: "#354 eager first clause in third person", input: ["<warm> She's holding up the trench and denim —", "I'll pull what I remember to pick one.", "Go with the trench."], speak: ["Go with the trench."], answer: true },
+  { name: "#354 mixed sentence keeps its real clause", input: ["<warm> Your day sounded long — let me check what I've got on you so I can keep up.", TOOL, "Tell me the worst part."], speak: ["<warm> Your day sounded long.", "Tell me the worst part."], answer: true },
+  { name: "#354 note-the-win clause", input: ["Your presentation went well — I'll note that win.", "Proud of you."], speak: ["Your presentation went well.", "Proud of you."], answer: true },
+  { name: "#354 route lookup wait", input: ["Trying to map your route to City Hall — give me just a moment.", TOOL, "Take the 2 line, it's 20 minutes."], speak: ["Take the 2 line, it's 20 minutes."], answer: true },
+  { name: "#354 lone third-person line with no tool and nothing after stays", input: ["She's asking me to pick a jacket."], speak: ["She's asking me to pick a jacket."], answer: true },
 ] as const;
 
 for (const scenario of judgeCases) test(`NarrationJudge sequence: ${scenario.name}`, () => {
