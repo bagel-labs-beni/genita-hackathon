@@ -152,7 +152,7 @@ public struct MotionVoiceRing: View {
 // MARK: - Card 3 · "Noted" chip
 
 /// The check of the "Noted" chip as a stroke that can be drawn (`trim`), in a 12 × 12 box like the SF checkmark it replaces.
-public struct MotionCheckShape: Shape {
+public struct MotionChipCheckShape: Shape {
     public init() {}
     public func path(in r: CGRect) -> Path {
         var p = Path()
@@ -192,7 +192,7 @@ public struct MotionNotedCheck: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     public init(color: Color) { self.color = color }
     public var body: some View {
-        MotionCheckShape().trim(from: 0, to: drawn)
+        MotionChipCheckShape().trim(from: 0, to: drawn)
             .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             .frame(width: 12, height: 12)
             .onAppear {

@@ -102,7 +102,7 @@ struct ConversationView: View {
                         if waitingCopy == nil {
                         if interpreting {
                             if !findsOpen {
-                                InterpretOverlay(board: call.interpretBoard, top: top, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
+                                InterpretOverlay(board: call.interpretBoard, top: top, level: { call.inputLevel }, onClose: { debugNoteStop(); call.setInterpreting(false) }, onHold: { call.setHold($0) })
                                     .frame(width: full.size.width, height: full.size.height)
                                     .transition(.opacity)
                             }
