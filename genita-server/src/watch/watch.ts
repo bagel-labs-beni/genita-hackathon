@@ -664,7 +664,7 @@ export class WatchController {
     return v;
   }
 
-  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string; talkOver: boolean }) => void): Promise<string> {
+  private async memoRace(req: SparkRequest, signal: AbortSignal, onEarly?: (e: { moment: Exclude<MemoVerdict["moment"], "none">; reaction: string; talkOver: boolean; page: boolean }) => void): Promise<string> {
     let earlyDone = false;
     const lanes = Math.max(1, this.deps.memoLanes ?? MEMO_LANES);
     const kids = Array.from({ length: lanes }, () => new AbortController());

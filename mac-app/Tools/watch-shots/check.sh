@@ -13,3 +13,5 @@ swiftc -parse-as-library -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target ar
   shared/GenitaKit/Sources/GenitaKit/Protocol.swift shared/GenitaKit/Sources/GenitaKit/FindsProtocol.swift \
   mac-app/Tools/watch-shots/CueChecks.swift -o "$CUE"
 "$CUE" "${1:-build-output/watch-screens}"
+# 11/4: the "Share this window" e2e player (ShareE2E.swift + the real WatchCapture/WatchUplink) still builds
+mac-app/Tools/watch-shots/share-e2e.sh --build-only "$(mktemp -d)/share-e2e"
