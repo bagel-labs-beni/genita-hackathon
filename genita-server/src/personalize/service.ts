@@ -23,7 +23,7 @@ import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrecti
 import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract.ts";
 import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
-import { forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
+import { avoidKeys, forgetTarget, isForgetRequest, mentionsAvoided, type Removed } from "./forgotten.ts";
 import { isSensitiveDetail } from "./sensitive.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
@@ -483,7 +483,13 @@ export class Personalize {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
-      if (target && !/\d/.test(target) && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+      // only a target the stored profile already speaks about (so it passed every filter once): a word list can't
+      // catch every health term ("asthma"), and what was only said in the call is kept out by the memory lane (Codex r5)
+      const inProfile = (() => {
+        const keys = avoidKeys([{ text: target, forget: true }]);
+        return Object.values(card.sections ?? {}).some((l) => (l as Array<{ text: string }>).some((f) => mentionsAvoided(f.text, keys)));
+      })();
+      if (target && inProfile && !/\d/.test(target) && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
     }
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;

@@ -443,7 +443,7 @@ test("S1: an answered unknown leaves GET story at once, before Spark merges it",
 test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing on; a plain target is kept out", async (t) => {
   const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
   t.after(h.cleanup);
-  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
   await h.p.voiceCorrection("u1", "Forget that I have diabetes.");
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.removed ?? []).includes("diabetes"));
   assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /diabetes/);
@@ -479,4 +479,14 @@ test("Codex P1 r3: an address is never stored (voice forget or sheet), 'lives in
   await h.p.voiceCorrection("u1", "Forget that my home is 42 5th Avenue.");
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("Example"));
   assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("5th Avenue"));
+});
+
+test("Codex r5: a forget target is only kept when the stored profile speaks about it ('asthma' never stored)", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard({ ...IMPORT_RAW, sections: { ...IMPORT_RAW.sections, likes: [f("Likes leather accessories.")] } }, "import"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I have asthma.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["leather accessories"]);
 });
