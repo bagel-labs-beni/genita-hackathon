@@ -230,6 +230,19 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    /// Set on the first launch of this install (AU-12).
+    static let installedKey = "genita.installed"
+
+    /// AU-12 (LG-01 FIRST): deleting the app clears UserDefaults but not the keychain, so a reinstall opened signed
+    /// in. The first launch of an install forgets an earlier install's session. An update from a build before this
+    /// flag still has its own saved state here and keeps its session. True when it cleared.
+    @discardableResult static func forgetEarlierInstall(storage: UserDefaults = .standard, clearToken: () -> Void) -> Bool {
+        guard !storage.bool(forKey: installedKey) else { return false }
+        storage.set(true, forKey: installedKey)
+        if [storageKey, userKey, signedOutKey, needsConsentKey].contains(where: { storage.object(forKey: $0) != nil }) { return false }
+        clearToken()
+        return true
+    }
     func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
         onboardingSession.snapshot(token: onboarding.auth.token)
     }

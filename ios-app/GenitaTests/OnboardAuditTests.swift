@@ -188,4 +188,18 @@ import UIKit
         for _ in 0..<200 where !player.available { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertTrue(player.available, "…and it comes back without leaving V04")
     }
+
+    /// AU-12 · LG-01 FIRST: a reinstall (empty UserDefaults, token left in the keychain) starts signed out once;
+    /// an update from an older build (its saved state is here) keeps the session.
+    func testAReinstallForgetsTheEarlierSessionButAnUpdateKeepsIt() {
+        let fresh = UserDefaults(suiteName: UUID().uuidString)!
+        var cleared = 0
+        XCTAssertTrue(AppState.forgetEarlierInstall(storage: fresh) { cleared += 1 })
+        XCTAssertFalse(AppState.forgetEarlierInstall(storage: fresh) { cleared += 1 }, "only the first launch")
+        XCTAssertEqual(cleared, 1)
+        let updated = UserDefaults(suiteName: UUID().uuidString)!
+        updated.set("u1", forKey: AppState.userKey)
+        XCTAssertFalse(AppState.forgetEarlierInstall(storage: updated) { cleared += 1 })
+        XCTAssertEqual(cleared, 1)
+    }
 }
