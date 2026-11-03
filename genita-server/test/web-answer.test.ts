@@ -53,6 +53,11 @@ test("the card: the spoken answer without the 'let me check' line, one source pe
     "It's Shuntaro Furukawa — he's still Nintendo's president!",
     "He's held the role since June 2018.",
   ]);
+  // real Spark 11/3: two messages back to back, and the pre-search line in other words
+  assert.deepEqual(answerPoints("You got it — I'll check who leads Nintendo right now.Hey, it's Shuntaro Furukawa! He's been president since June 2018."), ["Hey, it's Shuntaro Furukawa!", "He's been president since June 2018."]);
+  assert.deepEqual(answerPoints("Catching you up on Artemis — pulling the latest now.Hey, so Artemis III is now an Earth-orbit test."), ["Hey, so Artemis III is now an Earth-orbit test."]);
+  assert.deepEqual(answerPoints("Hey — checking who won the latest World Series for you.The Brewers won it all! They beat the Rays 4–1."), ["The Brewers won it all!", "They beat the Rays 4–1."]);
+  assert.deepEqual(answerPoints("The U.S. Army band played. They're looking at a 2027 launch."), ["The U.S. Army band played.", "They're looking at a 2027 launch."], "facts stay, abbreviations stay whole");
   const card = webAnswerCard({ id: "f1", question: "Who is the CEO of Nintendo?", said: "It's Shuntaro Furukawa.", searches: [{ query: SEARCH.action.query, urls: SEARCH.action.sources.map((s) => s.url) }] })!;
   assert.equal(card.kind, "answer");
   assert.equal(card.eyebrow, "From the web");

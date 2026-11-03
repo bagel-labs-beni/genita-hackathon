@@ -29,16 +29,22 @@ export function pickSources(searches: WebSearch[]): FindCard["sources"] {
   return out;
 }
 
-const NARRATION = /^(got it|okay|ok|sure|hold on|one sec|give me a sec|let me|i'?ll (?:quickly )?(?:check|look|search)|checking|looking)/i;
+/** "let me check", "I'll look it up", "checking who won… for you", "pulling the latest now": the line before the search */
+const NARRATION = [
+  /^\W*(got it|okay|ok|sure|hold on|one sec|give me a sec)\W*$/i,
+  /\b(let me|i'?ll|i will|i'm|i am|gonna|going to)\b[^.!?]*\b(check|look|search|pull|find|dig)/i,
+  /\b(checking|pulling up|pulling the latest|looking (?:it|that|this) up|searching|digging)\b[^.!?]*\b(now|for you|real quick|quick|the latest)\b/i,
+];
 
 /** The spoken answer as up to 3 points, without the "let me check" line before the search. */
 export function answerPoints(said: string): string[] {
   const sentences = said
     .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9"“'])/)
+    // two output messages arrive back to back ("…right now.Hey, it's…"); "U.S. Army" stays whole
+    .split(/(?<=[a-z0-9)"'”’%][.!?])\s+(?=[A-Z0-9"“'])|(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])/)
     .map((s) => s.trim())
     .filter((s) => s.length > 2);
-  const points = sentences.filter((s) => !NARRATION.test(s));
+  const points = sentences.filter((s) => !NARRATION.some((re) => re.test(s)));
   return (points.length ? points : sentences).slice(0, MAX_POINTS).map((s) => (s.length > 160 ? `${s.slice(0, 157).trimEnd()}…` : s));
 }
 
