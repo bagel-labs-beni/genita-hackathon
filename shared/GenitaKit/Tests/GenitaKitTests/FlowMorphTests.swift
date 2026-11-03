@@ -424,6 +424,16 @@ struct LipThinTests {
         #expect(hot.v59().amp == 0.8 && hot.v59().springHz == 14)     // never weakens a stronger prep value
     }
 
+    @Test func mapLaddersAndSpreadShareDecode() throws {
+        let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"spreadNeutral":0.1,"ladders":{"round":[["U",0],["OH",0.35]],"spread":[["EI",0],["EH",0.2]],"neutral":[["AH",0],["AH2",0.45]]}}"#.utf8))
+        #expect(p.spreadNeutral == 0.1)
+        let m = MotionV2(params: p, faceNorm: 1)
+        let l = try #require(m.mapLadders)
+        #expect(l[0].map(\.0) == ["U", "OH"] && l[1][1].1 == 0.2 && l[2][0].0 == "AH")
+        let none = MotionV2(params: MotionV2Params(), faceNorm: 1)
+        #expect(none.mapLadders == nil && MotionV2Params().spreadNeutral == 0.4)   // no map ladders = the built-in ones
+    }
+
     @Test func aV93PresetKeepsThePrepMotionAsSent() throws {
         let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"preset":"v93","idle":0.2,"amp":0.35}"#.utf8))
         #expect(p.preset == "v93" && p.v59() == p)

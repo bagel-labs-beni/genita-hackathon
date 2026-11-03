@@ -43,14 +43,21 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     /// 11/3 pm: "v93" = the map asks for the v9.3 motion exactly (no v59 over-ride, no v60 ladders), so the
     /// server can put the old mouth back on a built app (codex P2 on #388)
     public var preset: String? = nil
+    /// 11/3 pm: per-face key ladders from the map (round / spread / neutral: [[key, jaw]]), and how much of a
+    /// stressed spread vowel stays neutral (0.4 = the old fixed share). Shape contrast without drawing anything:
+    /// only the prepped Muse keys are chosen differently.
+    public var ladders: [String: [[FlowKeyValueLite]]]? = nil
+    public var spreadNeutral = 0.4
     public init() {}
-    enum CodingKeys: String, CodingKey { case preset, stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain, stressMargin }
+    enum CodingKeys: String, CodingKey { case preset, ladders, spreadNeutral, stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain, stressMargin }
     enum AliasKeys: String, CodingKey { case consonantDip }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
         guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
         if let v = try? c.decodeIfPresent(String.self, forKey: .preset) { preset = v }
+        if let v = try? c.decodeIfPresent([String: [[FlowKeyValueLite]]].self, forKey: .ladders) { ladders = v }
+        if let v = try? c.decodeIfPresent(Double.self, forKey: .spreadNeutral) { spreadNeutral = min(1, max(0, v)) }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
@@ -125,6 +132,13 @@ public struct MotionV2 {
         [("MID", 0), ("EH", 0.3), ("AH", 0.65)],
     ]
     var useV60 = false
+    /// the map's ladders (round, spread, neutral) when it sends all three
+    var mapLadders: [[(String, Double)]]? {
+        guard let l = p.ladders, let r = l["round"], let s = l["spread"], let n = l["neutral"] else { return nil }
+        func f(_ x: [[FlowKeyValueLite]]) -> [(String, Double)] { x.compactMap { $0.count == 2 ? ($0[0].s ?? "", $0[1].d ?? 0) : nil } }
+        let out = [f(r), f(s), f(n)]
+        return out.allSatisfy { !$0.isEmpty } ? out : nil
+    }
 
     var p: MotionV2Params
     var faceNorm: Double
@@ -182,7 +196,7 @@ public struct MotionV2 {
             var st = peaks[i] >= thr ? 1.0 : p.weakShape
             if q.e - q.s < p.shortVowelMs { st *= 0.5 }
             var t = [0.0, 0, 1 - st]; t[cls] += st
-            if cls == 1, peaks[i] >= thr { t = [0.6 * t[0], 0.6 * t[1], 0.6 * t[2] + 0.4] }
+            if cls == 1, peaks[i] >= thr { let k = p.spreadNeutral; t = [(1 - k) * t[0], (1 - k) * t[1], (1 - k) * t[2] + k] }
             return t
         }
         var target = shape
@@ -227,7 +241,7 @@ public struct MotionV2 {
         let mbp = order.firstIndex(of: "MBP")
         if closed { if let m = mbp { tgt[m] = 1 } } else {
             for c in 0..<3 where shape[c] > 1e-3 {
-                let steps = (useV60 ? Self.laddersV60 : Self.ladders)[c].compactMap { k, x -> (Int, Double)? in
+                let steps = (mapLadders ?? (useV60 ? Self.laddersV60 : Self.ladders))[c].compactMap { k, x -> (Int, Double)? in
                     guard let r = resolve(k), let i = order.firstIndex(of: r) else { return nil }
                     return (i, x)
                 }
@@ -274,5 +288,19 @@ public struct MotionV2 {
             out = zip(out, target0).map { max($0, 0.6 * $1) }
         }
         return (out.map(Float.init), closed)
+    }
+}
+
+
+/// One cell of a `[["AH", 0.35], …]` ladder row: a key name or a number.
+public struct FlowKeyValueLite: Codable, Equatable, Sendable {
+    public var s: String?, d: Double?
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let v = try? c.decode(String.self) { s = v; d = nil } else { d = try c.decode(Double.self); s = nil }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        if let s { try c.encode(s) } else { try c.encode(d ?? 0) }
     }
 }
