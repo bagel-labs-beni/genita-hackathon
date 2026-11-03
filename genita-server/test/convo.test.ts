@@ -1577,3 +1577,8 @@ test("Codex #502 P1 r6: after a crisis line, later turns of the call get no gidd
   assert.doesNotMatch(last, /giddy|Your mood right now is (?:upbeat|playful)|stay in that lane|own take/);
   session.close();
 });
+
+test("tone 11/4: 'That sounds heavy' / 'I'm right here with you' on a non-crisis line are counselor lines; on a real crisis line they stay", () => {
+  for (const s of ["That sounds heavy.", "I'm right here with you.", "That's a lot to carry today.", "That sounds draining."]) assert.equal(guardSentence(s, { camera: false, userText: "this orgo exam is killing me lol" }), "counselor", s);
+  assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "I want to kill myself" }), null);
+});
