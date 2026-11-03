@@ -16,6 +16,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | Companion reset: `POST /v1/companion/reset` (PREP_API.md) closes the account's live calls with **`4410` `companion_reset`** (new, additive). Clients: stop reconnecting and route like `/me` with no companion (iPhone → V01, Mac → "Set up on iPhone"). Older clients treat it like any other close and reconnect; the next `/me` routes them. |
 | 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
 | 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
@@ -59,7 +60,7 @@ Authorization: Bearer <session JWT>     (or ?token=… ; dev fallback: GENITA_SE
 
 With neither accounts (`DATABASE_URL`) nor `GENITA_SESSION_TOKEN` the server only binds to loopback (local dev).
 Rejections at upgrade: `503` server full. Auth is checked after the upgrade and closes with `4401` (no/bad/expired/revoked token → sign in again) or `4403` (signed in, no AI-data consent yet → CS01).
-Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required.
+Server close codes: `1000` normal / `stop`, `4000` idle 120 s, `4001` max call length (30 min default), `4401` unauthorized or account deleted mid-call, `4403` consent required, `4410` the companion was reset (`POST /v1/companion/reset`; no reconnect, route from `/me`).
 
 ## Frames
 

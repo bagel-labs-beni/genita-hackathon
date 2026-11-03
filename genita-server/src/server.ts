@@ -31,7 +31,9 @@ import { installKeepAlive, makePrewarm } from "./util/keepalive.ts";
 import { createSeamless } from "./tts/seamless.ts";
 import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
-import { demoTemplateWanted, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
+import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
+import { createCompanionReset } from "./prep/reset.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -160,6 +162,23 @@ export async function startServer(
       throw err;
     }
   };
+  // 11/4 "Make a new companion" (src/prep/reset.ts): the companion goes, the account stays. Same stop as DELETE /me
+  // (prep / top-up / reflow drained by the runner); live calls close 4410 and call memory is forgotten first.
+  const companionReset = createCompanionReset({
+    store: prep.deps.store, runner: prep.runner, log, blobs: accounts?.blobs ?? null,
+    isProtected: async (userId) => {
+      if (!accounts) return false;
+      const u = await accounts.accounts.getUser(userId);
+      if (u?.provider === "dev" && u.providerSub.startsWith(DEMO_TEMPLATE_SUB)) return true;
+      return (await readDemoPointer(accounts.blobs).catch(() => null))?.userId === userId;
+    },
+    beforeErase: async (userId) => {
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4410, "companion_reset");
+      dropLastTurns(userId);
+      forgetOpenerTopics(userId);
+      await deps.memory?.forget(userId);   // revision bump: a late extraction or turn cache from the closed call is refused
+    },
+  });
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   // proximity handoff moves a conversation only while the account has a live call socket
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log, {
@@ -220,6 +239,12 @@ export async function startServer(
     }
     if (accounts?.routes.handles(url.pathname)) return accounts.routes.handle(req, res, await principal(req, url));
     if (!accounts && (url.pathname === "/me" || url.pathname.startsWith("/me/") || url.pathname.startsWith("/auth/"))) return json(res, 503, { error: "accounts_disabled" });
+    if (companionReset.handles(url.pathname)) {
+      const who = await principal(req, url);
+      if (!who) return json(res, 401, { error: "unauthorized" });
+      if (!who.consented) return json(res, 403, { error: "consent_required" });
+      return companionReset.handle(req, res, who.userId);
+    }
     if (prep.routes.handles(req)) {
       const who = await principal(req, url);
       if (!who) return json(res, 401, { error: "unauthorized" });

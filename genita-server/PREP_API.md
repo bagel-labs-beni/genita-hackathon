@@ -91,6 +91,16 @@ A Judge access account (`POST /auth/judge`) that has no companion gets one at si
 - **Making their own:** the judge goes through the normal flow (image → voice → name → `POST /v1/companion`). Over a `demo:true` companion, `POST /v1/companion` deletes the demo one (rows, its photo copy, its files) and creates the new one: `201`, `demo: false`. A bad request (unknown image/voice, failed check) keeps the demo companion. From then on B7 applies as usual (`409`), and signing in again does not bring Jin back.
 - **Template:** `npm run demo:template` (ops only, see `scripts/demo-template.ts`) prepares Jin once from `assets/demo/jin.jpg` (Muse Image-generated, `ios-app/ASSET-SOURCES.md`) under a reserved account (`dev` / `demo:template`, not reachable by any login or `x-genita-user`). Re-run with `--force` after the prep pipeline changes so new judge accounts get the new face set. No template = judges onboard like any new user (log `demo.skipped {reason:"no_template"}`).
 
+### Make a new companion (companion reset, 11/4)
+
+`POST /v1/companion/reset` (session + AI consent, no body) → `200 {ok: true, removed}`. Settings → "Make a new companion" on the iPhone; also the QA way to test a new human / animal / character companion **without a new email per test**: reset, then onboard again from V01 on the same account.
+
+- **Removed:** the companion (row + prep job, prefs/persona, voice, name, emotions), its photo and every uploaded photo no companion uses, all face files under `users/<id>/companions/` (and legacy `avatars/<cid>/`), call memory (memories, call summaries, recent openers; same as Forget all). Live calls close `4410 companion_reset`.
+- **Kept:** login and sessions, consent, display name, the import / HISY profile (`GET /v1/import` stays `ready`), memory settings, reports, Finds, judge daily-turn counters.
+- **Order:** like `DELETE /me`, prep, face top-up and reflow are cancelled and their in-flight writes drained first; no new prep starts until the erase is done. Afterwards `/me` → `hasCompanion: false, prepStatus: "none"`, and `POST /v1/companion` works again.
+- **Limits:** 10 resets that removed a companion per account per 24 h (`429 rate_limited`; a reset with nothing to remove is `removed: false` and not counted), one at a time per account (`409 reset_in_progress`), `502 reset_failed` = retry (every step runs again). The demo template account is refused (`403 demo_template`); a judge's reset removes only the judge's own Jin copy, and the next judge sign-in brings Jin back.
+- Log: `companion.reset {ok, removed, demo, photos, ms}` (or `{ok:false, reason}`).
+
 ### Voices: device vs server TTS
 
 - **Server TTS off (default, Meta voice service unset):** the device speaks, so the four cards are device voice descriptors:

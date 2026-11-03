@@ -193,6 +193,16 @@ export class PgPrepStore implements PrepStore {
     return true;
   }
 
+  /** Companion reset: photo rows of this user that no companion points at (a companion made meanwhile keeps its own), then their bytes. */
+  async deleteUnusedImages(userId: string) {
+    const r = await this.db.query(
+      "DELETE FROM companion_images WHERE user_id = $1 AND id NOT IN (SELECT image_id FROM companions WHERE user_id = $1) RETURNING id",
+      [userId],
+    );
+    for (const row of r.rows) await this.blobs.deletePrefix(imageKey(userId, String(row.id)));
+    return r.rows.length;
+  }
+
   async deleteImage(userId: string, imageId: string) {
     await this.db.query("DELETE FROM companion_images WHERE id = $1 AND user_id = $2", [imageId, userId]);
     await this.blobs.deletePrefix(imageKey(userId, imageId));

@@ -107,6 +107,11 @@ export interface PrepStore {
   getAsset(userId: string, companionId: string, name: string): Promise<Buffer | null>;
   /** drops every image of a companion, or of every companion of the user when companionId is omitted */
   deleteAssets(userId: string, companionId?: string): Promise<void>;
+  /**
+   * Companion reset: drops the user's uploaded photos that no companion uses (V01 uploads, polished copies).
+   * Optional: the file store keeps photos by id only, so it has nothing to sweep per user.
+   */
+  deleteUnusedImages?(userId: string): Promise<number>;
 }
 
 const safe = (id: string) => {
