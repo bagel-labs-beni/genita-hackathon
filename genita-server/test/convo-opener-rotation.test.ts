@@ -118,3 +118,11 @@ test("opener topics (Codex #352 round 2): a Forget anywhere voids the list; no s
   assert.match(b, /one thing of your own/);
   assert.doesNotMatch(b, /one thing from it/);
 });
+
+test("opener topics (Codex #352 round 3): an unknown Forget revision neither reads nor writes the list", () => {
+  resetOpenerTopics();
+  pickOpenerTopic("u6", ["a thing", "b thing"], [], 0, undefined, undefined, 0);
+  const r = pickOpenerTopic("u6", ["a thing", "b thing"], ["a thing"], 0, undefined, undefined, null);
+  assert.deepEqual(r.recent, []);
+  assert.deepEqual(pickOpenerTopic("u6", ["a thing", "b thing"], [], 0, undefined, undefined, 0).recent, ["a thing"], "the null pick wrote nothing");
+});

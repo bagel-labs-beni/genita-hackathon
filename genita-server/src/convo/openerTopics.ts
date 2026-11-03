@@ -28,7 +28,9 @@ export function storedTopics(state: unknown): string[] {
 }
 
 /** pick this call's hook and record it, in one step; `stored` is the call state's list (used if this process has none) */
-export function pickOpenerTopic(userId: string | undefined, hooks: string[], stored: string[] | undefined, seed: number, memory?: MemoryService, onError?: (e: unknown) => void, revision = 0): { hook: string | null; recent: string[] } {
+export function pickOpenerTopic(userId: string | undefined, hooks: string[], stored: string[] | undefined, seed: number, memory?: MemoryService, onError?: (e: unknown) => void, revision: number | null = 0): { hook: string | null; recent: string[] } {
+  // Forget revision unknown (the memory store failed or was slow): never read or write a list that may predate a Forget
+  if (revision === null) return { hook: pickOpenerHook(hooks, [], seed), recent: [] };
   const mine = userId ? local.get(userId) : undefined;
   const recent = mine && mine.rev === revision ? mine.topics : clean(stored);
   const hook = pickOpenerHook(hooks, recent, seed + recent.length);
