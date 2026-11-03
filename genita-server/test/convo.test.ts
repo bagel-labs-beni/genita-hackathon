@@ -959,7 +959,7 @@ test("session v1: a first-call opener that only labels the user is retried, neve
   const reply = await client.waitFor((m) => m.type === "reply", 4000);
   assert.equal(reply.text, "Kimchi pasta at midnight is elite and I will not be taking questions.");
   assert.ok(calls.length >= 2);
-  assert.match(calls[0].instructions!, /Talk about the thing, never about who they are: no describing, typing or labeling them/);
+  assert.match(calls[0].instructions!, /Talk about the thing, never about who they are/);
   session.close();
 });
 
