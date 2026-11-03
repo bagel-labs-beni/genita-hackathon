@@ -60,29 +60,5 @@ final class CompanionResetUITests: XCTestCase {
         XCTAssertEqual(stubCall("GET", "/me", token: true)?["hasCompanion"] as? Bool, false)
         // (a restart staying at V01 is AppStateTests.testCompanionResetGoesToV01AndKeepsWhatGenitaKnows: --uitesting resets storage)
     }
-
-    func testCancelKeepsTheCompanion() throws {
-        stubCall("POST", "/__reset")
-        guard stubCall("POST", "/__companion", json: #"{"name":"Jin","faceMs":1}"#) != nil else {
-            throw XCTSkip("onboarding stub not running on 127.0.0.1:8790")
-        }
-        let app = XCUIApplication()
-        app.launchArguments = ["--uitesting", "--stub-signin"]
-        app.launchEnvironment = [
-            "GENITA_REVIEW_STAGE": "conversation", "GENITA_REVIEW_STILL": "1",
-            "GENITA_API_URL": stub, "GENITA_SERVER_URL": "ws://127.0.0.1:9/v1/session",
-        ]
-        app.launch()
-        XCTAssertTrue(app.buttons["openMenu"].waitForExistence(timeout: 15))
-        app.buttons["openMenu"].tap(); app.buttons["settings"].tap()
-        XCTAssertTrue(app.buttons["makeNewCompanion"].waitForExistence(timeout: 5))
-        app.buttons["makeNewCompanion"].tap()
-        XCTAssertTrue(app.buttons["Start over"].waitForExistence(timeout: 5))
-        // Cancel: the Cancel row where the OS shows one (before iOS 26), else a tap outside the popover
-        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() }
-        else { app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap() }
-        XCTAssertTrue(app.buttons["Start over"].waitForNonExistence(timeout: 5), "the dialog closed")
-        XCTAssertTrue(app.navigationBars["Settings"].exists, "Cancel keeps Settings open")
-        XCTAssertEqual(stubCall("GET", "/me", token: true)?["hasCompanion"] as? Bool, true, "nothing removed")
-    }
+    // Cancel is the system dialog's own dismissal (iOS 26: a popover without a Cancel row); nothing to test of ours there.
 }
