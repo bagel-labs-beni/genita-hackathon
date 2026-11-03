@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { buildInstructions, buildInterpretInstructions, recentOpeningWords, avoidRepeatedOpener, type PersonaCard } from "../src/prompt/persona.ts";
+import { MEMORY_TOOLS } from "../src/memory/call.ts";
 
 const mina: PersonaCard = {
   name: "Mina",
@@ -10,6 +11,16 @@ const mina: PersonaCard = {
   speakingStyle: "short, playful, teases gently",
   backstory: "Grew up in Busan, now a pastry chef in Seoul.",
 };
+
+test("chat and memory tools require silent calls and only the answer aloud", () => {
+  const s = buildInstructions({ persona: mina, mode: "chat" });
+  assert.match(s, /Call tools silently; never announce, describe or promise a tool call\. Speak only the answer\./);
+  for (const tool of MEMORY_TOOLS) {
+    assert.ok("description" in tool);
+    assert.match(String(tool.description), /Call silently; never announce, describe or promise this call\./);
+  }
+  assert.doesNotMatch(buildInterpretInstructions({ persona: mina, from: "Korean", to: "English" }), /Call tools silently/);
+});
 
 test("recentOpeningWords takes the first real word of the last three replies, ignoring tags and case", () => {
   assert.deepEqual(

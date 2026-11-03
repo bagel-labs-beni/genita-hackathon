@@ -9,6 +9,7 @@ struct MacConversationView: View {
     @State private var interpret = MacInterpretController()
     /// The live call owns camera and mic on the Mac too (one owner; #2's LocalCallMedia only keeps the permission UI).
     private let call = CallController.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// #118: account, companion and when the call runs on this Mac.
     @ObservedObject private var macCall = MacCall.shared
     /// #121 MAC-LINK: the product page just opened in the browser.
@@ -38,6 +39,11 @@ struct MacConversationView: View {
                 companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
+                // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
+                if let face = call.face {
+                    FaceFrameView(driver: face).frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                        .allowsHitTesting(false)
+                }
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
@@ -122,6 +128,9 @@ struct MacConversationView: View {
                 Task { if let c = try? await model.onboarding.companion() { model.setup.companionName = c.name; call.companionName = c.name } }
             }
         }
+        .onAppear { call.showFace(reduceMotion: reduceMotion) }
+        .onDisappear { call.hideFace() }
+        .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on) }
         // F5: the live call's session id + token reach the screen share (release builds had no watchConfig at all)
         .onChange(of: call.sessionId) { _, id in
             if let id { sharing.watchConfig = .init(server: call.currentEndpoint.url, token: call.currentEndpoint.token, sessionId: id) }

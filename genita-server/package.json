@@ -23,6 +23,7 @@
     "smoke:interpret": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/smoke-interpret.ts",
     "eval:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-memory.ts",
     "check:memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-memory.ts",
+    "eval:session-memory": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/eval-session-memory.ts",
     "finds:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/finds-e2e.ts",
     "product:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/product-e2e.ts",
     "watch-sim": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/watch-sim.ts",
