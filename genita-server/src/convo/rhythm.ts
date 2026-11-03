@@ -12,6 +12,8 @@
  * Intent only, never a line to copy.
  */
 
+import { NEUTRAL, clampMood, flatReply, moodHint, teased, toward, type Mood } from "./moodState.ts";
+
 const GOOD_NEWS = /\b(?:i|we) (?:got|landed) (?:the |a |an |my )?(?:job|offer|part|role|promotion|raise|apartment|place|internship|spot|scholarship|tickets?)\b|\b(?:i|we) (?:passed|won|aced|nailed|crushed)\b|\bi did it\b|\bthey said yes\b|\bgot (?:in|accepted|promoted|engaged|hired)\b/i;
 const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst|tore (?:it|my)|redid my)\b/i;
 const LAUGH = /\b(?:ha(?:ha)+|lol+|lmao+|lmfao|rofl|i'?m dead|that'?s hilarious|you'?re funny)\b|😂|🤣|💀/i;
@@ -28,33 +30,37 @@ function said(re: RegExp, line: string): boolean {
 }
 const laughed = (line: string) => LAUGH.test(line) && !NOT_A_LAUGH.test(line);
 
-export type Mood = { valence: number; energy: number };
+export type { Mood } from "./moodState.ts";
 
 /**
- * One call's mood (DESIGN §7.3), folded from the call's user lines so far (oldest first): it starts at baseline each
- * call, good news lifts, bad news lowers, a laugh makes it playful, and it decays 25 % a line. Pure, so a request
- * built twice for one turn (speculation, a retry) gets the same mood.
+ * One call's mood (DESIGN §7.3, #344 moodState.ts), folded from the call's user lines so far (oldest first): it starts
+ * from the last call's mood (faded, callMood.ts) or the persona baseline, decays 25 % a line toward that baseline,
+ * good news lifts, bad news lowers (either one turns a mood of the other sign), a laugh or a tease makes it playful, and two flat replies in a row ("ok", "yeah")
+ * make it quieter. Pure, so a request built twice for one turn (speculation, a retry) gets the same mood.
  */
-export function moodFrom(userLines: string[]): Mood {
-  const clamp = (v: number) => Math.max(-1, Math.min(1, v));
-  let valence = 0;
-  let energy = 0;
+export function moodFrom(userLines: string[], start: Mood = NEUTRAL, baseline: Mood = NEUTRAL): Mood {
+  let valence = start.valence;
+  let energy = start.energy;
+  let flat = 0;
   for (const line of userLines) {
-    valence *= 0.75;
-    energy *= 0.75;
-    if (said(GOOD_NEWS, line)) { valence += 0.6; energy += 0.5; }
-    if (said(BAD_NEWS, line)) { valence -= 0.6; energy -= 0.4; }
+    valence = toward(valence, baseline.valence, 0.75);
+    energy = toward(energy, baseline.energy, 0.75);
+    // news turns the mood: a high never cushions bad news (good news → bad news reads as bad at once), nor the reverse
+    if (said(GOOD_NEWS, line)) { valence = Math.max(valence, 0) + 0.6; energy = Math.max(energy, 0) + 0.5; }
+    if (said(BAD_NEWS, line)) { valence = Math.min(valence, 0) - 0.6; energy = Math.min(energy, 0) - 0.4; }
     if (laughed(line)) { valence += 0.3; energy += 0.4; }
-    valence = clamp(valence);
-    energy = clamp(energy);
+    else if (teased(line)) { valence += 0.2; energy += 0.45; }
+    flat = flatReply(line) ? flat + 1 : 0;
+    if (flat >= 2) energy -= 0.35;
+    valence = clampMood(valence);
+    energy = clampMood(energy);
   }
   return { valence, energy };
 }
 
-export function moodLine(m: Mood): string | null {
-  if (m.valence <= -0.3) return "Your mood right now is quieter, matching theirs.";
-  if (m.valence >= 0.35 && m.energy >= 0.3) return "Your mood right now is upbeat and playful.";
-  return null;
+/** the one mood line, with its pacing (moodState.ts moodHint); steady = the user picked "Never mirror my mood" */
+export function moodLine(m: Mood, o: { steady?: boolean } = {}): string | null {
+  return moodHint(m, o);
 }
 
 export type TurnHintInput = {
