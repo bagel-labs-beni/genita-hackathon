@@ -224,6 +224,10 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist" > /dev/null
           test -d "$APP/Contents/Frameworks/Sparkle.framework" || { echo "::error::Sparkle.framework is not embedded"; ls -la "$APP/Contents/Frameworks" || true; exit 1; }
           echo "GenitaMac $MAC_VERSION ($BUILD_NUMBER), Sparkle embedded"
+          # Xcode's generated Info.plist writes CFBundleName = $(PRODUCT_NAME) = GenitaMac over mac-app/Info.plist; the menu
+          # bar and About/Hide/Quit read it. Set the visible names here, before Developer ID signing (Chelsea 11/4: "Genita").
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleName Genita' "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName Genita' "$APP/Contents/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string Genita' "$APP/Contents/Info.plist"
 
       - name: Install Developer ID identity
         id: identity
