@@ -344,7 +344,7 @@ test("withV93Mouth: human rig faces without a perioral block get the v57c block 
   assert.deepEqual(out.perioral, { ...V93_PERIORAL });
   assert.equal((out.perioral as Record<string, number>).openMag, 0);
   assert.deepEqual(out.alive, { headX: 3, nodPx: 5, lockY: true });
-  assert.deepEqual(out.motionV2, { amp: 0.35 });
+  assert.deepEqual(out.motionV2, { amp: 0.35, preset: "v93" });
   assert.equal(map.alive.nodPx, 5);
   assert.equal((map as Record<string, unknown>).perioral, undefined, "the stored map is not mutated");
   // left alone: switch off, non-human kinds, no rig, a prep perioral block of its own

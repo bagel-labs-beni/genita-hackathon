@@ -510,7 +510,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 /** The served lip map with the v9.3 mouth (see V93_PERIORAL); the stored prep state is never changed. */
 export function withV93Mouth(map: Record<string, unknown>, kind: string, on: boolean): Record<string, unknown> {
   if (!on || kind !== "human" || !isRecord(map.rig) || map.perioral !== undefined) return map;
-  return { ...map, perioral: { ...V93_PERIORAL }, alive: { ...(isRecord(map.alive) ? map.alive : {}), lockY: true } };
+  // motionV2.preset "v93": app builds after build 4 then skip their v59 motion over-ride and v60 ladders too
+  // (build 4 ignores the key; there v59/v60 only act when phoneme timings arrive, and pick original key images)
+  const motionV2 = { ...(isRecord(map.motionV2) ? map.motionV2 : {}), preset: "v93" };
+  return { ...map, perioral: { ...V93_PERIORAL }, alive: { ...(isRecord(map.alive) ? map.alive : {}), lockY: true }, motionV2 };
 }
 
 export function faceManifest(
