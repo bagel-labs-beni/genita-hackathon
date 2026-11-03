@@ -249,6 +249,11 @@ export class WatchController {
     this.sink = sink;
   }
 
+  /** This socket is still the call's uplink (a replaced one's late `stop` or sound must not touch the new share). */
+  owns(sink: WatchSink): boolean {
+    return this.sink === sink;
+  }
+
   detach(sink: WatchSink): void {
     if (this.sink !== sink) return;
     this.stop("disconnected");

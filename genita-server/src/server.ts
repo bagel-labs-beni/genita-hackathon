@@ -483,6 +483,8 @@ export async function startServer(
     });
     ref.session = session;
     let announced = false;
+    let callEnded: (() => void) | null = null;
+    let socketClosed = false;
     sessions.set(id, session);
     sessionUsers.set(id, who.userId);
     sessionDevices.set(id, callDevice);
@@ -507,6 +509,8 @@ export async function startServer(
       void session
         .onClientText(buf.toString("utf8"))
         .then(() => {
+          // the other device's presence hears `peer.inCall` (Mac home: "Talking on your iPhone" only during a call)
+          if (here && !socketClosed && !callEnded && session.hasStarted) callEnded = handoff.callStarted(who.userId, here);
           if (gated && !announced && session.hasStarted) {
             announced = true;
             return gated.call.started();
@@ -519,6 +523,8 @@ export async function startServer(
       clearTimeout(life);
       session.close();
       gated?.call.close();
+      socketClosed = true;
+      callEnded?.();
       sessions.delete(id);
       sessionUsers.delete(id);
       sessionDevices.delete(id);

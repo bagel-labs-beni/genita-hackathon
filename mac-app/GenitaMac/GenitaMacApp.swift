@@ -11,7 +11,9 @@ import CoreText
         MacUpdater.shared.start() // Sparkle: launch + daily check, silent download, "Restart to update"
     }
     var body: some Scene {
-        WindowGroup("Genita", id: "companion") {
+        // One window only (QA 171: launch showed two "Genita" windows — a restored one plus a new one from the
+        // WindowGroup). `Window` is a single-instance scene: relaunch, reopen and restore all bring back the same one.
+        Window("Genita", id: "companion") {
             // Figma MAC-1~4: the window bar has the traffic lights only, no title text — and no bar of its own:
             // build 4 drew a white title band with a hairline over the #FEFEFE window (Mac UI polish 11/3). Hiding the
             // toolbar background lets the window's own sheet colour run up under the traffic lights (Apple's

@@ -46,6 +46,8 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     #if DEBUG
     /// CI review only: pins "an iPhone is in front" so MC-M and MAC-4 render their enabled state.
     var reviewCanMove:Bool?
+    /// CI review only: pins "the iPhone is in a call" so MAC-3 renders "Talking on your iPhone" (and MAC-3-idle the no-call row).
+    var reviewPhoneInCall:Bool?
     #endif
     private var linkReachable:Bool { link.connected && Date().timeIntervalSince1970-lastPong<3 }
     private var returnOrigin:NSPoint?
@@ -406,10 +408,18 @@ struct MacHomeView:View {
         switch v2Screen {
         case .setup: ("Waiting for your companion",.waiting)
         case .pair: ("Looking for your iPhone",.waiting)
-        case .onPhone: ("Talking on your iPhone",.live)
+        // QA 171: "Talking" only while the iPhone is really in a call — the server's `peer.inCall` (a started call socket);
+        // an older server: in front and it took the conversation. A fresh account's default owner is the phone at epoch 0.
+        case .onPhone: phoneInCall ? ("Talking on your iPhone",.live) : ("Not in a call right now",.idle)
         case .here: (paired || handoff.server.peerOnline ? "Paired with your iPhone" : "Signed in on this Mac",.live)
         case .offline: ("No connection",.idle)
         }
+    }
+    private var phoneInCall:Bool {
+        #if DEBUG
+        if let review=handoff.reviewPhoneInCall {return review}
+        #endif
+        return PhoneCallPresence.live(owner:handoff.ownership.state.owner,epoch:handoff.ownership.state.epoch,peerActive:handoff.server.peerActive,peerInCall:handoff.server.peerInCall)
     }
     private func v2Para(_ text:String)->some View {
         Text(text).font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).fixedSize(horizontal:false,vertical:true).frame(width:356,alignment:.leading)
@@ -482,7 +492,7 @@ struct MacHomeView:View {
                 }.frame(height:22)
                 button("Get Genita for iPhone",filled:false,id:"macGetGenita") { if let url=URL(string:"https://testflight.apple.com/join/Ybqh482p") {NSWorkspace.shared.open(url)} }
             case .onPhone:
-                statusRow("Conversation on your iPhone",live:true)
+                statusRow(phoneInCall ? "Conversation on your iPhone" : "Not in a call right now",live:phoneInCall)
                 button("Continue on this Mac",filled:true,id:"macContinueHere") { handoff.continueHere() }
                 pairingBlock
             case .here:
@@ -575,7 +585,8 @@ extension MacHandoff {
         call.companionName="Mina"
         do {
             reviewCanMove=true
-            for (name,kind) in [("MAC-2",MacHomeKind.noCompanion),("MAC-3",.onPhone),("MAC-4",.here)] {
+            for (name,kind,inCall) in [("MAC-2",MacHomeKind.noCompanion,true),("MAC-3",.onPhone,true),("MAC-3-idle",.onPhone,false),("MAC-4",.here,true)] {
+                reviewPhoneInCall=inCall
                 let host=NSHostingView(rootView:MacHomeView(kind:kind,name:"Mina",handoff:self))
                 let size=host.fittingSize
                 host.frame=NSRect(origin:.zero,size:size)

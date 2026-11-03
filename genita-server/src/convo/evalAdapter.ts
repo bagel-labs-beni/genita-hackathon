@@ -15,6 +15,7 @@ import { fallbackLine, guardSentence, neverSpoken, realCrisisSignal, type GuardC
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
 import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
+import { holdsSteady, personaBaseline } from "./moodState.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
 type Turn = { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
@@ -71,7 +72,7 @@ export const adapter = {
       callNumber: s.callNumber,
       lastReply: ctx.history.filter((h) => h.role === "assistant").at(-1)?.text,
       userText: t.text,
-      mood: moodLine(moodFrom(userLines)),
+      mood: moodLine(moodFrom(userLines, personaBaseline(s.persona), personaBaseline(s.persona)), { steady: holdsSteady(s.persona) }),
       remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
       recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
       crisisInCall: userLines.some(realCrisisSignal),
