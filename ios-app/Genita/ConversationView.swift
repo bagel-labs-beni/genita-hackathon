@@ -232,20 +232,43 @@ struct ConversationView: View {
                 #endif
             }
         }
-        .onDisappear { if !connecting { call.end() } }
+        .onDisappear { if !connecting { call.end(); keepScreenAwake(false) } }
+        .onAppear { if !connecting { keepScreenAwake(scenePhase == .active) } }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: call.sceneActivityChanged(.active)
+            case .active: call.sceneActivityChanged(.active); callBack()
             case .inactive: call.sceneActivityChanged(.inactive)
-            case .background: call.sceneActivityChanged(.background)
-            @unknown default: call.sceneActivityChanged(.background)
+            case .background: call.sceneActivityChanged(.background); hangUp()
+            @unknown default: call.sceneActivityChanged(.background); hangUp()
             }
+            if !connecting { keepScreenAwake(phase == .active) }
         }
+        // swipe-kill from the foreground (RV-01): the last chance to say `stop`
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in if !connecting { call.end() } }
         // #2: the conversation moved to the Mac (R1 waiting sheet): this iPhone stops listening and showing
         .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
     }
+    /// AU-38 / RV-01: Home, lock and a swipe-kill hang up like leaving the call screen does: `stop` goes out, so the
+    /// next call greets as a new call. The background task gives the close frame time to leave before suspension.
+    private func hangUp() {
+        guard !connecting, !call.isEnded else { return }
+        let task = UIApplication.shared.beginBackgroundTask(withName: "genita.call.stop", expirationHandler: nil)
+        call.end()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            if task != .invalid { UIApplication.shared.endBackgroundTask(task) }
+        }
+    }
+    /// IC-02 step 4 "돌아오면 재연결": back in the app, the call screen calls again (mic as the user left it, B12).
+    /// Not after the server stopped the call (sign-in, consent, time limit route elsewhere).
+    private func callBack() {
+        guard !connecting, call.isEnded, call.stopped == nil else { return }
+        call.begin(model.callStart)
+    }
+    /// AU-39: Auto-Lock must not end a hands-free call; only while this call screen is up and the app is active.
+    private func keepScreenAwake(_ on: Bool) { UIApplication.shared.isIdleTimerDisabled = on }
     /// Not while the conversation is on the Mac (this screen is hidden then).
     private func showFace() {
         guard !(handoffEnabled && handoff.surface != .active) else { return }

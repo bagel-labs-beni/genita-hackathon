@@ -238,6 +238,9 @@ import ARKit
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         moving=false;moveAttempt+=1
         if new == .mac {media.stopAll();CallController.shared.suspend()}
+        // AU-83/AU-84: back from the Mac. The open call gets a new server session seeded with what was said on the Mac,
+        // and the mic comes back as the user left it. A call ended meanwhile (background) begins again on .active.
+        else if old == .mac {CallController.shared.rejoin()}
         updateTracking();refreshSurface()
         if old != new,new == .mac,motion == nil {feedback.playConnected()}
     }

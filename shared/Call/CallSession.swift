@@ -228,7 +228,7 @@ enum CallStop: Equatable {
         audio.onUtterancePlayed = { [weak self] id in self?.utterancePlayed(id) }
         audio.onInterrupted = { [weak self] in self?.suspend() }
         voice.onPCM = { [weak self] pcm, id in
-            guard let self, !self.cancelled.contains(id) else { return }
+            guard let self, !self.cancelled.contains(id), self.mayPlayHere else { return }
             self.feedFaceDevicePCM(pcm, utteranceId: id)
             self.audio.enqueue(pcm: pcm, utteranceId: id)
         }
@@ -324,6 +324,28 @@ enum CallStop: Equatable {
         if Self.micWasOn && mode == .chat { toggleMic() }
     }
 
+    /// True between `end()` (or before the first `begin`) and the next `begin`.
+    var isEnded: Bool { userEnded }
+
+    /// The conversation came back to this device while its call socket stayed open (handoff return, AU-83/AU-84).
+    /// The open server session only knows the turns from before the move, so it is replaced by a new one: the server
+    /// seeds that from the session the other device just used. Closed without `stop` (a move back is not a hang-up),
+    /// and the mic comes back the way the user left it (B12, the same rule as a new call).
+    func rejoin() {
+        guard !userEnded, stopped == nil else { return }
+        reconnectTask?.cancel(); pingTask?.cancel()
+        let old = socket
+        socket = nil
+        old?.disconnect()
+        perception.stop()
+        flushPlayback()
+        restFace()
+        playing = false; awaitingFirstAudio = false; reconnectSince = nil
+        phase = .listening
+        connect()
+        if Self.micWasOn && mode == .chat && !micOn { toggleMic() }
+    }
+
     /// The turns of this call (last 20 go into every reconnect's `start`). The Mac keeps them across a move
     /// away and back, so the conversation resumes where it was (#118).
     var historySnapshot: [ClientMessage.HistoryItem] { history }
@@ -357,9 +379,11 @@ enum CallStop: Equatable {
 
     /// A system permission alert is inactive, but not backgrounded. Keep its answer until active;
     /// a real background transition still invalidates it, as do end(), handoff and audio interruption.
+    /// Only `.background` closes capture (AU-47): a permission alert, Control Center, Notification Center or the app
+    /// switcher makes the scene `.inactive` for a moment, and the mic and the companion's voice carry on through it.
     func sceneActivityChanged(_ activity: CapturePermissionRequests.Activity) {
         let answers = capturePermissions.updateActivity(activity, callEnded: userEnded, isOwner: ownsConversation)
-        if activity != .active { suspendCapture() }
+        if activity == .background { suspendCapture() }
         for answer in answers { applyCapturePermission(answer) }
     }
 
@@ -368,9 +392,31 @@ enum CallStop: Equatable {
         if micOn { setMic(false) }
         if cameraOn { toggleCamera() }
         if playing || phase == .speaking || phase == .thinking { socket?.send(.bargeIn) }
+        silenceCurrentReply()
         flushPlayback()
         restFace()
         playing = false
+    }
+
+    /// AU-50: a local stop (tap, background, handoff) tombstones the reply that was playing, so frames and `say`
+    /// lines already on their way for it are dropped here instead of playing again until `utterance.cancelled`.
+    private func silenceCurrentReply() {
+        for id in Set([currentUtterance, playingUtterance].compactMap { $0 }) {
+            cancelled.insert(id)
+            saidOnDevice.remove(id)
+            face?.cancel(utteranceId: faceId(id))
+        }
+    }
+
+    /// GATE-A (AU-82): the companion is heard only on the device that holds the conversation. Audio and `say` lines
+    /// that reach this iPhone after the conversation moved to the Mac (the rest of a reply, a search card's line)
+    /// are dropped here. The Mac closes its call when the conversation leaves it.
+    private var mayPlayHere: Bool {
+        #if os(iOS)
+        ownsConversation
+        #else
+        true
+        #endif
     }
 
     // MARK: user actions
@@ -516,6 +562,7 @@ enum CallStop: Equatable {
     /// Tap on the face while the companion talks: stop now, the server cancels the reply.
     func interrupt() {
         guard playing || phase == .speaking || phase == .thinking else { return }
+        silenceCurrentReply()
         flushPlayback()
         restFace()   // the mouth rests at once, before the server's utterance.cancelled
         playing = false
@@ -747,7 +794,7 @@ enum CallStop: Equatable {
             }
         case let .say(sentence):
             // Device voice mode: speak it into the call's player (same AEC, flush and playback_done as server audio).
-            guard !cancelled.contains(sentence.utteranceId) else { break }
+            guard !cancelled.contains(sentence.utteranceId), mayPlayHere else { break }
             currentUtterance = sentence.utteranceId
             saidOnDevice.insert(sentence.utteranceId)
             voice.say(sentence)
@@ -837,7 +884,7 @@ enum CallStop: Equatable {
         guard header.kind == GenitaProtocol.frameKindTTSPCM else { return }
         let utterance = seqToUtterance.removeValue(forKey: header.seq) ?? currentUtterance ?? -1
         let timing = faceAudio.removeValue(forKey: header.seq)
-        guard !cancelled.contains(utterance) else { return }
+        guard !cancelled.contains(utterance), mayPlayHere else { return }
         let route = interpretBoard.route(utteranceId: utterance)
         if route != .normal, let routeInterpretAudio {
             routed.insert(utterance)
