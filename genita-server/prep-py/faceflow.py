@@ -537,25 +537,42 @@ def blink_2d(neutral, key, eyes, thr=40):
 
 SMALL_SPECIES = re.compile(r'\b(cat|kitten|kitty|rabbit|bunny|hare|hamster|guinea|gerbil|mouse|rat|ferret|chinchilla|persian)\b', re.I)
 BIRD_SPECIES = re.compile(r'\b(bird|parrot|parakeet|budgie|cockatiel|cockatoo|macaw|owl|duck|chicken|hen|pigeon|crow|sparrow|canary|penguin)\b', re.I)
+RABBIT_SPECIES = re.compile(r'\b(rabbit|bunny|hare)\b', re.I)
+HORSE_SPECIES = re.compile(r'\b(horse|pony|donkey|mule|zebra|foal)\b', re.I)
+DOG_SPECIES = re.compile(r'\b(dog|puppy|doggo|pup)\b', re.I)
 LONG_SNOUT = re.compile(r'\b(retriever|labrador|collie|shepherd|husky|greyhound|setter|pointer|doberman)\b', re.I)
 
 
-def animal_rule(kind, prof, species, face, mouth):
-    """(name, sub-profile) for animals: bird beak split, small muzzle (box < 12 % face width or species), long-snout dog."""
+def animal_rules(kind, prof, species, face, mouth):
+    """[(name, sub-profile)] for animals, in apply order: one muzzle rule (bird beak split | long-snout dog | small muzzle |
+    mild dog muzzle), then species runtime add-ons (rabbit-like, horse-like). Each sub-profile may carry `prep` (merged
+    into the prep options) and `map` (merged into the flow map the app reads)."""
     if kind not in ('animal', 'cat'):
-        return None
+        return []
     sp = species or ''
-    if BIRD_SPECIES.search(sp) and isinstance(prof.get('bird'), dict):
-        return 'bird', prof['bird']
-    sm = prof.get('smallMuzzle') if isinstance(prof.get('smallMuzzle'), dict) else None
-    if not sm:
-        return None
-    if LONG_SNOUT.search(sp) and isinstance(sm.get('longSnoutDog'), dict):
-        return 'longSnoutDog', sm['longSnoutDog']
+    sub = lambda k: prof.get(k) if isinstance(prof.get(k), dict) else None
+    if BIRD_SPECIES.search(sp) and sub('bird'):
+        return [('bird', prof['bird'])]
+    out = []
+    sm = sub('smallMuzzle') or {}
     mwr = (mouth[2] - mouth[0]) / max(1e-6, face[2] - face[0])
-    if mwr < 0.12 or SMALL_SPECIES.search(sp) or kind == 'cat':
-        return 'smallMuzzle', sm
-    return None
+    if LONG_SNOUT.search(sp) and isinstance(sm.get('longSnoutDog'), dict):
+        out.append(('longSnoutDog', sm['longSnoutDog']))
+    elif sm and (mwr < 0.12 or SMALL_SPECIES.search(sp) or kind == 'cat'):
+        out.append(('smallMuzzle', sm))
+    elif DOG_SPECIES.search(sp) and sub('mildMuzzle'):
+        out.append(('mildMuzzle', prof['mildMuzzle']))
+    if RABBIT_SPECIES.search(sp) and sub('rabbitLike'):
+        out.append(('rabbitLike', prof['rabbitLike']))
+    if HORSE_SPECIES.search(sp) and sub('horseLike'):
+        out.append(('horseLike', prof['horseLike']))
+    return out
+
+
+def animal_rule(kind, prof, species, face, mouth):
+    """First rule only (kept for callers / tests): (name, sub-profile) or None."""
+    r = animal_rules(kind, prof, species, face, mouth)
+    return r[0] if r else None
 
 
 def shade_openings(ALN, N, face, mouth, k):
@@ -599,11 +616,12 @@ def main():
     prep = dict(prof.get('prep') or {})
     os.makedirs(a.out, exist_ok=True)
     face, mouth, nose = box(a.face), box(a.mouth), box(a.nose)
-    rule = animal_rule(kind, prof, a.species, face, mouth)
-    bird_lock = None
-    if rule:
-        # non-human lane 11/3: species / geometry sub-rules (profiles animal.bird / smallMuzzle / smallMuzzle.longSnoutDog)
-        name_, sub = rule
+    rules = animal_rules(kind, prof, a.species, face, mouth)
+    bird_lock, map_extra = None, {}
+    for name_, sub in rules:
+        # non-human lane 11/3: species / geometry sub-rules (profiles animal.bird / smallMuzzle / longSnoutDog / mildMuzzle /
+        # rabbitLike / horseLike): prep options here, runtime values into the flow map
+        map_extra = deep_merge(map_extra, sub.get('map') or {})
         if name_ == 'bird':                       # SAM's mouth box is the whole beak: upper part locked (nose), lower mandible moves
             fr = float(sub.get('split', 0.5)); ym = mouth[1] + fr * (mouth[3] - mouth[1])
             nose, mouth = [mouth[0], mouth[1], mouth[2], ym], [mouth[0], ym, mouth[2], mouth[3]]
@@ -708,6 +726,8 @@ def main():
         dot = prep.get('fitDotMouth') or {}
         if dot and (mouth[2] - mouth[0]) < 0.08 * (face[2] - face[0]):
             fit = {k: float(v) for k, v in (dot.get('fit') or {}).items()}          # chibi: dot-sized closed mouth, bigger openings
+            for dst, src in (dot.get('replace') or {}).items():                    # SM := a small open WD (closed < small open < big open)
+                if src in ALN: ALN[dst] = ALN[src].copy()
         if prep.get('cleanPlate', True):
             skin = np.median(Nl[lim > 0])
             lim_line = lim.copy()
@@ -863,7 +883,8 @@ def main():
     flow = {'version': 1, 'roi': [round(X1 / W, 5), round(Y1 / H, 5), round(X2 / W, 5), round(Y2 / H, 5)],
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
-            'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': lip_map(kind)}
+            'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': deep_merge(lip_map(kind), map_extra),
+            **({'rules': [r[0] for r in rules]} if rules else {})}
     if a.blink and a.eyes and kind == 'character2d':
         eyes = [box(e) for e in a.eyes.split(';') if e]
         BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)
