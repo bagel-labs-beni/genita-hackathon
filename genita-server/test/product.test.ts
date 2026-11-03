@@ -442,3 +442,34 @@ test("AU-79 FD-02: a category page nothing could read never fills a product slot
   assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Women's Boots - Heritage Chelsea Boot" }), true);
   assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Brown boots collection – Acme" }), false);
 });
+
+test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot while a brown one is there; brown shades and plain names stay", async () => {
+  const { askedColors, offColor } = await import("../src/finds/product.ts");
+  const brown = askedColors("Can we look for dark brown boots for my trench?");
+  assert.deepEqual([...brown], ["brown"]);
+  assert.equal(offColor("Black Chelsea Boot", brown), true);
+  assert.equal(offColor("Highwood Boot in Tan", brown), true);
+  assert.equal(offColor("Espresso Suede Chelsea Boot", brown), false, "a brown shade");
+  assert.equal(offColor("Heritage Chelsea Boot", brown), false, "no color named");
+  assert.equal(offColor("Black / Brown two-tone boot", brown), false, "names the asked color too");
+  // Codex r1: what they rule out or already own is not the color asked for; the latest color change wins
+  assert.equal(askedColors("Find boots, but no black ones").size, 0);
+  assert.equal(askedColors("Find boots that go with my brown trench").size, 0);
+  assert.deepEqual([...askedColors("Another one in brown instead")], ["brown"]);
+  assert.deepEqual([...askedColors("Find a couple that match my style", "Find black boots. Another one in brown instead")], ["brown"]);
+  assert.equal(askedColors("boots for my trench").size, 0);
+  // through the pipeline: the black one goes last, the brown ones take the two slots
+  const P3x = "https://shop3.example.com/products/chestnut-boot";
+  const v = vendors({
+    items: [{ ...ITEM1, name: "Black Chelsea Boot" }, { ...ITEM2, name: "Dark Brown Chelsea Boot" }, { ...ITEM1, url: P3x, name: "Chocolate Suede Boot" }],
+    output: [SEARCH, OPEN(P1), OPEN(P2), OPEN(P3x)],
+    facts: { [P1]: { kind: "product" }, [P2]: { kind: "product" }, [P3x]: { kind: "product" } },
+  });
+  const { ctx } = ctxFor(v, { question: "Can we look for dark brown boots for my trench?" });
+  const card = (await runProduct(ctx)).card!;
+  assert.deepEqual(card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Chocolate Suede Boot"]);
+  // Codex r1: a brand with a color word (Red Wing) never sinks the card when it's all there is
+  const one = vendors({ items: [{ ...ITEM1, name: "Red Wing Classic Moc" }], output: [SEARCH, OPEN(P1)], facts: { [P1]: { kind: "product" } } });
+  const c2 = (await runProduct(ctxFor(one, { question: "Can we look for brown boots?" }).ctx)).card;
+  assert.ok(c2, "still a card");
+});

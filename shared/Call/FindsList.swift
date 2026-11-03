@@ -101,12 +101,16 @@ enum FindFrameStore {
         }
     }
 
-    /// Account deleted (M02): its folder goes, and the loose pre-11/4 frames (no owner recorded) with it (AU-75).
-    static func removeAll(owner: String?) {
-        let fm = FileManager.default
-        try? fm.removeItem(at: folder(owner))
-        for url in (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] where url.pathExtension == "jpg" {
-            try? fm.removeItem(at: url)
+    /// Account deleted (M02): its folder goes, and of the loose pre-11/4 frames (no owner recorded) only those of its
+    /// own finds — `ids` from its Finds list read before the deletion; another account's never (AU-75, Codex r2).
+    static func removeAll(owner: String?, ids: [String] = []) {
+        try? FileManager.default.removeItem(at: folder(owner))
+        for id in ids where valid(id) {
+            var i = 0
+            while FileManager.default.fileExists(atPath: directory.appending(path: "\(id)-\(i).jpg").path) {
+                try? FileManager.default.removeItem(at: directory.appending(path: "\(id)-\(i).jpg"))
+                i += 1
+            }
         }
     }
 }

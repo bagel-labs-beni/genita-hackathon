@@ -14,6 +14,8 @@ struct FaceScanOverlay: View, Animatable {
     var mesh: FaceMesh?
     /// the photo's size in pixels (orientation applied): the photo is shown `scaledToFill`
     var imageSize: CGSize
+    /// the photo's top-left in the card (FaceMesh.fillOrigin): the photo and the net move together when it pans to the face
+    var origin: CGPoint = .zero
     /// when the bar reached 100 % (the hold, the breathing and the fade count from here)
     var doneAt: Date?
     /// no pops or trims (Reduce Motion, and the still review captures)
@@ -21,9 +23,9 @@ struct FaceScanOverlay: View, Animatable {
     /// the moving scan line and band (off under Reduce Motion: the net then appears in place at the answer)
     var showLine = true
 
-    var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(progress, reveal) }
-        set { progress = newValue.first; reveal = newValue.second }
+    var animatableData: AnimatablePair<AnimatablePair<Double, Double>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(progress, reveal), AnimatablePair(origin.x, origin.y)) }
+        set { progress = newValue.first.first; reveal = newValue.first.second; origin = CGPoint(x: newValue.second.first, y: newValue.second.second) }
     }
 
     static let accent = Color(red: 0, green: 0.635, blue: 1)          // #00A2FF: line, band, points
@@ -52,7 +54,7 @@ struct FaceScanOverlay: View, Animatable {
         if let mesh {
             clock.reset(for: mesh)
             let netY = size.height * CGFloat(min(1, max(0, min(progress, reveal))))
-            let pts = mesh.points.map { FaceMesh.aspectFill($0, image: imageSize, in: size) }
+            let pts = mesh.points.map { FaceMesh.place($0, image: imageSize, in: size, origin: origin) }
             for (i, p) in pts.enumerated() where p.y <= netY + 0.5 { clock.mark(i, at: now) }
             let shown = { (i: Int) -> Double? in clock.time(i).map { now.timeIntervalSince($0) } }
 

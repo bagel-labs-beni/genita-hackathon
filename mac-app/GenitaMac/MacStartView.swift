@@ -232,7 +232,7 @@ struct MacEmailSheet: View {
     private var v1Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(MacSheetInk.serif(28)).foregroundStyle(MacSheetInk.ink).accessibilityAddTraits(.isHeader)
-            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple\u{00A0}ID\u{00A0}needed." : "Enter the 6-digit code we sent to \(sentTo).")
                 .font(MacSheetInk.sans(16)).foregroundStyle(MacSheetInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {
@@ -328,7 +328,7 @@ struct MacJudgeCodeSheet: View {
         // 24 pt sides, a grey disabled block — the two sign-in sheets didn't match)
         VStack(alignment: .leading, spacing: 0) {
             MacV2Title(text: "Judge access")
-            Text("Enter the code from the submission form. No Apple ID needed.")
+            Text("Enter the code from the submission form. No Apple\u{00A0}ID\u{00A0}needed.")
                 .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
             TextField("Access code", text: $code)
                 .textFieldStyle(.plain).autocorrectionDisabled().focused($focused).disabled(sending)
@@ -385,7 +385,7 @@ struct MacConsentView: View {
     private var v2Body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MacV2Title(text: "Before we start.")
-            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
+            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and\u{00A0}when.")
                 .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(4).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
                 .frame(width: 356, alignment: .leading)
             VStack(alignment: .leading, spacing: 0) {
@@ -409,7 +409,7 @@ struct MacConsentView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Before we start.").font(MacSheetInk.serif(28)).tracking(-0.28).foregroundStyle(MacSheetInk.ink).frame(height: 34, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
-            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and when.")
+            Text("Genita uses AI services to make your companion and talk with you. Here’s what goes to them, and\u{00A0}when.")
                 .font(MacSheetInk.sans(15)).foregroundStyle(MacSheetInk.ink).lineSpacing(3).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(rows, id: \.0) { row in

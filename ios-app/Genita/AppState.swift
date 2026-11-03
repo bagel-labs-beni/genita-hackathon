@@ -61,6 +61,12 @@ struct SavedSetup: Codable {
     var skipAvoid: [String]?
     /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
     var skipLikes: [String]?
+    /// false = N1–N3 picked on this phone and not sent yet; true = a send was tried (they belong to that account even
+    /// if its reply was lost); nil = unknown (an older build) — only `false` picks go on to another account (Codex #516)
+    var skipSent: Bool?
+    /// AU-20 / Codex #516: the account a send went to whose outcome is unknown (timeout, dropped connection, 5xx) —
+    /// the server may have saved them there, so they never move to another account (nil = only this phone has them)
+    var skipOwner: String?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
@@ -70,7 +76,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, skipOwner, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -88,14 +94,23 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var menuOpen = false
     // Onboarding on the server (OnboardingFlow.swift). Transient: not saved.
     var importing = false
+    /// I03: the import answered while the reading screen is up: 100 % and the orb's pulse before I04 (Chelsea 11/4)
+    var readingDone = false
+    static let readingPulseMs = 380
     /// I02-E line ("I couldn't read this one…"); the pasted text stays
     var importError: String?
     /// I01 → ChatGPT / Claude → back: I02 opens with the paste button focused (transient)
     var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
+    /// AU-26: the check failed on the way (offline, timeout, server error), not on the photo: V02-F offers
+    /// "Try again" with the same photo instead of clearing it.
+    var imageCheckRetryable = false
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
+    /// V01 "Use a test photo" (device QA): only an account the server lists (`/me` `qaSamplePhotos`, GENITA_QA_SAMPLE_PHOTOS).
+    /// Set at sign-in and on every launch `/me`, cleared on sign-out. Transient: never saved, never on for judges or users.
+    var qaSamplePhotos = false
     var imageCheckError: String?
     /// Screen review only (GENITA_REVIEW_VARIANT=scan-NN): holds V03 at NN % with the face mesh, no animation
     var reviewScan: Double?
@@ -123,13 +138,31 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var retryingPrep = false
     /// PREP-1e: the one line under the buttons when Try again itself failed
     var prepError: String?
-    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
-    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
-    var sceneImage: (key: String, data: Data)?
+    /// PREP-1: the server's call scene, keyed by account + scene URL so another account's face never shows (see
+    /// `sceneKey`). Kept on disk next to the photo, so a cold launch straight into a call opens on the generated
+    /// face before `/prep` answers (build 7 P1: the call must never show the upload photo).
+    var sceneImage: (key: String, data: Data)? {
+        didSet {
+            guard let sceneImage else { try? FileManager.default.removeItem(at: sceneFileURL); storage.removeObject(forKey: Self.sceneKeyKey); return }
+            try? FileManager.default.createDirectory(at: sceneFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? sceneImage.data.write(to: sceneFileURL, options: [.atomic, .completeFileProtection])
+            storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
+        }
+    }
     var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
-    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for the same account.
+    var sceneImageData: Data? {
+        sceneImage.flatMap { saved in
+            if let key = sceneKey { return saved.key == key ? saved.data : nil }
+            return saved.key.hasPrefix("\(setup.accountId ?? "-")|") ? saved.data : nil
+        }
+    }
+    var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }
+    static let sceneKeyKey = "genita.sceneKey"
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
+    /// M02-X (Figma 82:2): A02 shows "Your account and data are deleted." once, after a deletion
+    var accountDeletedNotice = false
     /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
     /// again (`GET /v1/profile/story`).
     var story: [StoryCard]?
@@ -171,9 +204,16 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         self.storage = storage
         self.onHandoffAccountChange = onHandoffAccountChange
         self.imageURL = imageURL
-        if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
+        if reset {
+            storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); storage.removeObject(forKey: Self.sceneKeyKey)
+            try? FileManager.default.removeItem(at: imageURL)
+            try? FileManager.default.removeItem(at: imageURL.deletingLastPathComponent().appending(path: "scene.jpg"))
+        }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
         setup.imageData = try? Data(contentsOf: imageURL)
+        if let key = storage.string(forKey: Self.sceneKeyKey), let data = try? Data(contentsOf: imageURL.deletingLastPathComponent().appending(path: "scene.jpg")) {
+            sceneImage = (key, data)
+        }
         // auth state first (a restart must not skip a pending A02 / CS01 by restoring the call)
         if storage.bool(forKey: Self.signedOutKey) { setup.stage = .signIn }
         else if storage.bool(forKey: Self.needsConsentKey) { setup.stage = .consent }
@@ -225,6 +265,19 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    /// Set on the first launch of this install (AU-12).
+    static let installedKey = "genita.installed"
+
+    /// AU-12 (LG-01 FIRST): deleting the app clears UserDefaults but not the keychain, so a reinstall opened signed
+    /// in. The first launch of an install forgets an earlier install's session. An update from a build before this
+    /// flag still has its own saved state here and keeps its session. True when it cleared.
+    @discardableResult static func forgetEarlierInstall(storage: UserDefaults = .standard, clearToken: () -> Void) -> Bool {
+        guard !storage.bool(forKey: installedKey) else { return false }
+        storage.set(true, forKey: installedKey)
+        if [storageKey, userKey, signedOutKey, needsConsentKey].contains(where: { storage.object(forKey: $0) != nil }) { return false }
+        clearToken()
+        return true
+    }
     func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
         onboardingSession.snapshot(token: onboarding.auth.token)
     }
@@ -246,23 +299,26 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
-        prep = nil; sceneImage = nil
+        prep = nil; sceneImage = nil; qaSamplePhotos = false
         storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
-    func signedIn(userId: String? = nil, consented: Bool) {
+    func signedIn(userId: String? = nil, consented: Bool, qaSamplePhotos: Bool = false) {
         invalidateOnboardingWork()
+        accountDeletedNotice = false
         // an error from the signed-out session must not follow into the new one (QA build 5: N3 kept "Please sign in again.")
         flowError = nil
         authGeneration += 1
+        self.qaSamplePhotos = qaSamplePhotos
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
-            if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
+            // N1–N3 picks not sent to any account yet (picked signed out, QA build 5 h14) go on to this account
+            if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile(keepUnsentSkipPicks: true) }
             storage.set(userId, forKey: Self.userKey)
         }
         if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
@@ -285,6 +341,12 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         guard setup.accountId != id else { return }
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
+            // unsent N1–N3 picks stay (same rule as resetLocalProfile)
+            if setup.skipSent == false && setup.skipOwner == nil && setup.styleRows == nil && setup.companionCreated != true {
+                fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
+                fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
+                fresh.skipSent = false
+            }
             setup = fresh
             history = []
             story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
@@ -294,25 +356,74 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     }
     /// CS01 agreed: back to the call if the account is set up, else on to A03 (name).
     func consentAccepted() {
+        consentRecorded()
+        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+    }
+    /// CS01 agreed on the server: a restart no longer shows CS01 (or A02).
+    func consentRecorded() {
         storage.removeObject(forKey: Self.signedOutKey)
         storage.removeObject(forKey: Self.needsConsentKey)
-        if history.contains(.conversation) || setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
     }
     /// M02 account deleted: nothing of it stays on this iPhone.
     func accountDeleted() {
+        leftAfterDeleteRequest()
+        accountDeletedNotice = true
+    }
+    /// M02-D asked, then the session was gone before the server confirmed (AU-06): A02, nothing kept, no notice.
+    func leftAfterDeleteRequest() {
         resetLocalProfile()
         storage.removeObject(forKey: Self.userKey)
         signedOut()
     }
-    func resetLocalProfile() {
+    /// `keepUnsentSkipPicks`: N1–N3 answers that no account has received yet (no imported style, no companion) are
+    /// this person's, picked before signing in — they stay for the new account (QA build 5 device171: the skip sent
+    /// only N3 after a sign-in wiped N1·N2). An account delete drops everything.
+    func resetLocalProfile(keepUnsentSkipPicks: Bool = false) {
+        let old = setup
+        // only picks known to be unsent (`false`, set when picked); nil = an older build's data, never carried (Codex #516)
+        let carry = keepUnsentSkipPicks && old.skipSent == false && old.skipOwner == nil && old.styleRows == nil && old.companionCreated != true
         storage.removeObject(forKey: Self.storageKey)
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        if carry {
+            setup.skipInterests = old.skipInterests; setup.skipReplies = old.skipReplies
+            setup.skipAvoid = old.skipAvoid; setup.skipLikes = old.skipLikes
+            setup.skipSent = false   // still unsent: a later N3 pick must not clear them (Codex r4)
+        }
         story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
         prep = nil; sceneImage = nil
     }
-    /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
+    /// M02 "Make a new companion" (server `POST /v1/companion/reset` done, or its 4410 call close): this phone drops the
+    /// companion too and starts again at V01 "Bring an image". The account, the user's name and what Genita knows
+    /// about them (I04 rows / profile, HISY) stay. Safe to call twice (the HTTP answer and the call close both land here).
+    func companionReset() {
+        companionResets += 1
+        invalidateOnboardingWork()
+        var s = setup
+        s.companionName = nil; s.imageId = nil; s.imageType = nil; s.imageData = nil
+        s.companionCreated = nil; s.voice = nil; s.voiceId = nil; s.voiceName = nil
+        s.serverPersona = nil; s.companionDemo = nil; s.firstCallPending = nil
+        s.answers = [:]; s.boundaries = []; s.presence = []; s.presenceCardIDs = nil
+        s.hasOnboarded = false
+        s.stage = .image
+        setup = s
+        history = []
+        prep = nil; sceneImage = nil; imageCheck = nil; imageCheckError = nil; rightsAcked = false
+        polished = nil; polishedImage = nil; polishError = nil; polishRetriesLeft = 0; polishAttempts = 0
+        setupSummary = nil; suggestedCompanionName = nil; nameError = nil; prepError = nil; flowError = nil
+        menuOpen = false; settingsOpen = false
+    }
+    /// How many times this phone dropped its companion (`companionReset()`): Settings' reset request compares it, so its
+    /// HTTP answer arriving after the 4410 close already reset the phone never runs again (Codex #514 P2: it wiped the
+    /// photo the user had just picked on V01).
+    private(set) var companionResets = 0
+    /// Settings' `POST /v1/companion/reset` answered 200: the local reset, unless one already ran since `asked` (the call's 4410).
+    func companionResetAnswered(since asked: Int) {
+        guard companionResets == asked else { return }
+        companionReset()
+    }
+    /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403 / 4410, F1-L7).
     func route(_ stop: CallStop?) {
         switch stop {
         case .signIn?:
@@ -322,6 +433,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         case .consent?:
             storage.set(true, forKey: Self.needsConsentKey)
             if stage != .consent { go(.consent) }
+        case .companionReset?:
+            // reset from Settings (or another of this account's phones): no companion to reconnect to
+            if stage == .conversation || stage == .connecting { companionReset() }
         default: break
         }
     }

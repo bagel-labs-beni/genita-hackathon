@@ -50,3 +50,24 @@ test("CW-02: an outfit card with no taste line from the model gets the account's
   assert.equal(c.evidence?.situation, "Beige trench for this weekend.");
   assert.ok(c.why.length >= 2, "seen reasons");
 });
+
+test("AU-70 (Codex r2): a slower read of an earlier pick never takes the newer pick back", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  class SlowFirst extends MemoryFindsStore {
+    override async get(owner: string, id: string) {
+      if (id.endsWith("01")) await gate;
+      return super.get(owner, id);
+    }
+  }
+  const store = new SlowFirst();
+  await store.put(ownerKey("acct-a"), card("11111111-aaaa-4bbb-8ccc-000000000001", "Card A"));
+  await store.put(ownerKey("acct-a"), card("11111111-aaaa-4bbb-8ccc-000000000002", "Card B"));
+  const runner = new FindsRunner({ vendors: noVendors, store, images: false, imageBase: "/v1/finds" }, { emit() {}, announce() {}, log() {}, now: () => 0 });
+  runner.configure({ owner: "acct-a", memories: [] });
+  const a = runner.focus("11111111-aaaa-4bbb-8ccc-000000000001");
+  await runner.focus("11111111-aaaa-4bbb-8ccc-000000000002");
+  release();
+  await a;
+  assert.match(runner.onScreen() ?? "", /^Card B/);
+});

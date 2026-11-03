@@ -216,7 +216,7 @@ import Foundation
         Task.detached { _ = try? await URLSession.shared.data(for: req) }
     }
 
-    /// The server closed the call for a reason reconnecting can't fix (4401 / 4403 / 4001).
+    /// The server closed the call for a reason reconnecting can't fix (4401 / 4403 / 4001 / 4410).
     func callStopped(_ stop: CallStop) {
         call.end()
         switch stop {
@@ -231,6 +231,12 @@ import Foundation
             account = .needsConsent
         case .timeLimit:
             break
+        case .companionReset:
+            // the companion was reset on the iPhone: nothing to call back; /me now routes to MAC-2 "Set up on iPhone"
+            // (the server sends 4410 only after the companion rows are gone, so this /me already has no companion)
+            wantsCall = false
+            face = nil
+            Task { await refresh() }
         }
     }
 
@@ -245,9 +251,8 @@ import Foundation
         }
         handoffAccountID = accountID
         MacHandoff.shared.setAccount(accountID)
-        if changed, accountID != nil {
-            wantsCall = MacHandoff.shared.ownership.isOwner && MacHandoff.shared.ownership.state.epoch > 0
-        }
+        // MC-01 (lead 11/4): a restored account never starts the call by itself; MAC-4 "Continue here" does
+        // (MacHandoff.resumeHere → conversationArrived)
     }
 
     /// The conversation is on this Mac now (ownership → mac).

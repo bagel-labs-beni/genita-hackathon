@@ -92,10 +92,13 @@ import XCTest
         try Data([9]).write(to: FindFrameStore.directory.appending(path: "abcdef12-0003-0.jpg"))
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").count, 2)
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").count, 1, "old loose frames still open")
-        FindFrameStore.removeAll(owner: "acct-a")
+        // and one of account B's, also loose
+        try Data([8]).write(to: FindFrameStore.directory.appending(path: "abcdef12-0004-0.jpg"))
+        FindFrameStore.removeAll(owner: "acct-a", ids: ["abcdef12-0001", "abcdef12-0003"])
         XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0001", owner: "acct-a").isEmpty)
-        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").isEmpty, "loose frames go with any deletion")
+        XCTAssertTrue(FindFrameStore.load(id: "abcdef12-0003", owner: "acct-a").isEmpty, "its own loose frames go")
         XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0002", owner: "acct-b").count, 1, "the other account keeps its frames")
+        XCTAssertEqual(FindFrameStore.load(id: "abcdef12-0004", owner: "acct-b").count, 1, "and its loose ones (Codex r2)")
     }
 
     /// AU-62 / AU-72: the socket dropped mid-search. The new session never sends that result: the search fails with
@@ -165,5 +168,39 @@ import XCTest
         let p = FindsModel()
         p.apply(started("p1")); p.apply(created("p1")); p.force(.half); p.close()
         XCTAssertNil(p.noSee)
+    }
+
+    /// Codex r3: an older Finds list (picture still pending) never takes back a picture the call already got.
+    func testReopeningKeepsAPictureTheListDoesNotHaveYet() {
+        let m = FindsModel()
+        m.apply(started("a")); m.apply(created("a", hero: "pending")); m.force(.peek)
+        m.apply(try! ServerEvent.decode(#"{"type":"find.image","findId":"a","slot":"hero","status":"ready","url":"/v1/finds/a/images/hero"}"#))
+        XCTAssertEqual(m.current?.card?.hero?.status, .ready)
+        m.openSaved(card("a", kind: .product, hero: "pending"), frames: [])
+        XCTAssertEqual(m.current?.card?.hero?.status, .ready)
+    }
+
+    /// Codex r4: reopening a card this call made keeps what the call confirmed (an ingredient now "have"), not the list's older state.
+    func testReopeningKeepsTheCallsConfirmedIngredients() throws {
+        let m = FindsModel()
+        m.apply(started("a", kind: .recipe)); m.apply(created("a", kind: .recipe)); m.force(.peek)
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"a","checking":false,"subtitle":"Have 1","status":"All set","items":[{"id":"i1","name":"kimchi","tier":"have","from":"both"}]}"#))
+        var old = card("a", kind: .recipe)
+        old.status = "1 to check"
+        m.openSaved(old, frames: [])
+        XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
+        XCTAssertEqual(m.current?.card?.status, "All set")
+    }
+
+    /// Codex r5: ingredients still "checking" when the call dropped take the server's finished result from the list.
+    func testReopeningTakesTheListsResultForIngredientsStillChecking() throws {
+        let m = FindsModel()
+        m.apply(started("a", kind: .recipe)); m.apply(created("a", kind: .recipe)); m.force(.peek)
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"a","checking":true,"items":[{"id":"i1","name":"kimchi","tier":"checking","from":"camera"}]}"#))
+        m.interrupted()
+        var listed = card("a", kind: .recipe)
+        listed.items = [FindItem(id: "i1", name: "kimchi", tier: .have, from: .camera)]
+        m.openSaved(listed, frames: [])
+        XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
     }
 }

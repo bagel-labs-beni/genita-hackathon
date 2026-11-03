@@ -64,6 +64,8 @@ struct FindEntry: Identifiable, Equatable {
     var page = 0
     /// Ingredient chip the user tapped (its camera box lights up; r03 #4/#5).
     var selectedItem: String?
+    /// Motion card 6: +1 each time the user saves the shown card (not on unsave, not when a failed unsave restores it).
+    private(set) var savePulse = 0
     /// Step marked done, per find.
     var doneSteps: [String: Set<Int>] = [:]
     /// r03 #11: a result arrived while the user reads another one.
@@ -331,6 +333,7 @@ struct FindEntry: Identifiable, Equatable {
         let id = f.id
         let want = !f.saved
         update(id) { $0.saved = want }
+        if want { savePulse += 1 }
         Task { @MainActor in
             // server first-class: if the save didn't land, the bookmark goes back
             if !(await saveRemote(id, want)) { update(id) { $0.saved = !want } }
@@ -343,8 +346,9 @@ struct FindEntry: Identifiable, Equatable {
         risingTask?.cancel(); toastTask?.cancel()
         if let i = entries.firstIndex(where: { $0.id == card.id }) {
             entries[i].reopened = true
-            // Finds has the server's copy: pictures that finished after a reconnect or the call's end are in it (AU-72)
-            entries[i].card = card
+            // Finds has the server's copy: pictures that finished after a reconnect or the call's end are in it (AU-72);
+            // a picture this call already got stays, the list may be older than that (Codex r3)
+            entries[i].card = Self.merged(card, keeping: entries[i].card)
             entries[i].failed = nil
             entries[i].checking = false
             if let saved = card.saved { entries[i].saved = saved; entries[i].card?.saved = saved }
@@ -358,6 +362,25 @@ struct FindEntry: Identifiable, Equatable {
         selectedItem = nil; browser = nil; newFind = nil; undoState = nil
         boxes.clear(stale: false)
         state = .half
+    }
+
+    /// Reopening a card this call made: the live card (its confirmed ingredients and status are newer than any list),
+    /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
+    static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
+        guard var c = live else { return listed }
+        // ingredients still being checked when the call lost the server: the server finished them, the list has that (Codex r5)
+        if live?.items.contains(where: { $0.tier == .checking }) == true {
+            c.items = listed.items; c.subtitle = listed.subtitle; c.status = listed.status
+        }
+        let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
+        c.hero = pick(c.hero, listed.hero)
+        for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
+        if var products = c.products, let lp = listed.products {
+            for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
+            c.products = products
+        }
+        c.saved = listed.saved ?? c.saved
+        return c
     }
 
     /// "Talk about this on a call": the card stays up over the call, questions are about it from here on.
