@@ -1,11 +1,11 @@
 import XCTest
 
-/// SUM insight report (춘식이 r02 R1): the review fixture (no server). Screenshots `insight-*` go to the workflow
+/// SUM insight report (춘식이 r02 R1): the review fixture (no server). Screenshots `onb-insight-*` go to the workflow
 /// artifact for the eye check against ./_qa-scripts/genita-splash/insight "R1".
 final class InsightReportUITests: XCTestCase {
     private func shot(_ app: XCUIApplication, _ name: String) {
         let a = XCTAttachment(screenshot: app.screenshot())
-        a.name = "insight-" + name; a.lifetime = .keepAlways; add(a)
+        a.name = "onb-insight-" + name; a.lifetime = .keepAlways; add(a)
     }
 
     func testR1ReportScrollsThroughEverySection() throws {
