@@ -308,7 +308,10 @@ export class FindsRunner {
     const wanted = (w: string) => p.wants.has(w) || p.wants.has(`${w}s`) || p.wants.has(w.replace(/s$/, ""));
     if (itemWords.some((w) => !wanted(w))) return null;
     // a color or a price it never had in view (said, or the account's own taste) → fresh search
-    if (named.some((w) => COLOR.test(w) && !inView(w))) return null;
+    // a color must be one the search was steered by (what was said): taste alone didn't keep it from picking black
+    // for "dark brown" (prod 11/3 13:00)
+    const asked = new Set(p.question.toLowerCase().match(/[a-z]+/g) ?? []);
+    if (named.some((w) => COLOR.test(w) && !asked.has(w))) return null;
     if (/\$\s?\d|\bunder \d|\bcheap/.test(lower)) return null;
     // anything narrower than "what goes with it" is its own search (Codex P2 #366): an exclusion, a material,
     // a size, or a brand (a capitalized word mid-sentence) the prefetch never had in view

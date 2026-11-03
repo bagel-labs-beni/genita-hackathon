@@ -123,7 +123,8 @@ test("Codex r1: a blazer, a lamp next to shoes, or a color the prefetch never ha
     await r.settle();
     assert.equal(searches.length, pre + 1, ask);
   }
-  // the account's own taste colors count as in view ("dark brown" is in the import, not in what was said)
+  // prod 11/3 13:00: "dark brown shoes" reused a prefetch steered by "go with the black dress" and showed black boots.
+  // A color in the ask must be one the background search was asked for (what was said), not just the import's taste.
   const { v, searches } = vendors(10);
   const { r } = runner(v);
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve("The black one, for sure.") });
@@ -131,7 +132,7 @@ test("Codex r1: a blazer, a lamp next to shoes, or a color the prefetch never ha
   const pre = searches.length;
   r.onTurn({ text: "Can you find me dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
   await r.settle();
-  assert.equal(searches.length, pre, "taste color: reused");
+  assert.equal(searches.length, pre + 1, "a taste color the search wasn't steered by: fresh search");
 });
 
 test("Codex r1: a failed prefetch's fresh search shows one 'searching' state; a stopped ask never searches again", async () => {
