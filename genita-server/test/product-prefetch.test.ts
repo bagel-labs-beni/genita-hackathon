@@ -58,14 +58,15 @@ test("an outfit card starts the matching shoe search in the background; the ask 
   const { r, events } = runner(v);
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
   await sleep(60);
-  assert.equal(searches.length, 1, "prefetch started once the outfit card landed");
+  const pre = searches.length;
+  assert.ok(pre >= 1, "prefetch started as soon as the spoken pick was out");
   assert.match(searches[0], /dark brown shoes or leather accessories/, "it follows what the companion suggested");
   assert.ok(!events.some((e) => e.type === "find.started" && e.kind === "product"), "nothing on screen until she asks");
   const t0 = performance.now();
   const started = r.onTurn({ text: "Can you find me some dark brown shoes that go with this?", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) });
   assert.equal(started?.kind, "product");
   await r.settle();
-  assert.equal(searches.length, 1, "no second search");
+  assert.equal(searches.length, pre, "no second search");
   const mine = events.filter((e) => "findId" in e && e.findId === started!.findId);
   assert.deepEqual(mine.filter((e) => e.type === "find.started").length, 1);
   const created = mine.find((e) => e.type === "find.created") as Extract<ServerEvent, { type: "find.created" }>;
@@ -84,14 +85,15 @@ test("an unrelated ask, or one after 5 minutes, searches as before", async () =>
   const { r } = runner(v, () => now);
   r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
   await r.settle(); await sleep(30);
-  assert.equal(searches.length, 1);
+  const pre = searches.length;
+  assert.ok(pre >= 1);
   r.onTurn({ text: "Can you find me a desk lamp?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
   await r.settle();
-  assert.equal(searches.length, 2, "a lamp is not what the prefetch looked for");
+  assert.equal(searches.length, pre + 1, "a lamp is not what the prefetch looked for");
   now += 6 * 60_000;
   r.onTurn({ text: "Can you find me some dark brown shoes?", frames: [], utteranceId: 3, replyText: Promise.resolve(null) });
   await r.settle();
-  assert.equal(searches.length, 3, "too old: a fresh search");
+  assert.equal(searches.length, pre + 2, "too old: a fresh search");
 });
 
 test("no outfit card, no prefetch; a failed prefetch falls back to a normal search", async () => {

@@ -114,7 +114,7 @@ export type SessionDeps = {
 
 /** Demo S5 (agreed with the convo lane 11/3): the product-ask turn's reply while the search runs in the background. */
 export const PRODUCT_REACTION_LINE =
-  "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short, natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
+  "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
@@ -1322,7 +1322,11 @@ export class Session {
           // demo S5: the search can take 10–30 s, so no silent wait and no "On it." — one quick in-character reaction
           // (no tools: nothing to narrate, no guessed products); the card and its own line follow when it lands.
           // A failed reaction falls back to the short ack.
-          const react = this.sparkSource({ ...req, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
+          // text only: the frames already went to the search, and an image costs the reaction ~1–2 s of first word
+          const textOnly = Array.isArray(req.input)
+            ? req.input.map((m) => ("content" in m && Array.isArray(m.content) ? { ...m, content: m.content.filter((c) => c.type === "input_text").map((c) => (c as { text: string }).text).join(" ") } : m))
+            : req.input;
+          const react = this.sparkSource({ ...req, input: textOnly as typeof req.input, instructions: `${req.instructions ?? ""}\n${PRODUCT_REACTION_LINE}\n`, tools: undefined }, signal, undefined, false);
           pre = (async function* () {
             let said = false;
             try {

@@ -169,9 +169,15 @@ export class FindsRunner {
         return r;
       };
     } else if (intent.kind === "outfit") {
+      // the "goes with" search starts as soon as the spoken pick is out (~4 s), not after the card (~8 s):
+      // Spark search takes 15–30 s, every second of head start shows on camera
+      let prefetching = false;
+      void t.replyText.then((said) => {
+        if (said && !abort.signal.aborted) { prefetching = true; this.startPrefetch(null, said, t); }
+      }).catch(() => {});
       run = async (c) => {
         const r = await runOutfit(c);
-        if (r.card && !c.signal.aborted) void t.replyText.then((said) => this.startPrefetch(r.card!, said, t)).catch(() => {});
+        if (r.card && !prefetching && !c.signal.aborted) this.startPrefetch(r.card, r.card.say ?? null, t);
         return r;
       };
     } else run = intent.kind === "recipe" ? runRecipe : runLink;
@@ -202,13 +208,13 @@ export class FindsRunner {
 
   // ───────── demo S5: the search for what goes with a picked outfit, started before she asks ─────────
 
-  private startPrefetch(card: FindCard, said: string | null, t: TurnInput): void {
+  private startPrefetch(card: FindCard | null, said: string | null, t: TurnInput): void {
     if (this.closed || this.deps.productPrefetch === false) return;
-    const reply = (said ?? card.say ?? "").slice(0, 300);
+    const reply = (said ?? card?.say ?? "").slice(0, 300);
     const wants = new Set([...reply.matchAll(GOES_WITH)].map((m) => m[1].toLowerCase()));
     if (!wants.size) for (const w of ["shoes", "accessories", "bag"]) wants.add(w);
-    const picked = card.status || card.title;
-    const question = `Find shoes or accessories that go with the outfit they just picked (${picked}).${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
+    const picked = card ? ` (${card.status || card.title})` : "";
+    const question = `Find shoes or accessories that go with the outfit they just picked${picked}.${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
     this.prefetched?.abort.abort();
     const abort = new AbortController();
     const p: Prefetch = { at: this.hooks.now(), wants, question, label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, done: Promise.resolve({ card: null, timings: {} }) };
@@ -220,7 +226,9 @@ export class FindsRunner {
       putImage: async (slot, bytes) => { p.images.set(slot, bytes); return `prefetch:${slot}`; },
     };
     const likes = this.likes;
-    p.done = (async () => runProduct({ ...ctx, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge }))().catch(() => ({ card: null, timings: {} }));
+    // one more lane than a normal search: Spark search time varies 15–30 s and the first good lane wins
+    const hedge = Math.min(3, (this.deps.productHedge ?? 2) + 1);
+    p.done = (async () => runProduct({ ...ctx, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge }))().catch(() => ({ card: null, timings: {} }));
     this.prefetched = p;
     this.hooks.log("product.prefetch", { wants: [...wants].slice(0, 6) });
   }
@@ -241,7 +249,8 @@ export class FindsRunner {
     c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(p.label)} · searching shops` });
     let card: FindCard | null = null;
     const forward = async (e: ServerEvent) => {
-      if (c.signal.aborted || e.type === "find.started") return;
+      // a prefetch that found nothing is never shown: this ask searches itself (below)
+      if (c.signal.aborted || e.type === "find.started" || e.type === "find.failed") return;
       if (e.type === "find.image") {
         const bytes = e.status === "ready" ? p.images.get(e.slot) : undefined;
         if (bytes) {
