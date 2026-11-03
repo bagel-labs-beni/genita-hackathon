@@ -72,9 +72,10 @@ const ACRONYMS = new Set(["TV", "NASA", "FBI", "CIA", "USA", "US", "UK", "EU", "
   "PM", "AM", "ASAP", "DIY", "BBQ", "FAQ", "GPS", "PDF", "URL", "USB", "VIP", "NBA", "NFL", "BTS", "K", "TBD", "RSVP", "OMG", "LOL", "RN", "FR",
   "IKEA", "UNESCO", "NATO", "UFO", "MRI", "ER", "ICU", "IQ", "PhD", "MBA", "IT", "HR", "PR", "QA", "UI", "UX", "API", "AI"]);
 const SHOUTED_2 = new Set(["NO", "SO", "OH", "GO", "MY", "ME", "WE", "DO", "BE", "UP", "IS", "IN", "ON", "TO", "OF", "AT", "HI", "YO", "OK", "AH", "UH", "UM", "HE", "OR"]);
+const ROMAN = /^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/;
 function speakCaps(t: string): string {
   return t.replace(/\b[A-Z]{2,}\b/g, (w) => {
-    if (ACRONYMS.has(w) || /^[IVXLCDM]+$/.test(w)) return w; // acronyms, Roman numerals ("III")
+    if (ACRONYMS.has(w) || ROMAN.test(w)) return w; // acronyms, Roman numerals ("III"; "DID" is not one)
     if (w.length === 2) return SHOUTED_2.has(w) ? w.toLowerCase() : w;
     return /[AEIOUY]/.test(w) ? w.toLowerCase() : w;
   });
