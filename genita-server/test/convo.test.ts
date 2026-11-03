@@ -1403,6 +1403,7 @@ test("#345: a smile or laugh the camera saw at the last reply keeps that lane (a
   assert.match(line ?? "", /landed \(they smiled at it\): stay in that lane, and don't mention their face/);
   assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "ugh today was so bad", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "bad news wins");
   assert.equal(turnHints({ userText: "ok fine", remembers: false, faceLanded: "smiled" }), null, "no last reply, nothing landed");
+  assert.doesNotMatch(turnHints({ lastReply: "<teasing> Bet you burnt the rice again.", userText: "I want to kill myself.", remembers: false, faceLanded: "smiled" }) ?? "", /landed/, "a crisis line never keeps the joke lane");
 });
 
 test("#345 session: a perception smile at the reply reaches the next turn once, within 20 s", { skip: !v1 }, async () => {

@@ -11,6 +11,7 @@
  *               answered without the design-studio interview, recall 0.78)
  * Intent only, never a line to copy.
  */
+import { realCrisisSignal } from "./guard.ts";
 
 const GOOD_NEWS = /\b(?:i|we) (?:got|landed) (?:the |a |an |my )?(?:job|offer|part|role|promotion|raise|apartment|place|internship|spot|scholarship|tickets?)\b|\b(?:i|we) (?:passed|won|aced|nailed|crushed)\b|\bi did it\b|\bthey said yes\b|\bgot (?:in|accepted|promoted|engaged|hired)\b/i;
 const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst|tore (?:it|my)|redid my)\b/i;
@@ -87,9 +88,11 @@ export function turnHints(t: TurnHintInput): string | null {
   const close = closenessLine(t.callNumber);
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
-  if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
+  // a real crisis line never gets "stay in that lane" (Codex #489 P1)
+  const crisis = realCrisisSignal(user);
+  if (last && !crisis && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   // #345: what landed, read from their face — the same lane, never a word about their face or the camera
-  else if (last && t.faceLanded && !said(BAD_NEWS, user)) out.push(`Your last line landed (they ${t.faceLanded} at it): stay in that lane, and don't mention their face.`);
+  else if (last && !crisis && t.faceLanded && !said(BAD_NEWS, user)) out.push(`Your last line landed (they ${t.faceLanded} at it): stay in that lane, and don't mention their face.`);
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
   // a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
