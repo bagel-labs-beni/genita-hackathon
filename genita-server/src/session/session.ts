@@ -41,7 +41,6 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import { isForgetRequest } from "../memory/extract.ts";
 import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState , replyMemoryTools } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
