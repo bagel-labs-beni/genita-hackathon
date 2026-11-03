@@ -131,7 +131,6 @@ import os
         guard fire, let token = tokens[id] else { return }
         pendingToken = token
         log.info("proximity held close, reporting")
-        handoff.proximityReported()  // MC-01: an offer made after this report can be confirmed by proximity.result ok
         handoff.server.send(["type": "proximity.seen", "token": token])
     }
 
@@ -144,8 +143,6 @@ import os
             pendingToken = nil
             // Only a successful move keeps the leave-range latch. Briefly exclude an unknown token so
             // another account's nearby phone cannot keep retrying ahead of this account's phone.
-            // MC-01: an accepted report is a live move — open the call even if its claim landed first as a sync
-            if accepted { handoff?.liveMoveConfirmed(epoch: nil) }
             if !accepted {
                 detector.reject(token: token, reason: reason, at: Date().timeIntervalSince1970)
                 tokens = [:]

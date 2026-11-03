@@ -39,20 +39,15 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// A move the server makes for this Mac (proximity) can land first as a trigger-less `claim.result` (seen as a
     /// sync: Continue here offered). Its confirmation — `proximity.result ok`, or the `ownership` with a live trigger
     /// for the same epoch, which the reducer ignores — then opens the call (Codex P1/P2: no time window).
-    /// - Parameter epoch: the confirming claim's epoch; it must be the one the offer is waiting on (a late event for
-    ///   an older move never resumes the current one, Codex P2). nil = `proximity.result ok`, accepted only for an
-    ///   offer made after this Mac's own report.
-    func liveMoveConfirmed(epoch:Int?) {
-        guard ownership.isOwner,resumeOffered else{return}
-        if let epoch {guard epoch==resumeEpoch else{return}}
-        else {guard proximityReportedAt>0,resumeOfferedAt>=proximityReportedAt else{return}}
+    /// - Parameter epoch: the confirming `ownership(trigger: proximity)` epoch; it must be the one the offer is waiting
+    ///   on, so a late event for another move never resumes the current one (Codex P2). PROTOCOL: an accepted
+    ///   proximity report is always followed by that ownership event.
+    func liveMoveConfirmed(epoch:Int) {
+        guard ownership.isOwner,resumeOffered,epoch==resumeEpoch else{return}
         resumeHere()
     }
     private var resumeEpoch:Int?
-    private var resumeOfferedAt=0.0
-    private var proximityReportedAt=0.0
-    func proximityReported() { proximityReportedAt=Date().timeIntervalSince1970 }
-    private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch;resumeOfferedAt=Date().timeIntervalSince1970 }
+    private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
