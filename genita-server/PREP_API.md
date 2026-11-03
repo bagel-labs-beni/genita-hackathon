@@ -157,3 +157,16 @@ scene (Muse Image, retried once on failure) → **face set** (13 Muse Image edit
 | `never` | deep | any of `Message anyone for me` · `Use sensitive memories` · `Interrupt focus time` · `Mirror my mood` |
 
 Send exactly the keys of the chosen depth; a missing or extra key is `400 bad_prefs`.
+
+## Device QA test photos (V01 "Use a test photo", 11/4)
+
+QA drives a TestFlight iPhone over macOS iPhone Mirroring and must never open the owner's photo library. A QA account gets a small **Use a test photo** link under V01's rights line; it opens a sheet of five bundled, synthetic pictures (`ios-app/Genita/Resources/qa-sample-{human,dog,clay,anime,drawing}.jpg`: the demo companion Jin, plus the photo-polish probe set's dog, clay figure, 2D character and hand drawing). A pick goes through the same path as a library pick (`accept` → rights line → `POST /v1/companion/image` → V03 → polish / V02), so the test is real end to end.
+
+- **Gate (server only):** env `GENITA_QA_SAMPLE_PHOTOS` = comma list of account ids (`users.id`) and/or email addresses. A listed account's `/me` and sign-in body carry `qaSamplePhotos: true`; for everyone else the key is absent. An email entry matches only an address the provider verified and never a `dev` row (Judge access / shared token). Unset = off for all. The app keeps the flag in memory only (set at sign-in and each launch `/me`, cleared at sign-out); judges and users never see the link.
+- **Accessibility ids** for the QA agent: `qaSamplePhotoEntry` (the link), `qaSamplePhoto-human|dog|clay|anime|drawing` (sheet tiles). Then `rightsAck` and `primaryCTA` as usual.
+- **Turn it on for an account (prod, lead / Chelsea runs it — lanes don't write SSM):**
+  1. Find the account id (or use its verified email): `psql "$DATABASE_URL" -c "SELECT id, provider, email, email_verified FROM users WHERE email ILIKE '<qa email>'"`.
+  2. `aws ssm put-parameter --name /genita/server/GENITA_QA_SAMPLE_PHOTOS --type SecureString --overwrite --value '<id-or-email>,<id-or-email>'`
+  3. Restart so `start.mjs` re-reads SSM: `deploy/aws/server/deploy.sh <deployed ref>` (or `sudo systemctl restart genita-server` on the box via SSM). Check: the account's `GET /me` has `"qaSamplePhotos": true`; a normal account's has no such key.
+  4. On the phone: sign out and in again (or relaunch) so the app reads `/me`.
+- Off again: delete the parameter (`aws ssm delete-parameter --name /genita/server/GENITA_QA_SAMPLE_PHOTOS`) and restart.

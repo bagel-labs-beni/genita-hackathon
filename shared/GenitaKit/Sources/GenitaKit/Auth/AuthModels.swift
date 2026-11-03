@@ -26,14 +26,17 @@ public struct GenitaMe: Codable, Equatable, Sendable {
     public var conversation: Conversation?
     /// the account's companion is the ready-made judge one (PR #178)
     public var companionDemo: Bool?
+    /// device QA only: V01 shows "Use a test photo" (server GENITA_QA_SAMPLE_PHOTOS). Absent for every other account.
+    public var qaSamplePhotos: Bool?
 
-    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?, companionDemo: Bool? = nil) {
+    public init(user: User, consented: Bool, hasCompanion: Bool, prepStatus: PrepStatus, conversation: Conversation?, companionDemo: Bool? = nil, qaSamplePhotos: Bool? = nil) {
         self.user = user
         self.consented = consented
         self.hasCompanion = hasCompanion
         self.prepStatus = prepStatus
         self.conversation = conversation
         self.companionDemo = companionDemo
+        self.qaSamplePhotos = qaSamplePhotos
     }
 }
 

@@ -41,7 +41,7 @@ extension AppState {
         }
         guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
-        if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
+        if case .active(let m) = state { me = m; adopt(accountId: m.user.id); qaSamplePhotos = m.qaSamplePhotos == true }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first

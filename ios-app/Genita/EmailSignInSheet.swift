@@ -129,7 +129,7 @@ struct EmailSignInSheet: View {
             do {
                 let r = try await GenitaAuthClient().signInWithEmailCode(email: sentTo, code: code)
                 dismiss()
-                model.signedIn(userId: r.me.user.id, consented: r.me.consented)
+                model.signedIn(userId: r.me.user.id, consented: r.me.consented, qaSamplePhotos: r.me.qaSamplePhotos == true)
             } catch {
                 message = EmailSignInCopy.message(for: error, sendingCode: false)
                 code = ""

@@ -53,6 +53,7 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 | 11/3 | App config: new public REST `GET /v1/app-config` (copy, flags, tuning, update nudges, remote asset URLs; ETag/304). No WebSocket change. Additive. |
 | 11/3 | D27 voice GPU capacity: above `GENITA_VOICE_MAX_CALLS` (default 3, 0 = unlimited), chat and interpretation replies use the existing `say` fallback; server voice resumes from the next reply once a seat is free. Voice never switches mid-reply. No wire or `ready` changes. |
 | 11/3 | D27 capacity for judging: `GENITA_VOICE_MAX_CALLS` default 3 → 8 (the voice GPU now autoscales early, up to 4 containers). A full GPU queue answers 503 `busy` within 2.5 s; that sentence uses the existing `say` fallback and server voice is retried after 2 s (other failures still 30 s). No wire changes. |
+| 11/4 | Device QA test photos: `/me` (and the sign-in body) adds `qaSamplePhotos: true` **only** for accounts listed in server env `GENITA_QA_SAMPLE_PHOTOS` (account ids / verified emails); every other account's `/me` is unchanged (no key). The iPhone app then shows "Use a test photo" on V01 (bundled samples → the same `POST /v1/companion/image`). Additive. |
 
 ```
 wss://<host>/v1/session

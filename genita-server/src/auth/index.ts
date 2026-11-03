@@ -9,6 +9,7 @@
  *   GENITA_JWT_SECRET     HS256 secret for session tokens (≥32 chars). Unset on loopback = random per boot.
  *   GENITA_PUBLIC_URL     https://genita-api.thebeni.ai — Apple web callback base (Mac login)
  *   GENITA_JUDGE_CODES    label=code,… Judge access (auth/judge.ts)
+ *   GENITA_QA_SAMPLE_PHOTOS  account ids / verified emails, comma list: V01 "Use a test photo" for device QA (auth/accounts.ts)
  *   GENITA_JUDGE_DAILY_TURNS  user turns per UTC day per judge code (default 200, 0 = no cap)
  *   GENITA_TRUST_PROXY    "1" = rate-limit by X-Forwarded-For (behind a proxy/load balancer)
  *   APPLE_*               see auth/apple.ts · GENITA_S3_* see storage/blob.ts
@@ -95,7 +96,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
   }
   const blobs = opts.blobs ?? blobStoreFromEnv(env, join(env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "blobs"));
   const apple = opts.apple ?? new AppleAuth(appleConfigFromEnv(env));
-  const accounts = new Accounts(db);
+  const accounts = new Accounts(db, { qaSamplePhotos: env.GENITA_QA_SAMPLE_PHOTOS });
   const mail = opts.mail !== undefined ? opts.mail : mailSenderFromEnv(env, log, { loopback: opts.loopback });
   const publicUrl = (env.GENITA_PUBLIC_URL || "https://genita-api.thebeni.ai").replace(/\/+$/, "");
   const prepStore = new PgPrepStore(db, blobs);

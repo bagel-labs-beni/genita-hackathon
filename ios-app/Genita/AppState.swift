@@ -96,6 +96,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var imageCheck: ImageCheck?
     /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
     var rightsAcked = false
+    /// V01 "Use a test photo" (device QA): only an account the server lists (`/me` `qaSamplePhotos`, GENITA_QA_SAMPLE_PHOTOS).
+    /// Set at sign-in and on every launch `/me`, cleared on sign-out. Transient: never saved, never on for judges or users.
+    var qaSamplePhotos = false
     var imageCheckError: String?
     /// Photo polish (V03 → V02-T confirm): the polished result, its bytes, the wait, and an error line. Transient.
     var polished: PolishedImage?
@@ -243,16 +246,17 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
-        prep = nil; sceneImage = nil
+        prep = nil; sceneImage = nil; qaSamplePhotos = false
         storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
-    func signedIn(userId: String? = nil, consented: Bool) {
+    func signedIn(userId: String? = nil, consented: Bool, qaSamplePhotos: Bool = false) {
         invalidateOnboardingWork()
         authGeneration += 1
+        self.qaSamplePhotos = qaSamplePhotos
         signInRouting?.cancel(); signInRouting = nil
         onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)

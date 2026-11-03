@@ -32,10 +32,39 @@ const toUser = (r: Record<string, any>): User => ({
 
 const hashCode = (code: string) => createHash("sha256").update(code).digest("hex");
 
+/**
+ * QA test photos (11/4): `GENITA_QA_SAMPLE_PHOTOS` = comma list of account ids and/or email addresses.
+ * A listed account's `/me` carries `qaSamplePhotos: true` and the iPhone app shows "Use a test photo" on V01
+ * (bundled sample pictures, so device QA never opens a real photo library). An email entry only matches an
+ * address the provider verified, and never a `dev` (judge / shared-token) row. Unset = off for everyone,
+ * and `/me` never has the key unless it is true (normal accounts see exactly what they saw before).
+ */
+export function parseQaList(raw: string | undefined): { ids: Set<string>; emails: Set<string> } {
+  const ids = new Set<string>();
+  const emails = new Set<string>();
+  for (const part of (raw ?? "").split(",")) {
+    const s = part.trim();
+    if (!s || s.length > 254) continue;
+    if (s.includes("@")) emails.add(s.toLowerCase());
+    else ids.add(s);
+  }
+  return { ids, emails };
+}
+
 export class Accounts {
   readonly db: Db;
-  constructor(db: Db) {
+  private readonly qa: { ids: Set<string>; emails: Set<string> };
+  constructor(db: Db, opts: { qaSamplePhotos?: string } = {}) {
     this.db = db;
+    this.qa = parseQaList(opts.qaSamplePhotos);
+  }
+
+  /** QA test photos on V01 (see parseQaList). Judges and every unlisted account: false. */
+  async qaSamplePhotos(user: User): Promise<boolean> {
+    if (this.qa.ids.has(user.id)) return true;
+    if (!this.qa.emails.size || !user.email || user.provider === "dev" || !this.qa.emails.has(user.email.toLowerCase())) return false;
+    const r = await this.db.query("SELECT email_verified FROM users WHERE id = $1", [user.id]);
+    return r.rows[0]?.email_verified === true;
   }
 
   /**
@@ -168,6 +197,8 @@ export class Accounts {
       /** D41: the companion is the ready-made judge demo (app shows a small "Demo companion" label) */
       companionDemo: c.rows[0]?.demo === true,
       conversation: conv.rows[0] ? { activeDevice: conv.rows[0].active_device ?? null, epoch: Number(conv.rows[0].epoch) } : null,
+      /** QA test photos on V01 (GENITA_QA_SAMPLE_PHOTOS); the key is only there when true */
+      ...((await this.qaSamplePhotos(user)) ? { qaSamplePhotos: true as const } : {}),
     };
   }
 
