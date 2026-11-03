@@ -1582,8 +1582,8 @@ test("intel eval 11/4 task hints: a plan ask gets the work-it-out line, an unkno
   const { client, session, calls } = setup(["<teasing> Pack first, ten minutes."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
   const say = async (text: string) => { const n = calls.length; await session.onClientText(JSON.stringify({ type: "text", text })); await client.waitFor((m) => m.type === "reply" && m.final === true && calls.length > n); return calls.at(-1)!.instructions ?? ""; };
-  assert.doesNotMatch(await say("lol hi"), /work something out|who they mean/);
-  assert.match(await say("i have 45 minutes before i leave, need to shower, eat and pack. go"), /work something out/);
+  assert.doesNotMatch(await say("lol hi"), /Work it out for real|who they mean/);
+  assert.match(await say("i have 45 minutes before i leave, need to shower, eat and pack. go"), /Work it out for real/);
   assert.match(await say("should i text him or not"), /who they mean/);
   session.close();
 });

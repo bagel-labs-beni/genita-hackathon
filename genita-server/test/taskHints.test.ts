@@ -8,7 +8,7 @@ test("work it out: plans, math, timing, how-to and why asks get the 'real answer
   for (const t of ["i have 45 minutes before i leave and i still need to shower, eat something and pack for the weekend. go",
     "quick math, dinner was 86 bucks, four of us, 20 percent tip. how much each", "my flight's at 9:40, when do i leave",
     "ok explain like i'm five, why is the sky blue", "help me plan saturday", "how long does it simmer", "how do i make kimchi jjigae"]) {
-    assert.match(taskHint(t, []) ?? "", /real answer/i, t);
+    assert.match(taskHint(t, []) ?? "", /Work it out for real/i, t);
   }
   for (const t of ["lol", "making ramen", "i got the job!!", "ugh today was so bad", "what's up"]) assert.equal(taskHint(t, []), null, t);
 });
