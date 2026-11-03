@@ -11,6 +11,7 @@ import { makeFaceSilhouette, makePersonMatte } from "./person.ts";
 import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
+import { needsReflow, reflowFace } from "./reflow.ts";
 import { flowProfileOf, type FlowProfile } from "./profiles.ts";
 import { SCENE_SIZE } from "./prompts.ts";
 import type { CompanionRecord, PrepState, Step } from "./store.ts";
@@ -190,6 +191,35 @@ export class PrepRunner {
     this.topUpJobs.set(userId, { p, ac });
     return true;
   }
+  /**
+   * 11/4: a face whose flow mask predates the SAM face silhouette (flow.maskVersion < 2: a see-through jaw line under
+   * the chin) gets its flow step re-run in the background when it is loaded (GET /v1/companion/prep). Same job slot as
+   * the top-up (a new prep or DELETE /me cancels / waits on it), one at a time across the server, once per
+   * `TOPUP_RETRY_MS` per account; idempotent (a done face is maskVersion 2); a failure keeps the old flow and logs.
+   * GENITA_FACE_REFLOW=0 turns it off; ops pause "face.reflow". Log: face.reflow.
+   */
+  reflowMask(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
+    if ((env.GENITA_FACE_REFLOW ?? "").trim() === "0" || !this.d.python) return false;
+    if (this.running.has(userId) || this.topUpJobs.has(userId) || this.deleting.has(userId) || this.reflows >= 1) return false;
+    if (getOps().isPaused("face.reflow")) return false;
+    if (!needsReflow(c)) return false;
+    const last = this.reflowAt.get(userId);
+    if (last !== undefined && Date.now() - last < TOPUP_RETRY_MS) return false;
+    this.reflowAt.set(userId, Date.now());
+    const ac = new AbortController();
+    this.reflows++;
+    const p = reflowFace(this.d, c, ac.signal)
+      .then((r) => this.d.log("face.reflow", { companion: c.id, ...r }))
+      .catch((err) => this.d.log("face.reflow", { companion: c.id, status: "failed", reason: String(err).slice(0, 200) }))
+      .finally(() => {
+        this.reflows--;
+        this.topUpJobs.delete(userId);
+      });
+    this.topUpJobs.set(userId, { p, ac });
+    return true;
+  }
+  private reflows = 0;
+  private reflowAt = new Map<string, number>();
   /** Background face top-ups by account: kept apart from `running`, so a new prep never waits on one (it cancels it). */
   private topUpJobs = new Map<string, { p: Promise<void>; ac: AbortController }>();
   private topUps = 0;

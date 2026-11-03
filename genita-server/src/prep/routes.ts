@@ -333,7 +333,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
       // a face prepped before the expression keys gets them in the background (served from the next fetch)
-      runner.topUpFace(user, c);
+      // … and a face whose mouth mask predates the SAM face silhouette is re-flowed (no ghost jaw line; 11/4)
+      if (!runner.topUpFace(user, c)) runner.reflowMask(user, c);
       return send(res, 200, prepView(c));
     }
 

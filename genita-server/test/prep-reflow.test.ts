@@ -97,3 +97,30 @@ test("reflowFace: rebuilds the flow with the SAM face silhouette and swaps it in
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runner.reflowMask: starts once in the background for an old-mask face, logs face.reflow, keeps the old flow on failure; off by env / up-to-date (ops pause shares the global pause switch)", async () => {
+  const { PrepRunner } = await import("../src/prep/runner.ts");
+  const dir = mkdtempSync(join(tmpdir(), "prep-reflow-run-"));
+  try {
+    const store = new FileStore(dir);
+    await store.putCompanion(companion(oldFlow));
+    await store.putAsset("u1", "c1", "neutral", pngOf(16, 16, () => [128, 128, 128]));
+    const logs: Array<{ e: string; x: Record<string, unknown> }> = [];
+    // python that cannot run faceflow.py: the job fails and must leave the old flow alone
+    const d = { metaKey: "k", store, voices: [], log: (e: string, x: Record<string, unknown>) => void logs.push({ e, x }), media: { imageEdit: async () => Buffer.alloc(0), samDetect: async () => [] }, python: "/bin/false" } as unknown as PrepDeps;
+    const runner = new PrepRunner(d);
+    const c = (await store.getCompanion("u1"))!;
+    assert.equal(runner.reflowMask("u1", c, { GENITA_FACE_REFLOW: "0" }), false, "env off");
+    assert.equal(runner.reflowMask("u1", companion({ ...oldFlow, maskVersion: 2 }), {}), false, "already v2");
+    assert.equal(runner.reflowMask("u1", c, {}), true, "started");
+    assert.equal(runner.reflowMask("u1", c, {}), false, "one job per account at a time");
+    for (let i = 0; i < 100 && !logs.some((l) => l.e === "face.reflow"); i++) await new Promise((r) => setTimeout(r, 20));
+    const l = logs.find((x) => x.e === "face.reflow");
+    assert.ok(l, "face.reflow logged");
+    assert.equal(l!.x.status, "failed");
+    assert.deepEqual((await store.getCompanion("u1"))!.prep.steps.face!.face!.flow, oldFlow, "old flow kept");
+    assert.equal(runner.reflowMask("u1", c, {}), false, "not again within the retry window");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
