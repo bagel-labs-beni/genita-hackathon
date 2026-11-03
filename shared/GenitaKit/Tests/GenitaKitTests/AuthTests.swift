@@ -62,6 +62,15 @@ struct AuthWireTests {
         #expect(s.isNew && !s.me.consented && s.me.user.displayName == nil && s.me.conversation == nil)
     }
 
+    /// device QA test photos: absent for a normal account (the samples), true only when the server lists the account
+    @Test func qaSamplePhotosIsOptIn() throws {
+        #expect(try JSONDecoder().decode(GenitaMe.self, from: sample("me.json")).qaSamplePhotos == nil)
+        var json = try JSONSerialization.jsonObject(with: sample("me.json")) as! [String: Any]
+        json["qaSamplePhotos"] = true
+        let m = try JSONDecoder().decode(GenitaMe.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(m.qaSamplePhotos == true)
+    }
+
     @Test func secretsMatchTheServerDigests() {
         let s = AuthSecret(raw: "abc")
         #expect(s.sha256Hex == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
