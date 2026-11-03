@@ -27,13 +27,14 @@ function gate() {
 
 async function boot(t: TestContext, patch: (deps: SessionDeps) => void = () => {}) {
   const files = new Map<string, Buffer>();
-  const hooks = { put: async (_key: string) => {} };
+  const hooks = { put: async (_key: string) => {}, beforeDelete: async (_prefix: string) => {} };
   const blobs: BlobStore = {
     kind: "fs",
     async put(key, bytes) { await hooks.put(key); files.set(key, bytes); },
     async get(key) { return files.get(key) ?? null; },
     async list(prefix) { return [...files.keys()].filter((key) => key.startsWith(prefix)); },
     async deletePrefix(prefix) {
+      await hooks.beforeDelete(prefix);
       let count = 0;
       for (const key of files.keys()) if (key.startsWith(prefix)) { files.delete(key); count++; }
       return count;
@@ -102,8 +103,12 @@ const count = async (db: { query: (sql: string, p: unknown[]) => Promise<{ rows:
 
 test("companion reset: companion, photos, face files and call memory go; login, consent, name, profile and reports stay; /me has no companion", async (t) => {
   const forgotten: string[] = [];
+  let companionAtForget: unknown = "unset";
   const { accounts, files, logs, account } = await boot(t, (deps) => {
-    deps.memory = { ephemeral: true, useStore() {}, repository: {}, async forget(u: string) { forgotten.push(u); } } as unknown as SessionDeps["memory"];
+    deps.memory = { ephemeral: true, useStore() {}, repository: {}, async forget(u: string) {
+      forgotten.push(u);
+      companionAtForget = await accounts.prepStore.getCompanion(u);
+    } } as unknown as SessionDeps["memory"];
   });
   const { userId, call } = await account();
   const before = await call("GET", "/me");
@@ -130,6 +135,7 @@ test("companion reset: companion, photos, face files and call memory go; login, 
   assert.equal(await count(db, "SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1 AND revoked_at IS NULL", userId), 1, "session kept");
   assert.deepEqual([...files.keys()].filter((k) => k.startsWith(`users/${userId}/`)), [`users/${userId}/reports/r1.json`], "only the report file is left");
   assert.deepEqual(forgotten, [userId], "call memory forgotten");
+  assert.equal(companionAtForget, null, "calls close (4410) and memory goes only after the companion rows are gone (Codex P2)");
   assert.ok(logs.some((l) => l.event === "companion.reset" && l.data.ok === true && l.data.removed === true && l.data.photos === 1));
 
   // a new companion can be made on the same account afterwards (no "account deletion in progress" block)
@@ -217,4 +223,21 @@ test("companion reset: needs a session and only answers POST", async (t) => {
   assert.equal((await fetch(`${base}/v1/companion/reset`, { method: "POST", headers: { authorization: "Bearer aaa.bbb.ccc" } })).status, 401);
   assert.equal((await a.call("GET", "/v1/companion/reset")).status, 405);
   assert.equal((await a.call("GET", "/me")).body.hasCompanion, true);
+});
+
+test("companion reset: a storage failure answers 502 and a retry still removes every photo and face file (Codex P1)", async (t) => {
+  const { files, hooks, account } = await boot(t);
+  const { userId, call } = await account();
+  let failing = true;
+  hooks.beforeDelete = async (prefix) => {
+    if (failing && prefix.startsWith(`users/${userId}/images/`)) throw new Error("synthetic storage unavailable");
+  };
+  const first = await call("POST", "/v1/companion/reset");
+  assert.equal(first.status, 502);
+  assert.equal(first.body.error, "reset_failed");
+  failing = false;
+  const retry = await call("POST", "/v1/companion/reset");
+  assert.equal(retry.status, 200);
+  assert.equal((await call("GET", "/me")).body.hasCompanion, false);
+  assert.deepEqual([...files.keys()].filter((k) => k.startsWith(`users/${userId}/`)), [`users/${userId}/reports/r1.json`], "no photo or face file left behind");
 });

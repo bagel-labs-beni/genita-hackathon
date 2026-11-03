@@ -37,8 +37,8 @@ export type CompanionResetDeps = {
   blobs?: BlobStore | null;
   /** the reserved demo template account(s): never reset */
   isProtected?: (userId: string) => Promise<boolean>;
-  /** server-level cleanup before the rows go (close live calls, forget call memory). Throwing answers 502; a retry runs every step again. */
-  beforeErase?: (userId: string) => Promise<void>;
+  /** server-level cleanup once the companion is gone (close live calls 4410, forget call memory). Throwing answers 502; a retry runs every step again. */
+  afterErase?: (userId: string) => Promise<void>;
 };
 
 export type CompanionReset = {
@@ -69,14 +69,19 @@ export function createCompanionReset(d: CompanionResetDeps, perDay = RESETS_PER_
     hits.set(userId, h);
   };
 
+  /**
+   * Every file sweep is by prefix (or runs before the row that names it goes), so a storage failure answers 502 and a
+   * retry — with the row already gone — still finds and removes what was left (Codex P1).
+   */
   async function erase(userId: string) {
     const c = await d.store.getCompanion(userId);
-    await d.beforeErase?.(userId);
+    if (c && d.blobs) await d.blobs.deletePrefix(`avatars/${c.id}/`);   // legacy files: keyed by the id the row holds
     const removed = await d.store.deleteCompanion(userId);
     // a face file a stopped job wrote under any companion id, and photos no companion uses
     if (!(await d.store.getCompanion(userId))) await d.store.deleteAssets(userId);
     const photos = (await d.store.deleteUnusedImages?.(userId)) ?? 0;
-    if (c && d.blobs) await d.blobs.deletePrefix(`avatars/${c.id}/`);
+    // live calls close only now, so an app that re-reads /me on 4410 sees no companion (Codex P2)
+    await d.afterErase?.(userId);
     return { removed, companion: c?.id ?? null, demo: c?.demo === true, photos };
   }
 

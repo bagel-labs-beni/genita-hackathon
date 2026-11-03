@@ -193,13 +193,19 @@ export class PgPrepStore implements PrepStore {
     return true;
   }
 
-  /** Companion reset: photo rows of this user that no companion points at (a companion made meanwhile keeps its own), then their bytes. */
+  /**
+   * Companion reset: every photo of this user that no companion points at (a companion made meanwhile keeps its own).
+   * Bytes by listing users/<id>/images/ first, rows after: a storage failure throws with the rows still there, and a
+   * retry sweeps the prefix again even for bytes whose row an earlier try already removed.
+   */
   async deleteUnusedImages(userId: string) {
+    const keep = new Set((await this.db.query("SELECT image_id FROM companions WHERE user_id = $1", [userId])).rows.map((r) => String(r.image_id)));
+    const prefix = `users/${userId}/images/`;
+    for (const key of await this.blobs.list(prefix)) if (!keep.has(key.slice(prefix.length))) await this.blobs.deletePrefix(key);
     const r = await this.db.query(
       "DELETE FROM companion_images WHERE user_id = $1 AND id NOT IN (SELECT image_id FROM companions WHERE user_id = $1) RETURNING id",
       [userId],
     );
-    for (const row of r.rows) await this.blobs.deletePrefix(imageKey(userId, String(row.id)));
     return r.rows.length;
   }
 

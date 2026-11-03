@@ -232,6 +232,7 @@ import Foundation
             break
         case .companionReset:
             // the companion was reset on the iPhone: nothing to call back; /me now routes to MAC-2 "Set up on iPhone"
+            // (the server sends 4410 only after the companion rows are gone, so this /me already has no companion)
             wantsCall = false
             face = nil
             Task { await refresh() }

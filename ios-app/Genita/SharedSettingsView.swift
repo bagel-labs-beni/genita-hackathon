@@ -80,8 +80,8 @@ struct SettingsView: View {
                     // F1-L8: sign out and in-app account deletion (App Review 5.1.1(v))
                     Section("Account") {
                         Button("Report a problem") { reportOpen = true }.accessibilityIdentifier("settingsReport")
-                        Button("Sign out") { signOut() }.disabled(working).accessibilityIdentifier("signOut")
-                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working).accessibilityIdentifier("deleteAccount")
+                        Button("Sign out") { signOut() }.disabled(working || resetting).accessibilityIdentifier("signOut")
+                        Button(working ? "Deleting…" : "Delete account", role: .destructive) { confirmDelete = true }.disabled(working || resetting).accessibilityIdentifier("deleteAccount")
                     }
                 }
                 Section {
@@ -123,13 +123,18 @@ struct SettingsView: View {
     }
     private func resetCompanion() {
         resetting = true
+        // the account this was asked for: a late answer after a sign-out / another sign-in must not touch the new one (Codex P2)
+        let asked = model.launchAuthSnapshot
         Task { @MainActor in
             defer { resetting = false }
             do {
                 try await model.onboarding.resetCompanion()
+                guard asked.accepts(model.launchAuthSnapshot) else { return }
                 CallController.shared.end()
                 dismiss()
                 model.companionReset()
+            } catch _ where !asked.accepts(model.launchAuthSnapshot) {
+                return
             } catch GenitaAuthError.unauthorized {
                 dismiss()
                 model.signedOut()
