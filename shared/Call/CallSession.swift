@@ -120,6 +120,8 @@ enum CallStop: Equatable {
     /// D48 ①: "Updated: no cilantro" — a correction said in the call was saved (`profile.updated`). Shown for
     /// `profileChipMs`, then nil. A second one replaces the first and restarts the clock.
     private(set) var profileChip: String?
+    /// One per `profile.updated`: the chip view restarts (and re-times its exit) even when the words repeat.
+    private(set) var profileChipSerial = 0
     /// GK-1 "Getting to know you · {topic}": the companion just asked this call's question (`profile.asking`).
     /// A soft chip for `askingChipMs`, or until the answer is saved (CC-1 "Noted: …").
     private(set) var askingChip: String?
@@ -896,6 +898,7 @@ enum CallStop: Equatable {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         profileChip = String(text.prefix(60))
+        profileChipSerial += 1
         profileChipTask?.cancel()
         profileChipTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.profileChipMs))
@@ -928,6 +931,19 @@ enum CallStop: Equatable {
         log.info("state \(next.rawValue, privacy: .public)")
     }
 
+
+    /// Motion details cards 1 and 2: the user's voice (mic ring) and the reply (pill bars), 0…1, read every frame.
+    var inputLevel: Float {
+        #if DEBUG
+        // motion lane evidence recordings: the simulator has no mic, so a speech-like envelope stands in (never in TestFlight)
+        if micOn, ProcessInfo.processInfo.environment["GENITA_MOTION_DEMO_LEVEL"] == "1" {
+            let t = Date.timeIntervalSinceReferenceDate
+            return Float(max(0, sin(t * 2.2) * (0.55 + 0.45 * sin(t * 9.0))))
+        }
+        #endif
+        return audio.inputLevel
+    }
+    var outputLevel: Float { audio.outputLevel }
 
     /// Device voice mouth hook: openness 0…1 of the speech playing now (from the rendered buffers), or nil.
     func deviceMouthLevel() -> Float? {

@@ -118,15 +118,26 @@ struct CallCueView: View {
     /// HUD r01 A: the room on the menu row (between the menu button and its mirror). A "{name} is …" line that would
     /// not fit there says "Thinking" / "Talking" instead (NM01 allows 20-character names). nil = no limit.
     var rowWidth: CGFloat? = nil
+    /// Motion details card 1: the reply's loudness 0…1 now (the talking bars follow it)
+    var level: () -> Float = { 0 }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         if let content {
+            // motion details card 1 (flag `motionDetails`): breathing dot / dot wave / voice bars, words cross-dissolve,
+            // width on spring(0.36, 0.8). Off, Reduce Motion or UI tests: the previous icons and push.
+            let live = MotionDetails.live(reduceMotion: reduceMotion)
             HStack(spacing: CallPillMetrics.iconSpacing) {
-                content.icon
+                if live, let kind = motionIcon { MotionPillIcon(kind: kind, color: CallInk.onInk, dotColor: CallInk.blueOnInk, level: level) } else { content.icon }
                 // the push runs inside the line's own box: the old words leave and the new ones rise within the pill,
                 // never drawn above or below it (a mid-change capture showed three lines stacked, UI sweep 11/3)
                 ZStack {
-                    Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
-                        .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
+                    if live {
+                        Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                            .contentTransition(.interpolate).animation(MotionCall.pillText, value: content.text)
+                    } else {
+                        Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                            .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
+                    }
                 }.clipped()
                 if let action = content.action {
                     Button(action: action.run) {
@@ -143,12 +154,23 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
-            .animation(CallMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0), value: content.text)
+            .animation(CallMotion.reviewStill ? nil : live ? MotionCall.pillWidth : .spring(duration: 0.3, bounce: 0), value: content.text)
             // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
+
+    /// Card 1's live icon for the three conversation states; reconnecting, alerts and the Finds line keep theirs.
+    private var motionIcon: MotionPillIconKind? {
+        if findsText != nil, cue != .reconnecting, cue != .answerFailed { return nil }
+        return switch cue {
+        case .listening, .interrupted: .listening
+        case .thinking: .thinking
+        case .speaking: .talking
+        default: nil
+        }
+    }
 
     /// "{name} is thinking" when its pill fits in `rowWidth`, else the short word (HUD r01 A: plain cues stay on the row).
     static func nameLine(_ name: String, _ verb: String, short: String, rowWidth: CGFloat?) -> String {
@@ -201,6 +223,22 @@ struct CallCueView: View {
     }
 }
 
+/// Card 3 entrance with the flag on, the previous fade with it off.
+private struct ChipEntrance: ViewModifier {
+    var details: Bool
+    var soft: Bool
+    @Binding var shown: Bool
+    func body(content: Content) -> some View {
+        if details {
+            // a "Noted" chip leaves 200 ms before CallController drops it; the GK-1 chip stays until replaced or timed out
+            content.motionChipEntrance(leaveAfter: soft ? nil : max(0.3, Double(CallController.profileChipMs) / 1000 - 0.2))
+        } else {
+            content.opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
+                .onAppear { withAnimation(.fade) { shown = true } }
+        }
+    }
+}
+
 /// CC-1 "Updated: no cilantro" / "Noted: quiet company" for 2.5 s (`profile.updated`), and the softer GK-1
 /// "Getting to know you · {topic}" (`profile.asking`). The status line's pill, smaller, just under it.
 struct ProfileChipView: View {
@@ -208,19 +246,30 @@ struct ProfileChipView: View {
     /// GK-1: lighter pill, a "?" instead of the check
     var soft = false
     @State private var shown = false
+    /// card 3: one soft tap when a "Noted" chip arrives
+    @State private var noted = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
+        // motion details card 3 (flag `motionDetails`): drops 8 pt in, the check draws itself, leaves 6 pt up before
+        // the chip's 2.5 s are over. Off: the previous fade.
+        let details = MotionDetails.enabled
         HStack(spacing: 6) {
             if soft {
                 Image("hisy-question").resizable().renderingMode(.template).foregroundStyle(CallInk.blueOnInk).frame(width: 13, height: 13)
+            } else if details {
+                MotionNotedCheck(color: CallInk.blueOnInk).frame(width: 13, height: 13)
             } else {
                 Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
             }
+            // Chelsea 11/4: always one line; a long note widens the chip instead of wrapping or cutting it
             Text(text).font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk.opacity(soft ? 0.92 : 1)).lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 14).frame(height: 30)
         .background(soft ? CallInk.ink.opacity(0.5) : CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
-        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
-        .onAppear { withAnimation(.fade) { shown = true } }
+        .modifier(ChipEntrance(details: details, soft: soft, shown: $shown))
+        .sensoryFeedback(trigger: noted) { _, _ in MotionDetails.live(reduceMotion: reduceMotion) ? .impact(flexibility: .soft, intensity: 0.5) : nil }
+        .onAppear { if !soft && details { noted += 1 } }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
     }
