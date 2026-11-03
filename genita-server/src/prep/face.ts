@@ -36,7 +36,8 @@ export type FaceExpression = (typeof FACE_EXPRESSIONS)[number];
 export type Viseme = (typeof VISEMES)[number];
 /** Non-human profile keys (prep-py/profiles.json): 2D anime SM/WD/OO/EE; J2/J3/C2 = the animal jaw keys of companions
  *  prepped before 11/3 (now AH/AH2 like the human ladder), kept so their manifests stay valid. */
-export const PROFILE_KEYS = ["J2", "J3", "C2", "SM", "WD", "OO", "EE"] as const;
+// AH3 (11/3 night): 3D characters' extra-wide talking 'aah' (their openings were capped by AH2)
+export const PROFILE_KEYS = ["J2", "J3", "C2", "SM", "WD", "OO", "EE", "AH3"] as const;
 export type ProfileKey = (typeof PROFILE_KEYS)[number];
 export type MouthKey = (typeof MOUTH_KEYS)[number] | ProfileKey;
 export type FaceKey = FaceExpression | Viseme | MouthKey;

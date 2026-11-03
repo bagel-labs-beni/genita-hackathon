@@ -29,6 +29,9 @@ test("profile keys and prompts come from prep-py/profiles.json; humans keep the 
   assert.deepEqual(profileMouthKeys("character2d"), ["SM", "WD", "OO", "EE"]);
   assert.deepEqual(profileMouthKeys("toy"), ["AH"]);   // AH2 needs the squash derivation (not ported yet)
   assert.ok(!(profileMouthKeys("character3d") ?? []).includes("FV"), "v16: FV dropped from 3D (lower-lip twist)");
+  assert.ok((profileMouthKeys("character3d") ?? []).includes("AH3"), "11/3 night: a wider 'aah' on top of the 3D ladder");
+  assert.match(profilePrompt("character3d", "AH3") ?? "", /'aah'/);
+  assert.ok(faceKeysFor("character", "character3d").includes("AH3" as never));
   assert.match(profilePrompt("toy", "AH") ?? "", /\S/);
   assert.deepEqual([...faceKeysFor("human", "human")], [...FACE_KEYS]);
   const dog = faceKeysFor("animal", "animal");
