@@ -108,8 +108,12 @@ struct CallCueView: View {
         if let content {
             HStack(spacing: 8) {
                 content.icon
-                Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
-                    .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
+                // the push runs inside the line's own box: the old words leave and the new ones rise within the pill,
+                // never drawn above or below it (a mid-change capture showed three lines stacked, UI sweep 11/3)
+                ZStack {
+                    Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                        .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
+                }.clipped()
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
