@@ -424,3 +424,81 @@ test("Codex P1 #2: a reply already asking the question when watch together attac
   assert.ok(!s.client.json.some((m) => m.type === "profile.asking"));
   s.session.close();
 });
+
+// #387 Codex round 2 follow-ups: the question is judged as a whole sentence, and a queued one is not said.
+const voiceCfg = { url: "https://v", token: "t", speakers: { human: 3, animal: 5, character: 9 }, speed: 1, timeoutMs: 500, model: "seamless" as const };
+
+test("#387 follow-up: server voice splits the question at its comma — watch together still drops the whole sentence", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  // eager first clause: "Weekends for you," goes out on its own; "are they packed or lazy?" shares no topic word
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends for you, are they packed or lazy? Either way, I'm in." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Either way, I'm in.");
+  assert.ok(!said.some((t) => /Weekends for you|packed or lazy/.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up: a question already queued (TTS prefetch) when watch together attaches is not said", async () => {
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  let attached = false;
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) {
+    said.push(req.text);
+    // the first sentence is still being voiced when watch together attaches
+    if (!attached) { await sleep(80); }
+    yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" };
+  };
+  deps.spark = async function* () {
+    yield { type: "text", delta: "<happy> Fun one. Are your weekends busy or slow? " };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(30);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  attached = true;
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Fun one.");
+  assert.ok(!said.some((t) => /weekends/i.test(t)), `never voiced: ${JSON.stringify(said)}`);
+  s.session.close();
+});
+
+test("#387 follow-up: a held clause that turns out not to be the question is still said, in order", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ async unplanCall() {} });
+  const deps = (s.session as unknown as { deps: SessionDeps }).deps;
+  const said: string[] = [];
+  deps.config = { ...deps.config, serverTts: true, voice: voiceCfg };
+  deps.tts = async function* (req) { said.push(req.text); yield { audio: Buffer.alloc(4800), alignment: null, model: "seamless-m4t-v2" }; };
+  deps.spark = async function* () {
+    await gate;
+    yield { type: "text", delta: "<happy> Weekends are for this, honestly. Good pick." };
+    yield { type: "done", responseId: "r", text: "", status: "completed" };
+  };
+  await s.session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await s.session.onClientText(JSON.stringify({ type: "text", text: "Let's watch something." }));
+  await sleep(20);
+  assert.ok(s.session.attachWatch({ send() {}, sendJson() {}, close() {} } as never));
+  release();
+  const reply = await s.client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Weekends are for this, honestly. Good pick.");
+  s.session.close();
+});

@@ -1589,7 +1589,32 @@ export class Session {
     // Server voice: first clause goes out at its first comma ("Oh wow,") and long sentences split for rhythm
     const splitOptions = !device && this.deps.config.voice ? { eagerFirstClause: true, clauseMaxChars: 140 } : {};
     let splitter = new SentenceSplitter(splitOptions);
-    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true }[] = [];
+    const sentences: { tts: string; display: string; emotion: string | null; face: { tag: Expression; intensity: number } | null; beat?: true; drop?: true }[] = [];
+    // #387 follow-up: watch together took the call's question back. The question is judged as a whole sentence,
+    // never clause by clause: server voice cuts "Weekends for you, | are they packed or lazy?" at the comma.
+    const ends = (d: string) => LOOKS_FINAL.test(d.trim());
+    let askHold: string[] = [];
+    let askReleasing = false;
+    /** the queued, not-yet-ended clauses of the sentence in progress (before the next one) */
+    const openClauses = (): number[] => {
+      const out: number[] = [];
+      for (let k = sentences.length - 1; k >= 0 && !sentences[k].beat && !ends(sentences[k].display); k--) out.unshift(k);
+      return out;
+    };
+    /** Consumer side: clause i is part of a whole queued sentence that asks the dropped question → drop all of it. */
+    const askedAt = (i: number): boolean => {
+      if (!this.askDropped || interpret || self || sentences[i]?.beat) return false;
+      if (sentences[i].drop) return true;
+      let a = i, b = i;
+      while (a > 0 && !sentences[a - 1].beat && !ends(sentences[a - 1].display)) a--;
+      while (b < sentences.length && !ends(sentences[b].display)) b++;
+      if (b >= sentences.length) return false; // the sentence isn't finished yet: its end is judged on enqueue
+      const full = sentences.slice(a, b + 1).map((x) => x.display).join(" ");
+      if (!/\?\s*$/.test(sentences[b].display) || !replyAsks(full, this.askDropped)) return false;
+      for (let k = a; k <= b; k++) sentences[k].drop = true;
+      this.log("profile.ask_dropped", { utteranceId, queued: true });
+      return true;
+    };
     /** real sentences only: a hold beat ("Mm, okay.") is never the answer (Codex #384) */
     const said = () => sentences.filter((x) => !x.beat);
     let emotion: string | null = null;
@@ -1634,9 +1659,28 @@ export class Session {
           if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         // watch together took this call's question back: a reply already asking it (built before) drops that sentence
-        if (this.askDropped && !interpret && !self && /\?\s*$/.test(parseTaggedSentence(tts).displayText) && replyAsks(parseTaggedSentence(tts).displayText, this.askDropped)) {
-          this.log("profile.ask_dropped", { utteranceId });
-          continue;
+        if (this.askDropped && !interpret && !self && !askReleasing) {
+          const shown = parseTaggedSentence(tts).displayText;
+          // a clause that may start the question waits for the rest of its sentence
+          if (!ends(shown) && (askHold.length || replyAsks(`${shown.replace(/[\s,;:—-]+$/u, "")}?`, this.askDropped))) {
+            askHold.push(raw);
+            continue;
+          }
+          if (askHold.length || /\?\s*$/.test(shown)) {
+            const held = askHold;
+            askHold = [];
+            const queued = openClauses();
+            const full = [...queued.map((k) => sentences[k].display), ...held.map((h) => parseTaggedSentence(h).displayText), shown].join(" ");
+            if (/\?\s*$/.test(shown) && replyAsks(full, this.askDropped)) {
+              for (const k of queued) sentences[k].drop = true; // its first clause, queued before watch attached
+              this.log("profile.ask_dropped", { utteranceId });
+              continue;
+            }
+            if (held.length) {
+              askReleasing = true;
+              try { enqueueSentences(held, keepOpener); } finally { askReleasing = false; }
+            }
+          }
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
@@ -1679,6 +1723,14 @@ export class Session {
         this.log("reply.narration_dropped", { utteranceId });
       }
       enqueueSentences(speak);
+    };
+    /** a held clause whose sentence never ended was not the question: say it */
+    const releaseAskHold = () => {
+      if (!askHold.length) return;
+      const held = askHold;
+      askHold = [];
+      askReleasing = true;
+      try { enqueueSentences(held); } finally { askReleasing = false; }
     };
     const pushSentences = (list: string[]) => {
       for (const raw of list) {
@@ -1747,6 +1799,7 @@ export class Session {
           if (signal.aborted) return;
           pushSentences(splitter.flush());
           applyNarration(narration.finish());
+          releaseAskHold();
           // A bare "Yes!"/"Okay." is a valid answer. Defer a dropped eager
           // opener until EOF so "Oh, the rest" still loses the repeated Oh.
           if (!said().length && guarded.first && !neverSpoken(guarded.first.cls)) {
@@ -1763,6 +1816,7 @@ export class Session {
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
           if (attempt === 1) sparkError = attemptError;
           splitter = new SentenceSplitter(splitOptions);
+          askHold = [];
           onlyOpener = null;
           guarded.first = null;
           laughs = 0;
@@ -1773,7 +1827,7 @@ export class Session {
       } catch (err) {
         if (!signal.aborted) sparkError = err;
       } finally {
-        if (!signal.aborted) applyNarration(narration.finish());
+        if (!signal.aborted) { applyNarration(narration.finish()); releaseAskHold(); }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
@@ -1783,7 +1837,7 @@ export class Session {
     // Consumer: sentences → TTS (one sentence prefetched ahead) → client
     const jobs: Eager<TtsChunk>[] = [];
     const startJob = (i: number) => {
-      if (jobs[i] || !sentences[i]) return;
+      if (jobs[i] || !sentences[i] || askedAt(i)) return;
       const s = sentences[i];
       jobs[i] = new Eager(
         this.deps.tts({
@@ -1823,6 +1877,8 @@ export class Session {
       waiter.wake = null;
       if (signal.aborted || !sentences[i]) break;
       const s = sentences[i];
+      // watch together attached while this question was queued (or its TTS prefetched): it is not said
+      if (askedAt(i)) continue;
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
         if (signal.aborted) break;
