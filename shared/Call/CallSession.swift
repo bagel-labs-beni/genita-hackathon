@@ -1132,7 +1132,10 @@ enum CallStop: Equatable {
     /// Loads the face set; while it isn't made yet (or the request failed) and the call screen is up, tries again
     /// every `faceRetryInterval` until it loads. `hideFace` (and a newer load) cancels the wait.
     private func loadFace() async {
-        _ = await loadFaceOnce()
+        while await loadFaceOnce() {
+            try? await Task.sleep(for: faceRetryInterval)
+            guard !Task.isCancelled, faceOnScreen, face == nil else { return }
+        }
     }
 
     private func makeFaceLoader() -> CompanionFaceLoader {
