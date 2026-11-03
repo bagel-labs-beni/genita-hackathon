@@ -47,6 +47,8 @@ public final class FaceRenderer: @unchecked Sendable {
     private let browLift: CGFloat
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
+    /// Share of the speech sway non-people get (CA-09).
+    nonisolated(unsafe) public static var nonHumanSway = 0.5
     private var browTracker = BrowFlash.Tracker()
     /// Brow band and the eye cut-out (image coordinates, y up) from the eye line and the mouth centre: the brows sit
     /// 0.3 of the eye→mouth distance above the eyes, capped at 0.12 face widths (11/4: the face box takes in hair, so
@@ -176,7 +178,9 @@ public final class FaceRenderer: @unchecked Sendable {
             motion.headGain = a.headGain; motion.nodGain = a.nodGain
             motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
             motion.lockVertical = a.lockY
-            motion.swayGain = a.sway
+            // 11/4 CA-09: fur and line art (animals, 2D / 3D characters) turn the sway into local shimmer after
+            // stabilization (dog 0.69 / 2D 0.72 vs the 0.56 gate; 0.44 at half sway): half the sway for non-people
+            motion.swayGain = a.sway * (faceSet.flow?.kind == "human" ? 1 : Self.nonHumanSway)
         }
         let fr = Self.framing(faceSet)
         framingZoom = fr.zoom
@@ -464,7 +468,7 @@ public final class FaceRenderer: @unchecked Sendable {
 
     private func motionState(at t: Double, open: Double, face: CGRect) -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform) {
         lock.lock(); defer { lock.unlock() }
-        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width)
+        return motion.transforms(at: t, open: open, face: face, extent: extent, outputWidth: outputSize.width, zoom: framingZoom)
     }
 
     /// Head layer ellipse (image coordinates, y up): hair and face; fully opaque inside

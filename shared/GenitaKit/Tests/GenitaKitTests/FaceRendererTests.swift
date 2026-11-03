@@ -426,6 +426,26 @@ struct MouthQualityTests {
         #expect(offMax < 0.05)
     }
 
+    /// 11/4 CA-09: measured 1.5–3.7 px whole-frame moves (roll and the 2D / animal framing zoom on top of the clamped
+    /// translation). Every face-box corner now moves ≤ 1.35 output px, after the zoom.
+    @Test func theSwayStaysWithinOnePointFivePixelsOnScreen() {
+        let face = faceCI(animalSet), extent = CGRect(origin: .zero, size: CGSize(width: animalSet.pixelSize.width, height: animalSet.pixelSize.height))
+        let out: CGFloat = 540, zoom: CGFloat = 1.35, toOut = out / animalSet.pixelSize.width * zoom
+        var m = AliveMotion(seed: 4); m.headGain = 0; m.rollGain = 0; m.nodGain = 0
+        let pts = [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                   CGPoint(x: face.maxX, y: face.maxY), CGPoint(x: face.midX, y: face.midY)]
+        var worst: CGFloat = 0, moved = false
+        for i in 0..<500 {
+            let t = Double(i) / 25, open = (i % 12) < 4 ? 0.9 : 0.1
+            let tr = m.transforms(at: t, open: open, face: face, extent: extent, outputWidth: out, zoom: zoom)
+            let a = tr.head.concatenating(tr.camera)
+            for q in pts { let p = q.applying(a); worst = max(worst, hypot(p.x - q.x, p.y - q.y) * toOut) }
+            if hypot(face.midX - CGPoint(x: face.midX, y: face.midY).applying(a).x, 0) * toOut > 0.3 { moved = true }
+        }
+        #expect(moved)
+        #expect(worst <= 1.36)
+    }
+
     @Test func speechOnsetsNodTheHeadWhenTheVerticalLockIsOff() {
         var quiet = AliveMotion(seed: 3), talk = AliveMotion(seed: 3)
         quiet.lockVertical = false; talk.lockVertical = false

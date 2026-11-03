@@ -48,6 +48,9 @@ struct AliveMotion {
     /// nose and mouth move together (the eye band stays still relative to the face). Map `alive.sway` scales it (0 = off).
     var swayGain = 1.0
     static let swayMaxPx = 1.5, swayMaxDeg = 0.6, swayMaxScale = 0.004
+    /// the largest on-screen move of any face-box corner (output px, after the framing zoom); a little under the
+    /// ±1.5 px spec so the measured value (encoder, sub-pixel resampling) stays inside it
+    static let swayScreenMaxPx = 1.35
     private var energy = 0.0, energyPeak = 0.0
 
     init(seed: UInt64) {
@@ -63,7 +66,7 @@ struct AliveMotion {
     }
 
     /// Advances the nod spring to `t` with the current openness and returns the layer transforms.
-    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat)
+    mutating func transforms(at t: Double, open: Double, face: CGRect, extent: CGRect, outputWidth: CGFloat, zoom: CGFloat = 1)
         -> (head: CGAffineTransform, body: CGAffineTransform, camera: CGAffineTransform)
     {
         // Output px → still px.
@@ -122,16 +125,33 @@ struct AliveMotion {
             sy -= 0.6 * swayGain * min(1, nod)                                 // stressed onset: a small nod (down)
             sy -= 0.5 * swayGain * endDrop
             sy += 0.25 * swayGain * (1 - live) * sin(2 * .pi * Self.breathingHz * t)   // quiet breath
-            let cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, sx)) * k
-            let cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, sy)) * k
-            let rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * swayGain * live * noise(11, hz: 0.35, t))) * .pi / 180
-            let sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * swayGain * live * noise(12, hz: 0.3, t)))
+            var cx = max(-Self.swayMaxPx, min(Self.swayMaxPx, sx)) * k
+            var cy = max(-Self.swayMaxPx, min(Self.swayMaxPx, sy)) * k
+            var rr = max(-Self.swayMaxDeg, min(Self.swayMaxDeg, Self.swayMaxDeg * swayGain * live * noise(11, hz: 0.35, t))) * .pi / 180
+            var sc = 1 + max(-Self.swayMaxScale, min(Self.swayMaxScale, Self.swayMaxScale * swayGain * live * noise(12, hz: 0.3, t)))
             // about the face centre: the eyes, nose and mouth stay within the caps (a neck pivot swung the forehead 3 px per 0.5°)
             let pivot = CGPoint(x: face.midX, y: face.midY)
-            sway = CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
-                .concatenating(CGAffineTransform(scaleX: sc, y: sc))
-                .concatenating(CGAffineTransform(rotationAngle: rr))
-                .concatenating(CGAffineTransform(translationX: pivot.x + cx, y: pivot.y + cy))
+            func make() -> CGAffineTransform {
+                CGAffineTransform(translationX: -pivot.x, y: -pivot.y)
+                    .concatenating(CGAffineTransform(scaleX: sc, y: sc))
+                    .concatenating(CGAffineTransform(rotationAngle: rr))
+                    .concatenating(CGAffineTransform(translationX: pivot.x + cx, y: pivot.y + cy))
+            }
+            sway = make()
+            // 11/4 CA-09: ±1.5 px is the whole move ON SCREEN — translation + roll + scale at the face's corners, after the
+            // framing zoom (2D / animals are zoomed up to 1.35×). Measured 1.5–3.7 px before (roll and zoom added to the
+            // clamped translation). Over the cap, the whole sway is scaled down together.
+            let outPerStill = Double(zoom) / max(1e-6, k)
+            var worst = 0.0
+            for q in [CGPoint(x: face.minX, y: face.minY), CGPoint(x: face.maxX, y: face.minY), CGPoint(x: face.minX, y: face.maxY),
+                      CGPoint(x: face.maxX, y: face.maxY), pivot] {
+                let d = q.applying(sway); worst = max(worst, Double(hypot(d.x - q.x, d.y - q.y)) * outPerStill)
+            }
+            if worst > Self.swayScreenMaxPx {
+                let f = Self.swayScreenMaxPx / worst
+                cx *= f; cy *= f; rr *= f; sc = 1 + (sc - 1) * f
+                sway = make()
+            }
         }
 
         // Head: tilt about the neck, drift, nod (down + slight pitch), then it rides the body.
