@@ -35,10 +35,11 @@ export type Mood = { valence: number; energy: number };
  * call, good news lifts, bad news lowers, a laugh makes it playful, and it decays 25 % a line. Pure, so a request
  * built twice for one turn (speculation, a retry) gets the same mood.
  */
-export function moodFrom(userLines: string[]): Mood {
+export function moodFrom(userLines: string[], start: Mood = { valence: 0, energy: 0 }): Mood {
   const clamp = (v: number) => Math.max(-1, Math.min(1, v));
-  let valence = 0;
-  let energy = 0;
+  // #344: a call starts from the last call's mood, faded (callMood.ts); without one, from baseline
+  let valence = start.valence;
+  let energy = start.energy;
   for (const line of userLines) {
     valence *= 0.75;
     energy *= 0.75;

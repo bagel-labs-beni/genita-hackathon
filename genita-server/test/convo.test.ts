@@ -1330,3 +1330,32 @@ test("QA build 5 P3 recount (real Spark): 'when am I finally getting…' greetin
   assert.equal(greet.text, "Okay Summer, when am I finally getting a taste of that kimchi grilled cheese?");
   session.close();
 });
+
+// ───────────── #344 mood carried across calls, faces follow it ─────────────
+test("#344: the last call's mood carries (12 h half-life), a Forget voids it, faces scale with energy", async () => {
+  const { carriedMood, moodScaledIntensity } = await import("../src/convo/callMood.ts");
+  const H = 3_600_000;
+  const state = { revision: 2, call_mood: { valence: 0.8, energy: 0.6, at: 0, rev: 2 } };
+  assert.deepEqual(carriedMood(state, 0), { valence: 0.8, energy: 0.6 });
+  const half = carriedMood(state, 12 * H);
+  assert.ok(Math.abs(half.valence - 0.4) < 1e-9 && Math.abs(half.energy - 0.3) < 1e-9);
+  assert.deepEqual(carriedMood(state, 96 * H), { valence: 0, energy: 0 }, "faded out after days");
+  assert.deepEqual(carriedMood({ ...state, revision: 3 }, 0), { valence: 0, energy: 0 }, "a Forget voids it");
+  assert.deepEqual(carriedMood(null, 0), { valence: 0, energy: 0 });
+  assert.equal(moodScaledIntensity(0.6, { valence: 0.5, energy: 1 }), 0.78);
+  assert.equal(moodScaledIntensity(0.6, { valence: 0, energy: 0 }), 0.6);
+  assert.equal(moodScaledIntensity(0.6, { valence: -0.5, energy: -1 }), 0.42);
+  const { moodFrom, moodLine } = await import("../src/convo/rhythm.ts");
+  assert.equal(moodLine(moodFrom(["hey"], { valence: 0.8, energy: 0.6 })), "Your mood right now is upbeat and playful.");
+  assert.equal(moodLine(moodFrom(["hey"])), null);
+});
+
+test("#344 session: a call that starts after an upbeat call carries it into the first turn and the face", { skip: !v1 }, async () => {
+  const { client, session, calls } = setup(["<neutral> So what's the plan tonight."]);
+  (session as unknown as { startMood: { valence: number; energy: number } }).startMood = { valence: 0.8, energy: 0.6 };
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "hey" }));
+  await client.waitFor((m) => m.type === "reply");
+  assert.match(calls[0].instructions!, /upbeat and playful/);
+  session.close();
+});

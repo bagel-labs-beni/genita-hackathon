@@ -63,7 +63,8 @@ import { Backchannel } from "../convo/backchannel.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
-import { mentionsProfile, moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
+import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
+import { carriedMood, moodScaledIntensity, saveCallMood } from "../convo/callMood.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -371,6 +372,13 @@ export class Session {
   private lastMessageAt: number | null | undefined = undefined;
   /** #341: profile things recent greetings opened on (oldest → newest); undefined = not read yet */
   private openerRecent: string[] | undefined = undefined;
+  /** #344: where this call's mood starts (the last call's ending mood, faded); baseline when unknown */
+  private startMood: Mood = { valence: 0, energy: 0 };
+  /** the mood so far this call (user lines folded on the start mood) */
+  private callMood(extra?: string): Mood {
+    const lines = this.history.filter((h) => h.role === "user").map((h) => h.text);
+    return moodFrom(extra ? [...lines, extra] : lines, this.startMood);
+  }
   /** the companion speaks first mid-call (src/convo/initiative.ts); null = off for this call */
   private initiative: InitiativeGovernor | null = null;
   private initiativeTimer: NodeJS.Timeout | null = null;
@@ -699,6 +707,7 @@ export class Session {
         this.historyRevision = revision;
         // #341: what greetings opened on goes too (Codex #352)
         this.openerRecent = [];
+        this.startMood = { valence: 0, energy: 0 };
         forgetOpenerTopics(userId, memory, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }));
       });
       // Bounded (Codex 11/3): a store stalled behind the per-user lock must not hold ready/greeting. Past the
@@ -721,7 +730,7 @@ export class Session {
           const state = await memory.state.getState(userId);
           const revision = state.revision;
           // before this call's first user message: the previous call's last one (opener gap, DESIGN §4)
-          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); }
+          if (!abandoned) { this.lastMessageAt = state.last_message_at; this.openerRecent = storedTopics(state); this.startMood = carriedMood(state, (memory.now ?? Date.now)()); }
           if (this.closed) return;
           // a slow start never seeds old turns, but once verified, this call's NEW turns can hand off (Codex 11/3)
           if (abandoned) { if (this.historyRevision === null) this.historyRevision = revision; return; }
@@ -1030,6 +1039,10 @@ export class Session {
     this.backchannel?.stop();
     this.dropCallAsr();
     this.asr?.end();
+    // #344: the call's ending mood carries into the next call (numbers only; not after an account delete or Forget-less unknown state)
+    if (this.v1 && this.deps.memory && this.deps.userId && this.memoryCall && this.historyRevision !== null && reason !== "account_deleted" && this.history.some((h) => h.role === "user")) {
+      saveCallMood(this.deps.memory, this.deps.userId, this.callMood(), (this.deps.memory.now ?? Date.now)(), (e) => this.log("convo.mood_save_failed", { message: String(e).slice(0, 120) }));
+    }
     this.memoryCall?.close();
     this.correcting?.abort();
     // lane 개인화: the call's turns grow the profile (not after an account delete)
@@ -1403,7 +1416,7 @@ export class Session {
         callNumber: this.callNumber,
         lastReply: this.recentReplies.at(-1),
         userText,
-        mood: moodLine(moodFrom(userLines)),
+        mood: moodLine(moodFrom(userLines, this.startMood)),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
       }) ?? undefined;
@@ -1867,6 +1880,8 @@ export class Session {
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
     const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
+    // #344: this reply's mood (the user's line already in history for a user turn)
+    const replyMood: Mood | null = this.v1 && !interpret && !self ? this.callMood() : null;
     let laughs = 0;
     // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
     // (read from the request itself: it was built before this turn was counted)
@@ -1990,6 +2005,15 @@ export class Session {
         }
         // expression layer: one face per clause (Spark's [tag], else its words / the reply's <emotion>); never in interpretation
         let face = interpret ? null : clauseExpression(p, emotion, !!p.emotion, { scaled: this.v1 });
+        // #344: the face follows the call's mood — size by energy, and a reply with no face of its own keeps a faint
+        // one on its first clause instead of snapping back to neutral
+        if (this.v1 && !interpret && !self && replyMood) {
+          if (face && face.tag !== "laugh") face = { ...face, intensity: moodScaledIntensity(face.intensity, replyMood) };
+          else if (!face && !sentences.length && !emotion) {
+            if (replyMood.valence >= 0.35) face = { tag: "smile", intensity: 0.35 };
+            else if (replyMood.valence <= -0.3) face = { tag: "concerned", intensity: 0.4 };
+          }
+        }
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;
         sentences.push({ tts, display, emotion, face });
