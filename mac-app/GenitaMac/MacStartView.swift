@@ -181,6 +181,8 @@ struct MacEmailSheet: View {
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                     .onSubmit { sendCode() }.padding(.top, 24).accessibilityIdentifier("macEmailField")
+                    .macASCIIOnlyInput(focused: focused)
+                    .onChange(of: email) { _, v in let ascii = String(v.unicodeScalars.filter(\.isASCII).map(Character.init)); if ascii != v { email = ascii } }
             } else {
                 MacV2CodeField(code: $code, disabled: sending, id: "macEmailCodeField") { verify() }.padding(.top, 20)
             }
@@ -231,6 +233,7 @@ struct MacEmailSheet: View {
             .background(MacSheetInk.chip, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(message == nil ? .clear : MacSheetInk.ink, lineWidth: 1))
             .padding(.top, 24).onSubmit { step == .address ? sendCode() : verify() }
+            .macASCIIOnlyInput(focused: focused)
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macEmailError")
@@ -315,6 +318,7 @@ struct MacJudgeCodeSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                 .padding(.top, 24).onSubmit { submit() }
                 .accessibilityIdentifier("macJudgeCodeField")
+                .macASCIIOnlyInput(focused: focused)
             if let message {
                 Text(message).font(MacSheetInk.sans(14, .medium)).foregroundStyle(MacSheetInk.ink).padding(.top, 12)
                     .fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("macJudgeCodeError")

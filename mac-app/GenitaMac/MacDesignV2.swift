@@ -229,6 +229,7 @@ struct MacV2CodeField: View {
                         if digits.count == 6 { complete() }
                     }
                     .accessibilityLabel("Six-digit code").accessibilityIdentifier(id)
+                    .macASCIIOnlyInput(focused: focused)
             }
         }
         .onAppear { focused = true }
@@ -253,4 +254,25 @@ struct MacPairingCode: View {
                 .accessibilityIdentifier("macPairingCode")
         }
     }
+}
+
+/// Email, sign-in code and judge code fields take ASCII only (QA 171: with the Korean input source on, the email
+/// field filled with "ㅎㅂㅁㄷ…"). While the field is focused its field editor allows Roman input sources only, so
+/// macOS switches to ABC by itself; the source comes back when focus leaves (the field editor is the sheet's own).
+struct MacASCIIOnlyInput: ViewModifier {
+    var focused: Bool
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: focused, initial: true) { _, on in if on { Self.restrict() } }
+    }
+    static func restrict() {
+        // after SwiftUI hands focus to the field editor
+        DispatchQueue.main.async {
+            guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.isFieldEditor else { return }
+            editor.inputContext?.allowedInputSourceLocales = [NSAllRomanInputSourcesLocaleIdentifier]
+        }
+    }
+}
+extension View {
+    func macASCIIOnlyInput(focused: Bool) -> some View { modifier(MacASCIIOnlyInput(focused: focused)) }
 }
