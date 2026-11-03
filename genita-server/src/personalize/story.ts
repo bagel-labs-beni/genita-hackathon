@@ -247,7 +247,7 @@ function headlineOf(v: unknown): string | null {
 /** Best label behind a card among facts (suggestions never count). null = nothing to show. */
 function bestFact(card: StyleCard, keys: Array<keyof StyleCard["sections"]>): Evidence | null {
   let best: Evidence | null = null;
-  for (const k of keys) for (const f of card.sections?.[k] ?? []) if (f.label !== "suggested" && (best === null || RANK[f.label] > RANK[best])) best = f.label as Evidence;
+  for (const k of keys) for (const f of card.sections?.[k] ?? []) if (f.label !== "suggested" && !f.direction && (best === null || RANK[f.label] > RANK[best])) best = f.label as Evidence;
   return best;
 }
 const clamp = (claimed: unknown, best: Evidence): Evidence => (EVIDENCE.includes(claimed as Evidence) && RANK[claimed as Evidence] <= RANK[best] ? (claimed as Evidence) : best);
@@ -300,7 +300,7 @@ export function unknownsCard(card: StyleCard, missing: SparkStoryId[] = [], topi
   };
 }
 
-const facts = (card: StyleCard, id: SparkStoryId) => SOURCES[id].flatMap((k) => (card.sections?.[k] ?? []).filter((f) => f.label !== "suggested" && !storyTextProblem(f.text))).sort((a, b) => RANK[b.label] - RANK[a.label]);
+const facts = (card: StyleCard, id: SparkStoryId) => SOURCES[id].flatMap((k) => (card.sections?.[k] ?? []).filter((f) => f.label !== "suggested" && !f.direction && !storyTextProblem(f.text))).sort((a, b) => RANK[b.label] - RANK[a.label]);
 
 const FALLBACK_HEAD: Record<SparkStoryId, string> = {
   think: "How you work things out.",
@@ -322,14 +322,14 @@ function fallbackCard(id: SparkStoryId, card: StyleCard): StoryCard | null {
 
 function tasteFallback(card: StyleCard, base: StoryCard): StoryCard {
   const tags: StoryTag[] = [];
-  for (const f of card.sections.likes.filter((x) => x.label !== "suggested")) {
+  for (const f of card.sections.likes.filter((x) => x.label !== "suggested" && !x.direction)) {
     if (/^\s*budget:/i.test(f.text)) { const t = budgetTag(f.text); if (t) tags.push({ group: "style", text: t, dislike: false }); continue; }
     const text = shortTaste(f.text);
     if (!text || storyTextProblem(text)) continue;
     const dislike = /^\s*(?:dislikes?|avoids?|hates?|not into|no |never )/i.test(f.text);
     tags.push({ group: /^(?:food|cooking|cuisine)/i.test(f.text) ? "food" : /^(?:watch|media|shows|music|film)/i.test(f.text) ? "watch" : "style", text: text[0].toUpperCase() + text.slice(1), dislike });
   }
-  for (const f of card.sections.interests.filter((x) => x.label !== "suggested").slice(0, 4)) {
+  for (const f of card.sections.interests.filter((x) => x.label !== "suggested" && !x.direction).slice(0, 4)) {
     const text = shortTaste(f.text);
     if (text && text.length <= 28 && !storyTextProblem(text)) tags.push({ group: "interest", text: text[0].toUpperCase() + text.slice(1), dislike: false });
   }
@@ -387,10 +387,11 @@ function lineEvidence(text: string, card: StyleCard, id: SparkStoryId): Evidence
   const words = keyWords(text);
   const sources = SOURCES[id].flatMap((k) => card.sections?.[k] ?? []);
   const hits = sources.filter((f) => [...keyWords(f.text)].some((w) => words.has(w)));
-  const factHits = hits.filter((f) => f.label !== "suggested");
+  // a lean (direction only) is not a fact: a line that only echoes one is not shown as their taste
+  const factHits = hits.filter((f) => f.label !== "suggested" && !f.direction);
   if (factHits.length) return factHits.reduce((b, f) => (RANK[f.label] > RANK[b] ? (f.label as Evidence) : b), factHits[0].label as Evidence);
   if (hits.length) return null;
-  const facts = sources.filter((f) => f.label !== "suggested");
+  const facts = sources.filter((f) => f.label !== "suggested" && !f.direction);
   return facts.length ? facts.reduce((w, f) => (RANK[f.label] < RANK[w] ? (f.label as Evidence) : w), facts[0].label as Evidence) : null;
 }
 

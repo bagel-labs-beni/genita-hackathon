@@ -37,7 +37,8 @@ export const IMPORT_MAX_CHARS = 24_000;
 
 export type EvidenceLabel = "explicit" | "observed" | "memory" | "suggested";
 /** at = when a correction or a call added it (lane 개인화); import findings have none */
-export type Finding = { text: string; label: EvidenceLabel; scope: string; at?: string };
+/** direction = v4 "(direction only)": an indirectly supported lean, never said as their stated taste */
+export type Finding = { text: string; label: EvidenceLabel; scope: string; at?: string; direction?: true };
 export type ConditionalRule = { when: string; then: string; label: EvidenceLabel };
 
 /** v3 order: section n of the prompt is SECTION_KEYS[n - 1]. */
@@ -329,7 +330,7 @@ export function toStyleCard(raw: Partial<ImportRaw> | null | undefined, source: 
     if (k === "to_confirm") continue;
     const list = Array.isArray(raw?.sections?.[k]) ? raw!.sections![k] : [];
     sections[k] = list
-      .map((f) => ({ text: directionLine(clean(f?.text)), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any", ...(typeof f?.at === "string" ? { at: f.at.slice(0, 40) } : {}) }))
+      .map((f) => ({ ...(/\(direction only\)|^(?:[A-Za-z &]{2,24}:\s*)?leans? toward/i.test(clean(f?.text)) || (f as { direction?: unknown })?.direction === true ? { direction: true as const } : {}), text: directionLine(clean(f?.text)), label: k === "approach" && source === "import" ? "suggested" : label(f?.label), scope: clean(f?.scope, 40) || "any", ...(typeof f?.at === "string" ? { at: f.at.slice(0, 40) } : {}) }))
       .filter((f) => keep(f.text) && !(LANGUAGE_KEYS.has(k) && isLanguagePreference(f.text)))
       .slice(0, 12) as Finding[];
   }
@@ -399,9 +400,11 @@ const PROFILE_PER_SECTION = 3;
 export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?: boolean } = {}): string {
   const line = (k: FindingKey, f: Finding) => `- ${PROFILE_NAMES[k]}: ${f.text}${f.scope && f.scope !== "any" ? ` (${f.scope})` : ""}`;
   const list = (k: FindingKey): Finding[] => (Array.isArray(card.sections?.[k]) ? card.sections[k] : []);
-  const facts = (keys: FindingKey[], per: number) => keys.flatMap((k) => list(k).filter((f) => f.label !== "suggested").slice(0, per).map((f) => line(k, f)));
+  // v4: leans (direction only) and how they come across in conversation are kept apart from stated facts
+  const sure = (f: Finding) => f.label !== "suggested" && !f.direction && !(f.scope === "conversation");
+  const facts = (keys: FindingKey[], per: number) => keys.flatMap((k) => list(k).filter(sure).slice(0, per).map((f) => line(k, f)));
   // Likes & dislikes get more room (Finds reads them): up to 5 likes and every dislike up to 3
-  const likes = list("likes").filter((f) => f.label !== "suggested");
+  const likes = list("likes").filter(sure);
   const taste = [...likes.filter((f) => !isDislike(f.text)).slice(0, 5), ...likes.filter((f) => isDislike(f.text)).slice(0, 3)].map((f) => line("likes", f));
   const main = [
     ...taste,
@@ -410,6 +413,8 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
     ...facts(["boundaries"], 8),
   ];
   const more = facts(PROFILE_MORE, PROFILE_PER_SECTION);
+  const leans = [...PROFILE_ORDER, ...PROFILE_MORE].flatMap((k) => list(k).filter((f) => f.label !== "suggested" && f.direction).slice(0, 3).map((f) => line(k, f)));
+  const manner = list("tendencies").filter((f) => f.label !== "suggested" && f.scope === "conversation" && !f.direction).slice(0, 4).map((f) => `- ${f.text}`);
   const sugg = [...PROFILE_ORDER, ...PROFILE_MORE].flatMap((k) => list(k).filter((f) => f.label === "suggested").slice(0, 2).map((f) => line(k, f)));
   const rules = Array.isArray(card.rules) ? card.rules.slice(0, 5) : [];
   const parts: string[] = [];
@@ -418,6 +423,8 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   // toConfirm:false — the call asks one item at a time (src/personalize/unknowns.ts)
   if (card.toConfirm?.length && opts.toConfirm !== false) parts.push(`Ask naturally on the first call about: ${card.toConfirm.join("; ")}.`);
   if (more.length) parts.push("Also:", ...more);
+  if (manner.length) parts.push("How they come across with you (match it; never describe or label them with it):", ...manner);
+  if (leans.length) parts.push("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", ...leans);
   if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
   let out = parts.join("\n");
   if (out.length > max) out = out.slice(0, out.lastIndexOf("\n", max));

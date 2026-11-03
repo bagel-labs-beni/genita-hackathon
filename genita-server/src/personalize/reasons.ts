@@ -31,7 +31,7 @@ const STYLE_WORDS =
 export function tasteLines(src: StyleCard | string | null | undefined): TasteLine[] {
   if (!src) return [];
   if (typeof src !== "string") {
-    return (src.sections?.likes ?? []).filter((f) => f.label !== "suggested").map((f) => ({ text: f.text, label: f.label }));
+    return (src.sections?.likes ?? []).filter((f) => f.label !== "suggested" && !f.direction).map((f) => ({ text: f.text, label: f.label }));
   }
   const out: TasteLine[] = [];
   for (const line of src.split("\n")) {

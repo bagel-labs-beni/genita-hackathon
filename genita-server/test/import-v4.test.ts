@@ -91,3 +91,27 @@ test("QA 11/3 P1: an all-'Not enough information' reply is an empty profile (200
   // text we can't place at all is still 422
   await assert.rejects(importStyle(d, "u1", "x".repeat(300)), /couldn't read/);
 });
+
+test("leans and conversation manner are kept apart from facts: own block in the profile text, never a tag, chip or nod", async () => {
+  const { styleProfileText } = await import("../src/prep/importProfile.ts");
+  const { tasteLines } = await import("../src/personalize/reasons.ts");
+  const card = toStyleCard({
+    sections: {
+      tendencies: [{ text: "Uses playful humor, then gets back to the point.", label: "observed", scope: "conversation" }],
+      communication: [{ text: "Direct and plain.", label: "explicit", scope: "any" }],
+      response: [], help: [], support: [], interests: [],
+      likes: [{ text: "Media: leans toward streaming series (direction only)", label: "observed", scope: "any" }, { text: "Dislikes robotic voices.", label: "explicit", scope: "any" }],
+      boundaries: [], approach: [],
+    },
+    rules: [],
+    to_confirm: [],
+  });
+  assert.equal(card.sections.likes[0].direction, true);
+  const text = styleProfileText(card);
+  assert.match(text, /Leans \(indirect, not stated by them; at most a light guess, never a fact or a nickname\):\n- Taste: Media: leans toward streaming series/);
+  assert.match(text, /How they come across with you \(match it; never describe or label them with it\):\n- Uses playful humor/);
+  assert.doesNotMatch(text.split("Leans (")[0], /streaming series/);
+  assert.deepEqual(tasteLines(card).map((l) => l.text), ["Dislikes robotic voices."]);
+  const { cards } = toStory({ cards: [{ id: "taste", headline: "Streaming and natural voices.", items: [], promise: "", evidence: "observed", tags: [{ group: "watch", text: "Streaming series", dislike: false }, { group: "style", text: "Robotic voices", dislike: true }], help: [] }], topics: [] }, card);
+  assert.deepEqual(cards.find((c) => c.id === "taste")!.tags!.map((t) => t.text), ["Robotic voices"]);
+});
