@@ -349,6 +349,14 @@ extension AppState {
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }
+        // V02-F review (D26): GENITA_REVIEW_VARIANT=fail-public_figure shows the well-known-person refusal
+        if reviewStage == .imageCheck, variant.hasPrefix("fail-") {
+            if let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+            let code = String(variant.dropFirst("fail-".count))
+            let label = code == "public_figure" ? "This looks like a well-known person" : "Too blurry to make a face from"
+            let json = #"{"imageId":"review","passed":false,"type":"human","checks":{"oneFaceFrontFacing":true,"sharpAndLit":\#(code == "too_blurry" ? "false" : "true"),"noText":true},"reasons":[{"code":"\#(code)","label":"\#(label)"}]}"#
+            imageCheck = try? JSONDecoder().decode(ImageCheck.self, from: Data(json.utf8))
+        }
         setup.stage = reviewStage
     }
 }
