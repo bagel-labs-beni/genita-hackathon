@@ -92,8 +92,13 @@ function firstStepLine(step: string | undefined): string {
 }
 
 /** " And I left the cilantro out." from the recipe's own line (a dislike it skipped), or "". */
+const ING = "(?!(?:for|you|your|since|because|to|as|so|and|but|in|on|this|it)\\b)[a-z][a-z-]*";
+const LEFT_X_OUT = new RegExp(`\\bI(?:'ve| have)? left (?:the )?(${ING}(?: ${ING}){0,2}) out\\b`, "i");
+const LEFT_OUT_X = new RegExp(`\\bI(?:'ve| have)? left out (?:the )?(${ING}(?: ${ING}){0,2})(?=\\s*(?:[.!,;]|$))`, "i");
 export function leftOutLine(say: string): string {
-  const m = /\bI(?: have|'ve)? left (?:the |out the )?([\p{L}][\p{L} '-]{0,30}?) out\b/iu.exec(say) ?? /\bI(?:'ve| have)? left out (?:the )?([\p{L}][\p{L} '-]{0,30}?)(?=[.!,]|$)/iu.exec(say) ?? /\b(?:no|without|skipped the|minus the) ([\p{L}][\p{L} '-]{0,30}?),? (?:since|because|as) you (?:don't|do not|hate|dislike)/iu.exec(say);
+  const t = say.replace(/[’‘]/g, "'");
+  // only the plain "left X out" / "left out X" clause: one to three ingredient words, nothing after them
+  const m = LEFT_X_OUT.exec(t) ?? LEFT_OUT_X.exec(t);
   return m ? ` And I left the ${m[1].trim().toLowerCase()} out.` : "";
 }
 
