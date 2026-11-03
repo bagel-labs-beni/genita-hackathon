@@ -38,12 +38,15 @@ enum MacBundleName {
     /// `siblingTrusted`: the sibling passes this app's own designated requirement (same Developer ID team + bundle id).
     static func plan(current: AppCopy, parentWritable: Bool, readOnlyVolume: Bool, sibling: AppCopy?, siblingTrusted: Bool, siblingRunning: Bool) -> Action {
         guard current.url.lastPathComponent == legacyFileName else { return .none }
+        // Handing over to a running trusted copy moves no files, so it comes before the write checks (Codex re-review P2).
+        if let sibling, siblingTrusted, siblingRunning, let id = current.bundleID, sibling.bundleID == id {
+            return .yieldToRunning(sibling: sibling.url)
+        }
         // A quarantined app launched in place runs from a read-only App Translocation mount: nothing to rename.
         guard parentWritable, !readOnlyVolume, !current.url.path.contains("/AppTranslocation/") else { return .none }
         let target = current.url.deletingLastPathComponent().appendingPathComponent(fileName)
         guard let sibling else { return .rename(to: target) }
-        guard siblingTrusted, let id = current.bundleID, sibling.bundleID == id else { return .none }
-        if siblingRunning { return .yieldToRunning(sibling: sibling.url) }
+        guard siblingTrusted, !siblingRunning, let id = current.bundleID, sibling.bundleID == id else { return .none }
         guard let mine = current.build, let theirs = sibling.build else { return .none }
         return theirs >= mine ? .openNewer(sibling: sibling.url) : .replaceOlder(sibling: sibling.url)
     }
@@ -94,7 +97,7 @@ enum MacBundleName {
         let action = plan(current: info(url), parentWritable: fm.isWritableFile(atPath: parent.path),
                           readOnlyVolume: readOnly, sibling: sibling, siblingTrusted: trusted, siblingRunning: runningSibling != nil)
         NSLog("Genita bundle name: %@ → %@", url.path, String(describing: action))
-        if perform(action, current: url, activate: { _ in runningSibling?.activate() ?? false }, open: reopen) { exit(0) }
+        if perform(action, current: url, activate: { open($0, newInstance: false) }, open: { open($0, newInstance: true) }) { exit(0) }
     }
 
     private static func info(_ url: URL) -> AppCopy {
@@ -114,11 +117,13 @@ enum MacBundleName {
         return SecStaticCodeCheckValidity(other, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), requirement) == errSecSuccess
     }
 
-    /// `open -n`: this process (same bundle id) is still alive, so a plain open would only activate it.
-    private static func reopen(_ url: URL) -> Bool {
+    /// `open -n` starts the moved copy (this process, same bundle id, is still alive, so a plain open would only
+    /// activate it). A plain `open` of the running sibling's path activates it and sends Reopen, so its home window
+    /// comes back through `applicationShouldHandleReopen` even if it was closed.
+    private static func open(_ url: URL, newInstance: Bool) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-n", url.path]
+        p.arguments = newInstance ? ["-n", url.path] : [url.path]
         guard (try? p.run()) != nil else { return false }
         p.waitUntilExit()
         return p.terminationStatus == 0

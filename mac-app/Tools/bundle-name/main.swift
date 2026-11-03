@@ -30,6 +30,7 @@ expect(plan(copy(legacy, 90), sibling: copy(genita, 81)) == .replaceOlder(siblin
 expect(plan(copy(legacy, 81), sibling: copy(genita, 90, "other.app")) == .none, "different bundle id beside → leave both")
 expect(plan(copy(legacy, 81), sibling: copy(genita, 81), running: true) == .yieldToRunning(sibling: genita), "trusted sibling running → hand over to it, quit (no 2nd Mac client)")
 expect(plan(copy(legacy, 90), sibling: copy(genita, 81), running: true) == .yieldToRunning(sibling: genita), "older trusted sibling running → still hand over, trash nothing")
+expect(plan(copy(legacy, 81), writable: false, sibling: copy(genita, 81), running: true) == .yieldToRunning(sibling: genita), "trusted sibling running, folder not writable → still hand over (no file moves)")
 expect(plan(copy(legacy, 81), sibling: copy(genita, 90), trusted: false) == .none, "sibling not signed by us (same id, higher build) → never open or trash it")
 expect(plan(copy(legacy, 90), sibling: copy(genita, 81), trusted: false, running: true) == .none, "untrusted running sibling → leave both")
 expect(plan(copy(legacy, nil), sibling: copy(genita, 90)) == .none, "unknown build → leave both")
