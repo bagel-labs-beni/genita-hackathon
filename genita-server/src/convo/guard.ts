@@ -24,7 +24,7 @@ const CLASSES: Array<[GuardClass, RegExp]> = [
   ["intake", /\b(?:what do you (?:like|enjoy|do for fun|want to talk about)|tell me (?:a (?:bit|little) |more )?about yourself|what'?s on your mind|what (?:would|do) you (?:like|want) to (?:talk|chat) about|what are your (?:hobbies|interests)|what should i call you|what kind of (?:\w+ )?(?:do you like|are you into)|^\s*are you (?:more |a |an )?[\w' -]{1,30} or (?:more )?[\w' -]{1,30}(?:\?| when| person| type| kind| about))/i],
   // a personality read ("You're totally someone who…", "You give Apple-store-polish energy"): the hackathon bans
   // personality analyzers and it reads as a label, not a friend (personalization lane, import v4 opener 11/3)
-  ["label", /\byou(?:'re| are)\s+(?:totally |so |such |definitely |clearly |lowkey |kinda |kind of |100% |def )?(?:someone who|somebody who|the (?:type|kind|sort)(?: of (?:person|girl|guy))? (?:who|that)|(?:a|an) [\w-]+(?: [\w-]+)? (?:person|type|girl|guy|soul) who)\b|\byou (?:totally |definitely |so )?(?:seem|sound|strike me) like (?:someone|somebody|the type|the kind|a person)\b|\byou (?:give|have|got|radiate|bring)\s+(?:off\s+)?(?:total(?:ly)?\s+|major\s+|big\s+|such\s+)?(?:[\w'-]+\s+){0,4}energy\b|\bvery (?:main character|[\w-]+ core)\b|\b(?:straight|pure|total|major|big|giving|such)\s+(?:[\w'-]+\s+){0,3}energy\b|^(?:(?:okay|ok|hey|hi|yo|oh|alright|well)\s*,?\s*)?(?:you\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\byou\s+(?:little\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\b(?:little )?(?:miss|mister|mr\.?|ms\.?)\s+(?:only|high|zero|no|anti|pro|super|certified|premium|perfect|picky)\b/i],
+  ["label", /\byou(?:'re| are)\s+(?:totally |so |such |definitely |clearly |lowkey |kinda |kind of |100% |def )?(?:someone who|somebody who|the (?:type|kind|sort)(?: of (?:person|girl|guy))? (?:who|that)|(?:a|an) [\w-]+(?: [\w-]+)? (?:person|type|girl|guy|soul) who)\b|\byou (?:totally |definitely |so )?(?:seem|sound|strike me) like (?:someone|somebody|the type|the kind|a person)\b|\byou (?:give|have|got|radiate|bring)\s+(?:off\s+)?(?!the\b)(?:[\w'-]+\s+){1,4}energy\b(?!\s+to\b)|\bvery (?:main character|[\w-]+ core)\b|^(?:(?:okay|ok|hey|hi|yo|oh|alright|well)\s*,?\s*)?(?:you\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\byou\s+(?:little\s+)?(?:[\w-]+\s+)?(?:snob|perfectionist|queen|princess|diva|nerd|critic|junkie|connoisseur)\b|\b(?:little )?(?:miss|mister|mr\.?|ms\.?)\s+(?:only|high|zero|no|anti|pro|super|certified|premium|perfect|picky)\b/i],
   ["guilt", /\b(?:don'?t (?:leave|go)(?: me)?\b|stay with me|i'?m all you need|you don'?t need them|i'?ll miss you so much|ditch (?:them|your friends) for me|skip (?:it|them|your friends) and stay|stay (?:here|in) (?:with me|then))/i],
   // emergency help (911, police, emergency services) is never dropped: a danger the regex below misses must still get it
   ["referral", /\b(?:therapist|counsel(?:or|ling|ing)|hotline|crisis line|a professional|mental health (?:professional|expert)|988\b)/i],
@@ -135,6 +135,12 @@ const EMERGENCY_HELP = /\b(?:911|112|999|emergency (?:services|room|number)|call
 /** talk about being interrupted ("You cut me off twice, so one line from now on", demo lane 11/3): meta and guilt, never said */
 const INTERRUPTION = /\b(?:(?:you|u)\s+(?:keep\s+|kept\s+|just\s+)?(?:cut(?:ting)?\s+me\s+off|interrupt(?:ed|ing)?\s+me|talk(?:ed|ing)?\s+over\s+me)|cut\s+me\s+off|talk(?:ed|ing)?\s+over\s+me|interrupt(?:ed|ing)\s+me|(?:keep|keeping)\s+it\s+(?:short|brief)\s+from\s+now\s+on|one\s+line\s+from\s+now\s+on)\b/i;
 
+/** "…, straight premium app energy" about the person (a "you" in it, no thing that "has" the energy) — Codex #435 */
+const ENERGY_ABOUT_YOU = /\b(?:straight|pure|total|major|big|giving|such)\s+(?:[\w'-]+\s+){0,3}energy\b/i;
+function energyLabel(s: string): boolean {
+  return ENERGY_ABOUT_YOU.test(s) && /\byou\b/i.test(s) && !/\b(?:it|that|this|which|they|these|those)\s+(?:has|have|got|gives?)\b/i.test(s) && !/\benergy\s+to\b/i.test(s);
+}
+
 export function guardSentence(sentence: string, ctx: GuardContext): GuardClass | null {
   // emergency help and real crisis turns first (Codex #372 r2: "You can cut me off and call 911 right now")
   if (INTERRUPTION.test(sentence) && !EMERGENCY_HELP.test(sentence) && !realCrisisSignal(ctx.userText)) return "interruption";
@@ -144,6 +150,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (energyLabel(sentence)) return "label";
   for (const [cls, re] of CLASSES) {
     if (!re.test(sentence)) continue;
     if (cls === "unseen" && ctx.camera) continue;
