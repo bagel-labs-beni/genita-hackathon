@@ -25,8 +25,9 @@ import type { CompanionRecord, PrepStore } from "./store.ts";
 
 export const DEMO_TEMPLATE_SUB = "demo:template";
 export const DEMO_NAME = "Jin";
-export const DEMO_MAX_FILES = 64;
-export const DEMO_MAX_BYTES = 64 * 1024 * 1024;
+// a finished human template (face set + flow) is up to ~96 files; room for the face pipeline to grow
+export const DEMO_MAX_FILES = 256;
+export const DEMO_MAX_BYTES = 256 * 1024 * 1024;
 
 export type DemoSeedDeps = {
   store: PrepStore;

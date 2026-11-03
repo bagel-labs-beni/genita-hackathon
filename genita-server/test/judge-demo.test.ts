@@ -85,7 +85,7 @@ async function boot(t: import("node:test").TestContext) {
     await call("POST", "/me/consent", r.body.token, {});
     return r.body as { token: string; user: { id: string } } & Record<string, any>;
   };
-  return { accounts, call, signIn, events };
+  return { accounts, call, signIn, events, base };
 }
 
 test("judge first sign-in: a ready demo Jin, copied into the judge's own files", async (t) => {
@@ -206,6 +206,38 @@ test("seed copy is bounded: a template with too many or too large files is skipp
   const ok = await seedDemoCompanion(d, user.id);
   assert.equal(ok.seeded, true);
   assert.equal(ok.files, 5);
+});
+
+test("a finished human template (~96 face + flow files) is seeded with the default limits (Codex P1 11/3)", async (t) => {
+  const { accounts, events } = await boot(t);
+  const files: Record<string, Buffer> = {};
+  for (let i = 0; i < 96; i++) files[`face/k${i}`] = Buffer.alloc(2048, i);
+  await makeTemplate(accounts, files);
+  const { user } = await accounts.accounts.upsertUser({ provider: "dev", sub: "judge:big" });
+  const d = { store: accounts.prepStore, blobs: accounts.blobs, templateUserId: () => accounts.accounts.findUserId("dev", DEMO_TEMPLATE_SUB), log: (e: string, x: Record<string, unknown>) => events.push({ event: e, data: x }) };
+  const r = await seedDemoCompanion(d, user.id);
+  assert.equal(r.seeded, true, r.reason);
+  assert.equal(r.files, 96);
+});
+
+test("face images revalidate: ETag per companion + content, 304 when unchanged, never a day-long cache (Codex P2 11/3)", async (t) => {
+  const { accounts, call, signIn, base } = await boot(t);
+  await makeTemplate(accounts, { "face/neutral": Buffer.from("SCENE-JIN") });
+  const s = await signIn();
+  const c = (await call("GET", "/v1/companion", s.token)).body;
+  const auth = { authorization: `Bearer ${s.token}` };
+  const first = await fetch(`${base}/v1/companion/face/neutral`, { headers: auth });
+  assert.equal(first.status, 200);
+  assert.equal(await first.text(), "SCENE-JIN");
+  assert.equal(first.headers.get("cache-control"), "private, no-cache");
+  const etag = first.headers.get("etag")!;
+  assert.ok(etag.includes(c.id.slice(0, 12)), etag);
+  const again = await fetch(`${base}/v1/companion/face/neutral`, { headers: { ...auth, "if-none-match": etag } });
+  assert.equal(again.status, 304);
+  await accounts.blobs.put(`users/${s.user.id}/companions/${c.id}/face/neutral`, Buffer.from("SCENE-NEW"), "image/webp");
+  const changed = await fetch(`${base}/v1/companion/face/neutral`, { headers: { ...auth, "if-none-match": etag } });
+  assert.equal(changed.status, 200, "a changed picture is never answered from the old cache");
+  assert.equal(await changed.text(), "SCENE-NEW");
 });
 
 // ── Codex review 11/2 (P1, P2×3) ──

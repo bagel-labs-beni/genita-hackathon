@@ -26,7 +26,7 @@
  * Auth and the AI-consent gate are checked by server.ts before handle().
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { IMPORT_PROMPT, skipStyleCard, styleProfileText, type StyleCard } from "./importProfile.ts";
 import { MAX_IMAGE_BYTES, PrepError, checkImage, importStyle, orderedVoices, savePrefs, voicePreview, type PrepDeps } from "./pipeline.ts";
 import { needsFaceSet, newPrepState, prepView, type PrepRunner } from "./runner.ts";
@@ -278,6 +278,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       // B7 keeps one companion per user: a judge's own companion takes the demo one's place, atomically and only
       // if that demo is still there (a concurrent create wins once; the other gets 409). Bad requests never get here.
       if (existing?.demo) {
+        // a resumed/retried prep of the demo must not keep writing (its saves are by user id) over the new companion
+        await runner.stop(user);
         if (!(await d.store.replaceDemoCompanion(existing.id, c))) throw new PrepError(409, "companion_exists", "one companion per user; the face cannot be changed");
         d.log("demo.replaced", { companion: existing.id });
       } else await d.store.putCompanion(c);
@@ -331,7 +333,14 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
       } else if (fk[1] !== "neutral" && c.prep.steps.face?.face?.items[fk[1] as FaceKey]?.status !== "done") throw new PrepError(404, "no_image");
       const bytes = await d.store.getAsset(user, c.id, fk[1]);
       if (!bytes) throw new PrepError(404, "no_image");
-      res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, max-age=86400" });
+      // same URL for every companion of this account (a judge's own companion replaces the demo one): the app
+      // revalidates, and the ETag (companion + content) answers 304 while the picture is unchanged
+      const etag = `"${c.id.slice(0, 12)}-${createHash("sha1").update(bytes).digest("hex").slice(0, 16)}"`;
+      if (req.headers["if-none-match"] === etag) {
+        res.writeHead(304, { etag, "cache-control": "private, no-cache" });
+        return void res.end();
+      }
+      res.writeHead(200, { "content-type": sniffImage(bytes) ?? "application/octet-stream", "content-length": bytes.length, "cache-control": "private, no-cache", etag });
       return void res.end(bytes);
     }
 
