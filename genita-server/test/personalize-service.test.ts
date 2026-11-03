@@ -602,3 +602,28 @@ test("Codex #538 r2: a reworded line never takes another subject's finding; a pi
   assert.doesNotMatch(row(now, "likes").join(" "), /minimal/i);
   assert.deepEqual(withPendingRemoved({ ...r.card, pendingCorrections: [{ cardId: "unknowns", items: ["Likes jokes in our chats."], text: "x", asOf: "3" }] }).display, r.card.display, "an unknowns answer removes nothing");
 });
+
+test("Codex #538 r3: two saves of one line never take its neighbor; a chip leaves its list finding; the first-call nod follows", async () => {
+  const { withoutMarked, withPendingRemoved } = await import("../src/personalize/service.ts");
+  const { skipStyleCard, styleProfileText } = await import("../src/prep/importProfile.ts");
+  const { tasteLines } = await import("../src/personalize/reasons.ts");
+  const r = skipStyleCard({ interests: [], replies: null, avoid: [], n3: { clothes: { like: ["Minimal", "Comfy"], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } } });
+  assert.ok(r.ok);
+  const row = (c: typeof r.card, key: string) => c.display.find((d) => d.key === key)?.items.map((i) => i.text) ?? [];
+  // a chip in a list finding: only that chip goes
+  const likes = row(r.card, "likes").join(" | ");
+  assert.match(likes, /Minimal, Comfy/i, likes);
+  const after = withoutMarked(r.card, ["Minimal"], "taste");
+  assert.doesNotMatch(row(after, "likes").join(" "), /minimal/i);
+  assert.match(row(after, "likes").join(" "), /Comfy/);
+  assert.doesNotMatch(styleProfileText(after), /minimal/i);
+  assert.ok(!tasteLines(after).some((x) => /minimal/i.test(x.text)));
+  // both chips picked in two saves: the finding goes
+  const both = withPendingRemoved({ ...r.card, pendingCorrections: [{ cardId: "taste", items: ["Minimal"], text: "", asOf: "1" }, { cardId: "taste", items: ["Comfy"], text: "", asOf: "2" }] });
+  assert.doesNotMatch(row(both, "likes").join(" "), /minimal|comfy/i);
+  // the same line saved twice: its neighbor stays
+  const lines = { ...r.card, sections: { ...r.card.sections, boundaries: [{ text: "Ask before suggesting outfits.", label: "explicit", scope: "any" }, { text: "Ask before buying outfits.", label: "explicit", scope: "any" }] } } as typeof r.card;
+  lines.display = [...lines.display.filter((d) => d.key !== "boundaries"), { key: "boundaries", title: "Boundaries", items: lines.sections.boundaries.map((f) => ({ text: f.text, label: "explicit" })) }] as typeof lines.display;
+  const twice = withPendingRemoved({ ...lines, pendingCorrections: [1, 2].map((n) => ({ cardId: "lines", items: ["Ask before suggesting outfits."], text: "", asOf: String(n) })) });
+  assert.deepEqual(row(twice, "boundaries"), ["Ask before buying outfits."]);
+});

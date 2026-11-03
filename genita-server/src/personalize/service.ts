@@ -42,41 +42,86 @@ const STOPW = new Set("the and you your with for that this from into like likes 
 /** content words, 5-letter stems: "Lo-fi while working" ~ "Media: slow-burn dramas; lo-fi while working." */
 const keyWords = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOPW.has(w)).map((w) => w.slice(0, 5));
 
+type Edit = { drop: boolean; to?: string };
 /**
- * The style card with the marked lines taken out where they are the profile's own findings: the same words, or
- * nearly (Spark may word a card line a little differently: most of its words), only in the card's own sections.
+ * What the marked lines take out of `card` (finding text → edit), decided on that card alone: the same words, or
+ * nearly (Spark may word a card line a little differently), only in the card's own sections, about the same thing.
+ * A picked chip ("Minimal") in a list finding ("Style: Minimal, Comfy.") takes out only that chip (Codex #538 r3).
  */
-export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId): StyleCard {
+function markedEdits(card: StyleCard, items: string[], cardId?: StoryId): Map<string, Edit> {
   // a finding's own label ("Style: Minimal.", "Media: …") is not part of what the user marked (Codex #538 r2)
-  const bare = (t: string) => t.replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "");
+  const label = (t: string) => t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
+  const bare = (t: string) => t.slice(label(t).length);
   const list = (t: string) => bare(t).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
   const words = (t: string) => new Set(list(t));
   /** what the line is about: its last content word ("… outfits." vs "… recipes."), 5-letter stem */
   const subject = (t: string) => list(t).at(-1)?.slice(0, 5) ?? "";
-  const marked = items.map((t) => ({ w: words(t), subj: subject(t) })).filter((m) => m.w.size);
-  if (!marked.length) return card;
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const edits = new Map<string, Edit>();
+  const marked = items.map((t) => ({ raw: t, w: words(t), subj: subject(t) })).filter((m) => m.w.size);
+  if (!marked.length) return edits;
   const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
   const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
-  // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, and better than any
-  // other line) — "Ask before suggesting outfits." never takes "… recipes." with it (Codex P1 #538)
-  const drop = new Set<string>();
   const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
   for (const m of marked) {
-    // only a finding about the same thing: a reworded "Ask before recommending outfits." never takes "… recipes." (Codex #538 r2)
+    // a chip inside a list finding ("Style: Minimal, Comfy."): only that chip goes
+    const chip = norm(m.raw);
+    const listHit = candidates.find((t) => {
+      const parts = bare(t).replace(/\.\s*$/, "").split(/\s*,\s*/);
+      return parts.length > 1 && parts.some((x) => norm(x) === chip);
+    });
+    if (listHit) {
+      const parts = bare(listHit).replace(/\.\s*$/, "").split(/\s*,\s*/).filter((x) => norm(x) !== chip);
+      edits.set(listHit, { drop: false, to: `${label(listHit)}${parts.join(", ")}.` });
+      continue;
+    }
+    // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, better than any other
+    // line), about the same thing — "Ask before … outfits." never takes "… recipes." (Codex P1 #538, r2)
     const scored = candidates.filter((t) => subject(t) === m.subj).map((t) => ({ t, s: overlap(words(t), m.w) })).sort((a, b) => b.s - a.s);
-    if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) drop.add(scored[0].t);
+    if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) edits.set(scored[0].t, { drop: true });
   }
-  if (!drop.size) return card;
-  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, keys.has(k) && Array.isArray(v) ? v.filter((f) => !drop.has(f.text)) : v])) as StyleCard["sections"];
-  const display = (card.display ?? []).map((r) => (keys.has(r.key) ? { ...r, items: r.items.filter((i) => !drop.has(i.text)) } : r));
+  return edits;
+}
+
+function applyEdits(card: StyleCard, edits: Map<string, Edit>): StyleCard {
+  if (!edits.size) return card;
+  const fix = <T extends { text: string }>(list: T[]) => list.flatMap((x) => {
+    const e = edits.get(x.text);
+    return !e ? [x] : e.drop ? [] : [{ ...x, text: e.to! }];
+  });
+  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, Array.isArray(v) ? fix(v) : v])) as StyleCard["sections"];
+  const display = (card.display ?? []).map((r) => ({ ...r, items: fix(r.items) }));
   return { ...card, sections, display };
 }
+
+/** The style card with the marked lines taken out where they are the profile's own findings (M02). */
+export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId): StyleCard {
+  return applyEdits(card, markedEdits(card, items, cardId));
+}
+
 /**
  * The card with every save still waiting on Spark's merge taken out the same way (the save's answer and the call
- * start agree; a second correction never brings back the first one's line — Codex #538 r2). Unknowns answers are not removals.
+ * start agree; a second correction never brings back the first one's line — Codex #538 r2). Every save's targets are
+ * chosen on the stored card, so two saves of the same line never move on to its neighbor (Codex #538 r3).
+ * Unknowns answers are not removals.
  */
 export function withPendingRemoved(card: StyleCard): StyleCard {
-  return (card.pendingCorrections ?? []).reduce((c, p) => (p.cardId === "unknowns" ? c : withoutMarked(c, p.items, p.cardId as StoryId)), card);
+  const edits = new Map<string, Edit>();
+  for (const p of card.pendingCorrections ?? []) {
+    if (p.cardId === "unknowns") continue;
+    for (const [t, e] of markedEdits(card, p.items, p.cardId as StoryId)) {
+      const had = edits.get(t);
+      // two chips of one list finding: both go
+      if (had && !had.drop && !e.drop) {
+        const keep = (x: string) => new Set(x.replace(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/, "").replace(/\.\s*$/, "").split(/\s*,\s*/));
+        const a = keep(had.to!), b = keep(e.to!);
+        const both = [...a].filter((x) => b.has(x));
+        const lbl = t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
+        edits.set(t, both.length ? { drop: false, to: `${lbl}${both.join(", ")}.` } : { drop: true });
+      } else edits.set(t, had?.drop ? had : e);
+    }
+  }
+  return applyEdits(card, edits);
 }
 const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
 
@@ -506,7 +551,7 @@ export class Personalize {
       const told = withPendingRemoved(r.card);
       return {
         card: r.card,
-        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(told, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(told), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
+        out: { ...(firstCallNod(told) ? { nod: firstCallNod(told)! } : {}), profile: styleProfileText(told, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(told), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
       };
     });
   }
