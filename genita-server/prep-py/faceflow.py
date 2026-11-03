@@ -727,7 +727,8 @@ def main():
         if dot and (mouth[2] - mouth[0]) < 0.08 * (face[2] - face[0]):
             fit = {k: float(v) for k, v in (dot.get('fit') or {}).items()}          # chibi: dot-sized closed mouth, bigger openings
             for dst, src in (dot.get('replace') or {}).items():                    # SM := a small open WD (closed < small open < big open)
-                if src in ALN: ALN[dst] = ALN[src].copy()
+                if src in ALN:
+                    ALN[dst] = ALN[src].copy(); diag[dst] = dict(diag.get(src, {}), derivedFrom=src)   # codex P2: SM may have been rejected
         if prep.get('cleanPlate', True):
             skin = np.median(Nl[lim > 0])
             lim_line = lim.copy()

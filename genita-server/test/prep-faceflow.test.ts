@@ -338,3 +338,23 @@ test("faceflow.py end to end: species runtime values land in flow.map (dog lip /
   }
   assert.deepEqual(pyFaceflow("F.profile_of('character2d')['prep']['fitDotMouth']['replace']"), { SM: "WD" });
 });
+
+test("faceflow.py 2D dot mouth (codex P2): SM rejected upstream, WD kept → SM derived from WD, no crash", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, () => {
+  const py = pythonWithCv2()!;
+  const W = 256, H = 456, cy = 0.515 * H, cx = W / 2;
+  const skin: [number, number, number] = [235, 225, 215];
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - cy) < 1 && Math.abs(x - cx) < 4 ? [60, 40, 40] : skin));
+  const wd = pngOf(W, H, (x, y) => { const r = ((x - cx) / 12) ** 2 + ((y - cy - 3) / 9) ** 2; return r < 0.8 ? [80, 30, 40] : r < 1 ? [40, 25, 25] : skin; });
+  const dir = mkdtempSync(join(tmpdir(), "ff-dot-"));
+  try {
+    writeFileSync(join(dir, "n.png"), neutral); writeFileSync(join(dir, "wd.png"), wd);
+    const out = join(dir, "out");
+    const res = JSON.parse(execFileSync(py, [FACEFLOW_SCRIPT, "--neutral", join(dir, "n.png"), "--keys", `WD=${join(dir, "wd.png")}`, "--face", "0.1,0.2,0.9,0.6",
+      "--mouth", "0.49,0.512,0.51,0.518", "--kind", "character2d", "--out", out]).toString().trim().split("\n").pop()!);
+    assert.ok(res.ok);
+    assert.deepEqual(res.diag.SM.derivedFrom, "WD");
+    assert.ok(JSON.parse(readFileSync(join(out, "flow.json"), "utf8")).keys.includes("SM"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
