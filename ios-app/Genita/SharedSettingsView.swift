@@ -125,6 +125,7 @@ struct SettingsView: View {
         resetting = true
         // the account this was asked for: a late answer after a sign-out / another sign-in must not touch the new one (Codex P2)
         let asked = model.launchAuthSnapshot
+        let resets = model.companionResets
         Task { @MainActor in
             defer { resetting = false }
             do {
@@ -132,7 +133,8 @@ struct SettingsView: View {
                 guard asked.accepts(model.launchAuthSnapshot) else { return }
                 CallController.shared.end()
                 dismiss()
-                model.companionReset()
+                // the call's 4410 may have reset this phone already and the user picked a new photo since: never again
+                model.companionResetAnswered(since: resets)
             } catch GenitaAuthError.unauthorized where asked.generation == model.authGeneration {
                 // this request's 401 cleared the token (same sign-in): A02, as everywhere else
                 dismiss()

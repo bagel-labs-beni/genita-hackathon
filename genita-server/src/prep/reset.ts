@@ -51,6 +51,23 @@ function send(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * The judge demo copy (seedDemoCompanion at sign-in) is a companion create like POST /v1/companion: it runs under
+ * the same per-account create lock, so a reset never erases a demo copied in after its row sweep (Codex #514 P2 ①:
+ * reset → judge sign-in → new demo row with its face files deleted, prep "ready", 0 faces). During a reset the
+ * copy is skipped; the next sign-in copies it.
+ */
+export function guardDemoSeed(seed: (userId: string) => Promise<void>, runner: Pick<PrepRunner, "creating">, log: CompanionResetDeps["log"]): (userId: string) => Promise<void> {
+  return async (userId) => {
+    try {
+      await runner.creating(userId, () => seed(userId));
+    } catch (err) {
+      if (!(err instanceof ResetBusy)) throw err;
+      log("demo.skipped", { reason: "reset_in_progress" });
+    }
+  };
+}
+
 export function createCompanionReset(d: CompanionResetDeps, perDay = RESETS_PER_DAY): CompanionReset {
   const hits = new Map<string, number[]>();
   const recent = (userId: string) => (hits.get(userId) ?? []).filter((t) => Date.now() - t < DAY_MS);

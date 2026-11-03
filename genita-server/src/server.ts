@@ -33,7 +33,7 @@ import { createVoiceSeats } from "./tts/capacity.ts";
 import { createPrep } from "./prep/index.ts";
 import { demoTemplateWanted, readDemoPointer, startDemoTemplate } from "./prep/demoTemplate.ts";
 import { DEMO_TEMPLATE_SUB } from "./prep/demo.ts";
-import { createCompanionReset } from "./prep/reset.ts";
+import { createCompanionReset, guardDemoSeed } from "./prep/reset.ts";
 import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
@@ -126,6 +126,8 @@ export async function startServer(
   const touches = new Map<string, () => void>();
   const sessionUsers = new Map<string, string>(); // ws session id → users.id
   const prep = createPrep(config, log, env, accounts?.prepStore); // onboarding prep routes (src/prep/routes.ts)
+  // the judge demo copy at sign-in is a companion create: it takes the same lock as POST /v1/companion (Codex #514 P2)
+  if (accounts?.seedDemo) accounts.seedDemo = guardDemoSeed(accounts.seedDemo, prep.runner, log);
   // D41: the judge demo template ("Jin") is built by the server itself, in the background after the accounts
   // DB is migrated (007); idempotent, version-stamped, failures only logged (src/prep/demoTemplate.ts)
   const demoTemplate = accounts && demoTemplateWanted(env, accounts.db.kind)

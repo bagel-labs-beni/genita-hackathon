@@ -311,6 +311,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// companion too and starts again at V01 "Bring an image". The account, the user's name and what Genita knows
     /// about them (I04 rows / profile, HISY) stay. Safe to call twice (the HTTP answer and the call close both land here).
     func companionReset() {
+        companionResets += 1
         invalidateOnboardingWork()
         var s = setup
         s.companionName = nil; s.imageId = nil; s.imageType = nil; s.imageData = nil
@@ -325,6 +326,15 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         polished = nil; polishedImage = nil; polishError = nil; polishRetriesLeft = 0; polishAttempts = 0
         setupSummary = nil; suggestedCompanionName = nil; nameError = nil; prepError = nil; flowError = nil
         menuOpen = false; settingsOpen = false
+    }
+    /// How many times this phone dropped its companion (`companionReset()`): Settings' reset request compares it, so its
+    /// HTTP answer arriving after the 4410 close already reset the phone never runs again (Codex #514 P2: it wiped the
+    /// photo the user had just picked on V01).
+    private(set) var companionResets = 0
+    /// Settings' `POST /v1/companion/reset` answered 200: the local reset, unless one already ran since `asked` (the call's 4410).
+    func companionResetAnswered(since asked: Int) {
+        guard companionResets == asked else { return }
+        companionReset()
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403 / 4410, F1-L7).
     func route(_ stop: CallStop?) {
