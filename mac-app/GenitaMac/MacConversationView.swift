@@ -186,8 +186,13 @@ struct MacConversationView: View {
     /// This account's own picture only: the server's scene still, else the one the iPhone handed over. Without either the
     /// call shows a neutral placeholder — never the bundled demo face, which is someone else's companion (#524 UI sweep, CL-03).
     private var companionPicture: NSImage? {
-        if let face = macCall.face { return face }
-        if let data = handoff.profile, let image = NSImage(data: data) { return image }
+        // CL-03 order (CallStillSource, tested): this account's server still, then the iPhone's handoff profile, else
+        // the dark ground — never the bundled companion.png in the shipped app (DEBUG review renders below only)
+        switch CallStillSource.pick(hasServerStill: macCall.face != nil, hasHandoffProfile: handoff.profile != nil) {
+        case .serverStill: return macCall.face
+        case .handoffProfile: if let image = handoff.profile.flatMap({ NSImage(data: $0) }) { return image }
+        case .ground: break
+        }
         #if DEBUG
         // review renders (GENITA_MAC_REVIEW_OUT) keep the fixture face so the call screens stay comparable
         if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil, reviewState != "noface",
