@@ -912,7 +912,8 @@ export class Session {
       // to chat later must not use what they asked to forget (Codex #583 r6). Profile only (plan: false), off the path.
       const personalize = this.deps.personalize, userId = this.deps.userId;
       const gen = personalize.generation?.(userId);
-      if (personalize.isForgotten?.(userId)) { this.user = { ...this.user, profile: undefined }; this.taste = []; }
+      // interpretation doesn't use the profile: the app's copy is dropped outright, only the server's (when it lands) counts
+      this.user = { ...this.user, profile: undefined }; this.taste = [];
       void personalize.startCall(userId, { plan: false }).then((p) => {
         if (!p || this.closed || personalize.generation?.(userId) !== gen) return;
         this.user = { ...this.user, profile: p.profile || undefined };
