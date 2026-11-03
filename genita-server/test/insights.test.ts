@@ -611,3 +611,14 @@ test("eval 11/4: reading them against themselves is creepy — counts of how oft
   assert.equal(insightProblem("You decide by comparing, not by being told."), null);
   assert.equal(insightProblem("You keep the final say on anything that leaves your hands."), null);
 });
+
+test("settings lane Codex: after 'forget about seafood' the N3 pick isn't sent to Spark again", async (t) => {
+  const h = harness(() => RAW);
+  t.after(h.cleanup);
+  await h.p.replaceStyle("u1", { ...CARD, source: "skip", picks: [{ question: "Food: you don't want", label: "Seafood" }, { question: "Food: you like", label: "Spicy" }], removed: [{ text: "seafood", at: new Date(Date.now() - 60_000).toISOString(), forget: true }] });
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000);
+  const sent = String(h.calls.find((c) => c.schemaName === "insight_report")!.input);
+  assert.ok(!/seafood/i.test(sent), sent.slice(0, 300));
+  assert.match(sent, /Spicy/);
+});

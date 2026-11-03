@@ -18,7 +18,7 @@ import { museJson } from "../meta/spark.ts";
 import type { Personalize } from "../personalize/service.ts";
 import { looksLikeInjection, redactSensitive, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, type InsightInputs } from "./report.ts";
+import { LEARN_LABEL, OBS_MIN, buildInsightRequest, picksFromAnswers, privateDetail, settingsFrom, similarClaim, scrubRemoved, toReport, withoutObservations, withoutRemoved, type InsightInputs } from "./report.ts";
 import type { InsightReport, StoredInsights } from "./profile.ts";
 export { insightProfileLines } from "./profile.ts";
 
@@ -50,6 +50,9 @@ export function publicReport(s: StoredInsights | undefined | null): InsightRepor
 function cardFindings(card: StyleCard): string[] {
   return Object.values(card.sections ?? {}).flatMap((list) => (Array.isArray(list) ? list.map((f) => f.text) : [])).slice(0, 60);
 }
+
+/** the card's picks without what the user asked to forget (settings lane Codex: "Forget about seafood" kept the N3 pick) */
+const cardPicks = (card: StyleCard) => withoutRemoved(card.picks ?? [], (p) => p.label, card.removed);
 
 export class Insights {
   private readonly json: JsonFn;
@@ -178,7 +181,7 @@ export class Insights {
   /** N1–N3: the skip card is saved; the report comes from the picks. */
   fromSkip(userId: string): void {
     this.texts.delete(userId);
-    this.start(userId, "skip", (card) => (card ? { findings: cardFindings(card), picks: card.picks ?? [], source: "skip", unknowns: card.toConfirm } : null));
+    this.start(userId, "skip", (card) => (card ? { findings: cardFindings(card), picks: cardPicks(card), source: "skip", unknowns: card.toConfirm } : null));
   }
 
   /** Setup answers (server keys; partial is fine — the app sends them before the last pick). */
@@ -192,10 +195,10 @@ export class Insights {
       return {
         text: card.source === "import" ? this.textOf(userId, card) : undefined,
         findings: cardFindings(card),
-        picks: [...(card.picks ?? []), ...answerPicks],
+        picks: [...cardPicks(card), ...answerPicks],
         source: card.source,
         // AU-23: what the user took out of the profile (HISY "That's not me", "forget that …") is not true either
-        denied: [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).slice(-10).map((r) => ({ claim: r.text }))],
+        denied: [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).filter((r) => !r.forget).slice(-10).map((r) => ({ claim: r.text }))],
         unknowns: card.toConfirm,
       };
     }, { settings });
@@ -211,7 +214,7 @@ export class Insights {
       if (card.insights) return { status: "ready", report: publicReport(card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
-      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
+      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: cardPicks(c), source: c.source, unknowns: c.toConfirm } : null));
       job = this.jobs.get(userId);
     }
     if (job && waitMs > 0) {

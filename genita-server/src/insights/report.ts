@@ -200,6 +200,12 @@ function mentionsAvoided(text: string, keys: AvoidKey[]): boolean {
   return keys.some((k) => (k.loose ? k.keys.some((x) => w.has(x)) : k.keys.every((x) => w.has(x))));
 }
 
+/** Texts without what the user took out of the profile ("forget …", corrected lines) — before they go to Spark. */
+export function withoutRemoved<T>(items: T[], text: (x: T) => string, removed: Array<{ text: string; forget?: true | boolean }> | undefined): T[] {
+  const keys = avoidKeys((removed ?? []).map((x) => ({ text: x.text, forget: !!x.forget })));
+  return keys.length ? items.filter((x) => !mentionsAvoided(text(x), keys)) : items;
+}
+
 /** "forget that …" / corrected-away lines (card.removed): traits that cite or say them go, with what was built on them (Codex P1) */
 export function scrubRemoved<R extends InsightReport>(r: R, removed: Array<{ text: string; forget?: true | boolean }> | undefined): R {
   const keys = avoidKeys((removed ?? []).map((x) => ({ text: x.text, forget: !!x.forget })));
