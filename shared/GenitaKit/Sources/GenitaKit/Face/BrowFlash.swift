@@ -28,11 +28,14 @@ enum BrowFlash {
         return out
     }
 
-    /// 0…1 lift at `ms` (reply clock).
+    /// 0…1 lift at `ms` (reply clock) — stateless, from the onsets of this phoneme list.
     static func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], loudness: (Double) -> Double) -> Double {
         guard !phonemes.isEmpty else { return 0 }
-        let t = ms / 1000
-        for s in onsets(phonemes: phonemes, loudness: loudness) where t >= s && t < s + rise + hold + fall {
+        return envelope(at: ms / 1000, onsets: onsets(phonemes: phonemes, loudness: loudness))
+    }
+
+    static func envelope(at t: Double, onsets: [Double]) -> Double {
+        for s in onsets where t >= s && t < s + rise + hold + fall {
             let u = t - s
             if u < rise { let k = u / rise; return k * k * (3 - 2 * k) }
             if u < rise + hold { return 1 }
@@ -40,5 +43,25 @@ enum BrowFlash {
             return k * k * (3 - 2 * k)
         }
         return 0
+    }
+
+    /// Codex P2: the aligner sends phonemes clause by clause, so the loudness ranking changes as a reply streams.
+    /// A flash that has started is kept to its end, and a new one must start ≥ minGap after the last one shown.
+    struct Tracker {
+        private(set) var shown: [Double] = []
+        private var lastT: Double?
+        mutating func weight(atMs ms: Double, phonemes: [LipPhonemeTiming], loudness: (Double) -> Double) -> Double {
+            let t = ms / 1000
+            if phonemes.isEmpty || (lastT.map { t < $0 - 0.5 } ?? false) { shown = [] }   // a new reply / a jump back
+            lastT = t
+            guard !phonemes.isEmpty else { return 0 }
+            for s in BrowFlash.onsets(phonemes: phonemes, loudness: loudness) where s <= t {
+                if shown.contains(where: { abs($0 - s) < 1e-6 }) { continue }
+                if let last = shown.last, s - last < BrowFlash.minGap { continue }
+                if t - s >= BrowFlash.rise + BrowFlash.hold + BrowFlash.fall { continue }   // only flashes still live now
+                shown.append(s)
+            }
+            return BrowFlash.envelope(at: t, onsets: shown)
+        }
     }
 }

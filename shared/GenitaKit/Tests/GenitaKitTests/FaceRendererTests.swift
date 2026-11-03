@@ -462,4 +462,24 @@ struct BrowFlashTests {
         #expect(BrowFlash.weight(atMs: (s - 0.05) * 1000, phonemes: ph, loudness: loud) == 0)
         #expect(BrowFlash.weight(atMs: 1000, phonemes: [], loudness: loud) == 0)
     }
+
+    /// codex P2: a flash that has started survives later clauses (a louder vowel arriving re-ranks the list)
+    @Test func aStartedFlashIsKeptWhenLaterPhonemesArrive() {
+        var tr = BrowFlash.Tracker()
+        let first = (0..<4).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let quietLoud: (Double) -> Double = { ms in ms < 150 ? 0.6 : (ms < 2000 && Int(ms) % 500 < 150 ? 0.3 : 0.02) }
+        // the first vowel is the loud one so far: its flash starts
+        _ = tr.weight(atMs: 0, phonemes: first, loudness: quietLoud)
+        #expect(tr.weight(atMs: 120, phonemes: first, loudness: quietLoud) > 0.9)
+        // a much louder clause arrives: the started flash keeps going
+        let more = first + (4..<8).map { LipPhonemeTiming(phoneme: "AA1", startMs: $0 * 500, endMs: $0 * 500 + 150) }
+        let loudLater: (Double) -> Double = { ms in ms >= 2000 && Int(ms) % 500 < 150 ? 1.0 : quietLoud(ms) }
+        #expect(tr.weight(atMs: 160, phonemes: more, loudness: loudLater) > 0.9)
+        #expect(tr.shown.count == 1)
+    }
+
+    @Test func theBrowBandEndsAboveTheEyes() {
+        let g = FaceRenderer.browGeometry(bandTop: 600, bandBottom: 400)
+        #expect(g.browY - g.browRy > g.eyeY + g.eyeRy * 0.5)   // brow ellipse bottom above the eye cut-out's core
+    }
 }

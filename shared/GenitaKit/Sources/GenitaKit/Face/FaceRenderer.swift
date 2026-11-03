@@ -47,6 +47,13 @@ public final class FaceRenderer: @unchecked Sendable {
     private let browLift: CGFloat
     /// on/off (rollback); map-free on purpose: a tiny, speech-locked accent
     nonisolated(unsafe) public static var browFlash = true
+    private var browTracker = BrowFlash.Tracker()
+    /// Brow band and the eye cut-out inside the eye band (image coordinates, y up): the brow ellipse ends above the
+    /// eye line, the eyes are masked out besides.
+    static func browGeometry(bandTop: CGFloat, bandBottom: CGFloat) -> (browY: CGFloat, browRy: CGFloat, eyeY: CGFloat, eyeRy: CGFloat) {
+        let band = max(8, bandTop - bandBottom)
+        return (bandTop - band * 0.2, max(3, band * 0.16), bandTop - band * 0.58, max(3, band * 0.24))
+    }
     /// Expression stills: eyes, brows and cheek apples (always), and the whole face (only while the mouth rests).
     private let exprUpperMask: CIImage
     private let exprFaceMask: CIImage
@@ -155,10 +162,14 @@ public final class FaceRenderer: @unchecked Sendable {
         // Eye band: from 12% below the face top down to a quarter of the way above the mouth.
         let bandTop = face.maxY - face.height * 0.12
         let bandBottom = mouth.maxY + (face.maxY - mouth.maxY) * 0.22
-        // brows: the top third of the eye band, the face's width; a 0.3 s lift on stressed words (BrowFlash)
-        let browY = bandTop - (bandTop - bandBottom) * 0.28
-        browMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: browY), rx: face.width * 0.42, ry: max(4, (bandTop - bandBottom) * 0.3),
-                                    inner: 0.45, extent: extent)
+        // brows: the top of the eye band, the face's width, the eyes cut out (codex P2: the lift must never move an
+        // eye); a 0.3 s lift on stressed words (BrowFlash)
+        let g = Self.browGeometry(bandTop: bandTop, bandBottom: bandBottom)
+        let brow = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.browY), rx: face.width * 0.42, ry: g.browRy, inner: 0.45, extent: extent)
+        let eyes = Self.ellipseMask(center: CGPoint(x: face.midX, y: g.eyeY), rx: face.width * 0.5, ry: g.eyeRy, inner: 0.7, extent: extent)
+        let keep = CIFilter.colorInvert(); keep.inputImage = eyes
+        let cut = CIFilter.multiplyCompositing(); cut.inputImage = brow; cut.backgroundImage = keep.outputImage!
+        browMask = cut.outputImage!.cropped(to: extent)
         browLift = max(1, face.height * 0.012)
         blinkMask = faceSet.hasBlink
             ? Self.ellipseMask(center: CGPoint(x: face.midX, y: (bandTop + bandBottom) / 2),
@@ -318,7 +329,8 @@ public final class FaceRenderer: @unchecked Sendable {
         // 4b. brow flash (11/4): stressed words lift the brows ~0.2 of their gap for 0.3 s — the band is moved up rigidly
         // through a soft mask (no warp of the eyes; 0–2 per sentence)
         if Self.browFlash, !reduceMotion, stillsTotal < 0.15, let bm = browMask, let ctx = context {
-            let w = BrowFlash.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings, loudness: { ctx.timeline.loudness(atMs: $0) })
+            let w: Double = { lock.lock(); defer { lock.unlock() }
+                return browTracker.weight(atMs: ctx.audioMs - lipLookaheadMs, phonemes: ctx.timeline.phonemeTimings, loudness: { ctx.timeline.loudness(atMs: $0) }) }()
             if w > 0.01 {
                 let lifted = img.clampedToExtent().transformed(by: CGAffineTransform(translationX: 0, y: browLift * CGFloat(w))).cropped(to: extent)
                 let f = CIFilter.blendWithAlphaMask()
