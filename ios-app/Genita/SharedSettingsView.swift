@@ -38,8 +38,10 @@ struct SettingsView: View {
         guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
         return ImportedStyle(rows: rows, partial: false, toConfirm: [], profile: "", source: "").displayText
     }
+    /// The account's voice: the V04 pick on this phone, else the companion's saved voice from the server (another
+    /// phone, a reinstall: build 7 Appetize showed "Default" after picking Leah, 11/4).
     private var voiceName: String {
-        model.setup.voiceName ?? "Default"
+        model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default"
     }
     var body: some View {
         NavigationStack {
@@ -123,4 +125,11 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+/// The four V04 voices' names by server id (genita-server src/prep/voices.ts DEFAULT_VOICES). Lives here, not in the
+/// iOS-only OnboardingViews.swift, because the GenitaMac target compiles this file too.
+enum CuratedVoices {
+    static let names = ["72": "Tara", "9": "Leah", "19": "Leo", "26": "Dan"]
+    static func name(_ id: String?) -> String? { id.flatMap { names[$0] } }
 }
