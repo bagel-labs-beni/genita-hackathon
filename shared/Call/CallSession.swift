@@ -137,6 +137,9 @@ enum CallStop: Equatable {
     let finds = FindsModel()
 
     @ObservationIgnored let camera = CallCamera()
+    /// PERC-2: face crops for the server's perception, only while `ready.perception` is true.
+    @ObservationIgnored private let perception = PerceptionSampler()
+    @ObservationIgnored private var perceptionOn = false
     @ObservationIgnored private let audio: any CallAudioPlaying
     @ObservationIgnored private let voice: any CallVoiceRendering
     @ObservationIgnored private let makeSocket: () -> any CallConnection
@@ -324,6 +327,7 @@ enum CallStop: Equatable {
         voice.cancel()
         audio.stop()
         camera.stop()
+        perception.stop(); perceptionOn = false
         micOn = false; cameraOn = false; playing = false; link = .idle
         reconnectSince = nil; cancelled = []; seqToUtterance = [:]; lookedUp = []; findsCount = 0
         routed = []; interpretBoard = InterpretBoard(companionName: companionName); uplink.callFraming = false
@@ -439,6 +443,19 @@ enum CallStop: Equatable {
     }
 
     func flipCamera() { camera.flip(); cameraFront = camera.front; finds.boxes.clear() }
+
+    /// PERC-2: ~2 fps look at the camera; a face crop goes up when it changed (≥ 1 s apart) or every 2.5 s.
+    private func startPerception() {
+        guard !perception.isRunning else { return }
+        perception.start(
+            frame: { [weak self] in self?.camera.latestFrontImage() },
+            active: { [weak self] in
+                guard let self else { return false }
+                return PerceptionGate.active(serverOn: self.perceptionOn, cameraOn: self.cameraOn, front: self.camera.front, mode: self.mode, live: self.link == .live)
+            },
+            send: { [weak self] image in self?.socket?.send(.perceptionFrame(image: image)) }
+        )
+    }
 
     /// S09-X hold. Debug UI tests on slow simulators can lengthen it (GENITA_INTERRUPT_HOLD_MS).
     static var interruptedHoldMs: Int {
@@ -593,6 +610,7 @@ enum CallStop: Equatable {
         log.info("socket closed: \(String(describing: closure), privacy: .public)")
         socket = nil
         pingTask?.cancel()
+        perception.stop() // a new `ready` restarts it (Codex P2)
         flushPlayback()
         restFace()
         playing = false
@@ -680,6 +698,8 @@ enum CallStop: Equatable {
             interpretBoard.apply(event)
             phase = .listening
             keepAlive()
+            perceptionOn = r.perception == true
+            if perceptionOn { startPerception() } else { perception.stop() }
             log.info("ready session=\(r.sessionId, privacy: .public) lip=\(r.lip.active.rawValue, privacy: .public) tts=\(self.tts.rawValue, privacy: .public)")
         case let .state(s):
             setPhase(s.state)
