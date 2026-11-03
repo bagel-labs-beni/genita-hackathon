@@ -382,10 +382,15 @@ test("Codex S1: a text-only correction that replaced an unmarked fact answers wi
   assert.doesNotMatch(profile, /Short answers first/);
 });
 
-test("S1: Spark down — the save still answers; the correction call is retried once, then logged (no 502)", async (t) => {
+test("S1: Spark down — the save still answers, is kept pending, and is applied on a later read once Spark is back", async (t) => {
   let tries = 0;
+  let down = true;
   const h = harness(async (req) => {
-    if (req.schemaName === "profile_correction") { tries++; throw new Error("meta 504: request timed out"); }
+    if (req.schemaName === "profile_correction") {
+      tries++;
+      if (down) throw new Error("meta 504: request timed out");
+      return { updates: [{ field: "likes", text: "Dislikes logos and loud prints.", replaces: ["Style: Clean, minimal clothes."], chip: "no logos" }], answered: { field: "", text: "", chip: "" } };
+    }
     if (req.schemaName === "story_cards") return STORY_RAW;
     return null;
   });
@@ -396,4 +401,27 @@ test("S1: Spark down — the save still answers; the correction call is retried 
   await h.p.drainRewrites();
   assert.equal(tries, 2, "one retry");
   assert.ok(h.logs.some(([e]) => e === "profile.correct_failed"));
+  assert.equal((await h.store.getStyle("u1"))!.pendingCorrections?.length, 1, "kept for later");
+  down = false;
+  await h.p.story("u1"); // a later read replays it
+  await h.p.drainRewrites();
+  assert.equal((await h.store.getStyle("u1"))!.pendingCorrections?.length ?? 0, 0);
+  assert.match((await h.p.startCall("u1"))?.profile ?? "", /Dislikes logos/);
+});
+
+test("S1: an answered unknown leaves GET story at once, before Spark merges it", async (t) => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const h = harness(async (req) => {
+    if (req.schemaName === "profile_correction") { await gate; return { updates: [], answered: { field: "boundaries", text: "One reminder a day is fine.", chip: "one a day" } }; }
+    if (req.schemaName === "story_cards") return STORY_RAW;
+    return null;
+  });
+  t.after(h.cleanup);
+  await withStory(h);
+  await h.p.correct("u1", { cardId: "unknowns", items: ["Reminder frequency"], text: "One a day is fine." });
+  const unknowns = (await h.p.story("u1")).cards.find((c) => c.id === "unknowns");
+  assert.ok(!unknowns?.unknowns?.some((u) => u.topic === "Reminder frequency"));
+  release();
+  await h.p.drainRewrites();
 });
