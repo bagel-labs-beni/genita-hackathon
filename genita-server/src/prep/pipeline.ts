@@ -7,8 +7,9 @@ import { randomUUID } from "node:crypto";
 import { sparkJson, type SparkRequest } from "../meta/spark.ts";
 import { museImageEdit, samDetect } from "../meta/media.ts";
 import { getOps } from "../ops/limits.ts";
+import type { SamBox } from "../meta/sam.ts";
 import { buildClassifyRequest, headPrompt, interpretCheck, pickHeadBox, sniffImage, type ClassifyRaw } from "./classify.ts";
-import { EYES_PROMPT, MOUTH_PROMPT, facePointsFromSam, facePrompt, outlineFromSam } from "./faceGeometry.ts";
+import { EYES_PROMPT, MOUTH_PROMPT, faceRim, facePointsFromSam, facePrompt } from "./faceGeometry.ts";
 import { buildImportRequest, checkPaste, importFormat, redactSensitive, toStyleCard, type ImportRaw, type StyleCard } from "./importProfile.ts";
 import { buildPersonaRequest, toPersona, validatePrefs, type PersonaRaw } from "./personaCard.ts";
 import { SCENE_PROMPT, SCENE_SIZE, type CompanionKind } from "./prompts.ts";
@@ -91,8 +92,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
   // come first), and a failure or a slow answer only means no mesh, never a slower check.
   const scan = getOps().metaCallsLeft() >= FACE_SCAN_MIN_CALLS_LEFT;
   const optional = AbortSignal.timeout(FACE_SCAN_TIMEOUT_MS);
-  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) => !scan ? Promise.resolve(null)
-    : samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).then((b) => outlineFromSam(b), () => null);
+  const samFaceOf = (kind: Parameters<typeof facePrompt>[0]) => !scan ? Promise.resolve([] as SamBox[])
+    : samDetect(d.metaKey, url, facePrompt(kind), optional, { masks: true }).catch(() => [] as SamBox[]);
   const samBoxes = (prompt: string) => !scan ? Promise.resolve([])
     : samDetect(d.metaKey, url, prompt, optional).catch(() => [] as Awaited<ReturnType<typeof samDetect>>);
   const samFeatures = Promise.all([samBoxes(EYES_PROMPT), samBoxes(MOUTH_PROMPT)]);
@@ -112,10 +113,23 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     samFace = samFaceOf(kind);
     head = await samHead;
   }
+  // a failed animal / character check (the polish flow) still gets its net: that kind's face and head, for the rim only
+  // (the stored head box and `heads` stay as they were)
+  let rimHead = head ? pickHeadBox(head.boxes) : null;
+  if (scan && !check.passed && check.type && check.type !== "human") {
+    const kind = check.type;
+    samFace = samFaceOf(kind);
+    const kindHead = await within(samDetect(d.metaKey, url, headPrompt(kind), optional).catch(() => [] as SamBox[]), FACE_SCAN_TIMEOUT_MS, []);
+    rimHead = pickHeadBox(kindHead) ?? rimHead;
+  }
   // one shared deadline: the answer waits at most FACE_SCAN_GRACE_MS for the scan once the check and head box are in
   const deadline = performance.now() + FACE_SCAN_GRACE_MS;
   const left = () => Math.max(0, deadline - performance.now());
-  const [faceOutline, [eyes, mouth]] = await Promise.all([within(samFace, left(), null), within(samFeatures, left(), [[], []])]);
+  const [faceBoxes, [eyes, mouth]] = await Promise.all([within(samFace, left(), [] as SamBox[]), within(samFeatures, left(), [[], []])]);
+  // the net for every photo with a face, passed or not (lead 11/4 05:3x: the polish flow and V02-F show it too);
+  // only "no face" skips it
+  const faceFound = !!check.type && !check.reasons.some((r) => r.code === "no_face");
+  const faceOutline = faceFound ? faceRim(faceBoxes, rimHead) : null;
   const rec: ImageRecord = {
     id: randomUUID().replace(/-/g, ""),
     userId,
@@ -124,9 +138,8 @@ export async function checkImage(d: PrepDeps, userId: string, bytes: Buffer, rig
     check,
     headBox: check.passed && head ? pickHeadBox(head.boxes) : null,
     heads: head?.boxes ?? [],
-    // only on a passed check: a failed photo goes to V02-F, nothing to draw
-    faceOutline: check.passed ? faceOutline : null,
-    facePoints: check.passed ? facePointsFromSam(eyes, mouth, faceOutline) : null,
+    faceOutline,
+    facePoints: faceOutline ? facePointsFromSam(eyes, mouth, faceOutline) : null,
     rightsAck,
     // This is captured after the upload body is read, before any model check.
     createdAt,

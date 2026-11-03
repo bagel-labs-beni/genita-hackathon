@@ -150,3 +150,35 @@ export function facePointsFromSam(eyeBoxes: SamBox[], mouthBoxes: SamBox[], outl
   ].map(([x, y]) => [r4(x), r4(y)] as FacePoint);
   return { leftEye: eye(l), rightEye: eye(r), leftBrow: brow(l), rightBrow: brow(r), nose, lips: lips(mouth) };
 }
+
+/** 32 points round an ellipse inscribed in `b` (fractions), from the top, clockwise on screen */
+function ellipse(b: NBox, n = 32): FacePoint[] {
+  const cx = (b.x1 + b.x2) / 2, cy = (b.y1 + b.y2) / 2, rx = (b.x2 - b.x1) / 2, ry = (b.y2 - b.y1) / 2;
+  return Array.from({ length: n }, (_, i) => {
+    const a = -Math.PI / 2 + (2 * Math.PI * i) / n;
+    return [r4(cx + rx * Math.cos(a)), r4(cy + ry * Math.sin(a))] as FacePoint;
+  });
+}
+
+/**
+ * Pure (lead 11/4 05:3x: every photo with a face gets the net, polish included): the face rim for the largest face.
+ * SAM's traced mask when it looks like a face; else an ellipse in SAM's largest face box; else one in the lower part of
+ * the head box. A "face" under 20 % of its head box (PH-06 c4: a figure's goggles) is not the face.
+ * null only when SAM found neither a face nor a head.
+ */
+export function faceRim(faceBoxes: SamBox[], head: SamBox | null): FacePoint[] | null {
+  const h = head ? norm(head) : null;
+  const big = (b: NBox) => !h || area(b) >= 0.2 * area(h);
+  const traced = outlineFromSam(faceBoxes);
+  if (traced) {
+    const xs = traced.map((p) => p[0]), ys = traced.map((p) => p[1]);
+    if (big({ x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) })) return traced;
+  }
+  const box = faceBoxes.map(norm).filter((b): b is NBox => !!b).sort((a, b) => area(b) - area(a))[0];
+  if (box && big(box)) return ellipse(box);
+  if (h) {
+    const w = h.x2 - h.x1, hh = h.y2 - h.y1, cx = (h.x1 + h.x2) / 2, cy = h.y1 + hh * 0.6;
+    return ellipse({ x1: cx - w * 0.36, y1: cy - hh * 0.38, x2: cx + w * 0.36, y2: cy + hh * 0.38 });
+  }
+  return null;
+}

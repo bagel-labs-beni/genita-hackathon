@@ -100,6 +100,10 @@ struct ImageCheckView: View {
             if was && !now { Task { await finish() } }
         }
         .onChange(of: result?.imageId, initial: true) { _, _ in showMesh() }
+        // the photo's size from the start, so the net's crop and the photo's crop begin at the same place (Codex P2)
+        .onChange(of: model.setup.imageData?.count, initial: true) { _, _ in
+            photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
+        }
     }
 
     /// The check answer's face points → the net, swept on from the top over 0.4 s.
@@ -108,7 +112,6 @@ struct ImageCheckView: View {
         mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
         smallMesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox, layout: .r02Small)
         guard let mesh else { focus = nil; return }
-        photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
         // the photo pans to the face with the same 0.4 s curve as the reveal, so the net lands on it
         if reduceMotion { reveal = 1; focus = mesh.bounds } else { withAnimation(Self.finishCurve) { reveal = 1; focus = mesh.bounds } }
     }
@@ -116,8 +119,8 @@ struct ImageCheckView: View {
     /// r01: the answer takes the bar from where it is to 100 % in 0.4 s on an ease-in-out
     static let finishCurve = Animation.timingCurve(0.65, 0, 0.35, 1, duration: 0.4)
 
-    /// Answer in: the line runs to the bottom (0.4 s); a passed scan with a net gets one .success haptic, holds 1 s
-    /// (the faces breathe) and fades (0.3 s); then V02-T / V02-F. A failed check skips the hold; an error goes straight on.
+    /// Answer in: the line runs to the bottom (0.4 s); a scan with a net holds it 1 s (the faces breathe) and fades
+    /// (0.3 s), with one .success haptic when the check passed; then V02-T / V02-F. No net: straight on; an error too.
     private func finish() async {
         guard model.imageCheckError == nil else { finished = true; return }
         withAnimation(Self.finishCurve) { progress = 1; reveal = 1 }
@@ -125,7 +128,8 @@ struct ImageCheckView: View {
         guard !analyzing else { return }
         doneAt = Date()
         if passed { successTick += 1 }
-        try? await Task.sleep(for: .milliseconds(passed && mesh != nil ? 1300 : 150))
+        // every scan that drew a net holds it (lead 11/4 05:3x: polish and V02-F photos get the net too); the haptic stays for passes
+        try? await Task.sleep(for: .milliseconds(mesh != nil ? 1300 : 150))
         guard !analyzing else { return }
         finished = true
     }
@@ -255,7 +259,12 @@ struct ImageCheckView: View {
         FaceMesh.fillOrigin(image: photoSize, in: card, focus: focus, topMargin: 12)
     }
 
-    @ViewBuilder private func photo(width: CGFloat, height: CGFloat) -> some View {
+    /// the photo card: every branch is held to the card's size (Codex P1: the polished picture must not grow the page)
+    private func photo(width: CGFloat, height: CGFloat) -> some View {
+        photoContent(width: width, height: height).frame(width: width - 48, height: height).clipped()
+    }
+
+    @ViewBuilder private func photoContent(width: CGFloat, height: CGFloat) -> some View {
         // the polished picture only on V02-T: V03's finish keeps the original under its face net
         if !analyzing, finished, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
             // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
