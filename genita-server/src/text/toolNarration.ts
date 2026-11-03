@@ -60,11 +60,14 @@ const META = /^(?:she|he)(?:'s| is) (?:holding up|showing (?:me|us)|asking me to
 const META_GUARD = /\b(?:but|because|then|so|you|your)\b/;
 const CLAUSE_SPLIT = /\s*(?:—|–|;| - )\s*/;
 
+/** set per judge: a third-person "she/he" can be the user only when the user's line is about themselves (Codex #356 r11) */
+let metaIsUser = true;
+
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
   if (isNarrowNarration(s)) return true;
-  if (META.test(s)) return !META_GUARD.test(s);
+  if (META.test(s)) return metaIsUser && !META_GUARD.test(s);
   // "…for that but tofu works": a turn in the clause keeps it
   // "between the trench and denim" / "… and choose tonight" are part of the announcement, not a second statement
   const guard = s.replace(/\bbetween .+? and \S+/, "between").replace(/\band (?:choose|pick|decide)\b.*$/, "");
@@ -141,7 +144,9 @@ export type NarrationDecision = {
  * it makes it the preamble (dropped once the answer arrives), a following sentence releases it.
  */
 const SUSPECT = /\b(?:i'll|i will|let me|i'm (?:going to|gonna|on it|pulling|checking|looking|digging|deciding|picking|choosing|thinking)|on it)\b|^(?:she|he)(?:'s| is)\b|\b(?:picking|deciding|choosing) (?:a|one|between|which)\b/;
-const isSuspect = (text: string) => SUSPECT.test(normalize(text));
+/** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
+const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick|take|choose|vote for|say|recommend|bet on|stick with)\b|\b(?:go with|pick|wear) the\b/;
+const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
 /** An eager first clause cut at a dash ("City Hall from here —") waits for the rest of its sentence. */
 const DASH_END = /[—–]\s*$/;
 
@@ -152,17 +157,21 @@ export class NarrationJudge {
   private usedTool = false;
   private readonly enabled: boolean;
 
-  constructor(enabled = true) { this.enabled = enabled; }
+  private readonly thirdPersonIsUser: boolean;
+  constructor(enabled = true, opts: { thirdPersonIsUser?: boolean } = {}) { this.enabled = enabled; this.thirdPersonIsUser = opts.thirdPersonIsUser ?? true; }
 
   push(raw: string): NarrationDecision {
     if (!this.enabled || !parseTaggedSentence(raw).displayText) return this.result([raw]);
     // Judge the tail independently before a wait prefix can hide its intent.
+    metaIsUser = this.thirdPersonIsUser;
     const announcement = isToolNarration(parseTaggedSentence(raw).displayText);
     const prev = this.pending.at(-1)?.kind;
     if (prev === "lead" || prev === "clause") raw = this.pending.pop()!.raw + " " + raw;
+    const merged = raw;
     raw = stripNarrationClauses(raw);
     const text = parseTaggedSentence(raw).displayText;
-    if (announcement || isToolNarration(text)) {
+    // once merged/stripped, judge what is left ("Go with the black one — I'll check my memory." keeps the pick, r11)
+    if ((raw === merged && announcement) || isToolNarration(text)) {
       this.pending.push({ raw, kind: "announcement" });
     } else if (isToolNarrationLead(text)) {
       this.pending.push({ raw, kind: "lead" });

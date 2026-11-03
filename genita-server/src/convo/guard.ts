@@ -66,7 +66,7 @@ const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB}
  * closed today", "…shows it's ten minutes"): that is an answer, never dropped (Codex #356 rounds 4–5). The cost
  * is a few spoken announcements like "Let me look into where that is." — losing an answer is worse.
  */
-const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
+const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|suggests|recommends|lists|gives|puts|estimates|predicts|reads|reports|mentions|indicates|points to|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
 
 /** what is left beside an announcement carries no answer: short, no number, no stated or past-tense result (Codex #356 r6) */
 function noAnswerIn(rest: string): boolean {
@@ -184,9 +184,17 @@ function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
 export type AddressContext = { camera: boolean; first: boolean; userText: string; userName?: string };
 
 /** the user's own line is about themselves ("…better on me", "my outfit", "should I…"), the only evidence that "she" is them (Codex r10) */
-const SELF_REF = /\b(?:me|my|mine|myself|i|i'm|i'?ve|i'?d)\b/i;
+// "my screen" / "my photo" is about a picture, not the user (Codex r11): only me / I / myself count
+const SELF_REF = /\b(?:me|myself|i|i'm|i'?ve|i'?d)\b/i;
 /** a person named in the user's line (Taylor's outfit, a photo of Alice) is someone else */
 const NAMED = /(?:^|[^.!?]\s)([A-Z][a-z]{1,20})\b/;
+
+/** the user's line could make a she/he in the reply the user (no other person named, about themselves) */
+export function thirdPersonCouldBeUser(userText: string, userName?: string): boolean {
+  if (OTHER_PERSON.test(userText) || !SELF_REF.test(userText)) return false;
+  const named = userText.match(NAMED)?.[1];
+  return !(named && named.toLowerCase() !== (userName ?? "").toLowerCase() && !/^(?:I|Is|Are|Do|Does|Can|Could|Should|Would|Which|What|How|Who|Hey|Ok|Okay)$/.test(named));
+}
 
 export function thirdPersonAboutUser(sentence: string, ctx: AddressContext): boolean {
   if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText) || !SELF_REF.test(ctx.userText)) return false;
