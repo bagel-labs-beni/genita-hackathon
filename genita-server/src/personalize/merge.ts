@@ -34,7 +34,7 @@ export type ProfileUpdate = {
   /** when the user said it (ISO). A line saved after this wins: the update can't remove or contradict it */
   asOf?: string;
 };
-export type AppliedUpdate = { field: ProfileField; text: string; label: "explicit" | "observed"; removed: string[]; chip?: string };
+export type AppliedUpdate = { field: ProfileField; text: string; label: "explicit" | "observed"; removed: string[]; answers?: string; chip?: string };
 
 const SECTION_MAX = 12;
 const STOP = new Set(
@@ -113,18 +113,19 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     // …nor bring back (or contradict) a line the user removed after it
     // (any wording: once the user removed something from a field, older analyses of that field are dropped — Codex round 3)
     if (u.asOf && text && priorTombs.some((t) => t.at > u.asOf! && (t.field === u.field || norm(t.text) === norm(text) || contradicts(t.text, text)))) continue;
-    // An older duplicate can still add explicit evidence or complete an answer.
+    for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
+    for (const r of removed) tombs.push({ text: r, at: updateAt, field: u.field });
+    // Preserve the newer duplicate while applying valid replacements, evidence and answers.
     const promotesEvidence = same && same.label !== "explicit" && u.label === "explicit";
-    if (same?.at && same.at > updateAt && !promotesEvidence) {
-      if (u.answers) {
-        toConfirm = toConfirm.filter((t) => norm(t) !== norm(u.answers!));
-        // Count the answer so the service persists confirmation/growth without rewriting the newer finding.
-        applied.push({ field: u.field, text: same.text, label: same.label === "explicit" ? "explicit" : u.label, removed: [], ...(u.chip ? { chip: u.chip } : {}) });
+    if (same?.at && same.at > updateAt) {
+      if (promotesEvidence) same.label = "explicit";
+      if (u.answers) toConfirm = toConfirm.filter((t) => norm(t) !== norm(u.answers!));
+      if (removed.length || promotesEvidence) for (const id of cardsForField(u.field)) stale.add(id);
+      if (removed.length || promotesEvidence || u.answers) {
+        applied.push({ field: u.field, text: same.text, label: same.label === "explicit" ? "explicit" : u.label, removed, ...(u.answers ? { answers: u.answers } : {}), ...(u.chip ? { chip: u.chip } : {}) });
       }
       continue;
     }
-    for (let i = list.length - 1; i >= 0; i--) if (target(list[i])) removed.unshift(list.splice(i, 1)[0].text);
-    for (const r of removed) tombs.push({ text: r, at: u.asOf ?? at, field: u.field });
     if (same) list.splice(list.indexOf(same), 1);
     const label = same?.label === "explicit" ? "explicit" : u.label;
     // `at` = when the user said it (order of what they said, not of when Spark finished) — Codex round 4
@@ -136,7 +137,7 @@ export function mergeUpdates(card: StyleCard, updates: ProfileUpdate[], at: stri
     }
     if (u.answers) toConfirm = toConfirm.filter((t) => norm(t) !== norm(u.answers!));
     for (const id of cardsForField(u.field)) stale.add(id);
-    applied.push({ field: u.field, text, label, removed, ...(u.chip ? { chip: u.chip } : {}) });
+    applied.push({ field: u.field, text, label, removed, ...(u.answers ? { answers: u.answers } : {}), ...(u.chip ? { chip: u.chip } : {}) });
   }
   if (!applied.length) return { card, applied, staleCards: [] };
   const raw: ImportRaw = { sections, rules: card.rules ?? [], to_confirm: [] };

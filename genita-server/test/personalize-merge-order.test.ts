@@ -71,6 +71,77 @@ test("#368 P2: an older duplicate still cannot replace a newer different finding
   assert.deepEqual(result.applied, []);
 });
 
+for (const asOf of [LATEST, undefined]) {
+  for (const label of ["explicit", "observed"] as const) {
+    test(`#368 review: a delayed duplicate still replaces older lines (${label}, ${asOf ? "asOf" : "fallback at"})`, () => {
+      const card = profile();
+      const jazz = { ...finding("Loves jazz.", FRESH), label, scope: "music" };
+      card.sections.likes = [jazz, finding("Loves rock.", OLDER)];
+      const result = mergeUpdates(card, [{
+        field: "likes", text: "loves jazz!", replaces: ["Loves rock."], label: "explicit", ...(asOf ? { asOf } : {}),
+      }], LATEST);
+
+      assert.deepEqual(result.card.sections.likes, [{ ...jazz, label: "explicit" }]);
+      assert.deepEqual(result.card.removed, [{ field: "likes", text: "Loves rock.", at: LATEST }]);
+      assert.equal(result.applied.length, 1);
+      assert.deepEqual(result.applied[0].removed, ["Loves rock."]);
+      assert.deepEqual(result.staleCards, ["taste"]);
+      assert.deepEqual(result.card.sections.interests, card.sections.interests);
+
+      const stale = mergeUpdates(result.card, [{
+        field: "likes", text: "Loves rock.", replaces: [], label: "explicit", asOf: MIDDLE,
+      }], FRESH);
+      assert.deepEqual(stale.card, result.card);
+      assert.deepEqual(stale.applied, []);
+    });
+  }
+}
+
+for (const answerText of ["I love jazz.", "i love jazz!"]) {
+  test(`#368 review: a delayed voice answer stays Noted when a newer duplicate is stored (${answerText})`, { timeout: 5000 }, async () => {
+    const card = profile();
+    card.sections.tendencies = [finding("Compares two concrete options before deciding.")];
+    card.toConfirm = ["Music", "Weekend plans"];
+    const styles = new Map([["u1", card], ["u2", profile()]]);
+    const untouched = structuredClone(styles.get("u2"));
+    let finishAnalysis!: (value: unknown) => void;
+    let ready!: () => void;
+    const analysisStarted = new Promise<void>((resolve) => { ready = resolve; });
+    let now = OLDER;
+    const p = new Personalize({
+      store: {
+        getStyle: async (id) => structuredClone(styles.get(id) ?? null),
+        putStyle: async (id, stored) => { styles.set(id, structuredClone(stored)); },
+        getCompanion: async () => null,
+      },
+      now: () => new Date(now),
+      json: (async (req) => {
+        assert.equal(req.schemaName, "profile_correction");
+        if (now === MIDDLE) return new Promise<unknown>((resolve) => { finishAnalysis = resolve; ready(); });
+        return { updates: [{ field: "interests", text: "I love jazz.", replaces: [], chip: "jazz" }] };
+      }) as JsonFn,
+    });
+    const start = await p.startCall("u1");
+    assert.equal(start!.askItem, "Music");
+    now = MIDDLE;
+    const delayed = p.voiceCorrection("u1", "Jazz is my favorite.", "What music do you like?", undefined, start!.askTopic);
+    await analysisStarted;
+    now = LATEST;
+    assert.ok(await p.voiceCorrection("u1", "Actually I love jazz."));
+    const corrected = structuredClone(styles.get("u1")!);
+
+    now = FRESH;
+    finishAnalysis({ updates: [], answered: { field: "interests", text: answerText, chip: "jazz" } });
+    const result = await delayed;
+    assert.equal(result!.answered, true);
+    assert.deepEqual(result!.events, [{ text: "Noted: jazz", fields: ["interests"] }]);
+    assert.deepEqual(styles.get("u1")!.sections, corrected.sections);
+    assert.deepEqual(styles.get("u1")!.toConfirm, ["Weekend plans"]);
+    assert.deepEqual(styles.get("u1")!.growth, { calls: 1, asked: [{ item: "Music", at: OLDER, answered: true }] });
+    assert.deepEqual(styles.get("u2"), untouched);
+  });
+}
+
 test("#368 P2: delayed explicit call evidence promotes a noteShorter observation", { timeout: 5000 }, async () => {
   const styles = new Map([["u1", profile()], ["u2", profile()]]);
   const untouched = structuredClone(styles.get("u2"));
