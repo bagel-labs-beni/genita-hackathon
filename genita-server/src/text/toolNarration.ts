@@ -109,7 +109,7 @@ function isNarrationClause(clause: string): boolean {
  */
 /** D13 run (crisis turns use web_search for the local hotline): "I'm going to find the right support resources for you",
  * "let me find support resources you can reach right now" — a promise of the lookup, never the help itself */
-const RESOURCE_PROMISE = /(?:^|,? and )(?:i'?m going to|i'?m gonna|let me|i'?ll|i will|i want to)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:(?:support|crisis|help) ?(?:resources|options|numbers?|lines?|hotlines?)?|resources|options|numbers?|lines?|hotlines?)\b(?![^.!?]*\b(?:is|are|call|text|dial)\b)/;
+const RESOURCE_PROMISE = /(?:^|,? and )(?:i'?m going to|i'?m gonna|let me|i'?ll|i will|i want to)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:(?:support|crisis|help) ?(?:resources|options|numbers?|lines?|hotlines?)?|resources|options|numbers?|lines?|hotlines?)(?: (?:for you|you can (?:reach|call|use)|right now|now|here|tonight|in korea|near you|where you are))*$/;
 const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query)|dig (?:deeper|around|more)|look (?:again|harder|deeper))\b/;
 /** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
  * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
@@ -121,7 +121,7 @@ const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|tak
 const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for) (?:your |the |that |my )?[\w'-]+(?: [\w'-]+)?$/;
 /** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
  * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
-const HELP_ACTION = /\b(?:call|text|dial|police|emergency|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
+const HELP_ACTION = /\b(?:call|text|dial|police|emergency|someone you trust|stay with (?:someone|a friend|me)|move away from|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
 const progressClause = (c: string) => !HELP_ACTION.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
 // "which concert that was" is the thing being recalled, not a predicate
 const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;

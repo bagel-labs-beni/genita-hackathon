@@ -69,6 +69,8 @@ const answers = [
   "Searching for a job takes time.",
   "Finding what's open at 3am in Seoul is easy, Butanchu never closes.",
   "I want to get you the right support: call 109 right now.",
+  // Codex #450 P1
+  "I'm here with you — I want to get you help: move away from anything you could use to hurt yourself and stay with someone you trust.",
   "Checking the score is my whole personality during finals.",
   "The final score was 4 to 1, Brewers.",
   "Let me get you the number: call one oh nine right now.",
