@@ -439,3 +439,15 @@ test("S1: an answered unknown leaves GET story at once, before Spark merges it",
   release();
   await h.p.drainRewrites();
 });
+
+test("Codex P1: 'forget that I have diabetes' stores nothing and sends nothing on; a plain target is kept out", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await h.store.putStyle("u1", toStyleCard(IMPORT_RAW, "import"));
+  await h.p.voiceCorrection("u1", "Forget that I have diabetes.");
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.removed ?? []).includes("diabetes"));
+  assert.doesNotMatch((await h.p.startCall("u1"))?.profile ?? "", /diabetes/);
+  await h.p.voiceCorrection("u1", "Actually, forget that I like leather accessories.");
+  const removed = (await h.store.getStyle("u1"))!.removed ?? [];
+  assert.deepEqual(removed.map((r) => [r.text, r.forget]), [["leather accessories", true]]);
+});

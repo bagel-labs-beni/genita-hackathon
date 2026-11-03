@@ -14,7 +14,7 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
+import { looksLikeInjection, redactSensitive, styleProfileText, type StyleCard, type DisplayRow } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
 import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { mergeUpdates, type AppliedUpdate, type ProfileUpdate } from "./merge.ts";
@@ -24,6 +24,7 @@ import { buildCallExtractRequest, toCallUpdates, type CallTurn } from "./extract
 import { tasteLines, type TasteLine } from "./reasons.ts";
 import { firstCallNod } from "./knows.ts";
 import { forgetTarget, isForgetRequest, type Removed } from "./forgotten.ts";
+import { isSensitiveDetail } from "./sensitive.ts";
 
 export type JsonFn = <T>(req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> }, signal?: AbortSignal) => Promise<T>;
 export type PersonalizeStore = Pick<PrepStore, "getStyle" | "putStyle" | "getCompanion">;
@@ -473,7 +474,8 @@ export class Personalize {
     // "forget that …": its target is kept out of everything from now on, whatever Spark makes of the line
     if (isForgetRequest(line)) {
       const target = forgetTarget(line);
-      if (target) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+      // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
+      if (target && !isSensitiveDetail(target) && redactSensitive(target) === target && !looksLikeInjection(target)) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: target, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
     }
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
