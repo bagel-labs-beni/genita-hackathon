@@ -265,7 +265,7 @@ function generation(req: IncomingMessage, path: string): { image: boolean } | nu
   // voice previews render through the voice service on a cache miss
   if (req.method === "GET" && /^\/v1\/companion\/voices\/[^/]+\/preview$/.test(path)) return { image: false };
   if (req.method !== "POST") return null;
-  if (["/v1/companion", "/v1/companion/prep/retry", "/v1/us-photos"].includes(path)) return { image: true };
+  if (["/v1/companion", "/v1/companion/prep/retry", "/v1/us-photos", "/v1/companion/image/polish"].includes(path)) return { image: true };
   if (["/v1/import", "/v1/companion/image", "/v1/companion/prefs", "/v1/companion/name/suggest"].includes(path)) return { image: false };
   return null;
 }
