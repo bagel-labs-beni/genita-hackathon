@@ -805,13 +805,18 @@ def main():
                 sil = cv2.resize(sil, (W, H), interpolation=cv2.INTER_NEAREST)
             px = W / 540.0
             g = int(round(3 * px)) * 2 + 1
-            sb = cv2.dilate((sil > 127).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(np.float32)
+            sbin = (sil > 127).astype(np.uint8)
+            cs, _ = cv2.findContours(sbin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            sbin = cv2.drawContours(np.zeros_like(sbin), cs, -1, 1, -1)        # holes (an open mouth, eyes) filled
+            sb = cv2.dilate(sbin, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(np.float32)
             sb = cv2.GaussianBlur(sb, (0, 0), max(0.8, 1.0 * px))
-            if (sb * (Mfull > 0.004)).sum() > 0.25 * max(1.0, float((Mfull > 0.004).sum())):   # a silhouette that misses the mouth is ignored
+            mx1, my1, mx2, my2 = int(mouth[0] * W), int(mouth[1] * H), int(mouth[2] * W) + 1, int(mouth[3] * H) + 1
+            cover = float(sb[my1:my2, mx1:mx2].mean()) if my2 > my1 and mx2 > mx1 else 0.0
+            if cover >= 0.9:   # codex P2: the mouth itself must be inside, or the old mask stays (a SAM miss never freezes the mouth)
                 Mfull = Mfull * sb
                 diag['silhouette'] = {'kept': round(float((Mfull > 0.5).sum()) / max(1.0, float((sb > 0.5).sum())), 4)}
             else:
-                diag['silhouette'] = {'ignored': 'misses the mouth'}
+                diag['silhouette'] = {'ignored': 'misses the mouth', 'cover': round(cover, 3)}
 
     ys, xs = np.where(Mfull > 0.004)
     pad = int(4 / s)

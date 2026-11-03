@@ -155,11 +155,18 @@ test("faceflow.py silhouette (11/4): the blend never leaves the subject's face o
   const plain = await run();
   const cut = await run(async () => sil);
   const broken = await run(async () => { throw new Error("SAM down"); });
+  // codex P2: a silhouette that covers the cheeks but not the mouth is ignored (the mouth would freeze)
+  const noMouth = pngOf(W, H, (x, y) => (y < chin && Math.abs(x - mouthX) < 70 && !(Math.abs(y - mouthY) < 12 && Math.abs(x - mouthX) < 30) ? [255, 255, 255] : [0, 0, 0]));
+  const ring = pngOf(W, H, (x, y) => (y < chin && Math.abs(x - mouthX) > 40 && Math.abs(x - mouthX) < 70 ? [255, 255, 255] : [0, 0, 0]));
+  const holed = await run(async () => noMouth);
+  const missing = await run(async () => ring);
   assert.ok(plain && cut && broken);
   const grow = (3 * W) / 540 + 4;   // the 3 px growth + feather, in still px
   assert.ok(cut!.roi[3] * H <= chin + grow + 6, `ROI bottom ${cut!.roi[3] * H} ends at the outline (${chin})`);
   assert.ok(plain!.roi[3] * H > cut!.roi[3] * H, "without a silhouette the old (larger) mask");
   assert.deepEqual(broken!.roi, plain!.roi, "a failed SAM call keeps the old mask");
+  assert.deepEqual(holed!.roi, cut!.roi, "a hole at the open mouth is filled (still the outline)");
+  assert.deepEqual(missing!.roi, plain!.roi, "a silhouette without the mouth keeps the old mask");
 });
 
 function f16(h: number): number {
