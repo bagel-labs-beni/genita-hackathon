@@ -106,7 +106,7 @@ Env (keys are read only from env; locally `~/.config/genita/meta.env` or `GENITA
 `GENITA_DEFAULT_VOICE_ID` (`seamless:0`) ·
 `GENITA_WEB_SEARCH` (1) · `GENITA_ASR_LANGUAGES` (English,Korean) · `GENITA_BARGE_IN_MIN_MS` (400) · `GENITA_APP_CONFIG_FILE` (JSON overrides for `GET /v1/app-config`, PROTOCOL.md) · `GENITA_BARGE_IN_MIN_WORDS` (2) ·
 `GENITA_MAX_SESSIONS` (16) · `GENITA_MAX_SESSION_MS` · `GENITA_SPARK_TIMEOUT_MS` (8000) ·
-`GENITA_VOICE_MAX_CALLS` (8; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 8) ·
+`GENITA_VOICE_POST` (unset; `0` = raw voice, no post chain or emotion) · `GENITA_VOICE_EMOTION` (unset; `0` = post chain without emotion moves) · `GENITA_VOICE_MAX_CALLS` (8; nonnegative integer, 0 = unlimited; calls above the voice GPU's capacity use device voice and retry server voice at the next reply; invalid values use 8) ·
 `GENITA_SPARK_HEDGE` (2; 1 = off) · `GENITA_SPECULATE` (1) · `GENITA_SPECULATE_STABLE_MS` (250).
 
 D46 operational controls (SSM env changes take effect after a server restart):
