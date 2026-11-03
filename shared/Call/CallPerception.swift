@@ -1,12 +1,10 @@
 import CoreImage
 import Foundation
-import Vision
 
 /// PERC-2 (#320): while the camera is on in a call and the server asked for it (`ready.perception`), send a small
-/// face crop now and then so the companion can notice a smile, a laugh, confusion or the user looking away.
-/// On device there is no semantic judgement: Apple Vision only finds the face rectangle to crop (an OS feature,
-/// like the rectangle detection the handoff uses), and plain pixel math decides whether the face changed.
-/// The server's Muse Spark reads the expression. Nothing is stored.
+/// crop of the selfie face region now and then so the companion can notice a smile, a laugh, confusion or the user
+/// looking away. No AI on device (runtime AI is Meta-only): the crop is fixed geometry and plain pixel math decides
+/// whether the picture changed. The server's Muse Spark reads everything. Nothing is stored.
 struct PerceptionGate {
     var minGap: TimeInterval = 1.0
     var every: TimeInterval = 2.5
@@ -89,23 +87,33 @@ struct PerceptionGate {
     }
 }
 
-/// The largest face, padded 25 %, as a ≤256 px JPEG, plus a 24×24 gray thumbnail for change detection.
+/// The selfie face region as a 320 px JPEG, plus a 24×24 gray thumbnail for change detection.
 enum FaceCrop {
     struct Result { let jpeg: Data; let thumb: [UInt8] }
 
+    /// Long side of the JPEG sent up (256–384 px; the server reads it with Muse Spark).
+    static let side: CGFloat = 320
+
+    /// The selfie face region by plain geometry (no face detection: runtime AI is Meta-only, Spark reads the face).
+    /// A square as wide as the short side, centred horizontally; its centre sits 45 % from the top in portrait
+    /// (iPhone held at arm's length) and in the middle in landscape (Mac). Tuned on the 11/3 eval (portrait call
+    /// frames: 36 % / 80 % cut mouths off). Same numbers as `selfieRegion` in genita-server/scripts/perception-eval.ts.
+    /// CIImage origin is bottom-left.
+    nonisolated static func region(in e: CGRect) -> CGRect {
+        let side = min(e.width, e.height)
+        let fromTop: CGFloat = e.height > e.width ? 0.45 : 0.5
+        let midY = e.maxY - e.height * fromTop
+        var r = CGRect(x: e.midX - side / 2, y: midY - side / 2, width: side, height: side)
+        if r.maxY > e.maxY { r.origin.y = e.maxY - side }
+        if r.minY < e.minY { r.origin.y = e.minY }
+        return r
+    }
+
     nonisolated static func make(from image: CIImage) -> Result? {
-        let request = VNDetectFaceRectanglesRequest()
-        let handler = VNImageRequestHandler(ciImage: image, options: [:])
-        guard (try? handler.perform([request])) != nil,
-              let face = request.results?.max(by: { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height })
-        else { return nil }
         let e = image.extent
-        let box = face.boundingBox // normalized, origin bottom-left like CIImage
-        var rect = CGRect(x: e.minX + box.minX * e.width, y: e.minY + box.minY * e.height, width: box.width * e.width, height: box.height * e.height)
-        rect = rect.insetBy(dx: -rect.width * 0.25, dy: -rect.height * 0.25).intersection(e)
-        guard rect.width >= 32, rect.height >= 32 else { return nil }
-        let cropped = image.cropped(to: rect)
-        guard let jpeg = CallCamera.jpeg(cropped, maxSide: 256, quality: 0.6), let thumb = thumbnail(cropped) else { return nil }
+        guard e.width >= 64, e.height >= 64 else { return nil }
+        let cropped = image.cropped(to: region(in: e))
+        guard let jpeg = CallCamera.jpeg(cropped, maxSide: side, quality: 0.6), let thumb = thumbnail(cropped) else { return nil }
         return Result(jpeg: jpeg, thumb: thumb)
     }
 

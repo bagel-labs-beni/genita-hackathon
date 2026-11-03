@@ -69,3 +69,30 @@ import XCTest
         sampler.stop()
     }
 }
+
+/// 11/3 Meta-only rule: no on-device face detection. The crop is fixed geometry: the selfie face region.
+final class FaceCropRegionTests: XCTestCase {
+    func testPortraitSelfieIsAnUpperCenterSquare() {
+        // iPhone front camera, upright portrait 1080×1920; CIImage origin is bottom-left
+        let r = FaceCrop.region(in: CGRect(x: 0, y: 0, width: 1080, height: 1920))
+        XCTAssertEqual(r.width, 1080, accuracy: 0.5)
+        XCTAssertEqual(r.height, 1080, accuracy: 0.5)
+        XCTAssertEqual(r.midX, 540, accuracy: 0.5)
+        // centre 45 % from the top = 1056 from the bottom
+        XCTAssertEqual(r.midY, 1920 - 0.45 * 1920, accuracy: 0.5)
+    }
+
+    func testLandscapeMacCameraIsACenteredSquare() {
+        let r = FaceCrop.region(in: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        XCTAssertEqual(r.width, 1080, accuracy: 0.5)
+        XCTAssertEqual(r.midX, 960, accuracy: 0.5)
+        XCTAssertEqual(r.midY, 540, accuracy: 0.5)
+        XCTAssertTrue(CGRect(x: 0, y: 0, width: 1920, height: 1080).contains(r))
+    }
+
+    func testRegionStaysInsideAnOffsetFrame() {
+        let e = CGRect(x: 10, y: 20, width: 300, height: 300)
+        let r = FaceCrop.region(in: e)
+        XCTAssertTrue(e.contains(r), "\(r) inside \(e)")
+    }
+}
