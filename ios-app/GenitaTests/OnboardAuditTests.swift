@@ -159,4 +159,13 @@ import UIKit
         XCTAssertEqual(model.history.filter { $0 == .imageCheck }.count, 0, "checked again in place, no second V03 in Back")
         XCTAssertFalse(AppState.isTransient(GenitaAuthError.server(status: 422, code: "unreadable_image")))
     }
+
+    /// AU-33 · PU-01 small screen: V02's rows and note stay above the button on an iPhone SE (667 pt, safe top 20);
+    /// 390 × 844 (safe top 47) keeps the board's layout.
+    func testV02ContentClearsTheButtonOnAnSE() {
+        XCTAssertEqual(ImageCheckView.resultSqueeze(top: 47 - 44, footerY: 844 - 108), 0)
+        let se = ImageCheckView.resultSqueeze(top: 20 - 44, footerY: 667 - 108)
+        XCTAssertLessThanOrEqual(704 + (20 - 44) - se, 667 - 108 - 12, "note bottom above the button")
+        XCTAssertGreaterThanOrEqual(289 - se, 120)
+    }
 }
