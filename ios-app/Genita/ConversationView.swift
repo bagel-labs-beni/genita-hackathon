@@ -15,6 +15,9 @@ struct ConversationView: View {
     @State private var debugStopTaps = 0
     /// same probe for ⋮ More (CallScreenUITests: the sheet did not open after a reconnect)
     @State private var debugMoreTaps = 0
+    /// taps the face took (call.interrupt) and how often the rail was swapped for the handoff waiting sheet
+    @State private var debugFaceTaps = 0
+    @State private var debugWaitingSeen = 0
     #endif
     @State private var cameraGuide = false
     @State private var findsTabOpen = false
@@ -190,8 +193,9 @@ struct ConversationView: View {
         #if DEBUG
         // #291 probe (DEBUG builds only, never in TestFlight): taps that reached ✕ and the call's mode right now
         .overlay(alignment: .bottomLeading) {
-            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link))").font(.system(size: 2)).opacity(0.02)
+            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link)) face:\(debugFaceTaps) waiting:\(debugWaitingSeen) surface:\(String(describing: handoff.surface))").font(.system(size: 2)).opacity(0.02)
                 .allowsHitTesting(false).accessibilityIdentifier("debugInterpretProbe")
+                .onChange(of: waitingCopy != nil) { _, on in if on { debugWaitingSeen += 1 } }
         }
         #endif
         // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
@@ -261,6 +265,9 @@ struct ConversationView: View {
 
     /// Face tap: with the sheet up it folds the sheet (r03 "얼굴 누르기 → 접힘"); otherwise it interrupts.
     private func faceTapped() {
+        #if DEBUG
+        debugFaceTaps += 1
+        #endif
         if withAnimation(.drawer, { call.finds.faceTapped() }) { return }
         call.interrupt()
     }
