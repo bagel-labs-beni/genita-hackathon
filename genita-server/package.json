@@ -19,6 +19,7 @@
     "check:spark-open": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-spark-open.ts",
     "prep:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/prep-e2e.ts",
     "face:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/face-e2e.ts",
+    "face:topup": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/face-topup.ts",
     "eval:import": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/import/run.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/db-migrate.ts",
     "handoff:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/handoff-e2e.ts",
