@@ -53,9 +53,9 @@ const EMOTION_TAG = /<\s*[A-Za-z][A-Za-z_-]{0,23}\s*>/g;
  * A reaction that tells a story the frames can't show (AI sweep 11/3, prod + local watch-sim: a blurred jumpstyle
  * dance became "Whoa he's losing balance", "Oh he totally dodged that", "Oh his shoe flew off", "Oh no his pants"): balance, dodging,
  * near misses, things flying off, what's about to happen. Better silent than invented; the memo's next verdict can
- * still react. A plain fall or fail ("he fell", "total wipeout") is not a guess and stays.
+ * still react. A fall or fail that happened ("he fell", "he slipped and fell", "total wipeout") is not a guess and stays (Codex P2).
  */
-const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|wobbl\w*|stumbl\w*|slipp(?:ed|ing)|trip(?:ped|ping)|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) \w+|(?:his|her|their) (?:pants|shorts|shoes?|shirt|hat|cap|wig|skirt|top)\b(?! (?:are|is) (?:fire|clean|sick|insane|crazy|so good)))\b/i;
+const GUESS = /\b(?:los(?:ing|t|es) (?:(?:his|her|their|the) )?balance|off balance|dodg(?:e|ed|es|ing)|almost|nearly|about to|gonna (?:fall|eat it|crash)|(?:shoe|hat|cap|shirt|pants|wig|glasses) (?:flew|flying|fell|falling|came) off|flew off|wobbl\w*|stumbling|slipping|tripping|hurt|injur\w*|(?:oh no|uh oh|whoops|oops),? (?:his|her|their) (?:pants|shorts|shirt|skirt|top|wig|dress))\b/i;
 export function isGuessLine(words: string): boolean {
   return GUESS.test(words);
 }
