@@ -79,7 +79,8 @@ struct FindsTabView: View {
                 }
             }.accessibilityHidden(true)
             Text("Nothing here yet.").font(TypeStyle.body(18, .semibold)).foregroundStyle(CallInk.ink).padding(.top, 48)
-            Text("Ask me to look something up on a call, and it stays here.").font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
+            // two even lines (QA build 7: "…on a call, and / it stays here." left a 3-word orphan); same F1 copy
+            Text("Ask me to look something up\non a call, and it stays here.").font(TypeStyle.body(16)).foregroundStyle(CallInk.mute)
                 .multilineTextAlignment(.center).padding(.top, 4).padding(.horizontal, 6)
             Spacer(minLength: 0)
             Button(action: close) {

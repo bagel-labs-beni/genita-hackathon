@@ -387,4 +387,36 @@ import UIKit
         XCTAssertEqual(ReadingOrb.breath(3), 1, accuracy: 0.0001)
         XCTAssertGreaterThan(AppState.readingPulseMs, 250, "the pulse is seen before I04")
     }
+
+    /// Build 7 P1: a cold launch straight into a call opens on the saved generated scene (same account only),
+    /// never the upload photo; signing out forgets it.
+    func testSceneSurvivesARelaunchForTheSameAccountOnly() {
+        let dir = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let photo = dir.appending(path: "companion.jpg")
+        let model = AppState(storage: store, imageURL: photo)
+        model.setup.accountId = "a"
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
+        let relaunched = AppState(storage: store, imageURL: photo)
+        relaunched.setup.accountId = "a"
+        XCTAssertEqual(relaunched.sceneImageData, Data([1, 2, 3]), "before /prep answers: the saved scene")
+        relaunched.setup.accountId = "b"
+        XCTAssertNil(relaunched.sceneImageData, "another account never sees it")
+        relaunched.sceneImage = nil
+        XCTAssertNil(AppState(storage: store, imageURL: photo).sceneImage, "cleared on sign-out / reset")
+    }
+
+    /// Chelsea 11/4: after V02 the upload photo is never the companion's face — call, PiP, NM01, PREP-1 and the Mac
+    /// (handoff hello) all read `companionFaceData`: the generated scene, else nothing (a neutral placeholder).
+    func testTheUploadIsNeverTheCompanionFaceAfterV02() {
+        let photo = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString).appending(path: "companion.jpg")
+        let model = AppState(storage: store, imageURL: photo)
+        XCTAssertTrue(model.serverWired, "unit tests run as a wired build")
+        model.setup.imageData = Data([9, 9, 9])   // the upload
+        XCTAssertNil(model.companionFaceData, "no scene yet: a placeholder, not the upload")
+        model.setup.accountId = "a"
+        model.sceneImage = ("a|https://x/scene.jpg", Data([1, 2, 3]))
+        XCTAssertEqual(model.companionFaceData, Data([1, 2, 3]), "the generated scene")
+        model.setup.accountId = "b"
+        XCTAssertNil(model.companionFaceData, "another account's scene never shows, and still not the upload")
+    }
 }

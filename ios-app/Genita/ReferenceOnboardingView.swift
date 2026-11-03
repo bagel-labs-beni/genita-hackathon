@@ -438,15 +438,23 @@ import UniformTypeIdentifiers
     /// Opens V04: the server's list, then the earlier pick (or the default while the voice service wakes).
     func loadVoices() async {
         await player.load(client: model.onboarding, imageId: model.setup.imageId, kind: model.setup.imageType)
+        // 11/4: no earlier pick → the server's top match for the face (the list comes ordered by the photo's voice_fit)
+        // is pre-selected, so Continue saves the voice the user sees ticked; they can still change it
+        // the pre-selection is ours until the user taps a card: a list that comes back ordered for the face moves it
+        var autoPick: String?
         if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { selectVoice(i) }
-        else if !player.available { selectVoice(0) }
-        else { model.setup.voice = nil }
+        else { selectVoice(0); autoPick = model.setup.voiceId }
         // voice service cold: ask again every 4 s for up to 60 s, then the normal list replaces the greyed one
         var waited = 0
         while !player.available && waited < 60 && !Task.isCancelled {
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
             waited += 4
             await player.refresh(client: model.onboarding, imageId: model.setup.imageId)
+            // Continue already took the pick (saving or gone): the list must not move it any more (Codex re-review P2)
+            guard !Task.isCancelled, !model.savingVoice, model.stage == .voice else { return }
+            // the tick follows the voice id, never the row (Codex review P2: a refreshed list put Leo in row 0 while Tara was saved)
+            if player.available, autoPick != nil, model.setup.voiceId == autoPick { selectVoice(0); autoPick = model.setup.voiceId }
+            else if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { model.setup.voice = i }
         }
     }
     @ViewBuilder func presence(width: CGFloat, top: CGFloat, stretch: CGFloat) -> some View {

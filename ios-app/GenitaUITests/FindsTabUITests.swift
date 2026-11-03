@@ -99,6 +99,20 @@ final class FindsTabUITests: XCTestCase {
 
     private let camera = ["GENITA_FIXTURE_CAMERA": "bundle:finds-frame-fridge-1", "GENITA_CALL_AUTOCAMERA": "1", "GENITA_FIXTURE_SCRIPT": "none"]
 
+    /// Chelsea P1 (build 7): with the camera on, the small window is the live talking face, and no face layer on the
+    /// call is ever the upload photo (live > poster > still = scene/fixture > ground; "upload" doesn't exist).
+    func testCameraPipIsTheLiveFace() throws {
+        let faceSet = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path
+        let app = launch(camera.merging(["GENITA_FACE_SET_DIR": faceSet]) { $1 })
+        let pip = any(app, "cameraPip")
+        XCTAssertTrue(pip.waitForExistence(timeout: 25), "camera on: the face is the small window")
+        let end = Date().addingTimeInterval(15)
+        while Date() < end, (pip.value as? String) != "live" { Thread.sleep(forTimeInterval: 0.2) }
+        XCTAssertEqual(pip.value as? String, "live", "the PiP draws the face driver, not a still")
+        capture(app, "cam-pip-live-face")
+    }
+
     /// Boxes pop on the live preview, then fade (the board's 4 s).
     func testBoxesOverLivePreviewThenFade() throws {
         let app = launch(camera.merging(["GENITA_FINDS_STATE": "30"]) { $1 })

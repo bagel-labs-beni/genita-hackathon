@@ -5,6 +5,7 @@ import CoreText
 @main struct GenitaMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     init() {
+        MacBundleName.fixOnLaunch() // an updated GenitaMac.app becomes Genita.app (reopens from there), before anything starts
         MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["ttf", "otf"].contains(url.pathExtension.lowercased()) { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }
@@ -85,7 +86,10 @@ struct MacGlassControl: View {
         ZStack {
             if let tint { tinted(tint) } else { clearGlass }
             if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let data = try? Data(contentsOf: url), let bitmap = NSBitmapImageRep(data: data) {
-                resourceImage(icon).resizable().frame(width: CGFloat(bitmap.pixelsWide) / 4, height: CGFloat(bitmap.pixelsHigh) / 4)
+                // glyph = 55 % of the circle, the same rule as the iPhone (GlassGlyph); ⋮ as three dots
+                let g = GlassGlyph.size(pixels: CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh), diameter: size)
+                if icon == GlassGlyph.moreIcon { GlassDots(diameter: size) }
+                else { resourceImage(icon).resizable().frame(width: g.width, height: g.height) }
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
