@@ -567,4 +567,10 @@ test("QA build 6 M02: 'That's not me' on a profile line takes it out of the rows
     assert.deepEqual(row(after, "interests"), row(r.card, "interests"), "other rows untouched");
   }
   assert.deepEqual(row(withoutMarked(r.card, ["Spicy food is the move"], "talk"), "likes"), row(r.card, "likes"), "only the card's own sections");
+  // Codex P1 #538: one marked line takes out only its own finding, never a sibling that shares most words
+  const lines = skipStyleCard({ interests: [], replies: null, avoid: [], n3: { clothes: { like: ["Minimal"], no: [] }, food: { like: [], no: [] }, chats: { like: [], no: [] } } });
+  assert.ok(lines.ok);
+  const card = { ...lines.card, sections: { ...lines.card.sections, boundaries: [{ text: "Ask before suggesting outfits.", label: "explicit", scope: "any" }, { text: "Ask before suggesting recipes.", label: "explicit", scope: "any" }] } } as typeof lines.card;
+  card.display = card.display.map((d) => (d.key === "boundaries" ? { ...d, items: card.sections.boundaries.map((f) => ({ text: f.text, label: "explicit" })) } : d)) as typeof card.display;
+  assert.deepEqual(row(withoutMarked(card, ["Ask before suggesting outfits."], "lines"), "boundaries"), ["Ask before suggesting recipes."]);
 });

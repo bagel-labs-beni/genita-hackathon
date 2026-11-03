@@ -50,18 +50,19 @@ export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId
   const words = (t: string) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
   const marked = items.map(words).filter((w) => w.size);
   if (!marked.length) return card;
-  const out = (text: string) => {
-    const w = words(text);
-    return w.size > 0 && marked.some((m) => {
-      let both = 0;
-      for (const x of w) if (m.has(x)) both++;
-      return both / Math.max(w.size, m.size) >= 0.6;
-    });
-  };
+  const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
   const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
-  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, keys.has(k) && Array.isArray(v) ? v.filter((f) => !out(f.text)) : v])) as StyleCard["sections"];
-  const rowKeys: Record<string, string> = { communication: "communication", response: "response", help: "help", interests: "interests", likes: "likes", boundaries: "boundaries" };
-  const display = (card.display ?? []).map((r) => (keys.has(rowKeys[r.key] ?? r.key) ? { ...r, items: r.items.filter((i) => !out(i.text)) } : r));
+  // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, and better than any
+  // other line) — "Ask before suggesting outfits." never takes "… recipes." with it (Codex P1 #538)
+  const drop = new Set<string>();
+  const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
+  for (const m of marked) {
+    const scored = candidates.map((t) => ({ t, s: overlap(words(t), m) })).sort((a, b) => b.s - a.s);
+    if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) drop.add(scored[0].t);
+  }
+  if (!drop.size) return card;
+  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, keys.has(k) && Array.isArray(v) ? v.filter((f) => !drop.has(f.text)) : v])) as StyleCard["sections"];
+  const display = (card.display ?? []).map((r) => (keys.has(r.key) ? { ...r, items: r.items.filter((i) => !drop.has(i.text)) } : r));
   return { ...card, sections, display };
 }
 const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
