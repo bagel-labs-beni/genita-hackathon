@@ -12,7 +12,7 @@
  *   - time: ask → find.created, p50 (target ≤ 15 s)
  * Keys from GENITA_ENV_FILE / ~/.config/genita/meta.env, never printed.
  */
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { metaVendors, type FindsVendors, type OutputItem } from "../src/finds/vendors.ts";
@@ -29,6 +29,9 @@ const arg = (k: string, d: string) => args.find((a) => a.startsWith(`--${k}=`))?
 const runs = Number(arg("runs", "10"));
 const out = arg("out", "");
 const record = arg("record", ""); // write the first full card's events (app fixture for PF-1)
+const askArg = arg("ask", ""); // one spoken ask for every run (e.g. the S5 line)
+const frameArg = arg("frame", ""); // a JPEG the camera "sees" with the ask (demo S5: the outfit photo)
+const frames = frameArg ? ["data:image/jpeg;base64," + readFileSync(frameArg).toString("base64")] : [];
 
 const LIKES = ["Clean, minimal clothes. Understated colors.", "Mostly black, grey and navy; no loud logos."];
 const ASKS = [
@@ -47,7 +50,7 @@ const ASKS = [
 const real = metaVendors(key);
 const results: Record<string, unknown>[] = [];
 for (let i = 0; i < runs; i++) {
-  const ask = ASKS[i % ASKS.length];
+  const ask = askArg || ASKS[i % ASKS.length];
   let trace: OutputItem[] = [];
   const vendors: FindsVendors = {
     ...real,
@@ -64,7 +67,7 @@ for (let i = 0; i < runs; i++) {
     utteranceId: i,
     kind: "product",
     question: ask,
-    frames: [],
+    frames,
     memories: [],
     replyText: Promise.resolve("On it."),
     timeZone: "Asia/Seoul",

@@ -24,7 +24,7 @@ export type FindsDeps = {
   likes?: (userId: string) => Promise<string[] | undefined>;
   /** F7: where to shop ("US" default, GENITA_SHOP_REGION) */
   shopRegion?: string;
-  /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 2; 1 = off) */
+  /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 3; 1 = off) */
   productHedge?: number;
   /** demo S5: start the "goes with" search when an outfit card lands (GENITA_PRODUCT_PREFETCH=0 turns it off) */
   productPrefetch?: boolean;
