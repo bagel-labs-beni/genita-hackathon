@@ -473,3 +473,16 @@ test("AU-78 FD-02: 'dark brown boots' never shows a black or tan boot while a br
   const c2 = (await runProduct(ctxFor(one, { question: "Can we look for brown boots?" }).ctx)).card;
   assert.ok(c2, "still a card");
 });
+
+test("AU-79 (Codex #602 r2): a plural product name is not a category; the asked color still comes before a proven page", async () => {
+  assert.equal(isProductPage("https://shop.example.com/en/highwood-chelsea-boots", { kind: "unknown", title: "Highwood Chelsea Boots – Dark Brown" }), true);
+  assert.equal(isProductPage("https://shop.example.com/a/b", { kind: "unknown", title: "Boots | Acme" }), false);
+  const B1 = "https://shop1.example.com/en/brown-one", B2 = "https://shop2.example.com/en/brown-two";
+  const v = vendors({
+    items: [{ ...ITEM1, name: "Black Chelsea Boot" }, { ...ITEM2, url: B1, name: "Dark Brown Chelsea Boot" }, { ...ITEM2, url: B2, name: "Brown Suede Boot" }],
+    output: [SEARCH, OPEN(P1), OPEN(B1), OPEN(B2)],
+    facts: { [P1]: { kind: "product" }, [B1]: null, [B2]: null },
+  });
+  const card = (await runProduct(ctxFor(v, { question: "Can we look for dark brown boots?" }).ctx)).card!;
+  assert.deepEqual(card.products!.map((p) => p.name), ["Dark Brown Chelsea Boot", "Brown Suede Boot"]);
+});

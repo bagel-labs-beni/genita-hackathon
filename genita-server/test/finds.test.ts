@@ -646,7 +646,7 @@ test("AU-68 CW-01: no health or nutrition advice on the recipe card", async () =
   const v = fakeVendors({ seen: "eggs | 6 | carton\nkimchi | - | red jar\n", recipe: json });
   const { ctx } = ctxFor("recipe", v, { images: false });
   const card = (await runRecipe(ctx)).card!;
-  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Mix the eggs with low-fat milk.", "Top with egg."], "an ingredient named low-fat stays (Codex r1)");
+  assert.deepEqual(card.steps.map((s) => s.text), ["Fry the kimchi.", "Use less oil.", "Mix the eggs with low-fat milk.", "Top with egg."], "the advice goes, the step stays (Codex r2); an ingredient named low-fat stays (Codex r1)");
   assert.deepEqual(card.ask, ["How spicy is it?", "Add cheese?"]);
 });
 
@@ -659,4 +659,13 @@ test("AU-76 FD-01: camera cards credit Muse Spark · SAM 3.1 in 'How I found thi
   assert.equal(r.card!.how.at(-1), "Muse Spark · SAM 3.1");
   const o = await runOutfit(ctxFor("outfit", fakeVendors({ outfit: '{"pick":0,"title":"Wear the navy one.","taste":"","options":[{"label":"Navy coat","frame":1},{"label":"Camel blazer","frame":0}],"why":["a","b"],"ask":[],"say":"Navy."}' })).ctx);
   assert.ok(o.card!.how.includes("Muse Spark · SAM 3.1"));
+});
+
+test("AU-68 (Codex #602 r2): a cooking step keeps its action without the health advice", async () => {
+  const { withoutHealthAdvice } = await import("../src/finds/pipeline.ts");
+  assert.equal(withoutHealthAdvice("Cook chicken thoroughly for a healthier dish."), "Cook chicken thoroughly.");
+  assert.equal(withoutHealthAdvice("Use less oil, which makes it healthier."), "Use less oil.");
+  assert.equal(withoutHealthAdvice("Mix the eggs with low-fat milk."), "Mix the eggs with low-fat milk.");
+  assert.equal(withoutHealthAdvice("Healthy and nutritious!"), null);
+  assert.equal(withoutHealthAdvice("Serve with rice."), "Serve with rice.");
 });

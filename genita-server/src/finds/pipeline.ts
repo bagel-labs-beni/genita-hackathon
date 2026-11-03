@@ -187,6 +187,19 @@ export const MODEL_CREDIT = "Muse Spark · SAM 3.1";
 /** AU-68: health, nutrition or diet advice never reaches a recipe card (steps, ask). */
 /** AU-68 steps: advice, not an ingredient ("low-fat milk" is an ingredient; "for a healthier dish" is advice, Codex r1). */
 export const HEALTH_STEP = /\b(?:health(?:y|ier|iest)?|nutrition(?:al)?|nutritious|nutrients?|calories?|caloric|guilt[- ]free|good for you|vitamins?|cholesterol|(?:on|for) (?:a|your) diet)\b/i;
+/**
+ * A cooking step keeps its action without the advice ("Cook chicken thoroughly for a healthier dish." → "Cook chicken
+ * thoroughly."); a step that is only advice goes (Codex #602 r2). null = drop.
+ */
+export function withoutHealthAdvice(step: string): string | null {
+  if (!HEALTH_STEP.test(step)) return step;
+  const cut = step
+    .replace(/(?:\s*[,;:–—-])?\s+(?:for|to make it|to keep it|so it'?s|so it is|which is|which makes it|it'?s|and it'?s|making it)\b(?=[^.!?]*\b(?:health|nutri|calori|caloric|vitamin|cholesterol|guilt|good for you|diet))[^.!?]*/i, "")
+    .trim()
+    .replace(/[,;:\s]+$/, "");
+  if (!cut || HEALTH_STEP.test(cut) || cut.split(/\s+/).length < 2) return null;
+  return /[.!?]$/.test(cut) ? cut : `${cut}.`;
+}
 export const HEALTH_ADVICE = /\b(health(?:y|ier|iest)?|nutrition(?:al)?|nutritious|nutrients?|calories?|caloric|low[- ](?:fat|carb|cal|sodium)|diet(?:ary|ing)?|guilt[- ]free|good for you|vitamins?|protein[- ](?:packed|rich)|cholesterol|keto)\b/i;
 
 // ───────────────────────── recipe (fridge) ─────────────────────────
@@ -377,7 +390,7 @@ export async function runRecipe(ctx: PipelineCtx): Promise<PipelineResult> {
   }
   pushItems(true);
 
-  const steps = strList(r?.steps, 4, 140).filter((t) => !HEALTH_STEP.test(t));
+  const steps = strList(r?.steps, 4, 140).map(withoutHealthAdvice).filter((t): t is string => !!t);
   const sources = (Array.isArray(r?.sources) ? r!.sources : [])
     .map((s) => s as { title?: unknown; url?: unknown })
     .map((s) => ({ title: str(s.title, 120), url: str(s.url, 500) }))

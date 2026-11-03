@@ -182,7 +182,7 @@ const LIST_SLUG = new RegExp(`^(?:(?:womens?|mens?|women-s|men-s|kids|all|shop)-
 /** A title only a results page has: "24 results", "Results for brown boots", "Shop all". */
 const LIST_TITLE_STRONG = /\b(?:\d+ (?:items|results|products|styles)|results for|shop all)\b/i;
 /** One title part that names a category: "Women's Boots", "Brown boots collection", "Boots". */
-const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:[a-z]+ ){0,2}(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
+const CATEGORY_PART = new RegExp(`^(?:(?:women|men|kid)'?s(?: [a-z]+){0,2} (?:${PLURAL_GOODS})|(?:[a-z]+ ){0,3}(?:collection|category)|(?:${PLURAL_GOODS})|shop (?:women|men))$`, "i");
 /**
  * A title that is only a category (+ a short shop name): "Women's Boots | Shop", "Brown boots collection – Acme".
  * "Women's Boots - Heritage Chelsea Boot" names one item in another part, so it is not (Codex AU-79 r1).
@@ -522,7 +522,9 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
   const products: (FindProduct & { _image?: string })[] = [];
   let serverOpened = 0;
   // proven product pages first, then pages nothing could confirm (a category page can't take a slot a product page had)
-  const order = cands.map((_, i) => i).sort((a, b) => Number(proven(cands[b].url, facts[b])) - Number(proven(cands[a].url, facts[a])));
+  // the asked color first (AU-78), then proven product pages before unconfirmed ones (Codex #602 r2)
+  const rank = (i: number) => (offColor(str(cands[i].item?.name, 200), colors) ? 2 : 0) + (proven(cands[i].url, facts[i]) ? 0 : 1);
+  const order = cands.map((_, i) => i).sort((a, b) => rank(a) - rank(b));
   order.forEach((i) => {
     const p = cands[i];
     if (products.length >= PRODUCT_COUNT) return;
