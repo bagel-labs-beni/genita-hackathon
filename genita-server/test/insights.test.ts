@@ -128,7 +128,8 @@ test("report: claim / use_in_call shape — 'I think' is the app's, 'I'll …' i
 
 test("report: a bad headline / usage falls back to safe lines; chips only on taste and interest", () => {
   const raw = { ...RAW, headline: "You value deep connections.", usage: "", observations: [obs({ category: "taste", claim: "You pick clean lines over loud ones, at the table too.", evidence: [ev("answer", "Spicy")], chips: [{ label: "Spicy", polarity: "like" }, { label: "Seafood", polarity: "dislike" }] }), obs({ chips: [{ label: "x", polarity: "like" }] })] };
-  const r = toReport(raw, INPUTS, { at: "", from: "answers" });
+  // Seafood is grounded by the user's own "don't want" pick (chips must be grounded, Codex r1)
+  const r = toReport(raw, { ...INPUTS, picks: [...INPUTS.picks, { question: "Food: you don't want", label: "Seafood" }] }, { at: "", from: "answers" });
   assert.notEqual(r.headline, raw.headline);
   assert.match(r.headline, /^You /);
   assert.match(r.usage, /^In our calls/);
