@@ -20,32 +20,30 @@ export type VoiceOption = {
 };
 
 /**
- * Curated Seamless speakers per companion look (V04 lists 4, as in the Figma frames, for the look the face check found).
- * Picked from the 11/2 speaker sweep (UTMOS, WER ~0 on English; results/speaker_sweep.json).
- * The first of each look is the recommended default: human 72, animal 16, character 68.
- * Names and tone words follow the Figma V04 frames (Tara, Leah, Leo, Dan) and are ours, picked
- * from pitch/range in the sweep, not Seamless metadata; nobody has auditioned each one yet.
+ * The four V04 voices (11/3, Chelsea: "4 voices in total, 2 women + 2 men, the least machine-like"), the same four
+ * for every companion look. Picked from all 200 Seamless speakers x 10 conversational lines (11/3 sweep:
+ * UTMOS22 mean + worst line + the preview line, Whisper WER <= 0.03), gender judged by median pitch (pyin) AND an
+ * offline wav2vec2 gender classifier agreeing (eval only, nothing ships). Women: the top two. Men: 19 is the top
+ * score; 26 is within 0.03 of the next (25) and 4 semitones lighter, so the two men don't sound alike.
+ *   id  gender  F0     UTMOS mean / worst / preview
+ *   72  female  189 Hz  4.03 / 3.73 / 4.14   (was the default already)
+ *    9  female  190 Hz  3.99 / 3.73 / 4.29
+ *   19  male    111 Hz  4.08 / 3.58 / 4.26
+ *   26  male    133 Hz  3.89 / 3.57 / 4.23
+ * Results: ./_qa-scripts/genita-voice-natural/results/voices_table.json. Names follow the Figma V04 frames.
  */
-const pick = (kind: CompanionKind, id: number, name: string, blurb: string, tags: string): VoiceOption => ({ id: String(id), name, blurb, tags, kind });
+const pick = (id: number, name: string, blurb: string, gender: "female" | "male", tags: string): VoiceOption => ({ id: String(id), name, blurb, tags: `${gender}, ${tags}`, gender });
 export const DEFAULT_VOICES: VoiceOption[] = [
-  pick("human", 72, "Tara", "Warm, bright", "warm, bright, mid pitch"),
-  pick("human", 120, "Leah", "Soft, steady", "soft, steady, even"),
-  pick("human", 36, "Leo", "Calm, low", "calm, low pitch, wide range"),
-  pick("human", 24, "Dan", "Easygoing", "easygoing, low pitch"),
-  pick("animal", 16, "Pip", "Cheery, light", "cheery, mid-high, lively"),
-  pick("animal", 22, "Mochi", "Soft, gentle", "soft, even, gentle"),
-  pick("animal", 34, "Juno", "Lively, bright", "lively, high, wide range"),
-  pick("animal", 80, "Rue", "Mellow, easy", "mellow, mid pitch"),
-  pick("character", 68, "Nova", "Bright, clear", "bright, high, even"),
-  pick("character", 64, "Ivy", "Sparkly, light", "sparkly, high, even"),
-  pick("character", 44, "Wren", "Dreamy, soft", "dreamy, soft, steady"),
-  pick("character", 0, "Coco", "Playful, quick", "playful, high, wide range"),
+  pick(72, "Tara", "Warm, bright (female)", "female", "warm, bright, mid pitch, lively"),
+  pick(9, "Leah", "Soft, easygoing (female)", "female", "soft, easygoing, mid pitch"),
+  pick(19, "Leo", "Calm, deep (male)", "male", "calm, deep, low pitch"),
+  pick(26, "Dan", "Friendly, relaxed (male)", "male", "friendly, relaxed, light baritone"),
 ];
 
-/** The voices V04 shows for a companion look, recommended default first (voices without a look show for all). */
-export function voicesForKind(voices: VoiceOption[], kind: CompanionKind | null): VoiceOption[] {
-  const k = kind ?? "human";
-  return voices.filter((v) => !v.kind || v.kind === k);
+/** The V04 voices: the same four for every companion look (recommended default first). `kind` is kept for
+ * GENITA_VOICES overrides and older callers; it no longer filters. */
+export function voicesForKind(voices: VoiceOption[], _kind: CompanionKind | null): VoiceOption[] {
+  return voices;
 }
 
 /**
