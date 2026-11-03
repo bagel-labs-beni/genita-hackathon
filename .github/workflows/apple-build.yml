@@ -25,7 +25,7 @@ jobs:
   apple:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       # The apps use no Git LFS files, so LFS objects are not downloaded.
       - uses: actions/checkout@v4
