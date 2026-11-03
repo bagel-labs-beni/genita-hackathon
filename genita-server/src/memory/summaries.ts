@@ -140,7 +140,8 @@ export function createSummarizer(client: StructuredClient, safety?: LineSafety):
 export const metaSummarizer = (key: string): Summarizer => {
   // background only, so one retry on an empty/invalid vendor answer costs no reply latency
   const client: StructuredClient = <T,>(req: Parameters<StructuredClient>[0]) =>
-    sparkJson<T>(key, req, AbortSignal.timeout(30_000)).catch(() => sparkJson<T>(key, req, AbortSignal.timeout(30_000)));
+    // this already retries every failure once: no second, inner 5xx retry on top (Codex: 2 → 4 calls in an outage)
+    sparkJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }).catch(() => sparkJson<T>(key, req, AbortSignal.timeout(30_000), { retry: false }));
   return createSummarizer(client, createLineSafety(client));
 };
 
