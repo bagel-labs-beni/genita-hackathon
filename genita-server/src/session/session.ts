@@ -462,6 +462,9 @@ export class Session {
    * so neither the silence clock nor muting commits it first (Codex r2). lastAsrAt: a watchdog for a lost final.
    */
   private segmentOpen = false;
+  /** the open segment's latest partial; a watchdog commit keeps it, and then that segment's late final is dropped */
+  private segmentPartial = "";
+  private dropLateFinal = false;
   private echoPending = 0;
   private lastAsrAt = 0;
   /** the user is talking, or paused inside a turn the end-of-turn hold keeps open */
@@ -1200,7 +1203,7 @@ export class Session {
     if (e.type === "speechStart") this.warm();
     // interpretation speech counts as talking too: returning to chat never starts on a stale silence (Codex P2)
     if (this.interp && e.type !== "speaker") this.initiative?.userSpoke(t);
-    if (this.interp) { this.segmentOpen = false; return this.onInterpretAsr(e); }
+    if (this.interp) { this.segmentOpen = false; this.dropLateFinal = false; return this.onInterpretAsr(e); }
     this.lastAsrAt = t;
     if (this.cuedTurn && (e.type === "partial" || e.type === "speechComplete")) e = { ...e, text: stripCueEcho(e.text) };
     switch (e.type) {
@@ -1208,6 +1211,8 @@ export class Session {
         this.metrics = {};
         this.bcGen++;
         this.segmentOpen = true;
+        this.segmentPartial = "";
+        this.dropLateFinal = false; // a new segment: the lost one's final is not coming
         // the user goes on inside a held turn (CA-14): no commit while they talk (the hold's clock waits for their
         // final, see holdTimerFired); their next final joins it
         const resumed = this.held !== null;
@@ -1219,6 +1224,7 @@ export class Session {
       }
       case "partial": {
         this.metrics.lastPartialAt = t;
+        this.segmentPartial = e.text;
         this.bcGen++;
         // inside a held turn the partial continues it: the bubble, the cue's word count and the guess see the whole turn
         const text = this.held ? joinSegments(this.held.text, e.text) : e.text;
@@ -1236,6 +1242,13 @@ export class Session {
       case "speechComplete":
         this.bcGen++;
         this.segmentOpen = false;
+        this.segmentPartial = "";
+        if (this.dropLateFinal) {
+          // the watchdog already answered this segment with its partial (Codex r3): one reply, not two
+          this.dropLateFinal = false;
+          this.log("turn.late_final_dropped", { words: e.text.split(/\s+/).filter(Boolean).length });
+          return;
+        }
         this.backchannel?.stop();
         this.metrics.completeAt = t;
         // order (11/2): the interpret voice command first, then the watch echo filter, then the turn;
@@ -1348,6 +1361,13 @@ export class Session {
     if (this.finalOnItsWay() && this.now() - this.lastAsrAt < HOLD_WATCHDOG_MS) {
       h.timer = setTimeout(() => this.holdTimerFired(), 250);
       return;
+    }
+    // the watchdog: a segment still open after HOLD_WATCHDOG_MS of ASR silence lost its final; its words so far go
+    // with the turn, and if the final turns up after all it is dropped (Codex r3)
+    if (this.segmentOpen) {
+      h.text = joinSegments(h.text, this.segmentPartial);
+      this.dropLateFinal = true;
+      this.segmentOpen = false;
     }
     this.commitHeld("silence");
   }

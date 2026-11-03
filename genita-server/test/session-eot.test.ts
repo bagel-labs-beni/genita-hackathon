@@ -349,3 +349,23 @@ test("CA-14 watchdog: a resumed segment whose final never comes (ASR dropped) do
   await sleep(400);
   assert.equal(h.at(thinking).length, 1, "committed by the watchdog");
 });
+
+test("Codex r3: a final that turns up after the watchdog answered is dropped — one reply, the partial kept", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "partial", text: "yelling at me" });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  await sleep(EOT.incompleteMs + 100);
+  h.advance(6000); // the final is >5 s late
+  await sleep(400);
+  assert.equal(h.at(thinking).length, 1, "committed by the watchdog");
+  assert.match(JSON.stringify(h.sparkCalls.at(-1)!.input), /he started yelling at me/, "the resumed words went with it");
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "yelling at me about the deck." });
+  await sleep(150);
+  assert.equal(h.at(thinking).length, 1, "no second reply");
+  assert.equal(h.sent.filter((s) => s.m.type === "utterance.cancelled").length, 0);
+  assert.equal(h.sparkCalls.length, 1);
+});
