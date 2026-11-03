@@ -11,11 +11,11 @@ import { COOLDOWN_MS, MIN_SEEN_INTERVAL_MS, ProximityBook, TOKEN_TTL_MS, isToken
 type Msg = Record<string, any>;
 const flush = () => new Promise((r) => setTimeout(r, 5));
 
-function setup(opts: { liveCall?: boolean } = {}) {
+function setup(opts: { liveCall?: boolean; store?: MemoryOwnershipStore } = {}) {
   let now = 1_000_000;
   let live = opts.liveCall ?? true;
   const logs: { e: string; d: Record<string, unknown> }[] = [];
-  const hub = new HandoffHub(new MemoryOwnershipStore(), (e, d) => logs.push({ e, d }), {
+  const hub = new HandoffHub(opts.store ?? new MemoryOwnershipStore(), (e, d) => logs.push({ e, d }), {
     handoverMs: 0,
     now: () => now,
     liveCall: () => live,
@@ -53,6 +53,47 @@ test("token: 8 Crockford base32 symbols from 40 random bits", () => {
   assert.equal(isToken("abcdefgh"), false);
   assert.equal(isToken("ABCDEFG"), false);
   assert.equal(isToken(12345678), false);
+});
+
+test("proximity: replies identify the token and attempt, including a late unknown_token before another report succeeds", async () => {
+  const s = setup();
+  const { mac, token } = await armed(s);
+  const stranger = "00000000" === token ? "11111111" : "00000000";
+  const a = mac.handle.proximitySeen(stranger, "attempt-a");
+  // Both reports are queued before the first answer reaches the Mac (its 5 s timeout freed the slot).
+  s.tick(6_000);
+  const b = mac.handle.proximitySeen(token, "attempt-b");
+  await Promise.all([a, b]);
+  assert.deepEqual(mac.got.filter((m) => m.type === "proximity.result"), [
+    { type: "proximity.result", accepted: false, reason: "unknown_token", token: stranger, requestId: "attempt-a" },
+    { type: "proximity.result", accepted: true, reason: "ok", token, requestId: "attempt-b" },
+  ]);
+});
+
+test("proximity: store errors and rate-limited replies echo their own request identity", async () => {
+  const store = new MemoryOwnershipStore();
+  const s = setup({ store });
+  const { mac, token } = await armed(s);
+  store.claim = async () => { throw new Error("db down"); };
+  await mac.handle.proximitySeen(token, "failed-save");
+  assert.deepEqual(mac.last("proximity.result"), {
+    type: "proximity.result", accepted: false, reason: "server_error", token, requestId: "failed-save",
+  });
+  await mac.handle.proximitySeen(token, "too-soon");
+  assert.deepEqual(mac.last("proximity.result"), {
+    type: "proximity.result", accepted: false, reason: "rate_limited", token, requestId: "too-soon",
+  });
+});
+
+test("proximity: malformed request IDs are rejected before processing a token", async () => {
+  const s = setup();
+  const { mac, token } = await armed(s);
+  for (const requestId of [null, 42, "", "a".repeat(129)]) {
+    await mac.handle.proximitySeen(token, requestId);
+    assert.deepEqual(mac.last("error"), { type: "error", code: "bad_message" });
+  }
+  assert.equal(mac.last("proximity.result"), undefined);
+  assert.equal((await s.hub.current("u1")).owner, "iphone");
 });
 
 test("book: re-arm within 5 s keeps the token, later rotates and keeps one previous, expiry, revoke", () => {

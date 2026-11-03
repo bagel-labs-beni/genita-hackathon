@@ -23,7 +23,7 @@ import os
     private var detector = ProximityDetector(config: .current())
     /// peripheral → the token it advertised last (the local name can arrive in a later scan response)
     private var tokens: [UUID: String] = [:]
-    /// One report at a time; proximity.result does not echo the token. Given up after 5 s without an answer.
+    /// One report at a time; replies echo its request ID and token. A timeout is unconfirmed, not rejected.
     private var report = ProximityReport()
     private var timer: Timer?
     private var toastWindow: NSPanel?
@@ -130,18 +130,24 @@ import os
             log.debug("proximity rssi \(rssi, privacy: .public) smoothed \(level, privacy: .public) token \(hasToken, privacy: .public)")
         }
         guard fire, let token = tokens[id] else { return }
-        report.sent(token, at: now)
+        let requestID = report.sent(token, at: now)
         log.info("proximity held close, reporting")
-        handoff.server.send(["type": "proximity.seen", "token": token])
+        handoff.server.send(["type": "proximity.seen", "token": token, "requestId": requestID])
     }
 
     private func receive(_ m: [String: Any]) {
+        // Ownership can confirm the move before its result arrives (or after a timeout). Keep the approach's
+        // latch, and ignore any subsequent refusal for that attempt. onMessage runs before ownership is reduced.
+        if m["type"] as? String == "ownership", m["owner"] as? String == "mac",
+           let epoch = m["epoch"] as? Int, let handoff, epoch >= handoff.ownership.state.epoch {
+            report.reset()
+        }
         guard let message = ProximityMessage(m) else { return }
         switch message {
-        case let .result(accepted, reason):
+        case let .result(accepted, reason, token, requestID):
             log.info("proximity result \(accepted, privacy: .public) \(reason, privacy: .public)")
-            guard let token = report.answered() else { return }
-            // Only a successful move keeps the leave-range latch. Briefly exclude an unknown token so
+            guard let token = report.answered(requestID: requestID, token: token) else { return }
+            // A matching refusal releases the approach's latch. Briefly exclude an unknown token so
             // another account's nearby phone cannot keep retrying ahead of this account's phone.
             if !accepted {
                 detector.reject(token: token, reason: reason, at: Date().timeIntervalSince1970)
@@ -158,16 +164,12 @@ import os
         }
     }
 
-    /// No answer in time (an older server's bare `error/server_error`, or a stuck request): free the report so a later
-    /// approach can report without a reconnect. The call did not move here, so the leave-range latch goes too; if it
-    /// did move (the Mac owns it), the latch stays and nothing scans anyway.
+    /// Free the waiting slot, but keep the approach latched: a timeout says nothing about whether a delayed save
+    /// will move the call. Continue here on the iPhone must not bounce it back while it remains close.
     private func expireReport() {
         let now = Date().timeIntervalSince1970
-        guard let token = report.expire(at: now) else { return }
+        guard report.expire(at: now) != nil else { return }
         log.info("proximity result timed out")
-        guard handoff?.ownership.isOwner != true else { return }
-        detector.reject(token: token, reason: "timeout", at: now)
-        tokens = [:]
     }
 
     /// The Mac's half of the moment: the same Connected chime the iPhone plays, and the toast.

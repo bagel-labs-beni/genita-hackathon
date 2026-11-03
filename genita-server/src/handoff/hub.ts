@@ -51,7 +51,7 @@ export type PresenceHandle = {
   proximityArm(): Promise<void>;
   proximityDisarm(): void;
   /** Mac: this account's iPhone token was held close */
-  proximitySeen(token: unknown): Promise<void>;
+  proximitySeen(token: unknown, requestId?: unknown): Promise<void>;
   close(): void;
 };
 
@@ -135,7 +135,7 @@ export class HandoffHub {
       },
       proximityArm: () => this.proximityArm(u, conn),
       proximityDisarm: () => this.proximityRevoke(u, conn),
-      proximitySeen: (token) => this.proximitySeen(u, conn, token),
+      proximitySeen: (token, requestId) => this.proximitySeen(u, conn, token, requestId),
       close: () => {
         if (!u.conns.delete(conn)) return;
         if (conn.device === "iphone") this.proximityRevoke(u, conn);
@@ -229,10 +229,15 @@ export class HandoffHub {
     for (const c of only ? [only] : u.conns) if (c.device === "mac") c.send(m);
   }
 
-  private async proximitySeen(u: UserState, conn: Conn, token: unknown): Promise<void> {
+  private async proximitySeen(u: UserState, conn: Conn, token: unknown, requestId?: unknown): Promise<void> {
     if (conn.device !== "mac" || !isToken(token)) return conn.send({ type: "error", code: "bad_message" });
+    if (requestId !== undefined && (typeof requestId !== "string" || !requestId.length || requestId.length > 128)) {
+      return conn.send({ type: "error", code: "bad_message" });
+    }
     const result = (accepted: boolean, reason: ProximityReason) => {
-      conn.send({ type: "proximity.result", accepted, reason });
+      // Capture the request's identity before awaiting the claim. A timed-out Mac may already be reporting
+      // another token (or retrying this one) when any of these answers arrives. Legacy requests stay compatible.
+      conn.send({ type: "proximity.result", accepted, reason, ...(requestId === undefined ? {} : { token, requestId }) });
       if (!accepted && reason !== "rate_limited") this.log("handoff.proximity_rejected", { reason });
     };
     if (!this.proximity.reportAllowed(u.id, this.now())) return result(false, "rate_limited");
