@@ -16,6 +16,8 @@ Breaking changes are marked **BREAKING**; anything else is additive and safe to 
 
 | date | change |
 |---|---|
+| 11/4 | `/v1/presence` `peer` gets `inCall` (bool): the other device has a started call socket right now (its `start` was handled, until the socket closes). The Mac home says "Talking on your iPhone" only while it is true (QA 171). Additive; older apps ignore it and newer apps fall back when it is missing. |
+| 11/4 | `backchannel.audio?` (base64 PCM, the companion's own "Mm-hm.") — the app plays it quietly beside the reply queue (same engine, so echo cancellation removes it) and stops it when the user's voice is heard or a reply starts; the uplink is never cut; the server drops a stray "mm-hm" from that turn's transcript. Rate: ≥ 20 s apart. Additive. |
 | 11/3 | `backchannel {kind: "mm" \| "yeah"}` (server → app, convo P1 #345): during a long user turn, a 1.2 s mid-sentence pause → play a soft listening sound from the app's own clips; it is not a reply and changes no state. Server flag `GENITA_BACKCHANNEL=1`, off by default. Additive: older apps decode it as unknown and ignore it. |
 | 11/3 | Proximity handoff: `/v1/presence` gets `proximity.arm` / `proximity.disarm` (iPhone) and `proximity.seen {token}` (Mac), answered with `proximity.token`, `proximity.unavailable`, `proximity.result`, plus `proximity.peer {armed}` to Macs; new claim trigger `proximity` (section **Handoff → Proximity**). Additive; older builds never send them. |
 | 11/3 | D34 / #153 prep: scene → Meta face set only. Session hints use `lip:"none"` for humans, animals and characters; the device animates the face set. Legacy prep response keys remain neutral (`emotionVideos:{}`, video/lip steps `skipped`, lip URL `null`). See [PREP_API.md](PREP_API.md). |
@@ -221,7 +223,7 @@ contracts and offline/live checks: [`src/memory/README.md`](src/memory/README.md
 | `ready` | `protocol`, `sessionId`, `mode`, `audio {in,out,frameHeaderBytes}`, `lip {requested, active, reason}`, `voiceId`, `bargeIn`, `tts` | session is live; `tts` = the voice mode actually used (`server` \| `device`) |
 | `state` | `state: listening \| thinking \| speaking \| interrupted` | `interrupted` is momentary, always followed by `listening` |
 | `speech.start` / `speech.end` | `turnId` | ASR heard the user start / stop |
-| `backchannel` | `kind: mm \| yeah` | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 6 s apart): play a short soft listening clip; not a reply, no state change. Only with `GENITA_BACKCHANNEL=1` |
+| `backchannel` | `kind: mm \| yeah`, `audio?` (base64 PCM s16le 24 kHz mono, server voice) | mid user turn (≥ 12 words, 1.2 s pause, ≤ 2 per turn, ≥ 20 s apart): play `audio` quietly beside the reply queue (stop it when the user speaks or a reply starts); not a reply, no state change; the uplink is never cut. Only with `GENITA_BACKCHANNEL=1` |
 | `transcript` | `text`, `final`, `turnId?`, `source?: voice \| text` | partials are cumulative; `final:true` is the user's turn |
 | `interpret.detected` | `from`, `to` | chat mode only: a Korean turn is being passed on to the user instead of answered |
 | `interpret.pair` | `user`, `other` (string or null), `source`, `by: auto \| client`, `app?` | interpret mode started (`other: null` = INT-1 "listening for the other language") or the other language was just detected (INT-2 bar "Korean ↔ English") |
@@ -621,7 +623,7 @@ The server pings every 2 s and drops a socket silent for 6 s, so the other devic
 |---|---|---|
 | `ownership` | `owner`, `epoch`, `conversationId`, `by`, `trigger` | the owner now (sent on connect, on hello, and to every device on each change). `trigger: "current"` = no change. |
 | `claim.result` | `accepted`, `owner`, `epoch` | answer to this device's `claim`/`release`. `accepted` = this device holds the sound now. |
-| `peer` | `device`, `online`, `active` | the other device's presence |
+| `peer` | `device`, `online`, `active`, `inCall` | the other device's presence; `inCall` = it has a started call open (sent again when that changes) |
 | `move.request` | `from` | the other device asked to move here: claim if the app is in front |
 | `move.failed` | `to`, `reason: peer_offline \| peer_inactive` | at once, no 5 s wait (MV-E) |
 | `proximity.token` | `token`, `expiresIn` (s) | answer to `proximity.arm`: advertise this as the BLE local name |

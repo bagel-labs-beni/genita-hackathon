@@ -350,7 +350,9 @@ public enum ServerEvent: Equatable, Sendable {
     }
     public struct Backchannel: Codable, Equatable, Sendable {
         public var kind: String
-        public init(kind: String) { self.kind = kind }
+        /// base64 PCM s16le 24 kHz mono, the companion's own short cue (server voice); nil = nothing to play
+        public var audio: String?
+        public init(kind: String, audio: String? = nil) { self.kind = kind; self.audio = audio }
     }
 }
 
