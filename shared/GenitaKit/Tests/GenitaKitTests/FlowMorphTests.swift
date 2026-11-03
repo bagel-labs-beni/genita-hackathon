@@ -336,6 +336,21 @@ struct LipRigTests {
         #expect(widest <= 0.06)                  // the lips stay together (MID 0.06 ≈ < 1 px at 960 high)
     }
 
+    /// 11/4 renders: a closure releasing (m/b/p still partly on) squeezed the full-bright teeth into a thin white wire.
+    /// Less light reaches a narrow gap: the teeth layer darkens with the effective opening (top key − closure).
+    @Test func narrowGapTeethSitInShadow() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)
+        let k = (14 * m.width + 16) * 4
+        m.amountsOverride = [0, 0.6]
+        let wide = Int(pixels(m.render(.rest, at: 1))[k])
+        m.reset()
+        m.amountsOverride = [0.35, 0.45]
+        let narrow = Int(pixels(m.render(.rest, at: 2))[k])
+        #expect(wide > 200)
+        #expect(Double(narrow) < 0.75 * Double(wide))
+    }
+
     /// Rollback (map rig.interior = 0): the old idle drift and teeth layer are back.
     @Test func interiorOffRestoresTheOldRest() throws {
         let set = try Synth.faceSet(keys: ["MBP", "MID", "AH2"], rig: true, interior: false)
