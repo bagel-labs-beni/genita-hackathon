@@ -38,7 +38,7 @@ struct MacConversationView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                companionStill(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
@@ -103,7 +103,7 @@ struct MacConversationView: View {
                             .frame(width: 390, height: 844, alignment: .topLeading)
                     }
                     if sheetFull {
-                        companionImage.resizable().scaledToFill().frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                        companionStill(width: 96, height: 128, fill: true).clipShape(RoundedRectangle(cornerRadius: 16))
                             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(MacSheetInk.onInk, lineWidth: 2))
                             .position(x: 278 + 48, y: (MacDesignV2.enabled ? 28 : 48) + 64).onTapGesture { withAnimation { call.finds.pipTapped() } }
                             .accessibilityLabel("Back to half height").accessibilityAddTraits(.isButton)
@@ -181,9 +181,25 @@ struct MacConversationView: View {
         .frame(width: 390, height: 844)
         .accessibilityIdentifier("macInterpretSheet")
     }
-    private var companionImage: Image {
-        if let face = macCall.face { return Image(nsImage: face) }
-        if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
+    /// This account's own picture only: the server's scene still, else the one the iPhone handed over. Without either the
+    /// call shows a neutral placeholder — never the bundled demo face, which is someone else's companion (#524 UI sweep, CL-03).
+    private var companionPicture: NSImage? {
+        if let face = macCall.face { return face }
+        if let data = handoff.profile, let image = NSImage(data: data) { return image }
+        #if DEBUG
+        // review renders (GENITA_MAC_REVIEW_OUT) keep the fixture face so the call screens stay comparable
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil, reviewState != "noface",
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { return NSImage(contentsOf: url) }
+        #endif
+        return nil
+    }
+    @ViewBuilder private func companionStill(width: CGFloat, height: CGFloat, fill: Bool = false) -> some View {
+        if let picture = companionPicture {
+            if fill { Image(nsImage: picture).resizable().scaledToFill().frame(width: width, height: height) }
+            else { Image(nsImage: picture).resizable().frame(width: width, height: height) }
+        } else {
+            MacFacePlaceholder(name: macCall.companionName ?? (call.companionName.isEmpty ? nil : call.companionName)).frame(width: width, height: height)
+        }
     }
     // MARK: #118 / #121 call + sheet layout
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
@@ -317,5 +333,29 @@ private final class IslandDragView:NSView {
         guard MacHandoff.shared.companionVisible,MacHandoff.shared.motion == nil else{return}
         NSCursor.closedHand.push();defer{NSCursor.pop()}
         window?.performDrag(with:event)
+    }
+}
+
+/// The call's stand-in until this account's own face arrives: the companion's initial on a quiet dark field, or a
+/// neutral silhouette before the name is known. No one else's face is ever shown in its place (CL-03).
+struct MacFacePlaceholder: View {
+    let name: String?
+    static func initial(_ name: String?) -> String? {
+        guard let first = name?.trimmingCharacters(in: .whitespacesAndNewlines).first, first.isLetter else { return nil }
+        return String(first).uppercased()
+    }
+    var body: some View {
+        GeometryReader { geometry in
+            let side = min(geometry.size.width, geometry.size.height)
+            ZStack {
+                LinearGradient(colors: [Color(white: 46.0 / 255), Color(white: 24.0 / 255)], startPoint: .top, endPoint: .bottom)
+                if let letter = Self.initial(name) {
+                    Text(verbatim: letter).font(MacSheetInk.serif(side * 0.34)).foregroundStyle(Color.white.opacity(0.72))
+                } else {
+                    Image(systemName: "person.fill").resizable().scaledToFit().frame(width: side * 0.3).foregroundStyle(Color.white.opacity(0.28))
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
