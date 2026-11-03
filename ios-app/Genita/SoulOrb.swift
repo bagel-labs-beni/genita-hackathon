@@ -244,15 +244,23 @@ final class SoulOrbRenderer: NSObject, MTKViewDelegate {
 
     func resetClock() { lastTime = nil }
 
+    /// A drawable size Metal can allocate: finite, at least 1 × 1, at most 16,384 per side; nil otherwise.
+    static func targetSize(_ size: CGSize) -> (Int, Int)? {
+        guard size.width.isFinite, size.height.isFinite, size.width >= 1, size.height >= 1,
+              size.width <= 16_384, size.height <= 16_384 else { return nil }
+        return (Int(size.width), Int(size.height))
+    }
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) { scene = nil }
 
     func draw(in view: MTKView) {
-        guard let gpu = SoulOrbGPU.shared, let drawable = view.currentDrawable,
+        // FidelitySnapshotTests caught an infinite drawable size (Int(inf) traps): skip such frames
+        guard let target = Self.targetSize(view.drawableSize), Self.targetSize(view.bounds.size) != nil,
+              let gpu = SoulOrbGPU.shared, let drawable = view.currentDrawable,
               let pass = view.currentRenderPassDescriptor else { return }
-        let size = view.drawableSize
-        guard size.width >= 1, size.height >= 1 else { return }
-        if scene == nil || scene!.width != Int(size.width) || scene!.height != Int(size.height) {
-            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: Int(size.width), height: Int(size.height), mipmapped: false)
+        let (w, h) = target
+        if scene == nil || scene!.width != w || scene!.height != h {
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: w, height: h, mipmapped: false)
             d.usage = [.renderTarget, .shaderRead]; d.storageMode = .private
             scene = gpu.device.makeTexture(descriptor: d)
         }
