@@ -138,4 +138,16 @@ import XCTest
         m.openSaved(card("a", kind: .product, hero: "pending"), frames: [])
         XCTAssertEqual(m.current?.card?.hero?.status, .ready)
     }
+
+    /// Codex r4: reopening a card this call made keeps what the call confirmed (an ingredient now "have"), not the list's older state.
+    func testReopeningKeepsTheCallsConfirmedIngredients() throws {
+        let m = FindsModel()
+        m.apply(started("a", kind: .recipe)); m.apply(created("a", kind: .recipe)); m.force(.peek)
+        m.apply(try ServerEvent.decode(#"{"type":"find.items","findId":"a","checking":false,"subtitle":"Have 1","status":"All set","items":[{"id":"i1","name":"kimchi","tier":"have","from":"both"}]}"#))
+        var old = card("a", kind: .recipe)
+        old.status = "1 to check"
+        m.openSaved(old, frames: [])
+        XCTAssertEqual(m.current?.card?.items.first?.tier, .have)
+        XCTAssertEqual(m.current?.card?.status, "All set")
+    }
 }

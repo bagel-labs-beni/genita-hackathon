@@ -352,17 +352,18 @@ struct FindEntry: Identifiable, Equatable {
         state = .half
     }
 
-    /// The Finds list's card, with any picture the live card already has that the list still shows as pending.
+    /// Reopening a card this call made: the live card (its confirmed ingredients and status are newer than any list),
+    /// with a picture the list has ready where the live one is still pending or was cut off by a reconnect (Codex r3/r4).
     static func merged(_ listed: FindCard, keeping live: FindCard?) -> FindCard {
-        guard let live else { return listed }
-        let pick = { (a: FindImage?, b: FindImage?) -> FindImage? in a?.status == .pending && b != nil && b?.status != .pending ? b : a }
-        var c = listed
-        c.hero = pick(c.hero, live.hero)
-        for s in c.steps.indices where live.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, live.steps[s].image) }
-        if var products = c.products, let lp = live.products {
+        guard var c = live else { return listed }
+        let pick = { (mine: FindImage?, theirs: FindImage?) -> FindImage? in mine?.status != .ready && theirs?.status == .ready ? theirs : mine }
+        c.hero = pick(c.hero, listed.hero)
+        for s in c.steps.indices where listed.steps.indices.contains(s) { c.steps[s].image = pick(c.steps[s].image, listed.steps[s].image) }
+        if var products = c.products, let lp = listed.products {
             for p in products.indices where lp.indices.contains(p) { products[p].image = pick(products[p].image, lp[p].image) }
             c.products = products
         }
+        c.saved = listed.saved ?? c.saved
         return c
     }
 

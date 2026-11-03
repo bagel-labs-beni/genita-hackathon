@@ -515,9 +515,9 @@ export class Session {
   private readonly client: ClientSink;
   private finds: FindsRunner | null = null;
   /** FD-01: the in-flight read of a card named by find.focus; a typed turn waits for it */
-  private focusLoad: Promise<void> = Promise.resolve();
-  /** find.focus reads still running: no speculative guess meanwhile, and a spoken turn waits for them (Codex r2) */
-  private focusPending = 0;
+  private readonly focusLoads = new Set<Promise<void>>();
+  /** barge_in count: a typed turn that waited for a card and was interrupted meanwhile is dropped (Codex r4) */
+  private bargeSeq = 0;
   /** lane 개인화: this call's one still-to-confirm question (first ASK_TURNS user turns) */
   private ask: { line: string; item: string; topic: UnknownItem | null; asked: boolean } | null = null;
   /** the companion just asked this call's question: the next user line is checked for the answer */
@@ -654,14 +654,18 @@ export class Session {
           return;
         }
         // a card "Talk about this" just named may still be loading from Finds: this turn is about it (Codex P2)
-        await this.focusSettled();
-        if (this.closed) return;
+        if (this.focusLoads.size) {
+          const barge = this.bargeSeq;
+          await this.focusSettled();
+          if (this.closed || barge !== this.bargeSeq) return;
+        }
         if (typeof msg.findId === "string") await this.finds?.focus(msg.findId.slice(0, 64));
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
       }
       case "barge_in":
+        this.bargeSeq++;
         if (this.interp) return this.interp.bargeIn();
         return this.dispatch({ type: "client_barge_in" });
       case "hold":
@@ -699,13 +703,13 @@ export class Session {
       case "find.focus":
         // FD-01 "Talk about this on a call": later turns are about this card (one from an earlier call too)
         if (typeof msg.findId === "string") {
-          const load = (this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve()).catch(() => {});
-          this.focusLoad = load;
-          this.focusPending++;
+          const load: Promise<void> = (this.finds?.focus(msg.findId.slice(0, 64)) ?? Promise.resolve()).catch(() => {}).then(() => {
+            this.focusLoads.delete(load);
+          });
+          this.focusLoads.add(load);
           // a guess built before the card was there has no card in it
           this.dropSpeculation();
           await load;
-          this.focusPending--;
         }
         return;
       default:
@@ -1798,7 +1802,7 @@ export class Session {
     if (this.deps.turnGate && !this.deps.turnGate.peek()) return; // over the judge daily cap: no Spark guess
     const norm = normTranscript(text);
     if (!norm || this.closed || this.spec?.norm === norm) return;
-    if (this.focusPending) return; // the card "Talk about this" named is still loading (Codex r2)
+    if (this.focusLoads.size) return; // the card "Talk about this" named is still loading (Codex r2)
     this.dropSpeculation();
     const built = this.buildRequest(text);
     const abort = new AbortController();
@@ -1820,7 +1824,7 @@ export class Session {
 
   /** Every find.focus read started so far is done, a later one included (overlapping picks, Codex r3). */
   private async focusSettled(): Promise<void> {
-    while (this.focusPending > 0) await this.focusLoad;
+    while (this.focusLoads.size) await Promise.all([...this.focusLoads]);
   }
 
   private dropSpeculation(): void {
@@ -1932,7 +1936,7 @@ export class Session {
       memoryRetry = preGreet.memoryRetry;
       this.log("call.greet_prestarted", { utteranceId });
     } else preGreet?.abort.abort();
-    if (!built && this.focusPending) {
+    if (!built && this.focusLoads.size) {
       await this.focusSettled();
       // barged in or replaced while the card loaded: this turn is over (Codex r3)
       if (signal.aborted || this.reply !== reply || this.closed) return;
