@@ -206,7 +206,8 @@ test("interpretation preserves a translated tool announcement as content", async
   const text = "I'll look that up. Tofu works.";
   const { session, client, ttsCalls } = setup({ sparkText: text });
   t.after(() => session.close());
-  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  // explicit interpretation mode (chat no longer auto-interprets a Hangul line: English only, 11/3)
+  await session.onClientText(JSON.stringify({ type: "start", persona, mode: "interpret", interpret: { other: "Korean" }, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "기억을 찾아볼게요. 두부가 좋아요." }));
   const reply = await client.waitFor((m) => m.type === "reply");
   assert.equal(reply.interpret, true);
@@ -290,13 +291,29 @@ test("barge-in: two words while speaking cancel Spark+TTS, tell the app, and sto
   session.close();
 });
 
-test("a Korean transcript in chat mode is interpreted, not answered as chat", async () => {
-  const { asr, client, session, sparkCalls } = setup({ sparkText: "<neutral> He's asking how to get to City Hall." });
+test("GENITA_ENGLISH_ONLY=0: a Korean transcript in chat mode is interpreted, not answered as chat", async () => {
+  process.env.GENITA_ENGLISH_ONLY = "0";
+  try {
+    const { asr, client, session, sparkCalls } = setup({ sparkText: "<neutral> He's asking how to get to City Hall." });
+    await session.onClientText(JSON.stringify({ type: "start", persona }));
+    asr.fire({ type: "speechComplete", turnId: 0, text: "실례합니다, 시청 어떻게 가요?" });
+    await client.waitFor((m) => m.type === "reply");
+    assert.deepEqual(client.json.find((m) => m.type === "interpret.detected"), { type: "interpret.detected", from: "Korean", to: "English" });
+    assert.match(sparkCalls[0].instructions ?? "", /Someone near the user just spoke Korean/);
+    session.close();
+  } finally {
+    delete process.env.GENITA_ENGLISH_ONLY;
+  }
+});
+
+test("English only (default): a Korean transcript in chat mode gets a normal English chat reply, no translation", async () => {
+  const { asr, client, session, sparkCalls } = setup({ sparkText: "<curious> Wait, say that again?" });
   await session.onClientText(JSON.stringify({ type: "start", persona }));
   asr.fire({ type: "speechComplete", turnId: 0, text: "실례합니다, 시청 어떻게 가요?" });
   await client.waitFor((m) => m.type === "reply");
-  assert.deepEqual(client.json.find((m) => m.type === "interpret.detected"), { type: "interpret.detected", from: "Korean", to: "English" });
-  assert.match(sparkCalls[0].instructions ?? "", /Someone near the user just spoke Korean/);
+  assert.equal(client.json.find((m) => m.type === "interpret.detected"), undefined);
+  assert.doesNotMatch(sparkCalls[0].instructions ?? "", /Someone near the user just spoke/);
+  assert.match(sparkCalls[0].instructions ?? "", /Reply in English/);
   session.close();
 });
 

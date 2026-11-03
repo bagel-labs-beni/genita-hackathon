@@ -10,7 +10,7 @@ import type { AsrEvent } from "../meta/transcribe.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
-import { avoidRepeatedOpener, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
@@ -54,7 +54,7 @@ import { mightBeCorrection } from "../personalize/corrections.ts";
 import { localTimeLine } from "../personalize/knows.ts";
 import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
-import { convoV1, initiativeOn } from "../convo/flags.ts";
+import { convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
 import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
@@ -1278,7 +1278,9 @@ export class Session {
     const greeting = !!turn.greeting;
     const persona = this.persona!;
     const hangul = isMostlyHangul(text);
-    const interpret = this.mode === "interpret" || hangul;
+    // English only (11/3): in chat a Hangul transcript is answered in English, not auto-interpreted; the explicit
+    // interpretation mode is unchanged. GENITA_ENGLISH_ONLY=0 restores the F8 auto-switch.
+    const interpret = this.mode === "interpret" || (hangul && !englishOnly());
     if (interpret) {
       const from = hangul ? "Korean" : "English";
       const to = hangul ? "English" : "Korean";
@@ -1581,6 +1583,11 @@ export class Session {
         if (!p.displayText) continue;
         let tts = p.ttsText;
         if (!keepOpener && !sentences.length && !interpret && !self) tts = avoidRepeatedOpener(tts, this.recentReplies);
+        // v1: the user's name as a vocative once per few replies, not every line (11/3 tone pass)
+        if (this.v1 && tts && !keepOpener && !interpret && !self) {
+          const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
+          if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
         if (!tts || !parseTaggedSentence(tts).displayText) {
           onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
