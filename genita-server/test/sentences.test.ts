@@ -50,3 +50,13 @@ test("cuts a long first clause at a comma so the voice can start early", () => {
 test("flush returns nothing for whitespace-only remainder", () => {
   assert.deepEqual(run(["Hi there.  ", "  "]), ["Hi there."]);
 });
+
+test("tiny replies and tags survive every chunk boundary with eager first and later clause cuts", () => {
+  for (const text of ["Okay.", "Yes!", "[laughs]", "<happy> Yes!", "Oh, yes!"]) {
+    for (let cut = 0; cut <= text.length; cut++) {
+      const splitter = new SentenceSplitter({ eagerFirstClause: true, clauseMaxChars: 140 });
+      const pieces = [...splitter.push(text.slice(0, cut)), ...splitter.push(text.slice(cut)), ...splitter.flush()];
+      assert.equal(pieces.join(" "), text);
+    }
+  }
+});

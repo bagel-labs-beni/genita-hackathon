@@ -6,6 +6,14 @@ enum Stage: String, Codable, CaseIterable {
     case depth, help, relationship, challenge, tempo, initiative, boundaries, presence, summary, connecting, conversation
     /// CS01 AI data consent (F1-L8): after the first sign-in, or when the call closes 4403
     case consent
+    /// V03 analyzing → V02-T passed with type / V02-F failed with reasons (F3)
+    case imageCheck
+    /// NM01 "Give them a name." (D21): after V04, before D01
+    case companionName
+    /// PREP-1 "Bringing {name} to life" (D38): after SUM, before S07
+    case bringing
+    /// N1–N3: the I01 "I don’t use an AI assistant" path (D33, D44)
+    case skipTopics, skipReplies, skipAvoid
 }
 enum SetupDepth: String, Codable, CaseIterable { case quick, right, deep
     var title: String { switch self { case .quick: "Quick start"; case .right: "Make it feel right"; case .deep: "Deep setup" } }
@@ -30,107 +38,130 @@ struct SavedSetup: Codable {
     var presenceCardIDs: Set<String>? = nil
     var imageData: Data?
     var hasOnboarded = false
-    enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded }
+    // Server wiring (11/2 L2). Optional so older saved setups still decode.
+    /// NM01: the companion's name, used everywhere as {name} (never a hard-coded "Jin")
+    var companionName: String?
+    /// The server-checked image (`POST /v1/companion/image`) and its type (human | animal | character)
+    var imageId: String?
+    var imageType: String?
+    /// I04's six rows and the profile text the call sends as `start.user.profile` (the pasted reply stays on device)
+    var styleRows: [StyleRow]?
+    var styleProfile: String?
+    var stylePartial: Bool?
+    /// The companion exists on the server (prep started at "Use this image", D28)
+    var companionCreated: Bool?
+    /// The companion voice picked on V04 (server speaker id, saved on the companion with PUT /v1/companion/voice)
+    var voiceId: String?
+    var voiceName: String?
+    /// The silent offline fallback for calls the server can't voice (an installed en-US voice; never shown in V04)
+    var deviceVoice: String?
+    /// N1–N3 answers
+    var skipInterests: [String]?
+    var skipReplies: String?
+    var skipAvoid: [String]?
+    /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
+    var skipLikes: [String]?
+    /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
+    var firstCallPending: Bool?
+    /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
+    var serverPersona: ClientMessage.Persona?
+    /// The account this setup belongs to (`/me` user id). Another account on this phone starts clean.
+    var accountId: String?
+    /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
+    var companionDemo: Bool?
+    enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
+/// A launch response belongs to the token and authentication lifetime that requested it.
+struct LaunchAuthSnapshot: Equatable, Sendable {
+    let token: String?
+    let generation: Int
+
+    func accepts(_ current: LaunchAuthSnapshot) -> Bool { token != nil && self == current }
+}
+
 @MainActor @Observable final class AppState {
     var setup: SavedSetup { didSet { if oldValue.imageData != setup.imageData { saveImage() }; save() } }
     var history: [Stage] = []
     var settingsOpen = false
     var menuOpen = false
+    // Onboarding on the server (OnboardingFlow.swift). Transient: not saved.
+    var importing = false
+    /// I02-E line ("I couldn't read this one…"); the pasted text stays
+    var importError: String?
+    /// I01 → ChatGPT / Claude → back: I02 opens with the paste button focused (transient)
+    var pasteFocusRequested = false
+    var checkingImage = false
+    var imageCheck: ImageCheck?
+    /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
+    var rightsAcked = false
+    var imageCheckError: String?
+    var creatingCompanion = false
+    var suggestingName = false
+    var savingName = false
+    var savingVoice = false
+    /// V04's PUT did not reach the server; NM01 tries once more before the name goes up
+    var voiceUnsaved = false
+    var nameError: String?
+    var savingPrefs = false
+    var setupSummary: SetupSummary?
+    var prep: PrepProgress?
+    /// NM01-0 "Use {name}": the server's suggestion, kept after the field is cleared
+    var suggestedCompanionName: String?
+    /// PREP-1e Try again in flight
+    var retryingPrep = false
+    /// PREP-1e: the one line under the buttons when Try again itself failed
+    var prepError: String?
+    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
+    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
+    var sceneImage: (key: String, data: Data)?
+    var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
+    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
+    /// A02-E-style one-line error for any onboarding call (offline, server)
+    var flowError: String?
+    /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
+    /// again (`GET /v1/profile/story`).
+    var story: [StoryCard]?
+    /// import | skip — which opener (HISY-0 or S0) and copy the cards get
+    var storySource: String?
+    var storyLoading = false
+    /// no story could be had: HISY-0 "Show me" goes straight to HISY-7
+    var storyFailed = false
+    /// C3: the texts the last correction made new, by card id (drawn with the blue border)
+    var storyChanged: [String: [String]] = [:]
+    /// HISY page: 0 = opener (HISY-0 / S0), 1…n = the cards, n + 1 = HISY-7 "Now give me a face."
+    var hisyPage = 0
+    @ObservationIgnored var importTask: Task<Void, Never>?
+    @ObservationIgnored var companionTask: Task<Void, Never>?
+    @ObservationIgnored var imageCheckTask: Task<Void, Never>?
+    @ObservationIgnored var imageCheckTicket: UUID?
+    /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
+    @ObservationIgnored private var onboardingSession = OnboardingSessionGeneration()
+    /// After a sign-in, where to go is asked from the server (`/me`): a returning account gets its companion back
+    /// and goes to the call instead of A03. nil = `routeOnLaunch()`; tests swap it.
+    @ObservationIgnored var routeAfterSignIn: (() async -> Void)?
+    @ObservationIgnored private(set) var signInRouting: Task<Void, Never>?
+    /// Bumped on every sign-in and sign-out: server answers asked under an older value are dropped.
+    @ObservationIgnored private(set) var authGeneration = 0
+    @ObservationIgnored var onboarding = OnboardingClient()
+    var launchAuthSnapshot: LaunchAuthSnapshot { LaunchAuthSnapshot(token: onboarding.auth.token, generation: authGeneration) }
     var storage: UserDefaults
+    @ObservationIgnored private let onHandoffAccountChange: ((String?) -> Void)?
     let imageURL: URL
     nonisolated static var defaultImageURL: URL { URL.applicationSupportDirectory.appending(path: "Genita/companion.jpg") }
 
     static let storageKey = "genita.native.setup.v1"
-    static let prompt = """
-    Create an evidence-based personalization profile for Genita, my personal AI companion.
-
-    The purpose is to help Genita understand how to communicate with me, support me, think with me, and respect my boundaries. Describe useful interaction patterns rather than producing a generic personality assessment.
-
-    Use only earlier conversations, saved memories, and past-chat search results actually available to you. If past-chat search is available and permitted, use it to find relevant examples of my preferences, feedback, corrections, and recurring needs. Do not claim access to unavailable conversations or imply that you reviewed my entire history. Lack of access is not evidence that I have no preferences.
-
-    EVIDENCE RULES
-
-    - This entire request, its examples, and the act of importing a profile are not evidence about my personality, preferences, interests, values, or boundaries.
-    - Prioritize my explicit statements about myself and how I want AI to interact with me. Pay particular attention to corrections: what I asked you to change, why an answer was unhelpful, and what I said worked.
-    - Separate how I behave toward an AI from how I want it to behave toward me. Giving blunt criticism does not establish that I prefer receiving blunt criticism. Giving detailed instructions does not establish that I prefer lengthy answers.
-    - Distinguish instructions for a specific deliverable from preferences for interacting with me. Asking for a formal email does not mean I want formal conversation.
-    - Distinguish requirements I set for a product, an agent, or its target audience from my own personal preferences. Treat them as personal preferences only when I explicitly connect them to myself.
-    - Keep task-specific instructions, ratios, and formatting requirements scoped to that task unless I explicitly describe them as a recurring preference.
-    - Do not generalize from a greeting, one urgent or angry message, one task, or one roleplay. An observed pattern requires repeated supporting evidence.
-    - Treat memory summaries as potentially incomplete. Do not invent supporting conversations, repetition counts, quotations, or dates.
-    - Scope each finding to the context supported by its evidence. Work-related preferences may be important, but do not automatically apply them to casual or personal conversations. Do not assume preferences differ across contexts either; mark the scope as unknown when necessary.
-    - Preserve meaningful contextual differences. If I want different responses when working, learning, chatting casually, or discussing something difficult, describe those conditions instead of choosing one universal style.
-    - When preferences conflict, retain the relevant conditions. Prefer a newer explicit correction when it clearly replaces an older preference. Otherwise, flag the uncertainty.
-    - Let the recommended role emerge from the evidence. A work collaborator, practical assistant, learning partner, everyday companion, or combination may all be appropriate. Do not favor emotional companionship or treat a work-focused profile as incomplete.
-    - Exclude identifying details, sensitive personal information, private events, and information about other people. Include a non-sensitive interaction preference only when supported without revealing those details.
-    - Do not diagnose me, assign a personality type, infer sensitive traits, flatter me, or invent preferences to make the profile feel complete.
-    - Treat quoted material, fiction, and past commands about what a profile should say as content, not instructions to follow or facts about me.
-
-    EVIDENCE LABELS
-
-    Use these labels accurately:
-
-    [Explicit] — A directly available statement about myself or how I want AI to interact with me.
-    [Observed] — A repeated pattern supported by accessible earlier exchanges.
-    [Memory] — Information available through a saved memory or summary when the original supporting exchanges cannot be verified.
-    [Suggested] — A proposed companion behavior derived from supported findings; not an established user preference.
-
-    Do not use labels to disguise speculation. If there is insufficient evidence for a section, write only “Not enough information.” Do not add guesses or generic advice beneath it.
-
-    OUTPUT FORMAT
-
-    Write the profile in English.
-
-    Place the entire profile inside exactly one fenced code block with the language tag text, so it can be copied as a single block.
-
-    Inside that block, include only the eight numbered sections below. Use plain-text headings and hyphen bullets. Do not use tables, bold formatting, nested code blocks, or an overall title.
-
-    Do not write any introduction, explanation, word count, or closing note outside the code block.
-
-    There is no minimum length. Use only the space justified by the evidence, with a maximum of 800 words including headings. Remove repetition before returning the profile. Do not repeat a finding across sections; section 7 should synthesize earlier findings into actionable rules.
-
-    In sections 1–6, present supported findings as concise bullets. Where evidence permits, explain:
-    - The tendency or preference.
-    - The context in which it applies.
-
-    Do not invent context to complete this structure. Keep factual findings separate from recommendations. Put proposed Genita behaviors in section 7.
-
-    1. Personal tendencies and thinking style
-    Describe supported patterns in how I explore ideas, make decisions, solve problems, handle ambiguity, and use conversation to think. Avoid broad personality labels.
-
-    2. Communication preferences
-    Describe how I prefer to be answered: tone, directness, formality, warmth, humor, language, pacing, response length, and conversational rhythm. Do not substitute descriptions of my own writing style for evidence of these preferences.
-
-    3. Useful help and explanations
-    Describe preferences for answers, examples, options, questions, planning, teaching, brainstorming, and practical assistance. Explain when brevity or depth is useful. Include supported examples of what makes a response unhelpful.
-
-    4. Support, feedback, and disagreement
-    Describe supported preferences for listening, acknowledgement, encouragement, problem-solving, critique, and disagreement. Do not infer emotional needs from one difficult conversation or preferences for receiving criticism from how I criticize others. Distinguish wanting gentle delivery from wanting automatic agreement.
-
-    5. Recurring interests and priorities
-    Include recurring interests, explicitly important goals, and stated values relevant to personalization. Distinguish enduring interests from temporary tasks. Do not produce a biography or list private projects.
-
-    6. Boundaries and initiative
-    Describe supported preferences about unsolicited suggestions, follow-up questions, reminders, topic changes, personal questions, conversational closeness, and asking before acting. An absence of objection is not consent. Do not infer permission to contact people, spend money, or act outside the conversation.
-
-    7. Recommended companion approach
-    Use [Suggested] for each recommendation and make its supporting finding clear.
-
-    Recommend a role, temperament, and concrete interaction behaviors that fit the evidence. Work-focused and non-work-focused roles are equally valid. Do not assume a particular emotional relationship.
-
-    Include a few concise “When …, Genita should …” rules where supported. Keep recommendations within the contexts established above. Do not invent behaviors to cover every possible situation.
-
-    8. Preferences still to confirm
-    List up to four unresolved preference dimensions that would most improve personalization. Use short noun phrases with a brief explanation of what remains unknown. Do not ask questions now, repeat known preferences, assume emotional closeness is necessary, or introduce unsupported personal concerns. If none remain, write “None identified.”
-
-    Treat this profile as an editable starting point. Later explicit choices I make in Genita take priority over this import, especially over observations, memory summaries, and suggested behaviors.
-    """
-    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL) {
+    /// I01's prompt. One source: the repo's prompt v3 (docs/profile-import/prompt-v3.txt), bundled as
+    /// Resources/import-prompt.txt and byte-identical to what the server serves at GET /v1/import/prompt
+    /// (genita-server test "import prompt copies are identical").
+    static let prompt: String = Bundle.main.url(forResource: "import-prompt", withExtension: "txt")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL, onHandoffAccountChange: ((String?) -> Void)? = nil) {
         self.storage = storage
+        self.onHandoffAccountChange = onHandoffAccountChange
         self.imageURL = imageURL
-        if reset { storage.removeObject(forKey: Self.storageKey); try? FileManager.default.removeItem(at: imageURL) }
+        if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
         setup.imageData = try? Data(contentsOf: imageURL)
         // auth state first (a restart must not skip a pending A02 / CS01 by restoring the call)
@@ -138,27 +169,24 @@ struct SavedSetup: Codable {
         else if storage.bool(forKey: Self.needsConsentKey) { setup.stage = .consent }
         else if setup.hasOnboarded { setup.stage = .conversation }
         else if setup.stage == .preparing { setup.stage = .paste }
-        else if setup.stage == .connecting { setup.stage = .summary }
+        else if setup.stage == .imageCheck { setup.stage = .image }
+        else if setup.stage == .connecting { setup.stage = setup.companionCreated == true ? .bringing : .summary }
         #if DEBUG
+        // UI tests against ios-app/Tools/onboarding-stub: a signed-in session without the keychain (unsigned CI builds)
+        if ProcessInfo.processInfo.arguments.contains("--stub-signin") {
+            onboarding = OnboardingClient(auth: GenitaAuthClient(store: InMemoryTokenStore("stub-token")))
+        }
         if let raw = ProcessInfo.processInfo.environment["GENITA_REVIEW_STAGE"], let reviewStage = Stage(rawValue: raw) {
-            let variant = ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? ""
-            setup.name = variant == "empty" ? "" : "Dyno"
-            setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
-            setup.voice = variant == "empty" ? nil : 0
-            setup.depth = SetupDepth(rawValue: variant) ?? .right
-            if variant != "empty" {
-                setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
-                setup.boundaries = ["Message anyone for me"]
-                setup.presence = ["Calm"]
-            }
-            if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
-               let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
-            else { setup.imageData = nil }
-            setup.stage = reviewStage
+            applyReviewFixture(stage: reviewStage, variant: ProcessInfo.processInfo.environment["GENITA_REVIEW_VARIANT"] ?? "")
         }
         #endif
     }
     var stage: Stage { setup.stage }
+    /// {name} everywhere: what NM01 saved (or the server renamed in a call, `companion.named`). Never a hard-coded "Jin".
+    var companionDisplayName: String {
+        let n = CompanionName.clean(setup.companionName ?? "")
+        return n.isEmpty ? "your companion" : n
+    }
     var validResponse: Bool { !setup.response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var validName: Bool { !setup.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private func saveImage() {
@@ -168,6 +196,9 @@ struct SavedSetup: Codable {
     }
     func save() { if let data = try? JSONEncoder().encode(setup) { storage.set(data, forKey: Self.storageKey) } }
     func go(_ stage: Stage) {
+        // D01 default follows the import path chosen at I01 (set when the path starts, never when an answer arrives):
+        // skippers (N1–N3) start on Quick start, people who paste an AI profile on Make it feel right.
+        if stage == .skipTopics { setup.depth = .quick } else if stage == .paste { setup.depth = .right }
         // The processing screen is transient: back from the next screen must not replay it.
         if setup.stage == .preparing { if stage != .preferences { history.append(.preferences) } }
         else { history.append(setup.stage) }
@@ -175,22 +206,47 @@ struct SavedSetup: Codable {
     }
     func back() {
         if let previous = history.popLast() { setup.stage = previous; return }
-        let fallback: [Stage: Stage] = [.signIn: .welcome, .name: .signIn, .prompt: .name, .paste: .prompt, .preferences: .paste, .image: .preferences, .voice: .image, .depth: .voice]
+        let fallback: [Stage: Stage] = [.signIn: .welcome, .name: .signIn, .prompt: .name, .paste: .prompt, .preferences: .paste, .image: .preferences,
+                                        .imageCheck: .image, .voice: .image, .companionName: .voice, .depth: .companionName, .bringing: .summary,
+                                        .skipTopics: .prompt, .skipReplies: .skipTopics, .skipAvoid: .skipReplies]
         if let previous = fallback[stage] { setup.stage = previous }
         else if let i = setup.depth.path.firstIndex(of: stage), i > 0 { setup.stage = setup.depth.path[i - 1] }
     }
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
+        onboardingSession.snapshot(token: onboarding.auth.token)
+    }
+    func ownsOnboardingResponse(_ snapshot: OnboardingSessionGeneration.Snapshot, allowingClearedSession: Bool = false) -> Bool {
+        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token, allowingClearedSession: allowingClearedSession)
+    }
+    private func invalidateOnboardingWork() {
+        onboardingSession.invalidate()
+        importTask?.cancel(); importTask = nil
+        companionTask?.cancel(); companionTask = nil
+        imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
+        importing = false; creatingCompanion = false; checkingImage = false
+    }
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        invalidateOnboardingWork()
+        authGeneration += 1
+        signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
+        prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
         returnTo(.signIn)
     }
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
-    func signedIn(userId: String? = nil, consented: Bool = true) {
+    /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
+    func signedIn(userId: String? = nil, consented: Bool) {
+        invalidateOnboardingWork()
+        authGeneration += 1
+        signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
@@ -198,6 +254,30 @@ struct SavedSetup: Codable {
         }
         if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
         if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+        // two accounts on one iPhone: the other account's companion lives on the server, not in this phone's setup
+        // (signing in used to land a returning account on A03 until the app was relaunched)
+        if userId != nil {
+            #if os(iOS)
+            let route = routeAfterSignIn ?? { [weak self] in await self?.routeOnLaunch(afterSignIn: true) }
+            #else
+            let route = routeAfterSignIn ?? {}   // the Mac target has no OnboardingFlow (its own start screen routes)
+            #endif
+            signInRouting = Task { await route() }
+        }
+    }
+    /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
+    /// account, drop it — one account's data never goes out under another's token.
+    func adopt(accountId id: String) {
+        onHandoffAccountChange?(id)
+        guard setup.accountId != id else { return }
+        if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
+            var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
+            setup = fresh
+            history = []
+            story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+            prep = nil; sceneImage = nil
+        }
+        setup.accountId = id
     }
     /// CS01 agreed: back to the call if the account is set up, else on to A03 (name).
     func consentAccepted() {
@@ -216,6 +296,8 @@ struct SavedSetup: Codable {
         try? FileManager.default.removeItem(at: imageURL)
         history = []
         setup = SavedSetup()
+        story = nil; storyChanged = [:]; storyFailed = false; hisyPage = 0
+        prep = nil; sceneImage = nil
     }
     /// The call stopped for a reason reconnecting can't fix (server close 4401 / 4403, F1-L7).
     func route(_ stop: CallStop?) {
@@ -239,8 +321,35 @@ struct SavedSetup: Codable {
         let path = setup.depth.path
         if let i = path.firstIndex(of: stage), i + 1 < path.count { go(path[i + 1]) }
     }
-    func complete() { setup.hasOnboarded = true; setup.stage = .conversation; history = [] }
+    func complete() {
+        if !setup.hasOnboarded { setup.firstCallPending = true }
+        setup.hasOnboarded = true; setup.stage = .conversation; history = []
+    }
     func answer(_ key: String, _ value: String) { setup.answers[key] = value }
     func toggleBoundary(_ value: String) { if setup.boundaries.contains(value) { setup.boundaries.remove(value) } else { setup.boundaries.insert(value) } }
     func togglePresence(_ value: String) { if setup.presence.contains(value) { setup.presence.remove(value) } else { setup.presence.insert(value) } }
 }
+
+#if DEBUG
+extension AppState {
+    /// What the app knows at review stage `reviewStage` (name, imported style, answers, face), with the demo companion's name.
+    /// One source for the GENITA_REVIEW_STAGE launch environment (UI tests, screen review) and the browser preview menu.
+    func applyReviewFixture(stage reviewStage: Stage, variant: String) {
+        setup.name = variant == "empty" ? "" : "Dyno"
+        // screen review fixture: the demo companion's name ({name} in the copy, never hard-coded in the UI)
+        setup.companionName = variant == "empty" ? nil : (ProcessInfo.processInfo.environment["GENITA_REVIEW_NAME"] ?? "Jin")
+        setup.response = variant == "empty" ? "" : "Communication style\n• Warm, direct, and informal.\nResponse preferences\n• Specific feedback and clear alternatives.\nInterests\n• Visual design and building products.\nLikes & dislikes\n• Concrete examples over generic praise.\nBoundaries\n• Ask before taking action for me."
+        setup.voice = variant == "empty" ? nil : 0
+        setup.depth = SetupDepth(rawValue: variant) ?? .right
+        if variant != "empty" {
+            setup.answers = ["help": "Think with me", "relationship": "Trusted partner", "challenge": "2", "tempo": "2", "initiative": "2"]
+            setup.boundaries = ["Message anyone for me"]
+            setup.presence = ["Calm"]
+        }
+        if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
+        else { setup.imageData = nil }
+        setup.stage = reviewStage
+    }
+}
+#endif

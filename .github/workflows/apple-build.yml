@@ -2,6 +2,7 @@ name: Apple build
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/apple-build.yml"
       - "ios-app/**"
@@ -17,11 +18,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: apple-build-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -33,6 +35,11 @@ jobs:
           XC="$(ls -d /Applications/Xcode_26.*.app | sort -V | tail -1)"
           sudo xcode-select -s "$XC"
           xcodebuild -version
+
+      - name: Browser-preview call recordings match the call-replay server's
+        run: |
+          cmp ios-app/Tools/call-replay/session-r1.json ios-app/Genita/Resources/preview-session-r1.json
+          cmp ios-app/Tools/call-replay/session-int.json ios-app/Genita/Resources/preview-session-int.json
 
       - name: Pick an iPhone simulator
         id: simulator
@@ -53,6 +60,7 @@ jobs:
             -only-testing:GenitaTests \
             -only-testing:GenitaUITests/HandoffScreensUITests \
             -only-testing:GenitaUITests/GenitaUITests/testReviewCorrections \
+            -only-testing:GenitaUITests/BrowserPreviewUITests \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
@@ -69,7 +77,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith(("R1", "E0", "menu-", "pairing-", "conversation-")):
+                  if name.startswith(("R1", "E0", "P0", "MV", "PROX", "menu-", "pairing-", "conversation-", "preview-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens

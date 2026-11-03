@@ -12,6 +12,7 @@
  *   GENITA_JUDGE_DAILY_TURNS  user turns per UTC day per judge code (default 200, 0 = no cap)
  *   GENITA_TRUST_PROXY    "1" = rate-limit by X-Forwarded-For (behind a proxy/load balancer)
  *   APPLE_*               see auth/apple.ts · GENITA_S3_* see storage/blob.ts
+ *   RESEND_API_KEY, GENITA_MAIL_FROM   email code sign-in, see auth/email.ts
  */
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
@@ -21,6 +22,7 @@ import { migrateUp } from "../db/migrate.ts";
 import { blobStoreFromEnv, type BlobStore } from "../storage/blob.ts";
 import { PgPrepStore } from "../prep/pgStore.ts";
 import { AppleAuth, appleConfigFromEnv } from "./apple.ts";
+import { EmailCodes, mailSenderFromEnv, type MailSender } from "./email.ts";
 import { Accounts, DEVICES, type Device } from "./accounts.ts";
 import { JwtError, looksLikeJwt, signHs256, verifyHs256 } from "./jwt.ts";
 import { JudgeAccess, JudgeDailyTurns, judgeLabelOf } from "./judge.ts";
@@ -46,6 +48,9 @@ export type AccountsCore = {
   accounts: Accounts;
   blobs: BlobStore;
   apple: AppleAuth;
+  /** email code sign-in; `mail` null = no sender configured (start answers 503) */
+  emailCodes: EmailCodes;
+  mail: MailSender | null;
   jwtSecret: string;
   callbackUrl: string;
   trustProxy: boolean;
@@ -59,8 +64,6 @@ export type AccountsCore = {
   /** Awaited before any row is deleted: erase data kept outside Postgres (memory, Finds). Throwing keeps the account so the user can retry. */
   beforeUserDeleted?: (userId: string) => Promise<void>;
   onUserDeleted?: (userId: string) => void;
-  /** Drops baked Peter avatar caches on the GPU box (best effort; the S3 copy is deleted by DELETE /me itself). */
-  forgetAvatars?: (companionIds: string[]) => Promise<void>;
 };
 
 export type AccountsService = AccountsCore & {
@@ -71,7 +74,7 @@ export type AccountsService = AccountsCore & {
   close(): Promise<void>;
 };
 
-export type AccountsOptions = { loopback: boolean; db?: Db; blobs?: BlobStore; apple?: AppleAuth };
+export type AccountsOptions = { loopback: boolean; db?: Db; blobs?: BlobStore; apple?: AppleAuth; mail?: MailSender | null };
 
 export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: AccountsOptions): Promise<AccountsService | null> {
   if (!env.DATABASE_URL && !opts.db) return null;
@@ -89,6 +92,7 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
   const blobs = opts.blobs ?? blobStoreFromEnv(env, join(env.GENITA_DATA_DIR || join(homedir(), ".genita-data"), "blobs"));
   const apple = opts.apple ?? new AppleAuth(appleConfigFromEnv(env));
   const accounts = new Accounts(db);
+  const mail = opts.mail !== undefined ? opts.mail : mailSenderFromEnv(env, log, { loopback: opts.loopback });
   const publicUrl = (env.GENITA_PUBLIC_URL || "https://genita-api.thebeni.ai").replace(/\/+$/, "");
 
   const core: AccountsCore = {
@@ -96,6 +100,8 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     accounts,
     blobs,
     apple,
+    emailCodes: new EmailCodes(db, jwtSecret),
+    mail,
     jwtSecret,
     callbackUrl: `${publicUrl}/auth/apple/callback`,
     trustProxy: env.GENITA_TRUST_PROXY === "1",
@@ -103,12 +109,11 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     judge: new JudgeAccess(env.GENITA_JUDGE_CODES),
     judgeTurns: JudgeDailyTurns.fromEnv(env.GENITA_JUDGE_DAILY_TURNS),
     log,
-    forgetAvatars: peterForgetter(env, log),
     signSession: (userId, sid, device, expiresAt) =>
       signHs256({ iss: SESSION_ISSUER, sub: userId, sid, dev: device, iat: Math.floor(Date.now() / 1000), exp: Math.floor(expiresAt.getTime() / 1000) }, jwtSecret),
   };
 
-  log("accounts.ready", { db: db.kind, blobs: blobs.kind, apple_key: apple.canExchange ? "set" : "unset", judge_codes: core.judge.enabled ? "set" : "unset" });
+  log("accounts.ready", { db: db.kind, blobs: blobs.kind, apple_key: apple.canExchange ? "set" : "unset", email: mail?.kind ?? "off", judge_codes: core.judge.enabled ? "set" : "unset" });
 
   return Object.assign(core, {
     routes: createAccountRoutes(core),
@@ -124,30 +129,4 @@ export async function createAccounts(env: NodeJS.ProcessEnv, log: Log, opts: Acc
     },
     close: () => db.close(),
   });
-}
-
-/**
- * DELETE {GENITA_PETER_PREPARE_URL}/avatars/<id> (deploy/aws/peter/prep_api.py): local cache + tombstone so a
- * running bake never republishes. Throws when the GPU box can't confirm, so DELETE /me keeps the rows and the
- * user can retry (same rule as blob storage). Unset URL (Peter not deployed) = nothing to forget.
- */
-function peterForgetter(env: NodeJS.ProcessEnv, log: Log): AccountsCore["forgetAvatars"] {
-  const url = (env.GENITA_PETER_PREPARE_URL || "").replace(/\/+$/, "");
-  const token = env.GENITA_PETER_TOKEN || env.GENITA_PETER_WORKER_TOKEN || "";
-  if (!url) return undefined;
-  return async (ids) => {
-    for (const id of ids) {
-      let status = 0;
-      try {
-        const r = await fetch(`${url}/avatars/${encodeURIComponent(id)}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) });
-        status = r.status;
-      } catch (e) {
-        log("account.avatar_forget_failed", { message: String(e).slice(0, 120) });
-      }
-      if (status !== 200 && status !== 404) {
-        if (status) log("account.avatar_forget_failed", { status });
-        throw new Error("avatar_forget_failed");
-      }
-    }
-  };
 }

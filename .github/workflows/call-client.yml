@@ -1,9 +1,10 @@
 name: Call client
 
-# F4-L10 / F4-U-S09 / F10-U-SHEET: builds both apps, runs the unit tests, and drives the call screen through its states
+# F4-L10 / F4-U-S09 / F10-U-SHEET / F10-U-FINDS / F5-U-CAM: builds both apps, runs the unit tests, and drives the call screen through its states
 # with a recorded real session (ios-app/Tools/call-replay). Screenshots are uploaded as an artifact.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/call-client.yml"
       - "ios-app/**"
@@ -12,11 +13,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: call-client-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -43,7 +45,8 @@ jobs:
         run: |
           node ios-app/Tools/call-replay/server.mjs --scale 3 > replay.log 2>&1 &
           node ios-app/Tools/call-replay/server.mjs --port 8789 > replay-finds.log 2>&1 &
-          for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8788/healthz && curl -sf http://127.0.0.1:8789/healthz && break; sleep 0.5; done
+          node ios-app/Tools/onboarding-stub/server.mjs --port 8790 > onboarding-stub.log 2>&1 &
+          for _ in $(seq 1 20); do curl -sf http://127.0.0.1:8788/healthz && curl -sf http://127.0.0.1:8789/healthz && curl -sf http://127.0.0.1:8790/healthz && break; sleep 0.5; done
 
       - name: iOS build, unit tests, call screen states
         run: |
@@ -51,17 +54,28 @@ jobs:
             -project ios-app/Genita.xcodeproj -scheme Genita \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}" \
             -only-testing:GenitaTests \
+            -only-testing:GenitaUITests/SplashUITests \
             -only-testing:GenitaUITests/CallScreenUITests \
             -only-testing:GenitaUITests/FindsSheetUITests \
             -only-testing:GenitaUITests/GenitaUITests/testJudgeAccessSheet \
+            -only-testing:GenitaUITests/GenitaUITests/testA02LegalLinksOpenSafari \
+            -only-testing:GenitaUITests/GenitaUITests/testA02HidesGoogleByDefault \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ShowsGoogleWhenFlagOff \
+            -only-testing:GenitaUITests/GenitaUITests/testA02ESignInFailedCardDoesNotCoverTheTitle \
+            -only-testing:GenitaUITests/EmailSignInUITests \
+            -only-testing:GenitaUITests/FindsTabUITests \
+            -only-testing:GenitaUITests/CameraGuideUITests \
+            -only-testing:GenitaUITests/UpdateBannerUITests \
+            -only-testing:GenitaUITests/OnboardingUITests \
             -resultBundlePath build-output/ios.xcresult \
-            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
+            CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed|skipped)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)|FACE_FPS=" | cut -c1-240
           exit "${PIPESTATUS[0]}"
 
       - name: Replay server log, app log, crash reports
         if: always()
         run: |
           cat replay.log || true
+          cat onboarding-stub.log || true
           xcrun simctl spawn "${{ steps.simulator.outputs.id }}" log show --last 15m --style compact --predicate 'subsystem == "ai.thebeni.genita"' | tail -n 80 || true
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/Genita* 2>/dev/null | head -2); do
             echo "== $f"
@@ -95,7 +109,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith(("call-", "A02")):
+                  if name.startswith(("call-", "auth-", "onb-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens

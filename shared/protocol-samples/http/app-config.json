@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "updates": {
+    "ios": {
+      "minBuild": 0,
+      "latestBuild": 4121,
+      "url": "https://testflight.apple.com/join/Ybqh482p"
+    },
+    "mac": {
+      "minBuild": 0,
+      "latestBuild": 0,
+      "url": "https://bagel-labs-beni.github.io/genita-legal/mac/appcast.xml"
+    }
+  },
+  "flags": {
+    "watchReactions": true,
+    "textChat": false,
+    "judgeAccess": true,
+    "interactiveSplash": true,
+    "motion": true
+  },
+  "tuning": {
+    "bargeInMs": 400,
+    "prepContinueAfterSceneMs": 30000,
+    "prepStallMs": 45000,
+    "firstCallWaitMs": 2000,
+    "updateCheckHours": 24
+  },
+  "copy": {
+    "update.title": "A new Genita is ready",
+    "update.body": "Update to get the latest fixes.",
+    "update.action": "Update",
+    "update.required": "This version is no longer supported. Update to keep talking.",
+    "mac.update.ready": "Update ready",
+    "mac.update.restart": "Restart to update",
+    "prep.title": "Bringing {name} to life",
+    "prep.stage.scene": "Setting the scene",
+    "prep.stage.expressions": "Learning expressions",
+    "prep.stage.mouth": "Mouth",
+    "call.thinking": "{name} is thinking"
+  },
+  "assets": {}
+}

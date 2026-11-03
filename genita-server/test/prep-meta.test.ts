@@ -1,6 +1,5 @@
 /**
- * Meta-only prep (GENITA_KLING off, the default): scene → face set, no fal,
- * no Kling, no Peter; device voices when server TTS is off.
+ * Meta prep: scene → face set; device voices when server TTS is off.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,8 +10,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { FileStore, type CompanionRecord, type ImageRecord } from "../src/prep/store.ts";
 import { PrepRunner, newPrepState, prepProgress, prepView } from "../src/prep/runner.ts";
-import { createPrepRoutes } from "../src/prep/routes.ts";
-import { ModalPeterBaker, MouthAtlasBaker } from "../src/prep/lips.ts";
+import { companionView, createPrepRoutes } from "../src/prep/routes.ts";
 import { DEVICE_VOICES } from "../src/prep/voices.ts";
 import { FACE_KEYS, VISEMES, faceEditPrompt } from "../src/prep/face.ts";
 import { SCENE_PROMPT } from "../src/prep/prompts.ts";
@@ -46,7 +44,7 @@ function companion(prep = newPrepState()): CompanionRecord {
   return { id: "c1", userId: "u1", imageId: "img-u1", type: "human", voiceId: DEVICE_VOICES[0].id, name: "Jin", createdAt: new Date().toISOString(), prep };
 }
 
-/** Any real network call fails the test (fal, Kling, Peter, ElevenLabs, Meta). */
+/** Any real network call fails this isolated-media test. */
 function noNetwork(t: { after: (fn: () => void) => void }) {
   const real = globalThis.fetch;
   const seen: string[] = [];
@@ -58,21 +56,18 @@ function noNetwork(t: { after: (fn: () => void) => void }) {
   return seen;
 }
 
-test("progress (Meta-only): scene + 13 face images; Kling clips and lips are skipped", () => {
+test("progress (Meta-only): scene + 18 face images; legacy clips and lips are skipped", () => {
   const p = newPrepState();
   assert.equal(p.steps.videos.neutral.status, "skipped");
   assert.equal(p.steps.lips.status, "skipped");
   assert.equal(p.steps.face?.status, "pending");
-  assert.deepEqual(prepProgress(p), { done: 0, total: 14 });
+  assert.deepEqual(prepProgress(p), { done: 0, total: 19 });
   p.steps.scene = { status: "done", attempts: 1, url: "/v1/companion/face/neutral" };
   p.steps.face = { status: "running", attempts: 1, face: { size: [1, 2], ref: { face: [0, 0, 1, 1], mouth: [0, 0, 1, 1] }, items: { blink: { status: "rejected", reason: "face_moved", retried: true }, A: { status: "done", box: { face: [0, 0, 1, 1], mouth: [0, 0, 1, 1] }, retried: false, ms: 1 } }, ms: { total: 0, edits: 0, sam: 0 } } };
-  assert.deepEqual(prepProgress(p), { done: 3, total: 14 });
-  const k = newPrepState({ kling: true });
-  assert.equal(k.steps.face, undefined);
-  assert.deepEqual(prepProgress(k), { done: 0, total: 5 });
+  assert.deepEqual(prepProgress(p), { done: 3, total: 19 });
 });
 
-test("runner without GENITA_KLING: scene → face set, no fal/Kling/Peter call even with FAL_KEY set", async (t) => {
+test("runner: scene → face set using the supplied Meta media implementation", async (t) => {
   const net = noNetwork(t);
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -80,9 +75,8 @@ test("runner without GENITA_KLING: scene → face set, no fal/Kling/Peter call e
   await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
   await store.putCompanion(companion());
   const { media, calls } = fakeMedia({ keyOf });
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: "fal-set", store, voices: DEVICE_VOICES, log: () => {}, media };
-  // a configured Peter URL must not be reached either: the runner never asks for lips on this path
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker("http://peter.invalid", "t"), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d);
   const progress: string[] = [];
   runner.events.on("prep.progress", (p) => progress.push(`${p.done}/${p.total}`));
   let ready: any = null;
@@ -95,13 +89,13 @@ test("runner without GENITA_KLING: scene → face set, no fal/Kling/Peter call e
   assert.equal(c.prep.steps.scene.url, "/v1/companion/face/neutral");
   assert.equal(c.prep.steps.scene.source, "muse-image");
   assert.equal(calls.edits.filter((e) => e.key === "scene").length, 1);
-  assert.equal(calls.edits.length, 14);
-  assert.ok(progress.includes("14/14"));
+  assert.equal(calls.edits.length, 19);
+  assert.ok(progress.includes("19/19"));
   assert.equal(tagOf((await store.getAsset("u1", "c1", "neutral"))!), "scene");
   assert.equal(tagOf((await store.getAsset("u1", "c1", "A"))!), "A#1");
 
   const v = prepView(c);
-  assert.deepEqual(v.progress, { done: 14, total: 14 });
+  assert.deepEqual(v.progress, { done: 19, total: 19 });
   assert.deepEqual(v.emotionVideos, {});
   assert.equal(v.sceneUrl, "/v1/companion/face/neutral");
   assert.ok(v.face);
@@ -119,9 +113,9 @@ test("runner resume: an interrupted face step redoes only the missing images", a
   await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
   // first run, then rewind the record to "face running with 4 items" as if the server died mid-step
   const first = fakeMedia({ keyOf });
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media: first.media };
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media: first.media };
   await store.putCompanion(companion());
-  await new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() }).run("u1");
+  await new PrepRunner(d).run("u1");
   const done = (await store.getCompanion("u1"))!;
   const face = done.prep.steps.face!.face!;
   const kept = ["blink", "MBP", "FV", "A"] as const;
@@ -129,14 +123,14 @@ test("runner resume: an interrupted face step redoes only the missing images", a
   await store.patchCompanion("u1", (x) => ({ ...x, prep: { ...x.prep, status: "running", attempts: 1, steps: { ...x.prep.steps, face: { status: "running", attempts: 1, face: partial } } } }));
 
   const second = fakeMedia({ keyOf });
-  const runner = new PrepRunner({ ...d, media: second.media }, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const runner = new PrepRunner({ ...d, media: second.media });
   assert.equal(await runner.resumeAll(), 1);
   await runner.run("u1");
   const c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "ready");
-  assert.equal(second.calls.edits.length, 13 - kept.length, "only the missing images");
+  assert.equal(second.calls.edits.length, 18 - kept.length, "only the missing images");
   assert.ok(!second.calls.edits.some((e) => e.key === "scene" || (kept as readonly string[]).includes(e.key)));
-  assert.equal(Object.keys(c.prep.steps.face!.face!.items).length, 13);
+  assert.equal(Object.keys(c.prep.steps.face!.face!.items).length, 18);
 });
 
 test("runner: a face step that fails keeps its partial set, and POST retry resumes from it", async (t) => {
@@ -147,8 +141,8 @@ test("runner: a face step that fails keeps its partial set, and POST retry resum
   await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
   await store.putCompanion(companion());
   const down = fakeMedia({ keyOf, fail: (tag) => (tag === "scene" ? null : new Error("meta 503")) });
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media: down.media };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media: down.media };
+  const runner = new PrepRunner(d);
   await runner.run("u1");
   let c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "failed");
@@ -157,24 +151,29 @@ test("runner: a face step that fails keeps its partial set, and POST retry resum
   assert.equal(down.calls.edits.filter((e) => e.key === "scene").length, 1, "scene made once across attempts");
 
   const up = fakeMedia({ keyOf });
-  const r2 = new PrepRunner({ ...d, media: up.media }, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const r2 = new PrepRunner({ ...d, media: up.media });
   await r2.retry("u1");
   await r2.run("u1");
   c = (await store.getCompanion("u1"))!;
   assert.equal(c.prep.status, "ready");
-  assert.equal(up.calls.edits.length, 13);
+  assert.equal(up.calls.edits.length, 18);
 });
 
 test("routes (Meta-only): device voices, no previews, face images served per user, session lip none", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-routes-"));
   const store = new FileStore(dir);
   const { media } = fakeMedia({ keyOf });
-  const d: PrepDeps = { metaKey: "", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "", store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d);
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    return url.startsWith(base + "/") ? realFetch(input, init) : Promise.resolve(new Response("stubbed upstream failure", { status: 503 }));
+  });
   t.after(() => {
     http.close();
     rmSync(dir, { recursive: true, force: true });
@@ -213,27 +212,53 @@ test("routes (Meta-only): device voices, no previews, face images served per use
   assert.equal((await call("GET", "/v1/companion/face/neutral")).status, 200);
   assert.equal((await call("GET", "/v1/companion/face/O", undefined, "u2")).status, 404, "another user has no companion");
   assert.equal((await call("GET", "/v1/companion/face/nope")).status, 404);
+  assert.equal(prep.face.images.person, undefined, "fake SAM sends no masks: no subject matte listed");
+  assert.equal((await call("GET", "/v1/companion/face/person")).status, 404, "an unlisted matte is never served");
   assert.equal((await call("GET", "/v1/companion/face/..%2Fcompanions%2Fu1")).status, 404);
 
   const comp = (await (await call("POST", "/v1/companion/prefs", { depth: "quick", answers: { help: "Be there", relationship: "Close companion", presence: ["Calm"] } })).json()) as Record<string, any>;
   assert.equal(comp.session.lip, "none");
   assert.equal(comp.session.voiceId, DEVICE_VOICES[1].id);
+  const saved = (await store.getCompanion("u1"))!;
+  for (const type of ["human", "animal", "character"] as const) assert.equal(companionView({ ...saved, type }, null).session?.lip, "none", type);
 });
 
-test("createPrep: flags come from env; off by default (no FAL_KEY read, device voices, no Peter)", async (t) => {
+test("resume discards persisted legacy video jobs and makes the Meta face set", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-legacy-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  const old = companion();
+  delete old.prep.steps.face;
+  // Round-trip the old JSON, including provider-specific keys absent from current Step.
+  Object.assign(old.prep.steps.videos, JSON.parse('{"neutral":{"status":"running","attempts":99,"fal":{"requestId":"old-job","statusUrl":"https://retired.test/status"}},"happy":{"status":"done","attempts":1,"url":"https://retired.test/h.mp4"},"warm":{"status":"failed","attempts":99}}'));
+  old.prep.steps.lips = { status: "done", attempts: 1, url: "https://retired.test/lips" };
+  await store.putCompanion(old);
+  const { media, calls } = fakeMedia({ keyOf });
+  const runner = new PrepRunner({ metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media });
+  assert.equal(await runner.resumeAll(), 1);
+  await runner.run("u1");
+  const c = (await store.getCompanion("u1"))!;
+  assert.equal(c.prep.status, "ready");
+  assert.equal(calls.edits.length, 19);
+  for (const step of [...Object.values(c.prep.steps.videos), c.prep.steps.lips]) assert.deepEqual(step, { status: "skipped", attempts: 0 });
+  assert.deepEqual(prepView(c).progress, { done: 19, total: 19 });
+  assert.deepEqual(prepView(c).emotionVideos, {});
+});
+
+test("createPrep: config selects Meta voice or device descriptors", async (t) => {
   const { createPrep } = await import("../src/prep/index.ts");
+  const { loadConfig } = await import("../src/config.ts");
   const dir = mkdtempSync(join(tmpdir(), "prep-meta-index-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const config = { metaKey: "k", elevenKey: "e", ttsModel: "m" } as unknown as import("../src/config.ts").Config;
-  const off = createPrep(config, () => {}, { FAL_KEY: "fal", GENITA_PETER_PREPARE_URL: "http://p" }, new FileStore(dir));
-  assert.equal(off.deps.kling, false);
-  assert.equal(off.deps.falKey, null);
-  assert.equal(off.deps.elevenKey, null);
+  const config = loadConfig({ MODEL_API_KEY: "k" });
+  const off = createPrep(config, () => {}, {}, new FileStore(dir));
+  assert.equal(off.deps.voice, null);
   assert.equal(off.deps.voices, DEVICE_VOICES);
-  const on = createPrep(config, () => {}, { FAL_KEY: "fal", GENITA_KLING: "1", GENITA_SERVER_TTS: "1", GENITA_PETER: "1" }, new FileStore(dir));
-  assert.equal(on.deps.kling, true);
-  assert.equal(on.deps.falKey, "fal");
-  assert.equal(on.deps.elevenKey, "e");
+  const voice = { url: "https://voice.test", token: "test", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless" as const };
+  const on = createPrep({ ...config, voice, serverTts: true }, () => {}, {}, new FileStore(dir));
+  assert.equal(on.deps.voice, voice);
   assert.ok(on.deps.voices[0].id && !on.deps.voices[0].id.startsWith("device:"));
 });
 
@@ -255,11 +280,11 @@ test("runner (codex P1): companion deleted mid face step → stops, and the face
       rmSync(join(dir, "companions", "u1.json"));
     }
   };
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d);
   await runner.run("u1");
   assert.equal(await store.getCompanion("u1"), null);
-  assert.ok(calls.edits.length < 14, `stopped early (${calls.edits.length} edits)`);
+  assert.ok(calls.edits.length < 19, `stopped early (${calls.edits.length} edits)`);
   for (const k of ["neutral", ...FACE_KEYS]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} removed`);
 });
 
@@ -271,14 +296,14 @@ test("runner.cancel stops a face step without marking it failed", async (t) => {
   await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
   await store.putCompanion(companion());
   const { media, calls } = fakeMedia({ keyOf, delayMs: 20 });
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d);
   const p = runner.run("u1");
   await new Promise((r) => setTimeout(r, 30));
   runner.cancel("u1");
   await p;
   assert.equal(runner.isRunning("u1"), false);
-  assert.ok(calls.edits.length < 14);
+  assert.ok(calls.edits.length < 19);
   assert.notEqual((await store.getCompanion("u1"))?.prep.status, "failed");
 });
 
@@ -290,8 +315,8 @@ test("runner.forgetUser (account deleted): cancels, waits for the run, removes e
   await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
   await store.putCompanion(companion());
   const { media } = fakeMedia({ keyOf, delayMs: 10 });
-  const d: PrepDeps = { metaKey: "k", elevenKey: null, ttsModel: "m", falKey: null, store, voices: DEVICE_VOICES, log: () => {}, media };
-  const runner = new PrepRunner(d, { peter: new ModalPeterBaker(null), atlas: new MouthAtlasBaker() });
+  const d: PrepDeps = { metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media };
+  const runner = new PrepRunner(d);
   // a run that already finished (the blob/row delete window) and one still going
   await runner.run("u1");
   assert.ok(await store.getAsset("u1", "c1", "A"));
@@ -302,4 +327,65 @@ test("runner.forgetUser (account deleted): cancels, waits for the run, removes e
   assert.equal(runner.isRunning("u1"), false);
   await p;
   for (const k of ["neutral", ...FACE_KEYS]) assert.equal(await store.getAsset("u1", "c1", k), null, `${k} removed`);
+});
+
+test("runner.forgetUser blocks new runs and retries through cleanup and the account row-delete window", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-deleting-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putImage(imageRec(), fakePng(800, 1000, "upload"));
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf });
+  const runner = new PrepRunner({ metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media });
+  let entered!: () => void;
+  const deleting = new Promise<void>((r) => { entered = r; });
+  let release!: () => void;
+  const blocked = new Promise<void>((r) => { release = r; });
+  t.after(() => release());
+  t.mock.method(store, "deleteAssets", async () => { entered(); await blocked; });
+  const forgetting = runner.forgetUser("u1");
+  await deleting;
+  try {
+    await runner.run("u1");
+    await assert.rejects(runner.retry("u1"), /delet/i);
+    assert.equal(runner.isRunning("u1"), false);
+    assert.equal(calls.edits.length, 0);
+  } finally {
+    release();
+    await forgetting;
+  }
+  // The rows may still exist while another feature is being erased, including a failed delete.
+  await runner.run("u1");
+  await assert.rejects(runner.retry("u1"), /delet/i);
+  assert.equal(calls.edits.length, 0);
+  // Another DELETE /me must still be able to retry the purge.
+  await runner.forgetUser("u1");
+});
+
+test("runner.retry that was reading when deletion began cannot restart prep", async (t) => {
+  noNetwork(t);
+  const dir = mkdtempSync(join(tmpdir(), "prep-meta-retry-delete-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = new FileStore(dir);
+  await store.putCompanion(companion());
+  const { media, calls } = fakeMedia({ keyOf });
+  const runner = new PrepRunner({ metaKey: "k", store, voices: DEVICE_VOICES, log: () => {}, media });
+  let entered!: () => void;
+  const reading = new Promise<void>((r) => { entered = r; });
+  let release!: () => void;
+  const blocked = new Promise<void>((r) => { release = r; });
+  t.after(() => release());
+  const getCompanion = store.getCompanion.bind(store);
+  let first = true;
+  t.mock.method(store, "getCompanion", async () => {
+    if (first) { first = false; entered(); await blocked; }
+    return getCompanion("u1");
+  });
+  const retrying = runner.retry("u1");
+  await reading;
+  await runner.forgetUser("u1");
+  release();
+  await assert.rejects(retrying, /delet/i);
+  assert.equal(calls.edits.length, 0);
 });

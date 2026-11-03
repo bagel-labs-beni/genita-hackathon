@@ -33,19 +33,27 @@ enum CallMotion {
 // MARK: - Face
 
 /// Where the moving mouth comes from. Only `.none` exists today: the silent loop plays as is.
-/// F4-L18 adds `.peter` (MuseTalk frames composited over the loop) and F4-L19/20 `.atlas`; each draws in
+/// Atlas mouth playback draws in
 /// `LipLayer`, above the base video and below the controls.
 enum LipSource: Equatable { case none }
 
 struct CompanionFaceView: View {
     let still: Image
-    /// Silent loop of this companion (Dyno's clip for the demo face). nil → the still breathes (S09-P).
+    /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_CLIP_LOOP_FACE=1.
     let loop: URL?
+    /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
+    var face: FaceDriver? = nil
+    /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
+    var faceStill: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
-            if let loop, !CallMotion.reviewStill { LoopingVideo(url: loop).allowsHitTesting(false) }
+            if let face {
+                FaceFrameView(driver: face, still: faceStill)
+            } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
+                LoopingVideo(url: loop).allowsHitTesting(false)
+            }
             LipLayer(source: lip).allowsHitTesting(false)
         }
     }
@@ -92,6 +100,8 @@ final class LoopingVideoView: UIView {
 struct CallCueView: View {
     let cue: CallCue
     let name: String
+    /// PF-1: a Finds status line ("On it…", "Found two for you.") shown in the same pill instead of the call cue
+    var findsText: String? = nil
     var retry: () -> Void = {}
     var openSettings: () -> Void = {}
     var body: some View {
@@ -99,6 +109,7 @@ struct CallCueView: View {
             HStack(spacing: 8) {
                 content.icon
                 Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                    .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
@@ -111,13 +122,15 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
+            .animation(CallMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0), value: content.text)
             // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
     private var content: Content? {
-        switch cue {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+        return switch cue {
         case .none: nil
         case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
         case .thinking: Content(icon: AnyView(CueSpinner()), text: "\(name) is thinking", action: nil)
@@ -130,15 +143,40 @@ struct CallCueView: View {
     }
 }
 
+/// CC-1 "Updated: no cilantro" / "Noted: quiet company" for 2.5 s (`profile.updated`), and the softer GK-1
+/// "Getting to know you · {topic}" (`profile.asking`). The status line's pill, smaller, just under it.
+struct ProfileChipView: View {
+    let text: String
+    /// GK-1: lighter pill, a "?" instead of the check
+    var soft = false
+    @State private var shown = false
+    var body: some View {
+        HStack(spacing: 6) {
+            if soft {
+                Image("hisy-question").resizable().renderingMode(.template).foregroundStyle(CallInk.blueOnInk).frame(width: 13, height: 13)
+            } else {
+                Image(systemName: "checkmark").font(.system(size: 12, weight: .bold)).foregroundStyle(CallInk.blueOnInk)
+            }
+            Text(text).font(TypeStyle.body(13, .medium)).foregroundStyle(CallInk.onInk.opacity(soft ? 0.92 : 1)).lineLimit(1)
+        }
+        .padding(.horizontal, 14).frame(height: 30)
+        .background(soft ? CallInk.ink.opacity(0.5) : CallInk.pill, in: RoundedRectangle(cornerRadius: 15))
+        .opacity(shown ? 1 : 0).offset(y: shown ? 0 : -6)
+        .onAppear { withAnimation(.fade) { shown = true } }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(soft ? "askingChip" : "profileChip")
+    }
+}
+
 private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }
 
-private struct CueAlert: View {
+struct CueAlert: View {
     var body: some View { Image(systemName: "exclamationmark.circle").font(.system(size: 17, weight: .semibold)).foregroundStyle(CallInk.onInk).frame(width: 20, height: 20) }
 }
 
-private struct CueSpinner: View {
+struct CueSpinner: View {
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -204,6 +242,7 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
+    var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
@@ -219,7 +258,9 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            if textChatEnabled {
+                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }
@@ -281,7 +322,14 @@ extension AppState {
         return mine == demo ? loop : nil
     }
 
+    /// The server's persona card (setup answers, F4) when there is one, always with the NM01 name; the imported
+    /// style's profile text (never the raw paste once the import ran); 2 s wait on the first call (D21).
     var callStart: ClientMessage.Start {
-        .companion(name: "Jin", userName: setup.name, profile: setup.response, traits: setup.presence.sorted(), voiceId: nil)
+        var start = ClientMessage.Start.companion(name: companionDisplayName, userName: setup.name, profile: setup.styleProfile ?? setup.response,
+                                                  traits: setup.presence.sorted(), voiceId: nil)
+        if var persona = setup.serverPersona { persona.name = companionDisplayName; start.persona = persona }
+        if let kind = setup.imageType.flatMap(ClientMessage.Persona.Kind.init(rawValue:)) { start.persona.kind = kind }
+        start.greetAfterMs = setup.firstCallPending == true ? 2000 : nil
+        return start
     }
 }

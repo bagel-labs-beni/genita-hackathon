@@ -41,22 +41,14 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
   const realFetch = globalThis.fetch;
   globalThis.fetch = apple.fetch;
   const dir = mkdtempSync(join(tmpdir(), "genita-auth-"));
-  const peterDeletes: string[] = []; // stand-in for deploy/aws/peter/prep_api.py; the first DELETE fails (box down)
-  const peterApi = createHttpServer((req, res) => {
-    if (req.method === "DELETE" && req.headers.authorization === "Bearer worker-token") peterDeletes.push(req.url ?? "");
-    res.writeHead(peterDeletes.length === 1 ? 503 : 200, { "content-type": "application/json" }).end("{}");
-  });
-  await new Promise<void>((r) => peterApi.listen(0, "127.0.0.1", r));
   const env: NodeJS.ProcessEnv = {
     GENITA_DATA_DIR: dir,
     GENITA_JWT_SECRET: "j".repeat(40),
     GENITA_PUBLIC_URL: "https://genita-api.example",
     GENITA_AUTH_RATE_PER_MIN: "1000",
-    GENITA_PETER_PREPARE_URL: `http://127.0.0.1:${(peterApi.address() as AddressInfo).port}`,
-    GENITA_PETER_TOKEN: "worker-token",
     ...apple.env,
   };
-  const config = { ...loadConfig({ MODEL_API_KEY: "m", ELEVENLABS_API_KEY: "e" }), port: 0, sessionToken: SHARED, ...over };
+  const config = { ...loadConfig({ MODEL_API_KEY: "m" }), port: 0, sessionToken: SHARED, ...over };
   const events: { event: string; data: Record<string, unknown> }[] = [];
   const log = (event: string, data: Record<string, unknown>) => events.push({ event, data });
   const accounts = (await createAccounts(env, log, { loopback: true, db: await testDb(false) }))!;
@@ -65,8 +57,6 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
   t.after(async () => {
     globalThis.fetch = realFetch;
     await new Promise((r) => server.close(r));
-    peterApi.closeAllConnections();
-    await new Promise((r) => peterApi.close(r));
     await new Promise((r) => setTimeout(r, 50));
     rmSync(dir, { recursive: true, force: true });
   });
@@ -97,7 +87,7 @@ async function boot(t: import("node:test").TestContext, over: Partial<ReturnType
       ws.on("close", (code) => resolve({ code, opened }));
       ws.on("error", () => {});
     });
-  return { apple, env, call, wsClose, events, dir, accounts, base, peterDeletes };
+  return { apple, env, call, wsClose, events, dir, accounts, base };
 }
 
 test("Apple identity tokens: forged, expired, other audience, bad nonce, alg confusion → rejected", async () => {
@@ -135,7 +125,7 @@ test("Apple identity tokens: forged, expired, other audience, bad nonce, alg con
 });
 
 test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, logout, delete", async (t) => {
-  const { apple, call, wsClose, events, dir, accounts, peterDeletes } = await boot(t);
+  const { apple, call, wsClose, events, dir, accounts } = await boot(t);
 
   // ── unauthenticated ──
   assert.equal((await call("GET", "/me")).status, 401);
@@ -256,17 +246,11 @@ test("accounts end to end: iPhone sign-in, consent gate, name, Mac web login, lo
   assert.equal((await call("GET", "/v1/companion", { token: SHARED, user: "demo" })).json.error, "no_companion");
   assert.equal((await call("GET", "/me", { token: SHARED, user: "demo" })).json.user.provider, "dev");
 
-  // ── F1-L8 delete account (incl. the Peter avatar cache keyed by companion id) ──
-  await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
-  const failed = await call("DELETE", "/me", { token });
-  assert.equal(failed.status, 502, "GPU box could not confirm → nothing is reported deleted");
-  assert.equal((await call("GET", "/me", { token })).status, 200, "rows kept so the user can retry");
-  await accounts.blobs.put("users/" + userId + "/images/img1", Buffer.from("x"), "image/jpeg"); // put back for the count below
+  // ── F1-L8 delete account (including stored companion assets) ──
   await accounts.blobs.put("avatars/comp1/latents.pt", Buffer.from("x"), "application/octet-stream");
   const del = await call("DELETE", "/me", { token });
   assert.deepEqual(del.json, { deleted: true, appleRevoked: true, blobsDeleted: 2 });
   assert.equal((await accounts.blobs.list("avatars/comp1/")).length, 0, "avatar cache gone from blob storage");
-  assert.deepEqual(peterDeletes, ["/avatars/comp1", "/avatars/comp1"], "GPU box told to drop its local cache (retried)");
   const revoke = apple.requests.find((r) => r.url.endsWith("/auth/revoke"))!;
   // the latest login's refresh token is kept (here the Mac web one) and revoked with its own client_id
   assert.equal(revoke.form.get("token"), "rt-ai.thebeni.genita.web");
@@ -305,6 +289,22 @@ test("WS: a garbage frame on a 4401-closing socket does not crash the server", a
   await new Promise((r) => setTimeout(r, 100));
   sock.destroy();
   assert.equal((await call("GET", "/healthz")).status, 200, "server still up");
+});
+
+test("#294: malformed upgrade targets get 400 without ending the server", async (t) => {
+  const { call, base } = await boot(t);
+  const net = await import("node:net");
+  const { port } = new URL(base);
+  const sock = net.connect(Number(port), "127.0.0.1");
+  await new Promise<void>((resolve) => sock.once("connect", resolve));
+  const reply = new Promise<string>((resolve, reject) => {
+    sock.once("data", (data) => resolve(data.toString("utf8")));
+    sock.once("error", reject);
+  });
+  sock.write(`GET //[ HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`);
+  assert.match(await reply, /^HTTP\/1\.1 400 Bad Request\r?\n/);
+  sock.destroy();
+  assert.equal((await call("GET", "/healthz")).status, 200, "server stays up for subsequent calls");
 });
 
 test("WS: the session cap holds when several upgrades finish auth at the same time", async (t) => {
