@@ -450,10 +450,10 @@ struct CallGlassControl: View {
     var body: some View {
         ZStack {
             if #available(iOS 26.0, *) {
-                Circle().fill(.black.opacity(0.15)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
+                Circle().fill(.black.opacity(GlassGlyph.fill)).glassEffect(.clear, in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
             } else {
                 Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
-                    .overlay(Circle().fill(.black.opacity(0.15)))
+                    .overlay(Circle().fill(.black.opacity(GlassGlyph.fill)))
                     .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
             }
             // glyph = 55 % of the circle (GlassGlyph); ⋮ as three dots

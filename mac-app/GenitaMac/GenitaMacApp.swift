@@ -94,8 +94,8 @@ struct MacGlassControl: View {
         }.frame(width: size, height: size).contentShape(Circle())
     }
     @ViewBuilder private var clearGlass: some View {
-        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(0.15)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
-        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(0.15))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
+        if #available(macOS 26.0, *) { Circle().fill(.black.opacity(GlassGlyph.fill)).glassEffect(.clear.interactive(), in: Circle()).environment(\.colorScheme, .dark).overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7)) }
+        else { Circle().fill(.ultraThinMaterial).environment(\.colorScheme, .dark).overlay(Circle().fill(.black.opacity(GlassGlyph.fill))).overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.7)) }
     }
     /// Sharing on: ink-in-glass in red (#E7200C), the GlassCTA structure with the MacInkGlass non-key rule.
     @ViewBuilder private func tinted(_ tint: Color) -> some View {

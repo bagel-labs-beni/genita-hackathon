@@ -8,6 +8,9 @@ import SwiftUI
 /// as three dots instead of its padded PNG.
 enum GlassGlyph {
     static let fraction: CGFloat = 0.55
+    /// Black fill on the glass circle: Figma S09-L buttons are rgba(0,0,0,0.42), so the white glyph reads on a light scene
+    /// too (0.15 went pale beige over the dog's fur, #530 QA, build 7).
+    static let fill: Double = 0.42
 
     /// Frame for a 4× glyph bitmap of `pixels` in a circle of `diameter`: long side = 55 % of the circle
     /// (the mic, the one tall glyph, by its height; the others by their width).
