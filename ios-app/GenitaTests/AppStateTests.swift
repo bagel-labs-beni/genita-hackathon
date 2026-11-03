@@ -484,6 +484,14 @@ import UIKit
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
     }
 
+    /// QA build 7 (LG-03): a system alert over the launch (iPhone Mirroring's microphone sheet) used up the 0.9 s
+    /// relaunch splash unseen. On iPhone an inactive scene holds the splash clock.
+    func testSplashClockHoldsWhileTheSceneIsNotActive() {
+        XCTAssertTrue(GenitaSplash.holds(.inactive))
+        XCTAssertTrue(GenitaSplash.holds(.background))
+        XCTAssertFalse(GenitaSplash.holds(.active))
+    }
+
     /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.
     func testReadingOrbMotion() {
         XCTAssertEqual(1 / ReadingOrb.turnRate(0), 11, accuracy: 0.01)
