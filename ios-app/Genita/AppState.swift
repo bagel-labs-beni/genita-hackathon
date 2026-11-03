@@ -61,6 +61,9 @@ struct SavedSetup: Codable {
     var skipAvoid: [String]?
     /// N3 taste picker (Figma 144:2): tapped once = liked (here), tapped twice = avoided (`skipAvoid`)
     var skipLikes: [String]?
+    /// Set before the skip answers are sent (Codex P1 #516): once a send was tried they belong to that account,
+    /// even if its reply was lost, and never go on to another one
+    var skipSent: Bool?
     /// The first call after onboarding waits up to 2 s for the user to speak first (D21, `start.greetAfterMs`)
     var firstCallPending: Bool?
     /// The persona card the server wrote from the setup answers (`POST /v1/companion/prefs` → session.persona)
@@ -70,7 +73,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, skipSent, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -282,7 +285,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name
             // unsent N1–N3 picks stay (same rule as resetLocalProfile)
-            if setup.styleRows == nil && setup.companionCreated != true {
+            if setup.skipSent != true && setup.styleRows == nil && setup.companionCreated != true {
                 fresh.skipInterests = setup.skipInterests; fresh.skipReplies = setup.skipReplies
                 fresh.skipAvoid = setup.skipAvoid; fresh.skipLikes = setup.skipLikes
             }
@@ -310,7 +313,7 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     /// only N3 after a sign-in wiped N1·N2). An account delete drops everything.
     func resetLocalProfile(keepUnsentSkipPicks: Bool = false) {
         let old = setup
-        let carry = keepUnsentSkipPicks && old.styleRows == nil && old.companionCreated != true
+        let carry = keepUnsentSkipPicks && old.skipSent != true && old.styleRows == nil && old.companionCreated != true
         storage.removeObject(forKey: Self.storageKey)
         try? FileManager.default.removeItem(at: imageURL)
         history = []

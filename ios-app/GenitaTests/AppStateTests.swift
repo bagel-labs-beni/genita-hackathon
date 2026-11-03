@@ -82,8 +82,8 @@ import UIKit
         XCTAssertEqual(model.setup.skipInterests, ["Food", "Style"])
         XCTAssertEqual(model.setup.skipReplies, "Show me options")
         XCTAssertEqual(AppState.skipAnswers(model.setup).interests, ["Food", "Style"], "the skip request carries them")
-        // B sent them (style imported), then C signs in: C starts clean
-        model.setup.styleRows = []
+        // B tried to send them (even with the reply lost: no style yet), then C signs in: C starts clean (Codex P1)
+        model.setup.skipSent = true
         model.signedOut()
         model.signedIn(userId: "user-c", consented: true)
         XCTAssertNil(model.setup.skipInterests)

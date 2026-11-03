@@ -181,6 +181,7 @@ extension AppState {
             defer { importing = false }
             do {
                 let answers = Self.skipAnswers(setup)
+                setup.skipSent = true   // from here on they are this account's (even if the reply is lost)
                 applyStyle(try await onboarding.importSkip(interests: answers.interests, replies: setup.skipReplies, n3: answers.n3))
                 go(.preferences)
             } catch { flowError = Self.errorLine(error); route(error) }
