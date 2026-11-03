@@ -11,10 +11,10 @@ import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { parseTaggedSentence } from "../text/tags.ts";
-import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
+import { fallbackLine, guardSentence, neverSpoken, realCrisisSignal, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
-import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
+import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import { holdsSteady, personaBaseline } from "./moodState.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
@@ -63,7 +63,8 @@ export const adapter = {
     if (t.kind === "silence" || t.kind === "perception") {
       // the governor's budget is unit-tested; here every scripted cue is one allowed initiative
       const source: InitiativeSource = t.kind === "perception" && t.trigger ? (t.trigger as PerceptionTriggerKind) : "silence";
-      const instructions = buildInstructions({ ...base, initiative: initiativeBlock(source, threads(s)) });
+      const replies = ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text);
+      const instructions = buildInstructions({ ...base, initiative: cueRhythm(initiativeBlock(source, threads(s)), source, replies) });
       return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }
     // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
@@ -74,6 +75,8 @@ export const adapter = {
       userText: t.text,
       mood: moodLine(moodFrom(userLines, personaBaseline(s.persona), personaBaseline(s.persona)), { steady: holdsSteady(s.persona) }),
       remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
+      recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
+      crisisInCall: userLines.some(realCrisisSignal),
     }) ?? undefined;
     const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
