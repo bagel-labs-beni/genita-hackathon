@@ -90,9 +90,14 @@ export class Insights {
   }
 
   /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
-  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"]): Promise<InsightReport> {
+  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
     const t0 = performance.now();
-    const once = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    // every Spark call (and each retry) first checks the user hasn't since asked to forget something (Codex r8)
+    const once = async () => {
+      if (!(await stillOk())) throw new Error("insights_stale: forget or a newer write since this one started");
+      return onceRaw();
+    };
+    const onceRaw = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
     // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
     let r = await once().catch(async (err) => {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
@@ -121,7 +126,13 @@ export class Insights {
       const card = opts.gate ? null : await this.store.getStyle(userId);
       const inputs = inputsOf(card);
       if (!inputs) return;
-      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null);
+      const startedAt = Date.now();
+      const stillOk = async () => {
+        if (this.seq.get(userId) !== mine) return false;
+        const latest = await this.store.getStyle(userId);
+        return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
+      };
+      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
       await this.personalize.patchStyle(userId, (c) => {

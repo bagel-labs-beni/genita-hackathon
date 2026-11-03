@@ -350,7 +350,8 @@ test("codex: a late import report never lands on the card of a newer import; an 
   let releaseSlow!: () => void;
   const slow = new Promise<void>((r) => (releaseSlow = r));
   let m = 0;
-  const h2 = harness(async (req) => { m++; if (m === 1) await slow; return { ...RAW, headline: m === 1 ? "You are the old one." : RAW.headline }; });
+  // keyed by the request (not call order): the first write may now stop before its call (Codex r8 checks)
+  const h2 = harness(async (req) => { m++; const old = String(req.input).includes("Think with me"); if (old) await slow; return { ...RAW, headline: old ? "You are the old one." : RAW.headline }; });
   t.after(h2.cleanup);
   await h2.p.replaceStyle("u1", CARD);
   await h2.ins.fromAnswers("u1", { help: "Think with me" });
@@ -498,4 +499,26 @@ test("codex r7: a minor's age never shows ('You're 15 and …'); a forget stops 
   await h.ins.get("u1", 3000);
   const sent = h.calls.slice(n).map((c) => String(c.input)).join("\n");
   assert.ok(!sent.includes("which one is cheaper lol"), "the paste is no longer sent after a forget");
+});
+
+test("codex r8: a retry after a forget doesn't send the paste again", async (t) => {
+  let n = 0;
+  let h!: ReturnType<typeof harness>;
+  h = harness(async (req) => {
+    if (req.schemaName !== "insight_report") return null;
+    n++;
+    if (n === 2) {
+      // the answers write's first call: the user says "forget …" meanwhile, then this call fails
+      await h.p.patchStyle("u1", (c) => ({ ...c, removed: [...(c.removed ?? []), { text: "cheaper lol", at: new Date().toISOString(), forget: true as const }] }));
+      throw new Error("504");
+    }
+    return RAW;
+  });
+  t.after(h.cleanup);
+  const job = h.ins.begin("u1", PASTE);
+  job.commit(await h.p.replaceStyle("u1", CARD));
+  await h.ins.get("u1", 3000); // call 1
+  await h.ins.fromAnswers("u1", { help: "Think with me" });
+  await h.ins.get("u1", 3000); // call 2 fails; no retry with the paste
+  assert.equal(n, 2, "no third call");
 });
