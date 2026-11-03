@@ -41,3 +41,9 @@ test("a food constraint from earlier in the call rides the food ask (intel eval 
   assert.equal(taskHint("ok so what do i wear", hist), null);
   assert.equal(taskHint("what should i make", [h("user", "I love eggs")]), null);
 });
+
+test("a loss told plainly gets 'name that person' (intel eval sad-grandma attentive 2.0)", () => {
+  assert.match(taskHint("honestly i'm just sad today. it would've been my grandma's birthday", []) ?? "", /someone they lost/);
+  assert.match(taskHint("my dog died last week", []) ?? "", /someone they lost/);
+  assert.equal(taskHint("my battery died lol", []), null);
+});
