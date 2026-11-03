@@ -702,6 +702,76 @@ test("bug-fix a6df112 outfit 3/8: subject-less gerund openers and 'incoming' pro
   }
 });
 
+test("Codex r23: intentional repeats, gerund-subject answers, a real status and an 'and the X wins' pick all stay", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (first: string, tool: boolean, next: string) => { const j = new NarrationJudge(true); return [...j.push(first).speak, ...(tool ? j.onToolCall().speak : []), ...j.push(next).speak, ...j.finish().speak].join(" "); };
+  assert.match(run("Taking the bus saves you twenty minutes.", true, "It is the easiest option."), /saves you twenty/);
+  assert.match(run("Your taxi is on its way.", false, "Wait by the main entrance."), /on its way/);
+  assert.match(run("Checking my notes and the trench wins.", false, "Wear it tonight."), /trench wins/);
+  assert.match(run("Choosing your own clothes builds confidence.", false, "Trust yourself."), /builds confidence/);
+  const { client, session } = setup(["<calm> Breathe in. Breathe out. Breathe in. Breathe out."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "say breathe in breathe out twice" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Breathe in. Breathe out. Breathe in. Breathe out.");
+  session.close();
+});
+
+test("bug-fix a27831b outfit 1/9: 'I'll pick the one that fits tonight best' is a promised choice, dropped before the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Your two jackets are both cute — I'll pick the one that fits tonight best.").speak, ...j.push("Go with the trench.").speak, ...j.finish().speak].join(" ");
+  assert.doesNotMatch(out, /I'll pick the one/);
+  assert.match(out, /Go with the trench\./);
+});
+
+test("Codex r24: 'I'm picking the trench for you.' is the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'm picking the trench for you.").speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak].join(" ");
+  assert.match(out, /picking the trench/);
+});
+
+test("bug-fix 95acde0 smoke 2/10: 'Your dinner idea is coming — picking something good.' and 'You got it — thinking back on what you shared…' are never voiced", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const j = new NarrationJudge(true);
+    const out = [...j.push(first).speak, ...j.push("Try kimchi carbonara.").speak, ...j.finish().speak].join(" ");
+    assert.match(out, /^(?:You got it\. )?Try kimchi carbonara\.$/, first);
+  }
+});
+
+test("hard fail (main 11/3, smoke 95acde0): ack + dash + subject-less process '-ing' — dropped; the ack stays only with real content after", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  for (const first of ["Your dinner idea is coming — picking something good.", "You got it — thinking back on what you shared about your sister."]) {
+    const withContent = new NarrationJudge(true);
+    const a = [...withContent.push(first).speak, ...withContent.push("Try kimchi carbonara.").speak, ...withContent.finish().speak].join(" ");
+    assert.doesNotMatch(a, /picking something|thinking back/i, first);
+    assert.match(a, /Try kimchi carbonara\./);
+    const alone = new NarrationJudge(true);
+    assert.deepEqual([...alone.push(first).speak, ...alone.finish().speak], [], `${first} alone: nothing spoken (the turn retries)`);
+  }
+  // an ack + a real -ing answer stays
+  const j = new NarrationJudge(true);
+  assert.ok([...j.push("Got it — taking the 2 line is fastest.").speak, ...j.finish().speak].join(" ").includes("2 line"));
+});
+
+test("Codex #371: an ack + a real choice or result stays; a pick named by its features stays", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — taking the bus saves you twenty minutes.", "Get off at City Hall."]), /saves you twenty minutes/);
+  assert.match(run(["You got it — wearing the trench tonight."]), /wearing the trench/);
+  assert.match(run(["I'll pick the one that has the red buttons.", "It matches your understated style."]), /red buttons/);
+  assert.doesNotMatch(run(["I'll pick the one that fits tonight best.", "Go with the trench."]), /I'll pick the one/);
+});
+
+test("Codex #371 r2: a concrete pick after an ack and a past-tense lookup result stay", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — picking a black blazer over the denim jacket.", "It matches your understated style."]), /black blazer/);
+  assert.match(run(["Checking the route confirmed the last train already left.", "Take a taxi instead."]), /last train already left/);
+  assert.doesNotMatch(run(["You got it — thinking back on what you shared about your sister.", "Try asking her."]), /thinking back/);
+});
 test("hard fail (demo lane 11/3): a line about being interrupted is never said", { skip: !v1 }, async () => {
   for (const line of ["You cut me off twice, so one line from now on.", "Okay, you keep cutting me off.", "You talked over me there.", "I'll keep it short from now on.", "Since you interrupted me, quick version."]) {
     assert.equal(guardSentence(line, none), "interruption", line);
