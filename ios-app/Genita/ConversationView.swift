@@ -16,6 +16,7 @@ struct ConversationView: View {
     @State private var loopURL: URL?
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The waiting sheet for R1 and R1-E (#2, Dyno). A running effect covers the change of owner until it ends.
     private var waitingCopy: HandoffCopy? { handoffEnabled && !connecting && handoff.motion == nil ? HandoffCopy.phone(handoff.surface) : nil }
     var body: some View {
@@ -40,7 +41,7 @@ struct ConversationView: View {
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
                             .scaleEffect(faceScale(sheet), anchor: .topLeading).offset(faceOffset(sheet, top: top))
                             .opacity(sheet == .full || call.cameraOn ? 0 : 1)
@@ -100,7 +101,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
@@ -110,7 +111,11 @@ struct ConversationView: View {
                         }
                         // The call cue belongs to S09. Keep it below the Finds tab so it cannot cover that
                         // screen's title or subtitle; closing Finds immediately resumes the current call cue.
-                        if !findsTabOpen && !connecting && !interpreting && !unclear {
+                        let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
+                        if moveLine && !findsTabOpen && !interpreting && !unclear {
+                            // MV-1 / MV-E take the call's status line slot
+                            HandoffMoveStatusLine().position(x: full.size.width / 2, y: 142 + top)
+                        } else if !findsTabOpen && !connecting && !interpreting && !unclear {
                             let findsPill = call.finds.pillText
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings)
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
@@ -123,7 +128,7 @@ struct ConversationView: View {
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : (model.callPrepIndicator != nil && !interpreting ? 232 : 184)) + top)
                         }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
-                        if !connecting && !interpreting && sheet != .full, let line = model.callPrepIndicator {
+                        if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
                         }
                         }
@@ -150,7 +155,8 @@ struct ConversationView: View {
                                 .accessibilityLabel("Close More").accessibilityAddTraits(.isButton).accessibilityIdentifier("closeMore")
                             VStack(spacing: 0) {
                                 Spacer(minLength: 0)
-                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.settings = true },
+                                // #180: Move to Mac runs the move (unpaired → the P01 pairing sheet)
+                                CallMoreSheet(call: call, textChatEnabled: appConfig.config.flag("textChat", default: false), moveToMacSubtitle: handoff.link.connected ? "Connected to your Mac" : "Pair with your Mac", moveToMac: { handoff.moveToMac() },
                                               openFinds: { openFindsTab() }) {
                                     withAnimation(.easeOut(duration: 0.22)) { moreOpen = false }
                                 }
@@ -179,6 +185,12 @@ struct ConversationView: View {
             }.ignoresSafeArea()
         }.opacity(handoffEnabled && handoff.motionVisible ? 0 : 1)
         .overlay { if handoffEnabled && !connecting { PhoneHandoffOverlay(model:model) } }
+        // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
+        .onAppear { if !connecting { showFace() } }
+        .onDisappear { if !connecting { call.hideFace() } }
+        .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
+        .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
+        .onChange(of: handoff.surface) { _, surface in let onMac = surface != .active; if !connecting { if onMac { call.hideFace() } else if scenePhase == .active { showFace() } } }
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
@@ -204,6 +216,11 @@ struct ConversationView: View {
         .onChange(of: handoff.surface) { _, surface in if surface != .active { call.suspend() } }
         // F1-L7: 4401 → A02 sign in, 4403 → CS01 consent (CallController.stopped)
         .onChange(of: call.stopped) { _, stop in model.route(stop) }
+    }
+    /// Not while the conversation is on the Mac (this screen is hidden then).
+    private func showFace() {
+        guard !(handoffEnabled && handoff.surface != .active) else { return }
+        call.showFace(reduceMotion: reduceMotion || CallMotion.reviewStill, animate: !CallMotion.reviewStill)
     }
     /// S07 pill grows for a long {name} (NM01 allows 20 characters); "Connecting to Jin…" keeps the board's 175 pt.
     private func lineWidth(for label: DesignNode) -> CGFloat {

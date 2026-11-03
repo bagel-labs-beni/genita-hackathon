@@ -14,6 +14,9 @@ final class CallScreenUITests: XCTestCase {
             "GENITA_CALL_AUTOMIC": "1",
             "GENITA_INTERRUPT_HOLD_MS": "5000", // the workflow also replays at --scale 3
             "GENITA_REVIEW_STILL": "1", // still face, no wave/spinner motion: the app goes idle between events
+            // L4: GenitaKit's fixture face set from the checkout, so the shots show the rendered Meta face
+            "GENITA_FACE_SET_DIR": URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                .appending(path: "shared/GenitaKit/Tests/GenitaKitTests/Fixtures/face-animal").path,
         ]
         app.launch()
         let cue = app.descendants(matching: .any).matching(identifier: "callCue").firstMatch
