@@ -1642,3 +1642,9 @@ test("Codex r8: 'practice with someone you trust' after a crisis-word line gets 
   assert.equal(crisisFollowUp(["Practice with someone you trust first."]), null);
   assert.equal(crisisFollowUp(["Please call a crisis line right now."]), (await import("../src/session/session.ts")).CRISIS_NUMBER_LINE);
 });
+
+test("Codex r9: a figurative 'lifeline' is no crisis service", async () => {
+  const { crisisFollowUp } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUp(["Your support network can be a lifeline."]), null);
+  assert.equal(crisisFollowUp(["The Suicide and Crisis Lifeline is there any time."]), (await import("../src/session/session.ts")).CRISIS_NUMBER_LINE);
+});

@@ -280,7 +280,8 @@ export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in th
 /** what a real crisis reply still needs: the whole help line (no pointer at all), just the number line, or nothing */
 /** Codex r4 P1: crisis support, not medical care ("see a doctor", "urgent care" for a kitchen cut never gets 988) */
 // Codex r8: only explicit crisis services earn the number line (not "someone you trust", not a generic hotline)
-const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text |help|hot)?line|crisis text|lifeline|suicide (?:hotline|helpline|line|prevention line))\b/i;
+// Codex r9: a figurative "lifeline" is no crisis service
+const CRISIS_SUPPORT = /\b(?:988|nine[- ]eight[- ]eight|crisis (?:text |help|hot)?line|crisis text|suicide (?:hotline|helpline|line|prevention line)|suicide (?:and|&) crisis lifeline)\b/i;
 export function crisisFollowUp(said: string[]): string | null {
   if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
   return said.some((x) => HELP_NUMBER.test(x)) || !said.some((x) => CRISIS_SUPPORT.test(x)) ? null : CRISIS_NUMBER_LINE;
