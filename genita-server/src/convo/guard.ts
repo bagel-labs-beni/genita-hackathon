@@ -53,6 +53,9 @@ const FILLER_PART = /^(?:ok(?:ay)?|alright|sure|hm+|yeah|yep|one sec(?:ond)?|han
 const CONTENT_JOIN = /(?:,\s*|\s+)(?:but|and|though|because|plus|then)\s+|\s+[—–]\s+|[;:,]\s+/i;
 /** a joined clause with its own subject and a result ("Google Maps says it's ten minutes") is content (Codex #356 round 3) */
 const RESULT_CLAUSE = /\b(?:says?|said|is|are|was|were|it'?s|takes?|shows?|looks? like|minutes?|hours?|blocks?|miles?|degrees?)\b/i;
+/** a lookup clause that already states its result ("Checking the map shows it's ten minutes") is the answer (Codex round 4) */
+const NUM = "(?:\\d+|a few|a couple of|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|half an?)";
+const RESULT_STRONG = new RegExp(String.raw`\b(?:shows?|says?|takes?|looks? like|turns out)\b|\b${NUM}\s+(?:minutes?|mins?|hours?|blocks?|miles?|km|kilometers?|stops?|degrees?)\b`, "i");
 /** inside an announcement, a joined clause with its subject dropped is still the lookup ("… and check the route for you") */
 const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB})\b`, "i");
 
@@ -61,7 +64,7 @@ export function isNarration(sentence: string): boolean {
   if (!NARRATION.some((re) => re.test(s))) return false;
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => NARRATION.some((re) => re.test(p)) || (BARE_LOOKUP.test(p) && !RESULT_CLAUSE.test(p)) || FILLER_PART.test(p));
+  return parts.every((p) => (NARRATION.some((re) => re.test(p)) && !RESULT_STRONG.test(p)) || (BARE_LOOKUP.test(p) && !RESULT_CLAUSE.test(p)) || FILLER_PART.test(p));
 }
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */

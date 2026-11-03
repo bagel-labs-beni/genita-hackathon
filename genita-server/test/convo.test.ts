@@ -423,3 +423,9 @@ test("narration (Codex #356 round 3): a joined result clause with its own subjec
   assert.equal(guardSentence("Let me check my notes but Google Maps says it is ten minutes.", none), null);
   assert.equal(guardSentence("Let me pull that up and check the route for you.", none), "narration");
 });
+
+test("narration (Codex #356 round 4): a lookup clause that already states its result is the answer", () => {
+  assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
+  assert.equal(guardSentence("Let me look into where that is.", none), "narration");
+  assert.equal(guardSentence("Figuring out where you mean so I can map City Hall for you.", none), "narration");
+});
