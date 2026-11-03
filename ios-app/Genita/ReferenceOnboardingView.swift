@@ -118,7 +118,7 @@ import UniformTypeIdentifiers
                 DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round").designSlot(orb, width: width, top: bodyTop)
             }
             ZStack {
-                DesignText(node: title, text: stage == .image ? "Bring an image" : nil)
+                DesignText(node: title, text: stage == .image ? "Bring an image" : stage == .voice ? "Hear a few\npossibilities" : nil)   // V04: balanced lines, not Figma's "Hear a / few possibilities" (pixel QA 11/4)
                 if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
                     Button {
                         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }

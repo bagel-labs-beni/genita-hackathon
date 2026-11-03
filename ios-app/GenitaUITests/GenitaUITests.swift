@@ -292,7 +292,7 @@ final class GenitaUITests: XCTestCase {
         link.tap()
         let alert = app.alerts["Judge access"]
         XCTAssertTrue(alert.waitForExistence(timeout: 5), "A02-J is a system alert")
-        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple ID needed."].exists)
+        XCTAssertTrue(alert.staticTexts["Enter the code from the submission form. No Apple\u{00A0}ID\u{00A0}needed."].exists)
         let field = alert.textFields.element(boundBy: 0)
         XCTAssertTrue(field.exists)
         field.tap(); field.typeText("not-a-real-code")
