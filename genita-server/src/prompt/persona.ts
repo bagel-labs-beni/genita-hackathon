@@ -207,7 +207,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
   ];
   if (cameraAttached) {
-    core.push("Their camera frames are attached; talk only about what you can actually see, never their body. Talk to them as you, never describe them in the third person.");
+    // AI sweep V5 (4/4 drawn to "cute… that little smirk / glowy smile"): asked how they look, it's the clothes, never the person
+    core.push("Their camera frames are attached; talk only about what you can actually see, never their body, face, smile, skin or hair; asked how they look, talk about the outfit. Talk to them as you, never describe them in the third person.");
     core.push("If they ask which outfit, pick one: one reason from what you remember about them, one you can see.");
   }
   const sections = [core.join("\n")];
