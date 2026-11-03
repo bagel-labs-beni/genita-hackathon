@@ -377,6 +377,17 @@ import UIKit
         XCTAssertFalse(signedIn.needsSignInFirst, "a session: A03 stays")
     }
 
+    /// I03 orb (Chelsea 11/4): one turn in ~11 s, quicker as the bar fills; breathing 1.00 ↔ 1.04 over 3 s.
+    func testReadingOrbMotion() {
+        XCTAssertEqual(1 / ReadingOrb.turnRate(0), 11, accuracy: 0.01)
+        XCTAssertGreaterThan(ReadingOrb.turnRate(1), ReadingOrb.turnRate(0.5))
+        XCTAssertGreaterThanOrEqual(1 / ReadingOrb.turnRate(1), 7)
+        XCTAssertEqual(ReadingOrb.breath(0), 1, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(1.5), 1.04, accuracy: 0.0001)
+        XCTAssertEqual(ReadingOrb.breath(3), 1, accuracy: 0.0001)
+        XCTAssertGreaterThan(AppState.readingPulseMs, 250, "the pulse is seen before I04")
+    }
+
     /// Build 7 P1: a cold launch straight into a call opens on the saved generated scene (same account only),
     /// never the upload photo; signing out forgets it.
     func testSceneSurvivesARelaunchForTheSameAccountOnly() {

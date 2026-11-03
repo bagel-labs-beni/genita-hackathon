@@ -159,7 +159,13 @@ extension AppState {
                 guard !Task.isCancelled, ownsOnboardingResponse(request) else { return }
                 applyStyle(style)
                 importing = false
-                if stage == .preparing { go(.preferences) }
+                if stage == .preparing {
+                    // I03 at 100 %: the bar fills and the orb pulses once, then I04/HISY (Chelsea 11/4)
+                    readingDone = true
+                    try? await Task.sleep(for: .milliseconds(Self.readingPulseMs))
+                    readingDone = false
+                    if !Task.isCancelled, ownsOnboardingResponse(request), stage == .preparing { go(.preferences) }
+                }
             } catch {
                 let expiredCurrentSession = (error as? GenitaAuthError) == .unauthorized
                 guard !Task.isCancelled,

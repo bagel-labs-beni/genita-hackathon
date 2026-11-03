@@ -88,6 +88,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var menuOpen = false
     // Onboarding on the server (OnboardingFlow.swift). Transient: not saved.
     var importing = false
+    /// I03: the import answered while the reading screen is up: 100 % and the orb's pulse before I04 (Chelsea 11/4)
+    var readingDone = false
+    static let readingPulseMs = 380
     /// I02-E line ("I couldn't read this one…"); the pasted text stays
     var importError: String?
     /// I01 → ChatGPT / Claude → back: I02 opens with the paste button focused (transient)
