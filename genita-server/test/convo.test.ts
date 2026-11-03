@@ -785,3 +785,25 @@ test("hard fail (demo lane 11/3): a line about being interrupted is never said",
   assert.equal(reply.text, "Go with the trench.");
   session.close();
 });
+
+test("hold cap (prod 11/3): a held pre-tool line never keeps the turn silent past ~1.5 s — one short beat, then the answer", { skip: !v1 }, async () => {
+  const client = new Client();
+  const session = new Session("hb", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> {
+      yield { type: "text", delta: "<curious> I'll check what you told me about your sister. " };
+      yield { type: "tool", name: "recall", status: "in_progress" };
+      await new Promise((r) => setTimeout(r, 1900));
+      yield { type: "tool", name: "recall", status: "completed" };
+      yield { type: "text", delta: "<warm> You said she just moved to Busan." };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "what do you remember about my sister" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 5000);
+  assert.match(String(reply.text), /^(?:Hmm\.|Mm, okay\.|Ooh, okay\.) You said she just moved to Busan\.$/);
+  assert.doesNotMatch(String(reply.text), /I'll check/);
+  session.close();
+});

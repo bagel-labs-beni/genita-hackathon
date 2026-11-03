@@ -229,6 +229,9 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
   };
 }
 const ANNOUNCE_WAIT_MS = 20_000;
+/** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
+const HOLD_BEAT_MS = 1500;
+const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
 const GREET_PROMPT = "The call just connected. Greet the user.";
 const MAX_GREET_AFTER_MS = 3000;
 
@@ -1642,6 +1645,18 @@ export class Session {
     };
 
     // Producer: Spark stream → sentences
+    // hold cap (prod smoke 11/3 13:0x: a held pre-tool line kept a memory turn silent 5.9 s): if nothing has been
+    // said 1.5 s after Spark's first text, one short human beat goes out — never narration, never "let me…"
+    let beatTimer: NodeJS.Timeout | null = null;
+    const armBeat = () => {
+      if (beatTimer || !this.v1 || interpret || self) return;
+      beatTimer = setTimeout(() => {
+        if (signal.aborted || this.reply !== reply || sentences.length) return;
+        enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true);
+        this.log("convo.hold_beat", { utteranceId });
+      }, HOLD_BEAT_MS);
+      beatTimer.unref?.();
+    };
     const producer = (async () => {
       try {
         if (self) {
@@ -1662,6 +1677,7 @@ export class Session {
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {
+                if (ev.delta.trim()) armBeat();
                 // a speculation hit's tokens waited in a buffer: count from when Spark sent the first one
                 if (ev.delta.trim() && m.firstTokenAt === undefined) m.firstTokenAt = attempt === 0 && pre && spec?.firstTextAt !== undefined ? Math.min(spec.firstTextAt, this.now()) : this.now();
                 gotText ||= !!ev.delta.trim();
@@ -1713,6 +1729,7 @@ export class Session {
       } finally {
         if (!signal.aborted) applyNarration(narration.finish());
         sparkDone = true;
+        if (beatTimer) clearTimeout(beatTimer);
         waiter.wake?.();
       }
     })();
