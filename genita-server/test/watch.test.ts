@@ -101,6 +101,7 @@ test("memo request: frames as images, labelled lines, strict JSON schema; parse 
     speakers: [{ label: "A", name: "the woman" }],
     protectedVideo: false,
     talkOver: false,
+    page: false,
   });
   assert.equal(parseMemoVerdict("no json"), null);
   assert.equal(parseMemoVerdict('{"memo":"x","moment":"lol","reaction":"","speakers":[]}')!.moment, "none");
