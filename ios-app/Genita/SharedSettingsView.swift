@@ -17,9 +17,22 @@ struct SettingsView: View {
     static let labels = ["help": "Help with", "relationship": "Relationship", "challenge": "Challenge", "tempo": "Tempo", "initiative": "Reach out", "presenceDescription": "Presence"]
     static let scales = ["challenge": ["Gentle", "Direct"], "tempo": ["Reflective", "Quick"], "initiative": ["Only when asked", "Anticipate"]]
     static func label(for key: String) -> String { labels[key] ?? key.capitalized }
+    /// The five slider stops read as words, not "Gentle 3/5 Direct" (UI sweep 11/3).
+    static let steps = ["challenge": ["Gentle", "Mostly gentle", "In between", "Mostly direct", "Direct"],
+                        "tempo": ["Reflective", "Mostly reflective", "In between", "Mostly quick", "Quick"],
+                        "initiative": ["Only when asked", "Now and then", "Sometimes", "Often", "Anticipate"]]
     static func display(_ key: String, _ value: String) -> String {
-        guard let ends = scales[key], let step = Int(value) else { return value }
-        return "\(ends[0]) \(step + 1)/5 \(ends[1])"
+        guard let words = steps[key], let step = Int(value) else { return value }
+        return words[min(max(step, 0), words.count - 1)]
+    }
+    /// "Communication style / • Warm, direct." → a quiet heading over its bullets; a line that isn't followed
+    /// by a bullet (a pasted reply in another shape) stays body text.
+    static func styleLines(_ text: String) -> [(text: String, heading: Bool)] {
+        let lines = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return lines.enumerated().map { i, line in
+            let next = i + 1 < lines.count ? lines[i + 1] : ""
+            return (line, !line.hasPrefix("•") && next.hasPrefix("•"))
+        }
     }
     private var styleText: String {
         guard let rows = model.setup.styleRows, !rows.isEmpty else { return model.setup.response }
@@ -41,7 +54,17 @@ struct SettingsView: View {
                     LabeledContent("Voice", value: voiceName)
                 }
                 Section("Your preferences") {
-                    if !styleText.isEmpty { Text(styleText).font(.custom("PretendardVariable-Regular", fixedSize: 14)).textSelection(.enabled) }
+                    if !styleText.isEmpty {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(Self.styleLines(styleText).enumerated()), id: \.offset) { i, line in
+                                Text(line.text)
+                                    .font(.custom(line.heading ? "PretendardVariable-Medium" : "PretendardVariable-Regular", fixedSize: line.heading ? 13 : 15))
+                                    .foregroundStyle(line.heading ? .secondary : .primary)
+                                    .padding(.top, line.heading && i > 0 ? 10 : 0)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }.padding(.vertical, 4).textSelection(.enabled).accessibilityElement(children: .combine)
+                    }
                     LabeledContent("Setup", value: model.setup.depth.title)
                     ForEach(model.setup.answers.keys.sorted(), id: \.self) { key in LabeledContent(Self.label(for: key), value: Self.display(key, model.setup.answers[key] ?? "")) }
                 }
