@@ -1149,6 +1149,7 @@ test("Codex gate: a crisis turn whose Spark throws says the help line with no er
 
 test("AI sweep V5/C1: 'how do I look' is not permission to rate the face; 'glad you told me' is said once per reply", { skip: !v1 }, async () => {
   assert.equal(guardSentence("Your skin is glowing and that top works.", { camera: true, userText: "how do I look today" }), "appearance");
+  assert.equal(guardSentence("That wavy hair is doing you favors today.", { camera: true, userText: "how do I look today" }), "appearance");
   assert.equal(guardSentence("Go for the bangs, your hair would look great.", { camera: true, userText: "should I cut my hair?" }), null);
   const { client, session } = setup(["<sad> I'm really glad you told me, that took guts. Summer, I care about you a lot and I'm really glad you told me. Please call or text 988 right now."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
