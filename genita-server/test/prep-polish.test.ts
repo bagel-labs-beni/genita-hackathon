@@ -12,7 +12,7 @@ import { DEFAULT_VOICES } from "../src/prep/voices.ts";
 import { interpretCheck, type ClassifyRaw } from "../src/prep/classify.ts";
 import { POLISH_MAX_ATTEMPTS, POLISH_PROMPT, POLISH_SIZE, canPolish, headsView, uploadPolish } from "../src/prep/polish.ts";
 import type { PrepDeps } from "../src/prep/pipeline.ts";
-import type { MediaApi } from "../src/prep/face.ts";
+import { MOUTH_PROMPTS, type MediaApi } from "../src/prep/face.ts";
 import { checkPhotoInput } from "../src/prep/photoInput.ts";
 import { OpsLimits, rejectGeneration } from "../src/ops/limits.ts";
 
@@ -328,4 +328,11 @@ test("ops: GENITA_PAUSED and the image budget stop the polish route too (codex P
   budget.consumeMeta(true);
   assert.equal(rejectGeneration(req, res, budget), true, "an image route: the daily image cap applies");
   assert.equal(status, 429);
+});
+
+test("prep: a polished dog with its mouth closed is still found by its species (11/4 e2e: \"the animal's mouth\" → none, \"the dog's mouth\" → hit)", () => {
+  assert.deepEqual(MOUTH_PROMPTS("animal", "dog"), ["the animal's mouth", "the animal's muzzle", "the dog's mouth", "mouth"]);
+  assert.deepEqual(MOUTH_PROMPTS("animal"), ["the animal's mouth", "the animal's muzzle", "mouth"]);
+  assert.deepEqual(MOUTH_PROMPTS("animal", "dog's\" <x>"), ["the animal's mouth", "the animal's muzzle", "mouth"], "only plain words go into a prompt");
+  assert.deepEqual(MOUTH_PROMPTS("human", "dog"), ["the person's mouth", "the person's lips", "mouth"]);
 });

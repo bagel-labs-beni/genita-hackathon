@@ -147,8 +147,10 @@ export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose" |
  * SAM 3.1 sometimes finds nothing for "the person's mouth" on closed lips while
  * "the person's lips" and plain "mouth" hit (11/2 e2e). Tried in order, only on a miss.
  */
-export function MOUTH_PROMPTS(kind: CompanionKind): string[] {
-  return [samPrompt(kind, "mouth"), kind === "animal" ? "the animal's muzzle" : `the ${NOUN[kind]}'s lips`, "mouth"];
+export function MOUTH_PROMPTS(kind: CompanionKind, species?: string): string[] {
+  // an animal with its mouth closed (photo polish, 11/4) is often found only by its species: "the dog's mouth"
+  const named = kind === "animal" && species && /^[a-z][a-z ]{0,23}$/i.test(species.trim()) ? [`the ${species.trim().toLowerCase()}'s mouth`] : [];
+  return [samPrompt(kind, "mouth"), kind === "animal" ? "the animal's muzzle" : `the ${NOUN[kind]}'s lips`, ...named, "mouth"];
 }
 
 /** Mouth shape per viseme: [human lips wording, wording for a muzzle, beak or drawn mouth]. */
@@ -384,7 +386,7 @@ export async function makeFaceSet(o: FaceSetInput): Promise<FaceState> {
     const url = dataUrl(img);
     const size = imageSize(img);
     if (!size) throw new Error("face set: unreadable image");
-    const [primary, ...fallback] = MOUTH_PROMPTS(o.kind);
+    const [primary, ...fallback] = MOUTH_PROMPTS(o.kind, o.species);
     let [faces, mouths] = await Promise.all([
       o.media.samDetect(o.metaKey, url, samPrompt(o.kind, "face"), o.signal),
       o.media.samDetect(o.metaKey, url, primary, o.signal),
