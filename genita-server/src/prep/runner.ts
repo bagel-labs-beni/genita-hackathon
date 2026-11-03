@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { missingFaceKeys, topUpFaceKeys, topUpOn } from "./faceTopUp.ts";
+import { getOps } from "../ops/limits.ts";
 import { makePersonMatte } from "./person.ts";
 import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
@@ -170,6 +171,7 @@ export class PrepRunner {
    */
   topUpFace(userId: string, c: CompanionRecord, env: Record<string, string | undefined> = process.env): boolean {
     if (!topUpOn(env) || this.running.has(userId) || this.topUpJobs.has(userId) || this.deleting.has(userId) || this.topUps >= TOPUP_MAX) return false;
+    if (getOps().isPaused("face.topup")) return false;   // ops pause: no paid generation starts (Codex P1)
     const f = c.prep.steps.face;
     if (f?.status !== "done" || !f.face || !missingFaceKeys(c, env).length) return false;
     const last = this.topUpAt.get(userId);

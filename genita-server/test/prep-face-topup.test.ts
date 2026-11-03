@@ -7,6 +7,7 @@ import { FACE_KEYS, faceEditPrompt, faceManifest, faceSoftPrompt, type FaceState
 import { topUpFaceKeys } from "../src/prep/faceTopUp.ts";
 import { FileStore, type CompanionRecord } from "../src/prep/store.ts";
 import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
+import { configureOps } from "../src/ops/limits.ts";
 import { fakeMedia, fakePng } from "./helpers/fakeMedia.ts";
 
 const keyOf = (prompt: string) => {
@@ -140,6 +141,13 @@ test("runner.topUpFace (face load): in the background, once per account per 10 m
     const runner = new PrepRunner({ metaKey: "k", store, voices: [], media, log: (e) => logs.push(e) });
     const wait = () => (runner as unknown as { topUpJobs: Map<string, { p: Promise<void> }> }).topUpJobs.get("u1")?.p;
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, { GENITA_FACE_TOPUP: "0" }), false, "switch off");
+    configureOps({ paused: true });
+    try {
+      assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), false, "ops pause: no paid generation (Codex P1)");
+    } finally {
+      configureOps({});
+    }
+    assert.equal(calls.edits.length, 0);
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), true);
     assert.equal(runner.topUpFace("u1", (await store.getCompanion("u1"))!, {}), false, "one at a time");
     await wait();
