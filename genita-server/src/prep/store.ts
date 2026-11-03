@@ -13,6 +13,7 @@ import { mkdir, readFile, rename, writeFile, readdir, rm } from "node:fs/promise
 import { join } from "node:path";
 import type { ImageCheck } from "./classify.ts";
 import type { SamBox } from "../meta/sam.ts";
+import type { FacePoint, FacePoints } from "./faceGeometry.ts";
 import type { StyleCard } from "./importProfile.ts";
 import type { CompanionKind, PrepEmotion } from "./prompts.ts";
 import type { FaceState } from "./face.ts";
@@ -57,6 +58,9 @@ export type ImageRecord = {
   headBox: SamBox | null;
   /** every head SAM found, for the upload answer only (group photo → pick someone else); not kept by the DB store */
   heads?: SamBox[];
+  /** V03 face scan (faceGeometry.ts), for the upload answer only; not kept by the DB store */
+  faceOutline?: FacePoint[] | null;
+  facePoints?: FacePoints | null;
   rightsAck: boolean;
   createdAt: string;
   ms: { check: number; sam: number | null };

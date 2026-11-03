@@ -55,8 +55,11 @@ export function profileHooks(profile: string | undefined): string[] {
   return out.slice(0, 8);
 }
 
+/** r3 sweep 11/4 (5/5 camera-off openers on "dark brown leather jackets"): clothes, style and looks are never an opener —
+ *  with no camera it reads as seeing them (knows.ts firstCallNod: nothing about what they're wearing) */
+const LOOKS_HOOK = /\b(?:fashion|outfits?|clothes|clothing|wear\w*|style|styling|jackets?|coats?|leather|shoes|sneakers|boots|dress(?:es)?|shirts?|jeans|hoodies?|makeup|hair\w*|nails|skin\w*|jewel\w*|accessor\w*|monochrome|fits?|aesthetic|looks?)\b/i;
 export function isSafeHook(item: string): boolean {
-  return safeMemoryText(item) && !PRIVATE_HOOK.test(item);
+  return safeMemoryText(item) && !PRIVATE_HOOK.test(item) && !LOOKS_HOOK.test(item);
 }
 
 /**
