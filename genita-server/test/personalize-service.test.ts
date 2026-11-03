@@ -500,3 +500,16 @@ test("Codex r6: only the stored profile's own words are kept ('asthma when runni
   assert.ok(!stored.includes("asthma"));
   assert.deepEqual(((await h.store.getStyle("u1"))!.removed ?? []).filter((r) => r.forget).map((r) => r.text), ["running"]);
 });
+
+test("Codex r7: 'Forget that I have asthma' on the sheet stores and shows nothing; a profile thing is kept out by its own words", async (t) => {
+  const h = harness(() => ({ updates: [], answered: { field: "", text: "", chip: "" } }));
+  t.after(h.cleanup);
+  await withStory(h);
+  const r = await h.p.correct("u1", { cardId: "taste", text: "Forget that I have asthma." });
+  assert.deepEqual(r.changed, []);
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!).includes("asthma"));
+  await h.p.correct("u1", { cardId: "taste", text: "Forget that I like clean minimal clothes." });
+  const removed = ((await h.store.getStyle("u1"))!.removed ?? []).filter((x) => x.forget).map((x) => x.text);
+  assert.ok(removed.length === 1 && /clean|minimal|clothes/.test(removed[0]), JSON.stringify(removed));
+  assert.ok(!JSON.stringify((await h.store.getStyle("u1"))!.pendingCorrections ?? []).includes("Forget"));
+});

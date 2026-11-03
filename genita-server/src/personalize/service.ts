@@ -281,6 +281,17 @@ export class Personalize {
     const texts = cardTexts(shown);
     if (items.some((i) => !texts.includes(i))) throw new PersonalizeError(400, "bad_correction", "items: the card's own lines");
     const t0 = performance.now();
+    // "forget that …" on the sheet: like the voice path, only the profile's own words are kept; the request text
+    // itself is never stored, shown or replayed (Codex r7) — the marked lines still go
+    if (text && isForgetRequest(text)) {
+      await this.rememberForget(userId, before, forgetTarget(text));
+      if (!items.length) {
+        const latest = (await this.store.getStyle(userId)) ?? before;
+        this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "forget" });
+        return { card: Personalize.current(latest).find((c) => c.id === cardId) ?? shown, ack: ACK, changed: [], profile: styleProfileText(latest), rows: latest.display };
+      }
+      return this.correct(userId, { cardId, items });
+    }
     // a sensitive or identifying text (health, money, an email …) is never stored, shown or sent to Spark (Codex P1):
     // the card stays as it was, the user still gets the ack
     if (text && (isSensitiveDetail(text) || redactSensitive(text) !== text || looksLikeInjection(text))) {
@@ -468,6 +479,22 @@ export class Personalize {
   }
 
   /**
+   * A "forget that …" (voice or the profile sheet): what is kept is never the user's words, only the stored
+   * profile's own words the request named — those passed every filter once, so no new detail ("asthma when
+   * running") is stored or sent on (Codex r5–r7). Returns whether anything was kept.
+   */
+  private async rememberForget(userId: string, card: StyleCard, target: string): Promise<boolean> {
+    const keys = avoidKeys([{ text: target, forget: true }]);
+    const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
+    const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
+    const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
+    const kept = words.join(" ").slice(0, 80);
+    if (!kept) return false;
+    await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: kept, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+    return true;
+  }
+
+  /**
    * One user line in a call. `asked` = the companion just asked this call's question: the line is always
    * checked for an answer ("Noted: …"); otherwise only lines that look like a correction reach Spark ("Updated: …").
    */
@@ -483,14 +510,7 @@ export class Personalize {
       const target = forgetTarget(line);
       // a sensitive target (health, money, …) is never stored or sent on: the memory filters drop it anyway (Codex P1)
       // a target with a number in it (an address, a phone, an account) is never kept, whatever its shape
-      // what is kept is never the user's words, only the stored profile words the request named: those passed every
-      // filter once, so no new detail ("asthma when running") is stored or sent on (Codex r5–r6)
-      const keys = avoidKeys([{ text: target, forget: true }]);
-      const lines = Object.values(card.sections ?? {}).flatMap((l) => (l as Array<{ text: string }>).map((f) => f.text));
-      const named = [...new Set(keys.flatMap((k) => k.keys).filter((stem) => lines.some((t) => keyWords(t).includes(stem))))];
-      const words = [...new Set(lines.flatMap((t) => (t.match(/[\p{L}\p{N}-]{3,}/gu) ?? []).filter((w) => named.includes(w.toLowerCase().slice(0, 5)))))].map((w) => w.toLowerCase());
-      const kept = words.join(" ").slice(0, 80);
-      if (kept) await this.update(userId, (c) => ({ card: { ...c, removed: [...(c.removed ?? []), { text: kept, at: this.now().toISOString(), forget: true as const }].slice(-40) }, out: true }));
+      await this.rememberForget(userId, card, target);
     }
     const raw = await this.json<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(card, line, lastAssistant, asked), signal);
     const answer = asked ? toAnswer(raw, asked.item) : null;
