@@ -320,7 +320,8 @@ struct FindsSheet: View {
             } else {
                 if finds.state == .full {
                     Button { call.toggleMic() } label: {
-                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 18, weight: .medium)).foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
+                        Image(systemName: call.micOn ? "mic.fill" : "mic").font(.system(size: 22, weight: .medium))   // ~50 % of the 50 pt circle (18 pt read as shrunken, icon sweep 11/4)
+                            .foregroundStyle(CallInk.onInk).frame(width: 50, height: 50).background(CallInk.ink, in: Circle())
                     }.buttonStyle(PressScale(scale: 0.96)).accessibilityLabel(call.micOn ? "Mute" : "Unmute")
                 }
                 let reopened = finds.current?.reopened == true
