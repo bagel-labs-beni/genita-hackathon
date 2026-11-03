@@ -172,6 +172,21 @@ public final class LipTimeline: @unchecked Sendable {
         cache = nil
     }
 
+    /// Loudness openness 0…1 at `ms` (no shape weighting: a closure next to it doesn't lower it).
+    public func loudness(atMs ms: Double) -> Double {
+        lock.lock()
+        let d: Derived
+        if let c = cache { d = c } else { d = derive(); cache = d }
+        lock.unlock()
+        return d.voiced.isEmpty ? 0 : Double(interpolatedOpenness(ms, d))
+    }
+
+    /// Aligner phonemes received so far (ms on the reply clock, sorted).
+    public var phonemeTimings: [LipPhonemeTiming] {
+        lock.lock(); defer { lock.unlock() }
+        return phonemes.sorted { $0.startMs < $1.startMs }
+    }
+
     /// True when the shapes come from timings (phonemes, words or mouth cues), not the text fallback.
     public var hasTimings: Bool {
         lock.lock(); defer { lock.unlock() }

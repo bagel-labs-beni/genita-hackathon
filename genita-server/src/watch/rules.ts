@@ -3,7 +3,8 @@
  * rule is unit-testable without sockets or vendors.
  */
 
-export const REACT_MIN_GAP_MS = 30_000;
+/** at most one reaction every ~25 s (Chelsea 11/3: one per 20–30 s) */
+export const REACT_MIN_GAP_MS = 25_000;
 /** no reaction in the first seconds of a share: nothing has happened yet */
 export const REACT_AFTER_START_MS = 6_000;
 /** a dialogue line that ended this recently still counts as "talking" */
@@ -55,9 +56,10 @@ export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
   if (moment === "none" || !clean) return null;
   const capped = clean.split(" ").slice(0, 12).join(" ");
-  if (moment === "funny") return `<laugh> [laughs] ${capped}`;
-  if (moment === "surprising") return `<surprised> ${capped}`;
-  return `<warm> ${capped}`;
+  // the face: funny → smileopen (laugh draws as smileopen for now, 11/3), sweet → smile, surprising → surprised
+  if (moment === "funny") return `<laugh> [smileopen] [laughs] ${capped}`;
+  if (moment === "surprising") return `<surprised> [surprised] ${capped}`;
+  return `<warm> [smile] ${capped}`;
 }
 
 // ───────────────────────── echo guard (F5-L13) ─────────────────────────

@@ -5,6 +5,7 @@
  * "맞아?" answers, and gives the session one line of context about the card
  * on screen so "Ask about this" follow-ups make sense.
  */
+import { reasonChips, tasteLines, type TasteLine } from "../personalize/reasons.ts";
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isProductAsk } from "./intent.ts";
@@ -60,6 +61,8 @@ export class FindsRunner {
   private owner: string | null = null;
   private memories: string[] = [];
   private profile: string | undefined;
+  /** lane 개인화: the user's taste lines with labels (reason chips); empty = read them from the profile text */
+  private taste: TasteLine[] = [];
   private userName: string | undefined;
   private timeZone: string | undefined;
   private likes: Promise<string[] | undefined> = Promise.resolve(undefined);
@@ -74,14 +77,21 @@ export class FindsRunner {
     this.hooks = hooks;
   }
 
-  configure(o: { owner?: string; memories: string[]; profile?: string; userName?: string; timeZone?: string }): void {
+  configure(o: { owner?: string; memories: string[]; profile?: string; userName?: string; timeZone?: string; taste?: TasteLine[] }): void {
     this.owner = o.owner ? ownerKey(o.owner.slice(0, 128)) : null;
     this.memories = o.memories;
     this.profile = o.profile;
+    this.taste = o.taste ?? [];
     this.userName = o.userName;
     this.timeZone = o.timeZone && /^[A-Za-z_+\-/0-9]{1,40}$/.test(o.timeZone) ? o.timeZone : undefined;
     // the account's style card, read once per call (a failure just means no blue chip)
     this.likes = o.owner && this.deps.likes ? this.deps.likes(o.owner).catch(() => undefined) : Promise.resolve(undefined);
+  }
+
+  /** A correction in the call changed the profile: later cards use it. */
+  setProfile(profile: string, taste: TasteLine[]): void {
+    this.profile = profile;
+    this.taste = taste;
   }
 
   /** Starts a card pipeline if the turn asks for one. Returns the find (and what to say first) or null. */
@@ -172,6 +182,11 @@ export class FindsRunner {
     if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return;
     // after the call ends, finished cards still get their pictures saved
     if (e.type === "find.created") {
+      // lane 개인화 E: 1–2 reason chips from the user's own taste lines (never model-written)
+      if (!e.card.reasons) {
+        const reasons = reasonChips(this.taste.length ? this.taste : tasteLines(this.profile), e.card);
+        if (reasons.length) e.card.reasons = reasons;
+      }
       this.cards.set(e.findId, e.card);
       this.focusId = e.findId;
       void this.persist(e.card);

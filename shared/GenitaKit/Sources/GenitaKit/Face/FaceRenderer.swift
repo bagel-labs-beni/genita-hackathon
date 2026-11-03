@@ -36,6 +36,10 @@ public final class FaceRenderer: @unchecked Sendable {
     private let bases: [FaceExpression: CIImage]
     private let patchImages: [LipViseme: CIImage]
     private let extent: CGRect
+    /// Framing (11/3 small-mouth animals on a phone): zoom about a point just above the face centre
+    /// (CI coords). 1 = plain aspect fill.
+    private let framingZoom: CGFloat
+    private let framingCenter: CGPoint
     private let blinkMask: CIImage?
     private let jawMask: CIImage
     private let headMask: CIImage
@@ -46,6 +50,9 @@ public final class FaceRenderer: @unchecked Sendable {
     public var useFlow = true
     /// Callers sample the lip timeline this far ahead so smoothing lands on the sound.
     public static let defaultLipLookaheadMs = 40.0
+    /// Expression layer (smile / laugh / surprised / concerned warps). Off until the server's
+    /// `expression` event ships; turn on for tests and the render tool.
+    nonisolated(unsafe) public static var expressionLayer = false
     /// Flow-morph working resolution relative to the output (1 = output pixels).
     nonisolated(unsafe) public static var flowDensity = 1.5   // 1 was soft on the lips (review 11/3); 2 costs ~35% more
     /// This face's lookahead (the flow map's `lookaheadMs`, else the default).
@@ -58,6 +65,15 @@ public final class FaceRenderer: @unchecked Sendable {
         let hold: Double = m.drive == "snap" || (m.minHold ?? 1) >= 3 ? 80 : Self.defaultLipLookaheadMs
         return max(m.lookaheadMs ?? 0, hold)
     }
+    /// Expression events for the current reply (audio-clock ms). Ignored when the layer is off.
+    public func addExpression(_ e: FaceExpressionEvent) {
+        var e = e
+        // demo (11/3): laugh over the lip rig reads rubbery; it plays as an open smile
+        if Self.laughAsSmileOpen, e.tag == "laugh", flowMorph?.data.map.rig != nil { e.tag = "smileopen" }
+        lock.lock(); flowMorph?.expressionEvents.append(e); lock.unlock()
+    }
+    /// Laugh events on lip-rig faces play as `smileopen` (demo setting; the laugh warp fights the rig).
+    nonisolated(unsafe) public static var laughAsSmileOpen = true
     /// Cancel / barge-in: drop the mouth's smoothing and held shapes so it rests on the next frame.
     public func resetMouth() { lock.lock(); flowMorph?.reset(); lock.unlock() }
     /// Parity checks: the next frame uses these flow amounts (in `faceSet.flow.keys` order).
@@ -72,10 +88,18 @@ public final class FaceRenderer: @unchecked Sendable {
         self.reduceMotion = reduceMotion
         rng = SplitMix64(seed: seed)
         motion = AliveMotion(seed: seed)
+        if let a = faceSet.flow?.map.alive ?? (faceSet.flow?.kind == "human" ? FlowMap.Alive() : nil) {
+            motion.headGain = a.headGain; motion.nodGain = a.nodGain
+            motion.rollGain = a.rollGain ?? a.headGain; motion.nodWidth = a.nodWidth; motion.cameraGain = a.camera
+        }
+        let fr = Self.framing(faceSet)
+        framingZoom = fr.zoom
+        framingCenter = CGPoint(x: fr.center.x, y: CGFloat(faceSet.pixelSize.height) - fr.center.y)
         // Flow morph at `flowDensity` × the output's pixel density (capped at the still's own).
-        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity
+        let outScale = Double(max(outputSize.width / faceSet.pixelSize.width, outputSize.height / faceSet.pixelSize.height)) * Double(AliveMotion.overscan) * Self.flowDensity * Double(fr.zoom)
         flowMorph = faceSet.flow.flatMap { d in
-            faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox) }
+            faceSet.expressions[.neutral].map { FlowMorph(data: d, neutralStill: $0, scale: outScale, face: faceSet.faceBox, mouth: faceSet.mouthBox,
+                                                         expressions: Self.expressionLayer) }
         }
         self.context = context ?? CIContext(options: [.cacheIntermediates: false, .outputColorSpace: CGColorSpace(name: CGColorSpace.sRGB)!])
         let w = faceSet.pixelSize.width, h = faceSet.pixelSize.height
@@ -113,9 +137,17 @@ public final class FaceRenderer: @unchecked Sendable {
         // Person layers from the SAM face box: the head (with hair) and the shoulders/chest under it.
         // Soft masks, so the warp between layers is a smooth field with no holes.
         let he = Self.headEllipse(face: face)
-        headMask = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
-        bodyMask = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
+        var head = Self.ellipseMask(center: he.center, rx: he.rx, ry: he.ry, inner: Self.headMaskInner, extent: extent)
+        var body = Self.ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 1.25),
                                     rx: face.width * 2.0, ry: face.height * 1.75, inner: 0.6, extent: extent)
+        // Only the person moves (11/3 Chelsea: still background): layers = ellipse × person lock. The lock
+        // is prep's person matte (SAM, hair edge feathered) or, without one, a fixed feathered
+        // head-and-shoulders ellipse from the face box; outside it the still itself shows.
+        let ext = extent
+        let lock: CIImage
+        if let pm = faceSet.personMask { lock = Self.personAlpha(pm, extent: ext) } else { lock = Self.headShouldersLock(face: face, extent: ext) }
+        head = Self.multiply(head, lock, extent: ext); body = Self.multiply(body, lock, extent: ext)
+        headMask = head; bodyMask = body
     }
 
     // MARK: state
@@ -168,7 +200,7 @@ public final class FaceRenderer: @unchecked Sendable {
     // MARK: drawing
 
     /// The frame as a Core Image graph with extent (0, 0, outputSize).
-    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CIImage {
+    public func image(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, context: LipContext? = nil) -> CIImage {
         let h = extent.height
         // 1. expression: running weighted average of the stills in the mix
         var img: CIImage = bases[.neutral]!
@@ -190,7 +222,7 @@ public final class FaceRenderer: @unchecked Sendable {
         let open = Double(min(1, max(0, lip.openness)))
         if useFlow, let fm = flowMorph {
             // Lower face = neutral·(1−m) + morph·m; the nose and above are the still's own pixels.
-            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, at: t) }()
+            let cg: CGImage = { lock.lock(); defer { lock.unlock() }; return fm.render(lip, ahead: ahead, context: context, at: t) }()
             let r = fm.outputRect
             img = CIImage(cgImage: cg)
                 .transformed(by: CGAffineTransform(scaleX: r.width / CGFloat(cg.width), y: r.height / CGFloat(cg.height)))
@@ -220,11 +252,24 @@ public final class FaceRenderer: @unchecked Sendable {
         // background layers that move separately, so the mouth rides the head and never slides.
         let out = CGRect(origin: .zero, size: outputSize)
         let scale = max(outputSize.width / extent.width, outputSize.height / extent.height) * (reduceMotion ? 1 : AliveMotion.overscan)
-        let fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+        var fill = CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
                                      tx: (outputSize.width - extent.width * scale) / 2, ty: (outputSize.height - extent.height * scale) / 2)
+        if framingZoom > 1.001 {
+            // zoom about the framing point where it already sits on screen (inside the image: no edge shows)
+            let c = CGPoint(x: framingCenter.x - extent.minX, y: framingCenter.y - extent.minY).applying(fill)
+            fill = fill.concatenating(CGAffineTransform(translationX: -c.x, y: -c.y))
+                .concatenating(CGAffineTransform(scaleX: framingZoom, y: framingZoom))
+                .concatenating(CGAffineTransform(translationX: c.x, y: c.y))
+        }
         let filled = img.clampedToExtent().transformed(by: fill)
         guard !reduceMotion else { return filled.cropped(to: out) }
-        let m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        var m = motionState(at: t, open: open, face: Self.ciRect(faceSet.faceBox, height: h))
+        // laugh: the head bobs with the "ha-ha" (4.5 Hz), 2.5 px at 960 high
+        if let lw = flowMorph?.lastLaugh, lw.w > 0.01 {
+            // bob plus a 4 px tilt back (v30)
+            let bob = (2.5 * pow(sin(2 * Double.pi * 4.5 * lw.ms / 1000), 2) - 4) * lw.w * Double(extent.height) / 960
+            m.head = m.head.concatenating(CGAffineTransform(translationX: 0, y: -CGFloat(bob)))
+        }
         let inv = fill.inverted()
         func inOutput(_ a: CGAffineTransform) -> CGAffineTransform { inv.concatenating(a).concatenating(fill) }
         let bodyT = inOutput(m.body), headT = inOutput(m.head)
@@ -242,8 +287,8 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// Rendered RGBA frame (sRGB).
-    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil) -> CGImage? {
-        context.createCGImage(image(at: t, lip: lip, ahead: ahead), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    public func render(at t: Double, lip: LipFrame, ahead: LipFrame? = nil, lipContext: LipContext? = nil) -> CGImage? {
+        context.createCGImage(image(at: t, lip: lip, ahead: ahead, context: lipContext), from: CGRect(origin: .zero, size: outputSize), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     /// Renders into a caller-owned pixel buffer-like destination (e.g. a CVPixelBuffer via
@@ -334,6 +379,22 @@ public final class FaceRenderer: @unchecked Sendable {
 
     // MARK: helpers
 
+    /// Zoom and centre (still px, y down). map.framing wins; otherwise people stay unzoomed and a
+    /// face shorter than 35 % of the still is zoomed up to it (1…1.35×), centred a little above the
+    /// face centre.
+    static func framing(_ set: FaceSet) -> (zoom: CGFloat, center: CGPoint) {
+        let f = set.faceBox, H = Double(set.pixelSize.height)
+        let fh = Double(f.height) / max(1, H)
+        let fr = set.flow?.map.framing
+        let human = (set.flow?.kind ?? "human") == "human"
+        var z = fr?.zoom ?? (human || fh <= 0 ? 1 : min(1.35, max(1, 0.35 / fh)))
+        z = z.isFinite ? min(2, max(1, z)) : 1
+        let cy = fr?.cy.map { $0 * H } ?? (Double(f.midY) - 0.1 * Double(f.height))
+        // the zoom centre stays inside the still, so the zoomed image still covers the frame (no edge smear)
+        let cyIn = min(H, max(0, cy.isFinite ? cy : Double(f.midY)))
+        return (CGFloat(z.isFinite ? z : 1), CGPoint(x: min(set.pixelSize.width, max(0, f.midX)), y: CGFloat(cyIn)))
+    }
+
     static func ciRect(_ r: CGRect, height: CGFloat) -> CGRect {
         CGRect(x: r.minX, y: height - r.maxY, width: r.width, height: r.height)
     }
@@ -351,6 +412,40 @@ public final class FaceRenderer: @unchecked Sendable {
     }
 
     /// White-opaque ellipse fading to clear between `inner` and 1 of its radii.
+    /// Prep's person matte (8-bit grey, white = subject, hard edge) as an alpha mask at the still's extent.
+    static func personAlpha(_ cg: CGImage, extent: CGRect) -> CIImage {
+        var m = CIImage(cgImage: cg)
+        if m.extent.size != extent.size {
+            m = m.transformed(by: CGAffineTransform(scaleX: extent.width / m.extent.width, y: extent.height / m.extent.height))
+        }
+        // prep sends a hard matte: erode ~4 px (fur / hair halo stays with the background), feather ~2.5 px
+        let erode = CIFilter.morphologyMinimum()
+        erode.inputImage = m.clampedToExtent(); erode.radius = Float(max(1, 0.0035 * extent.width))
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = erode.outputImage!; blur.radius = Float(max(1.5, 0.0025 * extent.width))
+        let a = CIFilter.maskToAlpha()
+        a.inputImage = blur.outputImage!.cropped(to: extent)
+        return a.outputImage!.cropped(to: extent)
+    }
+
+    /// Non-ML person lock: head (with hair) and shoulders as two feathered ellipses (CI coords, y up).
+    static func headShouldersLock(face: CGRect, extent: CGRect) -> CIImage {
+        let he = headEllipse(face: face)
+        let head = ellipseMask(center: he.center, rx: he.rx * 1.08, ry: he.ry * 1.08, inner: 0.82, extent: extent)
+        let shoulders = ellipseMask(center: CGPoint(x: face.midX, y: face.minY - face.height * 0.95),
+                                    rx: face.width * 1.25, ry: face.height * 0.75, inner: 0.78, extent: extent)
+        let f = CIFilter.maximumCompositing()
+        f.inputImage = head; f.backgroundImage = shoulders
+        return f.outputImage!.cropped(to: extent)
+    }
+
+    /// a with its alpha multiplied by b's alpha (source-in): the product of two masks.
+    static func multiply(_ a: CIImage, _ b: CIImage, extent: CGRect) -> CIImage {
+        let f = CIFilter.sourceInCompositing()
+        f.inputImage = a; f.backgroundImage = b
+        return f.outputImage!.cropped(to: a.extent.intersection(extent))
+    }
+
     static func ellipseMask(center: CGPoint, rx: CGFloat, ry: CGFloat, inner: CGFloat, extent: CGRect) -> CIImage {
         let g = CIFilter.radialGradient()
         g.center = .zero
