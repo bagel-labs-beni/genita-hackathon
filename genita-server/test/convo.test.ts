@@ -148,9 +148,10 @@ test("prompt v1: honesty, real-life friends, no sexual content, crisis-only-on-r
   assert.doesNotMatch(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /You already know them/, "no profile, no claim");
 });
 
-test("prompt v1 stays lean: under 2,300 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
+test("prompt v1 stays lean: under 2,450 characters without user data (Spark reasons longer on long prompts, 11/2)", () => {
   const s = buildInstructions({ persona: mina, mode: "chat", style: "v1" });
-  assert.ok(s.length < 2300, `${s.length} chars`);
+  // 2,300 → 2,450 (#342): the card's own takes + quirk are ~90 chars of data in the backstory, every card has them now
+  assert.ok(s.length < 2450, `${s.length} chars`);
 });
 
 test("faces v1: intensity follows the emotion (warm → soft smile, excited → grin); legacy stays 0.7", () => {

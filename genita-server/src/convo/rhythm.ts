@@ -12,6 +12,8 @@
  * Intent only, never a line to copy.
  */
 
+import { ownTakeLine } from "./ownTakes.ts";
+
 const GOOD_NEWS = /\b(?:i|we) (?:got|landed) (?:the |a |an |my )?(?:job|offer|part|role|promotion|raise|apartment|place|internship|spot|scholarship|tickets?)\b|\b(?:i|we) (?:passed|won|aced|nailed|crushed)\b|\bi did it\b|\bthey said yes\b|\bgot (?:in|accepted|promoted|engaged|hired)\b/i;
 const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst|tore (?:it|my)|redid my)\b/i;
 const LAUGH = /\b(?:ha(?:ha)+|lol+|lmao+|lmfao|rofl|i'?m dead|that'?s hilarious|you'?re funny)\b|😂|🤣|💀/i;
@@ -68,6 +70,8 @@ export type TurnHintInput = {
   remembers: boolean;
   /** K-test 11/3: this call already brought up one personal thing on its own (MENTION_RULE budget) */
   mentionSpent?: boolean;
+  /** the last replies as stored, oldest first (session keeps 3) */
+  recentReplies?: string[];
 };
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
@@ -85,6 +89,9 @@ export function turnHints(t: TurnHintInput): string | null {
   const close = closenessLine(t.callNumber);
   if (close) out.push(close);
   if (t.mood) out.push(t.mood);
+  // #342: three replies with no take of its own → ask for one (ownTakes.ts)
+  const take = ownTakeLine(t.recentReplies, user);
+  if (take) out.push(take);
   if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");

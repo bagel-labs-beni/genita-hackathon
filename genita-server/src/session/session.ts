@@ -1458,6 +1458,7 @@ export class Session {
         mood: moodLine(moodFrom(userLines)),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
         mentionSpent: this.personalUsed > 0,
+        recentReplies: this.recentReplies,
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
