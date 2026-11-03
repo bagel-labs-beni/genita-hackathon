@@ -342,3 +342,15 @@ test("Codex #423 final P1: a failed saveNow extraction gives the turn back to th
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(batches.flat().filter((u) => /pistachio/.test(u)).length, 2, JSON.stringify(batches));
 });
+
+test("Codex #423 recheck P1: a failed saveNow is retried even when the reply never completed and the call ended", async () => {
+  const { service } = setup(); const call = new MemoryCall(service, "a", "s"); await call.open();
+  const batches: string[][] = [];
+  let fail = true;
+  const realExtract = service.extract.bind(service);
+  service.extract = ((u: string, sid: string, turns: { user: string }[], rev: unknown) => { batches.push(turns.map((t) => t.user)); if (fail) { fail = false; return Promise.reject(new Error("blip")); } return realExtract(u, sid, turns as never, rev as never); }) as typeof service.extract;
+  call.saveNow("Remember that my dog is called Biscuit.");
+  call.close(); // the reply was cut off: no completedTurn
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(batches.flat().filter((u) => /Biscuit/.test(u)).length, 2, JSON.stringify(batches));
+});

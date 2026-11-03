@@ -1101,3 +1101,10 @@ test("session v1 (QA P3 2/3): after a comma piece, a guard never capitalises the
   assert.doesNotMatch(String(second.text), /,\s+[A-Z]/, String(second.text));
   session.close();
 });
+
+test("AI sweep 11/3: a greeting never claims to hear them before they spoke; after they speak it may", () => {
+  assert.equal(guardSentence("Okay your voice sounds super alive right now.", none), "unseen");
+  assert.equal(guardSentence("You sound like you're in a great mood.", none), "unseen");
+  assert.equal(guardSentence("You sound so done with today.", { camera: false, userText: "ugh today was a lot" }), null);
+  assert.equal(guardSentence("That sounds like a plan.", none), null);
+});

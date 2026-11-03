@@ -160,6 +160,8 @@ const SAVE_TALK = [
 
 /** K-test 11/3: what they're wearing / how they look, said with no camera ("you're in something all black right now") */
 const WEARING_NOW = /\b(?:you'?re (?:in|wearing|rocking|dressed in)\b[^.!?]{0,30}\b(?:black|white|red|blue|green|grey|gray|beige|camel|navy|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|blazer|coat|pajamas|sweats|minimal|monochrome|something)\b|what you'?re wearing\b|your (?:outfit|fit|hair|makeup|shirt|top|dress|jacket|hoodie|sweater|jeans|look) (?:right now|today|tonight)\b)/i;
+/** AI sweep 11/3: hearing them before they spoke ("your voice sounds super alive right now") */
+const UNHEARD = /\b(?:your voice|you sound(?:s|ing)?\b|i (?:can )?hear (?:you|that|it in your)|sounds like you'?re|the way you sound)/i;
 const USER_ON_CLOTHES = /\b(?:wear\w*|outfit|fit|dress|shirt|top|jacket|hoodie|sweater|jeans|hair|makeup|look(?:s|ing)? like)\b/i;
 /**
  * K-test 11/3 [P2]: sensitive details said back ("eighty five K, you're doing solid"): an income / salary amount, or a
@@ -189,6 +191,8 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
   if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!ctx.camera && WEARING_NOW.test(sentence) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
+  // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
+  if (!ctx.userText.trim() && UNHEARD.test(sentence)) return "unseen";
   if ((INCOME.test(sentence) && !/\b(?:salary|income|make|earn|paid|\d+\s?k)\b/i.test(ctx.userText)) || (HEALTH.test(sentence) && !HEALTH.test(ctx.userText))) return "sensitive";
   if (APPEARANCE_WORDS.test(sentence) && !APPEARANCE_WORDS_USER.test(ctx.userText) && CLASSES.find(([c]) => c === "appearance")![1].test(sentence)) return "appearance";
   if (energyLabel(sentence)) return "label";

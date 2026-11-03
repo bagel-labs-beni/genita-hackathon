@@ -146,10 +146,18 @@ export class MemoryCall {
     const st: { ok: boolean | null; waiting: { user: string; assistant: string } | null } = { ok: null, waiting: null };
     this.savedNow.set(user, st);
     this.pending.push({ user, assistant: "" });
-    // a failed extraction gives the turn back to the normal batch (Codex #423 final P1: never lost)
+    const gen = this.forgetsSeen;
+    // a failed extraction is retried once — the completed pair if the reply finished, else the ask itself — even after
+    // the call ended (never lost), but never after a Forget since the ask (Codex #423 recheck P1 ×2). The store's own
+    // revision check (this.revision) rejects a write from before a Forget too.
     this.flush()?.then(() => { st.ok = true; }, () => {
       st.ok = false;
-      if (st.waiting && !this.closed) { this.pending.push(st.waiting); st.waiting = null; }
+      if (this.forgetsSeen !== gen) return;
+      const turn = st.waiting ?? { user, assistant: "" };
+      st.waiting = null;
+      st.ok = true; // covered by this retry: a later completedTurn does not send it a third time
+      this.pending.push(turn);
+      this.flush();
     });
   }
   private savedNow = new Map<string, { ok: boolean | null; waiting: { user: string; assistant: string } | null }>();
