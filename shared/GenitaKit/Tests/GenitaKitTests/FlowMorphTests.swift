@@ -429,7 +429,7 @@ struct LipThinTests {
         #expect(p.spreadNeutral == 0.1)
         let m = MotionV2(params: p, faceNorm: 1)
         let l = try #require(m.mapLadders)
-        #expect(l[0].map(\.0) == ["U", "OH"] && l[1][1].1 == 0.2 && l[2][0].0 == "AH")
+        #expect(l[0].map { $0.0 } == ["U", "OH"] && l[1][1].1 == 0.2 && l[2][0].0 == "AH")
         let none = MotionV2(params: MotionV2Params(), faceNorm: 1)
         #expect(none.mapLadders == nil && MotionV2Params().spreadNeutral == 0.4)   // no map ladders = the built-in ones
     }
