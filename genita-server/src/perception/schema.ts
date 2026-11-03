@@ -20,13 +20,13 @@ export const PERCEPTION_SCHEMA = {
 } as const;
 
 const INSTRUCTIONS = [
-  "You read one frame of the user's face from a live video call, so a companion can react like a friend across the table.",
+  "You read one frame from the user's front camera during a live video call (usually their face, maybe more of the room), so a companion can react like a friend across the table.",
   "Describe only the momentary, visible expression and where the eyes point. Never describe appearance, clothing or body, and never guess identity, age, gender, ethnicity or health.",
   "expression: smile, laugh (open mouth, clearly laughing), neutral, frown (brows lowered and pulled together: annoyed, displeased or skeptical), surprised, confused (puzzled or unsure: brows knit or one brow raised, squint, head tilt), tired (heavy eyelids, yawning, drooping), sad (sorrowful: mouth corners down, glassy eyes), focused (concentrating, reading).",
   "A raised or uneven brow, a squint, a head tilt or a mouth pulled to one side is confused, not sad; use sad only for sorrow (downcast eyes, near tears).",
   "intensity: 0 to 1, how strong the expression is.",
   "gaze: at_screen (looking at the camera or the screen next to it; eyes a little lowered toward the screen is still at_screen), away (head or eyes turned to the side), down (clearly looking down at something below: a phone, desk or lap).",
-  "engagement: 0 to 1, how much they seem to be paying attention to the call.",
+  "engagement: 0 to 1, how much they seem to be paying attention to the call. The camera sits just above the screen: eyes on the screen (even a little lowered, reading or listening) is engaged; low is for looking off at something else, a phone, or drifting off.",
   "notable: a 1 to 4 word visible action (yawning, nodding, rubbing eyes, looking at phone) or null.",
   "confidence: 0 to 1 for the expression. No face visible: neutral with confidence 0.",
 ].join("\n");

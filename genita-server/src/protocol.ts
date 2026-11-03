@@ -89,7 +89,7 @@ export type ClientMessage =
   | { type: "audio_stop" }
   | { type: "text"; text: string; frames?: string[]; findId?: string }
   | { type: "frames"; images: string[] }
-  /** PERC-1: a face crop (base64 JPEG ≤ 256 px) for perception; send only when `ready.perception` is true */
+  /** PERC-1: the selfie face region (fixed upper-centre crop, base64 JPEG 256–384 px); send only when `ready.perception` is true */
   | { type: "perception.frame"; image: string }
   | { type: "barge_in" }
   | { type: "playback_done"; utteranceId: number }
@@ -107,6 +107,12 @@ export type FindKind = "recipe" | "outfit" | "link" | "product";
 export type FindTier = "checking" | "have" | "maybe" | "buy";
 /** 0..1 of the camera frame the box was found on */
 export type NormBox = { x1: number; y1: number; x2: number; y2: number };
+/**
+ * SAM pixel mask over an item's box (GENITA_SAM_MASKS=1): a w x h grid stretched
+ * over `box`, row-major run lengths alternating 0s then 1s (first run may be 0).
+ * sum(rle) === w * h. Long side at most 96 cells.
+ */
+export type NormMask = { w: number; h: number; rle: number[] };
 export type FindItem = {
   id: string;
   name: string;
@@ -250,7 +256,7 @@ export type ServerEvent =
   | { type: "find.progress"; findId: string; detail: string; evidence?: FindEvidence }
   /** subtitle/status: the card's "You have 4, need rice" lines, once a card exists */
   | { type: "find.items"; findId: string; items: FindItem[]; checking: boolean; subtitle?: string; status?: string; pill?: string }
-  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox }[] }
+  | { type: "observe.boxes"; findId: string; frame: number; w: number; h: number; items: { label: string; box: NormBox; mask?: NormMask }[] }
   | { type: "find.created"; findId: string; card: FindCard }
   | { type: "find.image"; findId: string; slot: string; status: "ready" | "failed"; url?: string }
   | { type: "find.failed"; findId: string; reason: "unclear" | "search_failed" | "error" | "stopped"; message: string }

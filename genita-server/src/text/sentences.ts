@@ -16,6 +16,10 @@ const ABBREVIATIONS = new Set([
 const LATIN_END = new Set([".", "!", "?", "…"]);
 const WIDE_END = new Set(["。", "！", "？"]);
 const CLOSERS = new Set(['"', "'", "”", "’", ")", "]", "」", "』"]);
+// Keep tool-announcement recognition aligned with the clauses we can emit.
+export const CLAUSE_SEPARATORS = ",;:，、；：—";
+const CLAUSE_BREAK = new Set(CLAUSE_SEPARATORS);
+const FIRST_CLAUSE = new RegExp(`^(\\s*<[^<>]{1,24}>)?[^${CLAUSE_SEPARATORS}.!?…。！？]*?\\p{L}[^${CLAUSE_SEPARATORS}.!?…。！？]*?[${CLAUSE_SEPARATORS}](?=\\s)`, "u");
 
 export type SplitterOptions = {
   firstClauseMaxChars?: number;
@@ -70,7 +74,7 @@ export class SentenceSplitter {
     const b = this.buf;
     if (this.emitted === 0 && this.eagerFirstClause) {
       // first clause break, skipping a leading <emotion> tag; needs at least one letter before it
-      const m = /^(\s*<[^<>]{1,24}>)?[^,;:，—.!?…。！？]*?\p{L}[^,;:，—.!?…。！？]*?[,;:，—](?=\s)/u.exec(b);
+      const m = FIRST_CLAUSE.exec(b);
       if (m) return m[0].length;
     }
     for (let i = 0; i < b.length; i++) {
@@ -98,12 +102,12 @@ export class SentenceSplitter {
     }
     if (this.emitted > 0 && this.clauseMaxChars > 0 && b.length > this.clauseMaxChars) {
       for (let i = this.clauseMaxChars; i >= 40; i--) {
-        if ((b[i] === "," || b[i] === ";" || b[i] === "，") && i + 1 < b.length && /\s/.test(b[i + 1])) return i + 1;
+        if (CLAUSE_BREAK.has(b[i]) && i + 1 < b.length && /\s/.test(b[i + 1])) return i + 1;
       }
     }
     if (this.emitted === 0 && b.length > this.firstClauseMaxChars) {
       for (let i = b.length - 1; i >= 20; i--) {
-        if ((b[i] === "," || b[i] === ";" || b[i] === "，") && i + 1 < b.length && /\s/.test(b[i + 1])) return i + 1;
+        if (CLAUSE_BREAK.has(b[i]) && i + 1 < b.length && /\s/.test(b[i + 1])) return i + 1;
       }
     }
     return -1;

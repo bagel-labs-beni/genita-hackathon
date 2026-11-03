@@ -23,26 +23,7 @@ export type PerceptionSample = {
 /** Smoothed over the last few kept samples. `at` = last kept sample, `since` = when this expression began. */
 export type PerceptionState = PerceptionSample & { at: number; since: number };
 
-export const TRIGGER_KINDS = [
-  "smiled_at_reply",
-  "laughed",
-  "smiled_at_own_joke",
-  "looks_tired",
-  "looks_confused",
-  "looked_away",
-  "engagement_drop",
-] as const;
-export type TriggerKind = (typeof TRIGGER_KINDS)[number];
-
-/** `at` is the session clock (performance.now) of the frame the trigger is about. */
-export type PerceptionTrigger = { kind: TriggerKind; at: number; confidence: number };
-
-/** What the conversation engine sees (structurally identical to its src/convo/types.ts). */
-export interface PerceptionSource {
-  /** one live line for the reply's instructions, or null when the camera is off / state is stale */
-  contextLine(): string | null;
-  /** one line about the latest trigger for the next reply; consumed once, expires after 15 s */
-  pendingHint(): string | null;
-  /** returns an unsubscribe */
-  onTrigger(cb: (t: PerceptionTrigger) => void): () => void;
-}
+// The seam types live with the conversation engine (src/convo/types.ts, landed first); one definition (11/3 agreement).
+import type { PerceptionTriggerKind } from "../convo/types.ts";
+export type { PerceptionSource, PerceptionTrigger } from "../convo/types.ts";
+export type TriggerKind = PerceptionTriggerKind;

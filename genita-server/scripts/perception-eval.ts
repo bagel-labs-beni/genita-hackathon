@@ -2,8 +2,10 @@
  * npm run eval:perception -- [--out=dir] [--people=4] [--repeats=2]
  *
  * PERC-1 (#319) eval, real Meta vendors. Keys come from GENITA_ENV_FILE / ~/.config/genita/meta.env and are never printed.
- *  1. Labeled stills: Muse Image makes webcam-style face close-ups (9 expressions + gaze away/down) for a few
- *     synthetic people, downscaled to 256 px like the app's crop (macOS `sips`). Cached in --out.
+ *  1. Labeled stills: Muse Image makes portrait iPhone front-camera call frames (9 expressions + gaze away/down) for a
+ *     few synthetic people; the app's fixed selfie crop (FaceCrop.region in shared/Call/CallPerception.swift: square as wide as the
+ *     short side, centred, centre 45 % from the top in portrait) is applied with ffmpeg and scaled to 320 px.
+ *     No face detection anywhere (runtime AI is Meta-only). Cached in --out. `--frame=closeup` = the old face close-ups.
  *  2. Reads: the production perceive request (buildPerceiveRequest + parseSample) on each still, `repeats` times →
  *     expression / gaze accuracy and Spark latency p50 / p95.
  *  3. False comments: 5-minute timelines of neutral/focused reads only (real reads, resampled, a normal back-and-forth)
@@ -33,6 +35,7 @@ const arg = (k: string, d: string) => args.find((a) => a.startsWith(`--${k}=`))?
 const outDir = arg("out", join(tmpdir(), "genita-perception-eval"));
 const PEOPLE = Number(arg("people", "4"));
 const REPEATS = Number(arg("repeats", "2"));
+const FRAME = arg("frame", "selfie");
 mkdirSync(outDir, { recursive: true });
 
 type Label = { id: string; expression: Expression; gaze: Gaze; prompt: string };
@@ -63,7 +66,10 @@ const labels: (Label & { person: number })[] = PEOPLE_DESC.flatMap((who, p) =>
     person: p,
     expression: l.expression,
     gaze: l.gaze,
-    prompt: `Photorealistic front-camera video call frame, close-up of the face and shoulders of ${who} at home, ${l.how}. Natural indoor light, slight webcam softness, no text.`,
+    prompt:
+      FRAME === "closeup"
+        ? `Photorealistic front-camera video call frame, close-up of the face and shoulders of ${who} at home, ${l.how}. Natural indoor light, slight webcam softness, no text.`
+        : `Photorealistic vertical iPhone front-camera video call frame of ${who} at home holding the phone at arm's length, head and shoulders in frame with some room above the head, ${l.how}. Natural indoor light, slight phone-camera softness, no phone visible, no text.`,
   })),
 );
 
@@ -86,18 +92,31 @@ async function still(l: Label): Promise<string | null> {
   const big = join(outDir, `${l.id}.png`);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const d = await metaJson<{ data: { b64_json: string }[] }>(KEY!, "/images/generations", { model: "muse-image-1.0", prompt: l.prompt, size: "1024x1024", response_format: "b64_json", n: 1 });
-      writeFileSync(big, Buffer.from(d.data[0].b64_json, "base64"));
-      // the app's crop: long side 256 px, JPEG q 0.6
-      const r = spawnSync("sips", ["-Z", "256", "-s", "format", "jpeg", "-s", "formatOptions", "60", big, "--out", small], { encoding: "utf8" });
-      if (r.status !== 0) throw new Error(`sips: ${r.stderr}`);
-      spawnSync("rm", ["-f", big]);
+      const size = FRAME === "closeup" ? "1024x1024" : "1024x1820";
+      // the full frame stays cached so the crop geometry can be re-tuned without new generations (delete the .jpg)
+      if (!existsSync(big)) {
+        const d = await metaJson<{ data: { b64_json: string }[] }>(KEY!, "/images/generations", { model: "muse-image-1.0", prompt: l.prompt, size, response_format: "b64_json", n: 1 });
+        writeFileSync(big, Buffer.from(d.data[0].b64_json, "base64"));
+      }
+      const [w, h] = size.split("x").map(Number);
+      const c = FRAME === "closeup" ? { x: 0, y: 0, side: w } : selfieRegion(w, h);
+      // the app's crop, then long side 320 px (JPEG q ≈ 0.6)
+      const r = spawnSync("ffmpeg", ["-y", "-v", "error", "-i", big, "-vf", `crop=${c.side}:${c.side}:${c.x}:${c.y},scale=320:320`, "-q:v", "5", small], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`ffmpeg: ${r.stderr}`);
       return small;
     } catch (e) {
       console.error(`gen ${l.id} failed: ${(e as Error).message.slice(0, 160)}`);
     }
   }
   return null;
+}
+
+/** Same geometry as FaceCrop.region (Swift), in top-left image coordinates. */
+export function selfieRegion(w: number, h: number): { x: number; y: number; side: number } {
+  const side = Math.min(w, h);
+  const mid = h * (h > w ? 0.45 : 0.5);
+  const y = Math.round(Math.min(Math.max(mid - side / 2, 0), h - side));
+  return { x: Math.round(w / 2 - side / 2), y, side };
 }
 
 // ───────────── 2. reads ─────────────

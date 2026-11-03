@@ -11,7 +11,7 @@ import { contextLine, hintFor, initialTracker, observe, stateOf, type Convo, typ
 import type { PerceptionSource, PerceptionState, PerceptionTrigger } from "./types.ts";
 
 export const HINT_TTL_MS = 15_000;
-/** base64 chars; a 256 px JPEG at q 0.6 is ~10–20 KB */
+/** base64 chars; a 320 px JPEG at q 0.6 is ~15–30 KB */
 export const MAX_IMAGE_CHARS = 300_000;
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
