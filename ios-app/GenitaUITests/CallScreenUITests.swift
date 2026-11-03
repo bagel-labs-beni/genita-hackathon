@@ -52,8 +52,17 @@ final class CallScreenUITests: XCTestCase {
         // right after the reconnect the screen redraws; on a loaded runner the first tap can be lost (run 41536584305:
         // Listening was up, the rail visible, no sheet) — one more tap, then the sheet must be there
         let moreSheet = app.descendants(matching: .any)["moreSheet"]
-        app.buttons["more"].tap()
-        if !moreSheet.waitForExistence(timeout: 5) { app.buttons["more"].tap() }
+        let more = app.buttons["more"]
+        let moreFrame = more.frame, moreHittable = more.isHittable, moreEnabled = more.isEnabled
+        more.tap()
+        if !moreSheet.waitForExistence(timeout: 5) {
+            // #291 family: did the first tap reach the action (more:N), did the sheet state flip (moreOpen), what is the link
+            let probe = app.descendants(matching: .any)["debugInterpretProbe"].firstMatch
+            let line = "MORE-291 probe=\(probe.exists ? probe.label : "missing") frame=\(moreFrame) hittable=\(moreHittable) enabled=\(moreEnabled)"
+            print(line); print(String(app.debugDescription.prefix(6000)))
+            let note = XCTAttachment(string: line + "\n\n" + app.debugDescription); note.name = "more-291-diagnostics"; note.lifetime = .keepAlways; add(note)
+            more.tap()
+        }
         XCTAssertTrue(moreSheet.waitForExistence(timeout: 5))
         capture("MORE-B2-sheet")
         XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
