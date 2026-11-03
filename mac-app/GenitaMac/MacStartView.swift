@@ -182,7 +182,6 @@ struct MacEmailSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(focused || message != nil ? MacSheetInk.ink : MacDesignV2.outline, lineWidth: focused || message != nil ? 1.5 : 1))
                     .onSubmit { sendCode() }.padding(.top, 24).accessibilityIdentifier("macEmailField")
                     .macASCIIOnlyInput(focused: focused)
-                    .onChange(of: email) { _, v in let ascii = String(v.unicodeScalars.filter(\.isASCII).map(Character.init)); if ascii != v { email = ascii } }
             } else {
                 MacV2CodeField(code: $code, disabled: sending, id: "macEmailCodeField") { verify() }.padding(.top, 20)
             }

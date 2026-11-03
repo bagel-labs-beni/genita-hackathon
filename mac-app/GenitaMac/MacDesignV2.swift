@@ -259,6 +259,7 @@ struct MacPairingCode: View {
 /// Email, sign-in code and judge code fields take ASCII only (QA 171: with the Korean input source on, the email
 /// field filled with "ㅎㅂㅁㄷ…"). While the field is focused its field editor allows Roman input sources only, so
 /// macOS switches to ABC by itself; the source comes back when focus leaves (the field editor is the sheet's own).
+/// Pasted text is left as is: dropping characters could turn it into someone else's address (Codex review).
 struct MacASCIIOnlyInput: ViewModifier {
     var focused: Bool
     func body(content: Content) -> some View {
