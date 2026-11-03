@@ -255,11 +255,25 @@ final class OwnershipFanout: OwnershipTransport {
 /// Is the conversation in a real call on the iPhone right now? The Mac's home window says "Talking on your iPhone"
 /// only then (QA 171: a fresh account's default owner is the phone at epoch 0, which showed "Talking" with no call).
 enum PhoneCallPresence {
-    static func live(owner: ConversationDevice, epoch: Int, peerActive: Bool, peerInCall: Bool?) -> Bool {
+    /// `seen`: the iPhone takes this device watched happen (only used with an older server that sends no `inCall`).
+    static func live(owner: ConversationDevice, epoch: Int, peerActive: Bool, peerInCall: Bool?, seen: PhoneCallLatch = PhoneCallLatch()) -> Bool {
         guard owner == .phone else { return false }
         // a server that reports calls is the truth (a locked iPhone mid-call still counts)
         if let peerInCall { return peerInCall }
-        // older server: the iPhone took the conversation (call start or a move) and is open in front
-        return epoch > 0 && peerActive
+        // older server: the iPhone took the conversation at this very epoch while this device watched, and is in front.
+        // A persisted owner from an earlier run, or a take followed by the iPhone leaving the front, is not a call (Codex P2).
+        return epoch > 0 && peerActive && seen.epoch == epoch
     }
+}
+
+/// Older-server fallback for `PhoneCallPresence`: remembers the epoch at which this device saw the iPhone take the
+/// conversation (a call start or a move). Cleared when the owner or epoch changes, the iPhone leaves the front or
+/// goes offline, or the account changes, so "Talking on your iPhone" never outlives the call it came from.
+struct PhoneCallLatch: Equatable {
+    private(set) var epoch: Int?
+    /// A claim this device applied (server, local link or its own tap).
+    mutating func applied(owner: ConversationDevice, epoch: Int) { self.epoch = owner == .phone && epoch > 0 ? epoch : nil }
+    /// The iPhone's presence changed: out of front or offline ends whatever call was shown.
+    mutating func peer(active: Bool) { if !active { epoch = nil } }
+    mutating func reset() { epoch = nil }
 }
