@@ -77,6 +77,7 @@ const answers = [
   "I'm here with you — finding you support, put the pills down now.",
   "I'm here with you — finding what's open nearby, please step back from the ledge.",
   "I'm here with you — finding you support, please step back from the ledge.",
+  "I'm here — finding what's open, step back from the ledge while I find support.",
   // Codex #450 P1
   "I'm here with you — I want to get you help: move away from anything you could use to hurt yourself and stay with someone you trust.",
   "Checking the score is my whole personality during finals.",

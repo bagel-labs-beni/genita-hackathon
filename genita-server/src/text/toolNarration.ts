@@ -126,8 +126,9 @@ const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:abou
 const HELP_ACTION = /\b(?:call|text|dial|police|emergency|put (?:[\w']+ ){0,3}(?:down|away)|pills|safe|someone you trust|stay with (?:someone|a friend|me)|move away from|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
 /** a comma inside the lookup clause is fine only inside its object ("getting you fast, accurate support options");
  * anything else after a comma, colon or semicolon ("…, please step back from the ledge") is real content (Codex #450 r4–r5) */
-const LOOKUP_NOUN = /\b(?:options|resources|support|spots|places|score|scores|results?|stats|standings|numbers?|lines?|hotlines?|forecast|weather|schedule|times?|route|directions|picks|ideas|recs|recommendations)(?: (?:for you|now|right now|nearby|near you|tonight))*$/;
-const commaTailIsObject = (c: string) => { const parts = c.split(/[,:;]/); return parts.length < 2 || LOOKUP_NOUN.test(parts[parts.length - 1].trim()); };
+const LOOKUP_TAIL = /^(?:(?:the|some|a few|fast|accurate|good|best|local|late-night|open|nearby|real|solid|legit|quick|cheap|great|top|cozy|spicy|right|latest|live|final|support|crisis|help)\s+){0,3}(?:options|resources|support|spots|places|score|scores|results?|stats|standings|numbers?|lines?|hotlines?|forecast|weather|schedule|times?|route|directions|picks|ideas|recs|recommendations)$/;
+// the whole tail must be that noun phrase (Codex #450 r6: "…, step back from the ledge while I find support" ends in "support" too)
+const commaTailIsObject = (c: string) => { const parts = c.split(/[,:;]/); return parts.length < 2 || LOOKUP_TAIL.test(parts[parts.length - 1].trim()); };
 // a turn to something else ("…, but put the pills down now") is real content: kept (Codex #450 r3 P1)
 // …and an instruction after a comma or colon is real content ("…, put the pills down", Codex #450 r4)
 const progressClause = (c: string) => !HELP_ACTION.test(c) && commaTailIsObject(c) && !/\b(?:but|because|so|then|and)\b/.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
