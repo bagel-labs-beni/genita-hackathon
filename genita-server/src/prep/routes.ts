@@ -237,6 +237,9 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
         // photo polish: true = the app polishes this photo and shows it for confirmation (V02-T); `passed` stays strict
         polish: uploadPolish(rec.check, !!d.photoPolish),
         heads: headsView(rec.heads),
+        // V03 face scan (11/4): normalized [x, y] points for the app's mesh; null = draw from headBox
+        faceOutline: rec.faceOutline ?? null,
+        facePoints: rec.facePoints ?? null,
       });
     }
 

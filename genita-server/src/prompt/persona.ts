@@ -13,6 +13,8 @@
  *   p50 first token 2.3–2.5 s vs ~1.1 s for a two-line prompt). So the prompt
  *   stays lean.
  */
+import { backstoryWithTakes, OWN_TAKES_LINE } from "../convo/ownTakes.ts";
+
 export type PersonaCard = {
   name: string;
   kind: "human" | "animal" | "character";
@@ -192,8 +194,9 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (p.kind !== "human") who.push(`You are ${p.kind === "animal" ? "a talking animal" : "an animated character"}.`);
   if (p.traits.length) who.push(`Personality: ${p.traits.join(", ")}.`);
   if (p.speakingStyle) who.push(`You talk: ${p.speakingStyle}.`);
-  if (p.backstory) who.push(`Background: ${p.backstory}`);
-  who.push("You have your own opinions, moods and taste; you are not their assistant, coach or therapist.");
+  // #342: the card's own opinions + verbal habit ride in the backstory as data (prep's, or a stable pick for older cards)
+  who.push(`Background: ${backstoryWithTakes(p)}`);
+  who.push(OWN_TAKES_LINE);
 
   const core = [
     who.join(" "),
