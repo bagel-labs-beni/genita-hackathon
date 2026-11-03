@@ -418,3 +418,8 @@ test("narration (Codex #356 round 2): an answer after a colon or comma stays; a 
   assert.equal(guardSentence("Okay, let me pull that up.", none), "narration");
   assert.equal(guardSentence("Hang on, figuring out the route for you.", none), "narration");
 });
+
+test("narration (Codex #356 round 3): a joined result clause with its own subject stays", () => {
+  assert.equal(guardSentence("Let me check my notes but Google Maps says it is ten minutes.", none), null);
+  assert.equal(guardSentence("Let me pull that up and check the route for you.", none), "narration");
+});
