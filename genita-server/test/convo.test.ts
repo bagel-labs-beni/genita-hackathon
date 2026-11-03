@@ -640,3 +640,11 @@ test("Codex r18: '… and it's the trench' is never held, even with a tool after
   const out = [...j.push("I'll pick one for you and it's the trench.").speak, ...j.onToolCall().speak, ...j.push("It matches your understated style.").speak, ...j.finish().speak];
   assert.match(out.join(" "), /it's the trench/);
 });
+
+test("bug-fix 1c63d32 outfit 1/6: 'I'll pick a favorite — pulling up what I remember about your style.' is dropped before the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("I'll pick a favorite — pulling up what I remember about your style.").speak, ...j.push("Go with the trench.").speak, ...j.finish().speak];
+  assert.equal(out.join(" "), "Go with the trench.");
+  assert.equal(guardSentence("Pulling up what I remember about your style.", none), "narration");
+});
