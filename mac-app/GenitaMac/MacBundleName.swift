@@ -1,4 +1,5 @@
 import AppKit
+import Security
 
 /// The app file is `Genita.app` (Chelsea 11/4: "GenitaMac 말고 Genita"). Builds up to 7 shipped as `GenitaMac.app`, and
 /// Sparkle 2 installs an update at the installed bundle's own path (`SUInstaller`: it finds `Genita.app` in the DMG by
@@ -7,8 +8,10 @@ import AppKit
 /// `GenitaMac.app` renames itself to `Genita.app` and reopens from there. Permissions (TCC), UserDefaults, Keychain and
 /// Sparkle's state are keyed by bundle id + Developer ID signature, not by the path, so they carry over.
 ///
-/// If a `Genita.app` with the same bundle id already sits next to it (a fresh DMG install beside an old copy), the
-/// older of the two goes to the Trash (recoverable) and the newer one is the one that runs.
+/// If a `Genita.app` signed by the same developer (our designated requirement) already sits next to it — a fresh DMG
+/// install beside an old copy — the older of the two goes to the Trash (recoverable) and the newer one is the one that
+/// runs; if that `Genita.app` is already running, this copy hands over to it and quits (one Mac client per account).
+/// A sibling that fails the signature check is never opened, trashed or replaced.
 enum MacBundleName {
     static let legacyFileName = "GenitaMac.app"
     static let fileName = "Genita.app"
@@ -21,6 +24,8 @@ enum MacBundleName {
         case replaceOlder(sibling: URL)
         /// A same-id `Genita.app` that is this build or newer: open it and trash this copy.
         case openNewer(sibling: URL)
+        /// The trusted `Genita.app` beside it is already running: bring it forward and quit this copy.
+        case yieldToRunning(sibling: URL)
     }
 
     struct AppCopy: Equatable {
@@ -30,14 +35,16 @@ enum MacBundleName {
     }
 
     /// Pure decision (tested in `mac-app/Tools/bundle-name/check.sh`).
-    static func plan(current: AppCopy, parentWritable: Bool, readOnlyVolume: Bool, sibling: AppCopy?, siblingRunning: Bool) -> Action {
+    /// `siblingTrusted`: the sibling passes this app's own designated requirement (same Developer ID team + bundle id).
+    static func plan(current: AppCopy, parentWritable: Bool, readOnlyVolume: Bool, sibling: AppCopy?, siblingTrusted: Bool, siblingRunning: Bool) -> Action {
         guard current.url.lastPathComponent == legacyFileName else { return .none }
         // A quarantined app launched in place runs from a read-only App Translocation mount: nothing to rename.
         guard parentWritable, !readOnlyVolume, !current.url.path.contains("/AppTranslocation/") else { return .none }
         let target = current.url.deletingLastPathComponent().appendingPathComponent(fileName)
         guard let sibling else { return .rename(to: target) }
-        guard !siblingRunning, let id = current.bundleID, sibling.bundleID == id,
-              let mine = current.build, let theirs = sibling.build else { return .none }
+        guard siblingTrusted, let id = current.bundleID, sibling.bundleID == id else { return .none }
+        if siblingRunning { return .yieldToRunning(sibling: sibling.url) }
+        guard let mine = current.build, let theirs = sibling.build else { return .none }
         return theirs >= mine ? .openNewer(sibling: sibling.url) : .replaceOlder(sibling: sibling.url)
     }
 
@@ -45,6 +52,7 @@ enum MacBundleName {
     /// Every failure leaves a working app: a failed reopen moves the bundle back and this process keeps running.
     static func perform(_ action: Action, current: URL, fileManager fm: FileManager = .default,
                         trash: (URL) -> Bool = { (try? FileManager.default.trashItem(at: $0, resultingItemURL: nil)) != nil },
+                        activate: (URL) -> Bool = { _ in false },
                         open: (URL) -> Bool) -> Bool {
         switch action {
         case .none:
@@ -58,6 +66,8 @@ enum MacBundleName {
             guard open(sibling) else { return false }
             _ = trash(current) // best effort: the newer copy is already running
             return true
+        case .yieldToRunning(let sibling):
+            return activate(sibling)
         }
     }
 
@@ -77,19 +87,31 @@ enum MacBundleName {
         let parent = url.deletingLastPathComponent()
         let siblingURL = parent.appendingPathComponent(fileName)
         let sibling = fm.fileExists(atPath: siblingURL.path) ? info(siblingURL) : nil
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .contains { $0.bundleURL?.standardizedFileURL == siblingURL.standardizedFileURL }
+        let trusted = sibling != nil && sameSigner(siblingURL)
+        let runningSibling = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .first { $0.bundleURL?.standardizedFileURL == siblingURL.standardizedFileURL }
         let readOnly = (try? url.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) ?? true
         let action = plan(current: info(url), parentWritable: fm.isWritableFile(atPath: parent.path),
-                          readOnlyVolume: readOnly, sibling: sibling, siblingRunning: running)
+                          readOnlyVolume: readOnly, sibling: sibling, siblingTrusted: trusted, siblingRunning: runningSibling != nil)
         NSLog("Genita bundle name: %@ → %@", url.path, String(describing: action))
-        if perform(action, current: url, open: reopen) { exit(0) }
+        if perform(action, current: url, activate: { _ in runningSibling?.activate() ?? false }, open: reopen) { exit(0) }
     }
 
     private static func info(_ url: URL) -> AppCopy {
         let plist = Bundle(url: url)?.infoDictionary
         return AppCopy(url: url, bundleID: plist?["CFBundleIdentifier"] as? String,
                       build: (plist?["CFBundleVersion"] as? String).flatMap(Int.init))
+    }
+
+    /// The sibling's signature satisfies this running app's designated requirement (identifier + Developer ID team).
+    /// Unsigned / ad-hoc builds (DEBUG, CI) have no team requirement a sibling could meet → false.
+    static func sameSigner(_ url: URL) -> Bool {
+        var me: SecCode?, meStatic: SecStaticCode?, requirement: SecRequirement?, other: SecStaticCode?
+        guard SecCodeCopySelf([], &me) == errSecSuccess, let me,
+              SecCodeCopyStaticCode(me, [], &meStatic) == errSecSuccess, let meStatic,
+              SecCodeCopyDesignatedRequirement(meStatic, [], &requirement) == errSecSuccess, let requirement,
+              SecStaticCodeCreateWithPath(url as CFURL, [], &other) == errSecSuccess, let other else { return false }
+        return SecStaticCodeCheckValidity(other, SecCSFlags(rawValue: kSecCSCheckAllArchitectures), requirement) == errSecSuccess
     }
 
     /// `open -n`: this process (same bundle id) is still alive, so a plain open would only activate it.

@@ -12,8 +12,8 @@ let legacy = apps.appendingPathComponent("GenitaMac.app")
 let genita = apps.appendingPathComponent("Genita.app")
 let id = "ai.thebeni.genita.mac"
 func copy(_ url: URL, _ build: Int?, _ bid: String? = id) -> MacBundleName.AppCopy { .init(url: url, bundleID: bid, build: build) }
-func plan(_ c: MacBundleName.AppCopy, writable: Bool = true, ro: Bool = false, sibling: MacBundleName.AppCopy? = nil, running: Bool = false) -> MacBundleName.Action {
-    MacBundleName.plan(current: c, parentWritable: writable, readOnlyVolume: ro, sibling: sibling, siblingRunning: running)
+func plan(_ c: MacBundleName.AppCopy, writable: Bool = true, ro: Bool = false, sibling: MacBundleName.AppCopy? = nil, trusted: Bool = true, running: Bool = false) -> MacBundleName.Action {
+    MacBundleName.plan(current: c, parentWritable: writable, readOnlyVolume: ro, sibling: sibling, siblingTrusted: trusted, siblingRunning: running)
 }
 
 // plan
@@ -28,7 +28,10 @@ expect(plan(copy(legacy, 81), sibling: copy(genita, 81)) == .openNewer(sibling: 
 expect(plan(copy(legacy, 81), sibling: copy(genita, 90)) == .openNewer(sibling: genita), "newer Genita.app beside → open it")
 expect(plan(copy(legacy, 90), sibling: copy(genita, 81)) == .replaceOlder(sibling: genita), "older Genita.app beside → replace it")
 expect(plan(copy(legacy, 81), sibling: copy(genita, 90, "other.app")) == .none, "different bundle id beside → leave both")
-expect(plan(copy(legacy, 81), sibling: copy(genita, 90), running: true) == .none, "sibling running → leave both")
+expect(plan(copy(legacy, 81), sibling: copy(genita, 81), running: true) == .yieldToRunning(sibling: genita), "trusted sibling running → hand over to it, quit (no 2nd Mac client)")
+expect(plan(copy(legacy, 90), sibling: copy(genita, 81), running: true) == .yieldToRunning(sibling: genita), "older trusted sibling running → still hand over, trash nothing")
+expect(plan(copy(legacy, 81), sibling: copy(genita, 90), trusted: false) == .none, "sibling not signed by us (same id, higher build) → never open or trash it")
+expect(plan(copy(legacy, 90), sibling: copy(genita, 81), trusted: false, running: true) == .none, "untrusted running sibling → leave both")
 expect(plan(copy(legacy, nil), sibling: copy(genita, 90)) == .none, "unknown build → leave both")
 
 // perform, on disk
@@ -87,6 +90,17 @@ do { // target exists unexpectedly → move fails, no exit
     let exit = MacBundleName.perform(.rename(to: new), current: old, trash: trash, open: ok)
     expect(!exit && build(old) == "81" && opened.isEmpty, "rename onto an existing item → fails safely, nothing opened")
 }
+
+do { // yield: activate only, nothing moved
+    let old = root.appendingPathComponent("GenitaMac.app"), sib = root.appendingPathComponent("Genita.app"); opened = []
+    var activated = false
+    let exit = MacBundleName.perform(.yieldToRunning(sibling: sib), current: old, trash: trash, activate: { _ in activated = true; return true }, open: ok)
+    expect(exit && activated && build(old) == "81" && build(sib) == "90" && opened.isEmpty, "yieldToRunning: activated the running one, nothing moved")
+    let stay = MacBundleName.perform(.yieldToRunning(sibling: sib), current: old, trash: trash, activate: { _ in false }, open: ok)
+    expect(!stay, "yieldToRunning: activation failed → keep running")
+}
+// signature gate: an unsigned look-alike with our bundle id never counts as ours
+expect(!MacBundleName.sameSigner(root.appendingPathComponent("Genita.app")), "sameSigner: unsigned fake Genita.app (same id) → false")
 
 print(failures == 0 ? "bundle-name checks: all passed" : "bundle-name checks: \(failures) failed")
 exit(failures == 0 ? 0 : 1)
