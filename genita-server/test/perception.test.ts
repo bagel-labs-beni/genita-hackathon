@@ -156,6 +156,13 @@ test("looks_tired: tired conf ≥ 0.75 for ≥ 6 s and the user silent ≥ 8 s",
   assert.deepEqual(run(series(0, 10_000, 2000, tired, talked)).kinds, ["looks_tired"], "fires once silence reaches 8 s");
 });
 
+test("an unsure read breaks a tired run; looks_tired fires only on sure tired reads (Codex P2, round 4)", () => {
+  const tired = S({ expression: "tired", confidence: 0.8 });
+  const unsure = S({ expression: "neutral", confidence: 0.5 });
+  assert.deepEqual(run([[0, tired], [2500, unsure], [5000, unsure], [7500, unsure]]).kinds, []);
+  assert.deepEqual(run([[0, tired], [2500, unsure], [5000, tired], [7500, tired], [10_000, tired], [12_500, tired]]).kinds, ["looks_tired"]);
+});
+
 test("looks_confused: confused conf ≥ 0.65 during or ≤ 6 s after the reply", () => {
   const c = S({ expression: "confused", confidence: 0.7 });
   assert.deepEqual(run([[5000, c, { ...QUIET, lastReplyEndAt: 1000 }]]).kinds, ["looks_confused"]);
@@ -181,7 +188,12 @@ test("looking down never counts as away or as low engagement: reading the screen
 });
 
 test("gaze counts from conf ≥ 0.4: a turned-away face makes the expression unsure, not the gaze (eval 11/3 selfie crop)", () => {
-  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "away", confidence: 0.5 }))).kinds, ["looked_away"]);
+  // unsure reads extend the run, but the trigger waits for a read the engine accepts (≥ 0.6): Codex P2, round 4
+  assert.deepEqual(run(series(0, 10_000, 2000, S({ gaze: "away", confidence: 0.5 }))).kinds, []);
+  const r2 = run([...series(0, 10_000, 2000, S({ gaze: "away", confidence: 0.5 })), [12_000, S({ gaze: "away", confidence: 0.7 })]]);
+  assert.deepEqual(r2.triggers.map((t) => [t.kind, t.at, t.confidence]), [["looked_away", 12_000, 0.7]]);
+  const low = run([...series(0, 20_000, 2000, S({ gaze: "away", engagement: 0.2, confidence: 0.5 })), [22_000, S({ gaze: "away", engagement: 0.2, confidence: 0.8 })]]);
+  assert.deepEqual(low.kinds, ["looked_away", "engagement_drop"]);
   const r = run([[0, S({ expression: "smile", gaze: "away", confidence: 0.5 })]]);
   assert.equal(stateOf(r.tracker, 0), null, "an unsure read does not set the expression state");
 });
