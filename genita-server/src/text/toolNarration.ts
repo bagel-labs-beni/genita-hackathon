@@ -162,7 +162,9 @@ const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|th
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
 const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you)|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
-const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
+/** the line already states what was chosen ("… and it's the trench", "the winner is…"): an answer, never held (Codex r18) */
+const CARRIES_CHOICE = /\b(?:and|so) (?:it'?s|that'?s|the winner is|i'?m going with)\b|\bthe winner is\b|:\s*(?:the|that|this)\b/;
+const isSuspect = (text: string) => { const s = normalize(text); return SUSPECT.test(s) && !DECISION.test(s) && !CARRIES_CHOICE.test(s) && (metaIsUser || !/^(?:she|he)(?:'s| is)\b/.test(s)); };
 /** An eager first clause cut at a dash ("City Hall from here —") waits for the rest of its sentence. */
 const DASH_END = /[—–]\s*$/;
 
