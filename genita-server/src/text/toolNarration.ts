@@ -49,7 +49,7 @@ const WEB_INTENT = new RegExp(`^(?:i'll|i will|let me|i'm going to|i'm gonna)(?:
 /** "now I'm pulling your favorites for dinner ideas" (smoke 11/3): a lookup in progress. */
 // the subject may be dropped after a dash: "I'll pick a favorite — pulling up what I remember" (bug-fix 1c63d32 outfit 1/6)
 // what a lookup is about — memory, a route, options — never a plain noun ("Choosing your own clothes builds confidence", Codex r23)
-const LOOKUP_OBJ = "(?:what (?:i|you)\\b|on what you\\b|from what (?:i|you)\\b|something (?:good|tasty|fun|nice|new)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
+const LOOKUP_OBJ = "(?:(?:today|tomorrow|tonight|this week|the week|the weekend)'s (?:forecast|weather)\\b|what (?:i|you)\\b|on what you\\b|from what (?:i|you)\\b|something (?:good|tasty|fun|nice|new)\\b|(?:your|my|the)(?: [\\w'-]+){0,2} (?:style|notes|memory|options|favorites|faves|vibe|look|plans|calendar|route|directions|forecast|map|details|picks|choices)\\b|for you\\b)";
 const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pulling|checking|digging|searching|looking|plotting|mapping|working out|figuring out|grabbing|loading|scanning|lining up|picking|choosing|sizing up|thinking back|cooking up|whipping up|putting together)\\b(?=.*${LOOKUP_OBJ})${TAIL}$`);
 /** Deliberation said aloud before the pick ("Love both — let me think which one fits tonight best", outfit e2e 11/3).
  * A bare "Let me think" stays (it is how people start an answer). */
@@ -75,6 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
+  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s)) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -100,9 +101,19 @@ function isNarrationClause(clause: string): boolean {
   return !/\b(?:and|but|because|then)\b/.test(guard) && (LOOKUP_INTENT.test(s) || WEB_INTENT.test(s) || THINK_INTENT.test(s) || LOOKING_NOW.test(s));
 }
 
+/**
+ * AI sweep 11/3 (real Spark with web_search + memory on, n=54): two shapes still reached the voice.
+ * A search retry said aloud ("First search came up empty, so I'll try again with a broader query") and a recall in
+ * progress ("Got it — trying to remember that concert we mentioned"). Both are the lookup itself, never its result:
+ * "My search came up empty, I've never heard of it" (a result) and "trying to remember the last time I…" (a story) stay.
+ */
+const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query))\b/;
+const RECALL_NOW = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
+
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
+  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s)) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);
