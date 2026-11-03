@@ -9,7 +9,11 @@ struct RootView: View {
         NavigationStack {
             Group {
                 switch model.stage {
+                // PRD A01 → A02: after the launch splash (A01) the static welcome doesn't wait for a tap; it hands
+                // straight to A02 under the splash (QA Appetize build 7: stuck 90 s+, no cue to tap). UI tests
+                // (no splash) keep the tappable welcome; Back from A02 shows it again without bouncing.
                 case .welcome: ReferenceWelcomeView { model.go(.signIn) }
+                    .task { if WelcomeAutoAdvance.shouldAdvance() { model.go(.signIn) } }
                 case .signIn: ReferenceSignInView(model: model)
                 case .consent: ConsentView(model: model)
                 // D47 HISY v2: I03 / N3 → HISY-0 (S0) → cards → HISY-7 (the six I04 rows are still saved)
@@ -117,4 +121,14 @@ struct RootView: View {
     }
     func stop() { generation += 1; endTimer?.cancel(); task?.cancel(); task = nil; audio?.stop(); audio = nil; playing = nil; fetching = nil }
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { Task { @MainActor in if self.audio === player { self.playing = nil } } }
+}
+
+/// A01 → A02 once per launch, only when the launch splash ran (that splash is A01 and lands on A02).
+enum WelcomeAutoAdvance {
+    @MainActor private static var done = false
+    @MainActor static func shouldAdvance() -> Bool {
+        guard !done, GenitaSplash.shouldShowAtLaunch else { return false }
+        done = true
+        return true
+    }
 }

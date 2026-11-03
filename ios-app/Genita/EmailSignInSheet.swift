@@ -32,7 +32,7 @@ struct EmailSignInSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(step == .address ? "Continue with email" : "Check your email").font(TypeStyle.title(28)).foregroundStyle(CallInk.ink).padding(.top, 32)
                 .accessibilityAddTraits(.isHeader).accessibilityIdentifier("emailSheetTitle")
-            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
+            Text(step == .address ? "We’ll send a 6-digit code to sign you in. No Apple\u{00A0}ID needed." : "Enter the 6-digit code we sent to \(sentTo).")
                 .font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).padding(.top, 12).fixedSize(horizontal: false, vertical: true)
             Group {
                 if step == .address {
@@ -127,7 +127,8 @@ struct EmailSignInSheet: View {
                 resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
                 code = ""
                 step = .code
-                focused = true
+                // the code field is a new TextField: focus it once it exists (QA build 7: the first digit was lost)
+                DispatchQueue.main.async { focused = true }
             } catch {
                 message = EmailSignInCopy.message(for: error, sendingCode: true)
             }
