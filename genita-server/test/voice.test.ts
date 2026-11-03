@@ -217,6 +217,45 @@ test("client: a body that stalls after the headers still times out (idle timeout
   assert.equal(v.isDown(), true);
 });
 
+// D27 capacity: the voice GPU answers 503 {"error":"busy"} when its queue is full (deploy/modal-voice QUEUE_WAIT_MS).
+// That sentence goes to the device voice, but the voice is parked only briefly, not 30 s for every call.
+test("client: a busy GPU (503 busy) parks the voice for 2 s only, then server voice resumes", async () => {
+  let n = 0;
+  let t = 1000;
+  let busy = true;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => (n++, busy ? new Response('{"error":"busy"}', { status: 503 }) : ndjson([{ audio_base64: pcm(10) }, { done: true }]))) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  await assert.rejects(run, /voice 503/);
+  assert.equal(v.isDown(), true);
+  await assert.rejects(run, /voice_down/);
+  assert.equal(n, 1);
+  t += 2_001;
+  busy = false;
+  await run();
+  assert.equal(n, 2, "back on the server voice after 2 s");
+});
+
+test("client: a busy answer after an outage does not shorten the 30 s window (Codex P2)", async () => {
+  let t = 1000;
+  const answers = [new Response("boom", { status: 500 }), new Response('{"error":"busy"}', { status: 503 })];
+  let gate!: () => void;
+  const held = new Promise<void>((r) => (gate = r));
+  let n = 0;
+  const v = createSeamless(cfg, { now: () => t, fetch: (async () => { const k = n++; if (k === 1) await held; return answers[k]; }) as typeof fetch });
+  const run = async () => {
+    for await (const _ of v.speak({ voiceId: "seamless:3", text: "Hello there, friend.", emotion: null, model: "x" })) void _;
+  };
+  const a = run(); // will 500
+  const b = run(); // in flight, answers busy after the outage started
+  await assert.rejects(a, /voice 500/);
+  gate();
+  await assert.rejects(b, /voice 503/);
+  t += 2_001;
+  assert.equal(v.isDown(), true, "still inside the 30 s outage window");
+});
+
 test("client: a 400 (bad input) fails that sentence but does not take the voice down for everyone", async () => {
   let n = 0;
   const v = createSeamless(cfg, { fetch: (async () => (n++, new Response('{"error":"bad_request"}', { status: 400 }))) as typeof fetch });

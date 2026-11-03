@@ -187,7 +187,7 @@ struct ConversationView: View {
                         DesignText(node: title).frame(width: title.w, height: title.h).position(x: title.x + title.w / 2, y: title.y + top + title.h / 2)
                         menuRow("Chat", icon: "reference-menu-chat", y: 118, width: panelWidth, top: top) { withAnimation { model.menuOpen = false } }.accessibilityIdentifier("returnConversation")
                         menuRow("Setting", text: "Finds", symbol: "bookmark", badge: findsList.count > 0 ? "\(findsList.count)" : nil, y: 165, width: panelWidth, top: top) { openFindsTab() }.accessibilityIdentifier("menuFinds")
-                        menuRow("Setting", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
+                        menuRow("Setting", text: "Settings", icon: "reference-menu-settings", y: 212, width: panelWidth, top: top) { model.menuOpen = false; model.settingsOpen = true }.accessibilityIdentifier("settings")
                         if waitingCopy == nil && handoffEnabled {
                             moveToMacRow(y: 259, width: panelWidth, top: top) { withAnimation { model.menuOpen = false }; handoff.moveToMac() }.accessibilityIdentifier("moveToMac")
                         }
@@ -294,13 +294,7 @@ struct ConversationView: View {
         }
     }
     /// r03 `.rail`: half → up 440, peek/searching → up 122, full → hidden behind the sheet.
-    private func railShift(_ s: SheetState) -> CGFloat {
-        switch s {
-        case .half, .rising, .full: -440
-        case .peek, .searching: -122
-        default: 0
-        }
-    }
+    private func railShift(_ s: SheetState) -> CGFloat { CameraBoxes.railShift(s) }
 
     func dismissDenied() { media.denied = nil; call.dismissDenied() }
     func openAppSettings() {
@@ -321,7 +315,9 @@ struct ConversationView: View {
                 Color.clear
                 if let symbol { Image(systemName: symbol).font(.system(size: 18, weight: .regular)).foregroundStyle(CallInk.ink).frame(width: 21, height: 21).position(x: 20, y: 22) }
                 else { Image(resource: icon).resizable().frame(width: title == "Chat" ? 20.7 : 21.7007, height: 20.7).position(x: 20, y: 22) }
-                DesignText(node: label, text: text ?? label.characters).frame(width: label.w, height: label.h).position(x: label.x - 24 + label.w / 2, y: 22)
+                // "Settings" is wider than the Figma "Setting" node: room to 140 pt, as Move to Mac
+                let w = max(label.w, 140)
+                DesignText(node: label, text: text ?? label.characters).frame(width: w, height: label.h).position(x: label.x - 24 + w / 2, y: 22)
                 if let badge { Text(badge).font(TypeStyle.body(14)).foregroundStyle(CallInk.mute).position(x: width - 48 - 12, y: 22) }
             }.frame(width: width - 48, height: 44).contentShape(Rectangle())
         }.buttonStyle(.plain).position(x: width / 2, y: y + 22 + top).accessibilityLabel(text ?? title)
