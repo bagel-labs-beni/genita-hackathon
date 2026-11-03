@@ -59,12 +59,27 @@ const RESULT_STRONG = new RegExp(String.raw`\b(?:shows?|says?|takes?|looks? like
 /** inside an announcement, a joined clause with its subject dropped is still the lookup ("… and check the route for you") */
 const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB})\b`, "i");
 
+/**
+ * Outside the matched announcement, a finite verb means the clause states something ("…confirms City Hall is
+ * closed today", "…shows it's ten minutes"): that is an answer, never dropped (Codex #356 rounds 4–5). The cost
+ * is a few spoken announcements like "Let me look into where that is." — losing an answer is worse.
+ */
+const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
+
+function announcementOnly(clause: string): boolean {
+  for (const re of NARRATION) {
+    const m = re.exec(clause);
+    if (m && !RESULT_VERB.test(clause.slice(0, m.index) + " " + clause.slice(m.index + m[0].length))) return true;
+  }
+  return false;
+}
+
 export function isNarration(sentence: string): boolean {
   const s = sentence.trim().replace(/’/g, "'").replace(/\s+/g, " ");
-  if (!NARRATION.some((re) => re.test(s))) return false;
+  if (!announcementOnly(s) && !s.split(CONTENT_JOIN).some((p) => announcementOnly(p.trim()))) return false;
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => (NARRATION.some((re) => re.test(p)) && !RESULT_STRONG.test(p)) || (BARE_LOOKUP.test(p) && !RESULT_CLAUSE.test(p)) || FILLER_PART.test(p));
+  return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || (BARE_LOOKUP.test(p) && !RESULT_CLAUSE.test(p)) || FILLER_PART.test(p));
 }
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */

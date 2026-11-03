@@ -371,7 +371,7 @@ const NARRATION_HARD_FAILS = [
   // paraphrases
   "Okay, let me pull that up real quick.",
   "One sec, I'm checking my notes.",
-  "Let me look into where that is.",
+  "Let me look into it.",
   "I'll search for City Hall on the map.",
   "Pulling up what you said about the interview.",
   "Hang on, figuring out the route for you.",
@@ -426,6 +426,8 @@ test("narration (Codex #356 round 3): a joined result clause with its own subjec
 
 test("narration (Codex #356 round 4): a lookup clause that already states its result is the answer", () => {
   assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
-  assert.equal(guardSentence("Let me look into where that is.", none), "narration");
+  // known cost: a relative "where that is" reads as a statement, so this announcement is spoken (losing an answer is worse)
+  assert.equal(guardSentence("Let me look into where that is.", none), null);
+  assert.equal(guardSentence("Checking the map confirms City Hall is closed today.", none), null, "Codex round 5");
   assert.equal(guardSentence("Figuring out where you mean so I can map City Hall for you.", none), "narration");
 });
