@@ -39,6 +39,22 @@ export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recip
 
 /** Demo S5: an outfit card's background search for what goes with it is reused this long. */
 export const PREFETCH_WINDOW_MS = 5 * 60_000;
+/** demo S5: send the outfit frames with the prefetch search (GENITA_PREFETCH_FRAMES=1) or only what was said (default) */
+export function prefetchHedge(productHedge = 2, env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.GENITA_PREFETCH_HEDGE);
+  // default 5 (11/3 S4→S5, text-only: S5 card 11.1 / 4.9 / 8.0 s with 5 lanes vs 1.3 / 13.5 / 10.6 s with 3)
+  return Number.isInteger(n) && n >= 1 && n <= 6 ? n : Math.max(5, productHedge);
+}
+/** the companion's line names the pick by color ("Black, for sure…"): the search can go by what was said (Codex P2: "the first one" can't) */
+export function namesPick(said: string): boolean {
+  const words = [...said.toLowerCase().matchAll(/[a-z]+/g)].map((m) => m[0]);
+  // a color of what it recommends ("dark brown shoes", "black leather belt") is not the pick (Codex P2)
+  const goesWith = /^(shoes?|boots?|loafers?|sneakers?|heels?|flats|sandals?|bags?|belts?|watch|scarf|hat|accessories|leather|suede|jewelry|socks)$/;
+  return words.some((w, i) => COLOR.test(w) && !words.slice(i + 1, i + 4).some((n) => goesWith.test(n)));
+}
+export function prefetchFrames(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.GENITA_PREFETCH_FRAMES === "1";
+}
 /** what an outfit answer can suggest buying next ("dark brown shoes or leather accessories") */
 const GOES_WITH = /\b(shoes|sneakers|boots|loafers|heels|sandals|bag|bags|belt|belts|scarf|hat|jewelry|earrings|necklace|accessories|jacket|coat)\b/gi;
 
@@ -301,14 +317,16 @@ export class FindsRunner {
     const p: Prefetch = { at: this.hooks.now(), wants, question, inView: question.toLowerCase(), label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, settled: false, done: Promise.resolve({ card: null, timings: {} }) };
     const findId = `prefetch-${randomUUID()}`;
     const ctx: PipelineCtx = {
-      findId, utteranceId: t.utteranceId, kind: "product", question, frames: t.frames, memories: this.memories, profile: this.profile, userName: this.userName,
+      // the search follows what was said ("dark brown shoes…"); the frames cost a vision pass on every lane
+      findId, utteranceId: t.utteranceId, kind: "product", question, frames: prefetchFrames() || !namesPick(reply) ? t.frames : [], memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: Promise.resolve(null), timeZone: this.timeZone, vendors: this.deps.vendors, signal: abort.signal, now: this.hooks.now, log: this.hooks.log, images: this.deps.images,
       emit: (e) => { p.events.push(e); for (const l of p.listeners) l(e); },
       putImage: async (slot, bytes) => { p.images.set(slot, bytes); return `prefetch:${slot}`; },
     };
     const likes = this.likes;
     // one more lane than a normal search: Spark search time varies 15–30 s and the first good lane wins
-    const hedge = Math.min(3, (this.deps.productHedge ?? 2) + 1);
+    // GENITA_PREFETCH_HEDGE: lanes for this background search (11/3: text-only lanes took 11.7–24 s; the first good one wins)
+    const hedge = prefetchHedge(this.deps.productHedge);
     p.done = (async () => {
       const l = await likes;
       return runProduct({ ...ctx, likes: l, recent: t.recent ?? [], region: this.deps.shopRegion, hedge, allFrames: true });

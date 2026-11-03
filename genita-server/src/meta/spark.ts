@@ -156,18 +156,21 @@ export async function sparkText(key: string, req: SparkRequest, signal?: AbortSi
   return outputText(await metaJson<ResponseObject>(key, "/responses", body(req, false), signal));
 }
 
+/** pause before the one json_schema retry */
+export const JSON_RETRY_MS = 600;
+const retryable = (err: unknown) => err instanceof UpstreamError && (err.status === null || err.status >= 500 || err.status === 429);
+
 /** Structured output via text.format json_schema; returns the parsed object. */
 export async function museJson<T>(
   key: string,
   req: Omit<SparkRequest, "text"> & { schemaName: string; schema: Record<string, unknown> },
   signal?: AbortSignal,
+  /** read by sparkJson only (the one retry); museJson itself is always a single call */
+  _opts: { retry?: boolean } = {},
 ): Promise<T> {
   const { schemaName, schema, ...rest } = req;
-  const raw = await sparkText(
-    key,
-    { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } },
-    signal,
-  );
+  const call = () => sparkText(key, { ...rest, text: { format: { type: "json_schema", name: schemaName, schema, strict: true } } }, signal);
+  const raw = await call();
   const m = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
   if (!m) throw new UpstreamError("meta", null, `spark json: no JSON in reply: ${raw.slice(0, 120)}`);
   return JSON.parse(m[0]) as T;
@@ -180,12 +183,19 @@ export async function museJson<T>(
  * is what sparkOpen.ts falls back to, so the two never bounce.
  */
 export async function sparkJson<T>(...args: Parameters<typeof museJson>): Promise<T> {
-  const [, req, signal] = args;
+  const [key, req, signal, opts = {}] = args;
   try {
-    return await museJson<T>(...args);
+    return await museJson<T>(key, req, signal, { retry: false });
   } catch (err) {
     const open = openFallbackFor(err, req, signal);
-    if (!open) throw err;
+    // no Spark Open hop for this call: the Muse Spark API once more after a short pause (11/3 outage), unless the
+    // caller retries itself ({ retry: false })
+    if (!open) {
+      if (opts.retry === false || !retryable(err) || signal?.aborted) throw err;
+      await new Promise((r) => setTimeout(r, JSON_RETRY_MS));
+      if (signal?.aborted) throw err;
+      return museJson<T>(key, req, signal, { retry: false });
+    }
     logLlm("llm.fallback", { from: SPARK_MODEL, to: open.name, purpose: req.schemaName, status: err instanceof UpstreamError ? err.status : null });
     // its own budget even when the caller passed none (Codex P2): an outage must still end in the original error
     const budget = AbortSignal.timeout(openHopTimeoutMs());

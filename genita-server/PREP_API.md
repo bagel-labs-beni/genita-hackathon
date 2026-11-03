@@ -105,7 +105,7 @@ scene (Muse Image, retried once on failure) → **face set** (13 Muse Image edit
   "size": [1152, 2048],
   "faceBox": [0.3655, 0.3203, 0.7431, 0.6104],
   "mouthBox": [0.5269, 0.5303, 0.651, 0.5586],
-  "images": { "neutral": "/v1/companion/face/neutral", "blink": "/v1/companion/face/blink", "smile": "…/smile", "warm": "…/warm" },
+  "images": { "neutral": "/v1/companion/face/neutral", "blink": "/v1/companion/face/blink", "smile": "…/smile", "warm": "…/warm", "surprised": "…/surprised", "concerned": "…/concerned" },
   "visemes": { "MBP": "/v1/companion/face/MBP", "FV": "…", "TH": "…", "L": "…", "WQ": "…", "O": "…", "EI": "…", "A": "…", "U": "…", "CDG": "…" },
   "boxes": { "neutral": { "face": [..], "mouth": [..] }, "blink": { "face": [..], "mouth": [..] }, "…": {} },
   "rejected": [{ "key": "TH", "reason": "face_moved", "retried": true }],
@@ -117,7 +117,7 @@ scene (Muse Image, retried once on failure) → **face set** (13 Muse Image edit
 - Boxes are normalised `[x1, y1, x2, y2]` (0–1) of the image's own size, from SAM 3.1 (`"the person's face"` / `"the person's mouth"`; `animal` / `character` for the other types). `faceBox`/`mouthBox` = the scene's.
 - `rest` = `neutral` (the scene, unedited). A viseme or expression in `rejected` is absent from `images`/`visemes`/`boxes`; fall back to the nearest shape.
 - `rejected[].reason`: `face_moved` (face-box centre moved > 3 % of the width), `face_resized` (linear size changed > 6 %), `no_face`, `no_mouth`, `size_mismatch` (aspect ratio differs), `content_policy` (Muse Image refused the prompt), `edit_failed` (vendor error). Each rejected key was retried once with a stricter prompt.
-- Image URLs are relative to this host: **`GET /v1/companion/face/{key}`** with the same `Authorization` + `x-genita-user` headers as every prep call. `key` ∈ `neutral`, `blink`, `smile`, `warm`, `MBP`, `FV`, `TH`, `L`, `WQ`, `O`, `EI`, `A`, `U`, `CDG`. Answers the image bytes (`image/webp` today; check `content-type`), `cache-control: private, max-age=86400`. `404 no_companion` / `no_image` (not made yet, or rejected) / `not_found` (unknown key). Only the caller's own companion is served. `sceneUrl` on this pipeline is `/v1/companion/face/neutral`.
+- Image URLs are relative to this host: **`GET /v1/companion/face/{key}`** with the same `Authorization` + `x-genita-user` headers as every prep call. `key` ∈ `neutral`, `blink`, `smile`, `warm`, `surprised`, `concerned` (expression layer stills, 11/3 night; a set prepped before gets them in the background on its next `GET /v1/companion/prep` and serves them from the fetch after — `GENITA_FACE_TOPUP=0` stops that), `MBP`, `FV`, `TH`, `L`, `WQ`, `O`, `EI`, `A`, `U`, `CDG`. Answers the image bytes (`image/webp` today; check `content-type`), `cache-control: private, max-age=86400`. `404 no_companion` / `no_image` (not made yet, or rejected) / `not_found` (unknown key). Only the caller's own companion is served. `sceneUrl` on this pipeline is `/v1/companion/face/neutral`.
 - A server restart during the face step resumes it: kept and rejected images are saved one by one, and only the missing ones are redone. If every edit fails (vendor down) the attempt fails and the runner retries (`MAX_PREP_ATTEMPTS`), then `failed`; `POST /v1/companion/prep/retry` resumes from the saved images.
 - Session `lip` in `GET /v1/companion` → `session` is `"none"` for humans, animals and characters (the device animates the face set).
 

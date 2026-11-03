@@ -75,7 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -107,16 +107,33 @@ function isNarrationClause(clause: string): boolean {
  * progress ("Got it — trying to remember that concert we mentioned"). Both are the lookup itself, never its result:
  * "My search came up empty, I've never heard of it" (a result) and "trying to remember the last time I…" (a story) stay.
  */
-const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query))\b/;
+/** D13 run (crisis turns use web_search for the local hotline): "I'm going to find the right support resources for you",
+ * "let me find support resources you can reach right now" — a promise of the lookup, never the help itself */
+// only a clause that IS the promise: ", and I'll find you support…" after a real instruction ("Please put the pills down")
+// keeps the whole sentence (Codex #450 r2 P1)
+const RESOURCE_PROMISE = /^(?:i'?m going to|i'?m gonna|let me|i'?ll|i will|i want to)(?: (?:just|quickly|now))? (?:find|get|pull up|look up|grab)(?: you)? (?:the |some )?(?:right |best |local )?(?:(?:support|crisis|help) ?(?:resources|options|numbers?|lines?|hotlines?)?|resources|options|numbers?|lines?|hotlines?)(?: (?:for you|you can (?:reach|call|use)|right now|now|here|tonight|in korea|near you|where you are))*$/;
+const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query)|dig (?:deeper|around|more)|look (?:again|harder|deeper))\b/;
 /** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
  * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
-const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options))\b/;
+const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options)|getting you (?:[\w,'-]+ ){0,3}(?:support|options|resources|numbers?|help lines?)|(?:pulling|grabbing|checking|getting|fetching|loading)(?: up)? (?:the |that |your )?(?:final |latest |live |current |full )?(?:score|scores|results?|stats|standings|box score|numbers|forecast|weather|schedule|times?))\b/;
 // a predicate keeps it: "Searching for a job takes time", "Trying to remember what you ate can be hard" (Codex #415 P2)
 const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had|takes|took|makes|costs|means|sucks|helps|works|gets|feels|seems|can|could|will|would|should|might|must)\b|\d/;
 /** "I've got that note about your sister" said before the recall result, nothing in it: the memory store, never the
  * answer. "…note about your sister saying her birthday is May 12" carries the content and stays (Codex #415 P2). */
 const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for) (?:your |the |that |my )?[\w'-]+(?: [\w'-]+)?$/;
-const progressClause = (c: string) => (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
+/** a sentence that carries help or a result is never a lookup promise (Codex #431 P1: "Let me get you the crisis line:
+ * 988.", "Getting you support: call the police right now.", "Call 988 now, and I'll find support resources for you.") */
+const HELP_ACTION = /\b(?:call|text|dial|police|emergency|put (?:[\w']+ ){0,3}(?:down|away)|pills|safe|someone you trust|stay with (?:someone|a friend|me)|move away from|crisis (?:line|text line)|hotline|helpline|one (?:oh|zero) nine|nine one one|nine eight eight)\b|\d/;
+/** a comma inside the lookup clause is fine only inside its object ("getting you fast, accurate support options");
+ * anything else after a comma, colon or semicolon ("…, please step back from the ledge") is real content (Codex #450 r4–r5) */
+const LOOKUP_TAIL = /^(?:(?:the|some|a few|fast|accurate|good|best|local|late-night|open|nearby|real|solid|legit|quick|cheap|great|top|cozy|spicy|right|latest|live|final|support|crisis|help)\s+){0,3}(?:options|resources|support|spots|places|score|scores|results?|stats|standings|numbers?|lines?|hotlines?|forecast|weather|schedule|times?|route|directions|picks|ideas|recs|recommendations)$/;
+// the whole tail must be that noun phrase (Codex #450 r6: "…, step back from the ledge while I find support" ends in "support" too)
+const commaTailIsObject = (c: string) => { const parts = c.split(/[,:;]/); return parts.length < 2 || LOOKUP_TAIL.test(parts[parts.length - 1].trim()); };
+// a turn to something else ("…, but put the pills down now") is real content: kept (Codex #450 r3 P1)
+// …and an instruction after a comma or colon is real content ("…, put the pills down", Codex #450 r4)
+/** "finding what's open around Hongdae for you" — the whole clause, nothing after it (Codex #450 r7) */
+const FINDING_OPEN = /^(?:i'm )?(?:just )?finding (?:out )?what'?s (?:open|good)(?: (?:around|near|in|by) [\w'-]+(?: [\w'-]+)?)?(?: nearby)?(?: for you)?(?: right now| now)?$/;
+const progressClause = (c: string) => !HELP_ACTION.test(c) && commaTailIsObject(c) && !/\b(?:but|because|so|then|and|while|if|until|unless|before|after)\b/.test(c) && (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c) || FINDING_OPEN.test(c);
 // "which concert that was" is the thing being recalled, not a predicate
 const RECALL_HEAD = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
 const RECALL_PRED = /\b(?:can|could|will|would|should|might|must|takes|makes|sucks|gets|is (?:hard|tough|impossible|easy|rough)|helps)\b/;
@@ -125,15 +142,17 @@ const recallNow = (s: string) => RECALL_HEAD.test(s) && !RECALL_PRED.test(s);
  * train leaves at 11, so I'll try another search for a later bus" keeps the train time) */
 const SEARCH_META = /\b(?:search|query|results?|nothing (?:yet|so far)|came (?:up|back) (?:empty|blank|short|with nothing)|no luck)\b/;
 const searchRetry = (s: string) => {
-  if (!SEARCH_RETRY.test(s)) return false;
+  // help in the sentence is the answer (Codex #431 r2 P1: "Call the police and I'll look again for support resources")
+  if (!SEARCH_RETRY.test(s) || HELP_ACTION.test(s)) return false;
   const parts = s.split(/\s*(?:,|;|—|–| - )\s*(?:so |and |but )?|\s+so\s+/).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => SEARCH_RETRY.test(p) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
+  // a retry part that carries a result is an answer ("Let me look again at the tag because it says hand wash only", Codex #431 P2)
+  return parts.every((p) => (SEARCH_RETRY.test(p) && !/\bbecause\b/.test(p) && !PROGRESS_RESULT.test(p)) || (SEARCH_META.test(p) && !/\d/.test(p)) || /^(?:okay|ok|hmm+|ugh|got it|nothing yet)$/.test(p));
 };
 
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
-  if (searchRetry(s) || recallNow(s) || progressClause(s)) return true;
+  if (searchRetry(s) || recallNow(s) || progressClause(s) || (RESOURCE_PROMISE.test(s) && !HELP_ACTION.test(s))) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);

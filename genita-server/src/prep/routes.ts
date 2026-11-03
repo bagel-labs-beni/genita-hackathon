@@ -14,7 +14,7 @@
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
  *   GET  /v1/companion                      companion + prep + persona + demo
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
- *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes, mouth keys) or
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm/surprised/concerned, visemes, mouth keys) or
  *                                           face-flow asset (flow_*: ROI keys, float16 flows, mask), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields
@@ -332,6 +332,8 @@ export function createPrepRoutes(d: PrepDeps, runner: PrepRunner): PrepRoutes {
     if (m === "GET" && p === "/v1/companion/prep") {
       const c = await d.store.getCompanion(user);
       if (!c) throw new PrepError(404, "no_companion");
+      // a face prepped before the expression keys gets them in the background (served from the next fetch)
+      runner.topUpFace(user, c);
       return send(res, 200, prepView(c));
     }
 

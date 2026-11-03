@@ -44,13 +44,13 @@ test("voice capacity gate: max 0 is unlimited", async () => {
   assert.equal(gate.holders(), 99);
 });
 
-test("voice capacity config: default 3, zero unlimited, invalid values stay bounded", () => {
+test("voice capacity config: default 8 (11/3 load test: 8 calls on the autoscaled GPU, 0/32 turns fell back), zero unlimited, invalid values stay bounded", () => {
   const config = (value?: string) => loadConfig({ MODEL_API_KEY: "fake", GENITA_VOICE_MAX_CALLS: value });
-  assert.equal(config().voiceMaxCalls, 3);
+  assert.equal(config().voiceMaxCalls, 8);
   assert.equal(config("0").voiceMaxCalls, 0);
   assert.equal(config("2").voiceMaxCalls, 2);
   for (const value of ["", "  ", "-1", "2.5", "NaN", "Infinity", "9007199254740992"]) {
-    assert.equal(config(value).voiceMaxCalls, 3, value);
+    assert.equal(config(value).voiceMaxCalls, 8, value);
   }
 });
 

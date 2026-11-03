@@ -135,9 +135,9 @@ export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talk
 
 export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
   const instructions = [
-    `${q.companion.name} watches a video with a friend. These frames are the last second, oldest first; the last one is now.`,
-    "react: true if something a friend would blurt about is happening in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
-    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that, no question, no names.",
+    `${q.companion.name} watches a video with a friend. These frames are from the last few seconds, oldest first.`,
+    "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
+    "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that (past tense ok), no question, no names.",
     // AI sweep 11/3: jumpstyle kicks blurred mid-move were read as "he's losing balance" / "he totally dodged that" (prod + local, 2/3 runs)
     "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
@@ -253,7 +253,9 @@ export function buildQuestionContext(c: {
   if (moment) out.push(`The first attached image is the shared screen at that last moment, ${moment.agoSec} s ago.`);
   if (c.frames.length) out.push(`The ${moment ? "other " : ""}attached images are the shared screen over the last second or two, oldest first; the last one is the screen right now. For "what did they say", use the lines heard.`);
   if (c.frames.length) out.push("If a video's picture is solid black there (protected streaming like Netflix shows black to screen capture), say you can't see that one and never guess what's in it.");
-  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see.");
+  // AI sweep 11/3 (recall with the moment frame): "white twenty two went up", "Twenty eight went way up" — the visible
+  // jersey was 25; small blurry numbers get misread
+  out.push("If the user asks about it, answer in one short sentence with only what you saw or heard; add nothing you didn't see, and don't read out small text you can't make out for sure (jersey numbers, a score, a sign).");
   if (c.frames.length) out.push(NAMING_RULE);
   return { instructions: out.join("\n"), images: moment ? [moment.url, ...c.frames] : c.frames };
 }
