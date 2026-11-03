@@ -45,6 +45,11 @@ struct SettingsView: View {
     }
     private var companionName: String { model.companionDisplayName }
     /// M02 r01 C first screen: companion card → About you → Account → Start over → legal links. Five groups, one screen.
+    /// The account's voice: the V04 pick on this phone, else the companion's saved voice from the server (another
+    /// phone, a reinstall: build 7 Appetize showed "Default" after picking Leah, 11/4).
+    private var voiceName: String {
+        model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default"
+    }
     var body: some View {
         NavigationStack {
             SettingsPage {
@@ -159,7 +164,7 @@ struct SettingsView: View {
         .accessibilityElement(children: .combine)
     }
     private var companionSubtitle: String {
-        let voice = model.setup.voiceName.map { "\($0) voice" } ?? "Default voice"
+        let voice = voiceName + " voice"
         return model.setup.companionDemo == true ? voice + " · Demo companion" : voice
     }
     /// C1 About you row: "What {name} knows about you", the report's headline (2 lines max), "{n} things · {m} still learning".
@@ -430,7 +435,7 @@ struct SettingsCompanionPage: View {
             SettingsGroup {
                 SettingsRowLabel(title: "Name", value: model.companionDisplayName)
                 SettingsSeparator()
-                SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? "Default")
+                SettingsRowLabel(title: "Voice", value: model.setup.voiceName ?? CuratedVoices.name(model.setup.voiceId) ?? "Default")
             }
         }
         .navigationTitle("Your companion")
@@ -534,4 +539,11 @@ struct AboutYouPage: View {
         }
         return out.filter { !$0.claims.isEmpty }
     }
+}
+
+/// The four V04 voices' names by server id (genita-server src/prep/voices.ts DEFAULT_VOICES). Lives here, not in the
+/// iOS-only OnboardingViews.swift, because the GenitaMac target compiles this file too.
+enum CuratedVoices {
+    static let names = ["72": "Tara", "9": "Leah", "19": "Leo", "26": "Dan"]
+    static func name(_ id: String?) -> String? { id.flatMap { names[$0] } }
 }

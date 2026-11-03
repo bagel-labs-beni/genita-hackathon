@@ -294,7 +294,7 @@ final class SerifLabel: UIView {
 struct HISYGlobe: View {
     var body: some View {
         if let orb = DesignLibrary.nodes("preparing").first(where: { $0.name.hasPrefix("soul-orb") }) {
-            DesignImage(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
+            SoulOrbSlot(node: orb, resource: orb.name.contains("(2)") ? "reference-orb-wide" : "reference-orb-round")
                 .frame(width: orb.w, height: orb.h).scaleEffect(0.59).frame(width: 346, height: 321).accessibilityHidden(true)
         }
     }

@@ -103,16 +103,20 @@ const count = async (db: { query: (sql: string, p: unknown[]) => Promise<{ rows:
 
 test("companion reset: companion, photos, face files and call memory go; login, consent, name, profile and reports stay; /me has no companion", async (t) => {
   const forgotten: string[] = [];
+  const forgetOpts: unknown[] = [];
   let companionAtForget: unknown = "unset";
   const { accounts, files, logs, account } = await boot(t, (deps) => {
-    deps.memory = { ephemeral: true, useStore() {}, repository: {}, async forget(u: string) {
-      forgotten.push(u);
+    deps.memory = { ephemeral: true, useStore() {}, repository: {}, async forget(u: string, _id?: string, opts?: unknown) {
+      forgotten.push(u); forgetOpts.push(opts);
       companionAtForget = await accounts.prepStore.getCompanion(u);
     } } as unknown as SessionDeps["memory"];
   });
   const { userId, call } = await account();
   const before = await call("GET", "/me");
   assert.equal(before.body.hasCompanion, true);
+  // the old companion's calls counted (AU-90): call 3, two questions asked
+  const st = (await accounts.prepStore.getStyle(userId))!;
+  await accounts.prepStore.putStyle(userId, { ...st, growth: { calls: 3, asked: [{ item: "Food", at: new Date().toISOString(), answered: true }] } });
 
   const r = await call("POST", "/v1/companion/reset");
   assert.equal(r.status, 200);
@@ -135,6 +139,10 @@ test("companion reset: companion, photos, face files and call memory go; login, 
   assert.equal(await count(db, "SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1 AND revoked_at IS NULL", userId), 1, "session kept");
   assert.deepEqual([...files.keys()].filter((k) => k.startsWith(`users/${userId}/`)), [`users/${userId}/reports/r1.json`], "only the report file is left");
   assert.deepEqual(forgotten, [userId], "call memory forgotten");
+  assert.deepEqual(forgetOpts, [{ relationship: true }], "AU-90: when they last talked and the mood go too");
+  const after = (await accounts.prepStore.getStyle(userId))!;
+  assert.deepEqual(after.growth, { calls: 0, asked: [] }, "AU-90: call 1 with the new companion");
+  assert.ok(after.sections.interests.length > 0, "what Genita knows stays");
   assert.equal(companionAtForget, null, "calls close (4410) and memory goes only after the companion rows are gone (Codex P2)");
   assert.ok(logs.some((l) => l.event === "companion.reset" && l.data.ok === true && l.data.removed === true && l.data.photos === 1));
 
@@ -261,4 +269,21 @@ test("companion reset: POST /v1/companion waits (409) while a reset is erasing, 
   hooks.beforeDelete = async () => {};
   const after = await call("POST", "/v1/companion");
   assert.notEqual(after.body.error, "reset_in_progress", "the block lifts after the reset");
+});
+
+test("AU-90: memory.forget with relationship clears when they last talked and the carried mood; settings stay", async () => {
+  const { MemoryService } = await import("../src/memory/service.ts");
+  const { InMemoryMemoryRepository } = await import("../src/memory/repository.ts");
+  const repo = new InMemoryMemoryRepository();
+  const memory = new MemoryService({ repository: repo, state: repo, extract: async () => [] });
+  const s = await repo.getState("u1");
+  await repo.putState("u1", { ...s, last_message_at: Date.now(), last_opener_day: "2026-11-04", settings: { rememberSeen: false, photosOfUs: true }, call_mood: { valence: 0.5, energy: 0.2, at: Date.now(), rev: 0 } } as typeof s);
+  await memory.forget("u1");
+  assert.notEqual((await repo.getState("u1")).last_message_at, null, "a plain Forget keeps the call rhythm");
+  await memory.forget("u1", undefined, { relationship: true });
+  const after = await repo.getState("u1") as Awaited<ReturnType<typeof repo.getState>> & { call_mood?: unknown };
+  assert.equal(after.last_message_at, null);
+  assert.equal(after.last_opener_day, null);
+  assert.equal(after.call_mood, undefined);
+  assert.equal(after.settings.rememberSeen, false, "memory settings stay");
 });

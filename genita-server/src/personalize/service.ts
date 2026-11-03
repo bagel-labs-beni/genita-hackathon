@@ -14,9 +14,9 @@
 import type { SparkRequest } from "../meta/spark.ts";
 import { sparkJson } from "../meta/spark.ts";
 import { backgroundJson } from "../meta/sparkOpen.ts";
-import { looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
+import { isDislike, looksLikeInjection, redactSensitive, styleProfileText, type DisplayRow, type Finding, type StyleCard } from "../prep/importProfile.ts";
 import type { PrepStore } from "../prep/store.ts";
-import { EYEBROWS, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
+import { EYEBROWS, SOURCES, SPARK_STORY_IDS, STORY_IDS, buildStoryRequest, cardTexts, interimCard, optimisticCard, toStory, type SparkStoryId, type Story, type StoryCard, type StoryId, type UnknownItem } from "./story.ts";
 import { PROFILE_FIELDS, mergeUpdates, type AppliedUpdate, type ProfileField, type ProfileUpdate } from "./merge.ts";
 import { askLine, beginCall } from "./unknowns.ts";
 import { FORGET, buildCorrectionRequest, mightBeCorrection, toAnswer, toCorrectionUpdates } from "./corrections.ts";
@@ -42,6 +42,103 @@ const CALL_SIDE_MAX = 12;
 const STOPW = new Set("the and you your with for that this from into like likes about very really".split(" "));
 /** content words, 5-letter stems: "Lo-fi while working" ~ "Media: slow-burn dramas; lo-fi while working." */
 const keyWords = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !STOPW.has(w)).map((w) => w.slice(0, 5));
+
+type Edit = { drop: boolean; to?: string };
+/**
+ * What the marked lines take out of `card` (finding text → edit), decided on that card alone: the same words, or
+ * nearly (Spark may word a card line a little differently), only in the card's own sections, about the same thing.
+ * A picked chip ("Minimal") in a list finding ("Style: Minimal, Comfy.") takes out only that chip (Codex #538 r3).
+ */
+function markedEdits(card: StyleCard, items: string[], cardId?: StoryId): Map<string, Edit> {
+  // a finding's own label ("Style: Minimal.", "Media: …") is not part of what the user marked (Codex #538 r2)
+  const label = (t: string) => t.match(/^\s*[A-Za-z][A-Za-z ]{1,20}:\s+/)?.[0] ?? "";
+  // a dislike finding is what the import calls one (isDislike: "Dislikes …", "Avoids …"); its chip reads
+  // "Not for you: seafood" (Codex #538 r4, r5)
+  const NOT_FOR = /^\s*not for (you|them|me):?\s*/i;
+  const DISLIKE_HEAD = /^\s*(?:dislikes?|avoids?|hates?|not into|no|never|doesn't like|does not like|can't stand)\s+/i;
+  const negative = (t: string) => NOT_FOR.test(t) || isDislike(t);
+  /**
+   * A finding the N3 chips came from, as head + items + tail (story.ts skipTasteTags): "Style: Minimal, Comfy.",
+   * "Dislikes colorful, formal clothes.", "Avoids seafood." — or null for a sentence.
+   */
+  const asList = (t: string): { head: string; items: string[]; tail: string } | null => {
+    let m = t.match(/^(\s*dislikes?\s+)(.+?)(\s+clothes\.?)$/i);
+    if (!m) m = t.match(/^(\s*(?:dislikes?|avoids?|hates?|not into|no|never|doesn't like|does not like|can't stand)\s+)(.+?)(\.?)$/i);
+    if (!m && label(t)) m = t.match(/^(\s*[A-Za-z][A-Za-z ]{1,20}:\s+)(.+?)(\.?)$/);
+    if (!m) return null;
+    const parts = m[2].split(/\s*,\s*|\s+and\s+/).filter(Boolean);
+    return parts.length ? { head: m[1], items: parts, tail: m[3] || "." } : null;
+  };
+  const bare = (t: string) => (NOT_FOR.test(t) ? t.replace(NOT_FOR, "") : isDislike(t) ? t.replace(DISLIKE_HEAD, "") : t.slice(label(t).length));
+  const list = (t: string) => bare(t).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w));
+  const words = (t: string) => new Set(list(t));
+  /** what the line is about: its last content word ("… outfits." vs "… recipes."), 5-letter stem */
+  const subject = (t: string) => list(t).at(-1)?.slice(0, 5) ?? "";
+  const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const edits = new Map<string, Edit>();
+  const marked = items.map((t) => ({ raw: bare(t), neg: negative(t), w: words(t), subj: subject(t) })).filter((m) => m.w.size);
+  if (!marked.length) return edits;
+  const overlap = (a: Set<string>, b: Set<string>) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / Math.max(a.size, b.size); };
+  const keys = new Set<string>(cardId && cardId !== "unknowns" ? SOURCES[cardId] : Object.keys(card.sections ?? {}));
+  const candidates = Object.entries(card.sections ?? {}).flatMap(([k, v]) => (keys.has(k) && Array.isArray(v) ? v.map((f) => f.text) : []));
+  /** a list finding as it stands after this save's earlier chips */
+  const now = (t: string) => { const e = edits.get(t); return e?.drop ? null : e?.to ?? t; };
+  for (const m of marked) {
+    const pool = candidates.filter((t) => negative(t) === m.neg);   // a dislike chip only for a dislike, a like for a like
+    // a chip of a list finding ("Style: Minimal, Comfy.", "Dislikes colorful, formal clothes."): only that chip goes;
+    // several chips of one save add up; the last one takes the finding
+    const chip = norm(m.raw);
+    const listHit = pool.find((t) => { const cur = now(t); const l = cur ? asList(cur) : null; return !!l && l.items.some((x) => norm(x) === chip); });
+    if (listHit) {
+      const l = asList(now(listHit)!)!;
+      const parts = l.items.filter((x) => norm(x) !== chip);
+      edits.set(listHit, parts.length ? { drop: false, to: `${l.head}${parts.join(", ")}${l.tail}` } : { drop: true });
+      continue;
+    }
+    // each marked line takes out at most ONE finding: the clear best match (≥ 60 % of the words, better than any other
+    // line), about the same thing — "Ask before … outfits." never takes "… recipes." (Codex P1 #538, r2)
+    const scored = pool.filter((t) => subject(t) === m.subj).map((t) => ({ t, s: overlap(words(t), m.w) })).sort((a, b) => b.s - a.s);
+    if (scored[0] && scored[0].s >= 0.6 && (!scored[1] || scored[1].s < scored[0].s)) edits.set(scored[0].t, { drop: true });
+  }
+  return edits;
+}
+
+function applyEdits(card: StyleCard, edits: Map<string, Edit>): StyleCard {
+  if (!edits.size) return card;
+  const fix = <T extends { text: string }>(list: T[]) => list.flatMap((x) => {
+    const e = edits.get(x.text);
+    return !e ? [x] : e.drop ? [] : [{ ...x, text: e.to! }];
+  });
+  const sections = Object.fromEntries(Object.entries(card.sections ?? {}).map(([k, v]) => [k, Array.isArray(v) ? fix(v) : v])) as StyleCard["sections"];
+  const display = (card.display ?? []).map((r) => ({ ...r, items: fix(r.items) }));
+  return { ...card, sections, display };
+}
+
+/** The style card with the marked lines taken out where they are the profile's own findings (M02). */
+export function withoutMarked(card: StyleCard, items: string[], cardId?: StoryId): StyleCard {
+  return applyEdits(card, markedEdits(card, items, cardId));
+}
+
+/**
+ * The card with every save still waiting on Spark's merge taken out the same way (the save's answer and the call
+ * start agree; a second correction never brings back the first one's line — Codex #538 r2). Every save's targets are
+ * chosen on the stored card, so two saves of the same line never move on to its neighbor (Codex #538 r3).
+ * Unknowns answers are not removals.
+ */
+export function withPendingRemoved(card: StyleCard): StyleCard {
+  // all saves of one card as one set of marked lines (the same line twice is once), chosen on the stored card
+  const byCard = new Map<string, Set<string>>();
+  for (const p of card.pendingCorrections ?? []) {
+    if (p.cardId === "unknowns") continue;
+    const set = byCard.get(p.cardId) ?? new Set<string>();
+    for (const i of p.items) set.add(i);
+    byCard.set(p.cardId, set);
+  }
+  const edits = new Map<string, Edit>();
+  for (const [cardId, items] of byCard) for (const [t, e] of markedEdits(card, [...items], cardId as StoryId)) edits.set(t, e);
+  return applyEdits(card, edits);
+}
+const STOP = new Set(["the", "and", "you", "your", "our", "with", "for", "that", "this", "are", "like", "likes", "into", "about"]);
 
 export class PersonalizeError extends Error {
   readonly status: number;
@@ -124,8 +221,13 @@ export class Personalize {
     });
   }
 
-  /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
-  /** → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
+  /** Companion reset (AU-90): call 1 with the new companion (first-call nod and question); what they know stays. In the per-user lock, so a save under way can't write the old count back. */
+  async resetGrowth(userId: string): Promise<void> {
+    await this.update(userId, (c) => (c.growth ? { card: { ...c, growth: { calls: 0, asked: [] } }, out: true } : null));
+  }
+
+  /** Replace the user's style (import, N1–N3) under the same lock as every other write.
+   *  → the card's importedAt (the SUM insight report of this import is saved only onto this card) */
   async replaceStyle(userId: string, card: StyleCard): Promise<string> {
     const at = this.now().toISOString();
     await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
@@ -327,7 +429,11 @@ export class Personalize {
     this.queueCorrection(userId, () => this.applyCorrection(userId, cardId, items, text, asOf, shown, texts), `${userId}\u0000${asOf}`);
     const changed = card ? cardTexts(card).filter((t) => !texts.includes(t)) : [];
     this.log("profile.corrected", { card: cardId, ms: Math.round(performance.now() - t0), apply: "background" });
-    return { card, ack: ACK, changed, profile: styleProfileText(before), rows: before.display };
+    // M02 / the call follow the save at once (QA build 6: "That's not me" on "Likes jokes in our chats." stayed in
+    // Your preferences — the app keeps these rows, and the merge lands seconds later): the marked lines that are the
+    // profile's own words are out of the rows and the profile text now; Spark's merge settles the rest
+    const now = withPendingRemoved({ ...before, pendingCorrections: [...(before.pendingCorrections ?? []).filter((p) => p.asOf !== asOf), { cardId, items, text, asOf }] });
+    return { card, ack: ACK, changed, profile: styleProfileText(now), rows: now.display };
   }
 
   /** Saves kept in pendingCorrections with no job here (a restart, or Spark down twice): apply them again. */
@@ -452,6 +558,30 @@ export class Personalize {
   }
   /** tests / shutdown: wait for background card rewrites */
   async drainRewrites(): Promise<void> { while (this.rewrites.size) await Promise.all([...this.rewrites]); }
+  /**
+   * tests / shutdown: true once every background write this instance started (story jobs, queued corrections,
+   * rewrites, after-call growth, the per-user store locks) has settled; false when `maxMs` passed first (a test's Spark that never answers never writes either).
+   * A test removing its store dir after this sees no file appear mid-delete (CI ENOTEMPTY flake, 11/4).
+   */
+  async idle(maxMs = 3000): Promise<boolean> {
+    const end = Date.now() + maxMs;
+    for (;;) {
+      const all = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
+      if (!all.length) return true;
+      if (Date.now() >= end) return false;
+      // the timer is ref'd on purpose: with a job that never answers it is the only thing keeping the event loop up, and an
+      // unref'd one let node end the test file mid-wait (CI #577 "cancelledByParent"); cleared as soon as the jobs settle
+      let timer: NodeJS.Timeout | undefined;
+      const settled = await Promise.race([
+        Promise.allSettled(all).then(() => true),
+        new Promise<false>((r) => { timer = setTimeout(() => r(false), Math.max(0, end - Date.now())); }),
+      ]).finally(() => clearTimeout(timer));
+      if (!settled) return false;
+      // settled: anything new they started is picked up on the next pass; nothing new → done
+      const again = [...this.rewrites, ...this.storyJobs.values(), ...this.corrections.values(), ...this.locks.values()];
+      if (again.every((x) => all.includes(x))) return true;
+    }
+  }
 
   // ───────────── calls ─────────────
 
@@ -464,15 +594,18 @@ export class Personalize {
     const pendingCard = await this.store.getStyle(userId);
     if (pendingCard?.pendingCorrections?.length) this.replayPending(userId, pendingCard);
     if (opts.plan === false) {
-      const card = await this.store.getStyle(userId);
+      const stored = await this.store.getStyle(userId);
+      const card = stored ? withPendingRemoved(stored) : null;
       return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card), removed: (card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(card.growth?.calls ? { calls: card.growth.calls } : {}) } : null;
     }
     return this.update(userId, (card) => {
       const r = beginCall(card, this.now().toISOString());
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
+      // what the call is told: without the lines the user took out whose merge is still running
+      const told = withPendingRemoved(r.card);
       return {
         card: r.card,
-        out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
+        out: { ...(firstCallNod(told) ? { nod: firstCallNod(told)! } : {}), profile: styleProfileText(told, 2000, { toConfirm: false }), removed: (r.card.removed ?? []).map((t) => ({ text: t.text, forget: !!t.forget })), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(told), ...(r.card.growth?.calls ? { calls: r.card.growth.calls } : {}) },
       };
     });
   }
@@ -592,6 +725,14 @@ export class Personalize {
 
   /** After a call: grow the profile. Returns how many updates were applied. */
   async endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
+    // tracked from start to end: idle() waits for the after-call growth too (Codex #577)
+    const job = this.endCallNow(userId, turns, asked, startedAt);
+    const tracked = job.then(() => {}, () => {});
+    this.rewrites.add(tracked);
+    void tracked.finally(() => this.rewrites.delete(tracked));
+    return job;
+  }
+  private async endCallNow(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number> {
     const userTurns = turns.filter((t) => t.role === "user" && t.text.trim());
     if (userTurns.length < 2) return 0;
     const card = await this.store.getStyle(userId);
