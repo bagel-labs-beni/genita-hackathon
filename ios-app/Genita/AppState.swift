@@ -73,6 +73,14 @@ struct SavedSetup: Codable {
         companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
 
 }
+/// A launch response belongs to the token and authentication lifetime that requested it.
+struct LaunchAuthSnapshot: Equatable, Sendable {
+    let token: String?
+    let generation: Int
+
+    func accepts(_ current: LaunchAuthSnapshot) -> Bool { token != nil && self == current }
+}
+
 @MainActor @Observable final class AppState {
     var setup: SavedSetup { didSet { if oldValue.imageData != setup.imageData { saveImage() }; save() } }
     var history: [Stage] = []
@@ -125,7 +133,9 @@ struct SavedSetup: Codable {
     /// Bumped on every sign-in and sign-out: server answers asked under an older value are dropped.
     @ObservationIgnored private(set) var authGeneration = 0
     @ObservationIgnored var onboarding = OnboardingClient()
+    var launchAuthSnapshot: LaunchAuthSnapshot { LaunchAuthSnapshot(token: onboarding.auth.token, generation: authGeneration) }
     var storage: UserDefaults
+    @ObservationIgnored private let onHandoffAccountChange: ((String?) -> Void)?
     let imageURL: URL
     nonisolated static var defaultImageURL: URL { URL.applicationSupportDirectory.appending(path: "Genita/companion.jpg") }
 
@@ -135,8 +145,9 @@ struct SavedSetup: Codable {
     /// (genita-server test "import prompt copies are identical").
     static let prompt: String = Bundle.main.url(forResource: "import-prompt", withExtension: "txt")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL) {
+    init(storage: UserDefaults = .standard, reset: Bool = false, imageURL: URL = AppState.defaultImageURL, onHandoffAccountChange: ((String?) -> Void)? = nil) {
         self.storage = storage
+        self.onHandoffAccountChange = onHandoffAccountChange
         self.imageURL = imageURL
         if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
@@ -210,6 +221,7 @@ struct SavedSetup: Codable {
         invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(nil)
         storage.set(true, forKey: Self.signedOutKey)
         prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
@@ -222,6 +234,7 @@ struct SavedSetup: Codable {
         invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
+        onHandoffAccountChange?(userId)
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
@@ -243,6 +256,7 @@ struct SavedSetup: Codable {
     /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
     /// account, drop it — one account's data never goes out under another's token.
     func adopt(accountId id: String) {
+        onHandoffAccountChange?(id)
         guard setup.accountId != id else { return }
         if setup.accountId != nil || setup.companionCreated == true || setup.styleRows != nil {
             var fresh = SavedSetup(); fresh.stage = setup.stage == .consent ? .consent : .name

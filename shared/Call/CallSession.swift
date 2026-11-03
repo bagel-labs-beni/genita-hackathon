@@ -122,6 +122,8 @@ enum CallStop: Equatable {
     /// Unset = everything plays through CallAudio as usual.
     /// The app saves a name the server changed in the call (`companion.named`).
     @ObservationIgnored var onCompanionNamed: ((String) -> Void)?
+    /// A recovered authenticated call is also an opportunity to retry missing handoff identity.
+    @ObservationIgnored var onConnected: (() -> Void)?
     @ObservationIgnored var routeInterpretAudio: ((Data, InterpretBoard.Route, Int) -> Void)?
     @ObservationIgnored var flushRoutedAudio: (() -> Void)?
     @ObservationIgnored private var routed: Set<Int> = []
@@ -701,6 +703,7 @@ enum CallStop: Equatable {
             perceptionOn = r.perception == true
             if perceptionOn { startPerception() } else { perception.stop() }
             log.info("ready session=\(r.sessionId, privacy: .public) lip=\(r.lip.active.rawValue, privacy: .public) tts=\(self.tts.rawValue, privacy: .public)")
+            onConnected?()
         case let .state(s):
             setPhase(s.state)
         case .speechStart:

@@ -20,31 +20,38 @@ extension AppState {
     /// On launch with a saved token: `/me` decides the first screen (new account → A01…, consent → CS01,
     /// no name → A03, no companion → I01 or the onboarding step the user left, companion → S07 → S09).
     /// Offline keeps the saved screen; a 401 clears the token and shows A02.
-    /// `afterSignIn`: right after A02 (the local setup was just reset for this account), so a returning account
-    /// goes to the call even if A03's Next was already tapped. Every await re-checks `authGeneration`: a sign-out
-    /// (or another sign-in) in between drops this answer, so one account's companion never lands on another.
+    /// `afterSignIn`: a returning account goes to its call even if A03's Next was already tapped.
+    /// Token, authentication lifetime and cancellation are checked after each request.
     func routeOnLaunch(afterSignIn: Bool = false) async {
-        guard serverWired, onboarding.auth.isSignedIn else { return }
-        let generation = authGeneration
+        let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        guard serverWired, launchRequest.token != nil else { return }
         let state = await onboarding.auth.sessionState()
-        guard generation == authGeneration, !Task.isCancelled,
+        // A current 401 clears its token in the auth client. It still routes to A02, but an old
+        // request must never sign out a newer login or re-adopt a logged-out account's handoff.
+        guard launchRequest.generation == authGeneration, !Task.isCancelled,
               ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
+        if case .expired = state {
+            guard onboarding.auth.token == nil else { return }
+            signedOut()
+            return
+        }
+        guard launchRequest.accepts(launchAuthSnapshot) else { return }
         var me: GenitaMe?
         if case .active(let m) = state { me = m; adopt(accountId: m.user.id) }
         let route = StartRouter.route(state, device: .iphone)
         // a companion on the server but not on this phone (reinstall, new phone, a judge's ready-made one):
         // bring its name, card and face back first
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
-        guard generation == authGeneration, !Task.isCancelled,
-              ownsOnboardingResponse(request, allowingClearedSession: state == .expired) else { return }
+        guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
+              ownsOnboardingResponse(request) else { return }
         apply(route, me: me, afterSignIn: afterSignIn)
     }
 
     func restoreCompanion(for request: OnboardingSessionGeneration.Snapshot? = nil) async {
-        let generation = authGeneration
+        let launchRequest = launchAuthSnapshot
         let request = request ?? onboardingSnapshot()
-        guard let c = try? await onboarding.companion(), generation == authGeneration, !Task.isCancelled,
+        guard let c = try? await onboarding.companion(), launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
               ownsOnboardingResponse(request) else { return }
         setup.companionName = c.name
         setup.imageId = c.imageId
@@ -58,7 +65,7 @@ extension AppState {
         // (Meta-only `sceneUrl` is a token-protected server path, so it goes through the account client)
         if setup.imageData == nil, let url = c.prep?.sceneURL,
            let data = try? await onboarding.sceneImage(url), UIImage(data: data) != nil,
-           generation == authGeneration, !Task.isCancelled, ownsOnboardingResponse(request) {
+           launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled, ownsOnboardingResponse(request) {
             setup.imageData = data
         }
     }

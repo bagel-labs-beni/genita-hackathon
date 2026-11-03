@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main struct GenitaApp: App {
-    @State private var model = AppState(reset: GenitaApp.resetOnLaunch)
+    @State private var model = AppState(reset: GenitaApp.resetOnLaunch, onHandoffAccountChange: { PhoneHandoff.shared.setAccount($0) })
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
     /// UI tests start clean. So does the Appetize browser preview (`--browser-preview`, Debug builds only, see BrowserPreview.swift).

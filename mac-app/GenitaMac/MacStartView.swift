@@ -18,7 +18,7 @@ struct MacStartView: View {
             }
         }
         .task {
-            _ = MacHandoff.shared // the pairing link and presence start at launch, signed in or not (as before)
+            _ = MacHandoff.shared // Connections start after /me verifies the signed-in account.
             if call.account == .checking { await call.refresh() }
         }
     }

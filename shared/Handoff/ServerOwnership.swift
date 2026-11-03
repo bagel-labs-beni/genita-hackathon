@@ -158,7 +158,7 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
         pingTimer?.invalidate(); pingTimer = nil
         task?.cancel(with: .goingAway, reason: nil); task = nil
         session?.invalidateAndCancel(); session = nil
-        if state.connected { state = PresenceState() }
+        state = PresenceState(); nextTrigger = "continue"; backoff = 1
     }
     func setActive(_ value: Bool) {
         active = value
@@ -231,8 +231,9 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
         if wasConnected { onEffect?(.peerChanged) }
         guard wanted else { return }
         let delay = backoff; backoff = min(backoff * 2, 15)
+        let retryGeneration = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.wanted, self.task == nil else { return }
+            guard let self, self.wanted, self.generation == retryGeneration, self.task == nil else { return }
             self.connect()
         }
     }
