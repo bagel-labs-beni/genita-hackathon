@@ -44,7 +44,7 @@ test("watch: a named play or trick is never said as written; the plain line goes
 
 test("watch: the quick look and the memo are told to say the plain action, never a named play or trick", () => {
   const quick = buildQuickRequest({ companion: { name: "Juno" }, frames: [], heard: [] });
-  assert.match(String(quick.instructions), /no named play or trick \(alley-oop, kickflip\): say the plain action/);
+  assert.match(String(quick.instructions), /no named play or trick: say the plain action/);
   const memo = buildMemoRequest({ companion: { name: "Juno", traits: [] }, memo: [], lines: [], frames: [], names: {}, blank: false } as never);
   assert.match(String(memo.instructions), /never a named play or trick/);
 });

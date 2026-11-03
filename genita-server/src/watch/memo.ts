@@ -89,7 +89,7 @@ export function buildMemoRequest(m: MemoInput): SparkRequest {
     `page: true only if the frames show a web page, shop or document that the memo so far has not seen yet (a new page or product, not the same one scrolled, and not a video playing in it); then moment is sweet and reaction comments on one specific thing clearly visible on it (a product, a headline), the way a friend glancing over would (\"ooh, those red runners are cute\"), no question.`,
     `reaction: if moment is not none, the 2 to 8 words ${m.companion.name} blurts out about that exact thing, said the way a friend in their twenties would say it out loud (casual English, no emojis or texting abbreviations), no question, only what is clearly visible or heard (no guesses about clothes, injuries or intentions). Otherwise empty.`,
     // AI sweep 11/3: a blurred jumpstyle dance became "Oh his shoe flew off" / "he totally dodged that"
-    "A blurred mid-move frame is still the move: people kicking, hopping or spinning to music are dancing, never losing balance, losing a shoe or dodging. Name the move itself, not a story about it, and never a named play or trick (alley-oop, kickflip): say the plain action.",
+    "A blurred mid-move frame is still the move: people kicking, hopping or spinning to music are dancing, never losing balance, losing a shoe or dodging. Name the move itself, not a story about it, and never a named play or trick: say the plain action.",
     "speakers: for each voice label in the new lines, a short name from what you see (\"the chef\", \"the woman in green\") only if you are sure; skip the rest.",
     "protectedVideo: true only if a video player's picture is solid black while the page or app around it shows (protected streaming like Netflix captures black); then memo says so, moment none.",
     "talkOver: true if the screen's sound is crowd noise, music, sports commentary or narration (fine to react over); false if people on screen are talking to each other.",
@@ -143,11 +143,11 @@ export type QuickVerdict = { moment: Exclude<Moment, "none">; line: string; talk
 export function buildQuickRequest(q: { companion: { name: string }; frames: string[]; heard: string[] }): SparkRequest {
   const instructions = [
     `${q.companion.name} watches a video with a friend. These frames are from the last few seconds, oldest first.`,
-    "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights and stunts count. False for ordinary walking, talking, menus or pages.",
+    "react: true if something a friend would blurt about happens in these frames: a dunk or a score, a trick landed, a fall or a fail, a big dance move, a reveal, a punchline, people cracking up. Sports highlights, stunts and people dancing count as soon as you see them. False for ordinary walking, talking, menus or pages.",
     "moment: funny, surprising or sweet (none if react is false). line: 2 to 6 casual words about exactly that (past tense ok), no question, no names.",
     // AI sweep 11/3: jumpstyle kicks blurred mid-move were read as "he's losing balance" / "he totally dodged that" (prod + local, 2/3 runs)
     // QA build 6 (11/4): a solo dunk became "alley-oop"
-    "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen, no named play or trick (alley-oop, kickflip): say the plain action.",
+    "The line may only name what is clearly visible in the last frame (the move, the dunk, the face; a blur is the move). No guesses: no clothes slipping or falling off, no balance or dodging, no injuries, no intentions, nothing about to happen, no named play or trick: say the plain action.",
     "talkOver: true if the sound is crowd noise, music, sports commentary or narration; false if people on screen are talking to each other.",
   ].join("\n");
   const parts: ContentPart[] = [{ type: "input_text", text: q.heard.length ? `Heard just now (${ENGLISH_ONLY}): ${q.heard.map((h) => `"${h}"`).join(" ")}` : "Nothing heard just now." }];
