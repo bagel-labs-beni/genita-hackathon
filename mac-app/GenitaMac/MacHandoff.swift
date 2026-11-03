@@ -36,6 +36,24 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     @Published private(set) var phoneCallSeen = PhoneCallLatch()
     @Published fileprivate(set) var surface = HandoffSurface.active
     @Published private(set) var companionVisible = false
+    /// MC-01 (lead 11/4): the conversation is on this Mac but the app was just opened (or the server only synced an old
+    /// claim). The home offers "Continue here"; mic, camera and screen start only after that tap.
+    @Published var resumeOffered = false
+    /// set while this Mac claims the conversation itself (a live move), read by ownerChanged
+    private var claimingLive = false
+    private func claimLive() { claimingLive=true;ownership.claimHere();claimingLive=false }
+    /// A move the server makes for this Mac (proximity) can land first as a trigger-less `claim.result` (seen as a
+    /// sync: Continue here offered). Its confirmation — `proximity.result ok`, or the `ownership` with a live trigger
+    /// for the same epoch, which the reducer ignores — then opens the call (Codex P1/P2: no time window).
+    /// - Parameter epoch: the confirming `ownership(trigger: proximity)` epoch; it must be the one the offer is waiting
+    ///   on, so a late event for another move never resumes the current one (Codex P2). PROTOCOL: an accepted
+    ///   proximity report is always followed by that ownership event.
+    func liveMoveConfirmed(epoch:Int) {
+        guard ownership.isOwner,resumeOffered,epoch==resumeEpoch else{return}
+        resumeHere()
+    }
+    private var resumeEpoch:Int?
+    private func offerResume() { resumeOffered=true;resumeEpoch=ownership.state.epoch }
     /// R2 says "Screen sharing stopped." only when sharing was on as the conversation left.
     @Published fileprivate(set) var sharingStopped = false
     @Published var motion: TransitionPayload?
@@ -106,7 +124,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         epoch+=1;pending=nil;motion=nil;renderedMotionID=nil;candidate=nil;last=nil;dock=nil
         lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
         sharing.stop();sharing.permissionRequired=false;media.stopAll()
-        companion?.orderOut(nil);companionVisible=false;sharingStopped=false;closeRegistration()
+        companion?.orderOut(nil);companionVisible=false;sharingStopped=false;resumeOffered=false;closeRegistration()
         ownership.useAccount(accountID);phoneCallSeen.reset()
         status="Waiting for your iPhone"
         refreshSurface()
@@ -114,7 +132,17 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] == nil {
             link.host(accountID:accountID);server.start()
         }
-        if ownership.isOwner && ownership.state.epoch>0 {showCompanion()}
+        // MC-01: a cold launch never opens the call by itself; the home offers Continue here (ResumePolicy)
+        if ownership.isOwner && ownership.state.epoch>0 {
+            if ResumePolicy.opensCall(.coldLaunch) {showCompanion()} else {offerResume()}
+        }
+    }
+    /// MAC-4 "Continue here" after a cold launch: now the call window opens and the call starts.
+    func resumeHere() {
+        resumeOffered=false
+        guard ownership.isOwner else { continueHere(); return }  // the iPhone took it meanwhile: claim it back
+        sharingStopped=false;showCompanion()
+        MacCall.shared.conversationArrived()
     }
     func showRegistration() {
         screen = screen ?? NSScreen.main
@@ -188,7 +216,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         guard accountScope.accountID != nil,!ownership.isOwner else{return}
         let atEdge=freshAtDock
         server.nextTrigger = atEdge ? "touch" : "continue"
-        ownership.claimHere()
+        claimLive()
         status="Conversation on this Mac"
         if atEdge {prepare(outgoing:true)}
     }
@@ -212,7 +240,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
                 }
             } else {receiveServerClaim(claim,trigger:trigger)}
         case .moveRequested:
-            if !ownership.isOwner {server.nextTrigger="move";ownership.claimHere();status="Conversation on this Mac"}
+            if !ownership.isOwner {server.nextTrigger="move";claimLive();status="Conversation on this Mac"}
         case .moveFailed:
             status="Your iPhone isn’t available. Still on this Mac."
         case .peerChanged: phoneCallSeen.peer(active:server.peerActive);refreshSurface()
@@ -222,13 +250,19 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     private var applyingTrigger:String?
     private func receiveServerClaim(_ claim:OwnershipClaim,trigger:String?) {
         applyingTrigger=trigger;ownership.receive(claim);applyingTrigger=nil
+        // a live server move for an epoch already applied (claim.result came first): confirm it now
+        if claim.owner == .mac,ResumePolicy.arrival(localClaim:false,serverTrigger:trigger) == .liveMove {liveMoveConfirmed(epoch:claim.epoch)}
     }
     private func ownerChanged(from old:ConversationDevice,to new:ConversationDevice) {
         phoneCallSeen.applied(owner:new,epoch:ownership.state.epoch,trigger:applyingTrigger)
         if new == .mac {
-            sharingStopped=false;showCompanion()
-            MacCall.shared.conversationArrived()  // #118: the live call follows the conversation here
+            // #118: the live call follows the conversation here — only on a live move (MC-01, ResumePolicy)
+            if ResumePolicy.opensCall(ResumePolicy.arrival(localClaim:claimingLive,serverTrigger:applyingTrigger)) {
+                resumeOffered=false;sharingStopped=false;showCompanion()
+                MacCall.shared.conversationArrived()
+            } else {offerResume()}
         } else {
+            resumeOffered=false
             if old == .mac {sharingStopped=sharing.isSharing}
             // The conversation left: sharing stops now and does not come back by itself.
             sharing.stop();sharing.permissionRequired=false;media.stopAll();CallController.shared.suspend()
@@ -265,7 +299,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
         case "ownership":
             if let claim=OwnershipClaim(message) {ownership.receive(claim)}
         case "moveRequest":
-            if !ownership.isOwner {ownership.claimHere();status="Conversation on this Mac"}
+            if !ownership.isOwner {claimLive();status="Conversation on this Mac"}
         case "pong":
             lastPong=now
             if let sent=message["sent"] as? Double,let phone=message["phone"] as? Double {
@@ -294,7 +328,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
             renderedMotionID=nil
             motion=TransitionPayload(id:pending.id,image:image,start:start,outgoing:!pending.outgoing,reverse:(!pending.outgoing) != dock.right)
             // The move commits as the effect starts. The effect only decorates it.
-            if pending.outgoing,!ownership.isOwner {server.nextTrigger="touch";ownership.claimHere()}
+            if pending.outgoing,!ownership.isOwner {server.nextTrigger="touch";claimLive()}
             showCompanion();self.pending=nil;epoch+=1;let e=epoch
             DispatchQueue.main.asyncAfter(deadline:.now()+4) {
                 guard self.epoch==e else{return}
@@ -485,6 +519,10 @@ struct MacHomeView:View {
                     }.frame(height:44).padding(.top,4)
                 }
             case .here:
+                // MC-01: after a cold launch the call waits for this tap (MAC-3's primary button, R2's "Continue here")
+                if handoff.resumeOffered {
+                    MacV2Button(label:"Continue here",id:"macResumeHere") { handoff.resumeHere() }.padding(.top,24)
+                }
                 // only what works now (Chelsea 11/3): Show screen needs the local link, Move to iPhone a reachable iPhone
                 if handoff.canMoveToPhone || paired {
                     HStack(spacing:12) {
@@ -534,6 +572,8 @@ struct MacHomeView:View {
             case .here:
                 // MAC-4 (89:2). Only what works right now is shown — no greyed-out buttons (Chelsea 11/3).
                 statusRow(paired ? "Paired with your iPhone" : "Signed in on this Mac",live:true)
+                // MC-01: the call waits for this tap after a cold launch (v1 too — Codex P2)
+                if handoff.resumeOffered { button("Continue here",filled:true,id:"macResumeHere") { handoff.resumeHere() } }
                 if handoff.canMoveToPhone || paired {
                     HStack(spacing:8) {
                         if handoff.canMoveToPhone { button("Move to iPhone",filled:false,height:44,id:"macMoveToPhone") { handoff.moveToPhone() } }
@@ -645,6 +685,16 @@ extension MacHandoff {
                 try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-M.png"))
             }
             window.orderOut(nil)
+            // MC-NOFACE (CL-03): no picture of this account's companion yet → the placeholder, never the demo face
+            let noFace=NSHostingView(rootView:MacConversationView(reviewOverride:"noface").frame(width:390,height:844))
+            let noFaceWindow=NSWindow(contentRect:NSRect(x:0,y:0,width:390,height:844),styleMask:.borderless,backing:.buffered,defer:false)
+            noFaceWindow.contentView=noFace;noFaceWindow.orderFront(nil)
+            try? await Task.sleep(for:.seconds(1))
+            if let rep=noFace.bitmapImageRepForCachingDisplay(in:noFace.bounds) {
+                noFace.cacheDisplay(in:noFace.bounds,to:rep)
+                try? rep.representation(using:.png,properties:[:])?.write(to:dir.appendingPathComponent("MC-NOFACE.png"))
+            }
+            noFaceWindow.orderOut(nil)
         }
         // MAC-REG at a 14-inch MacBook Pro's point size
         let size=NSSize(width:1512,height:982)

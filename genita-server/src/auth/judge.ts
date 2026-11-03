@@ -9,7 +9,8 @@
  * Threat line: callers are the iOS/macOS apps (A02-J) and anyone on the internet who can reach
  * /auth/judge. Auth: the code itself, compared in constant time against every configured code
  * (no early exit). Limits (11/4: judges share a venue / office IP): 50 wrong tries per 10 minutes per IP, and
- * per IP + code prefix (first 4 characters) a growing wait after the 2nd miss (2 s, 4 s, 8 s … 10 min). Never a
+ * per IP + code prefix (first 4 characters) a growing wait after the 2nd miss (2 s, 4 s, 8 s … 10 min) that only
+ * a wrong code waits out (AU-04: the right code always passes it). Never a
  * limit across IPs (Codex P1 #492: anyone could then lock every judge out); the codes are long random secrets,
  * so a spread-out guessing run gets nowhere at 50 tries per IP. A 429 says how long to wait.
  * Exposes: only a session for the demo account that code belongs to.
@@ -65,12 +66,25 @@ export class JudgeAccess {
 
   /** Seconds this try has to wait (0 = check it now): the IP's window or this IP's backoff on the code prefix. */
   retryAfterSec(ip: string, code: string): number {
+    return Math.max(this.ipRetryAfterSec(ip), this.prefixRetryAfterSec(ip, code));
+  }
+
+  /** Seconds left in this IP's window once it used its 50 tries (0 = not limited). Checked before any code. */
+  ipRetryAfterSec(ip: string): number {
     const t = this.now();
-    let waitMs = 0;
     const h = this.fails.get(ip);
-    if (h && h.reset > t && h.n >= JUDGE_MAX_FAILS) waitMs = Math.max(waitMs, h.reset - t);
+    return h && h.reset > t && h.n >= JUDGE_MAX_FAILS ? Math.max(1, Math.ceil((h.reset - t) / 1000)) : 0;
+  }
+
+  /**
+   * Seconds this IP still waits on this code prefix. AU-04: only a wrong code waits it out. Judges share the
+   * code (same prefix) and a venue IP, so one judge's typos must never hold the right code; a wrong try during
+   * the wait is still checked and counted (the 50-per-IP window caps those), so no extra guesses come of it.
+   */
+  prefixRetryAfterSec(ip: string, code: string): number {
+    const t = this.now();
     const p = this.prefixes.get(JudgeAccess.prefix(ip, code));
-    if (p && p.reset > t) waitMs = Math.max(waitMs, p.last + prefixWaitMs(p.n) - t);
+    const waitMs = p && p.reset > t ? p.last + prefixWaitMs(p.n) - t : 0;
     return waitMs > 0 ? Math.max(1, Math.ceil(waitMs / 1000)) : 0;
   }
 

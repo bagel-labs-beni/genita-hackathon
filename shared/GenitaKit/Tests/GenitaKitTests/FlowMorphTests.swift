@@ -38,7 +38,7 @@ private enum Synth {
     }
 
     /// Files by name; `breakKey` leaves one flow file out (load error → no flow).
-    static func faceSet(keys: [String] = ["MBP", "MID", "AH", "AH2", "A"], breakKey: String? = nil, rig: Bool = false) throws -> FaceSet {
+    static func faceSet(keys: [String] = ["MBP", "MID", "AH", "AH2", "A"], breakKey: String? = nil, rig: Bool = false, interior: Bool = true) throws -> FaceSet {
         var files: [String: Data] = [:]
         let skin: (UInt8, UInt8, UInt8) = (200, 160, 140)
         let isMouth = { (x: Int, y: Int) in (26..<38).contains(x) && (60..<63).contains(y) }
@@ -67,7 +67,7 @@ private enum Synth {
             }
         }
         var rigMap = FlowMap.standard
-        rigMap.rig = FlowMap.Rig(); rigMap.rig?.lipTone = 0; rigMap.rig?.lipFlowPx = 0
+        rigMap.rig = FlowMap.Rig(); rigMap.rig?.lipTone = 0; rigMap.rig?.lipFlowPx = 0; rigMap.rig?.interior = interior
         let flow = FaceFlowManifest(version: 1, roi: roi, size: size, flowSize: flowSize, keys: keys, files: fm, mask: "mask.png", neutralRoi: nil, lockY: 0.55, kind: "human", map: rig ? rigMap : nil)
         let manifest = FaceManifest(version: 1, size: [w, h], faceBox: [0.1, 0.25, 0.9, 0.85], mouthBox: [0.4, 0.62, 0.6, 0.66],
                                     images: ["neutral": "neutral.png"], visemes: [:], boxes: nil, rejected: nil, flow: flow)
@@ -317,6 +317,73 @@ struct LipRigTests {
         m.amountsOverride = [0, 0.05]
         let shut = pixels(m.render(.rest, at: 2))
         #expect(shut[k] < 200)                               // below teethMin: no teeth
+    }
+
+    /// 11/4 (Chelsea, build 6: "something like teeth inside the mouth looks off" while Listening): with no reply
+    /// playing, the idle jaw drift parted the lips and switched the teeth layer on — a flat white band at rest.
+    /// Listening is lips together: the idle drift stays below the lips' parting and no teeth layer is drawn.
+    @Test func listeningRestShowsNoTeeth() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "MID", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)
+        let k = (14 * m.width + 16) * 4
+        var brightest = 0, widest: Float = 0
+        for i in 0..<150 {       // 6 s of Listening at 25 fps (the idle drift's slow sines peak inside it)
+            let p = pixels(m.render(.rest, at: Double(i) / 25))
+            brightest = max(brightest, Int(p[k]))
+            widest = max(widest, m.lastAmounts["MID"] ?? 0)
+        }
+        #expect(brightest < 200)                 // never the 235 teeth texture
+        #expect(widest <= 0.06)                  // the lips stay together (MID 0.06 ≈ < 1 px at 960 high)
+    }
+
+    /// 11/4 renders: a closure releasing (m/b/p still partly on) squeezed the full-bright teeth into a thin white wire.
+    /// Less light reaches a narrow gap: the teeth layer darkens with the effective opening (top key − closure).
+    @Test func narrowGapTeethSitInShadow() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "AH2"], rig: true)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)
+        let k = (14 * m.width + 16) * 4
+        m.amountsOverride = [0, 0.6]
+        let wide = Int(pixels(m.render(.rest, at: 1))[k])
+        m.reset()
+        m.amountsOverride = [0.35, 0.45]
+        let narrow = Int(pixels(m.render(.rest, at: 2))[k])
+        #expect(wide > 200)
+        // shaded: 212 vs 235 on CI — the 4-row synthetic inside is mostly rim (rim pixels keep the key), so the full
+        // x0.55 only reaches its middle; without the shade both are 235
+        #expect(Double(narrow) < 0.95 * Double(wide))
+    }
+
+    /// Rollback (map rig.interior = 0): the old idle drift and teeth layer are back.
+    @Test func interiorOffRestoresTheOldRest() throws {
+        let set = try Synth.faceSet(keys: ["MBP", "MID", "AH2"], rig: true, interior: false)
+        let m = FlowMorph(data: set.flow!, neutralStill: set.expressions[.neutral]!, scale: 1, mouth: set.mouthBox)
+        var widest: Float = 0
+        for i in 0..<150 { _ = m.render(.rest, at: Double(i) / 25); widest = max(widest, m.lastAmounts["MID"] ?? 0) }
+        #expect(widest > 0.1)
+        let rig = try JSONDecoder().decode(FlowMap.Rig.self, from: Data(#"{"interior":0}"#.utf8))
+        #expect(!rig.interior && FlowMap.Rig().interior)
+    }
+
+    /// 11/4: the toned teeth keep the photo's light. The v44 tone lifted them toward a fixed white with no shading
+    /// (a pasted, flat band); now they are never brighter than the key's own, fall into shadow toward the
+    /// corners and sit in the upper lip's shadow on the top rows.
+    @Test func litTeethFollowTheFaceLight() throws {
+        let w = 60, h = 30
+        let ix = 10..<50, iy = 10..<26                  // the mouth inside; upper teeth rows 10..<16, cavity below
+        var p = [Float](repeating: 0, count: w * h * 3), inn = [Float](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w {
+            let i = (y * w + x) * 3, inside = ix.contains(x) && iy.contains(y)
+            if inside { inn[y * w + x] = 1 }
+            let c: (Float, Float, Float) = inside ? (y < 16 ? (200, 196, 190) : (60, 30, 30)) : (130, 100, 85)   // skin around
+            p[i] = c.0; p[i + 1] = c.1; p[i + 2] = c.2
+        } }
+        let o = FlowMorph.toneTeethLit(p, interior: inn, width: w, height: h, tone: FlowMap.Rig.TeethTone())
+        func lum(_ x: Int, _ y: Int) -> Float { let i = (y * w + x) * 3; return (o[i] + o[i + 1] + o[i + 2]) / 3 }
+        let centre = lum(30, 14), corner = lum(13, 14), top = lum(30, 12)
+        #expect(centre <= 196.5)                        // never lifted above the key's own teeth
+        #expect(corner < 0.75 * centre)                 // shadow toward the corners
+        #expect(top < 0.88 * centre)                    // the upper lip's shadow on the top rows
+        #expect(lum(30, 21) < 50)                       // the cavity stays dark
     }
 
     /// The chin rows follow a slow, scaled copy of the amounts: a sudden opening barely moves them.
