@@ -11,33 +11,40 @@
 import type { MemoryService } from "../memory/service.ts";
 import { isSafeHook, noteHook, OPENER_RECENT_KEEP, pickOpenerHook } from "./opener.ts";
 
-type WithTopics = { opener_topics?: unknown };
+type WithTopics = { opener_topics?: unknown; opener_topics_rev?: unknown; revision?: unknown };
 const LOCAL_MAX_USERS = 5000;
-const local = new Map<string, string[]>();
+/** per user: the list and the Forget revision it was written under (a Forget anywhere bumps it → the list is void) */
+const local = new Map<string, { rev: number; topics: string[] }>();
 
 function clean(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length <= 80 && isSafeHook(x)).slice(-OPENER_RECENT_KEEP) : [];
 }
 
-/** the persisted list from a call state already read (oldest → newest) */
+/** the persisted list from a call state already read (oldest → newest); void after any Forget (Codex #352 round 2) */
 export function storedTopics(state: unknown): string[] {
-  return clean((state as WithTopics | null)?.opener_topics);
+  const s = state as WithTopics | null;
+  if (!s || (s.opener_topics_rev ?? 0) !== (s.revision ?? 0)) return [];
+  return clean(s.opener_topics);
 }
 
 /** pick this call's hook and record it, in one step; `stored` is the call state's list (used if this process has none) */
-export function pickOpenerTopic(userId: string | undefined, hooks: string[], stored: string[] | undefined, seed: number, memory?: MemoryService, onError?: (e: unknown) => void): { hook: string | null; recent: string[] } {
-  const recent = (userId ? local.get(userId) : undefined) ?? clean(stored);
+export function pickOpenerTopic(userId: string | undefined, hooks: string[], stored: string[] | undefined, seed: number, memory?: MemoryService, onError?: (e: unknown) => void, revision = 0): { hook: string | null; recent: string[] } {
+  const mine = userId ? local.get(userId) : undefined;
+  const recent = mine && mine.rev === revision ? mine.topics : clean(stored);
   const hook = pickOpenerHook(hooks, recent, seed + recent.length);
   if (!hook) return { hook: null, recent };
   const next = noteHook(recent, hook);
   if (userId) {
     local.delete(userId);
-    local.set(userId, next);
+    local.set(userId, { rev: revision, topics: next });
     if (local.size > LOCAL_MAX_USERS) local.delete(local.keys().next().value!);
     if (memory) {
       void memory.serial(userId, async () => {
         const s = await memory.state.getState(userId);
-        (s as typeof s & { opener_topics?: string[] }).opener_topics = noteHook(clean((s as WithTopics).opener_topics), hook);
+        const t = s as typeof s & { opener_topics?: string[]; opener_topics_rev?: number };
+        // written under the state's current Forget revision; a later Forget voids it without touching it
+        t.opener_topics = noteHook(storedTopics(s), hook);
+        t.opener_topics_rev = s.revision;
         await memory.state.putState(userId, s);
       }).catch((e) => onError?.(e));
     }

@@ -107,3 +107,14 @@ test("session (#341): consecutive calls of one account open on different profile
   for (let i = 1; i < picks.length; i++) assert.notEqual(picks[i], picks[i - 1]);
   assert.ok(new Set(picks).size >= 4, picks.join(" | "));
 });
+
+test("opener topics (Codex #352 round 2): a Forget anywhere voids the list; no safe hook → the companion's own thing, not 'one thing from the profile'", () => {
+  assert.deepEqual(storedTopics({ revision: 2, opener_topics_rev: 1, opener_topics: ["Film photography"] }), []);
+  assert.deepEqual(storedTopics({ revision: 2, opener_topics_rev: 2, opener_topics: ["Film photography"] }), ["Film photography"]);
+  resetOpenerTopics();
+  pickOpenerTopic("u8", ["a thing", "b thing"], [], 0, undefined, undefined, 0);
+  assert.deepEqual(pickOpenerTopic("u8", ["a thing", "b thing"], [], 0, undefined, undefined, 1).recent, [], "the in-process list from before the Forget is void");
+  const b = openerBlock({ hasProfile: true, sinceLastMs: null, hasItem: false, hook: null });
+  assert.match(b, /one thing of your own/);
+  assert.doesNotMatch(b, /one thing from it/);
+});
