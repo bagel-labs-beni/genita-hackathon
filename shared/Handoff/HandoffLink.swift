@@ -5,9 +5,6 @@ import Combine
 import UIKit
 #endif
 
-/// A Mac this iPhone paired with once. Later moves reconnect with the token, not the code.
-struct RememberedMac: Codable, Equatable { let mac: String; let token: String }
-
 /// Encrypted local peer connection. The Mac advertises a session code and a stable
 /// ID. The phone invites the Mac whose code the user entered once, then the Mac whose
 /// ID it remembers. No web server is required.
@@ -46,13 +43,15 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     private var incomingUsedCode = false
     private let service = "genita-handoff"
     private let store: UserDefaults
-    private let rememberedKey = "genita.handoff.rememberedMac"
-    private var tokensKey = "genita.handoff.pairedTokens"
+    private var pairingStore: HandoffPairingStore
+    private var accountScope = HandoffAccountScope()
+    private var hostingGeneration: Int?
+    private var tokensKey: String?
     private let macIDKey = "genita.handoff.macID"
     init(store: UserDefaults = .standard) {
         self.store = store
+        pairingStore = HandoffPairingStore(store: store)
         super.init()
-        remembered = store.data(forKey: rememberedKey).flatMap { try? JSONDecoder().decode(RememberedMac.self, from: $0) }
     }
     private func makeSession() -> MCSession {
         let session = MCSession(peer: peer, securityIdentity: nil, encryptionPreference: .required)
@@ -64,39 +63,51 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         if let value = store.string(forKey: macIDKey) { return value }
         let value = UUID().uuidString.lowercased(); store.set(value, forKey: macIDKey); return value
     }
-    func host(accountID: String? = nil) {
-        tokensKey = HandoffAccountScope.storageKey(base: "genita.handoff.pairedTokens", accountID: accountID) ?? "genita.handoff.pairedTokens"
+    @MainActor func useAccount(_ accountID: String?) {
+        guard accountScope.select(accountID) else { return }
+        stopHosting()
+        pairingStore.useAccount(accountID)
+        remembered = pairingStore.remembered
+        tokensKey = HandoffAccountScope.storageKey(base: "genita.handoff.pairedTokens", accountID: accountID)
+    }
+    @MainActor func host(accountID: String) {
+        useAccount(accountID)
+        hostingGeneration = accountScope.generation
         code = String(Int.random(in: 100000...999999))
         advertiser = MCNearbyServiceAdvertiser(peer: peer, discoveryInfo: ["code": code, "mac": macID], serviceType: service)
         advertiser?.delegate = self; advertiser?.startAdvertisingPeer()
         status = "Waiting for your iPhone"
     }
     /// Account changes close the local channel too. Queued callbacks belong to the old session.
-    func stopHosting() {
+    @MainActor func stopHosting() {
         advertiser?.stopAdvertisingPeer(); advertiser = nil
+        hostingGeneration = nil
+        browser?.stopBrowsingForPeers(); browser = nil; invited = false
         session.disconnect(); session = makeSession()
         connected = false; code = ""; incomingUsedCode = false; pairedWithCode = false
         status = "Not connected"
     }
-    func join(_ code: String) {
+    @MainActor func join(_ code: String) {
+        guard accountScope.accountID != nil else { return }
         guard code.count == 6 else { status = "Enter the six digits shown on your Mac"; return }
         self.code = code
         startBrowsing()
     }
     /// Look for the remembered Mac again. Does nothing if there is none or the link is up.
-    func reconnect() {
-        guard remembered != nil, !connected else { return }
+    @MainActor func reconnect() {
+        guard accountScope.accountID != nil, remembered != nil, !connected else { return }
         code = ""
         startBrowsing()
     }
-    func forgetMac() {
-        remembered = nil; store.removeObject(forKey: rememberedKey)
+    @MainActor func forgetMac() {
+        remembered = nil; pairingStore.forget()
         autoReconnect = false; code = ""
         browser?.stopBrowsingForPeers(); browser = nil
-        session.disconnect()
+        session.disconnect(); session = makeSession()
+        connected = false; incomingUsedCode = false; pairedWithCode = false
         status = "Not connected"
     }
-    private func startBrowsing() {
+    @MainActor private func startBrowsing() {
         invited = false
         browser?.stopBrowsingForPeers()
         // A session that has been dropped does not always accept a new connection.
@@ -110,27 +121,38 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
         catch { DispatchQueue.main.async { self.status = "Couldn’t send. Checking the connection." } }
     }
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String: String]?) {
-        guard !invited else { return }
-        let context: String
-        if !code.isEmpty, info?["code"] == code { context = "code:" + code }
-        else if let remembered, code.isEmpty, info?["mac"] == remembered.mac { context = "token:" + remembered.token }
-        else { return }
-        invited = true
-        browser.invitePeer(peerID, to: session, withContext: context.data(using: .utf8), timeout: 15)
+        DispatchQueue.main.async {
+            guard browser === self.browser, !self.invited else { return }
+            let context: String
+            if !self.code.isEmpty, info?["code"] == self.code { context = "code:" + self.code }
+            else if let remembered = self.remembered, self.code.isEmpty, info?["mac"] == remembered.mac { context = "token:" + remembered.token }
+            else { return }
+            self.invited = true
+            browser.invitePeer(peerID, to: self.session, withContext: context.data(using: .utf8), timeout: 15)
+        }
     }
-    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) { if !connected { invited = false } }
+    func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
+        DispatchQueue.main.async { if browser === self.browser, !self.connected { self.invited = false } }
+    }
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        guard advertiser === self.advertiser else { invitationHandler(false, nil); return }
-        let text = context.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        let byCode = text == "code:" + code && session.connectedPeers.isEmpty
-        // A remembered phone may return before the session has noticed its old connection is gone.
-        let byToken = text.hasPrefix("token:") && pairedTokens.contains(String(text.dropFirst(6)))
-        if byCode { incomingUsedCode = true }
-        invitationHandler(byCode || byToken, byCode || byToken ? session : nil)
+        // The delegate queue is unspecified. Validate AND approve on the same serial queue as
+        // useAccount/stopHosting, without yielding or reading a replacement account's session.
+        DispatchQueue.main.async {
+            guard advertiser === self.advertiser, let generation = self.hostingGeneration,
+                  self.accountScope.accepts(generation) else { invitationHandler(false, nil); return }
+            let session = self.session
+            let text = context.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let byCode = text == "code:" + self.code && session.connectedPeers.isEmpty
+            // A remembered phone may return before the session notices its old connection is gone.
+            let byToken = text.hasPrefix("token:") && self.pairedTokens.contains(String(text.dropFirst(6)))
+            if byCode { self.incomingUsedCode = true }
+            invitationHandler(byCode || byToken, byCode || byToken ? session : nil)
+        }
     }
-    private var pairedTokens: [String] { store.stringArray(forKey: tokensKey) ?? [] }
+    private var pairedTokens: [String] { tokensKey.flatMap { store.stringArray(forKey: $0) } ?? [] }
     /// Give the phone a token after a code pairing so it never needs the code again.
     private func issueToken() {
+        guard let tokensKey else { return }
         let token = UUID().uuidString.lowercased()
         store.set(pairedTokens + [token], forKey: tokensKey)
         send(["type": "paired", "mac": macID, "token": token])
@@ -153,8 +175,9 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
     private func retryIfWanted() {
         guard autoReconnect else { return }
+        let session = self.session
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self, self.autoReconnect else { return }
+            guard let self, self.autoReconnect, session === self.session else { return }
             self.reconnect()
         }
     }
@@ -168,7 +191,7 @@ final class HandoffLink: NSObject, ObservableObject, MCSessionDelegate, MCNearby
     }
     private func remember(_ mac: RememberedMac) {
         remembered = mac; code = ""
-        if let data = try? JSONEncoder().encode(mac) { store.set(data, forKey: rememberedKey) }
+        pairingStore.remember(mac)
     }
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }
     func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }

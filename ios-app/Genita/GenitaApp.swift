@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main struct GenitaApp: App {
-    @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"))
+    @State private var model = AppState(reset: ProcessInfo.processInfo.arguments.contains("--uitesting"), onHandoffAccountChange: { PhoneHandoff.shared.setAccount($0) })
     @State private var appConfig = GenitaAppConfigStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var handoff = PhoneHandoff.shared

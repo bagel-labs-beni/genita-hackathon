@@ -80,7 +80,7 @@ private final class CompanionWindow:NSWindow { override var canBecomeKey:Bool {t
     /// Called only with the verified /me user, or nil on logout/session expiry.
     func setAccount(_ accountID:String?) {
         guard accountScope.select(accountID) else{return}
-        server.stop();link.stopHosting()
+        server.stop();link.useAccount(accountID)
         epoch+=1;pending=nil;motion=nil;renderedMotionID=nil;candidate=nil;last=nil;dock=nil
         lastPong=0;lastAt=0;image="";profile=nil;returnOrigin=nil;armed=true
         sharing.stop();sharing.permissionRequired=false;media.stopAll()

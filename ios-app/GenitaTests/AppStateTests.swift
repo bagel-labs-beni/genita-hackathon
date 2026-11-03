@@ -61,6 +61,18 @@ import UIKit
         XCTAssertFalse(model.setup.hasOnboarded)
         XCTAssertEqual(model.stage, .consent)
     }
+    func testVerifiedIdentityAndLogoutNotifyHandoffEvenWhenSavedAccountIsUnchanged() {
+        var accounts: [String?] = []
+        let model = AppState(storage: store, onHandoffAccountChange: { accounts.append($0) })
+        model.setup.accountId = "a" // A saved profile alone must not start a connection.
+        XCTAssertTrue(accounts.isEmpty)
+        model.adopt(accountId: "a") // /me verifies the same saved account on launch.
+        model.signedOut()
+        model.signedIn(userId: "b", consented: false)
+        model.signedOut()
+        model.signedIn(userId: "a")
+        XCTAssertEqual(accounts, ["a", nil, "b", nil, "a"])
+    }
     func testPendingConsentSurvivesARestart() {
         let model = AppState(storage: store)
         model.setup.hasOnboarded = true; model.go(.conversation); model.save()

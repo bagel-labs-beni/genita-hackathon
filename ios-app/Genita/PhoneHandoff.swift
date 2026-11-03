@@ -58,18 +58,20 @@ import ARKit
     private var timer: Timer?
     private var debugPeerReachable: Bool?
     private var subscriptions = Set<AnyCancellable>()
+    private var accountScope = HandoffAccountScope()
     init() {
         let args=ProcessInfo.processInfo.arguments
         if args.contains("--uitesting") { for key in ["genita.handoff.ownership","genita.handoff.rememberedMac"] {UserDefaults.standard.removeObject(forKey:key)} }
         link=HandoffLink()
         ownership=OwnershipCoordinator(device:.phone)
+        ownership.useAccount(nil)
         let fanout=OwnershipFanout([link,server]);self.fanout=fanout
         ownership.transport=fanout
         ownership.onChange = { [weak self] old,new in self?.ownerChanged(from:old,to:new) }
         link.onMessage = { [weak self] in self?.receive($0) }
         server.onEffect = { [weak self] in self?.serverEffect($0) }
         server.onConnect = { [weak self] in
-            guard let self else{return}
+            guard let self,self.accountScope.accountID != nil else{return}
             self.server.send(["type":"hello","owner":self.ownership.state.owner.serverName,"epoch":self.ownership.state.epoch,"active":self.sceneActive])
         }
         tracker.$registered.dropFirst().removeDuplicates().sink { [weak self] done in
@@ -77,7 +79,6 @@ import ARKit
             // Keep `registering` on: tracking must restart even if the app leaves before the world map is saved.
             self.registeringVisible=false;self.showRegisteredToast()
         }.store(in:&subscriptions)
-        link.autoReconnect=true
         tracker.onReading = { [weak self] reading in
             guard let self else { return }; var packet=reading; packet["type"]="reading"
             self.link.send(packet, reliable:false)
@@ -90,6 +91,27 @@ import ARKit
         tracker.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in:&subscriptions)
         refreshSurface()
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){ [weak self] _ in Task { @MainActor in self?.refreshSurface() } }
+    }
+    /// Verified sign-in /me and logout switch the local link and ownership together.
+    func setAccount(_ accountID: String?) {
+        guard accountScope.select(accountID) else { return }
+        server.stop();link.autoReconnect=false;link.useAccount(accountID)
+        generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
+        pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
+        moving=false;moveFailed=false;pairingFailed=false;code="";settings=false
+        registering=false;registeringVisible=false;registeredToast=false
+        trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
+        media.stopAll()
+        ownership.useAccount(accountID)
+        refreshSurface()
+        link.autoReconnect=accountID != nil && sceneActive
+        if accountID != nil,model != nil {startConnections()}
+    }
+    private func startConnections() {
+        guard accountScope.accountID != nil else { return }
+        let args=ProcessInfo.processInfo.arguments
+        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        if !link.connected {link.reconnect()}
     }
     func attach(_ model: AppState) {
         self.model=model
@@ -115,14 +137,13 @@ import ARKit
         }
         #endif
         // UI tests stay offline so their screens never depend on a server.
-        if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
+        startConnections()
         if !launchConnected,let i=args.firstIndex(of:"--handoff-code"),args.indices.contains(i+1) {launchConnected=true;code=args[i+1];connect();return}
-        if !link.connected {link.reconnect()}
     }
     func resume() {
-        sceneActive=true;link.autoReconnect=true;lastPing=Date().timeIntervalSince1970
+        sceneActive=true;link.autoReconnect=accountScope.accountID != nil;lastPing=Date().timeIntervalSince1970
         server.setActive(true)
-        if !link.connected {link.reconnect()}
+        startConnections()
         updateTracking();refreshSurface()
     }
     /// P01: runs by itself when the sixth digit goes in. No Mac within 8 s shows P01-E.
@@ -195,12 +216,17 @@ import ARKit
         } else if trackingStarted {trackingStarted=false;tracker.stop()}
     }
     private func serverEffect(_ effect:PresenceEffect) {
+        guard accountScope.accountID != nil else{return}
         switch effect {
         case let .apply(claim):
             // A touch move's effect is driven by Dyno's local prepare/ready/start. If the server's copy of the
             // same claim arrives first, hold it until the effect has begun so the transition looks unchanged.
             if pending != nil || motion != nil {
-                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in self?.ownership.receive(claim) }
+                let generation=accountScope.generation
+                DispatchQueue.main.asyncAfter(deadline:.now()+1.2) { [weak self] in
+                    guard let self,self.accountScope.accepts(generation) else{return}
+                    self.ownership.receive(claim)
+                }
             } else {ownership.receive(claim)}
         case .moveRequested: if sceneActive && !ownership.isOwner {server.nextTrigger="move";continueHere()}
         case .moveFailed: if moving {moving=false;moveAttempt+=1;moveFailed=true}
@@ -214,6 +240,7 @@ import ARKit
         if next != surface {withAnimation(.easeOut(duration:0.24)) {surface=next}}
     }
     func receive(_ data:[String:Any]) {
+        guard accountScope.accountID != nil else{return}
         switch data["type"] as? String {
         case "connected":
             lastPing=Date().timeIntervalSince1970
