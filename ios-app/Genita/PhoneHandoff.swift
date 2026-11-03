@@ -99,7 +99,14 @@ import ARKit
     func setAccount(_ accountID: String?) {
         // Logout must cancel /me even when no scope has been resolved yet.
         accountResolver.invalidate()
-        guard accountScope.select(accountID) else { return }
+        // P01's digits typed while this sign-in's /me was pending belong to it: the first verified scope keeps them,
+        // whichever path verified it (routeOnLaunch or the resolver). An account switch or logout drops them.
+        let carry=HandoffPairingInput.carries(from:accountScope.accountID,to:accountID) ? (code:code,settings:settings) : nil
+        guard accountScope.select(accountID) else {
+            // logout before /me verified anything: still drop what was typed
+            if accountID == nil {pairingAttempt+=1;pairingFailed=false;code="";settings=false}
+            return
+        }
         server.stop();link.autoReconnect=false;link.useAccount(accountID)
         generation+=1;pairingAttempt+=1;moveAttempt+=1;moveFailedToken+=1
         pending=nil;motion=nil;renderedMotionID=nil;feedback.cancel()
@@ -108,30 +115,28 @@ import ARKit
         trackingURL=nil;trackingStarted=false;tracker.stop();lastPing=0;snapshot=""
         media.stopAll()
         ownership.useAccount(accountID)
+        if let carry {code=carry.code;settings=carry.settings}
         refreshSurface()
         link.autoReconnect=accountID != nil && sceneActive
         if accountID != nil,model != nil {startConnections()}
+        if carry?.code.count == 6 {connect()}
     }
     private func startConnections() {
         guard sceneActive else { return }
         guard accountScope.accountID != nil else { resolveAccount();return }
         let args=ProcessInfo.processInfo.arguments
         if !args.contains("--uitesting") || args.contains("--handoff-server") {server.start()}
-        if !link.connected {link.reconnect()}
+        // a recovered call never swaps a code pairing in progress for the remembered Mac
+        if HandoffPairingInput.mayReconnectRemembered(sheetOpen:settings,code:code,linkConnected:link.connected) {link.reconnect()}
     }
     private func resolveAccount() {
         guard sceneActive,accountScope.accountID == nil,let model,model.serverWired,
               !model.storage.bool(forKey:AppState.signedOutKey) else { return }
         let auth=model.onboarding.auth
         accountResolver.resolve(snapshot:model.launchAuthSnapshot,current:{ model.launchAuthSnapshot },
-            fetch:{ await auth.sessionState() },adopt:{ [weak self,weak model] accountID in
-                guard let self,let model else { return }
-                // Verification resets the account's transports. Keep the code entered while /me
-                // was pending, then join only after the verified scope has been installed.
-                let code=self.code,settings=self.settings
-                model.adopt(accountId:accountID)
-                self.code=code;self.settings=settings
-                if code.count == 6 {self.connect()}
+            fetch:{ await auth.sessionState() },adopt:{ [weak model] accountID in
+                // setAccount keeps the code entered while /me was pending and joins once the scope is installed
+                model?.adopt(accountId:accountID)
             },expired:{ [weak model] in model?.signedOut() })
     }
     func attach(_ model: AppState) {
