@@ -75,7 +75,7 @@ let metaIsUser = true;
 function isNarrationClause(clause: string): boolean {
   const s = normalize(clause);
   if (!s) return false;
-  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s)) return true;
+  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s) || progressClause(s)) return true;
   // an explicit pick is the answer before anything else ("I'm picking the trench for you", Codex r24)
   if (DECISION.test(s) && !(CHOOSE_PLAN.test(s) && new RegExp(`\\b${NO_CHOICE}\\b`).test(s))) return false;
   if (isNarrowNarration(s)) return true;
@@ -108,12 +108,19 @@ function isNarrationClause(clause: string): boolean {
  * "My search came up empty, I've never heard of it" (a result) and "trying to remember the last time I…" (a story) stay.
  */
 const SEARCH_RETRY = /\b(?:i'll|i will|let me|i'm gonna|i'm going to)(?: just)? (?:try (?:again|another (?:search|query)|a (?:broader|different|wider|new) (?:search|query))|search again|(?:re-?)?search (?:again|with)|(?:run|do) (?:another|a broader|a different) (?:search|query))\b/;
+/** "— finding you the Hongdae spots now", "Got you, hunting down late-night ramen", "— pulling it up now" (sweep r2):
+ * our own search in progress. A result in the clause ("…is exhausting", "found", "says") keeps it. */
+const PROGRESS = /^(?:i'm |i am )?(?:just |now |still )?(?:hunting (?:down|for)|tracking down|rounding up|scouting(?: out)?|finding (?:you|some|the best|a few)|pulling (?:up|together|it up|that up|those up|them up)|digging (?:up|into|through)|searching for|looking for (?:some|the best|a few|spots|places|options))\b/;
+const PROGRESS_RESULT = /\b(?:says|shows|found|turns out|is|was|were|has|had)\b/;
+/** "I've got that note about your sister" said before the recall result: the memory store, never the answer */
+const NOTE_CLAIM = /^i(?:'ve| have)? got (?:that|the|a|your|some) notes? (?:about|on|for)\b/;
+const progressClause = (c: string) => (PROGRESS.test(c) && !PROGRESS_RESULT.test(c.replace(/\b(?:that|which) are\b.*$/, ""))) || NOTE_CLAIM.test(c);
 const RECALL_NOW = /^(?:(?:got it|okay|ok|hmm+|wait)\W+)?(?:i'm )?(?:still )?trying to (?:remember|recall|place|think of) (?:that|which|what|who|when|where|the one|your)\b(?!.*\b(?:last time|first time|whenever|every time|back when)\b)/;
 
 export function isToolNarration(sentence: string): boolean {
   const s = normalize(sentence);
   if (!s) return false;
-  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s)) return true;
+  if (SEARCH_RETRY.test(s) || RECALL_NOW.test(s) || progressClause(s)) return true;
   if (isProcessLine(sentence)) return true;
   if (isNarrowNarration(s)) return true;
   const clauses = s.split(CLAUSE_SPLIT).map(normalize).filter(Boolean);
@@ -153,7 +160,7 @@ export function stripNarrationClauses(raw: string): string {
  * Same family as "I'm …ing": the process clause is dropped; the acknowledgement stays only if real content follows
  * (the judge drops a "process" line at EOF too, so a reply that is only this says nothing and retries).
  */
-const PROCESS_ACK = /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
+const PROCESS_ACK = /^(?:got it|got you|gotchu|say less|bet|love (?:that|it|this)|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
 const PROCESS_ING = /^(?:just )?(?:picking (?:something|one)\b|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|between)\b|scrolling|loading|grabbing (?:something|a few))\b/;
 const OPINION_ING = /^(?:loving|seeing|feeling|liking|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening)\b/;
 export function isProcessLine(sentence: string): boolean {
@@ -163,6 +170,7 @@ export function isProcessLine(sentence: string): boolean {
   const [head, ...rest] = clauses;
   // only a lookup / plan in progress, never a choice or a result ("You got it — wearing the trench tonight",
   // "… taking the bus saves you twenty minutes", Codex #371)
+  if (PROCESS_ACK.test(head) && rest.length === 1 && progressClause(rest[0])) return true;
   return PROCESS_ACK.test(head) && rest.length === 1 && PROCESS_ING.test(rest[0]) && !OPINION_ING.test(rest[0])
     && !/\b(?:shows|says|is|are|it'?s|that'?s|takes)\b|\d/.test(rest[0]) && !/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|you|it|up|out)\b/.test(rest[0]);
 }

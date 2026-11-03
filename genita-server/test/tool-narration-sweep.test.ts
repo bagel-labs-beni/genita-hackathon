@@ -25,6 +25,12 @@ const leaked: [string, string][] = [
   ["I'll search again with different keywords.", "search again"],
   ["Trying to remember which concert that was.", "remember which"],
   ["Looking at today's weather now.", "today's weather"],
+  // round 2 on the fix branch (n=18)
+  ["Got you, hunting down late-night ramen near Hongdae.", "hunting down"],
+  ["Love that, late-night ramen run — finding you the Hongdae spots now.", "finding you"],
+  ["Love a late-night ramen mission — pulling together Hongdae spots that are actually open late.", "pulling together"],
+  ["You mentioned a concert — I'm pulling up what we discussed.", "pulling up"],
+  ["I've got that note about your sister — pulling it up now.", "note about"],
 ];
 
 test("sweep: retry / recall-in-progress / forecast lookup lines are never voiced around a tool", () => {
@@ -44,6 +50,9 @@ const answers = [
   "Try again tomorrow, the shop opens at ten.",
   "Looking at your fridge, kimchi fried rice is right there.",
   "I tried a different ramen place last week and it slapped.",
+  "Looking for a job is exhausting, I get it.",
+  "Hunting down a vintage jacket like that is a whole sport.",
+  "Love that, you're finally going.",
 ];
 
 test("sweep: real answers with search / remember / forecast words are kept", () => {
