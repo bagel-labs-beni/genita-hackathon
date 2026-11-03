@@ -237,8 +237,10 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (input.perceptionHint) sections.push(input.perceptionHint.slice(0, 200));
   // P1 "This turn:" line goes BEFORE the voice block: placed last it cost ~+300 ms first token (Spark reasons on the
   // last instruction; n=14–24 ×4 runs 11/3), placed here it measured no slower than none (p50 2459 vs 3278 ms, n=14)
-  if (input.turn) sections.push(input.turn.slice(0, 400));
-  if (input.task) sections.push(input.task.slice(0, 400));
+  // the task line rides the same block, BEFORE "This turn:" (the block right before the voice block must end with the
+  // This-turn line, latency 11/3)
+  const turnBlock = [input.task?.slice(0, 400), input.turn?.slice(0, 400)].filter(Boolean).join(" ");
+  if (turnBlock) sections.push(turnBlock);
   // 11/3 tone pass (Chelsea: "English the way kids talk now, and kind; the voice is stiff"). The voice model has no
   // prosody controls, so breath and turns come from the text: commas, a dash. Kept a near-minimal diff on purpose:
   // longer "kind / soft / Gen Z" rules (r1–r4) lowered the blind judge's fun 3.64 → 3.27–3.46 and doubled "?" endings.
