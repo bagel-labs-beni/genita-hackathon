@@ -108,6 +108,21 @@ public struct FlowMap: Codable, Equatable, Sendable {
     public struct Jaw: Codable, Equatable, Sendable {
         public var floor: Double; public var gain: Double; public var gamma: Double?; public var mbpClose: Double?
         public var steps: [FlowKeyValue]; public var vowel: [String: Double]?
+        enum CodingKeys: String, CodingKey { case floor, gain, gamma, mbpClose, steps, vowel }
+        public init(floor: Double = 0, gain: Double = 1, gamma: Double? = nil, mbpClose: Double? = nil, steps: [FlowKeyValue], vowel: [String: Double]? = nil) {
+            self.floor = floor; self.gain = gain; self.gamma = gamma; self.mbpClose = mbpClose; self.steps = steps; self.vowel = vowel
+        }
+        /// 11/3 pm: a jaw block without `floor` (or `gain`) decoded to nil and the mouth never opened (a cat export with
+        /// one key C2); missing numbers now take their defaults, only `steps` is required.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            floor = (try? c.decodeIfPresent(Double.self, forKey: .floor)) ?? 0
+            gain = (try? c.decodeIfPresent(Double.self, forKey: .gain)) ?? 1
+            gamma = try? c.decodeIfPresent(Double.self, forKey: .gamma)
+            mbpClose = try? c.decodeIfPresent(Double.self, forKey: .mbpClose)
+            steps = try c.decode([FlowKeyValue].self, forKey: .steps)
+            vowel = try? c.decodeIfPresent([String: Double].self, forKey: .vowel)
+        }
     }
     public var jaw: Jaw? = nil
     /// Per-key amount ceiling after focus (the flow pulls the shape back toward neutral).

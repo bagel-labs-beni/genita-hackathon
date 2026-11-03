@@ -434,6 +434,11 @@ struct LipThinTests {
         #expect(none.mapLadders == nil && MotionV2Params().spreadNeutral == 0.4)   // no map ladders = the built-in ones
     }
 
+    @Test func aJawBlockWithoutFloorStillDrivesTheMouth() throws {
+        let j = try JSONDecoder().decode(FlowMap.Jaw.self, from: Data(#"{"gain":1.4,"gamma":0.85,"steps":[["C2",0.9]]}"#.utf8))
+        #expect(j.floor == 0 && j.gain == 1.4 && j.steps.count == 1)
+    }
+
     @Test func aV93PresetKeepsThePrepMotionAsSent() throws {
         let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"preset":"v93","idle":0.2,"amp":0.35}"#.utf8))
         #expect(p.preset == "v93" && p.v59() == p)
