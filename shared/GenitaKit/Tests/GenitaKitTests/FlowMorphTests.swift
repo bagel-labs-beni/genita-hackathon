@@ -413,7 +413,7 @@ struct LipThinTests {
         #expect(pr.openMag == 1.5 && pr.openDnPx == 0.02 && pr.openUpPx == 0.001 && pr.openWide == 0.3 && !pr.isOff)
         let off = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"lipThin":0.8}"#.utf8))
         #expect(off.openMag == 0)       // a prep block without openMag keeps the old mouth
-        #expect(FlowMap.Perioral.release.openMag == 1.0 && FlowMap.Perioral.release.openDnPx == 0.024 && FlowMap.Perioral.release.openWide == 0.2)
+        #expect(FlowMap.Perioral.release.openMag == 0.0 && FlowMap.Perioral.release.openDnPx == 0.024 && FlowMap.Perioral.release.openWide == 0.2)
     }
 
     @Test func v59MotionClosesBetweenSyllablesAndIsQuicker() {
@@ -422,6 +422,11 @@ struct LipThinTests {
         #expect(p.idle == 0 && p.consonantJaw == 0.05 && p.amp == 0.5 && p.springHz == 11 && p.jawAttackMs == 40)
         var hot = MotionV2Params(); hot.amp = 0.8; hot.springHz = 14
         #expect(hot.v59().amp == 0.8 && hot.v59().springHz == 14)     // never weakens a stronger prep value
+    }
+
+    @Test func aV93PresetKeepsThePrepMotionAsSent() throws {
+        let p = try JSONDecoder().decode(MotionV2Params.self, from: Data(#"{"preset":"v93","idle":0.2,"amp":0.35}"#.utf8))
+        #expect(p.preset == "v93" && p.v59() == p)
     }
 
     @Test func aliveLockYDecodesAndDefaultsOn() throws {

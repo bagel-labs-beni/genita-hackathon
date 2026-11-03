@@ -377,7 +377,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             return p
         }()
         /// v58 open magnifier strength for the release block (rollback: 0).
-        nonisolated(unsafe) public static var releaseOpenMag = 1.0
+        nonisolated(unsafe) public static var releaseOpenMag = 0.0   // 11/3 18:46 Chelsea: "looks synthetic when the mouth opens" — off (v9.3 mouth); was 1.0 in v60b
         var isOff: Bool { openMag == 0 && follow == 0 && followOpenPx == 0 && philtrumPx == 0 && eeSpread == 0 && roundBulgePx == 0 && spreadPx == 0 && roundInPx == 0 && jawDropPx == 0 && mbpChinPx == 0 && microPx == 0 && lipThin == 0 }
     }
     public var perioral: Perioral? = nil
@@ -1063,7 +1063,7 @@ final class FlowMorph: @unchecked Sendable {
             if v2 == nil {
                 let rigHuman = data.map.rig != nil && data.kind == "human"
                 v2 = MotionV2(params: rigHuman ? p.v59() : p, faceNorm: faceNorm)
-                v2!.useV60 = rigHuman && MotionV2.v60Ladders
+                v2!.useV60 = rigHuman && MotionV2.v60Ladders && p.preset != "v93"
             }
             if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { ctx.timeline.loudness(atMs: $0) },
                                 order: order, resolve: resolve) {

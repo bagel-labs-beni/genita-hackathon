@@ -40,13 +40,17 @@ public struct MotionV2Params: Codable, Equatable, Sendable {
     public var stressedJawGain = 1.0, unstressedJawGain = 1.0
     /// v28: pre-emphasis cap; jaw target inside a non-closing consonant (syllable beats)
     public var preemphCap = 2.5, consonantJaw = 0.1
+    /// 11/3 pm: "v93" = the map asks for the v9.3 motion exactly (no v59 over-ride, no v60 ladders), so the
+    /// server can put the old mouth back on a built app (codex P2 on #388)
+    public var preset: String? = nil
     public init() {}
-    enum CodingKeys: String, CodingKey { case stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain, stressMargin }
+    enum CodingKeys: String, CodingKey { case preset, stressK, preemphCap, consonantJaw, jawAttackMs, jawReleaseMs, jawKnee, shapeTauMs, weakShape, shortVowelMs, anticipation, amp, unstressed, lip, preemphMs, closureFrames, springHz, idle, stressPercentile, shortStressedMs, shortStressedLip, shortStressedJaw, closePre, micro, chinScale, stressedGain, unstressedGain, stressedJawGain, unstressedJawGain, stressMargin }
     enum AliasKeys: String, CodingKey { case consonantDip }
     /// Any field may be missing (prep sends only what it tunes); missing ones keep the defaults.
     public init(from decoder: Decoder) throws {
         self.init()
         guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
+        if let v = try? c.decodeIfPresent(String.self, forKey: .preset) { preset = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .stressK) { stressK = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .preemphCap) { preemphCap = v }
         if let v = try? c.decodeIfPresent(Double.self, forKey: .consonantJaw) { consonantJaw = v }
@@ -89,7 +93,7 @@ extension MotionV2Params {
     /// Rollback: `MotionV2Params.v59On = false` (the map's values as sent).
     nonisolated(unsafe) public static var v59On = true
     public func v59() -> MotionV2Params {
-        guard Self.v59On else { return self }
+        guard Self.v59On, preset != "v93" else { return self }
         var p = self
         p.idle = 0
         p.consonantJaw = min(p.consonantJaw, 0.05)
@@ -101,7 +105,7 @@ extension MotionV2Params {
     }
 }
 
-struct MotionV2 {
+public struct MotionV2 {
     static let round: Set<String> = ["AO", "OW", "OY", "UW", "UH", "W"]
     static let spread: Set<String> = ["IY", "IH", "EY", "EH", "Y"]
     static let open: Set<String> = ["AA", "AH", "AE", "AY", "AW", "ER"]
@@ -114,7 +118,7 @@ struct MotionV2 {
     /// v60 (11/3 pm review: every opening was a round "O" with a black hole — "blowing air"): a / e / i climb
     /// the wide, flat keys with the upper-teeth band (EH, AH); the big round AH2 is left to nothing, the
     /// round ladder (o / u / w) keeps OH. Rollback: `MotionV2.v60Ladders = false`.
-    nonisolated(unsafe) static var v60Ladders = true
+    nonisolated(unsafe) public static var v60Ladders = true
     static let laddersV60: [[(String, Double)]] = [
         [("U", 0), ("OH", 0.45)],
         [("EI", 0), ("EH", 0.45)],
