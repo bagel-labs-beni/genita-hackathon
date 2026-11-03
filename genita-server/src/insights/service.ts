@@ -198,7 +198,13 @@ export class Insights {
         picks: [...cardPicks(card), ...answerPicks],
         source: card.source,
         // AU-23: what the user took out of the profile (HISY "That's not me", "forget that …") is not true either
-        denied: [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).filter((r) => !r.forget).slice(-10).map((r) => ({ claim: r.text }))],
+        // …minus anything that names what they asked to forget: a forget also leaves a plain "Dislikes seafood."
+        // removal behind, which must not go back to Spark as not-true either (Codex r12)
+        denied: withoutRemoved(
+          [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).filter((r) => !r.forget).slice(-10).map((r) => ({ claim: r.text, correction: undefined as string | undefined }))],
+          (d) => `${d.claim} ${d.correction ?? ""}`,
+          (card.removed ?? []).filter((r) => r.forget),
+        ),
         unknowns: card.toConfirm,
       };
     }, { settings });
