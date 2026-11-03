@@ -2052,7 +2052,7 @@ export class Session {
     // #194 GK-1: this turn carries the call's one still-to-confirm question; the guard lets that question through
     // (read from the request itself: it was built before this turn was counted)
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
-    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
+    const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn, crisisInCall: this.crisisInCall };
     let cutBefore = false;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {

@@ -98,7 +98,7 @@ export const adapter = {
       if (tts) tts = dropRepeatedName(tts, ctx.scenario.user.name, [...recent.slice(-2), ...kept]);
       if (!tts) continue;
       if (!parseTaggedSentence(tts).displayText) continue;
-      const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
+      const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText, crisisInCall: ctx.history.some((h) => h.role === "user" && realCrisisSignal(h.text)) });
       const cls = found === "narration" && kept.length ? null : found;
       if (cls) { if (!neverSpoken(cls)) first ??= { raw: part, cls }; continue; }
       kept.push(tts);

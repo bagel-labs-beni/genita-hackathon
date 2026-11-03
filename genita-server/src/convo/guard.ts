@@ -16,6 +16,8 @@ export type GuardContext = {
   userText: string;
   /** personalization's one still-to-confirm question is due this turn (#194 GK-1): its question is not intake */
   askTurn?: boolean;
+  /** a real crisis line came earlier in this call (session crisisInCall): a friend staying is never filtered (Codex #610 P1) */
+  crisisInCall?: boolean;
 };
 
 const CLASSES: Array<[GuardClass, RegExp]> = [
@@ -320,7 +322,7 @@ export function guardSentence(sentence: string, ctx: GuardContext): GuardClass |
   if (!realCrisisSignal(ctx.userText) && isNarration(sentence)) return "narration";
   // a real crisis or danger turn: only an AI denial is dropped. "Stay with me", "you're not alone", a referral
   // are the friend staying, not therapy-speak or clinginess (Codex 11/3 P1)
-  if (realCrisisSignal(ctx.userText)) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
+  if (realCrisisSignal(ctx.userText) || ctx.crisisInCall) return deniesAi(sentence, ctx.userText) ? "denies_ai" : null;
   if (!ctx.camera && (WEARING_NOW.test(sentence) || CLOTHES_NOW.test(sentence)) && !USER_ON_CLOTHES.test(ctx.userText)) return "unseen";
   // a greeting / initiative turn (nothing said yet this turn): never claim to hear them ("your voice sounds super alive")
   if (!ctx.userText.trim() && (UNHEARD.test(sentence) || heardBeforeSpeech(sentence.replace(/’/g, "'")))) return "unseen";

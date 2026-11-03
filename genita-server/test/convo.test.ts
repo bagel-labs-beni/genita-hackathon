@@ -1582,3 +1582,15 @@ test("tone 11/4: 'That sounds heavy' / 'I'm right here with you' on a non-crisis
   for (const s of ["That sounds heavy.", "I'm right here with you.", "That's a lot to carry today.", "That sounds draining."]) assert.equal(guardSentence(s, { camera: false, userText: "this orgo exam is killing me lol" }), "counselor", s);
   assert.equal(guardSentence("I'm right here with you.", { camera: false, userText: "I want to kill myself" }), null);
 });
+
+test("Codex #610 P1: after a crisis line in the call, 'I'm right here with you — put the pills down' is never filtered", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<sad> Please call 988 right now, I care about you.", "<sad> I'm right here with you, put the pills down and step away. Is your sister still there?"]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I want to kill myself." }));
+  await client.waitFor((m) => m.type === "reply" && m.final === true);
+  const n = client.json.filter((m) => m.type === "reply" && m.final === true).length;
+  await session.onClientText(JSON.stringify({ type: "text", text: "Yes, I have the pills beside me" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true && client.json.filter((x) => x.type === "reply" && x.final === true).length > n);
+  assert.match(String(reply.text), /put the pills down/);
+  session.close();
+});
