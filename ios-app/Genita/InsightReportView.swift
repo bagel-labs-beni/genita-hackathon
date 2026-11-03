@@ -99,10 +99,12 @@ struct InsightReportView: View {
                     .ignoresSafeArea(edges: .top).transition(.opacity)
                 }
                 if showsCTA {
+                    // 150 pt fade to the screen's bottom edge (through the home-indicator inset), opaque from 45 %
                     LinearGradient(stops: [.init(color: InsightInk.canvas.opacity(0), location: 0), .init(color: InsightInk.canvas, location: 0.45)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 150).allowsHitTesting(false).ignoresSafeArea(edges: .bottom)
+                        .frame(height: 150).offset(y: safe.safeAreaInsets.bottom).allowsHitTesting(false)
+                    // CTA y 736 on the 844 frame: its bottom 58 pt above the screen's bottom edge
                     HISYPrimary(title: "Start talking to \(name)", busy: model.savingPrefs, id: "insightStart") { model.saveSetupAndPrepare() }
-                        .padding(.bottom, max(24, 108 - safe.safeAreaInsets.bottom - 50 + 24))
+                        .padding(.bottom, max(8, 58 - safe.safeAreaInsets.bottom))
                 }
             }
             .frame(width: w)
@@ -209,7 +211,8 @@ struct InsightReportView: View {
                 .opacity(appeared ? 1 : 0).offset(y: appeared || reduceMotion ? 0 : 12)
                 .animation(.easeOut(duration: 0.28).delay(0.2), value: appeared)
                 .accessibilityAddTraits(.isHeader)
-                Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 92, height: 92)
+                // the orb art has a wide transparent margin: drawn 1.5× so the globe itself is ~92 pt
+                Image(resource: "reference-orb-round").resizable().scaledToFit().frame(width: 92, height: 92).scaleEffect(1.5)
                     .scaleEffect(appeared || reduceMotion ? 1 : 0.85).accessibilityHidden(true)
             }
             .padding(.top, 8)
@@ -417,7 +420,8 @@ struct InsightNoteCard: View {
 struct InsightChainView: View {
     let chain: InsightChain
     var body: some View {
-        let steps = [("YOU’RE", InsightCopy.chainBody(chain.youAre, dropping: "You")), ("SO YOU", InsightCopy.chainBody(chain.soYou, dropping: "So you")),
+        // "You compare before you commit." stays a whole sentence under YOU (not "Compare before…" under YOU'RE)
+        let steps = [("YOU", chain.youAre), ("SO YOU", InsightCopy.chainBody(chain.soYou, dropping: "So you")),
                      ("SO I’LL", InsightCopy.chainBody(chain.soIll, dropping: "So I'll"))]
         VStack(alignment: .leading, spacing: 22) {
             ForEach(steps, id: \.0) { step in
