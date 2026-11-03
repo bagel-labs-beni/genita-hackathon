@@ -111,8 +111,7 @@ struct MacConversationView: View {
                     if let text = cueText { MacCallCue(text: text).frame(maxWidth: sheetFull ? 250 : 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                         .position(x: sheetFull ? 16 + 125 : 195, y: sheetFull ? 86 : (MacDesignV2.enabled && !displaySharing ? 103 : 142)).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false) }
                     if linkOpened != nil {
-                        if MacDesignV2.enabled { MacCallCue(text: "Opened it in your browser").frame(maxWidth: 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                            .position(x: 195, y: 103).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false) }
+                        // MAC-LINK = Dyno's demo video (2:16): the prompt draws its own two-line pill, so no separate cue
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
