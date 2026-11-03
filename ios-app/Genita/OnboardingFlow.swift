@@ -44,7 +44,13 @@ extension AppState {
         // bring its name, card and face back first
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
-              ownsOnboardingResponse(request) else { return }
+              ownsOnboardingResponse(request) else {
+            // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
+            // A02, as for an expired /me (a logout or another login bumps the generation and never lands here).
+            if launchRequest.generation == authGeneration, !Task.isCancelled, onboarding.auth.token == nil,
+               ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
+            return
+        }
         apply(route, me: me, afterSignIn: afterSignIn)
     }
 
