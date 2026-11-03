@@ -39,20 +39,24 @@ struct MacConversationView: View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
                 companionStill(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                    // motion details card 10: veiled while the call connects, clears once when it is live (flag off: plain)
+                    .modifier(MacCallVeil(veiled: call.link == .connecting))
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
-                if let face = call.face {
+                ZStack(alignment: .topLeading) { if let face = call.face {
                     // same presence: the face set's own rest frame sits under the live face, so the first frame after
                     // arriving from the iPhone is already this face in this crop (never the prep still, then a jump)
                     ZStack {
                         if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
-                        // iPhone #524: the generated face arrives through the veil lift (same motion lane modifier)
-                        .genitaFaceReveal(veiled: false, enabled: !MacDesignV2.reviewRender)
+                        // the motion lane's call veil (as the iPhone #524 reveal): the generated face clears it once
+                        .modifier(MacCallVeil(veiled: call.link == .connecting))
                         .allowsHitTesting(false)
-                }
+                        // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
+                        .transition(.opacity)
+                } }.animation(reduceMotion ? nil : CompanionFace.revealCurve, value: call.face.map(ObjectIdentifier.init))
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
@@ -61,19 +65,33 @@ struct MacConversationView: View {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
-                    selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
+                    if MacDesignV2.enabled {
+                        // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
+                        // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
+                        selfView.frame(width: selfSize.width, height: selfSize.height)
+                            .position(x: 16 + selfSize.width / 2, y: 806 - selfSize.height / 2 - railShift).opacity(sheetCovers ? 0 : 1)
+                            .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                    } else {
+                        selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
+                    }
                     VStack(spacing: 13) {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
-                        Button { call.toggleMic() } label: { MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn) }.buttonStyle(MacUnchangedControlStyle())
+                        // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
+                        Button { call.toggleMic() } label: {
+                            MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn)
+                                .background { MotionVoiceRing(active: call.micOn && call.link == .live, diameter: 46, color: Color(red: 84 / 255, green: 193 / 255, blue: 1), level: { call.inputLevel }) }
+                        }.buttonStyle(MotionPressStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 1))
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
                         if MacInterpretController.enabled {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
                             // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
@@ -205,7 +223,7 @@ struct MacConversationView: View {
             if fill { Image(nsImage: picture).resizable().scaledToFill().frame(width: width, height: height) }
             else { Image(nsImage: picture).resizable().frame(width: width, height: height) }
         } else {
-            MacFacePlaceholder(name: macCall.companionName ?? (call.companionName.isEmpty ? nil : call.companionName)).frame(width: width, height: height)
+            MacFacePlaceholder().frame(width: width, height: height)
         }
     }
     // MARK: #118 / #121 call + sheet layout
@@ -234,16 +252,29 @@ struct MacConversationView: View {
     }
     /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
     private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
+    /// Self view size on Mac v2 (iPhone HUD A): camera off 72×96, on 108×144.
+    private var selfSize: CGSize { call.cameraOn ? CGSize(width: 108, height: 144) : CGSize(width: 72, height: 96) }
     @ViewBuilder private var selfView: some View {
         if call.cameraOn {
-            SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
+            if MacDesignV2.enabled {
+                SelfCameraPreview(session: call.cameraSession).clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+            } else {
+                SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
+            }
         } else {
             if MacDesignV2.enabled {
-                VStack(spacing: 8) {
-                    Image(systemName: "video.slash").font(.system(size: 20, weight: .light))
-                    Text("Camera off").font(MacSheetInk.sans(12))
-                }.foregroundStyle(Color(white: 138.0 / 255)).frame(width: 113, height: 211)
-                    .background(Color(white: 26.0 / 255), in: RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .combine).accessibilityLabel("Your camera is off")
+                // the iPhone's camera-off glass tile: dark material + 28 % black, 0.7 pt white 35 % rim, video.slash
+                Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                            RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.28))
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+                    .accessibilityElement().accessibilityLabel("Your camera is off")
             } else {
                 resourceImage("selfPreview").resizable().frame(width: 113, height: 211).accessibilityLabel("Your camera is off")
             }
@@ -301,6 +332,22 @@ struct MacConversationView: View {
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
     }
 }
+/// Motion details card 10 on the Mac call window (flag `motionDetails`; off: unchanged).
+private struct MacCallVeil: ViewModifier {
+    var veiled: Bool
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionCallReveal(veiled: veiled) } else { content }
+    }
+}
+
+private struct MacControlEntrance: ViewModifier {
+    var shown: Bool
+    var index: Int
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionControlRise(shown: shown, index: index) } else { content }
+    }
+}
+
 private struct MacUnchangedControlStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label } }
 
 private struct MacDemoSystemBar: View {
@@ -347,7 +394,6 @@ private final class IslandDragView:NSView {
 /// → the dark call ink #111 under the S07 veil): no initial, no silhouette, no new design, and never someone else's face
 /// (CL-03). The live face fades in over it with the same veil lift (`genitaFaceReveal`).
 struct MacFacePlaceholder: View {
-    let name: String?
     var body: some View {
         MacSheetInk.ink.accessibilityHidden(true)
     }

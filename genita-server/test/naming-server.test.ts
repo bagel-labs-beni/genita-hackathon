@@ -80,3 +80,59 @@ test("server: 'Call yourself Max' in a call is saved — GET /v1/companion → s
   }
   assert.equal(after.session.persona.name, "Max");
 });
+
+test("AU-53 server: a device starting with its cached older name gets the stored one (companion.named), and the call uses it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "naming-server-"));
+  const store = new FileStore(dir);
+  // renamed to Max by voice on the other device; this device still has Jin cached
+  await store.putCompanion({
+    id: "c1",
+    userId: "demo",
+    imageId: "img1",
+    type: "human",
+    voiceId: "v1",
+    name: "Max",
+    createdAt: new Date().toISOString(),
+    prep: { ...newPrepState(), status: "failed" },
+    persona: { card: { name: "Max", kind: "human", traits: ["warm"] }, rules: [], summary: { why: "", energy: "", initiative: "", never: "" }, depth: "quick" },
+  });
+  const asr = Object.assign(new EventEmitter(), { isOpen: false, async connect() { this.isOpen = true; }, sendAudio() {}, end() { this.isOpen = false; } });
+  const prompts: string[] = [];
+  const deps: SessionDeps = {
+    config,
+    openAsr: () => asr,
+    async *spark(req) {
+      prompts.push(JSON.stringify(req));
+      yield { type: "text", delta: "<happy> Hi!" };
+      yield { type: "done", responseId: "r", text: "", status: "completed" };
+    },
+    async *tts() {},
+  };
+  const server = await startServer(config, () => {}, deps, { GENITA_DATA_DIR: dir }, null);
+  t.after(async () => {
+    await new Promise<void>((r) => server.close(() => r()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const addr = server.address();
+  assert.ok(addr && typeof addr === "object");
+  const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session`);
+  const events: Array<Record<string, unknown>> = [];
+  ws.on("message", (d, bin) => !bin && events.push(JSON.parse(d.toString())));
+  await new Promise((r) => ws.on("open", r));
+  ws.send(JSON.stringify({ type: "start", persona: { name: "Jin", kind: "human", traits: ["warm"] }, mic: false }));
+  const until = async (pred: () => boolean) => {
+    const end = Date.now() + 3000;
+    while (!pred()) {
+      if (Date.now() > end) throw new Error(`timeout: ${events.map((e) => e.type).join(",")}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+  await until(() => events.some((e) => e.type === "ready"));
+  await until(() => events.some((e) => e.type === "companion.named"));
+  assert.deepEqual(events.find((e) => e.type === "companion.named"), { type: "companion.named", name: "Max" });
+  ws.send(JSON.stringify({ type: "text", text: "who are you?" }));
+  await until(() => events.some((e) => e.type === "reply"));
+  assert.match(prompts[0], /Max/);
+  assert.doesNotMatch(prompts[0], /\bJin\b/);
+  ws.close();
+});

@@ -18,6 +18,11 @@ public struct GenitaSplash: View {
     var onFinished: () -> Void
 
     @State private var start: Date?
+    /// iPhone: when the scene stopped being active (a system alert over the launch, e.g. the iPhone Mirroring
+    /// "microphone unavailable" sheet in QA build 7); the clock holds until it's active again, so the splash is
+    /// seen rather than spent under the alert. nil = running.
+    @State private var pausedAt: Date?
+    @Environment(\.scenePhase) private var scenePhase
     @State private var skipAt: Double?
     @State private var finished = false
     @State private var lean = CGSize.zero
@@ -106,7 +111,7 @@ public struct GenitaSplash: View {
         GeometryReader { safe in
             let top = safe.safeAreaInsets.top - 44 // same origin as A02 (390 × 844 board)
             GeometryReader { full in
-                TimelineView(.animation(minimumInterval: Self.frameInterval, paused: start == nil || Self.frozenAt != nil || finished)) { ctx in
+                TimelineView(.animation(minimumInterval: Self.frameInterval, paused: start == nil || pausedAt != nil || Self.frozenAt != nil || finished)) { ctx in
                     let t = Self.frozenAt ?? start.map { ctx.date.timeIntervalSince($0) } ?? 0
                     scene(t: t, size: full.size, top: top)
                         .onChange(of: t >= endTime, initial: true) { _, done in if done { finish() } }
@@ -131,7 +136,14 @@ public struct GenitaSplash: View {
         .accessibilityIdentifier("splash")
         .onAppear {
             // the next run-loop turn ≈ the first frame on screen
-            DispatchQueue.main.async { if start == nil { let now = Date(); start = now; onStart(now) } }
+            DispatchQueue.main.async {
+                if start == nil { let now = Date(); start = now; onStart(now); if Self.holds(scenePhase) { pausedAt = now } }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard start != nil, !finished else { return }
+            if Self.holds(phase) { if pausedAt == nil { pausedAt = Date() } }
+            else if let since = pausedAt { start = start?.addingTimeInterval(Date().timeIntervalSince(since)); pausedAt = nil }
         }
         .task { await run() }
         .onDisappear { leanSource.stop() }
@@ -263,15 +275,31 @@ public struct GenitaSplash: View {
         if still == nil {
             leanSource.start { l in withAnimation(.interactiveSpring(response: 0.35, dampingFraction: 0.85)) { lean = l } }
         }
-        let elapsed = start.map { Date().timeIntervalSince($0) } ?? 0
-        let wait = (still?.fadeIn ?? Self.hapticAt) - elapsed
-        if wait > 0 { try? await Task.sleep(for: .milliseconds(Int(wait * 1000))) }
-        // one light haptic as the bloom settles (none on a signed-in relaunch)
-        if skipAt == nil, mode == .full { GenitaHaptic.impact(soft: false, intensity: 1) }
-        // hard deadline: late frames on a busy device / simulator must not hold A02 back
-        let left = endTime - (start.map { Date().timeIntervalSince($0) } ?? 0)
-        if left > 0 { try? await Task.sleep(for: .milliseconds(Int(left * 1000))) }
-        if skipAt == nil { finish() }
+        // hard deadline on the splash's own clock: late frames on a busy device must not hold the first screen back,
+        // and time under a system alert (scene not active) doesn't count
+        var hapticDone = false
+        while !finished, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(30))
+            guard let start, pausedAt == nil else { continue }
+            let elapsed = Date().timeIntervalSince(start)
+            if !hapticDone, elapsed >= (still?.fadeIn ?? Self.hapticAt) {
+                hapticDone = true
+                // one light haptic as the bloom settles (none on a signed-in relaunch)
+                if skipAt == nil, mode == .full { GenitaHaptic.impact(soft: false, intensity: 1) }
+            }
+            // endTime already follows a tap (skipAt + 0.38 s), so a skip also ends on the held clock (Codex P2)
+            if elapsed >= endTime { finish() }
+        }
+    }
+
+    /// iPhone only: a scene that isn't active holds the splash clock (macOS reports inactive for a window that's
+    /// simply not key, which must not stop the Mac splash).
+    static func holds(_ phase: ScenePhase) -> Bool {
+        #if os(iOS)
+        return phase != .active
+        #else
+        return false
+        #endif
     }
 
     @MainActor private func skip() {
@@ -279,8 +307,11 @@ public struct GenitaSplash: View {
         let now = Self.frozenAt ?? Date().timeIntervalSince(start)
         guard now < Self.handoffAt else { return } // already handing over
         skipAt = now
-        if let frozen = Self.frozenAt { self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.skipHandoff + 0.05) { finish() }
+        if let frozen = Self.frozenAt {
+            // review stills: run() never started its loop, so the tap ends it on a timer
+            self.start = Date().addingTimeInterval(-frozen); Self.unfreeze = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.skipHandoff + 0.05) { finish() }
+        }
     }
 
     @MainActor private func finish() {

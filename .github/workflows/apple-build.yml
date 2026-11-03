@@ -25,7 +25,7 @@ jobs:
   apple:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       # The apps use no Git LFS files, so LFS objects are not downloaded.
       - uses: actions/checkout@v4
@@ -52,6 +52,11 @@ jobs:
           echo "id=$ID" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices available | grep "$ID"
 
+      - name: Start the onboarding stub (CompanionResetUITests)
+        run: |
+          nohup node ios-app/Tools/onboarding-stub/server.mjs --port 8790 > build-output-stub.log 2>&1 &
+          for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8790/healthz && break; sleep 0.5; done
+
       - name: iOS simulator build and tests
         run: |
           xcodebuild test \
@@ -61,6 +66,7 @@ jobs:
             -only-testing:GenitaUITests/HandoffScreensUITests \
             -only-testing:GenitaUITests/GenitaUITests/testReviewCorrections \
             -only-testing:GenitaUITests/BrowserPreviewUITests \
+            -only-testing:GenitaUITests/CompanionResetUITests \
             -resultBundlePath build-output/ios.xcresult \
             CODE_SIGNING_ALLOWED=NO | grep -E "^Test Suite|^Test Case .*(passed|failed)|Executed [0-9]+ test|error:|\*\* (TEST|BUILD)" | cut -c1-240
           exit "${PIPESTATUS[0]}"
@@ -77,11 +83,61 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith(("R1", "E0", "P0", "MV", "PROX", "menu-", "pairing-", "conversation-", "preview-", "uidef-")):
+                  if name.startswith(("R1", "E0", "P0", "MV", "PROX", "menu-", "pairing-", "conversation-", "preview-", "uidef-", "reset-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens
           fi
+
+      # "** TEST FAILED **" with every suite passed: show what the result bundle says failed
+      - name: Why the iOS tests failed
+        if: failure()
+        continue-on-error: true
+        run: |
+          [ -d build-output/ios.xcresult ] || exit 0
+          xcrun xcresulttool get test-results summary --path build-output/ios.xcresult | head -c 6000
+          # a crashed test leaves its crash report in the bundle's diagnostics
+          mkdir -p build-output/diag
+          xcrun xcresulttool export diagnostics --path build-output/ios.xcresult --output-path build-output/diag >/dev/null 2>&1 || true
+          find build-output/diag -name '*.ips' -o -name '*.crash' | head -3 | while read -r f; do echo "== $f"; python3 -c '
+          import json, sys
+          raw = open(sys.argv[1]).read().split("\n", 1)
+          d = json.loads(raw[1]) if len(raw) > 1 else {}
+          print(d.get("exception"), d.get("termination", {}).get("indicator"))
+          th = d.get("threads", []); t = next((x for x in th if x.get("triggered")), th[0] if th else {})
+          imgs = d.get("usedImages", [])
+          for fr in t.get("frames", [])[:25]:
+              img = imgs[fr["imageIndex"]]["name"] if fr.get("imageIndex", -1) < len(imgs) else "?"
+              print(img, fr.get("symbol", "?"), fr.get("sourceFile", ""), fr.get("sourceLine", ""))
+          ' "$f" || head -80 "$f"; done
+
+      # I03 live soul orb: ~9 s simulator video + the app's own fps / GPU-time log (GENITA_ORB_STATS=1)
+      - name: Record the I03 orb
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 4
+        run: |
+          t() { perl -e 'alarm shift; exec @ARGV' "$@"; }  # every simctl call is bounded
+          SIM="${{ steps.simulator.outputs.id }}"
+          APP="$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 6 -path '*Debug-iphonesimulator/Genita.app' | head -1)"
+          [ -n "$APP" ] || { echo "no app build"; exit 0; }
+          BID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")"
+          mkdir -p build-output/screens
+          t 60 xcrun simctl bootstatus "$SIM" -b || true
+          t 60 xcrun simctl install "$SIM" "$APP"
+          SIMCTL_CHILD_GENITA_REVIEW_STAGE=preparing SIMCTL_CHILD_GENITA_ORB_STATS=1 SIMCTL_CHILD_GENITA_SERVER_URL=ws://127.0.0.1:9/v1/session \
+            t 60 xcrun simctl launch --terminate-running-process "$SIM" "$BID" --uitesting
+          sleep 6
+          xcrun simctl io "$SIM" recordVideo --codec=h264 --force build-output/screens/i03-live-orb.mp4 > /dev/null 2>&1 &
+          REC=$!
+          sleep 9
+          pkill -INT -f "simctl io $SIM recordVideo" || kill -INT "$REC" || true
+          for _ in $(seq 1 20); do kill -0 "$REC" 2>/dev/null || break; sleep 1; done
+          kill -9 "$REC" 2>/dev/null || true
+          DATA="$(t 30 xcrun simctl get_app_container "$SIM" "$BID" data || true)"
+          [ -n "$DATA" ] && cp "$DATA/tmp/soul-orb-stats.txt" build-output/screens/ || true
+          cat build-output/screens/soul-orb-stats.txt || true
+          ls -la build-output/screens/i03-live-orb.mp4 || true
 
       - name: Mac build
         working-directory: ios-app
@@ -89,10 +145,23 @@ jobs:
           xcodebuild -project Genita.xcodeproj -target GenitaMac -configuration Debug -sdk macosx CODE_SIGNING_ALLOWED=NO | tail -n 60
           exit "${PIPESTATUS[0]}"
 
+      - name: Mac app is Genita.app (names, bundle id, launch rename)
+        run: |
+          APP=ios-app/build/Debug/Genita.app
+          ls -d ios-app/build/Debug/*.app
+          test ! -e ios-app/build/Debug/GenitaMac.app || { echo "::error::GenitaMac.app was built"; exit 1; }
+          ls "$APP/Contents/MacOS"
+          plutil -p "$APP/Contents/Info.plist" | grep -E '"CF(BundleName|BundleDisplayName|BundleExecutable|BundleIdentifier)"'
+          for k in CFBundleName CFBundleDisplayName CFBundleExecutable; do
+            test "$(/usr/libexec/PlistBuddy -c "Print :$k" "$APP/Contents/Info.plist")" = Genita || { echo "::error::$k is not Genita"; exit 1; }
+          done
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = ai.thebeni.genita.mac
+          mac-app/Tools/bundle-name/check.sh
+
       - name: Capture Mac waiting screens
         continue-on-error: true
         run: |
-          GENITA_MAC_REVIEW_OUT="$PWD/build-output/screens" ios-app/build/Debug/GenitaMac.app/Contents/MacOS/GenitaMac &
+          GENITA_MAC_REVIEW_OUT="$PWD/build-output/screens" ios-app/build/Debug/Genita.app/Contents/MacOS/Genita &
           APP=$!
           for _ in $(seq 1 30); do kill -0 "$APP" 2>/dev/null || break; sleep 2; done
           kill "$APP" 2>/dev/null || true
