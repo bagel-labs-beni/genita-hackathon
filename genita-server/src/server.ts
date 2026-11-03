@@ -322,8 +322,9 @@ export async function startServer(
     const revision = session.historyForgetRevision;
     if (!turns.length || deletedUsers.has(userId)) return;
     // She hung up: calling again is a return visit (greeting + last call's notes), not a handoff to continue.
-    // Device moves keep the live iPhone call (suspended, not stopped), and dropped sockets never send stop.
-    if (session.endedByUser) {
+    // A move also ends with the app's `stop` (MacCall.conversationLeft → end), so a call the hub already stopped
+    // for the other device's claim (Session.movedAway) still caches; dropped sockets never send stop.
+    if (session.endedByUser && !session.movedAway) {
       // an older call's turns (cached before this call opened) must not come back either; a newer call's stay
       if ((lastTurns.get(userId)?.at ?? Infinity) < openedAt) dropLastTurns(userId);
       log("history.not_cached", { session: session.id, by: "hang_up" });
