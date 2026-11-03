@@ -429,6 +429,10 @@ export function styleProfileText(card: StyleCard, max = 2000, opts: { toConfirm?
   if (more.length) parts.push("Also:", ...more);
   if (manner.length) parts.push("How they come across with you (match it; never describe or label them with it):", ...manner);
   if (leans.length) parts.push("Leans (indirect, not stated by them; at most a light guess, never a fact or a nickname):", ...leans);
+  // "forget that…" / "That's not me": the model must not know-and-say it. Listed only as do-not-mention, never as a
+  // fact, and never acknowledged ("you told me to forget …" in the next call, QA post-deploy 11/3)
+  const gone = (card.removed ?? []).slice(-5).map((t) => t.text.replace(/[<>\n]/g, " ").slice(0, 120)).filter(Boolean);
+  if (gone.length) parts.push("Never bring these up, and never say you were asked to forget or drop them; talk as if you never knew them:", ...gone.map((t) => `- ${t}`));
   if (sugg.length) parts.push("Suggestions (not confirmed by the user):", ...sugg);
   let out = parts.join("\n");
   if (out.length > max) out = out.slice(0, out.lastIndexOf("\n", max));
