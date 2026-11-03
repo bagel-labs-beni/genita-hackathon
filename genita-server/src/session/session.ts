@@ -60,7 +60,7 @@ import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, mayBeSelfHarm, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
 import { mentionsProfile, moodFrom, moodLine, turnHints, type Mood } from "../convo/rhythm.ts";
@@ -281,6 +281,17 @@ export const CRISIS_NUMBER_LINE = "<sad> You can call or text 988 any time in th
 export function crisisFollowUp(said: string[]): string | null {
   if (!said.some((x) => HELP_POINTER.test(x))) return CRISIS_HELP_LINE;
   return said.some((x) => HELP_NUMBER.test(x)) ? null : CRISIS_NUMBER_LINE;
+}
+/**
+ * The follow-up for this turn: on a real signal (detector) the full rule above; otherwise, when the user's words come
+ * near harm AND the model itself pointed to help (it judged it a crisis), just the number if it left one out. A
+ * detector miss ("thinking of ending everything tonight") still ends with a number; an idiom with no help pointer gets
+ * nothing (integration 11/4: number 20/20 on real lines, forced 988 0 on ordinary ones).
+ */
+export function crisisFollowUpFor(userText: string, said: string[]): string | null {
+  if (realCrisisSignal(userText)) return crisisFollowUp(said);
+  if (mayBeSelfHarm(userText) && said.some((x) => HELP_POINTER.test(x)) && !said.some((x) => HELP_NUMBER.test(x))) return CRISIS_NUMBER_LINE;
+  return null;
 }
 const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| am| are| was| were| did| do| does| has| have| had| will| would| can| could| should)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
 /** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
@@ -2325,7 +2336,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text)) { const need = crisisFollowUp(sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
@@ -2364,7 +2375,7 @@ export class Session {
           // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
           // pointer to real help gets one fixed line (DESIGN §8.1)
           // a reply the help line now covers is not an error card either (Codex gate P2)
-          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text)) { const need = crisisFollowUp(sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
+          if (this.v1 && !interpret && !self && !synthetic) { const need = crisisFollowUpFor(text, sentences.filter((x) => !x.drop).map((x) => x.display)); if (need) { enqueueSentences([need], true); lostLine = true; } }
           // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
           // the ask is still said (Codex #423 final P2)
           if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);

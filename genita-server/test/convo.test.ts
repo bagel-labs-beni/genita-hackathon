@@ -1609,3 +1609,11 @@ test("#545 Codex r3 contract: help the model wrote is never deleted (detector or
     session.close();
   }
 });
+
+test("integration 11/4: a detector miss whose reply already points to help still ends with a number; an idiom with no help pointer gets nothing", { skip: !v1 }, async () => {
+  const { crisisFollowUpFor, CRISIS_NUMBER_LINE } = await import("../src/session/session.ts");
+  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["I care about you, please reach out to someone you trust right now."]), CRISIS_NUMBER_LINE);
+  assert.equal(crisisFollowUpFor("thinking of ending everything tonight", ["Please call nine eight eight right now."]), null);
+  assert.equal(crisisFollowUpFor("hanging myself out to dry with this deadline", ["Ugh, deadlines are the worst."]), null);
+  assert.equal(crisisFollowUpFor("I'm kinda tired today", ["Wanna just chill on the call?"]), null);
+});

@@ -7,7 +7,7 @@
  */
 import { avoidRepeatedOpener, buildInstructions, dropRepeatedName, type PersonaCard } from "../prompt/persona.ts";
 import { memoryPrompt, PRIOR_CRISIS_LINE } from "../memory/call.ts";
-import { crisisFollowUp } from "../session/session.ts";
+import { crisisFollowUpFor } from "../session/session.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { InputMessage, SparkRequest } from "../meta/spark.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
@@ -116,7 +116,7 @@ export const adapter = {
     }
     if (!kept.length && first) return fallbackLine(first.cls) ?? first.raw;
     // the session's crisis follow-up (help line, or just the number line) on a real crisis turn
-    if (realCrisisSignal(userText)) { const need = crisisFollowUp(kept.map((k) => parseTaggedSentence(k).displayText)); if (need) kept.push(need); }
+    { const need = crisisFollowUpFor(userText, kept.map((k) => parseTaggedSentence(k).displayText)); if (need) kept.push(need); }
     return kept.join(" ");
   },
 };
