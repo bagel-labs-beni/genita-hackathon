@@ -5,6 +5,10 @@ import CoreText
 @main struct GenitaMacApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     init() {
+        // UI-09: always light, like the iPhone (GenitaApp forces .light at the root). The home window had
+        // .preferredColorScheme(.light), but the call window (its own NSWindow), MAC-SET, MC-M and alerts followed a
+        // dark system. The app's appearance covers every window, sheet, menu and alert.
+        NSApplication.shared.appearance = NSAppearance(named: .aqua)
         MacAppConfig.start() // GET /v1/app-config at launch + on activate
         if let root = Bundle.main.resourceURL, let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) {
             for case let url as URL in files where ["ttf", "otf"].contains(url.pathExtension.lowercased()) { CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil) }

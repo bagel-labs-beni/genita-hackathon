@@ -49,6 +49,8 @@ struct MacConversationView: View {
                         if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                        // iPhone #524: the generated face arrives through the veil lift (same motion lane modifier)
+                        .genitaFaceReveal(veiled: false, enabled: !MacDesignV2.reviewRender)
                         .allowsHitTesting(false)
                 }
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
@@ -336,26 +338,12 @@ private final class IslandDragView:NSView {
     }
 }
 
-/// The call's stand-in until this account's own face arrives: the companion's initial on a quiet dark field, or a
-/// neutral silhouette before the name is known. No one else's face is ever shown in its place (CL-03).
+/// The call's ground until this account's own face arrives — the same as the iPhone (#524 CompanionFaceView: no still
+/// → the dark call ink #111 under the S07 veil): no initial, no silhouette, no new design, and never someone else's face
+/// (CL-03). The live face fades in over it with the same veil lift (`genitaFaceReveal`).
 struct MacFacePlaceholder: View {
     let name: String?
-    static func initial(_ name: String?) -> String? {
-        guard let first = name?.trimmingCharacters(in: .whitespacesAndNewlines).first, first.isLetter else { return nil }
-        return String(first).uppercased()
-    }
     var body: some View {
-        GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height)
-            ZStack {
-                LinearGradient(colors: [Color(white: 46.0 / 255), Color(white: 24.0 / 255)], startPoint: .top, endPoint: .bottom)
-                if let letter = Self.initial(name) {
-                    Text(verbatim: letter).font(MacSheetInk.serif(side * 0.34)).foregroundStyle(Color.white.opacity(0.72))
-                } else {
-                    Image(systemName: "person.fill").resizable().scaledToFit().frame(width: side * 0.3).foregroundStyle(Color.white.opacity(0.28))
-                }
-            }
-        }
-        .accessibilityHidden(true)
+        MacSheetInk.ink.accessibilityHidden(true)
     }
 }
