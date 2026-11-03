@@ -116,6 +116,11 @@ export class Personalize {
   }
 
   /** Replace the user's style (import, N1–N3) under the same lock as every other write. */
+  /** Companion reset (AU-90): call 1 with the new companion (first-call nod and question); what they know stays. In the per-user lock, so a save under way can't write the old count back. */
+  async resetGrowth(userId: string): Promise<void> {
+    await this.update(userId, (c) => (c.growth ? { card: { ...c, growth: { calls: 0, asked: [] } }, out: true } : null));
+  }
+
   async replaceStyle(userId: string, card: StyleCard): Promise<void> {
     const at = this.now().toISOString();
     await this.serial(userId, () => this.store.putStyle(userId, { ...card, importedAt: at }));
