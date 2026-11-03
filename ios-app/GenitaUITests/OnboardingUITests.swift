@@ -441,12 +441,16 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT. Under `--stub-external-apps` the app
-        // doesn't hand off to Safari (that round trip was flaky on loaded CI runners): it comes back on its own after
-        // the toast, through the same return path, so the toast and the return are both checked deterministically.
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT. Under `--stub-external-apps` nothing
+        // opens (the Safari hand-off was flaky on loaded CI runners) and the toast stays until the app leaves; the
+        // test leaves (Home) and comes back itself, which takes the real scene-phase return to I02.
         let toast = element("promptCopiedToast")
-        XCTAssertTrue(toast.waitForExistence(timeout: 10), "Prompt copied")
+        XCTAssertTrue(toast.waitForExistence(timeout: 15), "Prompt copied")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
+        XCUIDevice.shared.press(.home)
+        expectation(for: NSPredicate(format: "state != %d", XCUIApplication.State.runningForeground.rawValue), evaluatedWith: app)
+        waitForExpectations(timeout: 30)   // left Genita (background or suspended)
+        app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 30), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")

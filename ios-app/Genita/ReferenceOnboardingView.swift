@@ -271,7 +271,7 @@ import UniformTypeIdentifiers
         }
     }
     /// Back from the AI app: I02 with the paste button ready.
-    func backFromAI() { openedAI = false; leftApp = false; model.pasteFocusRequested = true; model.go(.paste) }
+    func backFromAI() { openedAI = false; leftApp = false; copiedToast = false; model.pasteFocusRequested = true; model.go(.paste) }
     /// I01: opens the AI app, or its website when the app isn't installed.
     func appButton(_ title: String, app: String, web: String) -> some View {
         Button {
@@ -280,15 +280,13 @@ import UniformTypeIdentifiers
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
-            Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             #if DEBUG
-            // UI tests (`--stub-external-apps`): no Safari round trip on a loaded CI runner; the app "comes back"
-            // after the toast, through the same path as a real return
-            if ProcessInfo.processInfo.arguments.contains("--stub-external-apps") {
-                Task { @MainActor in try? await Task.sleep(for: .seconds(2.5)); guard openedAI, stage == .prompt else { return }; backFromAI() }
-                return
-            }
+            // UI tests (`--stub-external-apps`): nothing opens (no Safari round trip on a loaded CI runner) and the
+            // toast stays until the test leaves and comes back (Home → activate), so neither depends on timing; the
+            // return goes through the real scene-phase path below
+            if ProcessInfo.processInfo.arguments.contains("--stub-external-apps") { return }
             #endif
+            Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }
         } label: {
             Text(title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity).frame(height: 40)
