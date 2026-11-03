@@ -1600,3 +1600,8 @@ test("crisis FP/TP sweep 11/4: the plan lines count (pills + how many, goodbye l
     "standing on the bridge taking sunset pics rn", "I'm dead tired, worked a double", "this orgo exam is killing me", "we broke up last night. I'm sad but I think it's for the best",
     "my cat knocked my pill organizer off the table and pills went everywhere", "I didn't write any goodbye letters, relax"]) assert.ok(!real(t), t);
 });
+
+test("prod 11/4: a spoken 'nine eight eight' on an ordinary line is a referral (dropped); on a real crisis line it stays", () => {
+  assert.equal(guardSentence("If you're still feeling like that, please call nine eight eight right now.", { camera: false, userText: "I'm kinda tired today" }), "referral");
+  assert.equal(guardSentence("Please call or text nine eight eight right now.", { camera: false, userText: "I want to kill myself" }), null);
+});
