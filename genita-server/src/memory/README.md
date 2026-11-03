@@ -12,7 +12,11 @@ No database migrations, app changes, deployment, push or PR are part of this lan
   the remaining 1–3. New turns only, no imported history/camera bytes. Work runs
   asynchronously, one extraction at a time per call. Failure is swallowed and
   the next batch can proceed. No network await for extraction on the reply path.
-- `memoryExtract` uses the existing `sparkJson`/Muse Spark 1.3 client. The schema
+- `memoryExtract`, recall keys and session summaries (+ their safety pass) run on
+  **Muse Spark Open** (open weights, `src/meta/sparkOpen.ts`: Baseten `meta-models/muse-spark-open-1026`
+  with `BASETEN_API_KEY`, or a Modal endpoint with `GENITA_SPARK_OPEN_PROVIDER=modal`) once the boot /
+  10-minute probe finds the model (`/healthz` `spark_open: available`); `GENITA_SPARK_OPEN=0` = off.
+  The Muse Spark 1.3 API is the fallback, and the only path while the model is `not_listed`/`no_key`. The schema
   separates `fact`/`episode`, sensitivity and whether an episode supports a follow-up.
   Model policy plus a conservative local filter reject sensitive storage. Explicit
   `remember` additionally uses a structured safety classification in production.
