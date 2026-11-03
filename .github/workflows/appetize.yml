@@ -159,12 +159,12 @@ jobs:
           echo "keychain probe (signed as the app): $PROBE"
           xcrun simctl install "$UDID" build-output/app/Genita.app
           xcrun simctl launch "$UDID" ai.thebeni.genita
-          sleep 10
+          sleep 30
           RUNNING="$(xcrun simctl spawn "$UDID" launchctl list | grep -c 'ai.thebeni.genita$\|UIKitApplication:ai.thebeni.genita\[' || true)"
-          echo "Genita processes after 10 s: $RUNNING"
+          echo "Genita processes after 30 s: $RUNNING"
           xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/launch.png" >/dev/null 2>&1 || true
           xcrun simctl shutdown "$UDID" || true
-          echo "Simulator: keychain probe \`$PROBE\`; Genita running after 10 s: $RUNNING" >> "$GITHUB_STEP_SUMMARY"
+          echo "Simulator: keychain probe \`$PROBE\`; Genita running after 30 s: $RUNNING" >> "$GITHUB_STEP_SUMMARY"
           # -34018 = errSecMissingEntitlement: a sign-in would be lost. A probe that could not run at all only warns.
           case "$PROBE" in
             "SecItemAdd=0 SecItemCopyMatching=0") ;;
