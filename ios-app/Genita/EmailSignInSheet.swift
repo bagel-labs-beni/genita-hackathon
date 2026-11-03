@@ -14,6 +14,8 @@ struct EmailSignInSheet: View {
     @State private var code = ""
     @State private var sending = false
     @State private var message: String?
+    /// clears the A02-E offline notice after 4 s
+    @State private var messageTimer: Task<Void, Never>?
     /// "Resend code" waits until this moment (server: one code per 60 s per address)
     @State private var resendAt = Date.distantPast
     @State private var now = Date()
@@ -45,7 +47,8 @@ struct EmailSignInSheet: View {
                     TextField("6-digit code", text: $code)
                         .keyboardType(.numberPad).textContentType(.oneTimeCode)
                         .onChange(of: code) { _, v in
-                            let digits = String(v.filter(\.isNumber).prefix(6))
+                            // ASCII 0–9 only: full-width or other scripts' digits pass isNumber and the server says 400 (AU-09)
+                            let digits = String(v.filter { $0.isASCII && $0.isNumber }.prefix(6))
                             if digits != v { code = digits }
                             if digits.count == 6 { verify() }
                         }
@@ -128,9 +131,20 @@ struct EmailSignInSheet: View {
                 resendAt = Date().addingTimeInterval(TimeInterval(r.resendAfterSec)); now = Date()
                 code = ""
                 step = .code
-                focused = true
+                // the code field is a new TextField: focus it once it exists (QA build 7: the first digit was lost)
+                DispatchQueue.main.async { focused = true }
             } catch {
-                message = EmailSignInCopy.message(for: error, sendingCode: true)
+                let line = EmailSignInCopy.message(for: error, sendingCode: true)
+                message = line
+                // A02-E (LG-02): offline is a 4 s notice, like the Apple path's, not a line that stays. Its own timer:
+                // this request ends now, a new Send code isn't held by it (Codex P2)
+                if (error as? GenitaAuthError) == .offline {
+                    messageTimer?.cancel()
+                    messageTimer = Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(4))
+                        if !Task.isCancelled, message == line { withAnimation(.easeOut(duration: 0.2)) { message = nil } }
+                    }
+                }
             }
         }
     }

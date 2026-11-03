@@ -331,3 +331,17 @@ test("mail sender: loopback without a key logs the code; deployed without a key 
   const failing = mailSenderFromEnv({ RESEND_API_KEY: "re_test", GENITA_MAIL_FROM: "a@example.com" }, log, { loopback: false }, (async () => new Response("{\"message\":\"to@example.com bounced\"}", { status: 422 })) as unknown as typeof fetch);
   await assert.rejects(failing!.send("to@example.com", "111111", 10), /resend_422/);
 });
+
+test("AU-07 SE-03: deleting an email account leaves no row with its address in email_codes", async (t) => {
+  const s = await boot(t);
+  await s.start("gone@example.com");
+  const v = await s.verify("gone@example.com", s.sent[0].code);
+  assert.equal(v.status, 200);
+  await s.age("gone@example.com", 61);
+  await s.start("Gone@Example.com"); // a second, unused code
+  await s.start("other@example.com");
+  const del = await s.call("DELETE", "/me", undefined, { authorization: `Bearer ${v.json.token}` });
+  assert.equal(del.status, 200);
+  const left = await s.accounts.db.query("SELECT email FROM email_codes");
+  assert.deepEqual(left.rows.map((r: any) => r.email), ["other@example.com"], "the deleted account's address is gone; others stay");
+});
