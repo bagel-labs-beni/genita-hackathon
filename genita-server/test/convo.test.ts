@@ -716,3 +716,11 @@ test("Codex r23: intentional repeats, gerund-subject answers, a real status and 
   assert.equal(reply.text, "Breathe in. Breathe out. Breathe in. Breathe out.");
   session.close();
 });
+
+test("bug-fix a27831b outfit 1/9: 'I'll pick the one that fits tonight best' is a promised choice, dropped before the pick", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const j = new NarrationJudge(true);
+  const out = [...j.push("Your two jackets are both cute — I'll pick the one that fits tonight best.").speak, ...j.push("Go with the trench.").speak, ...j.finish().speak].join(" ");
+  assert.doesNotMatch(out, /I'll pick the one/);
+  assert.match(out, /Go with the trench\./);
+});
