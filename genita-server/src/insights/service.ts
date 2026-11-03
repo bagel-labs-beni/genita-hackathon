@@ -81,15 +81,23 @@ export class Insights {
     this.texts.set(userId, { text, at: now });
   }
 
-  private textOf(userId: string): string | undefined {
+  /** the kept paste, unless the user has since asked to forget something (Codex r7: it would be sent again) */
+  private textOf(userId: string, card?: StyleCard | null): string | undefined {
     const t = this.texts.get(userId);
-    return t && Date.now() - t.at <= TEXT_TTL_MS ? t.text : undefined;
+    if (!t || Date.now() - t.at > TEXT_TTL_MS) return undefined;
+    if ((card?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= t.at - 1000)) { this.texts.delete(userId); return undefined; }
+    return t.text;
   }
 
   /** One Spark write; a second when fewer than OBS_MIN survive the checks (the better one wins). */
-  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"]): Promise<InsightReport> {
+  private async write(inputs: InsightInputs, from: InsightReport["from"], settings: InsightReport["settings"], stillOk: () => Promise<boolean> = async () => true): Promise<InsightReport> {
     const t0 = performance.now();
-    const once = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
+    // every Spark call (and each retry) first checks the user hasn't since asked to forget something (Codex r8)
+    const once = async () => {
+      if (!(await stillOk())) throw new Error("insights_stale: forget or a newer write since this one started");
+      return onceRaw();
+    };
+    const onceRaw = async () => toReport(await this.json<unknown>(buildInsightRequest(inputs), AbortSignal.timeout(SPARK_TIMEOUT_MS)), inputs, { at: this.now().toISOString(), from, settings });
     // a malformed JSON reply (seen 1 in 3 on 11/4) or a 5xx: once more
     let r = await once().catch(async (err) => {
       this.log("insights.retry", { from, message: String(err).slice(0, 120) });
@@ -118,7 +126,13 @@ export class Insights {
       const card = opts.gate ? null : await this.store.getStyle(userId);
       const inputs = inputsOf(card);
       if (!inputs) return;
-      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null);
+      const startedAt = Date.now();
+      const stillOk = async () => {
+        if (this.seq.get(userId) !== mine) return false;
+        const latest = await this.store.getStyle(userId);
+        return !(latest?.removed ?? []).some((r) => r.forget && Date.parse(r.at) >= startedAt - 1000);
+      };
+      const report = await this.write(inputs, from, opts.settings ?? card?.insights?.settings ?? null, stillOk);
       const basis = opts.gate ? await opts.gate : card?.importedAt ?? null;
       if (opts.gate && !basis) return;
       await this.personalize.patchStyle(userId, (c) => {
@@ -170,11 +184,12 @@ export class Insights {
     this.start(userId, "answers", (card) => {
       if (!card) return null;
       return {
-        text: card.source === "import" ? this.textOf(userId) : undefined,
+        text: card.source === "import" ? this.textOf(userId, card) : undefined,
         findings: cardFindings(card),
         picks: [...(card.picks ?? []), ...answerPicks],
         source: card.source,
-        denied: (card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })),
+        // AU-23: what the user took out of the profile (HISY "That's not me", "forget that …") is not true either
+        denied: [...(card.insights?.denied ?? []).map((d) => ({ claim: d.claim, correction: d.correction })), ...(card.removed ?? []).slice(-10).map((r) => ({ claim: r.text }))],
         unknowns: card.toConfirm,
       };
     }, { settings });
@@ -190,7 +205,7 @@ export class Insights {
       if (card.insights) return { status: "ready", report: publicReport(card.insights) };
       const failed = this.failedAt.get(userId);
       if (failed && Date.now() - failed < FAIL_BACKOFF_MS) return { status: "failed", report: null };
-      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
+      this.start(userId, "card", (c) => (c ? { text: c.source === "import" ? this.textOf(userId, c) : undefined, findings: cardFindings(c), picks: c.picks ?? [], source: c.source, unknowns: c.toConfirm } : null));
       job = this.jobs.get(userId);
     }
     if (job && waitMs > 0) {
@@ -203,6 +218,17 @@ export class Insights {
     if (this.jobs.has(userId)) return { status: "pending", report };
     if (report) return { status: "ready", report };
     return { status: this.failedAt.has(userId) ? "failed" : "none", report: null };
+  }
+
+  /**
+   * "Forget all of this" (AU-92 DELETE /v1/profile, SY-01): the stored report with its quoted lines goes with the
+   * profile row; this drops what is only in this process — the paste kept for the answers rewrite, a failure
+   * backoff — and makes any write still running land nowhere (a newer write number, and no card to land on).
+   */
+  forget(userId: string): void {
+    this.texts.delete(userId);
+    this.failedAt.delete(userId);
+    this.seq.set(userId, ++this.seqNext);
   }
 
   /** "That's right" / "Not me" (+ what's right, ≤ 200 chars). */

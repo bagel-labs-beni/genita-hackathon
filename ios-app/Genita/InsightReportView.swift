@@ -125,7 +125,8 @@ struct InsightReportView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Group {
-                if let data = model.setup.imageData ?? model.sceneImageData, let img = UIImage(data: data) {
+                // the companion's face (its generated scene), never the uploaded photo (AU-24); else the initial
+                if let data = model.sceneImageData, let img = UIImage(data: data) {
                     Image(uiImage: img).resizable().scaledToFill()
                 } else {
                     Circle().fill(InsightInk.blueSoft).overlay(Text(String(name.prefix(1)).uppercased()).insightText(15, .semibold, line: 20, color: InsightInk.blueText))
@@ -186,6 +187,9 @@ struct InsightReportView: View {
         }
         if let chain = r.chain {
             section("SO ON OUR CALLS") { InsightChainView(chain: chain) }
+        } else if r.observations.isEmpty {
+            // nothing noticed yet: no specific promise (a plan with no trait behind it is an ungrounded claim)
+            section("SO ON OUR CALLS") { Text(InsightCopy.keepLast("I’ll ask as we go and remember what you tell me.")).insightText(17, .semibold, line: 23) }
         } else if !r.usage.isEmpty {
             section("SO ON OUR CALLS") { Text(InsightCopy.keepLast(r.usage)).insightText(17, .semibold, line: 23) }
         }
@@ -194,11 +198,17 @@ struct InsightReportView: View {
         }
         if !r.learning.isEmpty { learning(r.learning).padding(.top, 34) }
         if let s = r.settings ?? fallbackSettings { setupDetails(s).padding(.top, 24) }
+        // SY-01 (춘식이 OK): the receipts are kept, the reply isn't
+        if r.observations.contains(where: { $0.evidence.contains { $0.source == "import" } }) {
+            Text("Your full reply isn’t kept. Only the short lines quoted here.").insightText(12, line: 16, color: InsightInk.mute)
+                .padding(.top, 16).accessibilityIdentifier("insightKeptNote")
+        }
     }
 
     @ViewBuilder private func typeSection(_ r: InsightReport, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            label("YOU’RE", blue: true)
+            // no traits yet: "SO FAR" (YOU'RE + "You gave me a good start." read as "You're you gave me…")
+            label(r.type == nil && r.observations.isEmpty ? "SO FAR" : "YOU’RE", blue: true)
             HStack(alignment: .top, spacing: 12) {
                 Group {
                     if let type = r.type {
@@ -365,7 +375,8 @@ struct InsightTraitRow: View {
                     }
                     .frame(minHeight: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).disabled(o.verdict == "right").accessibilityIdentifier("insightRight")
+                // selected: ✓ circle, text stays #111 (not the dimmed disabled look); a second tap does nothing
+                .buttonStyle(.plain).allowsHitTesting(o.verdict != "right").accessibilityIdentifier("insightRight")
                 .accessibilityValue(o.verdict == "right" ? "selected" : "")
                 Button(action: onNotQuite) {
                     Text("Not quite").insightText(14, .medium, line: 18, color: InsightInk.mute).frame(minHeight: 44).contentShape(Rectangle())

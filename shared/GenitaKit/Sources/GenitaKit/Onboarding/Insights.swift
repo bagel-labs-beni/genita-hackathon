@@ -118,8 +118,9 @@ public struct InsightMix: Codable, Hashable, Identifiable, Sendable {
     public var evidence: InsightEvidence?
 }
 
-public struct InsightStrength: Codable, Hashable, Sendable { public var text: String; public var basis: String? }
-public struct InsightWatchout: Codable, Hashable, Sendable { public var text: String; public var fix: String; public var basis: String? }
+/// `evidence`: the quote or pick it comes from (the server drops one it can't ground)
+public struct InsightStrength: Codable, Hashable, Sendable { public var text: String; public var basis: String?; public var evidence: InsightEvidence? }
+public struct InsightWatchout: Codable, Hashable, Sendable { public var text: String; public var fix: String; public var basis: String?; public var evidence: InsightEvidence? }
 
 public struct InsightChain: Codable, Hashable, Sendable {
     public var youAre: String
