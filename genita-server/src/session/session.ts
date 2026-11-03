@@ -41,6 +41,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
+import { isForgetRequest } from "../memory/extract.ts";
 import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
@@ -1379,10 +1380,14 @@ export class Session {
   get historyForgetRevision(): number | null { return this.historyRevision; }
   /** stopped or closed, even if its socket has not finished closing yet */
   get isClosed(): boolean { return this.closed; }
+  /** the user asked to forget something at any point in this call (#447) */
+  forgetAsked = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
   private remember(role: "user" | "assistant", text: string): void {
+    // whole call, not just the kept history: a forget request anywhere keeps this call's raw lines out of a return visit
+    if (role === "user" && isForgetRequest(text)) this.forgetAsked = true;
     this.history.push({ role, text });
     if (this.history.length > MAX_HISTORY) this.history.splice(0, this.history.length - MAX_HISTORY);
     this.deps.onHistoryChange?.(role);

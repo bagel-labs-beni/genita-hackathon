@@ -741,3 +741,31 @@ test("Codex 11/3 (#447): a hung-up call with a forget request in it sends no raw
   assert.match(reqs[0].instructions ?? "", /Black it is, final/, "the 12-turn summary doesn't cover turn 13");
   c.close(); await memory.drain();
 });
+
+test("Codex 11/3 (#447 r2): a forget request early in the call (outside the last lines) still keeps all raw lines out of the call-back", { timeout: 20_000 }, async (t) => {
+  const never: Summarizer = () => new Promise(() => {});
+  const { deps, requests } = setup(never);
+  const logs: string[] = [];
+  const server = await startServer({ ...config, sessionToken: "test-token" }, (e) => { logs.push(e); }, { ...deps, log: (e) => { logs.push(e); } }, {}, null);
+  t.after(() => new Promise<void>((r) => server.close(() => r())));
+  const addr = server.address(); assert.ok(addr && typeof addr === "object");
+  const headers = { authorization: "Bearer test-token", "x-genita-user": "acct-a" };
+  const sockets: WebSocket[] = [];
+  const open = () => new Promise<{ ws: WebSocket; replies: () => number }>((resolve, reject) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${addr.port}/v1/session?device=iphone`, { headers });
+    sockets.push(ws);
+    let n = 0;
+    ws.on("message", (d, bin) => { if (bin) return; const m = JSON.parse(String(d)); if (m.type === "reply") n++; });
+    ws.once("open", () => resolve({ ws, replies: () => n })); ws.once("error", reject);
+  });
+  const start = (c: { ws: WebSocket }) => c.ws.send(JSON.stringify({ type: "start", persona: { name: "Jin" }, mic: false }));
+  const c1 = await open(); start(c1); await waitFor(() => c1.replies() >= 1);
+  for (const line of ["Don't remember anything from this call.", "I bought an amber pendant.", "It was on sale.", "The chain is gold.", "I wore it today."]) {
+    const n = c1.replies(); c1.ws.send(JSON.stringify({ type: "text", text: line })); await waitFor(() => c1.replies() > n);
+  }
+  c1.ws.send(JSON.stringify({ type: "stop" })); await waitFor(() => logs.includes("session.close"));
+  requests.length = 0;
+  const back = await open(); start(back); await waitFor(() => back.replies() >= 1);
+  assert.doesNotMatch(requests[0].instructions ?? "", /amber pendant|ended moments ago/);
+  for (const w of sockets) w.terminate();
+});

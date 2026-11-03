@@ -314,7 +314,7 @@ export async function startServer(
   const zero: Progress = { turn: 0, update: 0 };
   const newer = (a: Progress, b: Progress) => a.turn > b.turn || (a.turn === b.turn && a.update > b.update);
   // device + hungUp (demo S5): the same device calling again after its user hung up is a return visit, not a move
-  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; progress: Progress; at: number; device: string; hungUp: boolean; gen: number; forgetAsked?: boolean; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
@@ -346,6 +346,7 @@ export async function startServer(
     let bestProgress = cached?.progress ?? zero;
     // the winner was a call the user hung up on this same device (cached, or stopped with its socket still closing)
     let hungUpHere = !!(best && cached?.hungUp && cached.device === device);
+    let forgetAsked = !!cached?.forgetAsked;
     let bestGen = cached?.gen ?? 0;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
@@ -360,6 +361,7 @@ export async function startServer(
         // on this same device is a return visit, exactly like its cached copy will be.
         best = t; thread = session.threadInfo(); bestProgress = p; bestGen = g;
         hungUpHere = session.isClosed && session.endedByUser && sessionDevices.get(sid) === device;
+        forgetAsked = session.forgetAsked;
       }
     }
     // Hung up on this same device and called again: a return visit (greeting + the last call's notes). A call
@@ -368,7 +370,8 @@ export async function startServer(
       log("history.not_seeded", { session: self, by: "hang_up" });
       // ...but its last lines go along right away as "the call that just ended" (P1 FILM 11/3): the summary and
       // memories of that call are written in the background and can take longer than a quick call-back
-      lastCallFor.set(self, { turns: best.slice(-8), threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
+      // a call with a forget request anywhere in it (even before the kept lines) hands over nothing raw (Codex 11/3)
+      if (!forgetAsked) lastCallFor.set(self, { turns: best, threadId: thread?.threadId ?? null, covered: thread?.covered ?? 0 });
       return null;
     }
     if (best) {
@@ -418,7 +421,7 @@ export async function startServer(
       const tags = keep ? { device: cached!.device, hungUp: cached!.hungUp, gen: cached!.gen } : { device, hungUp: session.endedByUser, gen };
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, progress: p, at: now, ...tags, forgetAsked: session.forgetAsked || (same && !!cached!.forgetAsked), unsubscribe });
       log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
