@@ -25,6 +25,8 @@ const FORGET_REQUEST = new RegExp([
   // 한국어: "잊어 줘/달라", "기억하지 마", "지워 줘/달라", "잊어 달라고 함"
   String.raw`잊어\s?(?:줘|주|달라|버려)|기억하지\s?마|지워\s?(?:줘|주|달라)|잊으라고|지우라고`,
 ].join("|"), "iu");
+/** a line that makes or describes a forget request (#443) */
+export function isForgetRequest(text: string): boolean { return FORGET_REQUEST.test(text); }
 export function safeMemoryText(text: unknown): text is string {
   return typeof text === "string" && text.trim().length >= 4 && text.trim().length <= 300 && !/[\r\n<>]/.test(text) && !SENSITIVE.test(text) && !SENSITIVE_TOPICS.test(text) && !PRIVATE_OR_INSTRUCTION.test(text) && !FORGET_REQUEST.test(text);
 }

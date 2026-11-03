@@ -49,7 +49,7 @@ function harness(handler: Handler) {
   }) as unknown as PrepDeps["spark"];
   const logs: Array<[string, Record<string, unknown>]> = [];
   const p = new Personalize({ store, json: json!, log: (e, d) => logs.push([e, d]) });
-  return { dir, store, p, calls, logs, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { dir, store, p, calls, logs, cleanup: () => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }) };
 }
 
 async function http(p: Personalize, store: FileStore, handlerJson: PrepDeps["spark"]) {
