@@ -447,8 +447,9 @@ enum CallStop: Equatable {
         case .microphone:
             if answer.granted { setMic(true); Self.micWasOn = true } else { micDenied = true }
         case .camera:
-            guard answer.granted else { cameraDenied = true; return }
-            guard camera.available else { return }
+            // a back-camera request that didn't start the camera doesn't carry over to the next camera-on (Codex P2)
+            guard answer.granted else { startCameraBack = false; cameraDenied = true; return }
+            guard camera.available else { startCameraBack = false; return }
             beforeCameraStart?()
             camera.start()
             if startCameraBack { startCameraBack = false; camera.flip() }
