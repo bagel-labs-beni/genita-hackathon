@@ -87,7 +87,7 @@ function previewWav() {
 
 let companion = null;
 let prepStartedAt = 0;
-// POST /__prep {failAt:n}: the face step fails once n of its 13 images are settled (PREP-1e); retry clears it.
+// POST /__prep {failAt:n, faceMs?}: the face step fails once n of its 13 images are settled (PREP-1e); retry clears it.
 let failAt = null;
 // The real Meta-only shape (genita-server runner.ts prepView): scene, then ONE face step for 3 expressions +
 // 10 visemes (`settled` of 13), the old video clips and lip step `skipped`. The clock starts at PREP-1's first poll
@@ -138,7 +138,12 @@ createServer(async (req, res) => {
     prepStartedAt = Date.now(); FACE_MS = b.faceMs ?? 1000;
     return send(200, companionView());
   }
-  if (req.method === "POST" && p === "/__prep") { failAt = Number.isInteger(b.failAt) ? b.failAt : null; return send(200, { failAt }); }
+  // {faceMs}: a slower face step (one image every faceMs), e.g. for the motion demo recordings of PREP-1
+  if (req.method === "POST" && p === "/__prep") {
+    failAt = Number.isInteger(b.failAt) ? b.failAt : null;
+    if (Number.isInteger(b.faceMs) && b.faceMs > 0) FACE_MS = b.faceMs;
+    return send(200, { failAt, faceMs: FACE_MS });
+  }
   if (req.method === "POST" && p === "/__voice") { voiceDown = b.down === true; return send(200, { voiceDown }); }
   if (!req.headers.authorization?.startsWith("Bearer ")) return send(401, { error: "unauthorized" });
 

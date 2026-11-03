@@ -206,13 +206,20 @@ public struct InterpretPanelView: View {
 public struct InterpretHoldButton: View {
     var board: InterpretBoard
     var onHold: (Bool) -> Void
+    /// Card 9: the user's mic level 0…1 for the bars over the button while it is held (nil: a calm low sway).
+    var level: (() -> Float)?
     @State private var down = false
-    public init(board: InterpretBoard, onHold: @escaping (Bool) -> Void) {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    public init(board: InterpretBoard, level: (() -> Float)? = nil, onHold: @escaping (Bool) -> Void) {
         self.board = board
+        self.level = level
         self.onHold = onHold
     }
     public var body: some View {
         let held = board.holding || down
+        // motion details card 9 (flag `motionDetails`): off → the INT-4 look switches at once as before
+        let details = MotionDetails.enabled
+        let live = MotionDetails.live(reduceMotion: reduceMotion)
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 InterpretIcon(kind: .mic)
@@ -221,10 +228,39 @@ public struct InterpretHoldButton: View {
             .foregroundStyle(held ? InterpretInk.ink : InterpretInk.onInk)
             .frame(maxWidth: .infinity, minHeight: 56)
             .background {
-                Capsule().fill(held ? AnyShapeStyle(InterpretInk.onInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
-                Capsule().fill(held ? Color.clear : InterpretInk.glass)
+                if details {
+                    // resting glass stays underneath; the INT-4 held fill sweeps in from the left (fades under Reduce Motion)
+                    Capsule().fill(.ultraThinMaterial.opacity(0.6))
+                    Capsule().fill(InterpretInk.glass)
+                    GeometryReader { g in
+                        Rectangle().fill(InterpretInk.onInk)
+                            .frame(width: held || !live ? g.size.width : 0)
+                            .opacity(held ? 1 : 0)
+                    }
+                    .clipShape(Capsule())
+                } else {
+                    Capsule().fill(held ? AnyShapeStyle(InterpretInk.onInk) : AnyShapeStyle(.ultraThinMaterial.opacity(0.6)))
+                    Capsule().fill(held ? Color.clear : InterpretInk.glass)
+                }
             }
             .overlay { Capsule().strokeBorder(held ? Color.clear : InterpretInk.glassLine, lineWidth: 1) }
+            .overlay(alignment: .top) {
+                if details {
+                    // your voice, floating over the button while it is held
+                    MotionLevelBars(active: held, level: level, color: InterpretInk.onInk)
+                        .opacity(held ? 1 : 0)
+                        .offset(y: -30)
+                        .allowsHitTesting(false)
+                }
+            }
+            .scaleEffect(live && down ? MotionOnboarding.holdScale : 1)
+            .animation(details && !GenitaMotion.reviewStill ? (held ? MotionOnboarding.holdFill : MotionOnboarding.holdDrain) : nil, value: held)
+            .animation(details && !GenitaMotion.reviewStill ? MotionOnboarding.holdFill : nil, value: down)
+            .sensoryFeedback(trigger: down) { _, pressed in
+                // soft on press, rigid when the release sends it
+                guard details else { return nil }
+                return pressed ? .impact(flexibility: .soft) : .impact(flexibility: .rigid)
+            }
             .contentShape(Capsule())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -259,9 +295,12 @@ public struct InterpretOverlay: View {
     var top: CGFloat
     var onClose: () -> Void
     var onHold: (Bool) -> Void
-    public init(board: InterpretBoard, top: CGFloat = 0, onClose: @escaping () -> Void, onHold: @escaping (Bool) -> Void) {
+    /// Card 9: the user's mic level 0…1 for the Hold to talk bars (nil: a calm low sway while held).
+    var level: (() -> Float)?
+    public init(board: InterpretBoard, top: CGFloat = 0, level: (() -> Float)? = nil, onClose: @escaping () -> Void, onHold: @escaping (Bool) -> Void) {
         self.board = board
         self.top = top
+        self.level = level
         self.onClose = onClose
         self.onHold = onHold
     }
@@ -277,7 +316,7 @@ public struct InterpretOverlay: View {
                     .frame(height: max(0, h - panelTop - 120 - 168), alignment: .bottom).offset(y: panelTop + 120)
                 InterpretBarView(board: board, onClose: onClose)
                     .padding(.horizontal, 24).offset(y: 124 + top)
-                InterpretHoldButton(board: board, onHold: onHold)
+                InterpretHoldButton(board: board, level: level, onHold: onHold)
                     .padding(.horizontal, 38).frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 64)
             }
             .frame(width: geo.size.width, height: h, alignment: .top)

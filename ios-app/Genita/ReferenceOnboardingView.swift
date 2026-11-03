@@ -119,6 +119,7 @@ import UniformTypeIdentifiers
             }
             ZStack {
                 DesignText(node: title, text: stage == .image ? "Bring an image" : nil)
+                    .motionBandLineReveal(pitch: title.lineHeight ?? title.font.lineHeight, key: stage)   // motion details card 8
                 if stage == .paste && keyboardTop != .greatestFiniteMagnitude {
                     Button {
                         for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) { scene.windows.forEach { $0.endEditing(true) } }

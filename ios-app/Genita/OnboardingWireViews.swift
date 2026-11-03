@@ -34,7 +34,9 @@ struct WirePage<Content: View>: View {
                     // title top at y 98, subtitle 10 pt under it (Figma NM01 152:2 / V02 30:2); a multi-line title pushes the subtitle down
                     VStack(alignment: .leading, spacing: 10) {
                         Text(title).font(TypeStyle.title(35)).kerning(-0.35).foregroundStyle(CallInk.ink)
-                            .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .motionLineReveal(key: title)   // motion details card 8: one line after another
+                            .accessibilityAddTraits(.isHeader)
                             .accessibilityIdentifier(pageID ?? "pageTitle")
                         if let subtitle { Text(subtitle).font(TypeStyle.body(16)).foregroundStyle(CallInk.mute).fixedSize(horizontal: false, vertical: true) }
                     }.frame(width: full.size.width - 62, alignment: .leading).offset(x: 31, y: 98 + top)
@@ -548,9 +550,13 @@ struct BringingView: View {
         return s
     }
     private var still: Bool { reduceMotion || CallMotion.reviewStill }
+    /// Motion details card 7 (flag `motionDetails`): rows move pending → active → done with the server's stages.
+    private var details: Bool { MotionDetails.live(reduceMotion: reduceMotion) && !still }
+    private var haptics: Bool { MotionDetails.enabled && !CallMotion.reviewStill }
 
     var body: some View {
         let s = screen
+        let tap = haptics
         GeometryReader { full in
             ZStack(alignment: .top) {
                 PrepStyle.background
@@ -570,6 +576,10 @@ struct BringingView: View {
             .frame(width: full.size.width, height: full.size.height)
         }
         .ignoresSafeArea()
+        // motion details card 7: a soft tap each time the server reports one more stage done
+        .sensoryFeedback(trigger: s.rows.filter { $0.status == .done }.count) { old, new in
+            tap && new > old ? .impact(flexibility: .soft, intensity: 0.4) : nil
+        }
         .task(id: model.prep?.status) { await model.followPrep() }
         .task {
             guard !still else { return }
@@ -641,8 +651,9 @@ struct BringingView: View {
 
     private func stageRow(_ row: PrepScreen.Row) -> some View {
         HStack(spacing: 12) {
-            PrepIndicator(status: row.status, still: still).frame(width: 20, height: 20)
+            PrepIndicator(status: row.status, still: still, details: details).frame(width: 20, height: 20)
             Text(row.title).font(TypeStyle.body(16, .medium)).foregroundStyle(row.status == .pending ? PrepStyle.dim : .white)
+                .animation(details ? MotionOnboarding.rowText : nil, value: row.status)
             Spacer(minLength: 8)
             Text(row.detail).font(TypeStyle.body(13)).foregroundStyle(PrepStyle.dim)
         }
@@ -659,15 +670,20 @@ struct BringingView: View {
 
 /// PREP-1 stage mark (20 pt): done = white disc + black check (scales in), working = blue arc turning,
 /// pending = grey ring, failed = white ring with "!" (no warning colour, Figma 182:142).
+/// Motion details card 7 (`details`): the arc turns every 0.8 s and done fades the disc in (150 ms) and draws the
+/// check (200 ms, 50 ms later) instead of the scale.
 private struct PrepIndicator: View {
     let status: PrepProgress.Status
     let still: Bool
+    var details = false
     @State private var turn = false
     @State private var shown = false
 
     var body: some View {
         ZStack {
             switch status {
+            case .done where details:
+                EmptyView()
             case .done:
                 Circle().fill(.white)
                 Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(CallInk.ink)
@@ -675,16 +691,25 @@ private struct PrepIndicator: View {
                 Circle().stroke(Color.white.opacity(0.22), lineWidth: 1.5)
                 Circle().trim(from: 0, to: 0.3).stroke(CallInk.blueOnInk, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                     .rotationEffect(.degrees(turn ? 360 : 0))
-                    .onAppear { if !still { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { turn = true } } }
+                    .onAppear {
+                        guard !still else { return }
+                        withAnimation(.linear(duration: details ? MotionOnboarding.spinnerTurn : 0.9).repeatForever(autoreverses: false)) { turn = true }
+                    }
             case .failed:
                 Circle().stroke(Color.white, lineWidth: 1.5)
                 Text("!").font(TypeStyle.body(12, .semibold)).foregroundStyle(.white)
             case .pending:
                 Circle().stroke(PrepStyle.dim, lineWidth: 1.5)
             }
+            if details {
+                // always there (empty until done) so the change to done can play
+                MotionDoneMark(done: status == .done, disc: .white, check: CallInk.ink, animated: true)
+            }
         }
-        .scaleEffect(status == .done && !shown ? 0.8 : 1)
+        .scaleEffect(status == .done && !shown && !details ? 0.8 : 1)
         .onChange(of: status) { _, s in
+            // the arc is gone: a later run (Try again) turns it from 0 again
+            if s != .running { turn = false }
             guard s == .done else { return }
             shown = false
             withAnimation(.easeOut(duration: PrepStyle.checkSeconds)) { shown = true }
