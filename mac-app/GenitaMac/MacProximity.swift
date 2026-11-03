@@ -23,6 +23,8 @@ import os
     private var detector = ProximityDetector(config: .current())
     /// peripheral → the token it advertised last (the local name can arrive in a later scan response)
     private var tokens: [UUID: String] = [:]
+    /// One report at a time; proximity.result does not echo the token.
+    private var pendingToken: String?
     private var timer: Timer?
     private var toastWindow: NSPanel?
     private var chime: AVAudioPlayer?
@@ -49,7 +51,12 @@ import os
         let hello = handoff.server.onConnect
         handoff.server.onConnect = { [weak self] in
             hello?()
-            MainActor.assumeIsolated { if let self, self.screenLocked, self.enabled { self.handoff?.server.setActive(false) } }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // A result from the old socket cannot arrive on this connection.
+                self.pendingToken = nil
+                if self.screenLocked, self.enabled { self.handoff?.server.setActive(false) }
+            }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
@@ -114,7 +121,7 @@ import os
         guard scanning, wanted, let handoff else { return }
         if let token = ProximityToken.parse(name) { tokens[id] = token }
         let now = Date().timeIntervalSince1970
-        let fire = detector.observe(id.uuidString, rssi: rssi, at: now, canReport: tokens[id] != nil)
+        let fire = detector.observe(id.uuidString, rssi: rssi, at: now, canReport: tokens[id] != nil && pendingToken == nil, token: tokens[id])
         if now - lastLog > 0.5 {
             lastLog = now
             let level = detector.smoothed(id.uuidString) ?? rssi, enter = detector.config.enterRSSI, hasToken = tokens[id] != nil
@@ -122,6 +129,7 @@ import os
             log.debug("proximity rssi \(rssi, privacy: .public) smoothed \(level, privacy: .public) token \(hasToken, privacy: .public)")
         }
         guard fire, let token = tokens[id] else { return }
+        pendingToken = token
         log.info("proximity held close, reporting")
         handoff.server.send(["type": "proximity.seen", "token": token])
     }
@@ -131,8 +139,14 @@ import os
         switch message {
         case let .result(accepted, reason):
             log.info("proximity result \(accepted, privacy: .public) \(reason, privacy: .public)")
-            // Refused (another account's token, a stale one…): the next approach may try again; the detector keeps its cooldown.
-            if !accepted { detector.reset(); tokens = [:] }
+            guard let token = pendingToken else { return }
+            pendingToken = nil
+            // Only a successful move keeps the leave-range latch. Briefly exclude an unknown token so
+            // another account's nearby phone cannot keep retrying ahead of this account's phone.
+            if !accepted {
+                detector.reject(token: token, reason: reason, at: Date().timeIntervalSince1970)
+                tokens = [:]
+            }
         case let .peer(armed):
             phoneArmed = armed
             if !armed { stopScan() }

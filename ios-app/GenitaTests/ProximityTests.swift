@@ -5,10 +5,10 @@ import XCTest
 /// cooldown, the presence messages, the flag, and when each side may run at all.
 final class ProximityTests: XCTestCase {
     /// Readings every 50 ms (iOS foreground advertising is faster than that) at a fixed RSSI.
-    private func feed(_ d: inout ProximityDetector, _ key: String = "p", rssi: Int, from t0: Double, seconds: Double, every step: Double = 0.05) -> Double? {
+    private func feed(_ d: inout ProximityDetector, _ key: String = "p", rssi: Int, from t0: Double, seconds: Double, every step: Double = 0.05, token: String? = nil) -> Double? {
         var t = t0
         while t <= t0 + seconds + 1e-9 {
-            if d.observe(key, rssi: rssi, at: t) { return t }
+            if d.observe(key, rssi: rssi, at: t, token: token) { return t }
             t += step
         }
         return nil
@@ -96,6 +96,51 @@ final class ProximityTests: XCTestCase {
         XCTAssertNil(feed(&d, rssi: -40, from: 31.4, seconds: 1), "still lying there: still no move")
         XCTAssertNil(feed(&d, rssi: -65, from: 32.45, seconds: 0.3))
         XCTAssertNotNil(feed(&d, rssi: -40, from: 32.8, seconds: 1), "taken away and brought back: moves")
+    }
+
+    func testUnknownTokenDoesNotBlockMyPhoneWhileTheRejectedPhoneStaysClose() {
+        var d = ProximityDetector()
+        let stranger = "7K2M9QXA", mine = "8K2M9QXA"
+        XCTAssertNotNil(feed(&d, "stranger", rssi: -40, from: 0, seconds: 1, token: stranger))
+        d.reject(token: stranger, reason: "unknown_token", at: 0.6)
+        var myReport: Double?
+        for i in 0..<16 {
+            let now = 0.65 + Double(i) * 0.05
+            XCTAssertFalse(d.observe("stranger", rssi: -40, at: now, token: stranger), "no rejection loop")
+            if d.observe("mine", rssi: -40, at: now, token: mine) { myReport = now }
+        }
+        XCTAssertNotNil(myReport, "my phone reports without waiting for the stranger to leave or the 10 s move cooldown")
+    }
+
+    func testUnknownTokenExclusionSurvivesScanRestartAndBluetoothIdentityChangeThenExpires() {
+        var d = ProximityDetector()
+        let token = "7K2M9QXA"
+        XCTAssertNotNil(feed(&d, "old-address", rssi: -40, from: 0, seconds: 1, token: token))
+        d.reject(token: token, reason: "unknown_token", at: 0.6)
+        d.reset()
+        XCTAssertNil(feed(&d, "new-address", rssi: -40, from: 0.65, seconds: 2.9, token: token), "exclude the token, not just its peripheral")
+        XCTAssertNotNil(feed(&d, "new-address", rssi: -40, from: 3.65, seconds: 1, token: token), "a short exclusion, not a permanent blacklist")
+    }
+
+    func testOtherRejectionsKeepCooldownButDoNotRequireTheRejectedPhoneToLeave() {
+        var d = ProximityDetector()
+        let token = "7K2M9QXA"
+        XCTAssertNotNil(feed(&d, "stranger", rssi: -40, from: 0, seconds: 1, token: token))
+        d.reject(token: token, reason: "expired", at: 0.6)
+        XCTAssertNil(feed(&d, "mine", rssi: -40, from: 1, seconds: 1, token: "8K2M9QXA"), "other failures keep retry backoff")
+        XCTAssertNotNil(feed(&d, "mine", rssi: -40, from: 11, seconds: 1, token: "8K2M9QXA"), "a rejection has no leave-range latch")
+    }
+
+    func testSuccessfulReportKeepsLeaveRangeLatchAcrossScanRestartWithTokens() {
+        var d = ProximityDetector()
+        let token = "7K2M9QXA"
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 0, seconds: 1, token: token))
+        // Accepted reports keep the detector state; ownership stops scanning, then Continue here restarts it.
+        d.reset()
+        XCTAssertNil(feed(&d, rssi: -40, from: 1, seconds: 20, token: token))
+        XCTAssertNil(feed(&d, "other", rssi: -40, from: 21.05, seconds: 1, token: "8K2M9QXA"))
+        XCTAssertNil(feed(&d, rssi: -65, from: 22.1, seconds: 0.3, token: token))
+        XCTAssertNotNil(feed(&d, rssi: -40, from: 22.45, seconds: 1, token: token))
     }
 
     func testANewBluetoothIdentityLyingOnTheMacDoesNotMoveButAnApproachingOneDoes() {
