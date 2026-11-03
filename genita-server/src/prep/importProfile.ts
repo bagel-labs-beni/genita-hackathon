@@ -506,7 +506,7 @@ function parseN3(v: unknown): Record<N3Group, N3Answers> | null {
 
 const lower = (xs: string[]) => xs.map((x) => x.toLowerCase());
 
-/** N1–N3 answers → the same card the import makes, without Spark. null = bad_skip. */
+/** N1–N3 answers → the same card the import makes, without Spark (nothing picked → an empty card). ok:false = bad_skip. */
 export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { ok: false } {
   const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
   if (!b) return { ok: false };
@@ -543,7 +543,8 @@ export function skipStyleCard(body: unknown): { ok: true; card: StyleCard } | { 
     to_confirm: [],
   };
   const card = toStyleCard(raw, "skip");
-  if (card.itemCount === 0) return { ok: false };
+  // AU-14: N1–N3 with nothing picked is a valid answer (Continue stays on, SK-01 N3-0): an empty card — the story
+  // says "Most of you, I'll learn as we talk" and the first calls ask. Only a malformed body is bad_skip.
   card.toConfirm = card.display.filter((r) => r.items.length === 0).map((r) => r.title).slice(0, 4);
   return { ok: true, card };
 }

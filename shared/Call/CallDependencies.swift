@@ -18,10 +18,15 @@ import Foundation
     func playbackPositionMs(utteranceId: Int) -> Double?
     /// Convo P1 #345: a soft backchannel cue while the user talks (default: ignored)
     func playCue(pcm: Data)
+    /// Motion details: the user's voice and the reply's loudness 0…1 right now (default: silent)
+    var inputLevel: Float { get }
+    var outputLevel: Float { get }
 }
 
 extension CallAudioPlaying {
     func playCue(pcm: Data) {}
+    var inputLevel: Float { 0 }
+    var outputLevel: Float { 0 }
 }
 
 @MainActor protocol CallVoiceRendering: AnyObject {

@@ -38,19 +38,25 @@ struct MacConversationView: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ZStack(alignment: .topLeading) {
-                companionImage.resizable().frame(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                companionStill(width: 479, height: 852).offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                    // motion details card 10: veiled while the call connects, clears once when it is live (flag off: plain)
+                    .modifier(MacCallVeil(veiled: call.link == .connecting))
                     .contentShape(Rectangle()).onTapGesture { faceTapped() }
                     .accessibilityElement().accessibilityLabel(macCall.companionName.map { "\($0) on the call" } ?? "Your companion").accessibilityIdentifier("macCompanionFace")
                 // L4: the animated Meta face (prep face set), same framing as the still; nil → the still
-                if let face = call.face {
+                ZStack(alignment: .topLeading) { if let face = call.face {
                     // same presence: the face set's own rest frame sits under the live face, so the first frame after
                     // arriving from the iPhone is already this face in this crop (never the prep still, then a jump)
                     ZStack {
                         if let poster = call.facePoster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
                         FaceFrameView(driver: face)
                     }.frame(width: 479, height: 852).clipped().offset(x: -53, y: -4).frame(width: 390, height: 844, alignment: .topLeading).clipped()
+                        // the motion lane's call veil (as the iPhone #524 reveal): the generated face clears it once
+                        .modifier(MacCallVeil(veiled: call.link == .connecting))
                         .allowsHitTesting(false)
-                }
+                        // S09-P (D28, AU-25): a face set that lands mid-call fades in over the still once (the reveal)
+                        .transition(.opacity)
+                } }.animation(reduceMotion ? nil : CompanionFace.revealCurve, value: call.face.map(ObjectIdentifier.init))
                 if sheetFull { MacSheetInk.ink.frame(width: 390, height: 844).allowsHitTesting(false) }
                 if waitingCopy != nil { handoffScrim.frame(width: 390, height: 844).allowsHitTesting(false) }
                 Button { withAnimation { menuOpen.toggle() } } label: { MacGlassControl(icon: "glass-menu-icon") }
@@ -70,16 +76,22 @@ struct MacConversationView: View {
                     }
                     VStack(spacing: 13) {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 0))
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
-                        Button { call.toggleMic() } label: { MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn) }.buttonStyle(MacUnchangedControlStyle())
+                        // motion details card 2: pressed to 0.92, a blue ring that follows the user's voice while the mic is on
+                        Button { call.toggleMic() } label: {
+                            MacGlassControl(icon: "glass-mic-icon", size: 46, slashed: !call.micOn)
+                                .background { MotionVoiceRing(active: call.micOn && call.link == .live, diameter: 46, color: Color(red: 84 / 255, green: 193 / 255, blue: 1), level: { call.inputLevel }) }
+                        }.buttonStyle(MotionPressStyle())
+                            .modifier(MacControlEntrance(shown: call.link != .connecting, index: 1))
                             .accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("macMicToggle")
                         if MacInterpretController.enabled {
                             Button { withAnimation(.easeOut(duration: 0.22)) { interpret.open() } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         } else {
                             // ⋮ = the Mac menu (MC-M: Finds, Setting, Move to iPhone) while interpretation is cut — never a dead button
                             Button { withAnimation { menuOpen = true } } label: { MacGlassControl(icon: "glass-more-icon", size: 46) }
-                                .buttonStyle(.plain).accessibilityLabel("More").accessibilityIdentifier("macMore")
+                                .buttonStyle(.plain).modifier(MacControlEntrance(shown: call.link != .connecting, index: 2)).accessibilityLabel("More").accessibilityIdentifier("macMore")
                         }
                     }.position(x: 334, y: 724 - railShift).opacity(sheetCovers ? 0 : 1).allowsHitTesting(!sheetCovers)
                 }
@@ -111,7 +123,7 @@ struct MacConversationView: View {
                             .frame(width: 390, height: 844, alignment: .topLeading)
                     }
                     if sheetFull {
-                        companionImage.resizable().scaledToFill().frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                        companionStill(width: 96, height: 128, fill: true).clipShape(RoundedRectangle(cornerRadius: 16))
                             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(MacSheetInk.onInk, lineWidth: 2))
                             .position(x: 278 + 48, y: (MacDesignV2.enabled ? 28 : 48) + 64).onTapGesture { withAnimation { call.finds.pipTapped() } }
                             .accessibilityLabel("Back to half height").accessibilityAddTraits(.isButton)
@@ -189,9 +201,30 @@ struct MacConversationView: View {
         .frame(width: 390, height: 844)
         .accessibilityIdentifier("macInterpretSheet")
     }
-    private var companionImage: Image {
-        if let face = macCall.face { return Image(nsImage: face) }
-        if let data=handoff.profile,let image=NSImage(data:data) { return Image(nsImage:image) };return resourceImage("companion")
+    /// This account's own picture only: the server's scene still, else the one the iPhone handed over. Without either the
+    /// call shows a neutral placeholder — never the bundled demo face, which is someone else's companion (#524 UI sweep, CL-03).
+    private var companionPicture: NSImage? {
+        // CL-03 order (CallStillSource, tested): this account's server still, then the iPhone's handoff profile, else
+        // the dark ground — never the bundled companion.png in the shipped app (DEBUG review renders below only)
+        switch CallStillSource.pick(hasServerStill: macCall.face != nil, hasHandoffProfile: handoff.profile != nil) {
+        case .serverStill: return macCall.face
+        case .handoffProfile: if let image = handoff.profile.flatMap({ NSImage(data: $0) }) { return image }
+        case .ground: break
+        }
+        #if DEBUG
+        // review renders (GENITA_MAC_REVIEW_OUT) keep the fixture face so the call screens stay comparable
+        if ProcessInfo.processInfo.environment["GENITA_MAC_REVIEW_OUT"] != nil, reviewState != "noface",
+           let url = Bundle.main.url(forResource: "companion", withExtension: "png") { return NSImage(contentsOf: url) }
+        #endif
+        return nil
+    }
+    @ViewBuilder private func companionStill(width: CGFloat, height: CGFloat, fill: Bool = false) -> some View {
+        if let picture = companionPicture {
+            if fill { Image(nsImage: picture).resizable().scaledToFill().frame(width: width, height: height) }
+            else { Image(nsImage: picture).resizable().frame(width: width, height: height) }
+        } else {
+            MacFacePlaceholder().frame(width: width, height: height)
+        }
     }
     // MARK: #118 / #121 call + sheet layout
     private var sheetFull: Bool { call.finds.state == .full && linkOpened == nil && waitingCopy == nil }
@@ -300,6 +333,22 @@ struct MacConversationView: View {
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
     }
 }
+/// Motion details card 10 on the Mac call window (flag `motionDetails`; off: unchanged).
+private struct MacCallVeil: ViewModifier {
+    var veiled: Bool
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionCallReveal(veiled: veiled) } else { content }
+    }
+}
+
+private struct MacControlEntrance: ViewModifier {
+    var shown: Bool
+    var index: Int
+    func body(content: Content) -> some View {
+        if MotionDetails.enabled { content.motionControlRise(shown: shown, index: index) } else { content }
+    }
+}
+
 private struct MacUnchangedControlStyle: ButtonStyle { func makeBody(configuration: Configuration) -> some View { configuration.label } }
 
 private struct MacDemoSystemBar: View {
@@ -339,5 +388,14 @@ private final class IslandDragView:NSView {
         guard MacHandoff.shared.companionVisible,MacHandoff.shared.motion == nil else{return}
         NSCursor.closedHand.push();defer{NSCursor.pop()}
         window?.performDrag(with:event)
+    }
+}
+
+/// The call's ground until this account's own face arrives — the same as the iPhone (#524 CompanionFaceView: no still
+/// → the dark call ink #111 under the S07 veil): no initial, no silhouette, no new design, and never someone else's face
+/// (CL-03). The live face fades in over it with the same veil lift (`genitaFaceReveal`).
+struct MacFacePlaceholder: View {
+    var body: some View {
+        MacSheetInk.ink.accessibilityHidden(true)
     }
 }
