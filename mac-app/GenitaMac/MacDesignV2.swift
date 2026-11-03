@@ -137,6 +137,7 @@ private struct MacGlassButtonBody<Label: View>: View {
     let tint: Color
     let pressed: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlActiveState) private var activeState
     @State private var hover = false
     var body: some View {
         surface
@@ -151,8 +152,11 @@ private struct MacGlassButtonBody<Label: View>: View {
             label.opacity(pressed ? 0.6 : 1).background(Capsule().fill(MacSheetInk.ink.opacity(hover && isEnabled ? 0.05 : 0)))
         case .prominent, .regular:
             if #available(macOS 26.0, *) {
-                label.glassEffect(glass, in: shape)
+                // prominent = ink in glass, the iPhone GlassCTA (#414) structure; MacInkGlass holds the ink in non-key windows
+                label.background { if kind == .prominent && isEnabled { shape.fill(tint.opacity(MacInkGlass.fillOpacity(activeState))) } }
+                    .glassEffect(glass, in: shape)
                     .brightness(hover && isEnabled && kind == .prominent ? 0.08 : 0)
+                    .animation(.easeOut(duration: 0.2), value: activeState)
             } else {
                 label.background {
                     if kind == .prominent && isEnabled { shape.fill(tint).brightness(hover ? 0.08 : 0) }
@@ -163,7 +167,7 @@ private struct MacGlassButtonBody<Label: View>: View {
     }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 12, style: .continuous) }
     @available(macOS 26.0, *) private var glass: Glass {
-        kind == .prominent && isEnabled ? .regular.tint(tint).interactive() : .regular.interactive(isEnabled)
+        kind == .prominent && isEnabled ? .regular.tint(tint).interactive(isEnabled) : .regular.interactive(isEnabled)
     }
 }
 
