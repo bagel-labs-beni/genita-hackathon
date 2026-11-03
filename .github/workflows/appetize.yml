@@ -29,6 +29,8 @@ jobs:
   appetize:
     runs-on: macos-15
     timeout-minutes: 40
+    outputs:
+      key: ${{ steps.upload.outputs.key }}
     env:
       APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
       # not a secret (it is in every link); the fallback is the app the first main run created (11/3)
@@ -119,12 +121,13 @@ jobs:
           otool -l "$APP/Genita" | grep -A1 "sectname __entitlements" || true
           grep -aq "SIMULATOR.ai.thebeni.genita" "$APP/Genita" || { echo "::error title=No keychain entitlement::the binary has no keychain group, sign-in could not keep its session token"; exit 1; }
 
-      # Same signing on a tiny tool run in a booted simulator: a keychain write + read with the app's query
-      # (data-protection keychain, as GenitaKit's KeychainTokenStore). Unsigned is logged for comparison only.
-      - name: Keychain works on the simulator with this signing
+      # On a booted simulator: (1) a tiny probe app signed the same way does a keychain write + read with the app's query
+      # (data-protection keychain, as GenitaKit's KeychainTokenStore) — unsigned it gets -34018 (errSecMissingEntitlement),
+      # which is why sign-in could not keep its session before; (2) Genita itself installs and stays running.
+      - name: Keychain and launch check on the simulator
         if: steps.plan.outputs.build == 'true'
         run: |
-          D="$RUNNER_TEMP/kc"; mkdir -p "$D"
+          D="$RUNNER_TEMP/kc"; P="$D/Probe.app"; mkdir -p "$P"
           cat > "$D/probe.swift" <<'EOF'
           import Foundation
           import Security
@@ -141,21 +144,41 @@ jobs:
           var out: CFTypeRef?
           let found = SecItemCopyMatching(read as CFDictionary, &out)
           print("SecItemAdd=\(added) SecItemCopyMatching=\(found)")
-          exit(added == errSecSuccess && found == errSecSuccess ? 0 : 1)
           EOF
-          xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$D/unsigned"
-          xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$D/signed" \
+          xcrun -sdk iphonesimulator swiftc -target arm64-apple-ios17.0-simulator "$D/probe.swift" -o "$P/probe" \
             -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __entitlements -Xlinker "$RUNNER_TEMP/simulator.entitlements"
-          codesign --force --sign - --entitlements "$RUNNER_TEMP/simulator.entitlements" "$D/signed"
+          plutil -create xml1 "$P/Info.plist"
+          for kv in "CFBundleIdentifier:ai.thebeni.genita.probe" "CFBundleExecutable:probe" "CFBundleName:probe" "CFBundlePackageType:APPL" \
+                    "CFBundleVersion:1" "CFBundleShortVersionString:1.0" "MinimumOSVersion:17.0"; do
+            plutil -insert "${kv%%:*}" -string "${kv#*:}" "$P/Info.plist"
+          done
+          plutil -insert CFBundleSupportedPlatforms -json '["iPhoneSimulator"]' "$P/Info.plist"
+          plutil -insert UIDeviceFamily -json '[1]' "$P/Info.plist"
+          codesign --force --sign - --entitlements "$RUNNER_TEMP/simulator.entitlements" "$P"
           UDID="$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in sorted(d.items(), reverse=True) if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b >/dev/null
-          echo "unsigned: $(xcrun simctl spawn "$UDID" "$D/unsigned" 2>&1 || true)"
-          RESULT="$(xcrun simctl spawn "$UDID" "$D/signed" 2>&1)" && STATUS=0 || STATUS=$?
-          echo "signed (as the app): $RESULT"
+          xcrun simctl install "$UDID" "$P"
+          PROBE="$(perl -e 'alarm 90; exec @ARGV' xcrun simctl launch --console "$UDID" ai.thebeni.genita.probe 2>&1 | grep SecItem || true)"
+          echo "keychain probe (signed as the app): $PROBE"
+          xcrun simctl install "$UDID" build-output/app/Genita.app
+          xcrun simctl launch "$UDID" ai.thebeni.genita
+          sleep 10
+          RUNNING="$(xcrun simctl spawn "$UDID" launchctl list | grep -c 'ai.thebeni.genita$\|UIKitApplication:ai.thebeni.genita\[' || true)"
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/launch.png" >/dev/null 2>&1 || true
           xcrun simctl shutdown "$UDID" || true
-          echo "Keychain on the simulator, signed as the app: $RESULT" >> "$GITHUB_STEP_SUMMARY"
-          [ "$STATUS" = 0 ] || { echo "::error title=Keychain write failed::$RESULT"; exit 1; }
+          echo "Simulator: keychain probe \`$PROBE\`; Genita running after 10 s: $RUNNING" >> "$GITHUB_STEP_SUMMARY"
+          [ "$PROBE" = "SecItemAdd=0 SecItemCopyMatching=0" ] || { echo "::error title=Keychain write failed::$PROBE"; exit 1; }
+          [ "$RUNNING" -ge 1 ] || { echo "::error title=Genita did not stay running on the simulator::"; exit 1; }
+
+      - name: Keep the launch screenshot
+        if: steps.plan.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-launch
+          path: ${{ runner.temp }}/launch.png
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Zip the app
         if: steps.plan.outputs.build == 'true'
@@ -174,6 +197,7 @@ jobs:
           retention-days: 7
 
       - name: Upload to Appetize
+        id: upload
         if: steps.plan.outputs.upload == 'true'
         run: |
           if [ -n "$APPETIZE_PUBLIC_KEY" ]; then
@@ -195,6 +219,7 @@ jobs:
             exit 1
           fi
           KEY="$(python3 -c "import json; print(json.load(open('appetize-response.json'))['publicKey'])")"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
           # grantPermissions: the camera / mic / photos prompts are answered yes (Appetize has neither device anyway)
           BASE="https://appetize.io/app/${KEY}?device=iphone17pro&osVersion=26.0&autoplay=true"
           URL="${BASE}&grantPermissions=true"
@@ -214,3 +239,75 @@ jobs:
               echo "**This run created a new Appetize app.** To keep this link for future runs, add its key \`$KEY\` as the repo secret (or variable) \`APPETIZE_PUBLIC_KEY\`. Without it every run creates another app with another link."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Opens the real-app link headless (Appetize JS SDK in Chromium on Linux, no Mac needed), waits for the sign-in
+  # screen and keeps a screenshot, the UI tree and the app's log. One short Appetize session per run.
+  check:
+    needs: appetize
+    if: needs.appetize.outputs.key != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Open the real app and wait for sign-in
+        env:
+          KEY: ${{ needs.appetize.outputs.key }}
+        run: |
+          mkdir -p check && cd check
+          npm init -y >/dev/null
+          npm i --no-save --silent playwright@1.48.2
+          npx playwright install --with-deps chromium >/dev/null
+          cat > check.mjs <<'EOF'
+          import { chromium } from "playwright";
+          import { writeFileSync } from "node:fs";
+          const key = process.env.KEY;
+          const html = `<!doctype html><html><body>
+            <iframe id="appetize" width="400" height="860" frameborder="0" scrolling="no"></iframe>
+            <script src="https://js.appetize.io/embed.js"></script></body></html>`;
+          const browser = await chromium.launch();
+          const page = await browser.newPage({ viewport: { width: 500, height: 900 } });
+          await page.route("https://check.genita.test/", r => r.fulfill({ contentType: "text/html", body: html }));
+          await page.goto("https://check.genita.test/");
+          await page.waitForFunction(() => window.appetize && window.appetize.getClient, null, { timeout: 60000 });
+          const out = await page.evaluate(async (key) => {
+            const logs = [];
+            const client = await window.appetize.getClient("#appetize", { buildId: key, device: "iphone17pro", osVersion: "26.0", grantPermissions: true, debug: true });
+            const session = await client.startSession();
+            session.on("log", d => logs.push(d.message));
+            const t0 = Date.now();
+            const within = (p, ms) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), ms))]);
+            let found = null, lastError = "";
+            while (!found && Date.now() - t0 < 150000) {
+              for (const text of ["Continue with email", "Continue with Apple"]) {
+                try { await within(session.findElement({ attributes: { text } }), 15000); found = text; break; } catch (e) { lastError = String(e); }
+              }
+              if (!found) await new Promise(r => setTimeout(r, 3000));
+            }
+            if (!found) logs.push("findElement: " + lastError);
+            const waitedMs = Date.now() - t0;
+            const shot = await session.screenshot("base64");
+            let ui = null; try { ui = await session.getUI(); } catch (e) { ui = String(e); }
+            await session.end();
+            return { found, waitedMs, shot: shot.data, ui, logs };
+          }, key);
+          writeFileSync("signin.png", Buffer.from(out.shot, "base64"));
+          writeFileSync("ui.json", typeof out.ui === "string" ? out.ui : JSON.stringify(out.ui, null, 1));
+          writeFileSync("app-log.txt", out.logs.join("\n"));
+          const net = out.logs.filter(l => /cloudfront|genita-api|app-config|auth\/|nw_|NSURLError|TLS/i.test(l)).slice(0, 40);
+          console.log(`found=${out.found} after ${out.waitedMs} ms; log lines ${out.logs.length}`);
+          console.log(net.join("\n"));
+          await browser.close();
+          process.exit(out.found ? 0 : 1);
+          EOF
+          node check.mjs
+
+      - name: Keep the screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: appetize-check
+          path: |
+            check/signin.png
+            check/ui.json
+            check/app-log.txt
+          retention-days: 7
+          if-no-files-found: ignore
