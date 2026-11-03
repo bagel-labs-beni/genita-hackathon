@@ -22,6 +22,10 @@ import SwiftUI
         }
         let reader = try XCTUnwrap(find(host.view), "the prompt reader is on I01")
         XCTAssertEqual(reader.textContainerInset.bottom, ScrollEdgeFade.height, "room for the last line above the fade")
+        XCTAssertEqual(reader.textContainerInset.top, ScrollEdgeFade.top, "the first line rests below the top fade")
+        // the first line stays where the design puts it (body text at y 319): the reader starts 20 pt above it
+        let origin = reader.convert(CGPoint.zero, to: host.view)
+        XCTAssertEqual(origin.y + ScrollEdgeFade.top, 319, accuracy: 1)
         XCTAssertGreaterThan(reader.contentSize.height, reader.bounds.height, "the prompt is longer than the card, so it scrolls")
 
         func capture(_ name: String) {
