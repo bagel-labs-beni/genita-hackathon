@@ -27,6 +27,8 @@ export type FindsDeps = {
   productHedge?: number;
   /** demo S5: start the "goes with" search when an outfit card lands (GENITA_PRODUCT_PREFETCH=0 turns it off) */
   productPrefetch?: boolean;
+  /** demo S5: a product search with nothing on screen by then gets one "still hunting" line (default 30 s) */
+  stillSearchingMs?: number;
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
@@ -49,6 +51,8 @@ type Prefetch = {
   images: Map<string, Buffer>;
   listeners: Set<(e: ServerEvent) => void>;
   done: Promise<PipelineResult & { label?: string }>;
+  /** the background search has ended (with or without a card) */
+  settled: boolean;
   abort: AbortController;
 };
 
@@ -61,6 +65,13 @@ const PRODUCT_WORD = /^(shoes?|sneakers?|boots?|loafers?|heels?|sandals?|bags?|b
 /** intent.ts's shopping nouns too ("blazer", "parka", "cardigan"…) */
 const ITEM_NOUN = /^(blazers?|parkas?|vests?|overshirts?|t-?shirts?|tees?|cardigans?|trousers|shorts|totes?|caps?|scarves|mugs?|chairs?|lamps?|outfits?)$/;
 const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|neon|silver|gold)$/;
+
+/** "Still hunting for the right pair, one sec." (shoes) / "…the right jacket…" */
+export function stillHunting(label: string): string {
+  const l = label.toLowerCase();
+  const thing = /shoe|sneaker|boot|loafer|sandal|heel/.test(l) ? "pair" : l === "things" ? "one" : l.replace(/s$/, "");
+  return `Still hunting for the right ${thing}, one sec.`;
+}
 
 export type TurnInput = {
   text: string;
@@ -203,6 +214,15 @@ export class FindsRunner {
       release();
     });
     this.running.set(findId, { abort, done });
+    if (intent.kind === "product") {
+      // never a long dead stretch: one natural line if the card isn't in by ~30 s
+      const label = this.lastProduct?.label ?? "Things";
+      const timer = setTimeout(() => {
+        if (abort.signal.aborted || this.closed || this.landed.has(findId)) return;
+        this.hooks.announce(stillHunting(label));
+      }, this.deps.stillSearchingMs ?? 30_000);
+      void done.finally(() => clearTimeout(timer));
+    }
     if (ACK[intent.kind]) this.acked.add(findId);
     return { findId, kind: intent.kind, ...(ACK[intent.kind] ? { ack: ACK[intent.kind] } : {}) };
   }
@@ -223,7 +243,7 @@ export class FindsRunner {
     const question = `Find shoes or accessories that go with the outfit they just picked${picked}.${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
     this.prefetched?.abort.abort();
     const abort = new AbortController();
-    const p: Prefetch = { at: this.hooks.now(), wants, question, inView: question.toLowerCase(), label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, done: Promise.resolve({ card: null, timings: {} }) };
+    const p: Prefetch = { at: this.hooks.now(), wants, question, inView: question.toLowerCase(), label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, settled: false, done: Promise.resolve({ card: null, timings: {} }) };
     const findId = `prefetch-${randomUUID()}`;
     const ctx: PipelineCtx = {
       findId, utteranceId: t.utteranceId, kind: "product", question, frames: t.frames, memories: this.memories, profile: this.profile, userName: this.userName,
@@ -238,6 +258,7 @@ export class FindsRunner {
       const l = await likes;
       return runProduct({ ...ctx, likes: l, recent: t.recent ?? [], region: this.deps.shopRegion, hedge, allFrames: true });
     })().catch(() => ({ card: null, timings: {} }));
+    void p.done.then(() => { p.settled = true; });
     void likes.then((l) => { p.inView = [question, ...(l ?? []), this.profile ?? ""].join(" ").toLowerCase(); });
     this.prefetched = p;
     this.hooks.log("product.prefetch", { wants: [...wants].slice(0, 6) });
@@ -260,15 +281,22 @@ export class FindsRunner {
     return p;
   }
 
-  /** Puts the prefetched search on screen under this ask's own find id (events, card, pictures). */
+  /**
+   * Puts the prefetched search on screen under this ask's own find id (events, card, pictures). If the prefetch is
+   * still running, a fresh search for this ask starts at once beside it; the first one with a card is shown and
+   * the other is stopped (never "wait for the prefetch, then search").
+   */
   private async replayPrefetch(p: Prefetch, c: PipelineCtx, t: TurnInput): Promise<PipelineResult> {
     c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(p.label)} · searching shops` });
+    type Src = { events: ServerEvent[]; listeners: Set<(e: ServerEvent) => void>; rekey: boolean; images?: Map<string, Buffer> };
+    let winner: Src | null = null;
     let card: FindCard | null = null;
-    const forward = async (e: ServerEvent) => {
-      // a prefetch that found nothing is never shown: this ask searches itself (below)
-      if (c.signal.aborted || e.type === "find.started" || e.type === "find.failed") return;
-      if (e.type === "find.image") {
-        const bytes = e.status === "ready" ? p.images.get(e.slot) : undefined;
+    const queue: Promise<void>[] = [];
+    const forward = async (src: Src, e: ServerEvent) => {
+      // only the winner reaches the app; a search that found nothing is never shown on its own
+      if (c.signal.aborted || winner !== src || e.type === "find.started" || e.type === "find.failed") return;
+      if (src.rekey && e.type === "find.image") {
+        const bytes = e.status === "ready" ? src.images?.get(e.slot) : undefined;
         if (bytes) {
           try { c.emit({ ...e, findId: c.findId, url: await c.putImage(e.slot, bytes) }); } catch { c.emit({ ...e, findId: c.findId, status: "failed", url: undefined }); }
         } else c.emit({ ...e, findId: c.findId, status: "failed", url: undefined });
@@ -277,27 +305,60 @@ export class FindsRunner {
       if (e.type === "find.created") { card = { ...e.card, id: c.findId }; c.emit({ ...e, findId: c.findId, card }); return; }
       c.emit({ ...e, findId: c.findId } as ServerEvent);
     };
-    const queue: Promise<void>[] = [];
-    for (const e of p.events) queue.push(forward(e));
-    p.listeners.add((e) => queue.push(forward(e)));
-    // stopping this ask stops the background search it is waiting on
-    const stop = () => p.abort.abort();
-    c.signal.addEventListener("abort", stop, { once: true });
-    const r = await p.done;
+    let won: () => void = () => {};
+    const someoneWon = new Promise<void>((resolve) => (won = resolve));
+    const crown = (src: Src) => {
+      if (winner) return;
+      winner = src;
+      won();
+      for (const e of src.events) queue.push(forward(src, e));
+      src.listeners.add((e) => queue.push(forward(src, e)));
+    };
+    const pre: Src = { events: p.events, listeners: p.listeners, rekey: true, images: p.images };
+    // stopping this ask stops both searches
+    const stopPre = () => p.abort.abort();
+    c.signal.addEventListener("abort", stopPre, { once: true });
+    const preDone = p.done.then((r) => { if (r.card) crown(pre); return r; });
+    let fresh: { src: Src; abort: AbortController; done: Promise<PipelineResult> } | null = null;
+    if (!p.settled) {
+      const abort = new AbortController();
+      const stopFresh = () => abort.abort();
+      c.signal.addEventListener("abort", stopFresh, { once: true });
+      const src: Src = { events: [], listeners: new Set(), rekey: false };
+      const likes = this.likes;
+      const done = (async () => runProduct({
+        ...c, signal: abort.signal,
+        emit: (e) => { src.events.push(e); for (const l of src.listeners) l(e); },
+        likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge,
+      }))().catch(() => ({ card: null, timings: {} }) as PipelineResult).then((r) => { if (r.card) crown(src); return r; });
+      fresh = { src, abort, done };
+    }
+    // first card wins; if one search ends empty, the other still may
+    await Promise.race([someoneWon, Promise.all([preDone, fresh?.done])]);
+    if (winner === pre) fresh?.abort.abort();
+    else if (winner) p.abort.abort();
+    const r = winner === pre ? await preDone : winner && fresh ? await fresh.done : await preDone;
     await Promise.all(queue);
     p.listeners.clear();
-    c.signal.removeEventListener("abort", stop);
-    if (r.card) return { card, timings: { ...r.timings, prefetched: 1 } };
+    c.signal.removeEventListener("abort", stopPre);
+    if (card) return { card, timings: { ...r.timings, prefetched: winner === pre ? 1 : 0 } };
     if (c.signal.aborted) return { card: null, timings: r.timings };
-    // the background search found nothing: search for this ask itself (the failure was never shown),
-    // under the "searching" state already on screen
-    const likes = this.likes;
-    return runProduct({ ...c, emit: (e) => { if (e.type !== "find.started") c.emit(e); }, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge });
+    if (!fresh) {
+      // the prefetch had already ended empty before the ask: search for this ask itself, under the same "searching" state
+      const likes = this.likes;
+      return runProduct({ ...c, emit: (e) => { if (e.type !== "find.started") c.emit(e); }, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge });
+    }
+    // both ended empty: say so once
+    await fresh.done;
+    const failed = fresh.src.events.find((e) => e.type === "find.failed");
+    if (failed) c.emit({ ...failed, findId: c.findId } as ServerEvent);
+    return { card: null, timings: r.timings };
   }
 
   private onEvent(e: ServerEvent): void {
     if (this.purged || (this.owner && this.deps.store.work.isDeleted(this.owner))) return;
     // after the call ends, finished cards still get their pictures saved
+    if (e.type === "find.created" || e.type === "find.failed") this.landed.add(e.findId);
     if (e.type === "find.created") {
       this.cards.set(e.findId, e.card);
       this.focusId = e.findId;
@@ -318,6 +379,8 @@ export class FindsRunner {
     if (e.type === "find.failed" && e.reason !== "stopped" && !this.closed && this.acked.has(e.findId)) this.hooks.announce(e.message);
     if (!this.closed) this.hooks.emit(e);
   }
+  /** finds that already have a card or a failure on screen */
+  private readonly landed = new Set<string>();
   /** finds whose turn got only the short line (ACK): their failure is said out loud */
   private readonly acked = new Set<string>();
 
