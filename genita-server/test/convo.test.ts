@@ -1407,7 +1407,7 @@ test("r3 sweep 11/4: money / health / address numbers they said are never said b
   assert.equal(guardSentence("That dark brown leather jacket of yours, you better be rocking it tonight.", { camera: false, userText: "" }), "unseen");
   const { profileHooks } = await import("../src/convo/opener.ts");
   assert.deepEqual(profileHooks("Taste: dark brown leather jackets\nTaste: minimal monochrome fashion\nInto: aespa, late-night ramen"), ["aespa", "late-night ramen"]);
-  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never say their salary, money amounts, address or health numbers back/);
+  assert.match(buildInstructions({ persona: mina, mode: "chat", style: "v1" }), /Never repeat their salary, money amounts, address or health numbers/);
   const { client, session } = setup(["<happy> finally, you actually did it."]);
   await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
   await session.onClientText(JSON.stringify({ type: "text", text: "I moved!" }));
@@ -1531,7 +1531,9 @@ test("Codex #502 P1: a crisis line early in the call still blocks the take nudge
   for (const first of ["I want to kill myself.", "hey"]) {
     const { client, session, calls } = setup(["<warm> Okay."]);
     await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
-    const lines = [first, ...Array(9).fill("ok"), "I'm about to swallow all these pills"];
+    // the last line is ordinary (#533 made "I'm about to swallow all these pills" a crisis line itself, which blocked
+    // the control's nudge): only the early line may decide here
+    const lines = [first, ...Array(9).fill("ok"), "anyway what should I eat tonight"];
     for (let i = 0; i < lines.length; i++) {
       await session.onClientText(JSON.stringify({ type: "text", text: lines[i] }));
       await client.waitFor(() => client.json.filter((m) => m.type === "reply").length === i + 1);
