@@ -500,3 +500,34 @@ test("narration (real Spark probe 11/3, round 2): 'Checking Seoul's forecast for
   assert.equal(guardSentence("Checking out your fridge, I see onions and garlic.", none), null);
   assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
 });
+
+// ───────────── third-person narration about the user (QA r3 #354, S4 outfit 3/3) ─────────────
+test("hard fail: 'She's holding up the trench…' becomes 'You're…'; clothes and other people stay", async () => {
+  const { addressUser, thirdPersonAboutUser } = await import("../src/convo/guard.ts");
+  const cases: Array<[string, string]> = [
+    ["She's holding up the trench and asking which one works.", "You're holding up the trench and asking which one works."],
+    ["<curious> She’s holding the white one in her left hand.", "<curious> You're holding the white one in your left hand."],
+    ["He's trying on the black blazer.", "You're trying on the black blazer."],
+    ["The user is wearing a beige trench coat.", "You're wearing a beige trench coat."],
+    ["They're comparing two jackets in front of the mirror.", "You're comparing two jackets in front of the mirror."],
+    ["She looks great in the black one.", "You look great in the black one."],
+    ["Summer is holding up two coats.", "You're holding up two coats."],
+  ];
+  for (const [inp, out] of cases) {
+    assert.ok(thirdPersonAboutUser(inp, "Summer"), inp);
+    assert.equal(addressUser(inp, "Summer"), out);
+  }
+  for (const keep of ["They're perfect with that trench.", "She sounds like a great friend.", "You're holding the trench, go black.", "It's a trench, honestly a classic."]) {
+    assert.equal(addressUser(keep, "Summer"), keep, keep);
+  }
+});
+
+test("session v1 (S4 outfit with camera): the reply addresses her as you", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<warm> She's holding up the trench and the black blazer. I'd go black, it's sharper."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "frames", images: ["aGVsbG8="] }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Which one looks better on me, the white one or the black one?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "You're holding up the trench and the black blazer. I'd go black, it's sharper.");
+  session.close();
+});

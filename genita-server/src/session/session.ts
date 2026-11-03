@@ -46,7 +46,7 @@ import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
 import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
-import { fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
+import { addressUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { openerBlock } from "../convo/opener.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
@@ -1348,6 +1348,11 @@ export class Session {
           onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
           continue;
+        }
+        // v1: never narrate the user in the third person ("She's holding up the trench…" → "You're holding…", QA #354)
+        if (this.v1 && !interpret && !self) {
+          const addressed = addressUser(tts, this.user?.name);
+          if (addressed !== tts) { tts = addressed; this.log("convo.addressed_user", { utteranceId }); }
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
           const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);

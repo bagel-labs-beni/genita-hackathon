@@ -159,3 +159,30 @@ export function fallbackLine(cls: GuardClass): string | null {
   if (cls === "guilt") return "<warm> Go have fun, seriously. I want the full story after.";
   return null;
 }
+
+/**
+ * Third-person narration about the user (QA r3 #354, S4 outfit 3/3): "She's holding up the trench…" — Spark describing
+ * the camera frame instead of talking to the person. The lead subject is rewritten to "you" (and that sentence's
+ * her/his/their to "your"), so the reply addresses her. Only a person-action verb counts ("They're perfect with the
+ * trench" is about the clothes and stays).
+ */
+const ACTION = "(?:holding|wearing|standing|showing|smiling|looking|trying|sitting|posing|pointing|waving|turning|modeling|modelling|checking|deciding|comparing|asking|picking|lifting|raising|hanging|putting|getting|choosing|thinking|wondering|leaning|facing|stepping|moving|laughing|frowning)";
+const THIRD_LEAD = new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)(?:she|he|they|the user)\s*(?:'s|’s|'re|’re| is| are)\s+(${ACTION}\b)`, "i");
+const SIMPLE: Record<string, string> = { looks: "look", seems: "seem", has: "have", wants: "want", needs: "need", likes: "like", wears: "wear", holds: "hold" };
+const THIRD_SIMPLE = new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)(?:she|he)\s+(${Object.keys(SIMPLE).join("|")})\b`, "i");
+
+export function thirdPersonAboutUser(sentence: string, userName?: string): boolean {
+  const named = userName ? new RegExp(String.raw`^\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*${userName.replace(/[^\p{L}\p{N} '-]/gu, "")}\s*(?:'s|’s| is)\s+${ACTION}\b`, "iu") : null;
+  return THIRD_LEAD.test(sentence) || THIRD_SIMPLE.test(sentence) || !!named?.test(sentence);
+}
+
+/** "She's holding up the trench in her hand." → "You're holding up the trench in your hand." (unchanged if not third person) */
+export function addressUser(sentence: string, userName?: string): string {
+  let out = sentence;
+  const named = userName ? new RegExp(String.raw`^(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)${userName.replace(/[^\p{L}\p{N} '-]/gu, "")}\s*(?:'s|’s| is)\s+(${ACTION}\b)`, "iu") : null;
+  if (THIRD_LEAD.test(out)) out = out.replace(THIRD_LEAD, (_m, lead: string, verb: string) => `${lead}You're ${verb}`);
+  else if (named?.test(out)) out = out.replace(named, (_m, lead: string, verb: string) => `${lead}You're ${verb}`);
+  else if (THIRD_SIMPLE.test(out)) out = out.replace(THIRD_SIMPLE, (_m, lead: string, verb: string) => `${lead}You ${SIMPLE[verb.toLowerCase()]}`);
+  else return sentence;
+  return out.replace(/\b(?:her|his|their)\b(?=\s+\p{L})/giu, "your").replace(/\b(?:herself|himself|themselves)\b/gi, "yourself");
+}
