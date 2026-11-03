@@ -788,15 +788,8 @@ export class Session {
         return this.turn.utteranceId;
       },
       // no memory context or recall/remember tools in translation (useMemory = false)
-      // D41 daily cap: each translation is a user turn. Charged here, after the interpreter dropped echoes and
-      // empty lines; a refusal fails this line like a Spark error (bubble closed as unknown), with daily_limit first.
-      translate: (req, signal) => {
-        if (this.deps.turnGate && !this.deps.turnGate.take()) {
-          this.dailyLimit();
-          return (async function* (): AsyncGenerator<SparkStreamEvent> { throw new Error("daily_limit"); })();
-        }
-        return this.sparkSource(req, signal, undefined, false);
-      },
+      // D41 daily cap: each translation is a user turn, charged in admitTurn() together with the D46 cap.
+      translate: (req, signal) => this.sparkSource(req, signal, undefined, false),
       tts: (text, signal) =>
         this.deps.tts({ voiceId: this.voiceId, text, emotion: null, model: SEAMLESS_MODEL, signal }),
       // Overflow stays on the device for the whole interpretation: queued translations would otherwise mix device PCM
@@ -1494,9 +1487,9 @@ export class Session {
     const reply: Reply = { utteranceId, abort: new AbortController(), spoken: [], firstAudioAt: null, audioMs: 0, doneTimer: null, chars: 0, fellBack: this.deviceVoiceForReply() && this.tts === "server" };
     const device = this.tts === "device";
     this.reply = reply;
-    // D41 daily cap: a real user turn spends one; the greeting only runs while one is left. Over the cap:
-    // no Spark call, a daily_limit error, and the call stays open.
-    if (!self && this.deps.turnGate && !(greeting ? this.deps.turnGate.peek() : this.deps.turnGate.take())) {
+    // D41 daily cap: real user turns were charged in admitTurn(); the greeting and an initiative cue only run
+    // while a turn is left and never spend one. Over the cap: no Spark call, a daily_limit error, the call stays open.
+    if (synthetic && this.deps.turnGate && !this.deps.turnGate.peek()) {
       this.dropSpeculation();
       this.dailyLimit();
       // after the reducer's own effects (state thinking) went out, so the last state is listening
@@ -2073,10 +2066,18 @@ export class Session {
     return this.deps.turnUserId === null ? null : this.deps.turnUserId ?? this.deps.userId;
   }
 
+  /** One admission point for both caps: the D41 judge cap is checked first and spent only when the D46 cap
+   * also admits the turn, so a refusal by either never charges the other. */
   private admitTurn(): boolean {
     if (this.closed) return false;
+    const gate = this.deps.turnGate;
+    if (gate && !gate.peek()) {
+      this.dailyLimit();
+      return false;
+    }
     let admitted = false;
     (this.deps.ops ?? getOps()).userTurn(this.limitUserId(), () => { admitted = true; }, (message) => this.error("spark_unavailable", message, false));
+    if (admitted && gate) gate.take();
     return admitted;
   }
 
