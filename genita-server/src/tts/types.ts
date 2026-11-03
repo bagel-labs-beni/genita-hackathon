@@ -13,5 +13,7 @@ export type TtsRequest = {
   lang?: string;
   /** a live reply's one retry of a failed clause: asks the service even while it is parked as down */
   force?: boolean;
+  /** answer only from the client's cache (the recovery line); never asks the service */
+  cachedOnly?: boolean;
 };
 export const pcmDurationMs = (bytes: number) => (bytes / 2 / PCM_SAMPLE_RATE) * 1000;

@@ -17,7 +17,7 @@ import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
 import { isMostlyHangul, speechLang } from "../text/language.ts";
-import { resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
+import { RECOVER_LINE, resolveSpeaker, seamlessLang, SEAMLESS_MODEL } from "../tts/seamless.ts";
 import type { VoiceSeats } from "../tts/capacity.ts";
 import { spokenText } from "../voice/normalize.ts";
 import { chunkTiming, type LipMode, type LipPlan } from "../lips/source.ts";
@@ -167,8 +167,8 @@ const MAX_CORRECTION_CHECKS = 12;
 
 /** A slow prep store never holds up `ready`: past this the client's voice stays. */
 const COMPANION_VOICE_WAIT_MS = 800;
-/** wait before the one retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s) */
-const TTS_RETRY_MS = 400;
+/** waits before each retry of a clause the voice service failed (a busy GPU frees a slot in ~0.5 s; a cold one takes longer) */
+const TTS_RETRY_MS = [400, 1500];
 
 /** Demo S4: said once per call, on the first outfit ask while the Mac app is open. */
 export const SUGGEST_MAC_LINE =
@@ -2400,8 +2400,10 @@ export class Session {
       jobs[i] = ttsJob(sentences[i]);
     };
     let ttsFailed = false;
-    // 11/4: one retry per reply for a clause the voice service failed before any of its audio went out (no device voice)
-    let retried = false;
+    // 11/4 (no device voice): retries per reply for a clause the voice service failed before any of its audio went
+    // out, then once the cached recovery line
+    let retries = 0;
+    let recovered = false;
     let ttsModelUsed: string | null = null;
     let sentEmotion: string | null | undefined;
     // The app speaks it: plain text (tags already stripped), no vendor call, no audio frames.
@@ -2532,16 +2534,54 @@ export class Session {
       } catch (err) {
         if (signal.aborted) break;
         const ttsOff = err instanceof Error && err.message === "tts_off";
-        if (!ttsOff && this.deps.config.voice && !this.deps.config.voice.deviceFallback && !sentAudio && !retried) {
-          // the companion's own voice or nothing (11/4): ask the voice service once more for this clause, even if
-          // it is parked as down; a second failure leaves the rest of this reply as captions
-          retried = true;
-          this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
-          await new Promise<void>((r) => { const t = setTimeout(r, TTS_RETRY_MS); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
+        const ownVoiceOnly = !ttsOff && !!this.deps.config.voice && !this.deps.config.voice.deviceFallback;
+        const reason = err instanceof Error ? err.message.slice(0, 120) : "unknown";
+        if (ownVoiceOnly && !sentAudio && retries < TTS_RETRY_MS.length) {
+          // the companion's own voice, never the phone's (11/4): wait for the voice service and ask again for this
+          // clause, even while it is parked as down (a cold or busy GPU usually answers within a few seconds)
+          const waitMs = TTS_RETRY_MS[retries++];
+          this.log("tts.retry", { sessionId: this.id, utteranceId, sentence: i, attempt: retries, reason });
+          await new Promise<void>((r) => { const t = setTimeout(r, waitMs); signal.addEventListener("abort", () => { clearTimeout(t); r(); }, { once: true }); });
           if (signal.aborted) break;
-          if (sentences[i] === s && !sentences[i]?.drop) jobs[i] = ttsJob(s, true);
-          else jobs[i] = undefined as never;
+          // watch together may have taken the question back (or swapped it for the short reaction) meanwhile:
+          // the loop head judges it again (Codex review P2)
+          jobs[i] = sentences[i] === s && !sentences[i]?.drop ? ttsJob(s, true) : (undefined as never);
           i--;
+          continue;
+        }
+        if (ownVoiceOnly && !sentAudio && reply.firstAudioAt === null && !recovered) {
+          // nothing of this reply was heard and the voice service stayed down: say the short recovery line in the
+          // companion's own voice from the cache (prefetched with the fillers), so the call is never just silent
+          // (the call screen shows no captions, Codex review P1). The reply's words still go to the history.
+          recovered = true;
+          ttsFailed = true;
+          const taken = askedAt(i) || !!sentences[i]?.drop;
+          if (!taken && !sentences[i]?.beat) reply.spoken.push(sentences[i].display);
+          let voiced = false;
+          try {
+            for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text: RECOVER_LINE, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
+              if (signal.aborted || !chunk.audio.length) continue;
+              if (reply.firstAudioAt === null) {
+                await this.untilUserQuiet(signal);
+                if (signal.aborted) break;
+                reply.firstAudioAt = this.now();
+                m.firstAudioAt = reply.firstAudioAt;
+                this.dispatch({ type: "first_audio", utteranceId });
+                noteFirstAudio();
+                this.client.sendJson({ type: "speaking", on: true, utteranceId, emotion: "neutral" });
+              }
+              const seq = ++this.seq;
+              const durationMs = pcmDurationMs(chunk.audio.length);
+              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, reply.audioMs) });
+              this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
+              reply.audioMs += durationMs;
+              ttsModelUsed = chunk.model;
+              voiced = true;
+            }
+          } catch { /* not cached for this speaker: nothing to play */ }
+          if (signal.aborted) break;
+          this.log("tts.recover_line", { sessionId: this.id, userId: this.deps.userId, utteranceId, voiced, reason });
+          if (!voiced) this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           continue;
         }
         ttsFailed = true;
@@ -2549,9 +2589,12 @@ export class Session {
           // tts_off = no server voice configured (the app speaks on-device): text-only is the normal path
           this.error("tts_unavailable", "Voice failed for this reply; showing text only", true);
           this.log("tts.error", { message: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-          if (this.deps.config.voice && !this.deps.config.voice.deviceFallback) {
-            // no other voice stands in for the companion: this clause and the rest of the reply are captions only
-            this.log("tts.text_only", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason: err instanceof Error ? err.message.slice(0, 120) : "unknown" });
+          if (ownVoiceOnly) {
+            // no other voice stands in for the companion: the rest of the reply goes to the history only
+            this.log("tts.text_only", { sessionId: this.id, userId: this.deps.userId, utteranceId, reason });
+            // a question watch together took back is not recorded either (Codex review P2)
+            if (askedAt(i) || sentences[i]?.drop) continue;
+            if (!sentAudio && sentences[i] !== s) { if (!sentences[i].beat) reply.spoken.push(sentences[i].display); continue; }
           } else if (this.deps.config.voice) {
             // Meta voice service down/slow: the rest of this reply goes to the app's own voice (`say`)
             reply.fellBack = true;

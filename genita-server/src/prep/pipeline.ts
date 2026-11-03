@@ -188,7 +188,7 @@ export async function makeScene(d: PrepDeps, image: Buffer, mime: string, kind: 
 
 // ---------- F2-L8: voices ----------
 
-export const PREVIEW_VERSION = "meta-v3"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72)
+export const PREVIEW_VERSION = "meta-v4"; // v3 (11/3): the four V04 voices are new speakers 9, 19, 26 (+72); v4 (11/4): raw Seamless (post.py off by default)
 
 /**
  * V04's list: the curated voices for this look, recommended default first (no model call).

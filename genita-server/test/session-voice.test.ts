@@ -13,6 +13,7 @@ import { checkServerEvent } from "../src/protocol.ts";
 import type { AsrEvent } from "../src/meta/transcribe.ts";
 import type { SparkStreamEvent } from "../src/meta/spark.ts";
 import type { TtsChunk } from "../src/tts/types.ts";
+import { RECOVER_LINE } from "../src/tts/seamless.ts";
 
 const config: Config = {
   metaKey: "x",
@@ -209,28 +210,46 @@ test("voice identity: a clause the voice service fails is retried once in the sa
   session.close();
 });
 
-test("voice identity: voice service down → one retry, then captions only (tts_unavailable), never say", async () => {
+test("voice identity: voice service down for the whole reply → two retries, then the cached recovery line in the same voice, never say", async () => {
+  const { client, session, calls } = setup({ failCalls: [0, 1, 2] });
+  await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(reply.text, "Oh wow, you're back! How was it?", "the reply's words still go to the history");
+  assert.equal(client.of("say").length, 0, "no system voice");
+  assert.equal(calls.length, 4, "first clause + 2 retries + the recovery line, nothing after");
+  assert.deepEqual([calls[1].force, calls[2].force], [true, true]);
+  assert.equal(calls[3].text, RECOVER_LINE);
+  assert.equal((calls[3] as { cachedOnly?: boolean }).cachedOnly, true, "the recovery line never waits on the service");
+  assert.equal(calls[3].voiceId, calls[0].voiceId, "same speaker");
+  assert.equal(client.of("audio").length, 1, "the recovery line is heard");
+  assert.equal(client.of("error").length, 0);
+  session.close();
+});
+
+test("voice identity: recovery line not cached either → no sound, tts_unavailable once, never say", async () => {
   const { client, session, calls } = setup({ failAt: 0 });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
-  const reply = await client.waitFor((m) => m.type === "reply");
-  assert.equal(reply.text, "Oh wow, you're back! How was it?", "the whole reply still reaches the captions");
+  const reply = await client.waitFor((m) => m.type === "reply", 6000);
+  assert.equal(reply.text, "Oh wow, you're back! How was it?");
   assert.equal(client.of("say").length, 0);
   assert.equal(client.of("audio").length, 0);
-  assert.equal(calls.length, 2, "first clause + its one retry, nothing after");
+  assert.equal(calls.length, 4);
   assert.equal(client.of("error").filter((e) => e.code === "tts_unavailable").length, 1);
   assert.notEqual(client.of("turn.metrics")[0].ttsModel, "device");
   session.close();
 });
 
-test("voice identity: a failure after a clause's audio started is not retried (no repeated words), rest is captions", async () => {
+test("voice identity: a failure after part of the reply was heard: retries, no recovery line, never say", async () => {
   const { client, session, calls } = setup({ failAt: 1 });
   await session.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await session.onClientText(JSON.stringify({ type: "text", text: "back" }));
-  await client.waitFor((m) => m.type === "reply");
+  await client.waitFor((m) => m.type === "reply", 6000);
   assert.equal(client.of("audio").length, 1, "first clause voiced");
   assert.equal(client.of("say").length, 0);
-  assert.equal(calls.length, 3, "clause 2 failed (prefetched) + its one retry; clause 3 not asked");
+  assert.equal(calls.length, 4, "clause 2 failed (prefetched) + 2 retries; clause 3 not asked");
+  assert.ok(calls.every((c) => c.text !== RECOVER_LINE));
   session.close();
 });
 

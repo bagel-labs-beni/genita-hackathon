@@ -23,6 +23,11 @@ import { g2pOn, relabelPhonemes } from "../lips/g2p.ts";
 export const SEAMLESS_MODEL = "seamless-m4t-v2";
 export const FILLERS = ["Hmm,", "Oh!", "Yeah.", "Oh wow,", "Okay,", "Right,", "Mm-hm.", "Aw,", "Haha,", "Well,", "So,", "Oh no,"];
 const CACHE_MAX_CHARS = 14;
+/**
+ * 11/4: when the voice service stays down for a whole reply, this line is said in the companion's own voice from the
+ * cache (prefetched per speaker with the fillers) instead of the phone's system voice. Kept short and neutral.
+ */
+export const RECOVER_LINE = "Sorry, my voice cut out. Say that again?";
 const CACHE_MAX = 1200; // fillers x (neutral + VOICE_EMOTIONS) x the 4 V04 speakers fits
 
 /** Labels the voice GPU moves (deploy/modal-voice/post.py SHIFT_ST). neutral / curious / unknown send no emotion. */
@@ -225,6 +230,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       yield* hit;
       return;
     }
+    if (req.cachedOnly) throw new UpstreamError("voice", null, "not_cached");
     if (!req.force && now() < downUntil) throw new UpstreamError("voice", null, "voice_down");
     const got: TtsChunk[] = [];
     // normalisation can grow a sentence past the service's 400-char cap: send it in pieces, pause only after
@@ -257,7 +263,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
       }
       throw err;
     }
-    if (text.length <= CACHE_MAX_CHARS && got.length) remember(k, got);
+    if ((text.length <= CACHE_MAX_CHARS || req.text === RECOVER_LINE) && got.length) remember(k, got);
   }
 
   function prefetch(speaker: number): void {
@@ -265,7 +271,7 @@ export function createSeamless(cfg: VoiceConfig, opts: { fetch?: Fetch; now?: ()
     if (prefetched.has(p) || now() < downUntil) return;
     prefetched.add(p);
     void (async () => {
-      for (const f of FILLERS) {
+      for (const f of [...FILLERS, RECOVER_LINE]) {
         try {
           for await (const _ of speak({ voiceId: `seamless:${speaker}`, text: f, emotion: null, model: SEAMLESS_MODEL, lang: "en" })) void _;
         } catch {
