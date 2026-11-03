@@ -22,6 +22,7 @@ struct CameraGuideSheet: View {
     let bottomInset: CGFloat
     var turnOn: () -> Void
     var notNow: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -30,9 +31,17 @@ struct CameraGuideSheet: View {
                 Capsule().fill(CallInk.handle).frame(width: 47, height: 5).accessibilityHidden(true)
                 Text("I only see when it’s on.").font(TypeStyle.title(28)).tracking(-0.28).foregroundStyle(CallInk.ink)
                     .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading).padding(.top, 24).accessibilityAddTraits(.isHeader)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Turn on the camera to show me things.")
-                    Text("I look while it’s on and don’t keep the video.")
+                Group {
+                    if dynamicTypeSize > .large {
+                        // larger text: one paragraph that wraps on its own (two fixed lines left "me things." alone)
+                        Text("Turn on the camera to show me things. I look while it’s on and don’t keep the video.")
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Turn on the camera to show me things.")
+                            Text("I look while it’s on and don’t keep the video.")
+                        }
+                    }
                 }.font(TypeStyle.text(16)).foregroundStyle(CallInk.ink).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
                 Button(action: turnOn) {
                     Text("Turn on camera").font(TypeStyle.text(16, .medium)).foregroundStyle(CallInk.onInk)

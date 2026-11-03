@@ -42,7 +42,8 @@ import SwiftUI
 
     private func render(_ view: some View) -> UIImage {
         let size = CGSize(width: 390, height: 844)
-        let host = UIHostingController(rootView: view.frame(width: size.width, height: size.height))
+        // an offscreen window has no safe area: give it the device's (top 47 / bottom 34), as the real screen does
+        let host = UIHostingController(rootView: view.safeAreaPadding(.top, 47).safeAreaPadding(.bottom, 34).frame(width: size.width, height: size.height))
         let window = UIWindow(frame: CGRect(origin: .zero, size: size))
         window.rootViewController = host; window.isHidden = false
         host.view.frame = window.bounds; host.view.layoutIfNeeded()
