@@ -3,7 +3,7 @@
 This file is the in-repo copy of the product decisions made on the night of 11/3 → 11/4 KST.
 It is the current truth for the behaviors below. QA and merges check against it.
 
-- Full PRD: D2 PRD v12.2e, section 2.2 (decisions D101–D116). The PRD itself is kept outside
+- Full PRD: D2 PRD v12.2e, section 2.2 (decisions D101–D117). The PRD itself is kept outside
   this public repo; this file carries every decision that changes UI or behavior.
 - QA: each decision maps to one or more scenario IDs in the Genita QA scenario book
   (`LG-01`, `IS-01`, …). A PR that implements a decision cites those IDs.
@@ -30,15 +30,17 @@ It is the current truth for the behaviors below. QA and merges check against it.
 | D109 | **The original uploaded photo is never shown after onboarding V02** — not on cold launch, not at call connect, not in PiP. A veiled orb / placeholder shows until the generated face loads. | A frame of the original before the face reads as fake. | #524 | CL-03 |
 | D110 | **ASR is English-only for normal calls** (`GENITA_ASR_LANGUAGES=English`, live). Interpreter mode adds Korean automatically and drops it when turned off. Watch-together audio ASR is English-only too (accepted). | English-only product; fewer mis-hearings. | config | SY-07, TR-01, CW-03 |
 | D111 | **Crisis.** Method / means / imminence phrases trigger even in isolation; everyday near-miss phrases (kitchen, screen, routine) must not. A crisis reply always includes the 988 line. Low mood alone is normal conversation. | Three plan lines were missed; some crisis replies had no number. | #533, #545 | SY-08, CL-02 |
-| D112 | **TTS prosody post-processing is closed (11/3); keep the current voice.** Emotion maps to speech rate only. | Decided 11/3. | — | SY-09 |
+| D112 | **TTS prosody post-processing is closed (11/3); keep the current voice.** Emotion maps to speech rate only (server `EMOTION_SPEED`: excited 1.10, surprised 1.08, teasing 1.06, happy 1.05, curious/neutral 1.03, warm 1.00, whisper 0.95, sad 0.94; clamped 0.8–1.3; ≤14-character fillers keep the base rate). **Open:** the voice GPU post chain on main (`deploy/modal-voice/post.py`) still shifts pitch, brightness and level per emotion and applies a 3 kHz −1 dB cut; the lead decides whether that goes or this line changes. | Decided 11/3. | — | SY-09 |
 | D113 | **Reconnect after a drop on the same device greets with one short reconnect line** (not the first-call greeting, not silence). In progress. | Silence or a repeated "Hey, {name}!" felt broken. | #555 | IC-02 |
 | D114 | **The Mac app is `Genita.app`.** Old installs rename themselves after a Sparkle update. | No internal names where people look. | #528 | MC-01 |
 | D115 | **The onboarding orb is Dyno's original three.js volumetric orb ported to Metal.** Reduce Motion = breathing only. | Match the original motion. | #515 | IM-01 |
 | D116 | **QA sample photos for QA accounts.** V01 shows "Use a test photo" only for accounts on the allowlist `GENITA_QA_SAMPLE_PHOTOS`. | Device QA cannot open the photo library. | #519 | PU-03 |
+| D117 | **No memory-off toggle in this submission.** The three ST-1 "What I keep" toggles moved to after the hackathon (Figma Settings note, 11/2). The user's control over memory is About you → per-item "Not quite… / Remove" plus "Forget all of this" (and saying "forget that" in a call). | Settings option C (D102) has no toggle; Figma had already deferred ST-1. | #535 | SE-01 |
 
 ## Superseded earlier decisions
 
 - D76 / D83 "buttons stay Liquid Glass" → for CTAs, replaced by D105. Glass stays on call controls and the HUD.
 - D87 "emotion: all of it" → replaced by D112 (speech rate only).
+- ST-1 "What I keep" memory toggles → replaced by D117 (About you: Remove / Forget all of this).
 - Motion detail 3 (separate "Noted" chip dropping 8 pt) → replaced by D103 (content swap inside the pill).
 - Figma SUM (four lines, blue CTA), secondary text #B7B7B7, S09 HUD positions and the I03 soul-orb position → replaced by D101, D106, D103 and D107.
