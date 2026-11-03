@@ -1331,9 +1331,12 @@ export class Session {
             let said = false;
             try {
               for await (const ev of react) {
+                if (ev.type === "done") {
+                  if (said) { yield ev; return; }
+                  break; // an empty reaction: the short ack below, never the tool-carrying retry
+                }
                 if (ev.type === "text" && ev.delta.trim()) said = true;
                 yield ev;
-                if (ev.type === "done") return;
               }
             } catch (err) {
               if (said) throw err;

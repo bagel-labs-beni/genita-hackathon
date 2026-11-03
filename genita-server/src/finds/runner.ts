@@ -42,6 +42,8 @@ type Prefetch = {
   /** words the background search looked for (lowercased): a later ask must name one of them, or none */
   wants: Set<string>;
   question: string;
+  /** what the search had in view (question + taste lines), lowercased: an ask's colors must be in it */
+  inView: string;
   label: string;
   events: ServerEvent[];
   images: Map<string, Buffer>;
@@ -55,6 +57,10 @@ const REFINE_WINDOW_MS = 15 * 60_000;
 
 /** item words in an ask ("shoes", "lamp"): one the prefetch didn't look for means a fresh search */
 const PRODUCT_WORD = /^(shoes?|sneakers?|boots?|loafers?|heels?|sandals?|bags?|belts?|scarf|scarves|hats?|jewelry|earrings?|necklaces?|accessories|accessory|jackets?|coats?|lamps?|chairs?|mugs?|headphones|earbuds|dress|dresses|shirts?|pants|jeans|sweaters?|hoodies?|tote|backpack|watch|sunglasses|gift|tops?|skirts?)$/;
+
+/** intent.ts's shopping nouns too ("blazer", "parka", "cardigan"…) */
+const ITEM_NOUN = /^(blazers?|parkas?|vests?|overshirts?|t-?shirts?|tees?|cardigans?|trousers|shorts|totes?|caps?|scarves|mugs?|chairs?|lamps?|outfits?)$/;
+const COLOR = /^(black|white|grey|gray|navy|blue|red|green|pink|purple|yellow|orange|beige|camel|tan|brown|cream|ivory|olive|burgundy|neon|silver|gold)$/;
 
 export type TurnInput = {
   text: string;
@@ -217,10 +223,10 @@ export class FindsRunner {
     const question = `Find shoes or accessories that go with the outfit they just picked${picked}.${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
     this.prefetched?.abort.abort();
     const abort = new AbortController();
-    const p: Prefetch = { at: this.hooks.now(), wants, question, label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, done: Promise.resolve({ card: null, timings: {} }) };
+    const p: Prefetch = { at: this.hooks.now(), wants, question, inView: question.toLowerCase(), label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, done: Promise.resolve({ card: null, timings: {} }) };
     const findId = `prefetch-${randomUUID()}`;
     const ctx: PipelineCtx = {
-      findId, utteranceId: t.utteranceId, kind: "product", question, frames: t.frames.slice(-1), memories: this.memories, profile: this.profile, userName: this.userName,
+      findId, utteranceId: t.utteranceId, kind: "product", question, frames: t.frames, memories: this.memories, profile: this.profile, userName: this.userName,
       replyText: Promise.resolve(null), timeZone: this.timeZone, vendors: this.deps.vendors, signal: abort.signal, now: this.hooks.now, log: this.hooks.log, images: this.deps.images,
       emit: (e) => { p.events.push(e); for (const l of p.listeners) l(e); },
       putImage: async (slot, bytes) => { p.images.set(slot, bytes); return `prefetch:${slot}`; },
@@ -228,7 +234,11 @@ export class FindsRunner {
     const likes = this.likes;
     // one more lane than a normal search: Spark search time varies 15–30 s and the first good lane wins
     const hedge = Math.min(3, (this.deps.productHedge ?? 2) + 1);
-    p.done = (async () => runProduct({ ...ctx, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge }))().catch(() => ({ card: null, timings: {} }));
+    p.done = (async () => {
+      const l = await likes;
+      return runProduct({ ...ctx, likes: l, recent: t.recent ?? [], region: this.deps.shopRegion, hedge, allFrames: true });
+    })().catch(() => ({ card: null, timings: {} }));
+    void likes.then((l) => { p.inView = [question, ...(l ?? []), this.profile ?? ""].join(" ").toLowerCase(); });
     this.prefetched = p;
     this.hooks.log("product.prefetch", { wants: [...wants].slice(0, 6) });
   }
@@ -237,9 +247,15 @@ export class FindsRunner {
   private takePrefetch(text: string, now: number): Prefetch | null {
     const p = this.prefetched;
     if (!p || now - p.at > PREFETCH_WINDOW_MS) return null;
-    const named = [...text.matchAll(/\b([a-z]+)\b/gi)].map((m) => m[1].toLowerCase());
-    const itemWords = named.filter((w) => PRODUCT_WORD.test(w));
-    if (itemWords.length && !itemWords.some((w) => p.wants.has(w) || p.wants.has(`${w}s`) || p.wants.has(w.replace(/s$/, "")))) return null;
+    const lower = text.toLowerCase();
+    const named = [...lower.matchAll(/\b([a-z]+)\b/g)].map((m) => m[1]);
+    // every item the ask names must be one the prefetch looked for ("shoes and a lamp" → fresh search)
+    const itemWords = named.filter((w) => PRODUCT_WORD.test(w) || ITEM_NOUN.test(w));
+    const wanted = (w: string) => p.wants.has(w) || p.wants.has(`${w}s`) || p.wants.has(w.replace(/s$/, ""));
+    if (itemWords.some((w) => !wanted(w))) return null;
+    // a color or a price it never had in view (said, or the account's own taste) → fresh search
+    if (named.some((w) => COLOR.test(w) && !p.inView.includes(w))) return null;
+    if (/\$\s?\d|\bunder \d|\bcheap/.test(lower)) return null;
     this.prefetched = null;
     return p;
   }
@@ -264,13 +280,19 @@ export class FindsRunner {
     const queue: Promise<void>[] = [];
     for (const e of p.events) queue.push(forward(e));
     p.listeners.add((e) => queue.push(forward(e)));
+    // stopping this ask stops the background search it is waiting on
+    const stop = () => p.abort.abort();
+    c.signal.addEventListener("abort", stop, { once: true });
     const r = await p.done;
     await Promise.all(queue);
     p.listeners.clear();
+    c.signal.removeEventListener("abort", stop);
     if (r.card) return { card, timings: { ...r.timings, prefetched: 1 } };
-    // the background search found nothing: search for this ask itself (the failure was never shown)
+    if (c.signal.aborted) return { card: null, timings: r.timings };
+    // the background search found nothing: search for this ask itself (the failure was never shown),
+    // under the "searching" state already on screen
     const likes = this.likes;
-    return runProduct({ ...c, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge });
+    return runProduct({ ...c, emit: (e) => { if (e.type !== "find.started") c.emit(e); }, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge });
   }
 
   private onEvent(e: ServerEvent): void {

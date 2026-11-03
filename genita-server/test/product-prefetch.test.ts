@@ -110,3 +110,58 @@ test("no outfit card, no prefetch; a failed prefetch falls back to a normal sear
   await b.r.settle();
   assert.ok(b.events.some((e) => e.type === "find.created" && e.findId === s!.findId), "a fresh search made the card");
 });
+
+test("Codex r1: a blazer, a lamp next to shoes, or a color the prefetch never had in view → a fresh search", async () => {
+  for (const ask of ["Find me a blazer", "Find me shoes and a lamp", "Can you find me some neon green shoes?"]) {
+    const { v, searches } = vendors(10);
+    const { r } = runner(v);
+    r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+    await r.settle(); await sleep(30);
+    const pre = searches.length;
+    r.onTurn({ text: ask, frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+    await r.settle();
+    assert.equal(searches.length, pre + 1, ask);
+  }
+  // the account's own taste colors count as in view ("dark brown" is in the import, not in what was said)
+  const { v, searches } = vendors(10);
+  const { r } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve("The black one, for sure.") });
+  await r.settle(); await sleep(30);
+  const pre = searches.length;
+  r.onTurn({ text: "Can you find me dark brown shoes that go with this?", frames: [], utteranceId: 2, replyText: Promise.resolve(null) });
+  await r.settle();
+  assert.equal(searches.length, pre, "taste color: reused");
+});
+
+test("Codex r1: a failed prefetch's fresh search shows one 'searching' state; a stopped ask never searches again", async () => {
+  let fail = true;
+  const { v, searches } = vendors(40);
+  const flaky: FindsVendors = { ...v, async spark(req) { if (fail && JSON.stringify(req.input).includes("Shop for them")) { searches.push("x"); await sleep(40); throw new Error("503"); } return v.spark(req); } };
+  const { r, events } = runner(flaky);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await sleep(10);
+  const s1 = r.onTurn({ text: "Find me dark brown shoes for this", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) })!;
+  await sleep(5); fail = false;
+  await r.settle();
+  assert.equal(events.filter((e) => e.type === "find.started" && e.findId === s1.findId).length, 1, "one searching state for the ask");
+  assert.ok(events.some((e) => e.type === "find.created" && e.findId === s1.findId));
+  // stop while the prefetch is still running, then the prefetch fails: no fresh search, nothing new on screen
+  fail = true;
+  const b = runner(flaky);
+  b.r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: [FRAME, FRAME], utteranceId: 1, replyText: Promise.resolve(SAID) });
+  await sleep(10);
+  const s2 = b.r.onTurn({ text: "Find me dark brown shoes for this", frames: [FRAME], utteranceId: 2, replyText: Promise.resolve(null) })!;
+  const before = searches.length;
+  b.r.stop(s2.findId);
+  await b.r.settle();
+  assert.equal(searches.length, before, "a stopped ask is not searched again");
+  assert.ok(!b.events.some((e) => e.type === "find.created" && e.findId === s2.findId));
+});
+
+test("Codex r1: the prefetch sees both outfit frames (the pick may be the first)", async () => {
+  const { v, searches } = vendors(10);
+  const { r } = runner(v);
+  r.onTurn({ text: "Which one looks better on me, the white one or the black one?", frames: ["data:image/jpeg;base64,V0hJVEU=", "data:image/jpeg;base64,QkxBQ0s="], utteranceId: 1, replyText: Promise.resolve("The first one, the white top.") });
+  await r.settle(); await sleep(30);
+  assert.ok(searches[0].includes("V0hJVEU=") && searches[0].includes("QkxBQ0s="), "both frames");
+});

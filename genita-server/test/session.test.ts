@@ -565,6 +565,25 @@ test("finds: demo S5 — if the reaction call fails, the product turn still says
   s2.close();
 });
 
+test("finds: demo S5 — an empty reaction (done, no text) still says the short ack, and no tool-carrying retry", async () => {
+  const { client, session, sparkCalls } = setup({ deps: { async *spark(req) { sparkCalls.push(req); yield { type: "done" as const, responseId: "r", text: "", status: "completed" }; } } });
+  const { MemoryFindsStore } = await import("../src/finds/store.ts");
+  const vendors = {
+    async spark() { await sleep(50); return { text: "", output: [] }; },
+    async *sparkStream() { yield { type: "done" as const, responseId: null, text: "", status: "completed" }; },
+    async sam() { return []; }, async image() { return Buffer.from([0xff, 0xd8]); }, async pageFacts() { return null; }, async productImage() { return null; },
+  };
+  const s2 = new Session("fp3", client, { ...(session as unknown as { deps: SessionDeps }).deps, finds: { vendors, store: new MemoryFindsStore(), images: false, imageBase: "/v1/finds" }, userId: "acct-9" });
+  session.close();
+  await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
+  const before = sparkCalls.length;
+  await s2.onClientText(JSON.stringify({ type: "text", text: "Can you find me some white sneakers?" }));
+  const ack = await client.waitFor((m) => m.type === "reply" && !!m.text, 3000);
+  assert.equal(ack.text, "On it.");
+  assert.ok(sparkCalls.slice(before).every((r) => !r.tools?.length), "never a full answer with web_search on a product turn");
+  s2.close();
+});
+
 test("finds: no card for a plain chat turn, and none without the finds deps", async () => {
   const { client, session } = setup();
   await session.onClientText(JSON.stringify({ type: "start", persona }));

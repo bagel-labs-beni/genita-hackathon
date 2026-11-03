@@ -279,6 +279,8 @@ export type ProductCtx = PipelineCtx & {
   region?: string;
   /** identical search calls raced (GENITA_PRODUCT_HEDGE, default 2): first with 2 opened pages wins */
   hedge?: number;
+  /** demo S5 prefetch: send all frames (the outfit options), not only the latest */
+  allFrames?: boolean;
 };
 
 type SearchResult = Awaited<ReturnType<FindsVendors["spark"]>>;
@@ -340,7 +342,8 @@ export async function runProduct(ctx: ProductCtx): Promise<PipelineResult & { la
 
   const today = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: ctx.timeZone ?? "UTC" }).format(at);
   // Demo S5: with the camera on, the search also sees the latest frame (vision + web search in one call)
-  const look = ctx.frames.length ? [ctx.frames[ctx.frames.length - 1]] : [];
+  // the latest frame; a prefetch after an outfit pick sends every option's frame (the pick may be the first one)
+  const look = ctx.allFrames ? ctx.frames.slice(-3) : ctx.frames.length ? [ctx.frames[ctx.frames.length - 1]] : [];
   const prompt = productPrompt({ question: ctx.question, recent: ctx.recent ?? [], taste, previous: ctx.previous, city: cityOf(ctx.timeZone), region: ctx.region ?? "US", today, seeing: look.length > 0 });
 
   const res = await hedgedSearch(vendors, prompt, ctx.hedge ?? 2, ctx.signal, look);
