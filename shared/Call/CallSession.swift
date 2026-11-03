@@ -552,7 +552,8 @@ enum CallStop: Equatable {
     private var micHeldForPreview = false
     func holdMicForPreview(_ hold: Bool) {
         if hold, micOn, !micHeldForPreview { micHeldForPreview = true; setMic(false) }
-        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation, link != .idle { setMic(true) } // reconnecting too: its `start.mic` follows micOn (Codex re-review P2) }
+        // reconnecting too: its `start.mic` follows micOn (Codex re-review P2)
+        else if !hold, micHeldForPreview { micHeldForPreview = false; if !userEnded, ownsConversation, link != .idle { setMic(true) } }
     }
 
     private func setMic(_ on: Bool) {
