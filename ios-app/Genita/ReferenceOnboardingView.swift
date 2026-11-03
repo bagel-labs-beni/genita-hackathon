@@ -265,6 +265,7 @@ import UniformTypeIdentifiers
             // one tap: copy the prompt, say so, open the AI app (or its site); coming back opens I02
             UIPasteboard.general.string = AppState.prompt
             copied = true; openedAI = true; leftApp = false
+            model.setup.importAI = title == "Open ChatGPT" ? "ChatGPT" : "Claude"
             withAnimation(.easeOut(duration: 0.2)) { copiedToast = true }
             Task { @MainActor in try? await Task.sleep(for: .seconds(2)); withAnimation(.easeOut(duration: 0.2)) { copiedToast = false } }
             UIApplication.shared.open(a) { ok in if !ok { UIApplication.shared.open(w) } }

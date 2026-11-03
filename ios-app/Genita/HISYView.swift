@@ -211,6 +211,8 @@ struct HISYTitle: View {
     var line: CGFloat = 39
     /// Dynamic Type: the title grows with the text size like the old `.largeTitle`-relative serif (1 at the default size)
     @ScaledMetric(relativeTo: .largeTitle) private var scale: CGFloat = 1
+    /// explicit: the SUM insight report (InsightReportView.swift) uses other sizes
+    init(text: String, size: CGFloat = 35, line: CGFloat = 39) { self.text = text; self.size = size; self.line = line }
     var body: some View {
         HISYSerifText(text: text, size: size * scale, line: line * scale).padding(.vertical, -HISYSerifText.overflow)
     }
