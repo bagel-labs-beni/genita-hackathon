@@ -2222,7 +2222,9 @@ export class Session {
       if (device || reply.fellBack) {
         if (reply.firstAudioAt === null) await this.untilUserQuiet(signal);
         if (signal.aborted) break;
-        sayOnDevice(i, s);
+        // watch together may have attached while waiting for the user to go quiet
+        if (askedAt(i)) continue;
+        sayOnDevice(i, sentences[i]);
         continue;
       }
       if (ttsFailed) {
@@ -2235,6 +2237,17 @@ export class Session {
       let firstSeq: number | null = null; // this clause's first audio chunk: `audio.timing` is keyed to it
       let sentChars = ""; // characters of this sentence already voiced (from the voice's timing)
       let clauseWords = null as { s: number; e: number } | null; // aligner span of this clause (reply timeline)
+      // watch together can attach while this clause's TTS is still coming (after the askedAt check above): judged
+      // again right before its first audio goes out, and a clause marked dropped stops (Codex #401 r1 P1)
+      let skipped = false;
+      let replaced = false;
+      const stillAsked = (): boolean => {
+        if (!this.askDropped || interpret || self) return false;
+        if (!sentAudio && askedAt(i)) return true;
+        if (sentences[i]?.drop) return true;
+        if (!sentAudio && sentences[i] !== s) { replaced = true; return true; }
+        return false;
+      };
       try {
         let first = true;
         for await (const chunk of jobs[i]) {
@@ -2254,10 +2267,12 @@ export class Session {
             continue;
           }
           if (!chunk.audio.length && !chunk.alignment) continue;
+          if (stillAsked()) { skipped = true; break; }
           ttsModelUsed = chunk.model;
           if (reply.firstAudioAt === null) {
             await this.untilUserQuiet(signal);
             if (signal.aborted) break;
+            if (stillAsked()) { skipped = true; break; }
             reply.firstAudioAt = this.now();
             m.firstAudioAt = reply.firstAudioAt;
             this.dispatch({ type: "first_audio", utteranceId });
@@ -2287,6 +2302,12 @@ export class Session {
             this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
           }
           reply.audioMs += durationMs;
+        }
+        if (skipped) {
+          this.log("profile.ask_dropped", { utteranceId, midTts: true, replaced });
+          // the only sentence became the short reaction: say that one instead (its own TTS)
+          if (replaced) { jobs[i] = undefined as never; i--; }
+          continue;
         }
         if (!signal.aborted) {
           if (!s.beat) reply.spoken.push(s.display);
