@@ -72,7 +72,7 @@ struct SavedSetup: Codable {
     /// The judge account's ready-made companion (server `demo: true`), labelled "Demo companion"
     var companionDemo: Bool?
     enum CodingKeys: String, CodingKey { case stage, name, response, depth, voice, answers, boundaries, presence, presenceCardIDs, hasOnboarded,
-        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo }
+        companionName, imageId, imageType, styleRows, styleProfile, stylePartial, companionCreated, voiceId, voiceName, deviceVoice, skipInterests, skipReplies, skipAvoid, skipLikes, firstCallPending, serverPersona, accountId, companionDemo, importAI }
 
 }
 /// A launch response belongs to the token and authentication lifetime that requested it.
@@ -149,6 +149,10 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var insightUnavailable = false
     /// the answers last sent with POST /v1/profile/insights (sent again only when they change)
     @ObservationIgnored var insightAnswersSent: String?
+    /// the answers POST in flight (SUM's GET waits for it, so it reads the rewrite, not the older report)
+    @ObservationIgnored var insightAnswersTask: Task<Void, Never>?
+    /// verdicts one after another (a later answer never brings back a removed trait)
+    @ObservationIgnored var insightVerdictTask: Task<String?, Never>?
     @ObservationIgnored var importTask: Task<Void, Never>?
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
@@ -221,7 +225,9 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         else { history.append(setup.stage) }
         setup.stage = stage
         // the last P screen opens: the server rewrites the SUM report with the answers so far, while the user picks
+        #if os(iOS)
         if stage == .presence || stage == .summary { sendInsightAnswers() }
+        #endif
     }
     func back() {
         if let previous = history.popLast() { setup.stage = previous; return }
@@ -366,11 +372,13 @@ extension AppState {
             setup.presence = ["Calm"]
         }
         // SUM insight report review (R1): GENITA_REVIEW_VARIANT=insight / insight-empty
+        #if os(iOS)
         if reviewStage == .summary, variant.hasPrefix("insight") {
             insightReport = InsightFixture.report(empty: variant == "insight-empty")
             setup.importAI = "ChatGPT"
             setup.name = "Summer"
         }
+        #endif
         if variant == "image" || reviewStage == .conversation || reviewStage == .connecting,
            let url = Bundle.main.url(forResource: "companion", withExtension: "png") { setup.imageData = try? Data(contentsOf: url) }
         else { setup.imageData = nil }
