@@ -609,6 +609,7 @@ def main():
     ap.add_argument('--blink', help='character2d: Muse blink still -> BLINK.jpg + BLINKMASK.png (eye rect only)')
     ap.add_argument('--eyes', help='character2d: eye boxes x1,y1,x2,y2;x1,y1,x2,y2 (SAM)')
     ap.add_argument('--species', default='', help='animal species from the image check (bird / small-muzzle / long-snout rules)')
+    ap.add_argument('--silhouette', help='SAM face (or head) mask of the neutral, 8-bit, still size: the blend never leaves it (11/4)')
     a = ap.parse_args()
     t0 = time.time()
     kind = 'character3d' if a.kind == 'character' else a.kind
@@ -793,6 +794,24 @@ def main():
             Mfull = build_mask(H, W, face, mouth, lock_y, kind, s)
     else:
         Mfull = build_mask(H, W, face, mouth, lock_y, kind, s)
+
+    # 11/4 (Chelsea: a see-through double jaw line under the chin while talking): the blend stays inside the subject's own
+    # face silhouette (SAM), grown 3 px and feathered ~2.5 px at a 540-wide frame — outside it the still's own pixels, so a
+    # key's lower jaw line is cut at the original outline instead of ghosting over the neck / background
+    if a.silhouette:
+        sil = cv2.imread(a.silhouette, cv2.IMREAD_GRAYSCALE)
+        if sil is not None and sil.max() > 0:
+            if sil.shape[:2] != (H, W):
+                sil = cv2.resize(sil, (W, H), interpolation=cv2.INTER_NEAREST)
+            px = W / 540.0
+            g = int(round(3 * px)) * 2 + 1
+            sb = cv2.dilate((sil > 127).astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(np.float32)
+            sb = cv2.GaussianBlur(sb, (0, 0), max(0.8, 1.0 * px))
+            if (sb * (Mfull > 0.004)).sum() > 0.25 * max(1.0, float((Mfull > 0.004).sum())):   # a silhouette that misses the mouth is ignored
+                Mfull = Mfull * sb
+                diag['silhouette'] = {'kept': round(float((Mfull > 0.5).sum()) / max(1.0, float((sb > 0.5).sum())), 4)}
+            else:
+                diag['silhouette'] = {'ignored': 'misses the mouth'}
 
     ys, xs = np.where(Mfull > 0.004)
     pad = int(4 / s)

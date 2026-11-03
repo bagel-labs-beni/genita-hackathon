@@ -7,7 +7,7 @@ import { PREP_EMOTIONS } from "./prompts.ts";
 import { makeScene, mediaOf, type PrepDeps } from "./pipeline.ts";
 import { missingFaceKeys, topUpFaceKeys, topUpOn } from "./faceTopUp.ts";
 import { getOps } from "../ops/limits.ts";
-import { makePersonMatte } from "./person.ts";
+import { makeFaceSilhouette, makePersonMatte } from "./person.ts";
 import { FACE_EXPRESSIONS, FACE_KEYS, faceManifest, imageSize, makeFaceSet, normBox, samPrompt, type FaceKey } from "./face.ts";
 const sceneMime = (b: Buffer) => (b.readUInt32BE(0) === 0x89504e47 ? "image/png" : b[0] === 0xff && b[1] === 0xd8 ? "image/jpeg" : "image/webp");
 import { makeFaceFlow } from "./faceflow.ts";
@@ -385,6 +385,11 @@ export class PrepRunner {
             const size = imageSize(scene!);
             const boxes = await mediaOf(d).samDetect(d.metaKey, `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, samPrompt(c.type, "nose"), signal);
             return size && boxes[0] ? normBox(boxes[0], size) : null;
+          },
+          // 11/4: the mouth blend stays inside the subject's own face outline (no ghost jaw line over the neck)
+          silhouette: async () => {
+            const size = imageSize(scene!);
+            return size ? makeFaceSilhouette({ media: mediaOf(d), metaKey: d.metaKey, sceneDataUrl: `data:${sceneMime(scene!)};base64,${scene!.toString("base64")}`, size, kind: c.type, signal }) : null;
           },
           eyes: async () => {
             const size = imageSize(scene!);

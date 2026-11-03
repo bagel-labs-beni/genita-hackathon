@@ -140,6 +140,28 @@ test("faceflow.py end to end: flows + keys written, nose lock holds (nothing abo
   assert.ok(stored.has("flow_mask") && stored.has("flow_neutral") && stored.has("flow_AH_key"));
 });
 
+test("faceflow.py silhouette (11/4): the blend never leaves the subject's face outline — the ROI ends at the outline, a missing silhouette keeps the old mask", { skip: pythonWithCv2() ? false : "no python with OpenCV here" }, async () => {
+  const W = 256, H = 456;
+  const tex = (x: number, y: number): [number, number, number] => [150 + ((x * 7 + y * 3) % 40), 120 + ((x * 3 + y * 5) % 30), 110 + ((x + y) % 25)];
+  const mouthY = 0.515 * H, mouthX = W / 2;
+  const neutral = pngOf(W, H, (x, y) => (Math.abs(y - mouthY) < 1.5 && Math.abs(x - mouthX) < 18 ? [90, 40, 40] : tex(x, y)));
+  const ah = pngOf(W, H, (x, y) => (((x - mouthX) / 18) ** 2 + ((y - mouthY) / 7) ** 2 < 1 ? [40, 15, 15] : tex(x, y)));
+  const chin = Math.round(mouthY + 0.05 * H);
+  const sil = pngOf(W, H, (x, y) => (y < chin && Math.abs(x - mouthX) < 70 ? [255, 255, 255] : [0, 0, 0]));
+  const run = async (silhouette?: () => Promise<Buffer | null>) => makeFaceFlow({
+    python: pythonWithCv2()!, scene: neutral, state: state(), kind: "human",
+    image: async (k) => ({ MID: neutral, AH: ah } as Record<string, Buffer>)[k] ?? null, put: async () => {}, silhouette,
+  });
+  const plain = await run();
+  const cut = await run(async () => sil);
+  const broken = await run(async () => { throw new Error("SAM down"); });
+  assert.ok(plain && cut && broken);
+  const grow = (3 * W) / 540 + 4;   // the 3 px growth + feather, in still px
+  assert.ok(cut!.roi[3] * H <= chin + grow + 6, `ROI bottom ${cut!.roi[3] * H} ends at the outline (${chin})`);
+  assert.ok(plain!.roi[3] * H > cut!.roi[3] * H, "without a silhouette the old (larger) mask");
+  assert.deepEqual(broken!.roi, plain!.roi, "a failed SAM call keeps the old mask");
+});
+
 function f16(h: number): number {
   const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
   if (e === 0) return s * m * 2 ** -24;
