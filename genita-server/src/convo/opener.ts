@@ -29,7 +29,8 @@ export type OpenerInput = {
  * several on one line ("Into: a, b, c"), which are split on commas. Dislikes, talk style and boundaries are not hooks.
  */
 /** unconfirmed suggestions and to-confirm asks are not things we know about them (Codex #352 P2) */
-const STOP_SECTION = /^\s*(?:suggestions\b|ask naturally\b)/i;
+// …and #432's "How they come across with you" / "Leans" blocks: a manner to match and indirect leans, never an opener topic
+const STOP_SECTION = /^\s*(?:suggestions\b|ask naturally\b|how they come across\b|leans\b)/i;
 /** a hook is said out loud on the first line: never health, money, a place, a person (Codex #352 P1) */
 const PRIVATE_HOOK = /\b(?:lives?|living|based in|from|moved|city|town|address|neighbou?rhood|works? (?:at|for)|job at|friend|boyfriend|girlfriend|partner|wife|husband|mom|dad|mother|father|sister|brother|son|daughter|kids?|coworker|boss)\b/i;
 const HOOK_LINE = /^\s*-?\s*(taste|interests?|into|likes?|loves?|hobbies|favou?rites?)\s*:\s*(.+)$/i;
@@ -110,8 +111,8 @@ export function openerBlock(o: OpenerInput): string {
   // "fight me on aespa again": the hook is profile knowledge, not a shared history (eval 11/3, 4 of 26 runs)
   const known = hook ? ` It's something you know from their profile, not something you two talked about (so no "again"), and never something you can see right now.` : "";
   const lines: Record<typeof k, string> = {
-    first_known: `This is your very first call (nothing has happened between you yet, so no "again" or "back"), but you already know them from their profile. Open like a friend who knows them: build your first line on ${on} as a guess, a tease or an opinion they can push back on, in the style the profile says they like.${known} No "nice to meet you", never say how you know it. ${NO_INTAKE} ${SHORT}`,
-    known: `Open like a friend who knows them: build your first line on ${onLater} as a guess, a tease or an opinion, in the style it says they like.${notLast}${known} Never say how you know it. ${NO_INTAKE} ${SHORT}`,
+    first_known: `This is your very first call (nothing has happened between you yet, so no "again" or "back"), but you already know them from their profile. Open like a friend who knows them: build your first line on ${on} itself: one specific topic (your take on it, a tease about it, or something you'd do with it), in the style the profile says they like. Talk about the thing, never about who they are: no describing, typing or labeling them, a lean in the profile is never said as a fact, and no either-or survey questions.${known} No "nice to meet you", never say how you know it. ${NO_INTAKE} ${SHORT}`,
+    known: `Open like a friend who knows them: build your first line on ${onLater} itself (your take, a tease about it, or a plan), in the style it says they like. Talk about the thing, never about who they are: no labeling them, no lean said as a fact, no either-or survey questions.${notLast}${known} Never say how you know it. ${NO_INTAKE} ${SHORT}`,
     first_new: `This is your first call. Say hi warmly and a little playfully, with one specific thing about you (an opinion or something you're into) so they have something to bite on. Not an interview. ${SHORT}`,
     followup: `Open like a friend picking up the thread: one light, specific question about that one thing, the way a friend would ask it. No recap, no "last time", never mention notes or memory. ${SHORT}`,
     back_soon: `You talked a little while ago; this is the same conversation picking back up. A quick, casual "back" line, no fresh hello. ${SHORT}`,

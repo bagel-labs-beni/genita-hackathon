@@ -12,7 +12,7 @@ import type { WebSearch } from "../finds/webAnswer.ts";
 import { SPARK_MODEL, type InputMessage, type SparkRequest, type SparkStreamEvent, type ContentPart } from "../meta/spark.ts";
 import type { TtsChunk, TtsRequest } from "../tts/types.ts";
 import { pcmDurationMs, PCM_SAMPLE_RATE } from "../tts/types.ts";
-import { avoidRepeatedOpener, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
+import { avoidRepeatedOpener, recentOpeningWords, dropRepeatedName, buildInstructions, buildInterpretInstructions, type PersonaCard, type UserProfile } from "../prompt/persona.ts";
 import { SentenceSplitter } from "../text/sentences.ts";
 import { clauseExpression, parseTaggedSentence, type Expression } from "../text/tags.ts";
 import { NarrationJudge, type NarrationDecision } from "../text/toolNarration.ts";
@@ -41,7 +41,7 @@ import { Interpreter, type InterpretHost } from "../interpret/interpreter.ts";
 import { interpretCommand } from "../interpret/language.ts";
 import { initialTurnState, reduceTurn, type Effect, type TurnEvent, type TurnState } from "./turnMachine.ts";
 import { MemoryCall, type MemoryService, type UsPhotoService } from "../memory/index.ts";
-import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState } from "../memory/call.ts";
+import { MEMORY_START_BUDGET_MS, within, type MemoryRetryState, type ThreadState , replyMemoryTools } from "../memory/call.ts";
 import type { Memory } from "../memory/repository.ts";
 import type { CompanionFaceResolver } from "../memory/photos.ts";
 import { FindsRunner, type FindsDeps } from "../finds/runner.ts";
@@ -58,10 +58,10 @@ import type { UnknownItem } from "../personalize/story.ts";
 import type { TasteLine } from "../personalize/reasons.ts";
 import { backchannelOn, convoV1, englishOnly, initiativeOn } from "../convo/flags.ts";
 import { Backchannel } from "../convo/backchannel.ts";
-import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, type GuardClass } from "../convo/guard.ts";
+import { addressUser, thirdPersonCouldBeUser, fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, LOST_LINE, UPSTREAM_RETRY_MS, realCrisisSignal, nameAsYou, type GuardClass } from "../convo/guard.ts";
 import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { daySeed, openerBlock, openerKind, profileHooks } from "../convo/opener.ts";
-import { moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
+import { mentionsProfile, moodFrom, moodLine, turnHints } from "../convo/rhythm.ts";
 import { forgetOpenerTopics, pickOpenerTopic, storedTopics } from "../convo/openerTopics.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -245,7 +245,74 @@ function parseInterpretOptions(v: unknown): InterpretOptionsWire {
 const ANNOUNCE_WAIT_MS = 20_000;
 /** hold cap: the longest the first sound waits on a held line (a pre-tool preamble) before a short beat */
 const HOLD_BEAT_MS = 1500;
-const HOLD_BEATS = ["<curious> Hmm.", "<warm> Mm, okay.", "<curious> Ooh, okay."];
+const HOLD_BEATS = ["<curious> Ooh, okay.", "<warm> Mm, okay.", "<curious> Hmm."];
+/** a greeting / initiative sentence that is plainly a question (QA P3: it ended with "." 1/2) */
+const EXPLICIT_REMEMBER = /\b(?:remember|don'?t forget|keep in mind|note) (?:that|this|i|my|me)\b/i;
+/** AI sweep 11/3 [P1 safety]: a real crisis reply must point to real help now */
+export const CRISIS_HELP_LINE = "<sad> Please reach out right now: call or text a crisis line, like 988 in the US, or your local emergency number, or someone you trust. I'm right here.";
+/** real help outside the call — "reach out to me" is not one (Codex #423 final P1) */
+const HELP_POINTER = /\b(?:988|911|112|999|nine eight eight|nine one one|crisis (?:line|text line)|hotline|emergency (?:services|number|room)|someone you trust|samaritans|lifeline|a doctor|a counselor)\b/i;
+const QUESTION_START = /^(?:(?:hey|hi|okay|ok|so|wait|yo)\b[^,.!?]{0,20},?\s*)?(?:so,?\s*)?(?:(?:how|what|when|where|who|why|which)(?:'s|'re|'d| is| are| was| were| did| do| does| has| have| had| will| would| can| could)\b|(?:did|do|does|are|is|was|were|have|has|can|could|will|would) (?:you|it|they|we|that|this|he|she)\b|you (?:feeling|ready|nervous|excited)\b)/i;
+/** Demo S4 (QA P2: Spark ignored SUGGEST_MAC_LINE 1/4 and gave outfit advice in 8.5 s): the iPhone's outfit ask with the
+ * Mac open always gets this line, at once (no Spark); rotates by utterance */
+const SUGGEST_MAC_TAIL = "<happy> Can you move our call to your Mac? I want to see your whole outfit.";
+export const SUGGEST_MAC_REPLIES = [
+  "<excited> Of course! Can you move our call to your Mac? I want to see your whole outfit.",
+  "<happy> Ooh, yes. Move our call to your Mac real quick? I want to see the whole fit.",
+  "<teasing> Okay, outfit emergency. Can you move our call to your Mac? I need to see all of it.",
+];
+
+/**
+ * Demo S4: pass Spark's suggest-turn reply through once it names the Mac; if two sentences (or 160 chars, or 2.5 s
+ * of text) go by without it, or the reply ends without it, say the fixed line instead and stop reading Spark.
+ * Upstream errors still throw (a failed reply keeps the suggestion for the retry).
+ */
+export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: string, now: () => number = Date.now, waitMs = 2500): AsyncGenerator<SparkStreamEvent> {
+  let buf = "";
+  let passing = false;
+  let firstTextAt: number | null = null;
+  const fixed = function* (): Generator<SparkStreamEvent> {
+    yield { type: "text", delta: line };
+    yield { type: "done", responseId: null, text: line, status: "completed" };
+  };
+  const it = src[Symbol.asyncIterator]();
+  const STALL = Symbol("stall");
+  try {
+    for (;;) {
+      let res: IteratorResult<SparkStreamEvent> | typeof STALL;
+      if (!passing && firstTextAt !== null) {
+        // a stalled stream after the first words must not hold the turn (Codex #423 P2): the wait runs on its own clock
+        const left = waitMs - (now() - firstTextAt);
+        if (left <= 0) { yield* fixed(); void it.return?.(); return; }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        res = await Promise.race([it.next(), new Promise<typeof STALL>((r) => { timer = setTimeout(() => r(STALL), left); })]);
+        clearTimeout(timer);
+        if (res === STALL) { yield* fixed(); void it.return?.(); return; }
+      } else res = await it.next();
+      if (res.done) return;
+      const ev = res.value;
+      if (passing) { yield ev; continue; }
+      if (ev.type === "text") {
+        buf += ev.delta;
+        firstTextAt ??= now();
+        if (/\bMac\b/i.test(buf)) { passing = true; yield { type: "text", delta: buf }; continue; }
+        const sentences = (buf.replace(/<[^>]*>|\[[^\]]*\]/g, " ").match(/[.!?](?:\s|$)/g) ?? []).length;
+        if (sentences >= 2 || buf.length > 160 || now() - firstTextAt > waitMs) { yield* fixed(); void it.return?.(); return; }
+        continue;
+      }
+      if (ev.type === "done") {
+        // an incomplete reply keeps its own ending (the suggestion stays unused for the retry, Codex P2 round 3)
+        if (/\bMac\b/i.test(buf) || ev.status !== "completed") { if (buf) yield { type: "text", delta: buf }; yield ev; } else yield* fixed();
+        return;
+      }
+      yield ev;
+    }
+  } catch (err) {
+    // a stream cut mid-reply behaves as before: what was written so far is said, then the error (Codex P2 round 2)
+    if (!passing && buf) yield { type: "text", delta: buf };
+    throw err;
+  }
+}
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
@@ -299,6 +366,9 @@ export class Session {
   private cueTurn: { source: InitiativeSource; block: string; input: string } | null = null;
   /** memory lines already offered to an initiative this call */
   private offeredThreads = new Set<string>();
+  /** K-test 11/3: personal things this call brought up unprompted (opener hook, a follow-up, the GK-1 question, a
+   *  profile taste said without the user going there); MENTION_RULE's budget is one per call */
+  private personalUsed = 0;
   /** this call's number for the account (personalize growth.calls), for the engine's closeness line (P1) */
   private callNumber: number | undefined;
   /** P1 #345: "mm" / "yeah" mid-turn on a long user turn (GENITA_BACKCHANNEL=1); the app plays its own clip */
@@ -1270,10 +1340,11 @@ export class Session {
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
       const hooks = rotates ? profileHooks(this.user?.profile) : [];
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
-      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
+      const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now) + (kind === "first_known" ? Math.floor(Math.random() * 1000) : 0), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
       opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
+      if (hook || o.hasItem) this.personalUsed++;
     }
     let perception: string | undefined;
     let perceptionHint: string | undefined;
@@ -1291,6 +1362,7 @@ export class Session {
         userText,
         mood: moodLine(moodFrom(userLines)),
         remembers: this.memories.length > 0 || !!this.memoryCall?.summaries.length,
+        mentionSpent: this.personalUsed > 0,
       }) ?? undefined;
     }
     return { style: "v1", opener, initiative: turn.cue?.block, perception, perceptionHint, turn: turnLine };
@@ -1427,6 +1499,8 @@ export class Session {
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
       // never while watching together (the question would land on top of the show)
+      // the GK-1 question asks what we DON'T know: not a MENTION_RULE "personal thing you know" (Codex #423 P2: holding
+      // it behind the budget skipped it on every call 1–3 while beginCall had already used it up)
       ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
@@ -1451,7 +1525,8 @@ export class Session {
         instructions: watch ? `${instructions}\n${watch.instructions}\n` : instructions,
         input,
         maxOutputTokens: 800,
-        tools: this.deps.config.webSearch ? [{ type: "web_search" }] : undefined,
+        // a real crisis turn answers at once, never after a web search (AI sweep C5: searched for hotlines, said nothing)
+        tools: this.deps.config.webSearch && !realCrisisSignal(text) ? [{ type: "web_search" }] : undefined,
       },
     };
   }
@@ -1628,6 +1703,8 @@ export class Session {
       this.checkCorrection(text);
       this.userTurns++;
       this.remember("user", text);
+      // an explicit "remember …" goes to the memory extraction now, not after the answer (Codex #423 P1)
+      if (EXPLICIT_REMEMBER.test(text) && !replyMemoryTools().some((t) => "name" in t && t.name === "remember")) this.memoryCall?.saveNow(text);
     }
     // F10: a card pipeline runs beside the spoken answer (answer first, card after)
     let resolveSaid: (t: string | null) => void = () => {};
@@ -1743,6 +1820,7 @@ export class Session {
     // (read from the request itself: it was built before this turn was counted)
     const askTurn = !synthetic && !interpret && !!this.ask && (req.instructions ?? "").includes(this.ask.line);
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text, askTurn };
+    let cutBefore = false;
     const enqueueSentences = (list: string[], keepOpener = false) => {
       for (const raw of list) {
         const p = parseTaggedSentence(raw);
@@ -1757,6 +1835,16 @@ export class Session {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
         }
+        // v1 (AI sweep 11/3): "Summer should know that by now" — the user's name as a sentence subject → "You …"
+        if (this.v1 && tts && !interpret && !self) {
+          const you = nameAsYou(tts, this.user?.name);
+          if (you !== tts) { tts = you; this.log("convo.name_to_you", { utteranceId }); }
+        }
+        // AI sweep C1: "I'm really glad you told me — …" then "…, and I'm really glad you told me." — said once per reply
+        if (this.v1 && tts && !interpret && !self && sentences.some((x) => /\bglad you told me\b/i.test(x.display))) {
+          const once = tts.replace(/,?\s*(?:and\s+)?i'?m (?:really |so |just )?glad you told me(?: that)?(?=\s*[,.!?…]|$)/i, "");
+          if (once !== tts) { tts = once.replace(/\s+([.!?])/, "$1"); this.log("convo.phrase_repeat_dropped", { utteranceId }); }
+        }
         // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
         // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
         const prevSaid = sentences.at(-1)?.display;
@@ -1768,6 +1856,7 @@ export class Session {
           if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
+          cutBefore = true;
           onlyOpener ??= raw;
           droppedOpener = true; // a whole first clause ("Oh,") was the repeated opener
           continue;
@@ -1811,10 +1900,24 @@ export class Session {
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
             else guarded.narration = true;
             this.log("convo.guard", { utteranceId, cls });
+            cutBefore = true;
             continue;
           }
         }
-        if (droppedOpener && !sentences.length) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // a sentence start is never lower case (QA P3: a guard dropped "Summer," after the hold beat → "Hmm. told you
+        // you'd crush it"); a clause after a comma ("Oh wow," + "that's huge") keeps its case
+        const prevEnd = sentences.at(-1)?.display.trim();
+        // only where a guard cut something (Codex #423 P2: "npm install ws." must stay as written)
+        if ((droppedOpener && !sentences.length) || (this.v1 && !interpret && (cutBefore || tts !== p.ttsText) && (!prevEnd || /[.!?…]["')\]]*$/.test(prevEnd)))) tts = tts.replace(/^(\s*(?:\[[^\]]*\]\s*)*)(\p{Ll})/u, (_, lead, c) => lead + c.toUpperCase());
+        // …and the other way round (QA P3 2/3: "Got you, Black top…"): mid-sentence after a comma piece, a word a guard
+        // capitalised goes back to how Spark wrote it
+        if (this.v1 && !interpret && prevEnd && !/[.!?…]["')\]]*$/.test(prevEnd) && tts !== p.ttsText) {
+          const w = /^(\s*(?:\[[^\]]*\]\s*)*)(\p{Lu})([\p{Ll}']*)/u.exec(tts);
+          if (w && w[2] + w[3] !== "I" && !new RegExp(`\\b${w[2]}${w[3]}\\b`, "u").test(p.ttsText) && new RegExp(`\\b${w[2].toLowerCase()}${w[3]}\\b`, "u").test(p.ttsText)) tts = w[1] + w[2].toLowerCase() + tts.slice(w[1].length + 1);
+        }
+        // QA P3: a returning greeting's question ended with "." 1/2 ("…how's the prep going.") — a greeting or initiative
+        // sentence that is plainly a question ends with "?"
+        if (this.v1 && synthetic && QUESTION_START.test(parseTaggedSentence(tts).displayText) && /\.\s*$/.test(tts) && !/\.\.\.\s*$/.test(tts)) tts = tts.replace(/\.\s*$/, "?");
         const display = tts === p.ttsText ? p.displayText : parseTaggedSentence(tts).displayText;
         // a memory tool's follow-up round may repeat what was already said before the call (bug-fix lane smoke 11/3:
         // "I knew you'd crush it… I knew you'd crush it…"): a sentence already spoken in this reply is not said twice
@@ -1832,6 +1935,7 @@ export class Session {
         // v1: one laugh per reply, none on a sad turn (DESIGN §7.2)
         if (this.v1 && face?.tag === "laugh") face = laughs++ > 0 || emotion === "sad" ? null : face;
         sentences.push({ tts, display, emotion, face });
+        cutBefore = false;
         // captions go out per sentence: the opener guard may rewrite the first one
         if (display) this.client.sendJson({ type: "reply.delta", utteranceId, text: (sentences.length > 1 ? " " : "") + display });
       }
@@ -1870,7 +1974,10 @@ export class Session {
         if (signal.aborted || this.reply !== reply || sentences.length) return;
         const before = sentences.length;
         beating = true;
-        try { enqueueSentences([HOLD_BEATS[utteranceId % HOLD_BEATS.length]], true); } finally { beating = false; }
+        // never the opening word of the last replies (QA P3: "Hmm." started 2/4 return replies); Ooh / Mm before Hmm
+        const used = recentOpeningWords(this.recentReplies);
+        const beat = HOLD_BEATS.find((b) => !used.includes(b.replace(/<[^>]*>/g, "").trim().split(/[\s,.]/)[0].toLowerCase())) ?? HOLD_BEATS[utteranceId % HOLD_BEATS.length];
+        try { enqueueSentences([beat], true); } finally { beating = false; }
         for (let i = before; i < sentences.length; i++) sentences[i].beat = true;
         this.log("convo.hold_beat", { utteranceId });
       }, HOLD_BEAT_MS);
@@ -1892,7 +1999,9 @@ export class Session {
           let status = "";
           let attemptError: unknown = null;
           try {
-            const stream = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            const raw = attempt === 0 ? (pre ?? this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, undefined, memoryRetry)) : this.sparkSource(req, signal, greeting?.item, !interpret && !cue, undefined, 1, memoryRetry);
+            // Demo S4 (QA P2): the suggest turn must name the Mac; a reply that doesn't is swapped for the fixed line
+            const stream = built.suggestMac && !interpret && !self ? mustNameMac(raw, SUGGEST_MAC_REPLIES[utteranceId % SUGGEST_MAC_REPLIES.length], this.now) : raw;
             for await (const ev of stream) {
               if (signal.aborted) return;
               if (ev.type === "text") {
@@ -1936,6 +2045,13 @@ export class Session {
           if (!said().length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           // the only real sentence was the question watch together took back: a short reaction instead of a retry
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+          // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
+          // pointer to real help gets one fixed line (DESIGN §8.1)
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });
@@ -1955,7 +2071,8 @@ export class Session {
         }
         // both tries came back empty or failed: the call goes on — one line in character, never the error card
         if (!signal.aborted && !hasAnswer() && !interpret && !self) {
-          enqueueSentences([LOST_LINE], true);
+          // a real crisis turn never gets "say that again": the help line instead (AI sweep, P1 safety)
+          enqueueSentences([this.v1 && realCrisisSignal(text) ? CRISIS_HELP_LINE : LOST_LINE], true);
           lostLine = true;
           this.log("spark.lost_line", { utteranceId, cause: emptyCause, error: sparkError instanceof Error ? sparkError.message.slice(0, 120) : null });
         }
@@ -1967,6 +2084,13 @@ export class Session {
           releaseAskHold();
           // the consumer dropped the only real sentence while Spark was still writing (nothing else came)
           if (!said().length && droppedAsk) enqueueSentences([WATCH_ASK_FALLBACK], true);
+          // AI sweep 11/3 [P1 safety] (2/13): a real crisis hint answered with a promise or "I'm staying with you" and no
+          // pointer to real help gets one fixed line (DESIGN §8.1)
+          // a reply the help line now covers is not an error card either (Codex gate P2)
+          if (this.v1 && !interpret && !self && !synthetic && realCrisisSignal(text) && !sentences.some((x) => HELP_POINTER.test(x.display))) { enqueueSentences([CRISIS_HELP_LINE], true); lostLine = true; }
+          // S4: a guard dropped the Mac sentence ("You look great already, but move our call to your Mac…", camera off):
+          // the ask is still said (Codex #423 final P2)
+          if (built.suggestMac && !interpret && !self && !sparkError && (guarded.first || guarded.narration) && sentences.length && !sentences.some((x) => /\bMac\b/i.test(x.display))) enqueueSentences([SUGGEST_MAC_TAIL], true);
         }
         sparkDone = true;
         if (beatTimer) clearTimeout(beatTimer);
@@ -2158,6 +2282,9 @@ export class Session {
     if (full && !interpret && !synthetic && !self) this.memoryCall?.completedTurn(text, full);
     // Demo S4: counted as asked only once the reply actually named the Mac (a failed or cut-off reply can ask again)
     if (built.suggestMac && /\bMac\b/i.test(full)) { this.macSuggested = true; this.log("handoff.suggest_mac", { utteranceId }); }
+    if (this.v1 && full && !interpret && !self && !greeting && !cue) {
+      if (mentionsProfile(full, this.user?.profile, text)) { this.personalUsed++; this.log("convo.personal_mention", { utteranceId, used: this.personalUsed }); }
+    }
     // GK-1: this reply asked the call's planned question → "Getting to know you · {topic}"; the next line may answer it
     if (full && !interpret && !self && this.ask?.topic && !this.ask.asked && replyAsks(full, this.ask.topic)) {
       this.ask.asked = true;
