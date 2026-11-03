@@ -340,8 +340,10 @@ public struct FlowMap: Codable, Equatable, Sendable {
         /// openDnPx below), centre scale 1 / (1 − openMag × opening). The teeth layer follows the same
         /// rows, so the teeth fill the bigger opening instead of a dark slit. Closures are never touched.
         public var openMag = 0.0, openUpPx = 0.004, openDnPx = 0.012
+        /// v60: sideways widening on flat vowels (share of the mouth half-width at the opening's centre row)
+        public var openWide = 0.0
         public init() {}
-        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, spreadPx, roundInPx, jawDropPx, mbpChinPx, lpfMs, microPx, lipThin, lipThinPx, openMag, openUpPx, openDnPx }
+        enum CodingKeys: String, CodingKey { case follow, falloff, followOpenPx, philtrumPx, eeSpread, roundBulgePx, spreadPx, roundInPx, jawDropPx, mbpChinPx, lpfMs, microPx, lipThin, lipThinPx, openMag, openUpPx, openDnPx, openWide }
         public init(from decoder: Decoder) throws {
             self.init()
             guard let c = try? decoder.container(keyedBy: CodingKeys.self) else { return }
@@ -362,6 +364,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             if let v = try? c.decodeIfPresent(Double.self, forKey: .openMag) { openMag = min(1.5, max(0, v)) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .openUpPx) { openUpPx = max(0, v) }
             if let v = try? c.decodeIfPresent(Double.self, forKey: .openDnPx) { openDnPx = max(0, v) }
+            if let v = try? c.decodeIfPresent(Double.self, forKey: .openWide) { openWide = min(0.3, max(0, v)) }
         }
         /// Release values for people on the lip rig when prep sends no perioral block: the human lane's
         /// v56 (critic 8.5; jawDrop 0 — 5 px made the jaw 1.34× too fast), plus the app's ring follow.
@@ -370,7 +373,7 @@ public struct FlowMap: Codable, Equatable, Sendable {
             p.follow = 0.2; p.philtrumPx = 1.6; p.spreadPx = 5; p.roundInPx = 3; p.jawDropPx = 0; p.roundBulgePx = 1.2
             p.mbpChinPx = 1.1; p.lpfMs = 150; p.microPx = 0      // MBP chin 1.3 → 1.1 (critic: jawspd 1.5)
             p.lipThin = 0.8; p.lipThinPx = 0.014                  // v57c
-            p.openMag = Self.releaseOpenMag; p.openDnPx = 0.022; p.openUpPx = 0.006  // v59 (v58: .012 / .004)
+            p.openMag = Self.releaseOpenMag; p.openDnPx = 0.024; p.openUpPx = 0.006; p.openWide = 0.2  // v60 (v58: .012 / .004)
             return p
         }()
         /// v58 open magnifier strength for the release block (rollback: 0).
@@ -693,6 +696,8 @@ final class FlowMorph: @unchecked Sendable {
     private var rigLo: [Float] = []
     /// mouth box in working px (lip thinning)
     private var rigMouth: CGRect?
+    /// v60: the magnifier's strength, low-passed (its peaks jumped: jerk 1.8 vs the reference 0.8)
+    private var openKS: Float = 0, openKT: Double?
     private var stillH: Double = 0
     /// per flow cell: slow share and its gain (chin rows, skin ring)
     private var rigLoC: [Float] = [], rigGC: [Float] = []
@@ -1055,7 +1060,11 @@ final class FlowMorph: @unchecked Sendable {
         var usedV2 = false
         if mo != nil, let ctx = context, let p = data.map.motionV2 ?? (data.kind == "human" ? MotionV2Params() : nil),
            case let ph = ctx.timeline.phonemeTimings, !ph.isEmpty {
-            if v2 == nil { v2 = MotionV2(params: data.map.rig != nil && data.kind == "human" ? p.v59() : p, faceNorm: faceNorm) }
+            if v2 == nil {
+                let rigHuman = data.map.rig != nil && data.kind == "human"
+                v2 = MotionV2(params: rigHuman ? p.v59() : p, faceNorm: faceNorm)
+                v2!.useV60 = rigHuman && MotionV2.v60Ladders
+            }
             if let r = v2!.step(ms: ctx.audioMs, phonemes: ph, openness: { ctx.timeline.loudness(atMs: $0) },
                                 order: order, resolve: resolve) {
                 am = r.amounts; v2Closed = r.closed; usedV2 = true
@@ -1242,7 +1251,7 @@ final class FlowMorph: @unchecked Sendable {
         // v57c lip thinning (spread vowels): band around the opening, centre column scanned on the teeth layer
         var thin: (yc: Float, R: Float, cx: Float, hw: Float, k: Float)? = nil
         // v58 open magnifier: (centre row, band above, band below, strength)
-        var openW: (yc: Float, core: Float, eUp: Float, eDn: Float, rUp: Float, rDn: Float, cx: Float, hw: Float, paint: Bool)? = nil
+        var openW: (yc: Float, core: Float, eUp: Float, eDn: Float, rUp: Float, rDn: Float, cx: Float, hw: Float, paint: Bool, wid: Float, flat: Float)? = nil
         if rg != nil, let pr = cheekRig?.perioral, pr.lipThin > 0 || pr.openMag > 0, let mb = rigMouth, !(usedV2 && v2Closed) {
             let ewT = (context.map { expressionWeights(atMs: $0.audioMs) }) ?? [:]
             let swT = max(ewT["smile"] ?? 0, ewT["smileopen"] ?? 0, 0.8 * (ewT["laugh"] ?? 0))
@@ -1252,7 +1261,15 @@ final class FlowMorph: @unchecked Sendable {
             // resting gap is left alone and only real vowels grow
             let openSum = Double(["AH", "AH2", "A", "OH", "O", "EH", "EI", "U", "MID"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] })
             let openN = min(1, max(0, (openSum - 0.12) / 0.5))
-            let ko = Float(pr.openMag * openN * openN * (3 - 2 * openN))
+            let koRaw = Float(pr.openMag * openN * openN * (3 - 2 * openN))
+            let dtK = openKT.map { t - $0 } ?? 0
+            openKT = t
+            if dtK <= 0 || dtK > 0.5 { openKS = koRaw }
+            else { openKS += (koRaw - openKS) * Float(min(1, dtK / 0.045)) }   // ~45 ms: softens the peaks, keeps the beat
+            let ko = openKS
+            // v60 vowel shape: open / spread keys open wide and flat (upper teeth band), only o / u / w round
+            let roundSum = Double(["OH", "O", "U", "WQ"].compactMap { order.firstIndex(of: $0) }.reduce(Float(0)) { $0 + am[$1] })
+            let flatShare = Float(openSum > 1e-3 ? max(0, min(1, 1 - roundSum / openSum)) : 0)
             if k > 0.01 || ko > 0.01 {
                 var yc = Float(mb.midY), dop: Float = 1
                 var ySplit: Float? = nil       // v58: the darkest row between the teeth rows (upper teeth stay up)
@@ -1287,13 +1304,15 @@ final class FlowMorph: @unchecked Sendable {
                 }
                 let R = dop + Float(pr.lipThinPx * stillH) * Float(h) / Float(data.roi.height)
                 if k > 0.01 { thin = (yc, R, Float(mb.midX), Float(mb.width / 2 * 1.05), k) }
-                if ko > 0.01 {
+                if ko > 0.01, ySplit != nil {   // no clean teeth rows at the centre (broken prep interiors): leave the opening alone
                     // the lower lip / lower teeth / chin translate down by eDn, the upper lip lifts by eUp; only a
                     // thin core of the opening (the dark middle) stretches, so teeth move but are never stretched
                     let pxH = Float(stillH) * Float(h) / Float(data.roi.height)
-                    let eDn = ko * Float(pr.openDnPx) * pxH, eUp = ko * Float(pr.openUpPx) * pxH
+                    // flat (a / e / i) vowels drop 30% less and widen instead; round ones keep the full drop
+                    let eDn = ko * Float(pr.openDnPx) * pxH * (1 - 0.3 * flatShare), eUp = ko * Float(pr.openUpPx) * pxH
                     let core = max(0.5, 0.2 * dop)
-                    openW = (ySplit ?? yc, core, eUp, eDn, dop + eUp + 0.025 * pxH, dop + eDn + 0.06 * pxH, Float(mb.midX), Float(mb.width / 2 * 1.1), ySplit != nil)
+                    openW = (ySplit ?? yc, core, eUp, eDn, dop + eUp + 0.025 * pxH, dop + eDn + 0.06 * pxH, Float(mb.midX), Float(mb.width / 2 * 1.1), ySplit != nil,
+                             ko * Float(pr.openWide) * flatShare, flatShare)
                 }
             }
         }
@@ -1304,10 +1323,13 @@ final class FlowMorph: @unchecked Sendable {
                 let m = maskW[i]
                 var r = neutral[i * 3], g = neutral[i * 3 + 1], b = neutral[i * 3 + 2]
                 if m > 0.002, !act.isEmpty || !drawn.isEmpty || shG != nil {
-                    let fx = (Float(x) + 0.5) * sx - 0.5
-                    let px = Float(x), py0 = Float(y)
+                    var fx = (Float(x) + 0.5) * sx - 0.5
+                    var px = Float(x)
+                    let py0 = Float(y)
                     var py = py0, fy = fy0
                     var cav: Float = 0          // v58: share of the dark mouth inside painted over this pixel
+                    var pyT = py0, fyT = fy0
+                    var cavT: Float = 0.5       // v60b: 0 at the top of the gap → 1 at the bottom (tongue side)    // v58: teeth rows — the opening's move only, never the v57c thinning (codex P2)
                     if let th = thin {
                         let d = abs(py0 - th.yc)
                         if d < th.R {
@@ -1322,8 +1344,14 @@ final class FlowMorph: @unchecked Sendable {
                     if let ow = openW {
                         let dd = py - ow.yc, ad = abs(dd)
                         let R = dd >= 0 ? ow.rDn : ow.rUp
+                        // v60 widen: flat vowels pull the mouth out sideways about its centre (fades with the band)
+                        if ow.wid > 0.002, ad < R {
+                            let v = 1 - ad / R, uw = (px - ow.cx) / (1.6 * ow.hw)
+                            let hz = ow.wid * v * v * max(0, 1 - uw * uw)
+                            if hz > 0.001 { px = ow.cx + (px - ow.cx) * (1 - hz); fx = (px + 0.5) * sx - 0.5 }
+                        }
                         let u = (px - ow.cx) / ow.hw, u2 = u * u
-                        let wu = max(0, 1 - u2)                                      // zero past the mouth corners
+                        let wu = max(0, 1 - u2)        // lens-shaped gap, nothing at the corners (a flat profile drew a slab)
                         let E = (dd >= 0 ? ow.eDn : ow.eUp) * wu * wu
                         if ad < R, E > 0.05 {
                             let c2 = ow.core + E
@@ -1332,9 +1360,10 @@ final class FlowMorph: @unchecked Sendable {
                                 // the new gap between the teeth: dark mouth inside (stretching it drew fangs)
                                 sd = ad * ow.core / c2
                                 let z = 1 - ad / c2
-                                // only with a whole mouth inside at the centre column (prep's broken interiors
-                                // — the 11/3 teeth-block faces — painted dark squares on the lip), centre 70%
-                                if ow.paint { cav = min(1, E / 3) * min(1, 2.2 * z) * 0.85 * max(0, 1 - u2 / 0.5) }
+                                // the whole lens-shaped gap (it narrows to nothing at the corners): any stretched texture
+                                // here — teeth rows (fangs, v58) or key teeth (white bars, v60 beard) — is covered
+                                let ze = min(1, z / 0.6); cav = min(1, E / 2.0) * ze * ze * (3 - 2 * ze) * 0.95   // soft inner-lip edge
+                                cavT = (dd / c2 + 1) / 2
                             }
                             else {                                                      // lips / teeth / chin translate, easing to 0 at R
                                 let q = min(1, (R - ad) / max(1, R - c2))
@@ -1342,6 +1371,14 @@ final class FlowMorph: @unchecked Sendable {
                             }
                             py = ow.yc + (dd >= 0 ? sd : -sd)
                             fy = (py + 0.5) * sy - 0.5
+                        }
+                        // the same opening move from the unthinned row, for the teeth layer
+                        let dT = py0 - ow.yc, aT = abs(dT), RT = dT >= 0 ? ow.rDn : ow.rUp
+                        let ET = (dT >= 0 ? ow.eDn : ow.eUp) * wu * wu
+                        if aT < RT, ET > 0.05 {
+                            let c2 = ow.core + ET
+                            let sT: Float = aT <= c2 ? aT * ow.core / c2 : aT - ET * { let q = min(1, (RT - aT) / max(1, RT - c2)); return q * q * (3 - 2 * q) }()
+                            pyT = ow.yc + (dT >= 0 ? sT : -sT); fyT = (pyT + 0.5) * sy - 0.5
                         }
                     }
                     let d = Self.bilinear2(gn, fw, fh, fx, fy)
@@ -1363,22 +1400,29 @@ final class FlowMorph: @unchecked Sendable {
                     }
                     if let tl = teethL {
                         // teeth texture in its own (pre-thinning) coordinates; the alpha grows with the map
-                        let tY = openW != nil ? py : py0, tFy = openW != nil ? fy : fy0
+                        let tY = openW != nil ? pyT : py0, tFy = openW != nil ? fyT : fy0
                         let dk = Self.bilinear2(tl.field, fw, fh, fx, tFy)
                         var al = Self.bilinear1(tl.int, w, h, px + dk.0, tY + dk.1)
                         if py != tY {
                             let dm = Self.bilinear2(tl.field, fw, fh, fx, fy)
                             al = max(al, Self.bilinear1(tl.int, w, h, px + dm.0, py + dm.1))
                         }
-                        cav *= min(1, al)                  // only inside the mouth (never over lips or skin)
                         al = min(1, al * tl.s)
                         if al > 0.002 {
-                            let c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
+                            var c = Self.bilinear3(tl.key, w, h, px + dk.0, tY + dk.1)
+                            // v60b: the key's thin upper-teeth band reads a little brighter (bright pixels only, above the gap)
+                            if let ow = openW, tY < ow.yc {
+                                let l = (c.0 + c.1 + c.2) / 3, bw = min(1, max(0, (l - 120) / 60)) * 0.18
+                                if bw > 0 { c = (c.0 + (255 - c.0) * bw, c.1 + (255 - c.1) * bw, c.2 + (255 - c.2) * bw) }
+                            }
                             r = r * (1 - al) + c.0 * al; g = g * (1 - al) + c.1 * al; b = b * (1 - al) + c.2 * al
                         }
                     }
-                    if teethL == nil { cav = 0 }
-                    if cav > 0.002 { r += (34 - r) * cav; g += (18 - g) * cav; b += (20 - b) * cav }
+                    if cav > 0.002 {
+                        // v60b: warm dark red-brown, #3a1a1a at the top → #5a2a2a toward the tongue (never a black hole)
+                        let cr = 58 + 32 * cavT, cg = 26 + 16 * cavT, cb = 26 + 16 * cavT
+                        r += (cr - r) * cav; g += (cg - g) * cav; b += (cb - b) * cav
+                    }   // mouth shadow, not a black hole
                     if let sh = shG {
                         let v = Self.bilinear1(sh, fw, fh, fx, fy)
                         if v != 0 { let f = 1 + v * (0.5 + (r + g + b) / 765); r *= f; g *= f; b *= f }

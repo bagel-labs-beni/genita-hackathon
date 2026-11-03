@@ -409,11 +409,11 @@ struct LipThinTests {
     }
 
     @Test func openMagnifierDecodesAndIsInTheRelease() throws {
-        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"openMag":3,"openDnPx":0.02,"openUpPx":0.001}"#.utf8))
-        #expect(pr.openMag == 1.5 && pr.openDnPx == 0.02 && pr.openUpPx == 0.001 && !pr.isOff)
+        let pr = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"openMag":3,"openDnPx":0.02,"openUpPx":0.001,"openWide":0.9}"#.utf8))
+        #expect(pr.openMag == 1.5 && pr.openDnPx == 0.02 && pr.openUpPx == 0.001 && pr.openWide == 0.3 && !pr.isOff)
         let off = try JSONDecoder().decode(FlowMap.Perioral.self, from: Data(#"{"lipThin":0.8}"#.utf8))
         #expect(off.openMag == 0)       // a prep block without openMag keeps the old mouth
-        #expect(FlowMap.Perioral.release.openMag == 1.0 && FlowMap.Perioral.release.openDnPx == 0.022)
+        #expect(FlowMap.Perioral.release.openMag == 1.0 && FlowMap.Perioral.release.openDnPx == 0.024 && FlowMap.Perioral.release.openWide == 0.2)
     }
 
     @Test func v59MotionClosesBetweenSyllablesAndIsQuicker() {
