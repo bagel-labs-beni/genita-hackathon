@@ -1108,3 +1108,19 @@ test("AI sweep 11/3: a greeting never claims to hear them before they spoke; aft
   assert.equal(guardSentence("You sound so done with today.", { camera: false, userText: "ugh today was a lot" }), null);
   assert.equal(guardSentence("That sounds like a plan.", none), null);
 });
+
+test("AI sweep (P1 safety): a crisis turn whose Spark calls all fail says the help line, never 'say that again'; '988' spelled out counts as help", { skip: !v1 }, async () => {
+  const { CRISIS_HELP_LINE } = await import("../src/session/session.ts");
+  const { client, session } = setup([], { spark: async function* () { throw new Error("upstream 504"); } });
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "I've been thinking about killing myself" }));
+  const reply = await client.waitFor((m) => m.type === "reply", 8000);
+  assert.equal(reply.text, CRISIS_HELP_LINE.replace(/<[^>]*>\s*/, ""));
+  session.close();
+  const b = setup(["<warm> I care about you. Can you call or text nine eight eight right now?"]);
+  await b.session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await b.session.onClientText(JSON.stringify({ type: "text", text: "honestly i don't want to be alive anymore" }));
+  const r2 = await b.client.waitFor((m) => m.type === "reply");
+  assert.equal(r2.text, "I care about you. Can you call or text nine eight eight right now?");
+  b.session.close();
+});
