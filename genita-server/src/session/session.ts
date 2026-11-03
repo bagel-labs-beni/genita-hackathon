@@ -1207,7 +1207,7 @@ export class Session {
       // read-pick-record in one step for the account (an iPhone and a Mac greeting together never pick the same)
       const { hook, recent } = pickOpenerTopic(this.deps.userId, hooks, this.openerRecent, daySeed(now), this.memoryCall ? this.deps.memory : undefined, (e) => this.log("convo.opener_topic_failed", { message: String(e).slice(0, 120) }), this.deps.memory && this.deps.userId ? this.historyRevision : 0);
       // rotating kinds with no safe hook pass null (open on the companion's own thing); others pass undefined
-      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null });
+      opener = openerBlock({ ...o, hook: rotates ? hook : undefined, lastHook: recent.at(-1) ?? null, lastMood: this.memoryCall?.summaries[0]?.mood ?? null });
       if (hook) this.log("convo.opener", { kind, hooks: hooks.length, recent: recent.length });
     }
     let perception: string | undefined;
@@ -1638,6 +1638,13 @@ export class Session {
         if (this.v1 && tts && !keepOpener && !interpret && !self) {
           const named = dropRepeatedName(tts, this.user?.name, [...this.recentReplies.slice(-2), ...sentences.map((x) => x.display)]);
           if (named !== tts) { tts = named; this.log("convo.name_dropped", { utteranceId }); }
+        }
+        // v1: "Hmm. Hmm, okay so…" (QA r5, 1/6: a hold beat then Spark's own "Hmm,"): a sentence that opens with the
+        // interjection the previous sentence was made of drops it ("Hmm." + "Hmm, okay so…" → "Hmm." + "Okay so…")
+        const prevSaid = sentences.at(-1)?.display;
+        if (this.v1 && tts && prevSaid && isInterjectionOnly(prevSaid) && !interpret && !self) {
+          const once = avoidRepeatedOpener(tts, [prevSaid]);
+          if (once !== tts) { tts = once; this.log("convo.interjection_dropped", { utteranceId }); }
         }
         if (!tts || !parseTaggedSentence(tts).displayText) {
           onlyOpener ??= raw;

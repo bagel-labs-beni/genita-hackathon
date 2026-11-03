@@ -55,7 +55,7 @@ export const adapter = {
       const rotates = kind === "first_known" || kind === "known" || kind === "back_today" || kind === "back_days";
       const hook = rotates ? pickOpenerHook(profileHooks(s.user.profile), recent, (ctx.series?.index ?? [...(s as { id?: string }).id ?? ""].reduce((n, c) => n + c.charCodeAt(0), 0)) + recent.length) : null;
       if (hook && ctx.series) recentBySeries.set(key, noteHook(recent, hook));
-      const opener = openerBlock({ ...o, hook, lastHook: recent.at(-1) ?? null });
+      const opener = openerBlock({ ...o, hook, lastHook: recent.at(-1) ?? null, lastMood: (s.summaries?.[0] as { mood?: string | null } | undefined)?.mood ?? null });
       const instructions = buildInstructions({ ...base, opener }) + memoryPrompt(s.opening ? [mem(s.opening, 0)] : [], true);
       return { instructions, input: GREET_PROMPT, maxOutputTokens: 800, effort: "minimal" };
     }
