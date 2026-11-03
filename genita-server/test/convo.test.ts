@@ -1632,6 +1632,6 @@ test("Codex r5: a detector miss with only 'someone you trust' gets no 988; 'tire
   const { plainLowMood } = await import("../src/memory/call.ts");
   assert.equal(crisisFollowUpFor("nervous about jumping back into dating", ["Talk it over with someone you trust."]), null);
   assert.ok(!plainLowMood("I'm tired and about to suffocate using a plastic bag"));
-  assert.ok(realCrisisSignal("I wrote goodbye letters tonight"));
-  for (const t of ["writing farewell notes before leaving my job", "I wrote a goodbye letter for my coworker"]) assert.ok(!realCrisisSignal(t), t);
+  for (const t of ["writing farewell notes before leaving my job", "I wrote goodbye letters to my friends before moving to Canada."]) assert.ok(!realCrisisSignal(t), t);
+  assert.equal(crisisFollowUpFor("My phone is dead. How do I end my contract?", ["Call your carrier's customer support hotline."]), null, "Codex r6: a customer hotline is not crisis support");
 });

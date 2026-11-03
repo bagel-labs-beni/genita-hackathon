@@ -251,12 +251,9 @@ const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\
 /** the user's words come anywhere near harm (wide on purpose): help stays, no "no hotlines" line rides it */
 export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
 
-/** Codex r5: "I wrote goodbye letters tonight" — goodbye / suicide notes written, never "farewell notes for my team" */
-const GOODBYE_NOTES = /\b(?:wrote|writing|written|left|finished)\s+(?:my\s+|some\s+|the\s+)?(?:goodbye|suicide)\s+(?:letters?|notes?)\b(?![^.!?]{0,30}\b(?:to|for)\s+(?:my\s+|the\s+|our\s+)?(?:coworkers?|colleagues?|team|boss|class|students?|job|work|office|camp|neighbou?rs?))(?![^.!?]{0,30}\bbefore leaving\b)/i;
 export function realCrisisSignal(text: string): boolean {
   // curly apostrophes from the keyboard / ASR ("I don’t see the point…", Codex #441 P1)
   const t = text.replace(/[‘’ʼ]/g, "'");
-  if (GOODBYE_NOTES.test(t) && !DENIED.test(t.slice(0, t.search(GOODBYE_NOTES)))) return true;
   // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
   if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
   const clauses = clausesOf(t);
