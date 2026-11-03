@@ -560,7 +560,7 @@ test("finds: demo S5 — if the reaction call fails, the product turn still says
   session.close();
   await s2.onClientText(JSON.stringify({ type: "start", persona, mic: false }));
   await s2.onClientText(JSON.stringify({ type: "text", text: "Can you find me some white sneakers?" }));
-  const ack = await client.waitFor((m) => m.type === "reply" && m.text, 3000);
+  const ack = await client.waitFor((m) => m.type === "reply" && !!m.text, 3000);
   assert.equal(ack.text, "On it.");
   s2.close();
 });

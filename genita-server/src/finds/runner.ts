@@ -8,7 +8,7 @@
 import { randomUUID } from "node:crypto";
 import type { FindCard, FindKind, ServerEvent } from "../protocol.ts";
 import { classifyTurn, isProductAsk } from "./intent.ts";
-import { PRODUCT_COUNT, guessLabel, runProduct } from "./product.ts";
+import { PRODUCT_COUNT, SEARCH_TITLE, guessLabel, runProduct, shortLabel } from "./product.ts";
 import { confirmItem, runLink, runOutfit, runRecipe, type PipelineCtx, type PipelineResult } from "./pipeline.ts";
 import { ownerKey, type FindsStore } from "./store.ts";
 import type { FindsVendors } from "./vendors.ts";
@@ -25,13 +25,36 @@ export type FindsDeps = {
   shopRegion?: string;
   /** F7: identical product searches raced (GENITA_PRODUCT_HEDGE, default 2; 1 = off) */
   productHedge?: number;
+  /** demo S5: start the "goes with" search when an outfit card lands (GENITA_PRODUCT_PREFETCH=0 turns it off) */
+  productPrefetch?: boolean;
 };
 
 /** What the session says instead of a full answer while a card is being made (PF-1 "On it…"). */
 export const ACK: Partial<Record<FindKind, string>> = { product: "On it.", recipe: "Let me take a look." };
 
+/** Demo S5: an outfit card's background search for what goes with it is reused this long. */
+export const PREFETCH_WINDOW_MS = 5 * 60_000;
+/** what an outfit answer can suggest buying next ("dark brown shoes or leather accessories") */
+const GOES_WITH = /\b(shoes|sneakers|boots|loafers|heels|sandals|bag|bags|belt|belts|scarf|hat|jewelry|earrings|necklace|accessories|jacket|coat)\b/gi;
+
+type Prefetch = {
+  at: number;
+  /** words the background search looked for (lowercased): a later ask must name one of them, or none */
+  wants: Set<string>;
+  question: string;
+  label: string;
+  events: ServerEvent[];
+  images: Map<string, Buffer>;
+  listeners: Set<(e: ServerEvent) => void>;
+  done: Promise<PipelineResult & { label?: string }>;
+  abort: AbortController;
+};
+
 /** A product ask with no thing named ("match my style", "send me the links") refines the last search (D25). */
 const REFINE_WINDOW_MS = 15 * 60_000;
+
+/** item words in an ask ("shoes", "lamp"): one the prefetch didn't look for means a fresh search */
+const PRODUCT_WORD = /^(shoes?|sneakers?|boots?|loafers?|heels?|sandals?|bags?|belts?|scarf|scarves|hats?|jewelry|earrings?|necklaces?|accessories|accessory|jackets?|coats?|lamps?|chairs?|mugs?|headphones|earbuds|dress|dresses|shirts?|pants|jeans|sweaters?|hoodies?|tote|backpack|watch|sunglasses|gift|tops?|skirts?)$/;
 
 export type TurnInput = {
   text: string;
@@ -68,6 +91,7 @@ export class FindsRunner {
   private readonly running = new Map<string, Running>();
   private focusId: string | null = null;
   private closed = false;
+  private prefetched: Prefetch | null = null;
 
   constructor(deps: FindsDeps, hooks: RunnerHooks) {
     this.deps = deps;
@@ -137,12 +161,20 @@ export class FindsRunner {
       }
       this.lastProduct = { label: prev?.label ?? guessLabel(t.text, "Things"), question: prev ? `${prev.question} — ${t.text}` : t.text, at: now };
       const likes = this.likes;
-      run = async (c) => {
+      const pre = prev ? null : this.takePrefetch(t.text, now);
+      if (pre) this.lastProduct = { label: pre.label, question: `${pre.question} — ${t.text}`, at: now };
+      run = pre ? (c) => this.replayPrefetch(pre, c, t) : async (c) => {
         const r = await runProduct({ ...c, likes: await likes, recent: t.recent ?? [], previous: prev?.question, region: this.deps.shopRegion, hedge: this.deps.productHedge });
         if (r.label && this.lastProduct) this.lastProduct.label = r.label;
         return r;
       };
-    } else run = intent.kind === "recipe" ? runRecipe : intent.kind === "outfit" ? runOutfit : runLink;
+    } else if (intent.kind === "outfit") {
+      run = async (c) => {
+        const r = await runOutfit(c);
+        if (r.card && !c.signal.aborted) void t.replyText.then((said) => this.startPrefetch(r.card!, said, t)).catch(() => {});
+        return r;
+      };
+    } else run = intent.kind === "recipe" ? runRecipe : runLink;
     const release = this.deps.store.work.track(this.owner, () => this.close({ purge: true }));
     const done = run(ctx).catch((err) => {
       if (!abort.signal.aborted) {
@@ -166,6 +198,70 @@ export class FindsRunner {
   /** Waits for every running pipeline (tests, e2e script). */
   async settle(): Promise<PipelineResult[]> {
     return Promise.all([...this.running.values()].map((r) => r.done));
+  }
+
+  // ───────── demo S5: the search for what goes with a picked outfit, started before she asks ─────────
+
+  private startPrefetch(card: FindCard, said: string | null, t: TurnInput): void {
+    if (this.closed || this.deps.productPrefetch === false) return;
+    const reply = (said ?? card.say ?? "").slice(0, 300);
+    const wants = new Set([...reply.matchAll(GOES_WITH)].map((m) => m[1].toLowerCase()));
+    if (!wants.size) for (const w of ["shoes", "accessories", "bag"]) wants.add(w);
+    const picked = card.status || card.title;
+    const question = `Find shoes or accessories that go with the outfit they just picked (${picked}).${reply ? ` What you told them: "${reply}". If you named shoes or accessories there, find those.` : ""}`;
+    this.prefetched?.abort.abort();
+    const abort = new AbortController();
+    const p: Prefetch = { at: this.hooks.now(), wants, question, label: guessLabel(reply, "Shoes"), events: [], images: new Map(), listeners: new Set(), abort, done: Promise.resolve({ card: null, timings: {} }) };
+    const findId = `prefetch-${randomUUID()}`;
+    const ctx: PipelineCtx = {
+      findId, utteranceId: t.utteranceId, kind: "product", question, frames: t.frames.slice(-1), memories: this.memories, profile: this.profile, userName: this.userName,
+      replyText: Promise.resolve(null), timeZone: this.timeZone, vendors: this.deps.vendors, signal: abort.signal, now: this.hooks.now, log: this.hooks.log, images: this.deps.images,
+      emit: (e) => { p.events.push(e); for (const l of p.listeners) l(e); },
+      putImage: async (slot, bytes) => { p.images.set(slot, bytes); return `prefetch:${slot}`; },
+    };
+    const likes = this.likes;
+    p.done = (async () => runProduct({ ...ctx, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge }))().catch(() => ({ card: null, timings: {} }));
+    this.prefetched = p;
+    this.hooks.log("product.prefetch", { wants: [...wants].slice(0, 6) });
+  }
+
+  /** The prefetch fits this ask: fresh, and the ask names nothing it didn't look for. */
+  private takePrefetch(text: string, now: number): Prefetch | null {
+    const p = this.prefetched;
+    if (!p || now - p.at > PREFETCH_WINDOW_MS) return null;
+    const named = [...text.matchAll(/\b([a-z]+)\b/gi)].map((m) => m[1].toLowerCase());
+    const itemWords = named.filter((w) => PRODUCT_WORD.test(w));
+    if (itemWords.length && !itemWords.some((w) => p.wants.has(w) || p.wants.has(`${w}s`) || p.wants.has(w.replace(/s$/, "")))) return null;
+    this.prefetched = null;
+    return p;
+  }
+
+  /** Puts the prefetched search on screen under this ask's own find id (events, card, pictures). */
+  private async replayPrefetch(p: Prefetch, c: PipelineCtx, t: TurnInput): Promise<PipelineResult> {
+    c.emit({ type: "find.started", findId: c.findId, utteranceId: c.utteranceId, kind: "product", title: SEARCH_TITLE, detail: `${shortLabel(p.label)} · searching shops` });
+    let card: FindCard | null = null;
+    const forward = async (e: ServerEvent) => {
+      if (c.signal.aborted || e.type === "find.started") return;
+      if (e.type === "find.image") {
+        const bytes = e.status === "ready" ? p.images.get(e.slot) : undefined;
+        if (bytes) {
+          try { c.emit({ ...e, findId: c.findId, url: await c.putImage(e.slot, bytes) }); } catch { c.emit({ ...e, findId: c.findId, status: "failed", url: undefined }); }
+        } else c.emit({ ...e, findId: c.findId, status: "failed", url: undefined });
+        return;
+      }
+      if (e.type === "find.created") { card = { ...e.card, id: c.findId }; c.emit({ ...e, findId: c.findId, card }); return; }
+      c.emit({ ...e, findId: c.findId } as ServerEvent);
+    };
+    const queue: Promise<void>[] = [];
+    for (const e of p.events) queue.push(forward(e));
+    p.listeners.add((e) => queue.push(forward(e)));
+    const r = await p.done;
+    await Promise.all(queue);
+    p.listeners.clear();
+    if (r.card) return { card, timings: { ...r.timings, prefetched: 1 } };
+    // the background search found nothing: search for this ask itself (the failure was never shown)
+    const likes = this.likes;
+    return runProduct({ ...c, likes: await likes, recent: t.recent ?? [], region: this.deps.shopRegion, hedge: this.deps.productHedge });
   }
 
   private onEvent(e: ServerEvent): void {
@@ -253,6 +349,8 @@ export class FindsRunner {
     // purge (account deleted): stop everything and never write again.
     this.closed = true;
     if (opts.purge) this.purged = true;
+    this.prefetched?.abort.abort();
+    this.prefetched = null;
     for (const [id, r] of this.running) if (opts.purge || !this.cards.has(id)) r.abort.abort();
   }
   private purged = false;
