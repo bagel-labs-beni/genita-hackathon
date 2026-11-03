@@ -123,11 +123,27 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
     var retryingPrep = false
     /// PREP-1e: the one line under the buttons when Try again itself failed
     var prepError: String?
-    /// PREP-1: the server's call scene (not saved; the call uses the uploaded photo until the face set lands),
-    /// keyed by account + scene URL so another account's face never shows (see `sceneKey`).
-    var sceneImage: (key: String, data: Data)?
+    /// PREP-1: the server's call scene, keyed by account + scene URL so another account's face never shows (see
+    /// `sceneKey`). Kept on disk next to the photo, so a cold launch straight into a call opens on the generated
+    /// face before `/prep` answers (build 7 P1: the call must never show the upload photo).
+    var sceneImage: (key: String, data: Data)? {
+        didSet {
+            guard let sceneImage else { try? FileManager.default.removeItem(at: sceneFileURL); storage.removeObject(forKey: Self.sceneKeyKey); return }
+            try? FileManager.default.createDirectory(at: sceneFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? sceneImage.data.write(to: sceneFileURL, options: [.atomic, .completeFileProtection])
+            storage.set(sceneImage.key, forKey: Self.sceneKeyKey)
+        }
+    }
     var sceneKey: String? { prep?.sceneURL.map { "\(setup.accountId ?? "-")|\($0.absoluteString)" } }
-    var sceneImageData: Data? { sceneImage.flatMap { $0.key == sceneKey ? $0.data : nil } }
+    /// Until `/prep` answers (no `sceneKey` yet) the saved scene counts only for the same account.
+    var sceneImageData: Data? {
+        sceneImage.flatMap { saved in
+            if let key = sceneKey { return saved.key == key ? saved.data : nil }
+            return saved.key.hasPrefix("\(setup.accountId ?? "-")|") ? saved.data : nil
+        }
+    }
+    var sceneFileURL: URL { imageURL.deletingLastPathComponent().appending(path: "scene.jpg") }
+    static let sceneKeyKey = "genita.sceneKey"
     /// A02-E-style one-line error for any onboarding call (offline, server)
     var flowError: String?
     /// D47 HISY v2 cards (I03 → HISY-0 … HISY-7, N1–N3 → S0 … S4). Transient: after a relaunch they're read
@@ -171,9 +187,16 @@ struct LaunchAuthSnapshot: Equatable, Sendable {
         self.storage = storage
         self.onHandoffAccountChange = onHandoffAccountChange
         self.imageURL = imageURL
-        if reset { storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); try? FileManager.default.removeItem(at: imageURL) }
+        if reset {
+            storage.removeObject(forKey: Self.storageKey); storage.removeObject(forKey: Self.signedOutKey); storage.removeObject(forKey: Self.sceneKeyKey)
+            try? FileManager.default.removeItem(at: imageURL)
+            try? FileManager.default.removeItem(at: imageURL.deletingLastPathComponent().appending(path: "scene.jpg"))
+        }
         if let data = storage.data(forKey: Self.storageKey), let saved = try? JSONDecoder().decode(SavedSetup.self, from: data) { setup = saved } else { setup = SavedSetup() }
         setup.imageData = try? Data(contentsOf: imageURL)
+        if let key = storage.string(forKey: Self.sceneKeyKey), let data = try? Data(contentsOf: imageURL.deletingLastPathComponent().appending(path: "scene.jpg")) {
+            sceneImage = (key, data)
+        }
         // auth state first (a restart must not skip a pending A02 / CS01 by restoring the call)
         if storage.bool(forKey: Self.signedOutKey) { setup.stage = .signIn }
         else if storage.bool(forKey: Self.needsConsentKey) { setup.stage = .consent }

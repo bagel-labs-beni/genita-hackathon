@@ -38,17 +38,22 @@ enum CallMotion {
 enum LipSource: Equatable { case none }
 
 struct CompanionFaceView: View {
-    let still: Image
+    /// The prep call scene (or a bundled fixture on unwired builds); nil = the dark call ground. Never the upload photo.
+    let still: Image?
     /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_CLIP_LOOP_FACE=1.
     let loop: URL?
     /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
     var face: FaceDriver? = nil
     /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
     var faceStill: CGImage? = nil
+    /// The face set's rest frame (CallController.facePoster): the generated face in the call's crop, drawn over the
+    /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
+    var poster: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
-            still.resizable().scaledToFill()
+            if let still { still.resizable().scaledToFill() } else { CallInk.ink }
+            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
             if let face {
                 FaceFrameView(driver: face, still: faceStill)
             } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
@@ -56,7 +61,10 @@ struct CompanionFaceView: View {
             }
             LipLayer(source: lip).allowsHitTesting(false)
         }
+        .accessibilityValue(Self.layer(face: face != nil, poster: poster != nil, still: still != nil))
     }
+    /// What's on top, for UI tests: live (the talking face) > poster (its rest frame) > still (scene / fixture) > ground.
+    static func layer(face: Bool, poster: Bool, still: Bool) -> String { face ? "live" : poster ? "poster" : still ? "still" : "ground" }
 }
 
 struct LipLayer: View {

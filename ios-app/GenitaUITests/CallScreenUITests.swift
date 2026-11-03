@@ -37,6 +37,14 @@ final class CallScreenUITests: XCTestCase {
         }
 
         XCTAssertTrue(app.buttons["micToggle"].waitForExistence(timeout: 10))
+        // Chelsea P1: the call's first frame is a face layer of the companion (live / its poster / the scene), never the upload photo
+        let face = app.descendants(matching: .any)["companionFace"]
+        XCTAssertTrue(face.waitForExistence(timeout: 10))
+        XCTAssertTrue(["live", "poster", "still", "ground"].contains(face.value as? String ?? ""), "face layer: \(String(describing: face.value))")
+        // the S09 face is the companion's processed face (the face set's live frame or its rest-frame poster), not a still
+        let faceEnd = Date().addingTimeInterval(8)
+        while Date() < faceEnd, !["live", "poster"].contains(face.value as? String ?? "") { Thread.sleep(forTimeInterval: 0.1) }
+        XCTAssertTrue(["live", "poster"].contains(face.value as? String ?? ""), "S09 shows the generated face, got \(String(describing: face.value))")
         capture("S09-start")
         XCTAssertTrue(waitCue("Listening"), "S09-L"); capture("S09-L-listening")
         // HUD r01 A: the pill shares the menu button's centre line, and stays clear of it
