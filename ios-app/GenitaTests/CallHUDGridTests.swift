@@ -45,6 +45,16 @@ final class CallHUDGridTests: XCTestCase {
         }
     }
 
+    /// Codex P2: on SE (no home bar) the HUD baseline is 27 pt below the board's; with the sheet up the rail keeps the
+    /// board's line, so More ends above the half sheet as before (old: 46 pt More centred at 783 + (H − 844) − 440).
+    func testRailClearsTheHalfSheetOnSE() {
+        let se = CallHUDGrid(size: CGSize(width: 375, height: 667), safeTop: 20, safeBottom: 0)
+        let oldMoreBottom: CGFloat = 783 + (667 - 844) - 440 + 23
+        XCTAssertLessThanOrEqual(se.railY(.more, sheetUp: true) - 440 + 22, oldMoreBottom, "no lower than the 46 pt More was")
+        XCTAssertEqual(se.railY(.more), 667 - 12 - 22, "sheet down: the HUD baseline")
+        XCTAssertTrue(CallHUDGrid.sheetUp(.half) && CallHUDGrid.sheetUp(.peek) && !CallHUDGrid.sheetUp(.idle) && !CallHUDGrid.sheetUp(.dismissed))
+    }
+
     /// The call cue steps aside once the Finds sheet is half up or more; peek keeps it. A Finds line (PF-1) and a
     /// problem the user must act on stay.
     func testCueHidesFromHalfButNotFindsLinesOrProblems() {

@@ -32,8 +32,14 @@ struct CallHUDGrid: Equatable {
 
     enum RailButton: Int, CaseIterable { case camera = 2, mic = 1, more = 0 }
     var railX: CGFloat { size.width - Self.margin - Self.button / 2 }
+    /// While the Finds sheet is up the rail and the self view keep the board's line (806 on 390 × 844, + the screen's
+    /// extra height), so the sheet's shift clears them on every screen (SE has no home bar: the HUD baseline sits
+    /// 27 pt lower than the board's there, and the half sheet covered More — Codex P2).
+    var sheetBaseline: CGFloat { size.height - 844 + 806 }
     /// Centre y of a rail button before the Finds sheet shift: more = baseline − 22, mic − 78, camera − 134.
-    func railY(_ b: RailButton) -> CGFloat { baseline - Self.button / 2 - CGFloat(b.rawValue) * (Self.button + Self.gap) }
+    func railY(_ b: RailButton, sheetUp: Bool = false) -> CGFloat {
+        (sheetUp ? sheetBaseline : baseline) - Self.button / 2 - CGFloat(b.rawValue) * (Self.button + Self.gap)
+    }
 
     // MARK: status pill
 
@@ -68,10 +74,12 @@ struct CallHUDGrid: Equatable {
 
     static let selfOff = CGSize(width: 72, height: 96)
     /// Centre of the camera-off tile, left edge on the margin, bottom on the baseline (scaled about its centre by the caller).
-    func selfCenter(lift: CGFloat = 0, scale: CGFloat = 1) -> CGPoint {
+    func selfCenter(lift: CGFloat = 0, scale: CGFloat = 1, sheetUp: Bool = false) -> CGPoint {
         let s = Self.selfOff
-        return CGPoint(x: Self.margin + s.width * scale / 2, y: baseline - s.height / 2 + lift)
+        return CGPoint(x: Self.margin + s.width * scale / 2, y: (sheetUp ? sheetBaseline : baseline) - s.height / 2 + lift)
     }
+    /// The sheet states that move the rail and the self view (CameraBoxes.railShift ≠ 0).
+    static func sheetUp(_ s: SheetState) -> Bool { s != .idle && s != .dismissed }
 }
 
 /// The status pill's box (HUD r01 A). Position comes from `CallHUDGrid`; how the pill moves (width spring, text

@@ -100,7 +100,7 @@ struct ConversationView: View {
                             if !call.cameraOn {
                                 let selfScale: CGFloat = sheet == .half || sheet == .rising ? 0.5 : 1
                                 selfView.scaleEffect(selfScale)
-                                    .position(grid.selfCenter(lift: selfLift(sheet), scale: selfScale))
+                                    .position(grid.selfCenter(lift: selfLift(sheet), scale: selfScale, sheetUp: CallHUDGrid.sheetUp(sheet)))
                                     .opacity(sheet == .full ? 0 : 1).animation(.drawer, value: sheet)
                                     // camera on: the tile gives way to the camera stage (Reduce Motion: fade only)
                                     .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
@@ -108,13 +108,13 @@ struct ConversationView: View {
                         }.frame(width: full.size.width, height: full.size.height)
                             .animation(reduceMotion || CallMotion.reviewStill ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
                         Button { cameraTapped() } label: { CallToggleGlass(icon: "glass-camera-icon", on: call.cameraOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera) + railShift(sheet))
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("cameraToggle").position(x: grid.railX, y: grid.railY(.camera, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: grid.railX, y: grid.railY(.mic) + railShift(sheet))
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: grid.railX, y: grid.railY(.mic, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: CallHUDGrid.button) }
-                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: grid.railX, y: grid.railY(.more) + railShift(sheet))
+                            .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: grid.railX, y: grid.railY(.more, sheetUp: CallHUDGrid.sheetUp(sheet)) + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
                         if findsTabOpen && !connecting {
@@ -309,10 +309,11 @@ struct ConversationView: View {
     private func faceOffset(_ s: SheetState, top: CGFloat) -> CGSize {
         s == .half ? CGSize(width: 43.1, height: -66) : s == .rising ? CGSize(width: 24.2, height: -37.1) : .zero
     }
-    /// r03 `.self`: half → up 452.75 at half size (as before, from the new baseline); peek/searching → up 122.
+    /// r03 `.self` from the sheet baseline (806 + H − 844): half → half size with its bottom where the old box's was
+    /// (300.5 + H − 844: 806 − 48 − 481.5 + 24); peek/searching → up 122.
     private func selfLift(_ s: SheetState) -> CGFloat {
         switch s {
-        case .half, .rising: -452.75
+        case .half, .rising: -481.5
         case .peek, .searching: -122
         default: 0
         }

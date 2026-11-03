@@ -244,7 +244,7 @@ import XCTest
         let grid = Self.grid16, view = grid.size, label = CGSize(width: 90, height: 28)
         let rail = CameraBoxes.railRect(grid: grid, sheet: .idle)
         XCTAssertTrue(rail.contains(CGPoint(x: grid.railX, y: grid.railY(.camera))) && rail.contains(CGPoint(x: grid.railX, y: grid.railY(.more))), "camera and more buttons inside")
-        XCTAssertEqual(CameraBoxes.railRect(grid: grid, sheet: .half).minY, rail.minY - 440)
+        XCTAssertEqual(CameraBoxes.railRect(grid: grid, sheet: .half).minY, grid.railY(.camera, sheetUp: true) - 22 - 4 - 440)
         let milk = CGRect(x: 280, y: 690, width: 90, height: 120)
         let o = CameraBoxes.labelOrigin(milk, label: label, view: view, topInset: grid.labelFloor, obstacles: [rail])
         XCTAssertFalse(CGRect(origin: o, size: label).intersects(rail), "moved off the buttons")
