@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // F5-U-CAM · CAM-H (full-flow board r01 §6): the camera is the stage, the companion's face is a 96 × 128 window at the
 // top right, and the boxes the server found sit on the live preview. A box pops in over 240 ms, 60 ms after the one
@@ -19,7 +20,10 @@ struct CameraStage: View {
                 LinearGradient(colors: [CallInk.dim, .clear], startPoint: .top, endPoint: .bottom).frame(height: 136 + topInset)
                 Spacer(minLength: 0)
             }.allowsHitTesting(false)
-            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect)
+            CameraBoxOverlay(boxes: call.finds.boxes, mirrored: mirrored, topInset: 96 + topInset, avoid: noSeeRect,
+                             // demo S3 option (c): mask labels keep clear of the menu button and the self-view PiP
+                             labelObstacles: [CameraBoxes.menuRect(top: topInset),
+                                              CameraBoxes.pipRect(view: size, top: topInset, sheetHalf: call.finds.state == .half || call.finds.state == .rising)])
         }
         .frame(width: size.width, height: size.height).clipped()
         .accessibilityElement(children: .contain)
@@ -56,17 +60,25 @@ struct CameraBoxOverlay: View {
     let mirrored: Bool
     let topInset: CGFloat
     var avoid: CGRect? = nil
+    var labelObstacles: [CGRect] = []
 
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .topLeading) {
                 // r03 `.a[data-sel] img { filter: brightness(.6) }`: the scene steps back behind the lit box
                 Color.black.opacity(boxes.highlighted != nil ? 0.4 : 0).allowsHitTesting(false)
-                ForEach(boxes.boxes) { item in
-                    let rect = CameraBoxes.rect(item.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)
-                    // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
-                    if !CameraBoxes.hidden(rect, avoiding: avoid), !CameraBoxes.aboveView(rect, topInset: topInset) { PopBox(item: item, rect: rect, size: g.size, topInset: topInset, lit: boxes.highlighted == item.id,
-                           dimmed: boxes.highlighted != nil && boxes.highlighted != item.id) }
+                // `topInset` here is 96 + safe top; the avoid rect is in the same screen space
+                let drawn = boxes.boxes.map { (item: $0, rect: CameraBoxes.rect($0.box, frame: boxes.frameSize, in: g.size, mirrored: mirrored)) }
+                    .filter { !CameraBoxes.hidden($0.rect, avoiding: avoid) && !CameraBoxes.aboveView($0.rect, topInset: topInset) }
+                let labeled = CameraBoxes.labelOwners(drawn)
+                ForEach(drawn, id: \.item.id) { d in
+                    let mask = CameraBoxes.masksEnabled ? boxes.maskImages(for: d.item) : nil
+                    PopBox(item: d.item, rect: d.rect, size: g.size, topInset: topInset, lit: boxes.highlighted == d.item.key,
+                           dimmed: boxes.highlighted != nil && boxes.highlighted != d.item.key,
+                           showsLabel: labeled.contains(d.item.id),
+                           mask: mask, mirrored: mirrored,
+                           // boxes keep their label rule; masks (flag on) move the pill off the menu button and the PiP
+                           labelAt: mask == nil ? nil : CameraBoxes.labelOrigin(d.rect, label: Self.labelSize(d.item.label), view: g.size, topInset: topInset, obstacles: labelObstacles))
                 }
             }
             .opacity(boxes.visible ? 1 : 0)
@@ -77,6 +89,12 @@ struct CameraBoxOverlay: View {
         .accessibilityHidden(true)
         .accessibilityIdentifier("cameraBoxes")
     }
+
+    /// The pill's size: 12 pt medium text + 8 pt sides, 28 pt tall.
+    static func labelSize(_ text: String) -> CGSize {
+        let font = UIFont(name: "PretendardVariable-Medium", size: 12) ?? .systemFont(ofSize: 12, weight: .medium)
+        return CGSize(width: ceil((text as NSString).size(withAttributes: [.font: font]).width) + 16, height: 28)
+    }
 }
 
 private struct PopBox: View {
@@ -86,18 +104,37 @@ private struct PopBox: View {
     let topInset: CGFloat
     let lit: Bool
     let dimmed: Bool
+    /// one pill per ingredient (CameraBoxes.labelOwners); always true without repeated labels
+    var showsLabel = true
+    /// Demo S3 (flag, off by default): the SAM pixel mask drawn instead of the box — soft translucent fill + thin outline.
+    var mask: (fill: CGImage, edge: CGImage)? = nil
+    var mirrored = false
+    /// absolute origin of the label pill (masks only); nil = the box rule
+    var labelAt: CGPoint? = nil
     @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
-            RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
+            if let mask {
+                // a light, neutral fill (red-on-red vanishes on tomatoes) and a blue outline, both from the mask grid
+                Color.white.opacity(lit ? 0.45 : 0.25)
+                    .mask(Image(decorative: mask.fill, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 2))
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+                CallInk.blueOnInk
+                    .mask(Image(decorative: mask.edge, scale: 1).resizable().interpolation(.high).luminanceToAlpha().blur(radius: 0.6))
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+            } else {
+                RoundedRectangle(cornerRadius: 12).fill(CallInk.blueOnInk.opacity(lit ? 0.3 : 0.16))
+                RoundedRectangle(cornerRadius: 12).strokeBorder(CallInk.blueOnInk, lineWidth: 2)
+            }
+            if showsLabel {
             Text(item.label).font(TypeStyle.body(12, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(height: 28)
                 .background(CallInk.pill, in: RoundedRectangle(cornerRadius: 12))
-                .offset(x: max(-2, -rect.minX), y: CameraBoxes.labelOffsetY(rect, topInset: topInset))
+                .offset(x: labelAt.map { $0.x - rect.minX } ?? max(-2, -rect.minX), y: labelAt.map { $0.y - rect.minY } ?? CameraBoxes.labelOffsetY(rect, topInset: topInset))
                 .accessibilityIdentifier("boxLabel-\(item.label)")
+            }
         }
         .frame(width: max(8, rect.width), height: max(8, rect.height), alignment: .topLeading)
         .scaleEffect(shown || reduceMotion ? 1 : 0.97)

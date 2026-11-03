@@ -20,15 +20,28 @@ import ARKit
     var motionVisible: Bool { motion != nil && renderedMotionID == motion?.id }
     func effectReady(_ id:String) { guard motion?.id == id else{return};renderedMotionID=id }
     @Published var settings = false
+    /// P01-E: the six digits found no Mac.
+    @Published var pairingFailed = false
+    /// Review hook only: shows P02 without a Mac.
+    @Published var debugPaired = false
+    private var pairingAttempt = 0
     @Published var code = ""
     @Published private(set) var moving = false
-    @Published var moveFailed = false
+    /// MV-E: shown for 3 s as the call's status line, then it clears itself (independent of any view).
+    @Published var moveFailed = false {
+        didSet {
+            guard moveFailed else{return} // every failure restarts the 3 s (a quick retry that fails again stays up 3 s)
+            moveFailedToken+=1;let token=moveFailedToken
+            DispatchQueue.main.asyncAfter(deadline:.now()+3) { [weak self] in if self?.moveFailedToken==token {self?.moveFailed=false} }
+        }
+    }
+    private var moveFailedToken = 0
     /// P03: the rear camera is looking for the MAC-REG picture.
     @Published private(set) var registeringVisible = false
     /// P04: the toast after the screen was learned (4 s).
     @Published private(set) var registeredToast = false
     /// Touch to move needs world tracking (A12+) and a known display size. LiDAR only adds precision.
-    var proximitySupported: Bool { ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
+    var proximitySupported: Bool { debugPaired || ScreenWorldTracker.supported && PhoneDisplayGeometry.meters != nil }
     var isPaired: Bool { link.remembered != nil }
     private var pending: [String: Any]?
     private var snapshot = ""
@@ -86,6 +99,13 @@ import ARKit
             switch args[i+1] {
             case "p03": registeringVisible=true;return
             case "p04": showRegisteredToast();return
+            // CI screenshots of the pairing sheet and the move status line (no Mac needed)
+            case "p01": code="482";settings=true;return
+            case "p01-looking": code="482918";settings=true;return
+            case "p01e": code="482918";pairingFailed=true;settings=true;return
+            case "p02": debugPaired=true;settings=true;return
+            case "mv1": moving=true;return
+            case "mve": moveFailed=true;return
             default: break
             }
             if !ownership.isOwner || ownership.state.epoch==0 {ownership.receive(OwnershipClaim(owner:.mac,epoch:1))}
@@ -105,7 +125,21 @@ import ARKit
         if !link.connected {link.reconnect()}
         updateTracking();refreshSurface()
     }
-    func connect() { registering=proximitySupported;link.join(code) }
+    /// P01: runs by itself when the sixth digit goes in. No Mac within 8 s shows P01-E.
+    func connect() {
+        // Registering the screen waits for Set up touch to move (P02), so Not now leaves no MAC-REG behind.
+        pairingFailed=false;registering=false;link.join(code)
+        guard code.count == 6 else{return}
+        pairingAttempt+=1;let attempt=pairingAttempt
+        DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self] in
+            guard let self,self.pairingAttempt==attempt,!self.link.connected else{return}
+            self.pairingFailed=true
+        }
+    }
+    /// Editing the digits drops a running search, so its timer can't flag the new input.
+    func codeEdited() { pairingAttempt+=1;pairingFailed=false }
+    /// Closes P01/P02. A half-entered code is dropped.
+    func closePairing() { pairingAttempt+=1;pairingFailed=false;if !link.connected {code=""};settings=false }
     /// P02 Set up touch to move → P03 here and MAC-REG on the Mac at the same time.
     func registerScreen() { registering=true;registeringVisible=true;tracker.resetScreen();link.send(["type":"register"]);updateTracking();settings=false;model?.settingsOpen=false }
     func cancelRegistration() { registeringVisible=false;registering=false;link.send(["type":"registerCancel"]);updateTracking() }
@@ -189,7 +223,8 @@ import ARKit
             link.send(hello)
             ownership.publishCurrent()
             if moving && !server.peerActive {link.send(["type":"moveRequest"])}
-            if link.pairedWithCode {settings=false}
+            // P02 (Paired) follows the code. Without position tracking there is nothing to set up, so it closes.
+            if link.pairedWithCode && !proximitySupported {settings=false}
             refreshSurface()
         case "welcome":
             guard let identity=data["identity"] as? String, let url=URL(string:"genita://"+identity) else{return}
@@ -256,34 +291,8 @@ struct PhoneHandoffOverlay: View {
             if handoff.registeringVisible { RegisteringView(session:handoff.tracker.session,cancel:handoff.cancelRegistration).ignoresSafeArea() }
         }.onAppear { handoff.attach(model) }
         .onChange(of:phase) { _,new in if new != .active { handoff.pause() } else { handoff.resume() } }
-        .sheet(isPresented:$handoff.settings) { PhonePairingView().padding(24).presentationDetents([.medium,.large]) }
-        .alert("Mac not responding.",isPresented:$handoff.moveFailed) { Button("OK",role:.cancel) {} } message: { Text("It may be asleep or offline. You can keep talking here.") }
-    }
-}
-
-/// First pairing and position-effect registration. Later moves do not come here.
-struct PhonePairingView: View {
-    @ObservedObject private var handoff = PhoneHandoff.shared
-    var body: some View {
-        VStack(spacing:20) {
-            Text(handoff.isPaired ? "Your Mac" : "Pair with your Mac").font(.title2)
-            if handoff.isPaired {
-                Text(handoff.link.status)
-            } else {
-                Text("Enter the six-digit code shown in Genita on your Mac. You only do this once.").multilineTextAlignment(.center)
-                TextField("Code",text:$handoff.code).keyboardType(.numberPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("pairingCode")
-                Button("Pair",action:handoff.connect).buttonStyle(.borderedProminent)
-                Text(handoff.link.status)
-            }
-            if handoff.link.connected && handoff.proximitySupported {
-                Text(handoff.tracker.status).font(.caption)
-                Button("Set up touch to move",action:handoff.registerScreen).accessibilityIdentifier("setUpTouchToMove")
-                HStack {Text("Center down \(Int(handoff.tracker.centerDownMM)) mm");Slider(value:Binding(get:{handoff.tracker.centerDownMM},set:{handoff.tracker.centerDownMM=$0}),in:0...90,step:1)}
-                HStack {Text("Right \(Int(handoff.tracker.centerRightMM)) mm");Slider(value:Binding(get:{handoff.tracker.centerRightMM},set:{handoff.tracker.centerRightMM=$0}),in:-35...35,step:1)}
-            }
-            Text(handoff.proximitySupported ? "Show this iPhone your Mac’s screen once to set it up. Move to Mac in the menu works without it." : "Use Move to Mac in the menu to move the conversation.").font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            if handoff.isPaired { Button("Forget this Mac",role:.destructive,action:handoff.forgetMac) }
-        }
+        .overlay { if handoff.settings { PhonePairingView().transition(.opacity) } }
+        .animation(.easeOut(duration:0.24),value:handoff.settings)
     }
 }
 
@@ -293,8 +302,10 @@ struct RegisteringView: View {
     let cancel: () -> Void
     var body: some View {
         ZStack {
-            Color.black
+            RegisteringPalette.base
             CameraFeed(session: session)
+            // the board's navy shows through the camera so the white corners and Cancel always read
+            RegisteringPalette.base.opacity(0.32).allowsHitTesting(false)
             // viewfinder corners around where the Mac's screen should sit
             ViewfinderCorners().stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round)).frame(width: 300, height: 196).offset(y: -40)
             VStack(spacing: 0) {
@@ -327,10 +338,9 @@ private struct CameraFeed: UIViewRepresentable {
     let session: ARSession
     func makeUIView(context: Context) -> ARSCNView {
         let view = ARSCNView(frame: .zero)
-        // Black until the first camera frame (ARKit then draws the camera image as the scene background),
-        // so the light Cancel button and the white corners always have contrast.
-        view.backgroundColor = .black
-        view.scene.background.contents = UIColor.black
+        // The board's navy until the first camera frame (ARKit then draws the camera image as the scene background).
+        view.backgroundColor = RegisteringPalette.baseUI
+        view.scene.background.contents = RegisteringPalette.baseUI
         view.automaticallyUpdatesLighting = false
         view.rendersCameraGrain = false
         // Assigning the session keeps the tracker as its delegate; the view only draws the camera image.
@@ -351,4 +361,10 @@ struct RegisteredToast: View {
         .background(Color(white: 17.0 / 255), in: RoundedRectangle(cornerRadius: 16)).shadow(color: .black.opacity(0.12), radius: 12, y: 8)
         .padding(.horizontal, 24).accessibilityIdentifier("registeredToast")
     }
+}
+
+/// P03 board background (design-flow r01): dark navy, not black.
+enum RegisteringPalette {
+    static let baseUI = UIColor(red: 29.0 / 255, green: 34.0 / 255, blue: 43.0 / 255, alpha: 1)
+    static let base = Color(baseUI)
 }

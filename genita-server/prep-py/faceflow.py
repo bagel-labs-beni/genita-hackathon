@@ -46,10 +46,21 @@ BASE_MAP = {
     # coarticulation: a frame whose dominant shape is a consonant other than MBP/FV keeps `share` of the
     # neighbouring vowel frames' key amounts (linear between the nearest vowel frames within windowMs)
     'jawFloor': {'share': 0.6, 'windowMs': 160, 'vowels': ['A', 'O', 'EI', 'U'], 'closed': ['MBP', 'FV', 'rest']},
-    'blink': {'mode': 'snap', 'frames': 3},  # eyes fully closed for 3 frames, no half frames
+    'blink': {'mode': 'snap', 'frames': 3, 'perTenSeconds': 5},  # eyes fully closed for 3 frames, no half frames
     # optional per-key cap applied LAST (after focus, which would otherwise restore it); remainder -> neutral.
-    # Empty for v7 (caps were only needed for the bigger dark-interior keys that lost the sweep).
-    'maxAmount': {},
+    'maxAmount': {'AH2': 0.85},
+    # --- v16 (critic 8.5/10 vs the old lip-sync baseline; prototype runtime flags row v16) ---
+    # key colour only inside files[k].lip (lips + opening hull, prep-baked); outside it the neutral texture,
+    # warped by the same output->neutral flow GN (skin / beard / wrinkles never pop between keys)
+    'lipMask': True,
+    # cheeks / nasolabial follow the mouth corners: corner displacement d = -GN(corner); V = sum over sides of
+    # w_cheek * (spread * d[t - delayFrames] + (0, -lift * (EH + EI amounts))) - w_corner * pull * d; out(p) = frame(p - V(p))
+    'cheek': {'spread': 0.8, 'pull': 0.0, 'cheek': 1.3, 'naso': 0.4, 'lift': 3.0, 'delayFrames': 1, 'cornerRef': 3.36,
+              'roundNoInward': ['O', 'OH', 'U', 'WQ']},
+    'consonantOverride': {'U': 0.55, 'WQ': 0.55},
+    'brow': {'px': 2.5}, 'nod': {'px': 5.0, 'width': 2.0}, 'stress': {'topShare': 0.3, 'minGapMs': 450, 'leadMs': 80},
+    # whole-face life (v41): head drift / roll multipliers on the alive base, stress nods
+    'alive': {'headX': 3.0, 'headRoll': 1.5, 'nodPx': 5.0, 'nodWidth': 2.0, 'browPx': 2.5},
 }
 PROFILE = {
     'human': {},
@@ -97,6 +108,35 @@ def lip_map(kind):
     m.update(json.loads(json.dumps(PROFILE.get(kind, {}))))
     if kind != 'human':
         m.update({k: v for k, v in profile_of(kind).items() if k not in NON_MAP and not k.startswith('_')})
+    mo = profiles().get('motion', {})
+    if isinstance(mo, dict):
+        mk = kind if kind in mo else {'cat': 'animal', 'toy': 'character3d', 'character': 'character3d'}.get(kind)
+        if mk in mo:
+            # prototype names under their own key: GenitaKit's FlowMap.motion (riseMs / amplitude ...) is a different
+            # block, and its mere presence switches the app's continuous-motion path on (codex P1)
+            m['motionProto'] = {k: v for k, v in mo[mk].items() if not k.startswith('_')}
+            if 'motionV2' not in m and isinstance(m['motionProto'].get('motionV2'), dict):
+                m['motionV2'] = m['motionProto']['motionV2']                           # the block GenitaKit reads (#267)
+    # cheek field names: the app reads cheekW / nasoW; keep cheek / naso for older readers
+    ch = m.get('cheek')
+    if isinstance(ch, dict):
+        if 'cheekW' not in ch and 'cheek' in ch: ch['cheekW'] = ch['cheek']
+        if 'nasoW' not in ch and 'naso' in ch: ch['nasoW'] = ch['naso']
+        if 'cheek' not in ch and 'cheekW' in ch: ch['cheek'] = ch['cheekW']
+        if 'naso' not in ch and 'nasoW' in ch: ch['naso'] = ch['nasoW']
+    if kind == 'human':
+        m['runtime'] = {'default': 'humanV41'}
+    if (m.get('runtime') or {}).get('default') == 'humanV41':
+        _tt = m.get('teethTop', True)                       # a profile can switch the teeth layer off (animal-like mascots)
+        # lip rig (v41, critic 8.5, blind ~5:5): cross-blended lips + slow chin channel + opaque teeth layer from the top key
+        m['rig'] = {'chinLpHz': 2.0, 'chinGain': 0.3, 'chinRamp': [0.035, 0.03], 'blendFloor': [0.12, 0.40],
+                    'teethTop': {'hyst': 0.05, 'min': 0.08, 'alpha': [0.06, 0.12], 'fade': [0.1, 0.3], 'cavity': [52, 28, 30],
+                                 # v42-v44: teeth-layer-only tone + teeth leave one frame before a closure
+                                 'tone': {'cavityDark': 0.5, 'teethLift': 0.5, 'band': 0.90, 'split': 0.40, 'thrPct': 50},   # app v9.1 (critic 8.5)
+                                 'exitBeforeClose': 1, 'on': True},
+                    'lipFlowPx': 1.2, 'lipFlowSigma': 0.012, 'lipTex': 0.15, 'lipTone': 1}
+    if 'rig' in m and m.get('teethTop') is False:
+        m['rig']['teethTop']['on'] = False
     m['profile'] = kind
     return m
 
@@ -104,12 +144,241 @@ def lip_map(kind):
 # Human colour-only post (critic 11/3: v7 + this = 7.5/10 vs the old baseline): same transform on every key and the neutral
 # ROI, so it never flickers. Lifts grey teeth inside the lip hull, pulls the lips toward the photo's pink.
 COLORFIX = {'human': (1.15, 0.88, 1.0)}
+LIP_MATCH = True   # key lips take the neutral's lip colour (all skin tones)
 LOWER_V = 1.0    # lower-half darkening (0.85) measured worse (critic v13 7.0 < v12 7.5): openings read bigger; off
+
+
+def lips_lab_mask(img, mouth_px):
+    """Lips = redder (Lab a*) than the skin in the mouth box; robust across skin tones."""
+    lab = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+    bx1, by1, bx2, by2 = mouth_px
+    mw, mh = bx2 - bx1, max(1, by2 - by1)
+    box = np.zeros(lab.shape[:2], np.uint8)
+    box[max(0, by1 - mh):by2 + max(3 * mh, int(0.4 * mw)), max(0, bx1 - mw // 6):bx2 + mw // 6] = 1   # open keys: lower lip far below
+    if not box.any():
+        return lab, box.astype(np.float32)
+    skin_a = np.median(lab[..., 1][box > 0])
+    return lab, (((lab[..., 1] > skin_a + 6) & (box > 0)).astype(np.float32))
+
+
+def lip_match(key, neutral, mouth_px):
+    """Move the key's lip colour (L*, a*, b* means) onto the neutral's lips, so a key never changes lip colour
+    (critic 11/3: dark-skin open keys turned the lower lip lighter and redder)."""
+    lk, mk = lips_lab_mask(key, mouth_px)
+    ln, mn = lips_lab_mask(neutral, mouth_px)
+    if mk.sum() < 20 or mn.sum() < 20:
+        return key
+    d = ln[mn > 0].mean(0) - lk[mk > 0].mean(0)
+    m = cv2.GaussianBlur(mk, (0, 0), 1.5)[..., None]
+    out = np.clip(lk + d[None, None, :] * m, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(out, cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def lip_hull_mask(img, mouth_px, dilate_px):
+    """Lips + mouth opening of a key (ROI): the two largest redder-than-skin blobs in the mouth box, convex hull,
+    dilated `dilate_px` above the hull's middle and half that below (beard: no bare-skin band), feathered."""
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    hull = np.zeros_like(keep)
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if cs:
+        cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    if len(cs) < 2:
+        # no or only one lip found (grey photo, pale lower lip): the mouth box ellipse reaching down, so the key's
+        # opening still shows (codex P2 x2). With one lip found, only the ellipse's dark (opening) pixels are added,
+        # so skin below the mouth keeps the neutral's texture.
+        bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
+        mh_ = max(1, by2 - by1)   # the key's jaw may be lowered by more than the closed mouth's height
+        el = np.zeros_like(hull)
+        cv2.ellipse(el, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh_), (max(1, (bx2 - bx1) // 2), max(1, 2 * mh_)), 0, 0, 360, 1, -1)
+        if cs:
+            L_ = lab[..., 0]; lipL_ = float(np.median(L_[keep > 0]))
+            hs_ = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+            teeth_ = (hs_[..., 1] < 0.35 * 255) & (L_ > lipL_ + 10)
+            el = el * ((L_ < lipL_ - 15) | teeth_).astype(np.uint8)        # the opening: dark cavity or teeth (codex P2)
+            el = cv2.morphologyEx(el, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        hull = np.maximum(hull, el)
+    d = max(1, int(dilate_px)); dl = max(1, d // 2)
+    up = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * d + 1, 2 * d + 1)))
+    lo = cv2.dilate(hull, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * dl + 1, 2 * dl + 1)))
+    ys = np.where(hull.any(1))[0]
+    if len(ys):
+        mid = int((ys.min() + ys.max()) / 2)
+        up[mid:] = lo[mid:]
+    return cv2.GaussianBlur(up.astype(np.float32), (0, 0), max(1.0, 0.6 * d))
+
+
+# Mouth interior tone (critic 11/3, sweep v25/v26: 7.5 -> 8.5 vs the reference): the Muse open keys show grey teeth and
+# a grey cavity. Inside each key's lip hull (lips excluded), the upper 60 % low-saturation teeth lift halfway to white
+# (a band 70 % of the hull width, dimmer off-centre), everything else in the opening becomes a warm dark maroon with a
+# faint tongue tone in the lower third. Colour only; no geometry. Teeth white scales with skin lightness.
+INTERIOR = {'human': {'lift': 0.65, 'vlo': 105, 'vhi': 240, 'split': 0.6, 'band': 0.7, 'mix': 1.0, 'greyDark': 0.5}}
+
+
+def interior_tone(img, mouth_px, spec, scale, neutral=None):
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cs:
+        return img
+    hull = np.zeros_like(keep)
+    cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
+    inn = (cv2.erode(hull, k3) * (1 - cv2.dilate(keep, k3))).astype(np.float32)
+    # never on lip-coloured skin: a big lip hull can cover part of the lower lip (critic: dark tick on darkskin / woman)
+    bx1, by1, bx2, by2 = mouth_px
+    mw_, mh_ = bx2 - bx1, max(1, by2 - by1)
+    box = np.zeros(inn.shape, bool); box[max(0, by1 - mh_):by2 + 3 * mh_, max(0, bx1 - mw_ // 6):bx2 + mw_ // 6] = True
+    skin_a = float(np.median(lab[..., 1][box])) if box.any() else 128.0
+    lipL = float(np.median(lab[..., 0][keep > 0]))
+    hsv0 = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+    lipish = (lab[..., 1] > skin_a + 6) & (hsv0[..., 1] > 0.2 * 255) & (lab[..., 0] > 0.7 * lipL)
+    inn = inn * (1 - lipish).astype(np.float32)
+    # the opening is one big region between the lips; small islands are lip patches the lip mask missed (darkskin tick).
+    # an opening cuts thin bridges first, so a patch hanging off the opening by a few pixels becomes its own island
+    inn = cv2.morphologyEx(inn, cv2.MORPH_OPEN, k3)
+    n_, lab2, st2, _ = cv2.connectedComponentsWithStats((inn > 0).astype(np.uint8))
+    if n_ > 2:
+        big = st2[1:, cv2.CC_STAT_AREA].max()
+        inn = inn * np.isin(lab2, [c for c in range(1, n_) if st2[c, cv2.CC_STAT_AREA] >= 0.3 * big]).astype(np.float32)
+    # recolouring below touches only low-saturation pixels (teeth / grey film), never coloured lip or skin
+    hsv1 = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
+    lipV = float(np.median(hsv1[..., 2][keep > 0]))
+    inn = cv2.GaussianBlur(inn, (0, 0), max(1.0, 1.0 * scale)) * (inn > 0)
+    ys, xs = np.where(inn > 0.05)
+    if len(ys) < 10:
+        return img
+    H, W = inn.shape
+    fe = max(0.8, 0.8 * scale)
+    hsv = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV).astype(np.float32)
+    S, V = hsv[..., 1] / 255, hsv[..., 2]
+    skinL = np.median(lab[max(0, by1 - (by2 - by1)):max(1, by1), max(0, bx1):max(1, bx2), 0]) if by1 > 0 else 170
+    vhi = spec['vhi'] - 40 * (1 - float(np.clip(skinL / 170.0, 0.3, 1.0)))       # darker skin: less glaring white
+    # teeth threshold relative to this key: top 30 % of the low-saturation interior (dim teeth on older / glasses faces)
+    cand = V[(inn > 0) & (S < 0.42)]
+    vlo = float(np.clip(min(spec['vlo'], np.percentile(cand, 70)) if len(cand) > 20 else spec['vlo'], 60, spec['vlo']))
+    # teeth area 10-40 % of the opening (older: no white paint over everything; glasses: some teeth at all)
+    vin = V[inn > 0]; sin_ = S[inn > 0]
+    if len(vin) > 30:
+        frac = lambda t: float(((vin > t) & (sin_ < 0.42)).mean())
+        if frac(vlo) > 0.4: vlo = float(np.percentile(vin, 60))
+        elif frac(vlo) < 0.1: vlo = max(60.0, float(np.percentile(vin, 90)))
+    r = ((np.arange(H, dtype=np.float32) - ys.min()) / max(1, ys.max() - ys.min()))[:, None]
+    up = np.clip((spec['split'] - r) / 0.15, 0, 1)
+    cx, hw = (xs.min() + xs.max()) / 2, max(1, (xs.max() - xs.min()) / 2)
+    dx = (np.abs(np.arange(W, dtype=np.float32) - cx) / hw)[None, :]
+    band = np.clip((spec['band'] - dx) / 0.1, 0, 1) * (1 - 0.45 * np.clip(dx / spec['band'], 0, 1))
+    th = np.clip((0.38 - S) / 0.1, 0, 1) * np.clip((V - vlo) / 12, 0, 1) * inn
+    th = np.maximum(th, band * np.clip((0.42 - S) / 0.1, 0, 1) * np.clip((V - (vlo - 15)) / 12, 0, 1) * inn) * up
+    th = cv2.GaussianBlur(th, (0, 0), fe)
+    hsv[..., 2] = np.clip(V + (vhi - V) * spec['lift'] * th, 0, 255)
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1 - 0.4 * th), 0, 255)
+    out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR).astype(np.float32)
+    # every darkening below only where the key CHANGED vs the neutral (Lab distance): lips and skin that are still the
+    # neutral's (incl. dark / low-saturation lips the lip mask missed) are never touched (critic darkskin, codex P2)
+    if neutral is not None:
+        labn = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB).astype(np.float32)
+        chg = np.clip((np.linalg.norm(lab - labn, axis=2) - 12) / 10, 0, 1)
+    else:
+        chg = np.ones(inn.shape, np.float32)
+    notc = 1 - np.clip(th * 1.5, 0, 1)
+    # the real opening = dark cavity or tooth pixels, in the components that cross the middle of the mouth; a patch on the
+    # lower lip (not dark, not a tooth, or off to the side on its own) is outside it (critic darkskin)
+    core = ((inn > 0.05) & ((V < 0.75 * lipV) | ((S < 0.35) & (V > 0.9 * lipV) & (up > 0.5)))).astype(np.uint8)
+    nc_, lc_, stc_, _ = cv2.connectedComponentsWithStats(core)
+    mid0, mid1 = int(cx - 0.4 * hw), int(cx + 0.4 * hw)
+    keepc = [c for c in range(1, nc_) if stc_[c, cv2.CC_STAT_LEFT] <= mid1 and stc_[c, cv2.CC_STAT_LEFT] + stc_[c, cv2.CC_STAT_WIDTH] >= mid0]
+    core = np.isin(lc_, keepc).astype(np.uint8) if keepc else np.zeros_like(core)
+    near = cv2.dilate(core, np.ones((5, 5), np.uint8)).astype(np.float32)
+    chg = chg * near
+    lows = np.clip((0.3 - S) / 0.1, 0, 1)                    # low saturation only: coloured lip / tongue keep their colour
+    # grey film -> warm and darker. Upper part: not the bright teeth (V cap); lower part (lower teeth, film): all of it
+    vcap = np.clip((vlo + 10 - V) / 20, 0, 1)
+    vcap2 = np.clip((min(vlo + 50, 200) - V) / 20, 0, 1)      # lower part: never a bright lip highlight (specular, low-sat)
+    grey = lows * np.clip((V - 0.35 * lipV) / 15, 0, 1) * (up * vcap + (1 - up) * vcap2)
+    g = cv2.GaussianBlur(inn * chg * grey * notc, (0, 0), fe)[..., None] * spec['mix']
+    dark = out * spec.get('greyDark', 0.62) * np.array([0.85, 0.85, 1.08], np.float32)
+    out = out * (1 - g) + dark * g
+    # tongue shadow: the lower third of the opening x .7, changed pixels only
+    low3 = cv2.GaussianBlur(inn * chg * np.clip((r - 0.62) / 0.15, 0, 1), (0, 0), fe)[..., None]
+    return out * (1 - 0.3 * low3)
+
+
+def interior_mask(img, mouth_px, scale, neutral=None):
+    """Mouth interior of a key (lip rig teeth layer; same rules as the prototype v45): lip hull minus the lips (lip-
+    highlight holes closed horizontally); with fewer than two lips found, the mouth-box ellipse's pixels that are new
+    vs the neutral are added; then the one region crossing the mouth middle that is mostly cavity / tooth. 0..1."""
+    lab, lips = lips_lab_mask(img, mouth_px)
+    lb = (lips > 0).astype(np.uint8)
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(lb)
+    keep = np.zeros_like(lb)
+    if n > 1:
+        order = np.argsort(-st[1:, cv2.CC_STAT_AREA])[:2] + 1
+        for c in order:
+            if st[c, cv2.CC_STAT_AREA] > 0.2 * st[order[0], cv2.CC_STAT_AREA]:
+                keep[lab_ == c] = 1
+    cs, _ = cv2.findContours(keep, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hull = np.zeros_like(keep)
+    if cs:
+        cv2.fillConvexPoly(hull, cv2.convexHull(np.vstack(cs)), 1)
+    hsv = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8), cv2.COLOR_BGR2HSV)
+    L = lab[..., 0]
+    bx1, by1, bx2, by2 = [int(v) for v in mouth_px]
+    mw, mh = max(2, bx2 - bx1), max(1, by2 - by1)
+    if len(cs) < 2:
+        # one lip (dark lips on dark skin) or none (grey photo): the ellipse's new pixels vs the neutral, else its
+        # cavity-dark / tooth pixels (codex P2)
+        el = np.zeros_like(hull)
+        cv2.ellipse(el, ((bx1 + bx2) // 2, (by1 + by2) // 2 + mh // 2), (max(1, mw // 2), max(1, int(1.4 * mh))), 0, 0, 360, 1, -1)
+        if neutral is not None:
+            Ln = cv2.cvtColor(np.clip(neutral, 0, 255).astype(np.uint8), cv2.COLOR_BGR2LAB)[..., 0].astype(np.float32)
+            sel = ((Ln - L) > 18) | ((hsv[..., 1] < 0.3 * 255) & ((L - Ln) > 18))
+        else:
+            Lm = float(np.median(L[el > 0])) if el.any() else 128.0
+            sel = (L < 0.6 * Lm) | ((hsv[..., 1] < 0.25 * 255) & (L > Lm + 15))
+        hull = np.maximum(hull, cv2.morphologyEx((el & sel).astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)))
+    k3 = np.ones((max(3, int(round(3 * scale)) | 1),) * 2, np.uint8)
+    kc = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, np.ones((1, max(9, int(round(9 * scale)) | 1)), np.uint8))
+    inn = (cv2.erode(hull, k3) * (1 - cv2.dilate(kc, k3))).astype(np.uint8)
+    n2, l3, st3, c3 = cv2.connectedComponentsWithStats(inn)
+    cx, hw = (bx1 + bx2) / 2, mw / 2
+    ok = [c for c in range(1, n2) if st3[c, cv2.CC_STAT_LEFT] <= cx + 0.35 * hw and st3[c, cv2.CC_STAT_LEFT] + st3[c, cv2.CC_STAT_WIDTH] >= cx - 0.35 * hw]
+    V, S = hsv[..., 2].astype(np.float32), hsv[..., 1].astype(np.float32) / 255
+    lv = float(np.median(V[keep > 0])) if keep.any() else 128.0
+    real = (V < 0.6 * lv) | ((S < 0.3) & (V > 1.1 * lv))
+    hy = np.where(hull.any(1))[0]
+    if len(hy):
+        ok = [c for c in ok if (c3[c][1] - hy.min()) / max(1, hy.max() - hy.min()) < 0.62]
+    if not ok:
+        return np.zeros(inn.shape, np.float32)
+    best = max(ok, key=lambda c: int((real & (l3 == c)).sum()))
+    if (real & (l3 == best)).sum() < 0.3 * st3[best, cv2.CC_STAT_AREA]:
+        return np.zeros(inn.shape, np.float32)
+    out = cv2.dilate((l3 == best).astype(np.uint8), k3).astype(np.float32)
+    return cv2.GaussianBlur(out, (0, 0), max(1.0, scale))
 
 
 def colorfix(img, mouth_px, spec):
     tg, ls, lv = spec
     u8 = np.clip(img, 0, 255).astype(np.uint8)
+    # teeth lift scales with skin lightness (dark skin: bright-white teeth read as pasted on)
+    bx1_, by1_, bx2_, by2_ = mouth_px
+    skinL = np.median(cv2.cvtColor(u8, cv2.COLOR_BGR2LAB)[max(0, by1_ - (by2_ - by1_)):max(1, by1_), max(0, bx1_):max(1, bx2_), 0]) if by1_ > 0 else 170
+    tg = 1 + (tg - 1) * float(np.clip(skinL / 170.0, 0.3, 1.0))
     hsv = cv2.cvtColor(u8, cv2.COLOR_BGR2HSV).astype(np.float32)
     H_, S_, V_ = hsv[..., 0], hsv[..., 1] / 255, hsv[..., 2]
     bx1, by1, bx2, by2 = mouth_px
@@ -206,6 +475,66 @@ def build_mask(h, w, face, mouth, lock_y, kind, scale):
     return m
 
 
+# ---- 2D blink (non-human lane, secondary.py): clean plate over the open eyes + only the key's closed-eye line art ----
+def ellipse_mask(H, W, boxes, grow=1.6, feather=0.25):
+    m = np.zeros((H, W), np.float32)
+    for b in boxes:
+        cx, cy = (b[0] + b[2]) / 2 * W, (b[1] + b[3]) / 2 * H
+        rx, ry = (b[2] - b[0]) / 2 * W * grow, (b[3] - b[1]) / 2 * H * grow * 1.3
+        cv2.ellipse(m, (int(cx), int(cy)), (int(rx), int(ry)), 0, 0, 360, 1.0, -1)
+    sig = max(1.0, feather * np.mean([(b[2] - b[0]) * W for b in boxes]))
+    return cv2.GaussianBlur(m, (0, 0), sig)
+
+
+def align_excluding(neutral, key, exclude):
+    """ECC affine of key onto neutral, ignoring `exclude` (float mask, >0 = ignore)."""
+    H, W = neutral.shape[:2]
+    s = 480.0 / H
+    g = lambda im: cv2.cvtColor(cv2.resize(im, (int(W * s), int(H * s)), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    reg = (cv2.resize(exclude, (int(W * s), int(H * s))) < 0.02).astype(np.uint8) * 255
+    Wm = np.eye(2, 3, dtype=np.float32)
+    try:
+        _, Wt = cv2.findTransformECC(g(neutral), g(key), np.eye(2, 3, dtype=np.float32), cv2.MOTION_AFFINE,
+                                     (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 60, 1e-6), reg, 5)
+        sv = np.linalg.svd(Wt[:, :2], compute_uv=False)
+        # keep it only when sane: near-unit scale, shift within 10 % of the frame (a failed ECC leaves garbage)
+        if np.all(np.isfinite(Wt)) and sv.min() > 0.8 and sv.max() < 1.25 and np.abs(Wt[:, 2]).max() < 0.1 * 480.0:
+            Wm = Wt
+    except cv2.error:
+        pass
+    Wm = Wm.copy(); Wm[:, 2] /= s
+    return cv2.warpAffine(key, Wm, (W, H), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP, borderMode=cv2.BORDER_REPLICATE)
+
+
+def blink_2d(neutral, key, eyes, thr=40):
+    N = np.clip(neutral, 0, 255).astype(np.float32); K = np.clip(key, 0, 255).astype(np.float32)
+    H, W = N.shape[:2]
+    img = N.copy(); mask = np.zeros((H, W), np.float32)
+    Nl = cv2.cvtColor(N.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    Kl = cv2.cvtColor(K.astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+    for b in eyes:
+        R = np.zeros((H, W), np.uint8); ring = np.zeros((H, W), np.uint8)
+        cx, cy = (b[0] + b[2]) / 2 * W, (b[1] + b[3]) / 2 * H; rx, ry = (b[2] - b[0]) / 2 * W, (b[3] - b[1]) / 2 * H
+        cv2.ellipse(R, (int(cx), int(cy)), (int(rx * 1.2), int(ry * 1.45)), 0, 0, 360, 1, -1)
+        cv2.ellipse(ring, (int(cx), int(cy)), (int(rx * 1.6), int(ry * 2.0)), 0, 0, 360, 1, -1); ring &= (1 - R)
+        if not ring.any():
+            continue
+        rv = N[ring > 0]; rl = Nl[ring > 0]
+        skin = np.median(rv[rl >= np.percentile(rl, 60)], 0)
+        hair = (np.abs(N - K).max(2) < 18) & (Nl < np.median(rl[rl >= np.percentile(rl, 60)]) - 45)
+        R = (R > 0) & ~hair
+        # line = clearly darker than the skin; relative on dark skin (a fixed 40 would miss a black line on dark skin)
+        t_ = min(float(thr), 0.33 * float(skin.mean()))
+        line = (R & (Kl < skin.mean() - max(6.0, t_))).astype(np.float32)
+        if line.sum() < max(6.0, 0.01 * R.sum()):
+            continue                                   # no closed-eye line found: leave this eye untouched
+        line = cv2.GaussianBlur(cv2.dilate(line, np.ones((2, 2), np.uint8)), (0, 0), 0.7)[..., None]
+        reg = R.astype(np.float32)[..., None]
+        img = img * (1 - reg) + (skin * (1 - line) + K * line) * reg
+        mask = np.maximum(mask, R.astype(np.float32))
+    return img, cv2.GaussianBlur(mask, (0, 0), 1.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--neutral', required=True)
@@ -216,6 +545,8 @@ def main():
     ap.add_argument('--kind', default='human', help='profile: human | animal | cat | character3d | character2d | toy (character = character3d)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--jpeg', type=int, default=90)
+    ap.add_argument('--blink', help='character2d: Muse blink still -> BLINK.jpg + BLINKMASK.png (eye rect only)')
+    ap.add_argument('--eyes', help='character2d: eye boxes x1,y1,x2,y2;x1,y1,x2,y2 (SAM)')
     a = ap.parse_args()
     t0 = time.time()
     kind = 'character3d' if a.kind == 'character' else a.kind
@@ -276,6 +607,23 @@ def main():
             if nm in ALN:
                 my = gy_ + wt * ((anc + (gy_ - anc) / float(sy)) - gy_)
                 ALN[nm] = cv2.remap(ALN[nm], gx_, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+    # 2b) 3D: lift pitch-black mouth interiors to a dark warm red-brown (profiles prep.interior = B,G,R; classical)
+    if prep.get('interior'):
+        tgt = np.array([float(v) for v in prep['interior']], np.float32)
+        mw_ = (mouth[2] - mouth[0]) * W; fwp_ = (face[2] - face[0]) * W
+        lim_ = np.zeros((H, W), np.float32)
+        r_ = max(mw_, 0.2 * fwp_)
+        cv2.ellipse(lim_, (int((mouth[0] + mouth[2]) / 2 * W), int((mouth[1] + mouth[3]) / 2 * H + 0.3 * mw_)), (int(r_), int(0.9 * r_)), 0, 0, 360, 1.0, -1)
+        lim_ = cv2.GaussianBlur(lim_, (0, 0), 0.05 * fwp_)
+        LN_ = cv2.cvtColor(np.clip(N, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+        for nm in list(ALN):
+            al = ALN[nm]
+            L = cv2.cvtColor(np.clip(al, 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY).astype(np.float32)
+            new_ = np.clip((LN_ - L - 15) / 20, 0, 1)        # only the new opening (darker than the neutral): dark fur / cloth stay
+            wv = np.clip((tgt.mean() * 1.4 - L) / (tgt.mean() * 1.4), 0, 1) * 0.85 * lim_ * new_
+            wv = cv2.GaussianBlur(wv, (0, 0), 1.2)[..., None]
+            ALN[nm] = al * (1 - wv) + np.maximum(al, tgt) * wv
 
     # 3) blend mask (= lock mask). character2d: only where a key's drawing differs, after fitting each drawn mouth
     #    onto a clean plate (the closed line painted out); others: lower-face ellipse x lock ramp.
@@ -353,6 +701,7 @@ def main():
 
     # 4) neutral ROI (+ human colour fix, applied identically to the neutral and every key)
     cfx = COLORFIX.get(kind)
+    RIG_RUNTIME = ((lip_map(kind).get('runtime') or {}).get('default') == 'humanV41')
     mouth_px = (int(mouth[0] * W) - X1, int(mouth[1] * H) - Y1, int(mouth[2] * W) - X1, int(mouth[3] * H) - Y1)
     Mr = Mfull[roiF][..., None]
     NR = base[roiF]
@@ -392,9 +741,25 @@ def main():
         cr = comp[roiF]
         if cfx:
             cr = NR * (1 - Mr) + colorfix(cr, mouth_px, cfx) * Mr
+        if kind == 'human' and LIP_MATCH:
+            cr = NR * (1 - Mr) + lip_match(cr, NR, mouth_px) * Mr
+        if INTERIOR.get(kind) and name != 'MBP':
+            cr = interior_tone(cr, mouth_px, INTERIOR[kind], W / 540.0, NR)
         crop = np.clip(cr, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(a.out, f'{name}.jpg'), crop, [cv2.IMWRITE_JPEG_QUALITY, a.jpeg])
         ent = {'key': f'{name}.jpg'}
+        if kind == 'human' or RIG_RUNTIME:
+            if kind == 'human':
+                # 6 px at a 540-wide frame, scaled to this face set's resolution. Not for the non-human kinds on the human
+                # rig: a missed lip border on a wide 3D key would hide part of its opening (codex P2) — they keep the
+                # full key texture and only get the teeth-layer interior below.
+                lm = lip_hull_mask(crop.astype(np.float32), mouth_px, 6 * W / 540.0)
+                cv2.imwrite(os.path.join(a.out, f'{name}.lip.png'), np.clip(lm * 255 + 0.5, 0, 255).astype(np.uint8))
+                ent['lip'] = f'{name}.lip.png'
+            if name != 'MBP':   # lip rig teeth layer (v41): where this key's teeth / cavity may show, same size as the lip mask
+                im_ = interior_mask(crop.astype(np.float32), mouth_px, W / 540.0, NR)
+                cv2.imwrite(os.path.join(a.out, f'{name}.interior.png'), np.clip(im_ * 255 + 0.5, 0, 255).astype(np.uint8))
+                ent['interior'] = f'{name}.interior.png'
         gKr = cv2.cvtColor(cv2.resize(crop, (rw, rh), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         for tag, (src, dst) in (('nk', (gNr, gKr)), ('kn', (gKr, gNr))):
             if not use_flow:
@@ -415,6 +780,21 @@ def main():
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
             'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': lip_map(kind)}
+    if a.blink and a.eyes and kind == 'character2d':
+        eyes = [box(e) for e in a.eyes.split(';') if e]
+        BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)
+        if BKr is not None and eyes:
+            EM = ellipse_mask(H, W, eyes)
+            low = np.zeros((H, W), np.float32); low[Y1:] = 1
+            BK = align_excluding(N, cv2.resize(BKr, (W, H), interpolation=cv2.INTER_AREA), np.maximum(EM, low)).astype(np.float32)
+            img, bm = blink_2d(N.astype(np.float32), BK, eyes)
+            yy, xx = np.where(bm > 0.01)
+            if len(yy):
+                bx1, by1, bx2, by2 = xx.min(), yy.min(), xx.max() + 1, yy.max() + 1
+                cv2.imwrite(os.path.join(a.out, 'BLINK.jpg'), np.clip(img[by1:by2, bx1:bx2], 0, 255).astype(np.uint8), [cv2.IMWRITE_JPEG_QUALITY, 92])
+                cv2.imwrite(os.path.join(a.out, 'BLINKMASK.png'), np.clip(bm[by1:by2, bx1:bx2] * 255 + 0.5, 0, 255).astype(np.uint8))
+                flow['blink'] = {'mode': 'snap2d', 'image': 'BLINK.jpg', 'mask': 'BLINKMASK.png', 'frames': 3,
+                                 'rect': [round(bx1 / W, 5), round(by1 / H, 5), round(bx2 / W, 5), round(by2 / H, 5)]}
     json.dump(flow, open(os.path.join(a.out, 'flow.json'), 'w'), indent=1)
     print(json.dumps({'ok': True, 'ms': int((time.time() - t0) * 1000), 'flowBytes': nbytes, 'keys': len(files),
                       'lockY': flow['lockY'], 'lockSource': lock_src, 'kind': kind, 'diag': diag}))

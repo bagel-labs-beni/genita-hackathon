@@ -26,7 +26,13 @@ export const FLOW_KEYS: readonly FaceKey[] = [...VISEMES, ...MOUTH_KEYS, ...PROF
 
 /** faceflow.py file name -> asset name (store ids are [A-Za-z0-9_-] only). */
 export function flowAssetName(file: string): string | null {
-  let m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
+  if (file === "BLINK.jpg") return "flow_blink";
+  if (file === "BLINKMASK.png") return "flow_blinkmask";
+  let m = file.match(/^([A-Za-z0-9]{1,8})\.lip\.png$/);
+  if (m) return `flow_${m[1]}_lip`;
+  m = file.match(/^([A-Za-z0-9]{1,8})\.interior\.png$/);   // lip rig teeth layer (v41)
+  if (m) return `flow_${m[1]}_int`;
+  m = file.match(/^([A-Za-z0-9]{1,8})\.(nk|kn)\.f16$/);
   if (m) return `flow_${m[1]}_${m[2]}`;
   m = file.match(/^([A-Za-z0-9]{1,8})\.jpg$/);
   if (m) return m[1] === "neutral" ? "flow_neutral" : `flow_${m[1]}_key`;
@@ -39,7 +45,8 @@ export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   const out = new Set<string>();
   if (!flow) return out;
   out.add(flow.mask).add(flow.neutralRoi);
-  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn]) if (a) out.add(a);
+  if (flow.blink) out.add(flow.blink.image).add(flow.blink.mask);
+  for (const f of Object.values(flow.files)) for (const a of [f.key, f.nk, f.kn, f.lip, f.interior]) if (a) out.add(a);
   return out;
 }
 
@@ -72,6 +79,8 @@ export type FaceflowInput = {
   timeoutMs?: number;
   /** nose box on the scene (SAM), normalised; null = the script estimates the subnasale line from the face box */
   nose?: () => Promise<readonly [number, number, number, number] | null>;
+  /** character2d: eye boxes on the scene (SAM) for the clean-plate blink, normalised */
+  eyes?: () => Promise<Array<readonly [number, number, number, number]>>;
   signal?: AbortSignal;
   log?: (event: string, data: Record<string, unknown>) => void;
 };
@@ -124,6 +133,15 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     args[3] = keys.map((f) => `${f.split(".")[0]}=${join(dir, f)}`).join(",");
     const nose = o.nose ? await o.nose().catch(() => null) : null;
     if (nose) args.push("--nose", fmt(nose));
+    // 2D: the blink is a clean plate over the open eyes + the key's closed-eye lines (no flow)
+    if (o.profile === "character2d" && o.state.items.blink?.status === "done" && o.eyes) {
+      const eyes = await o.eyes().catch(() => []);
+      const b = eyes.length ? await o.image("blink") : null;
+      if (b) {
+        await writeFile(join(dir, `blink.${extOf(b)}`), b);
+        args.push("--blink", join(dir, `blink.${extOf(b)}`), "--eyes", eyes.map((e) => fmt(e)).join(";"));
+      }
+    }
     o.signal?.throwIfAborted();
     const stdout = await run(o.python, [o.script ?? FACEFLOW_SCRIPT, ...args], o.timeoutMs ?? FACEFLOW_TIMEOUT_MS, o.signal);
     const res = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { ok?: boolean };
@@ -135,7 +153,7 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       return a;
     };
     const files: FaceFlow["files"] = {};
-    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}) };
+    for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}), ...(f.lip ? { lip: rename(f.lip) } : {}), ...(f.interior ? { interior: rename(f.interior) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
       const a = flowAssetName(file);
@@ -145,7 +163,14 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
       await o.put(a, bytes);
     }
     const ms = Math.round(performance.now() - t0);
-    const flow: FaceFlow = { ...raw, files, mask: rename(raw.mask), neutralRoi: rename(raw.neutralRoi), ms };
+    const flow: FaceFlow = {
+      ...raw,
+      files,
+      mask: rename(raw.mask),
+      neutralRoi: rename(raw.neutralRoi),
+      ...(raw.blink ? { blink: { ...raw.blink, image: rename(raw.blink.image), mask: rename(raw.blink.mask) } } : {}),
+      ms,
+    };
     o.log?.("face.flow_done", { ms, keys: raw.keys.length, lockY: raw.lockY });
     return flow;
   } catch (err) {

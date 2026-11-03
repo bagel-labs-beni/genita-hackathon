@@ -34,7 +34,8 @@ import { likesFromStyle } from "./finds/setup.ts";
 import { renameCompanion } from "./prep/naming.ts";
 import { createAccounts, type AccountsService, type Principal } from "./auth/index.ts";
 import { looksLikeJwt } from "./auth/jwt.ts";
-import { createMemory } from "./memory/index.ts";
+import { createMemory, PgMemoryRepository } from "./memory/index.ts";
+import type { ThreadState } from "./memory/call.ts";
 import { isMemoryRoute, memoryRoute } from "./memory/routes.ts";
 import { findsFromEnv } from "./finds/setup.ts";
 import { handleFindsHttp, isFindsRoute } from "./finds/http.ts";
@@ -105,6 +106,10 @@ export async function startServer(
     throw new Error("GENITA_SESSION_TOKEN or DATABASE_URL (accounts) is required when HOST is not loopback");
   }
   const ops = configureOps(config, { log, db: accounts?.db });
+  // P0 11/3: without GENITA_MEMORY_FILE, memory lived in this process and every deploy erased it.
+  // With accounts on, long-term memory goes to Postgres (migration 005), keyed by users.id.
+  if (accounts && deps.memory?.ephemeral) deps.memory.useStore(new PgMemoryRepository(accounts.db));
+  if (deps.memory) log("memory.store", { kind: deps.memory.ephemeral ? "process" : deps.memory.repository instanceof PgMemoryRepository ? "pg" : deps.memory.repository.constructor.name });
   const sessions = new Map<string, Session>();
   /** resets a call's idle timer; watch traffic keeps a muted call alive */
   const touches = new Map<string, () => void>();
@@ -117,15 +122,25 @@ export async function startServer(
   const appConfig = createAppConfigSource({ file: env.GENITA_APP_CONFIG_FILE || null, bargeInMs: config.bargeInMinMs, log });
   // memories (and other feature data) live outside Postgres: erased before the account rows, and a
   // failure keeps the account so DELETE /me can be retried
+  // accounts being deleted: a late socket close must not cache their turns again (Codex P2 11/3 — the
+  // cascade drops memory_state, so the Forget revision reads 0 again)
+  const deletedUsers = new Set<string>();
   if (accounts) accounts.beforeUserDeleted = async (userId) => {
-    // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
-    // before purging. A late vendor completion must never recreate deleted data.
-    const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
-    for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
-    await findsDeleted;
-    await prep.runner.forgetUser(userId);
-    await deps.memory?.forget(userId);
-    await deps.finds?.store.removeOwner(ownerKey(userId));
+    deletedUsers.add(userId);
+    dropLastTurns(userId);
+    try {
+      // Includes Finds from ended calls: tombstone, cancel, and drain actual store writes
+      // before purging. A late vendor completion must never recreate deleted data.
+      const findsDeleted = deps.finds?.store.work.deleteOwner(ownerKey(userId));
+      for (const [id, u] of sessionUsers) if (u === userId) sessions.get(id)?.close(4401, "account_deleted");
+      await findsDeleted;
+      await prep.runner.forgetUser(userId);
+      await deps.memory?.forget(userId);
+      await deps.finds?.store.removeOwner(ownerKey(userId));
+    } catch (err) {
+      deletedUsers.delete(userId); // the account stays (DELETE /me answers 502 and can be retried)
+      throw err;
+    }
   };
   // F6-L7: who holds the sound. conversations.active_device/epoch with accounts, memory without.
   const handoff = new HandoffHub(accounts ? new PgOwnershipStore(accounts.db) : new MemoryOwnershipStore(), log);
@@ -135,6 +150,7 @@ export async function startServer(
     for (const [name, u] of devUsers) if (u === userId) devUsers.delete(name);
     for (const [close, u] of presence) if (u === userId) close();
     handoff.forget(userId);
+    dropLastTurns(userId);
   };
 
   /** session JWT → user; else the shared dev token (or loopback without one) → x-genita-user. null = reject. */
@@ -198,6 +214,9 @@ export async function startServer(
   }
 
   const http = createServer((req, res) => {
+    // #232: the API is HTTPS-only behind CloudFront (it forwards origin headers); writeHead merges these
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     route(req, res).catch((err) => {
       log("http.error", { path: req.url?.split("?")[0], message: String(err).slice(0, 200) });
       if (!res.headersSent) json(res, 500, { error: "server_error" });
@@ -207,11 +226,16 @@ export async function startServer(
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES, perMessageDeflate: false });
 
   http.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
     const reject = (status: number, text: string) => {
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
       socket.destroy();
     };
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      return reject(400, "Bad Request");
+    }
     if (url.pathname === "/v1/watch") {
       // F5 + 11/2 auth: same principal as the call; only the user who owns the call can share into it.
       // Someone else's session id looks exactly like a missing one (404).
@@ -265,40 +289,50 @@ export async function startServer(
 
   // Handoff: the turns of this account's other live call, else of its call that ended < 10 min ago (in memory,
   // one process — same as the audio gate). Never another account's.
-  const lastTurns = new Map<string, { turns: HistoryItem[]; revision: number | null; at: number; unsubscribe?: () => void }>();
+  const lastTurns = new Map<string, { turns: HistoryItem[]; thread: ThreadState | null; revision: number | null; at: number; unsubscribe?: () => void }>();
   function dropLastTurns(userId: string) {
     lastTurns.get(userId)?.unsubscribe?.();
     lastTurns.delete(userId);
   }
+  // Session memory: the thread of the call whose turns priorTurns handed over (read right after it, same tick)
+  const handedThread = new Map<string, ThreadState | null>();
   function priorTurns(userId: string, self: string, revision: number): HistoryItem[] | null {
     let best: HistoryItem[] | null = null;
+    let thread: ThreadState | null = null;
     for (const [sid, u] of sessionUsers) {
       if (u !== userId || sid === self) continue;
       const session = sessions.get(sid);
       const t = session?.historyForgetRevision === revision ? session.historySnapshot() : null;
-      if (t?.length && (!best || t.length >= best.length)) best = t;
+      if (t?.length && (!best || t.length >= best.length)) { best = t; thread = session!.threadInfo(); }
     }
-    if (best) return best;
+    if (best) { handedThread.set(self, thread); return best; }
     const c = lastTurns.get(userId);
-    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) return c.turns;
+    if (c && c.revision === revision && Date.now() - c.at < 10 * 60_000) { handedThread.set(self, c.thread); return c.turns; }
     dropLastTurns(userId);
     return null;
   }
+  function priorThread(self: string): ThreadState | null {
+    const t = handedThread.get(self) ?? null;
+    handedThread.delete(self);
+    return t;
+  }
   async function cacheTurns(userId: string, session: Session): Promise<void> {
     const turns = session.historySnapshot();
+    const thread = session.threadInfo();
     const revision = session.historyForgetRevision;
-    if (!turns.length) return;
+    if (!turns.length || deletedUsers.has(userId)) return;
     const save = () => {
       dropLastTurns(userId);
       const unsubscribe = deps.memory?.subscribe(userId, () => dropLastTurns(userId));
-      lastTurns.set(userId, { turns, revision, at: Date.now(), unsubscribe });
+      lastTurns.set(userId, { turns, thread, revision, at: Date.now(), unsubscribe });
+      log("history.cached", { session: session.id, turns: turns.length });
     };
     if (!deps.memory) return save();
     // Session.close unsubscribes before the socket closes. Keep the snapshot's ORIGINAL revision and
     // refuse a late pre-Forget close, including when newer safe turns are already cached.
     if (revision === null) return;
     await deps.memory.serial(userId, async () => {
-      if ((await deps.memory!.state.getState(userId)).revision === revision) save();
+      if (!deletedUsers.has(userId) && (await deps.memory!.state.getState(userId)).revision === revision) save();
     });
   }
 
@@ -316,7 +350,10 @@ export async function startServer(
     const sink = gated?.sink ?? raw;
     // F2-L26: a rename said in the call is saved to this user's own companion (no-op without one)
     const rename = deps.renameCompanion ?? ((userId: string, name: string) => renameCompanion(prep.deps.store, userId, name));
-    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, priorTurns: (revision) => priorTurns(who.userId, id, revision) });
+    // Same presence (11/3): this account's saved companion voice, on the iPhone and the Mac alike
+    const companionVoiceId = () => prep.deps.store.getCompanion(who.userId).then((c) => c?.voiceId ?? null);
+    // lane 개인화: the stored profile, first-call asks, voice corrections and post-call growth for this account
+    const session = new Session(id, sink, { ...deps, ops, userId: who.userId, turnUserId, renameCompanion: rename, companionVoiceId, priorTurns: (revision) => priorTurns(who.userId, id, revision), priorThread: () => priorThread(id), personalize: deps.personalize ?? prep.deps.personalize });
     ref.session = session;
     let announced = false;
     sessions.set(id, session);
@@ -354,6 +391,7 @@ export async function startServer(
       gated?.call.close();
       sessions.delete(id);
       sessionUsers.delete(id);
+      handedThread.delete(id);
       touches.delete(id);
       void cacheTurns(who.userId, session)
         .catch(() => log("history.unavailable", { session: id }))

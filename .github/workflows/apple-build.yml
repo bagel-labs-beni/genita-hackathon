@@ -2,6 +2,7 @@ name: Apple build
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - ".github/workflows/apple-build.yml"
       - "ios-app/**"
@@ -17,11 +18,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: apple-build-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   apple:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -75,7 +77,7 @@ jobs:
           for test in json.loads((raw / "manifest.json").read_text()):
               for item in test["attachments"]:
                   name = item["suggestedHumanReadableName"].split("_")[0]
-                  if name.startswith(("R1", "E0", "P0", "menu-", "pairing-", "conversation-", "preview-")):
+                  if name.startswith(("R1", "E0", "P0", "MV", "menu-", "pairing-", "conversation-", "preview-")):
                       shutil.copy(raw / item["exportedFileName"], screens / f"{name}.png")
           PY
             ls build-output/screens

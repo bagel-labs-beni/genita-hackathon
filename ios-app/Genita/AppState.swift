@@ -86,6 +86,8 @@ struct SavedSetup: Codable {
     var pasteFocusRequested = false
     var checkingImage = false
     var imageCheck: ImageCheck?
+    /// V01 "I have the right to use this image" (D26 / SUB-8): off for every new image, must be on to check it. Transient.
+    var rightsAcked = false
     var imageCheckError: String?
     var creatingCompanion = false
     var suggestingName = false
@@ -114,6 +116,12 @@ struct SavedSetup: Codable {
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
+    /// After a sign-in, where to go is asked from the server (`/me`): a returning account gets its companion back
+    /// and goes to the call instead of A03. nil = `routeOnLaunch()`; tests swap it.
+    @ObservationIgnored var routeAfterSignIn: (() async -> Void)?
+    @ObservationIgnored private(set) var signInRouting: Task<Void, Never>?
+    /// Bumped on every sign-in and sign-out: server answers asked under an older value are dropped.
+    @ObservationIgnored private(set) var authGeneration = 0
     @ObservationIgnored var onboarding = OnboardingClient()
     var storage: UserDefaults
     let imageURL: URL
@@ -184,6 +192,8 @@ struct SavedSetup: Codable {
     static let userKey = "genita.userId"
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        authGeneration += 1
+        signInRouting?.cancel(); signInRouting = nil
         storage.set(true, forKey: Self.signedOutKey)
         prep = nil; sceneImage = nil
         storage.removeObject(forKey: Self.needsConsentKey)
@@ -191,7 +201,10 @@ struct SavedSetup: Codable {
     }
     /// Past A02. `userId` = the signed-in account: another account than last time starts with a fresh local
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
-    func signedIn(userId: String? = nil, consented: Bool = true) {
+    /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
+    func signedIn(userId: String? = nil, consented: Bool) {
+        authGeneration += 1
+        signInRouting?.cancel(); signInRouting = nil
         storage.removeObject(forKey: Self.signedOutKey)
         if let userId {
             if let previous = storage.string(forKey: Self.userKey), previous != userId { resetLocalProfile() }
@@ -199,6 +212,16 @@ struct SavedSetup: Codable {
         }
         if !consented { storage.set(true, forKey: Self.needsConsentKey); go(.consent); return }
         if setup.hasOnboarded { returnTo(.conversation) } else { go(.name) }
+        // two accounts on one iPhone: the other account's companion lives on the server, not in this phone's setup
+        // (signing in used to land a returning account on A03 until the app was relaunched)
+        if userId != nil {
+            #if os(iOS)
+            let route = routeAfterSignIn ?? { [weak self] in await self?.routeOnLaunch(afterSignIn: true) }
+            #else
+            let route = routeAfterSignIn ?? {}   // the Mac target has no OnboardingFlow (its own start screen routes)
+            #endif
+            signInRouting = Task { await route() }
+        }
     }
     /// Signed in as `id`: if this phone's saved setup (name, photo, imported style) belongs to another
     /// account, drop it — one account's data never goes out under another's token.

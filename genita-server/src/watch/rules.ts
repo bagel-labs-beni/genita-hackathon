@@ -3,7 +3,8 @@
  * rule is unit-testable without sockets or vendors.
  */
 
-export const REACT_MIN_GAP_MS = 30_000;
+/** at most one reaction every ~25 s (Chelsea 11/3: one per 20–30 s) */
+export const REACT_MIN_GAP_MS = 25_000;
 /** no reaction in the first seconds of a share: nothing has happened yet */
 export const REACT_AFTER_START_MS = 6_000;
 /** a dialogue line that ended this recently still counts as "talking" */
@@ -55,9 +56,10 @@ export function reactionScript(moment: Moment, words: string): string | null {
   const clean = words.replace(AUDIO_TAG, " ").replace(EMOTION_TAG, " ").replace(/\s+/g, " ").trim();
   if (moment === "none" || !clean) return null;
   const capped = clean.split(" ").slice(0, 12).join(" ");
-  if (moment === "funny") return `<laugh> [laughs] ${capped}`;
-  if (moment === "surprising") return `<surprised> ${capped}`;
-  return `<warm> ${capped}`;
+  // the face: funny → smileopen (laugh draws as smileopen for now, 11/3), sweet → smile, surprising → surprised
+  if (moment === "funny") return `<laugh> [smileopen] [laughs] ${capped}`;
+  if (moment === "surprising") return `<surprised> [surprised] ${capped}`;
+  return `<warm> [smile] ${capped}`;
 }
 
 // ───────────────────────── echo guard (F5-L13) ─────────────────────────
@@ -84,6 +86,22 @@ export function isVideoEcho(userText: string, recentLines: string[], minOverlap 
     if (hit / u.length >= minOverlap) return true;
   }
   return false;
+}
+
+/**
+ * While the video is mid-line: can the user's turn be decided now from the line's partial transcript, or must
+ * it wait for the line to finish? The system-audio transcriber hears the video before the mic's own turn ends,
+ * so a real echo already shows in the partial. "wait" only when the partial is still too short to tell.
+ * A one-word turn ("wow") is never treated as an echo (same as isVideoEcho).
+ */
+export function echoNow(userText: string, openLine: string, minOverlap = 0.7): "echo" | "user" | "wait" {
+  const u = tokens(userText);
+  if (u.length < 2) return "user";
+  const open = tokens(openLine);
+  if (!open.length) return "wait";
+  const set = new Set(open);
+  if (u.filter((w) => set.has(w)).length / u.length >= minOverlap) return "echo";
+  return open.length >= u.length ? "user" : "wait";
 }
 
 // ───────────────────────── speaker chip (F5-L16) ─────────────────────────

@@ -39,13 +39,21 @@ enum LipSource: Equatable { case none }
 
 struct CompanionFaceView: View {
     let still: Image
-    /// Silent loop of this companion (Dyno's clip for the demo face). nil → the still breathes (S09-P).
+    /// Silent loop of this companion (Dyno's clip for the demo face). Plays only with GENITA_CLIP_LOOP_FACE=1.
     let loop: URL?
+    /// L4: the animated Meta face from the companion's prep face set, drawn above the still. nil → the still.
+    var face: FaceDriver? = nil
+    /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
+    var faceStill: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
-            if let loop, !CallMotion.reviewStill { LoopingVideo(url: loop).allowsHitTesting(false) }
+            if let face {
+                FaceFrameView(driver: face, still: faceStill)
+            } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {
+                LoopingVideo(url: loop).allowsHitTesting(false)
+            }
             LipLayer(source: lip).allowsHitTesting(false)
         }
     }
@@ -101,6 +109,7 @@ struct CallCueView: View {
             HStack(spacing: 8) {
                 content.icon
                 Text(content.text).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.onInk).lineLimit(1).fixedSize()
+                    .genitaStatusLine(content.text) // catalog: words push up from below, pill width follows
                 if let action = content.action {
                     Button(action: action.run) {
                         Text(action.title).font(TypeStyle.body(14, .medium)).foregroundStyle(CallInk.blueOnInk).padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
@@ -113,6 +122,7 @@ struct CallCueView: View {
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.updatesFrequently)
             .accessibilityIdentifier("callCue")
+            .animation(CallMotion.reviewStill ? nil : .spring(duration: 0.3, bounce: 0), value: content.text)
             // One line swaps in place: a crossfade overlaps two texts in the pill.
         }
     }
@@ -137,11 +147,11 @@ private struct CueDot: View {
     var body: some View { Circle().fill(CallInk.blueOnInk).frame(width: 8, height: 8) }
 }
 
-private struct CueAlert: View {
+struct CueAlert: View {
     var body: some View { Image(systemName: "exclamationmark.circle").font(.system(size: 17, weight: .semibold)).foregroundStyle(CallInk.onInk).frame(width: 20, height: 20) }
 }
 
-private struct CueSpinner: View {
+struct CueSpinner: View {
     @State private var turn = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -207,6 +217,7 @@ final class SelfCameraSurface: UIView {
 
 struct CallMoreSheet: View {
     let call: CallController
+    var textChatEnabled: Bool
     var moveToMacSubtitle: String
     var moveToMac: () -> Void
     /// S08 and the F10 Finds sheet are separate tickets; their rows stay disabled until wired.
@@ -222,7 +233,9 @@ struct CallMoreSheet: View {
                 call.setInterpreting(on)
                 if on { close() }
             }
-            row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            if textChatEnabled {
+                row("text.bubble", "Text chat", "Same conversation, in writing", id: "moreTextChat", enabled: openTextChat != nil) { close(); openTextChat?() }
+            }
             let n = max(call.finds.cardCount, call.findsCount)
             row("bookmark", "Finds", n == 0 ? "Nothing looked up yet" : n == 1 ? "1 thing I looked up" : "\(n) things I looked up", id: "moreFinds", enabled: openFinds != nil) { close(); openFinds?() }
             row("camera", "Flip camera", call.cameraOn ? "Switch front and back" : "Turn your camera on first", id: "moreFlip", enabled: call.canFlipCamera) { call.flipCamera() }

@@ -34,7 +34,8 @@ export const VISEMES = ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"
 export const MOUTH_KEYS = ["MID", "AH", "AH2", "EH", "OH"] as const;
 export type FaceExpression = (typeof FACE_EXPRESSIONS)[number];
 export type Viseme = (typeof VISEMES)[number];
-/** Non-human profile keys (prep-py/profiles.json): animal J2/J3, cat C2, 2D anime SM/WD/OO/EE. */
+/** Non-human profile keys (prep-py/profiles.json): 2D anime SM/WD/OO/EE; J2/J3/C2 = the animal jaw keys of companions
+ *  prepped before 11/3 (now AH/AH2 like the human ladder), kept so their manifests stay valid. */
 export const PROFILE_KEYS = ["J2", "J3", "C2", "SM", "WD", "OO", "EE"] as const;
 export type ProfileKey = (typeof PROFILE_KEYS)[number];
 export type MouthKey = (typeof MOUTH_KEYS)[number] | ProfileKey;
@@ -92,13 +93,15 @@ export type FaceFlow = {
   flowSize: [number, number];
   keys: string[];
   /** nk/kn absent when the profile does not morph (character2d snaps between drawings) */
-  files: Record<string, { key: string; nk?: string; kn?: string }>;
+  files: Record<string, { key: string; nk?: string; kn?: string; lip?: string; interior?: string }>;
   mask: string;
   neutralRoi: string;
   lockY: number;
   lockSource: string;
   kind: string;
   map: Record<string, unknown>;
+  /** character2d: snap blink = paste `image` through `mask` inside `rect` (normalised) for `frames` frames */
+  blink?: { mode: string; image: string; mask: string; frames: number; rect: [number, number, number, number] };
   ms?: number;
 };
 
@@ -112,7 +115,7 @@ export type MediaApi = {
 /** Same nouns as classify.headPrompt. */
 const NOUN: Record<CompanionKind, string> = { human: "person", animal: "animal", character: "character" };
 
-export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose"): string {
+export function samPrompt(kind: CompanionKind, part: "face" | "mouth" | "nose" | "eyes"): string {
   return `the ${NOUN[kind]}'s ${part}`;
 }
 
@@ -182,6 +185,14 @@ function region(key: FaceKey, kind: CompanionKind): { part: string; keep: string
   return { part: mouth, keep: "hair, eyes" };
 }
 
+/**
+ * Prep option (11/3, lip rig v45 / app v9.1): re-bake the open human keys with clearly visible upper teeth (the
+ * keys' teeth were a 1-2 px line on wide opens). Off by default until the critic signs off; GENITA_PREP_TEETH_VISIBLE=1.
+ */
+export const TEETH_VISIBLE_LINE = "the upper front teeth clearly visible, about one third of the mouth opening height, with a natural tooth edge";
+const TEETH_VISIBLE_KEYS = new Set<string>(["AH", "AH2", "EH"]);
+export const teethVisibleOn = (): boolean => process.env.GENITA_PREP_TEETH_VISIBLE === "1";
+
 export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolean, ctx: PromptCtx = {}): string {
   // non-human profiles bring whole prompts (tested by the non-human lane); strict adds the hold-still line
   const own = ctx.profile ? profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species) : null;
@@ -193,7 +204,8 @@ export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolea
     (isMouthKey(key) ? MOUTH_PROMPT_BY_KIND[kind]?.[key] : undefined) ??
     (key in SHAPE ? SHAPE[key as Viseme] : isMouthKey(key) ? MOUTH[key as (typeof MOUTH_KEYS)[number]] : EXPRESSION[key as FaceExpression])[kind === "human" ? 0 : 1];
   const style = kind === "character" ? " Keep the original art style." : kind === "animal" ? " Keep it a real animal." : "";
-  const base = `Edit only the ${s}'s ${part}: ${line}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
+  const teeth = kind === "human" && TEETH_VISIBLE_KEYS.has(key) && teethVisibleOn() ? `, ${TEETH_VISIBLE_LINE}` : "";
+  const base = `Edit only the ${s}'s ${part}: ${line}${teeth}. Keep the ${s}'s identity, face, ${keep}, lighting, background, framing and camera exactly the same.${style}`;
   // the mouth keys always carry the hold-still line (that is how they were tested), and never smile
   if (isMouthKey(key)) return `${base} Neutral relaxed expression, not smiling. Do not move, resize, rotate or re-crop: the head stays at exactly the same position and size in the frame.${strict ? " Everything above the upper lip stays identical." : ""}`;
   if (!strict) return base;
@@ -214,7 +226,10 @@ const SOUND: Record<Viseme | (typeof MOUTH_KEYS)[number], string> = {
 export function faceSoftPrompt(key: FaceKey, kind: CompanionKind, ctx: PromptCtx = {}): string {
   // profile keys (and a profile's blink): the lane's own prompt again, same species; its wording is already
   // the filter-safe "talking / calm" one (codex P2: never swap a blink retry for a mouth prompt)
-  if (isProfileKey(key) || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
+  // also a mouth key the profile brings its own prompt for (11/3: animal / cat / toy jaw keys are named AH / AH2)
+  // animal / cat bring filter-safe prompts of their own; 3D / toy retries still soften to the generic line (codex P2)
+  const ownSafe = (ctx.profile === "animal" || ctx.profile === "cat") && !!profilePrompt(ctx.profile, key === "blink" ? "BLINK" : key, ctx.species);
+  if (isProfileKey(key) || ownSafe || (ctx.profile && key === "blink" && profilePrompt(ctx.profile, "BLINK", ctx.species))) {
     return faceEditPrompt(key, kind, false, ctx);
   }
   const s = NOUN[kind];
@@ -489,10 +504,11 @@ export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) =>
     ? {
         ...s.flow,
         files: Object.fromEntries(
-          Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}) }]),
+          Object.entries(s.flow.files).map(([k, f]) => [k, { key: flowUrl(f.key), ...(f.nk ? { nk: flowUrl(f.nk) } : {}), ...(f.kn ? { kn: flowUrl(f.kn) } : {}), ...(f.lip ? { lip: flowUrl(f.lip) } : {}), ...(f.interior ? { interior: flowUrl(f.interior) } : {}) }]),
         ),
         mask: flowUrl(s.flow.mask),
         neutralRoi: flowUrl(s.flow.neutralRoi),
+        ...(s.flow.blink ? { blink: { ...s.flow.blink, image: flowUrl(s.flow.blink.image), mask: flowUrl(s.flow.blink.mask) } } : {}),
       }
     : null;
   return { version: 1, size: s.size, faceBox: s.ref.face, mouthBox: s.ref.mouth, images, visemes, mouthKeys, flow, boxes, rejected, ms: s.ms };

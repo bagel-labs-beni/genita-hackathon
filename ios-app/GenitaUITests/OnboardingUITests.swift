@@ -72,6 +72,15 @@ final class OnboardingUITests: XCTestCase {
         // V01 (fixture photo) → V03 → V02-T
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
         capture("V01")
+        // SUB-8 (#125) / D26: the rights line is on screen and "Use this image" stays off until it is on
+        let rights = app.buttons["rightsAck"]
+        XCTAssertTrue(rights.exists, "V01 shows the rights line")
+        XCTAssertEqual(rights.value as? String, "Off")
+        XCTAssertFalse(primary.isEnabled, "no check without the rights line")
+        rights.tap()
+        XCTAssertEqual(rights.value as? String, "On")
+        XCTAssertTrue(primary.isEnabled)
+        capture("V01-rights-on")
         primary.tap()
         XCTAssertTrue(element("V03").waitForExistence(timeout: 3), "V03 while the check runs")
         capture("V03")
@@ -92,7 +101,7 @@ final class OnboardingUITests: XCTestCase {
         waitForExpectations(timeout: 10)
         XCTAssertFalse(primary.isEnabled, "V04-P: Continue waits for the clip")
         capture("V04-P")
-        // when the 1.6 s clip ends the card stays picked
+        // when the 4 s stub clip ends the card stays picked
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"])
         waitForExpectations(timeout: 10)
         XCTAssertTrue(primary.isEnabled)
@@ -140,7 +149,7 @@ final class OnboardingUITests: XCTestCase {
         // Start talking lights up once the server says the scene is done (stub: 3 s after PREP-1's first poll)
         expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: app.buttons["prepContinue"])
         waitForExpectations(timeout: 15)
-        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped Peter lips don't mark Mouth done")
+        XCTAssertEqual(element("prepStage-mouth").value as? String, "pending", "the skipped lip step doesn't mark Mouth done")
         capture("PREP1-scene-done")
         // PREP-1e: the stub fails the face step at 7/13 (expressions done, mouth failed)
         XCTAssertTrue(app.buttons["prepRetry"].waitForExistence(timeout: 20), "PREP-1e Try again")
@@ -249,15 +258,30 @@ final class OnboardingUITests: XCTestCase {
         func element(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         XCTAssertTrue(app.buttons["openChatGPT"].waitForExistence(timeout: 15), "I01")
         app.buttons["openChatGPT"].tap()
-        XCTAssertTrue(element("promptCopiedToast").waitForExistence(timeout: 3), "Prompt copied")
-        let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot)
-        // leave the app (ChatGPT or its site opens; home makes sure) and come back
-        XCUIDevice.shared.press(.home)
-        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 15))
+        // One tap copies the prompt, shows "Prompt copied" and opens ChatGPT (on the simulator, with no ChatGPT app:
+        // chatgpt.com in Safari). Safari can take the foreground before the toast is read (flaky on loaded CI
+        // runners), so the toast is only looked for while Genita is still in front; the open and the copy are then
+        // checked on their own: Safari comes to the front, and back on I02 the paste button pastes the prompt.
+        let toast = element("promptCopiedToast")
+        var sawToast = false
+        let end = Date().addingTimeInterval(3)
+        while Date() < end, app.state == .runningForeground {
+            if toast.exists { sawToast = true; break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if sawToast { let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "onb-I01-prompt-copied"; shot.lifetime = .keepAlways; add(shot) }
+        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
+        XCTAssertTrue(safari.wait(for: .runningForeground, timeout: 15), "the AI app's site opened")
+        // Safari in front is the proof the app left; Genita's own reported state lags on CI (it stayed
+        // .runningForeground for 5 s after Safari came up), so it is not asserted
         app.activate()
         XCTAssertTrue(app.buttons["pasteReply"].waitForExistence(timeout: 10), "back from the AI app → I02 with the paste button")
         XCTAssertTrue(element("responseInput").exists)
         XCTAssertFalse(element("copyPrompt").exists, "not on I01 any more")
+        // the copy: the system paste button puts the I01 prompt into the reply box
+        app.buttons["pasteReply"].tap()
+        let pasted = NSPredicate(format: "value CONTAINS %@", "evidence-based personalization profile for Genita")
+        expectation(for: pasted, evaluatedWith: element("responseInput")); waitForExpectations(timeout: 10)
         let back = XCTAttachment(screenshot: app.screenshot()); back.name = "onb-I02-paste-first"; back.lifetime = .keepAlways; add(back)
     }
 
@@ -278,6 +302,8 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15)); primary.tap()
         XCTAssertTrue(app.buttons["play1"].waitForExistence(timeout: 10)); app.buttons["play1"].tap()
         expectation(for: NSPredicate(format: "label BEGINSWITH 'Leah, Selected'"), evaluatedWith: app.buttons["voice1"]); waitForExpectations(timeout: 15)
+        // Continue waits for the clip (V04-P): tap it once it is on, not while the preview still plays
+        expectation(for: NSPredicate(format: "isEnabled == true"), evaluatedWith: primary); waitForExpectations(timeout: 15)
         primary.tap()
         let name = app.textFields["companionNameInput"]
         XCTAssertTrue(name.waitForExistence(timeout: 10))
@@ -316,6 +342,7 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(element("profileResult").waitForExistence(timeout: 15))
         primary.tap()
         XCTAssertTrue(app.buttons["uploadImage"].waitForExistence(timeout: 5))
+        app.buttons["rightsAck"].tap() // SUB-8: "Use this image" stays off until the rights line is on
         primary.tap()
         XCTAssertTrue(element("V02-T").waitForExistence(timeout: 15))
         primary.tap()

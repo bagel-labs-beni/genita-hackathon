@@ -23,13 +23,13 @@ const style = (source) => ({
   style: { version: 1, source, display: rows, partial: false, toConfirm: ["Budget"], itemCount: 7, dropped: { injection: 0, sensitive: 0 } },
 });
 
-// V04: the server's four voices for the look, the preview clip (WAV, 1.6 s tone) and the saved pick.
+// V04: the server's four voices for the look, the preview clip (WAV, 4 s tone: long enough that a loaded CI simulator still sees "Playing") and the saved pick.
 // POST /__voice {down:true|false} flips the voice service so the UI test can show the greyed list.
 let voiceDown = false;
 const VOICES = [["72", "Tara", "Warm, bright"], ["120", "Leah", "Soft, steady"], ["36", "Leo", "Calm, low"], ["24", "Dan", "Easygoing"]]
   .map(([id, name, blurb]) => ({ id, name, blurb, label: `${name} · ${blurb.split(",")[0].toLowerCase()}`, previewUrl: `/v1/companion/voices/${id}/preview` }));
 function previewWav() {
-  const rate = 24000, n = Math.floor(rate * 1.6), pcm = Buffer.alloc(n * 2);
+  const rate = 24000, n = Math.floor(rate * 4), pcm = Buffer.alloc(n * 2);
   for (let i = 0; i < n; i++) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 220 * i) / rate) * 2500), i * 2);
   const h = Buffer.alloc(44);
   h.write("RIFF", 0); h.writeUInt32LE(36 + pcm.length, 4); h.write("WAVEfmt ", 8); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
@@ -42,7 +42,7 @@ let prepStartedAt = 0;
 // POST /__prep {failAt:n}: the face step fails once n of its 13 images are settled (PREP-1e); retry clears it.
 let failAt = null;
 // The real Meta-only shape (genita-server runner.ts prepView): scene, then ONE face step for 3 expressions +
-// 10 visemes (`settled` of 13), Kling clips and Peter lips `skipped`. The clock starts at PREP-1's first poll
+// 10 visemes (`settled` of 13), the old video clips and lip step `skipped`. The clock starts at PREP-1's first poll
 // (the UI test spends longer than the prep on the screens before it): scene done at 3 s, then one face image a
 // second (expressions done at 6 s, mouth done = ready at 16 s).
 const SCENE_MS = 3000, FACE_TOTAL = 13;
@@ -61,7 +61,7 @@ const prepView = () => {
     progress: { done: (sceneDone ? 1 : 0) + settled, total: 1 + FACE_TOTAL },
     sceneUrl: null,
     steps: { scene: { status: sceneDone ? "done" : "running", ms: null }, videos: { neutral: skipped, happy: skipped, warm: skipped }, face },
-    lips: { status: "skipped", detail: null, url: null, ms: null, peter: null },
+    lips: { status: "skipped", detail: null, url: null, ms: null },
   };
 };
 const companionView = () => ({ ...companion, prep: prepView(), persona: null, session: null });
