@@ -2014,7 +2014,6 @@ final class CheekRig: @unchecked Sendable {
         let sprPx = ((pr?.spreadPx ?? 0) * peri.ee - (pr?.roundInPx ?? 0) * peri.round) / stillToOut
         let jawPx = (pr?.jawDropPx ?? 0) * peri.open / stillToOut
         let mx = micro.0 / stillToOut, my = micro.1 / stillToOut
-        var out = [UInt8](repeating: 0, count: width * height * 4)
         // Mac CPU (QA: a call at 80 % on build 6, this loop ≈ half of it). The warp is linear in the weight fields with
         // per-frame coefficients, so it is built with vDSP (one multiply-add pass per field) instead of ~12 array reads
         // and ~40 Double ops per pixel; the per-pixel loop only samples. Float accumulation: differences ≤ 1e-5 px.
