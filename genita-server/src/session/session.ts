@@ -138,6 +138,8 @@ export type SessionDeps = {
   personalize?: SessionPersonalize;
   /** server.ts: this call continues the account's conversation from the other device (memory-independent; P1 11/3) */
   continuesCall?: () => boolean;
+  /** resolves true once this call's device may play sound (handoff owner, lease over), false if it won't soon */
+  untilPlayable?: () => Promise<boolean>;
   /**
    * Same presence on every device (11/3): the voice saved on this account's companion (prep store). It wins over
    * the start message's voice, so the iPhone and the Mac always speak with one voice. null/unset = the client's.
@@ -348,6 +350,8 @@ export async function* mustNameMac(src: AsyncIterable<SparkStreamEvent>, line: s
 /** #387 follow-up: said instead of a reply whose only sentence was the question watch together took back */
 const WATCH_ASK_FALLBACK = "<happy> Ooh, okay. Let's watch.";
 const GREET_PROMPT = "The call just connected. Greet the user.";
+/** the call came back after a drop (same device, or the other device after a gap): no full greeting, one short line */
+export const RECONNECT_LINE = "Sorry, we got cut off — where were we?";
 /**
  * Greeting option (a), Chelsea 11/4 (GENITA_GREET_OPENER=0 turns it off): the call's first words are
  * said at once from the user's name ("Hey, Summer!"); Spark's greeting continues right after it (first sound ~0.4 s
@@ -915,7 +919,12 @@ export class Session {
     if (startMode === "interpret") this.enterInterpret(parseInterpretOptions(msg.interpret));
     if (this.tts === "server" && this.deps.config.voice && !this.voiceOverflow) this.deps.voicePrefetch?.(Number(this.voiceId.slice("seamless:".length)));
     if (startMode === "chat" && initiativeOn()) this.startInitiative();
-    if (this.continued) return; // handoff: the conversation goes on, no greeting of either kind
+    if (this.continued) {
+      // handoff: the conversation goes on, no greeting of either kind. A drop coming back (same device, or a gap)
+      // says one short line so the user isn't met by silence (coordinator 11/4 WT-06 follow-up)
+      if (this.reconnected && startMode === "chat") void this.sayReconnectLine();
+      return;
+    }
     if (greetAfterMs === null) {
       if (this.greeting && !this.closed && !this.reply) this.dispatch({ type: "text", text: GREET_PROMPT });
       return;
@@ -942,6 +951,21 @@ export class Session {
       }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
+  }
+
+  /**
+   * The reconnect line, once this device may play (the start claim and a switch's short lease: said into a closed
+   * gate it was lost — Codex #555), and only if nothing happened meanwhile: no user turn yet, still a chat (not
+   * interpretation), no reply under way (Codex #555 P2s).
+   */
+  private async sayReconnectLine(): Promise<void> {
+    const playable = (await this.deps.untilPlayable?.().catch(() => false)) ?? true;
+    if (!playable || this.closed || this.reply || this.mode !== "chat" || this.turn.utteranceId !== 0) {
+      this.log("call.reconnect_skipped", { playable, busy: !!this.reply, mode: this.mode, turns: this.turn.utteranceId });
+      return;
+    }
+    this.log("call.reconnect_line", {});
+    this.dispatch({ type: "self_speak", text: RECONNECT_LINE, origin: "card" });
   }
 
   private startPreGreet(): void {
@@ -1663,6 +1687,8 @@ export class Session {
   /** a real crisis line came up anywhere in this call: sticky (the 16-line history trim never clears it) and handed to
    * the next device with the turns (server.ts), like forgetAsked. No take nudge after it (Codex #502 P1 r1–r3) */
   crisisInCall = false;
+  /** set by the server when this call picked up a dropped one (same device, or > RECONNECT_GAP_MS later): RECONNECT_LINE */
+  reconnected = false;
   /** the user hung up (`stop`), as opposed to a dropped socket or a move to the other device */
   endedByUser = false;
 
