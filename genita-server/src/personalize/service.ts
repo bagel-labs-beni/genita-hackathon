@@ -196,8 +196,9 @@ export class Personalize {
   }
 
   /** The cards to show now: the stored ones, with `unknowns` rebuilt from the latest card. */
-  private static current(card: StyleCard): StoryCard[] {
+  private static current(card: StyleCard, hidePending = true): StoryCard[] {
     const cards = toStory(null, card, card.story?.version === 2 ? card.story.cards : undefined, card.story?.version === 2 ? ["unknowns"] : undefined).cards;
+    if (!hidePending) return cards;
     // an answer saved but not merged yet: its topic is already gone from the list (Codex P2)
     const answering = new Set((card.pendingCorrections ?? []).filter((p) => p.cardId === "unknowns" && p.text).map((p) => p.items[0]).filter(Boolean));
     if (!answering.size) return cards;
@@ -270,7 +271,8 @@ export class Personalize {
     for (const p of card.pendingCorrections ?? []) {
       const key = `${userId}\u0000${p.asOf}`;
       if (this.queued.has(key)) continue;
-      const shown = Personalize.current(card).find((c) => c.id === p.cardId);
+      // the list with the pending answers still in it: a replayed answer must find its own topic (Codex)
+      const shown = Personalize.current(card, false).find((c) => c.id === p.cardId);
       if (!shown) continue;
       this.queued.add(key);
       this.log("profile.correction_replay", { card: p.cardId });
@@ -305,8 +307,12 @@ export class Personalize {
     let updates: ProfileUpdate[];
     if (cardId === "unknowns") {
       // "let me tell you now": an answer to one of the open topics
-      const topic = shown.unknowns!.find((u) => u.topic === items[0]) ?? shown.unknowns![0];
-      if (!text || !topic) return;
+      // the topic they answered, never "the first one" (a replay after the list changed would answer the wrong one)
+      const topic = (shown.unknowns ?? []).find((u) => u.topic === items[0]) ?? (items.length ? undefined : shown.unknowns?.[0]);
+      if (!text || !topic) {
+        await this.update(userId, (c) => ({ card: { ...c, pendingCorrections: (c.pendingCorrections ?? []).filter((x) => x.asOf !== asOf) }, out: true }));
+        return;
+      }
       const raw = await once<{ updates?: unknown; answered?: unknown }>(buildCorrectionRequest(before, text, undefined, topic)).catch((err) => {
         this.log("profile.correct_failed", { card: cardId, message: String(err).slice(0, 160) });
         return null;
