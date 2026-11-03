@@ -14,7 +14,7 @@
  *   PATCH /v1/companion {name}              F2-L26 rename (1–20 chars, else 400 bad_name)
  *   GET  /v1/companion                      companion + prep + persona + demo
  *   GET  /v1/companion/prep                 F2-L9  {status, progress {done,total}, face (manifest), emotionVideos}
- *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm, visemes, mouth keys) or
+ *   GET  /v1/companion/face/:key            face set image (neutral = scene, blink/smile/warm/laugh/surprised/concerned, visemes, mouth keys) or
  *                                           face-flow asset (flow_*: ROI keys, float16 flows, mask), this user's companion only
  *   POST /v1/companion/prep/retry           F2-L9  after `failed`
  *   POST /v1/companion/prefs {depth, answers}      F2-L14 → persona card + SUM lines + session start fields

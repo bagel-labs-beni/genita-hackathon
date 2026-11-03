@@ -1,8 +1,9 @@
 /**
  * Prep step `face` (Meta-only face set, team/metaface spec "Face set").
  *
- * From the call scene, Muse Image edits make three expressions (blink, smile,
- * warm) and ten viseme images (MBP FV TH L WQ O EI A U CDG); `rest` and
+ * From the call scene, Muse Image edits make six expressions (blink, smile,
+ * warm, and since 11/3 night laugh, surprised, concerned — the device's expression layer blends their eyes, brows
+ * and cheeks in while a server `expression` event is active) and ten viseme images (MBP FV TH L WQ O EI A U CDG); `rest` and
  * `neutral` are the scene itself. Every edit starts from the scene, never from
  * another edit, so drift does not stack.
  *
@@ -24,7 +25,9 @@ import type { SamBox } from "../meta/sam.ts";
 import type { CompanionKind } from "./prompts.ts";
 import { profileMouthKeys, profilePrompt, type FlowProfile } from "./profiles.ts";
 
-export const FACE_EXPRESSIONS = ["blink", "smile", "warm"] as const;
+export const FACE_EXPRESSIONS = ["blink", "smile", "warm", "laugh", "surprised", "concerned"] as const;
+/** Full-face expression keys for the device's expression layer (server `expression` tags map onto them in the app). */
+export const EMOTION_KEYS = ["smile", "warm", "laugh", "surprised", "concerned"] as const;
 export const VISEMES = ["MBP", "FV", "TH", "L", "WQ", "O", "EI", "A", "U", "CDG"] as const;
 /**
  * Conversational mouth keys for the device's optical-flow morph (11/3, "B"): a jaw ladder
@@ -55,10 +58,18 @@ const ALL_MOUTH = new Set<string>([...MOUTH_KEYS, ...PROFILE_KEYS]);
 export const MOUTH_PROMPT_BY_KIND: Partial<Record<CompanionKind, Partial<Record<MouthKey, string>>>> = {};
 
 /** Keys a face set of this kind (and mouth profile, when known) is made of: expressions + visemes + mouth keys. */
-export function faceKeysFor(kind: CompanionKind, profile?: FlowProfile): readonly FaceKey[] {
+export function faceKeysFor(kind: CompanionKind, profile?: FlowProfile, env: Record<string, string | undefined> = process.env): readonly FaceKey[] {
   const fromProfile = profile ? profileMouthKeys(profile) : null;
   const mouth = new Set<string>(fromProfile ?? MOUTH_KEYS_BY_KIND[kind] ?? MOUTH_KEYS);
-  return ALL_FACE_KEYS.filter((k) => !ALL_MOUTH.has(k) || mouth.has(k));
+  const emotions = emotionKeysOn(env);
+  return ALL_FACE_KEYS.filter((k) => (!ALL_MOUTH.has(k) || mouth.has(k)) && (emotions || !NEW_EMOTION_KEYS.has(k)));
+}
+
+/** The three keys added 11/3 night (laugh, surprised, concerned): GENITA_FACE_EMOTION_KEYS=0 stops making them (prep time / cost). */
+const NEW_EMOTION_KEYS = new Set<string>(["laugh", "surprised", "concerned"]);
+export function emotionKeysOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.GENITA_FACE_EMOTION_KEYS ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "false" || v === "off");
 }
 /**
  * Edits in flight at once. 6 was set for the first 13-key set; with 18–19 keys that was
@@ -66,7 +77,7 @@ export function faceKeysFor(kind: CompanionKind, profile?: FlowProfile): readonl
  * at once (one wave + retries): face 34–51 s, ready 64–94 s, no 429 (11/3 n=3).
  * GENITA_FACE_CONCURRENCY overrides (e.g. back to 6 if Muse Image starts rate limiting).
  */
-export const FACE_CONCURRENCY = 20;
+export const FACE_CONCURRENCY = 24;   // 11/3 night: + laugh / surprised / concerned = 21 human keys, still one wave
 export function faceConcurrency(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.GENITA_FACE_CONCURRENCY);
   return Number.isInteger(n) && n >= 1 && n <= 32 ? n : FACE_CONCURRENCY;
@@ -186,13 +197,28 @@ const EXPRESSION: Record<FaceExpression, [string, string]> = {
   blink: ["both eyes fully closed in a natural relaxed blink", "both eyes fully closed in a natural relaxed blink"],
   smile: ["a happy, natural smile with smiling eyes, as if just amused", "a happy, content look with relaxed, smiling eyes"],
   warm: ["a soft, tender look: a faint gentle closed-lip smile and warm eyes", "a soft, tender look with gentle, warm eyes"],
+  // 11/3 night (expression layer): the eyes carry it — a real laugh narrows the eyes and lifts the cheeks
+  laugh: [
+    "laughing at something funny: a big genuine smile with the mouth open and the upper teeth showing, the eyes narrowed and crinkled at the corners with joy, the cheeks raised",
+    "laughing happily: a big open happy smile, the eyes narrowed with joy",
+  ],
+  surprised: [
+    "pleasantly surprised: the eyebrows raised high, the eyes opened wide, the lips slightly parted",
+    "pleasantly surprised: the eyebrows raised, the eyes opened wide",
+  ],
+  concerned: [
+    "gently concerned and caring: the inner ends of the eyebrows raised and drawn slightly together, soft sympathetic eyes, the lips closed and relaxed, not smiling",
+    "gently concerned and caring: soft sympathetic eyes, the brows slightly raised in the middle",
+  ],
 };
+const isEmotionKey = (k: FaceKey): boolean => (EMOTION_KEYS as readonly string[]).includes(k);
 
 /** What the edit may change, and what else it must keep. */
 function region(key: FaceKey, kind: CompanionKind): { part: string; keep: string } {
   const mouth = kind === "animal" ? "mouth (its muzzle or beak)" : kind === "character" ? "mouth, drawn in the character's own art style" : "mouth";
   if (key === "blink") return { part: "eyes", keep: "hair, mouth" };
   if (key === "smile" || key === "warm") return { part: "facial expression (mouth and eyes)", keep: "hair" };
+  if (isEmotionKey(key)) return { part: "facial expression (mouth, eyes and eyebrows)", keep: "hair" };
   if (isMouthKey(key)) return { part: kind === "human" ? "mouth and jaw" : `${mouth} and jaw`, keep: "hair, eyes, eyebrows, nose" };
   return { part: mouth, keep: "hair, eyes" };
 }
@@ -221,7 +247,7 @@ export function faceEditPrompt(key: FaceKey, kind: CompanionKind, strict: boolea
   // the mouth keys always carry the hold-still line (that is how they were tested), and never smile
   if (isMouthKey(key)) return `${base} Neutral relaxed expression, not smiling. Do not move, resize, rotate or re-crop: the head stays at exactly the same position and size in the frame.${strict ? " Everything above the upper lip stays identical." : ""}`;
   if (!strict) return base;
-  return `${base} Do not move, resize, rotate, re-crop or redraw anything else: the head stays at exactly the same position and size in the frame, and everything outside the ${key === "blink" ? "eyes" : key in SHAPE ? "mouth" : "mouth and eyes"} stays identical.`;
+  return `${base} Do not move, resize, rotate, re-crop or redraw anything else: the head stays at exactly the same position and size in the frame, and everything outside the ${key === "blink" ? "eyes" : key in SHAPE ? "mouth" : key === "smile" || key === "warm" ? "mouth and eyes" : "mouth, eyes and eyebrows"} stays identical.`;
 }
 
 /** The sound each viseme is caught on, for the soft prompt. */
