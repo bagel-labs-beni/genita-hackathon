@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
 import { FileStore, type ImageRecord } from "../src/prep/store.ts";
 import { createPrepRoutes } from "../src/prep/routes.ts";
-import { PrepRunner } from "../src/prep/runner.ts";
+import { PrepRunner, newPrepState } from "../src/prep/runner.ts";
 import { DEFAULT_VOICES, orderForFace } from "../src/prep/voices.ts";
 import { resetVoiceProbe, type PrepDeps } from "../src/prep/pipeline.ts";
 import { CLASSIFY_SCHEMA, interpretCheck, type ClassifyRaw } from "../src/prep/classify.ts";
@@ -64,7 +64,7 @@ test("pick → save → call: a man's face is suggested Leo; the voice the user 
   assert.equal((await voices("u3", "old")).suggested, "72", "a photo checked before 11/4 keeps the old order");
 
   // the companion is made with the suggested voice ("Use this image"), then V04 saves the user's pick
-  await store.putCompanion({ id: "c1", userId: "u1", imageId: "m", type: "human", voiceId: man.suggested, name: "Leo", createdAt: new Date().toISOString(), prep: { status: "pending" } as never });
+  await store.putCompanion({ id: "c1", userId: "u1", imageId: "m", type: "human", voiceId: man.suggested, name: "Leo", createdAt: new Date().toISOString(), prep: newPrepState() });
   const put = await fetch(`${base}/v1/companion/voice`, { method: "PUT", headers: { "x-genita-user": "u1", "content-type": "application/json" }, body: JSON.stringify({ voiceId: "9" }) });
   assert.equal(put.status, 200);
   assert.equal((await store.getCompanion("u1"))?.voiceId, "9");
