@@ -440,6 +440,8 @@ import UniformTypeIdentifiers
             do { try await Task.sleep(for: .seconds(4)) } catch { return }
             waited += 4
             await player.refresh(client: model.onboarding, imageId: model.setup.imageId)
+            // Continue already took the pick (saving or gone): the list must not move it any more (Codex re-review P2)
+            guard !Task.isCancelled, !model.savingVoice, model.stage == .voice else { return }
             // the tick follows the voice id, never the row (Codex review P2: a refreshed list put Leo in row 0 while Tara was saved)
             if player.available, autoPick != nil, model.setup.voiceId == autoPick { selectVoice(0); autoPick = model.setup.voiceId }
             else if let id = model.setup.voiceId, let i = player.voices.firstIndex(where: { $0.id == id }) { model.setup.voice = i }

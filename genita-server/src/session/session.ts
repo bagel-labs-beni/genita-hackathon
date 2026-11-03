@@ -2558,6 +2558,7 @@ export class Session {
           const taken = askedAt(i) || !!sentences[i]?.drop;
           if (!taken && !sentences[i]?.beat) reply.spoken.push(sentences[i].display);
           let voiced = false;
+          const recoverOffset = reply.audioMs; // the line's alignment is from its own start (Codex re-review P2)
           try {
             for await (const chunk of this.deps.tts({ voiceId: this.voiceId, text: RECOVER_LINE, emotion: null, model: SEAMLESS_MODEL, signal, lang: "en-US", cachedOnly: true })) {
               if (signal.aborted || !chunk.audio.length) continue;
@@ -2572,7 +2573,7 @@ export class Session {
               }
               const seq = ++this.seq;
               const durationMs = pcmDurationMs(chunk.audio.length);
-              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, reply.audioMs) });
+              this.client.sendJson({ type: "audio", utteranceId, seq, sentence: i, offsetMs: Math.round(reply.audioMs), durationMs: Math.round(durationMs), sampleRate: PCM_SAMPLE_RATE, model: chunk.model, ...chunkTiming(this.lip.active, chunk.alignment, recoverOffset) });
               this.client.sendBinary(Buffer.concat([encodeFrameHeader(FRAME_KIND_TTS_PCM, seq), chunk.audio]));
               reply.audioMs += durationMs;
               ttsModelUsed = chunk.model;
