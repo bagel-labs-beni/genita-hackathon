@@ -49,8 +49,18 @@ final class CallScreenUITests: XCTestCase {
         XCTAssertTrue(waitCue("Reconnecting"), "S09-R"); capture("S09-R-reconnecting")
         XCTAssertTrue(waitCue("Listening", timeout: 40), "back after reconnect")
 
-        app.buttons["more"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5))
+        let more = app.buttons["more"]
+        let moreFrame = more.frame, moreHittable = more.isHittable, moreEnabled = more.isEnabled
+        more.tap()
+        let sheetUp = app.descendants(matching: .any)["moreSheet"].waitForExistence(timeout: 5)
+        if !sheetUp {
+            // #291 family: did the tap reach the action (more:N), did the sheet state flip (moreOpen), what is the link
+            let probe = app.descendants(matching: .any)["debugInterpretProbe"].firstMatch
+            let line = "MORE-291 probe=\(probe.exists ? probe.label : "missing") frame=\(moreFrame) hittable=\(moreHittable) enabled=\(moreEnabled)"
+            print(line); print(String(app.debugDescription.prefix(6000)))
+            let note = XCTAttachment(string: line + "\n\n" + app.debugDescription); note.name = "more-291-diagnostics"; note.lifetime = .keepAlways; add(note)
+        }
+        XCTAssertTrue(sheetUp)
         capture("MORE-B2-sheet")
         XCTAssertFalse(app.buttons["moreTextChat"].exists, "Text chat stays hidden while the bundled app-config flag is false")
         XCTAssertFalse(app.buttons["moreFlip"].isEnabled, "Flip camera needs the camera on")

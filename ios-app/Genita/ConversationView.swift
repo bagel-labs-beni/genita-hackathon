@@ -13,6 +13,8 @@ struct ConversationView: View {
     #if DEBUG
     /// #291 probe for UI tests: how many times ✕ Stop interpreting ran its action (the tap reached the button)
     @State private var debugStopTaps = 0
+    /// same probe for ⋮ More (CallScreenUITests: the sheet did not open after a reconnect)
+    @State private var debugMoreTaps = 0
     #endif
     @State private var cameraGuide = false
     @State private var findsTabOpen = false
@@ -88,7 +90,7 @@ struct ConversationView: View {
                         Button { call.toggleMic() } label: { CallToggleGlass(icon: "glass-mic-icon", on: call.micOn) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel(call.micOn ? "Turn microphone off" : "Turn microphone on").accessibilityIdentifier("micToggle").position(x: full.size.width - 56, y: 724 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
-                        Button { withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
+                        Button { debugNoteMore(); withAnimation(.easeOut(duration: 0.22)) { moreOpen = true } } label: { CallGlassControl(icon: "glass-more-icon", size: 46) }
                             .buttonStyle(PreviewControlStyle()).disabled(connecting).accessibilityLabel("More").accessibilityIdentifier("more").position(x: full.size.width - 56, y: 783 + bottom + railShift(sheet))
                             .opacity(sheet == .full ? 0 : 1).accessibilityHidden(sheet == .full).animation(.drawer, value: sheet)
                         }
@@ -188,7 +190,7 @@ struct ConversationView: View {
         #if DEBUG
         // #291 probe (DEBUG builds only, never in TestFlight): taps that reached ✕ and the call's mode right now
         .overlay(alignment: .bottomLeading) {
-            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat")").font(.system(size: 2)).opacity(0.02)
+            Text("stop:\(debugStopTaps) mode:\(call.mode == .interpret ? "interpret" : "chat") more:\(debugMoreTaps) moreOpen:\(moreOpen) link:\(String(describing: call.link))").font(.system(size: 2)).opacity(0.02)
                 .allowsHitTesting(false).accessibilityIdentifier("debugInterpretProbe")
         }
         #endif
@@ -239,6 +241,11 @@ struct ConversationView: View {
     private func lineWidth(for label: DesignNode) -> CGFloat {
         let line = "Connecting to \(model.companionDisplayName)…"
         return max(label.w, ceil((line as NSString).size(withAttributes: [.font: label.font]).width) + 2)
+    }
+    private func debugNoteMore() {
+        #if DEBUG
+        debugMoreTaps += 1
+        #endif
     }
     private func debugNoteStop() {
         #if DEBUG
