@@ -262,7 +262,8 @@ struct CallToggleGlass: View {
             if on {
                 Circle().fill(CallInk.onInk)
                 if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
-                    Image(uiImage: image).resizable().colorInvert().frame(width: image.size.width / 4, height: image.size.height / 4)
+                    let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: CallHUDGrid.button)
+                    Image(uiImage: image).resizable().colorInvert().frame(width: g.width, height: g.height)
                 }
             }
         }.frame(width: CallHUDGrid.button, height: CallHUDGrid.button).contentShape(Circle())

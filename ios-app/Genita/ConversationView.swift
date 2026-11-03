@@ -456,8 +456,12 @@ struct CallGlassControl: View {
                     .overlay(Circle().fill(.black.opacity(0.15)))
                     .overlay(Circle().strokeBorder(LinearGradient(colors: [.white.opacity(0.65), .white.opacity(0.06), .white.opacity(0.32)], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 0.7))
             }
-            if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
-                Image(uiImage: image).resizable().frame(width: image.size.width / 4, height: image.size.height / 4)
+            // glyph = 55 % of the circle (GlassGlyph); ⋮ as three dots
+            if icon == GlassGlyph.moreIcon {
+                GlassDots(diameter: size)
+            } else if let url = Bundle.main.url(forResource: icon, withExtension: "png"), let image = UIImage(contentsOfFile: url.path) {
+                let g = GlassGlyph.size(pixels: CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale), diameter: size)
+                Image(uiImage: image).resizable().frame(width: g.width, height: g.height)
             }
             if slashed { Capsule().fill(.white).frame(width: 26, height: 1.5).rotationEffect(.degrees(45)) }
         }.frame(width: size, height: size).contentShape(Circle())
