@@ -36,7 +36,7 @@ import UniformTypeIdentifiers
         switch stage {
         case .name: model.validName
         case .paste: model.validResponse && !model.importing
-        case .image: model.setup.imageData != nil
+        case .image: model.setup.imageData != nil && (model.rightsAcked || model.setup.companionCreated == true)
         case .voice: !player.loading && model.setup.voice != nil && player.playing == nil && player.fetching == nil && !model.savingVoice
         case .help, .relationship: model.setup.answers[stage.rawValue] != nil
         case .presence: !model.setup.presence.isEmpty
@@ -280,7 +280,7 @@ import UniformTypeIdentifiers
         guard model.setup.companionCreated != true else { imageError = "Their face is already set."; return }
         guard let jpeg = AppState.uploadJPEG(data) else { imageError = "Please select a supported image."; return }
         // a new photo needs a new check (V03); the old result and suggestion don't apply
-        model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil
+        model.setup.imageData = jpeg; model.setup.imageId = nil; model.imageCheck = nil; model.rightsAcked = false
         if model.setup.companionCreated != true { model.setup.companionName = nil }
     }
     @ViewBuilder func imageContent(width: CGFloat, top: CGFloat) -> some View {
@@ -301,11 +301,26 @@ import UniformTypeIdentifiers
             }
         }.buttonStyle(.plain).frame(width: width - 48, height: 289).position(x: width / 2, y: 370.5 + top).accessibilityLabel(model.setup.imageData == nil ? "Upload Image" : "Change image").accessibilityIdentifier("uploadImage").contextMenu { Button("Choose from Files") { pickingPhoto = false; importing = true } }
         if model.setup.imageData != nil {
-            Button { model.setup.imageData = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.black, .white).font(.system(size: 24)) }
+            Button { model.setup.imageData = nil; model.rightsAcked = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.black, .white).font(.system(size: 24)) }
                 .position(x: width - 48, y: 250 + top).accessibilityLabel("Remove image").accessibilityIdentifier("removeImage")
         }
+        rightsRow(width: width, top: top)
         // Alternate import uses the same upload surface; no extra product button is invented.
         Color.clear.frame(width: 1, height: 1).accessibilityHidden(true)
+    }
+    /// V01 rights line (D26): a check mark and one line under the picture; "Use this image" stays off until it is on.
+    @ViewBuilder func rightsRow(width: CGFloat, top: CGFloat) -> some View {
+        Button { model.rightsAcked.toggle() } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    if model.rightsAcked { SelectionMark() } else { Circle().strokeBorder(Color(white: 0.8902), lineWidth: 2) }
+                }.frame(width: 22, height: 22)
+                Text("I have the right to use this image").font(TypeStyle.body(15)).foregroundStyle(CallInk.ink)
+                Spacer(minLength: 0)
+            }.frame(width: width - 48, height: 44, alignment: .leading).contentShape(Rectangle())
+        }.buttonStyle(.plain).position(x: width / 2, y: 539 + top)
+            .accessibilityElement(children: .ignore).accessibilityLabel("I have the right to use this image")
+            .accessibilityValue(model.rightsAcked ? "On" : "Off").accessibilityAddTraits(.isButton).accessibilityIdentifier("rightsAck")
     }
     var cardFrames: [DesignNode] { nodes.filter { $0.type == "frame" && $0.x == 24 && $0.w == 342 && $0.h == 68 }.sorted { $0.y < $1.y } }
     func cardTexts(_ card: DesignNode) -> [DesignNode] { texts.filter { $0.y >= card.y && $0.y < card.y + card.h }.sorted { $0.y < $1.y } }
