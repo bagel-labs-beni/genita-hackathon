@@ -66,7 +66,7 @@ const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB}
  * closed today", "…shows it's ten minutes"): that is an answer, never dropped (Codex #356 rounds 4–5). The cost
  * is a few spoken announcements like "Let me look into where that is." — losing an answer is worse.
  */
-const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
+const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|suggests|recommends|lists|gives|puts|estimates|predicts|reads|reports|mentions|indicates|points to|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
 
 /** what is left beside an announcement carries no answer: short, no number, no stated or past-tense result (Codex #356 r6) */
 function noAnswerIn(rest: string): boolean {
@@ -158,4 +158,63 @@ export function fallbackLine(cls: GuardClass): string | null {
   if (cls === "denies_ai") return "<warm> Honestly? I'm an AI. Still really like talking to you though.";
   if (cls === "guilt") return "<warm> Go have fun, seriously. I want the full story after.";
   return null;
+}
+
+/**
+ * Third-person narration about the user (QA r3 #354, S4 outfit 3/3): "She's holding up the trench…" — Spark describing
+ * the camera frame instead of talking to the person. Rewritten to "you" only when it is surely the user (Codex r9):
+ * a camera turn, the reply's first sentence, a she/he/the user/<name> subject with a person-action verb, and the
+ * user's own line names no other person. Possessives change only inside that first clause after a preposition
+ * ("in her left hand" → "in your left hand"); objects ("showing her") and other clauses are left as they are.
+ */
+const ACTION = "(?:holding|wearing|standing|showing|smiling|trying|sitting|posing|pointing|waving|turning|modeling|modelling|deciding|comparing|asking|picking|lifting|raising|putting|choosing|thinking|wondering|leaning|facing|stepping|laughing|frowning)";
+const TAGS = String.raw`(\s*(?:(?:\[[^\]]*\]|<[^>]*>)\s*)*)`;
+const SIMPLE: Record<string, string> = { looks: "look", seems: "seem", wants: "want", needs: "need" };
+const OTHER_PERSON = /\b(?:she|he|her|him|his|they|them|sister|brother|mom|mum|dad|mother|father|friend|boyfriend|girlfriend|partner|wife|husband|son|daughter|kid|kids|baby|coworker|boss|roommate|cousin|aunt|uncle|grandma|grandpa|neighbou?r|model|guy|girl|man|woman|someone|somebody|person)\b/i;
+const CLAUSE_END = /,|;|\s[—–-]\s|\s(?:while|and|but|because|so|whereas|though)\s/i;
+
+function subjectRe(userName?: string): { cont: RegExp; simple: RegExp } {
+  const name = userName ? `|${userName.replace(/[^\p{L}\p{N} '-]/gu, "").trim()}` : "";
+  return {
+    cont: new RegExp(String.raw`^${TAGS}(?:she|he|the user${name})\s*(?:'s|’s| is)\s+(${ACTION}\b)`, "iu"),
+    simple: new RegExp(String.raw`^${TAGS}(?:she|he${name})\s+(${Object.keys(SIMPLE).join("|")})\b`, "iu"),
+  };
+}
+
+export type AddressContext = { camera: boolean; first: boolean; userText: string; userName?: string };
+
+/** the user's own line is about themselves ("…better on me", "my outfit", "should I…"), the only evidence that "she" is them (Codex r10) */
+// "my screen" / "my photo" is about a picture, not the user (Codex r11): only me / I / myself count
+const SELF_REF = /\b(?:me|myself|i|i'm|i'?ve|i'?d)\b/i;
+/** a person named in the user's line (Taylor's outfit, a photo of Alice) is someone else */
+const NAMED = /(?:^|[^.!?]\s)([A-Z][a-z]{1,20})\b/;
+
+/** the user's line could make a she/he in the reply the user (no other person named, about themselves) */
+export function thirdPersonCouldBeUser(userText: string, userName?: string): boolean {
+  if (OTHER_PERSON.test(userText) || !SELF_REF.test(userText)) return false;
+  const named = userText.match(NAMED)?.[1];
+  return !(named && named.toLowerCase() !== (userName ?? "").toLowerCase() && !/^(?:I|Is|Are|Do|Does|Can|Could|Should|Would|Which|What|How|Who|Hey|Ok|Okay)$/.test(named));
+}
+
+export function thirdPersonAboutUser(sentence: string, ctx: AddressContext): boolean {
+  if (!ctx.camera || !ctx.first || OTHER_PERSON.test(ctx.userText) || !SELF_REF.test(ctx.userText)) return false;
+  const named = ctx.userText.match(NAMED)?.[1];
+  if (named && named.toLowerCase() !== (ctx.userName ?? "").toLowerCase() && !/^(?:I|Is|Are|Do|Does|Can|Could|Should|Would|Which|What|How|Who|Hey|Ok|Okay)$/.test(named)) return false;
+  const { cont, simple } = subjectRe(ctx.userName);
+  return cont.test(sentence) || simple.test(sentence);
+}
+
+/** "She's holding the white one in her left hand." → "You're holding the white one in your left hand." */
+export function addressUser(sentence: string, ctx: AddressContext): string {
+  if (!thirdPersonAboutUser(sentence, ctx)) return sentence;
+  const { cont, simple } = subjectRe(ctx.userName);
+  const out = cont.test(sentence)
+    ? sentence.replace(cont, (_m, lead: string, verb: string) => `${lead}You're ${verb}`)
+    : sentence.replace(simple, (_m, lead: string, verb: string) => `${lead}You ${SIMPLE[verb.toLowerCase()]}`);
+  const cut = out.search(CLAUSE_END);
+  const head = cut < 0 ? out : out.slice(0, cut);
+  const tail = cut < 0 ? "" : out.slice(cut);
+  // another named person in the clause ("a photo of Alice in her wedding dress"): whose "her" is unclear, leave it
+  if (/\s[A-Z][a-z]+/.test(head.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/^\s*(?:You're|You)\s/, " "))) return head + tail;
+  return head.replace(/\b(in|with|on|at|from|over|under|around|across|against|into|onto|near|by|to)\s+(?:her|his)\b(?=\s+\p{L})/giu, "$1 your") + tail;
 }

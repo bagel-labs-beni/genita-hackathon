@@ -500,3 +500,69 @@ test("narration (real Spark probe 11/3, round 2): 'Checking Seoul's forecast for
   assert.equal(guardSentence("Checking out your fridge, I see onions and garlic.", none), null);
   assert.equal(guardSentence("Checking the map shows City Hall is ten minutes away.", none), null);
 });
+
+// ───────────── third-person narration about the user (QA r3 #354, S4 outfit 3/3) ─────────────
+test("hard fail: 'She's holding up the trench…' becomes 'You're…' on a camera turn's first sentence; others stay (Codex r9)", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const ctx = { camera: true, first: true, userText: "Which one looks better on me?", userName: "Summer" };
+  const cases: Array<[string, string]> = [
+    ["She's holding up the trench and asking which one works.", "You're holding up the trench and asking which one works."],
+    ["<curious> She’s holding the white one in her left hand.", "<curious> You're holding the white one in your left hand."],
+    ["He's trying on the black blazer.", "You're trying on the black blazer."],
+    ["The user is wearing a beige trench coat.", "You're wearing a beige trench coat."],
+    ["She looks great in the black one.", "You look great in the black one."],
+    ["Summer is holding up two coats.", "You're holding up two coats."],
+    ["The user is holding the coat while her friend is wearing her own jacket.", "You're holding the coat while her friend is wearing her own jacket."],
+    ["She's showing her the blazer.", "You're showing her the blazer."],
+  ];
+  for (const [inp, out] of cases) assert.equal(addressUser(inp, ctx), out, inp);
+  for (const keep of ["They're perfect with that trench.", "They're hanging on the rack behind you.", "You're holding the trench, go black."]) assert.equal(addressUser(keep, ctx), keep, keep);
+  // her sister's outfit, no camera, or a later sentence: never rewritten
+  assert.equal(addressUser("She's wearing the red dress.", { ...ctx, userText: "What do you think of my sister's outfit?" }), "She's wearing the red dress.");
+  assert.equal(addressUser("She's holding up the trench.", { ...ctx, camera: false }), "She's holding up the trench.");
+  assert.equal(addressUser("She's holding up the trench.", { ...ctx, first: false }), "She's holding up the trench.");
+});
+
+test("session v1 (S4 outfit with camera): the reply addresses her as you", { skip: !v1 }, async () => {
+  const { client, session } = setup(["<warm> She's holding up the trench and the black blazer. I'd go black, it's sharper."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", user: { name: "Summer" } }));
+  await session.onClientText(JSON.stringify({ type: "frames", images: ["aGVsbG8="] }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Which one looks better on me, the white one or the black one?" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  // the third-person frame description is either dropped (bug-fix lane's pre-tool judge) or turned to "you"; never "She's"
+  assert.doesNotMatch(String(reply.text), /\bshe'?s\b/i);
+  assert.match(String(reply.text), /I'd go black, it's sharper\./);
+  session.close();
+});
+
+test("third person (Codex r10): only when the user's line is about themselves; a named person or their things stay", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const base = { camera: true, first: true, userName: "Summer" };
+  assert.equal(addressUser("She's wearing a red dress.", { ...base, userText: "What do you think of Taylor's outfit?" }), "She's wearing a red dress.");
+  assert.equal(addressUser("The user is holding a photo of Alice in her wedding dress.", { ...base, userText: "What do you think, should I post this?" }), "You're holding a photo of Alice in her wedding dress.");
+  assert.equal(addressUser("She's holding up two jackets.", { ...base, userText: "Which one should I wear?" }), "You're holding up two jackets.");
+});
+
+test("third person (bug-fix lane #354): 'get her a pick' after a dash is never 'get your a pick'", async () => {
+  const { addressUser } = await import("../src/convo/guard.ts");
+  const out = addressUser("She's holding up the options — I'll get her a pick for tonight.", { camera: true, first: true, userText: "which one should I wear tonight?", userName: "Summer" });
+  assert.doesNotMatch(out, /your a pick/);
+});
+
+// ───────────── Codex #356 round 11 (folded judge + guard) ─────────────
+test("r11: a pick before an announcement stays; a decision is not a plan; a sister is not the user; 'suggests' is a result; 'my screen' is not me", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[], tool = false, opts = {}) => {
+    const j = new NarrationJudge(true, opts);
+    const out: string[] = [];
+    for (const [i, l] of lines.entries()) { out.push(...j.push(l).speak); if (tool && i === 0) out.push(...j.onToolCall().speak); }
+    out.push(...j.finish().speak);
+    return out.join(" ");
+  };
+  assert.match(run(["Go with the black one — I'll check my memory.", "It looks sharper."]), /black one/);
+  assert.match(run(["I'll go with the black blazer.", "It suits your style."], true), /black blazer/);
+  assert.match(run(["She's holding up her boarding pass.", "Looks exciting."], false, { thirdPersonIsUser: false }), /boarding pass/);
+  assert.equal(guardSentence("Checking the map suggests the bus.", none), null);
+  const { addressUser } = await import("../src/convo/guard.ts");
+  assert.equal(addressUser("She's wearing a red dress.", { camera: true, first: true, userText: "Can you describe my screen?", userName: "Summer" }), "She's wearing a red dress.");
+});
