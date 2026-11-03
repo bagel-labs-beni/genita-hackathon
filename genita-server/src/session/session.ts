@@ -133,7 +133,9 @@ export const PRODUCT_REACTION_LINE =
   "A shopping search for this is already running in the background and its card will appear on its own. Reply with ONE short sentence (under 10 words): a natural, in-character reaction to what they asked or what you see (taste, color, how it goes with the outfit); talk to them as you. Never say you are searching, looking, checking or pulling anything up, no 'let me…'; don't name products, stores, prices or links.";
 /** The slice of the personalize service a call uses (structural, so tests can fake it). */
 export type SessionPersonalize = {
-  startCall(userId: string): Promise<CallStart | null>;
+  startCall(userId: string, opts?: { plan?: boolean }): Promise<CallStart | null>;
+  /** watch together attached before the question: not a new conversation after all (give the count back) */
+  unplanCall?(userId: string, item: string | null): Promise<void>;
   voiceCorrection(userId: string, line: string, lastAssistant?: string, signal?: AbortSignal, asked?: UnknownItem | null): Promise<VoiceUpdate | null>;
   endCall(userId: string, turns: CallTurn[], asked: string | null, startedAt?: string): Promise<number>;
   /** Knows-Me S1: the user cut two long replies short → observed "short replies" line; null = not saved */
@@ -334,6 +336,8 @@ export class Session {
   private awaitingAnswer: UnknownItem | null = null;
   private userTurns = 0;
   private callStartedAt: string | null = null;
+  /** this call was counted as a new call by personalize (not a handoff) */
+  private callPlanned = false;
   /** Knows-Me: the user's IANA time zone (start.user.timeZone) and call 1's greeting nod */
   private timeZone: string | undefined;
   private nod: string | null = null;
@@ -634,8 +638,12 @@ export class Session {
     if (this.deps.personalize && this.deps.userId && startMode === "chat") {
       try {
         // never hold the call up for the profile store: past STARTCALL_TIMEOUT_MS the app's copy is used
+        // a handoff (iPhone → Mac, seeded or `start.handoff`) is the same conversation: profile only, no question,
+        // no first-call nod, not counted as a call (P1 11/3: the Mac's S4 answer ended with the call-2 question)
+        const continuation = this.continued || msg.handoff === true;
+        this.callPlanned = !continuation;
         const p = await Promise.race([
-          this.deps.personalize.startCall(this.deps.userId),
+          this.deps.personalize.startCall(this.deps.userId, { plan: !continuation }),
           new Promise<null>((r) => setTimeout(() => r(null), STARTCALL_TIMEOUT_MS).unref?.()),
         ]);
         this.callStartedAt = new Date().toISOString();
@@ -993,6 +1001,14 @@ export class Session {
       },
     );
     this.watch.attach(sink);
+    // watch together is not a getting-to-know-you call: drop this call's question and give the count back
+    if (this.callPlanned && this.deps.personalize?.unplanCall && this.deps.userId && !this.ask?.asked) {
+      const item = this.ask?.item ?? null;
+      this.callPlanned = false;
+      this.ask = null;
+      this.nod = null;
+      void this.deps.personalize.unplanCall(this.deps.userId, item).catch((err) => this.log("profile.unplan_failed", { message: String(err).slice(0, 120) }));
+    }
     return this.watch;
   }
 
@@ -1323,7 +1339,8 @@ export class Session {
       onScreen: this.finds?.onScreen(),
       renamedFrom,
       // this call's one question rides the first user turns (the turn being built is userTurns + 1)
-      ask: this.ask && !this.ask.asked && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
+      // never while watching together (the question would land on top of the show)
+      ask: this.ask && !this.ask.asked && !this.watch && this.userTurns < ASK_TURNS ? this.ask.line : undefined,
       localTime: localTimeLine(this.timeZone, new Date()) ?? undefined,
       // call 1's greeting only (v1 has its own first_known opener: no second personal mention)
       nod: greeting && this.nod && !this.v1 ? this.nod : turn.cue ? undefined : this.shorterLine ?? undefined,

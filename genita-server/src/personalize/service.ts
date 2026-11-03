@@ -279,8 +279,16 @@ export class Personalize {
 
   // ───────────── calls ─────────────
 
-  /** Call start: the server's latest profile (corrections included) and this call's one question. */
-  async startCall(userId: string): Promise<CallStart | null> {
+  /**
+   * Call start: the server's latest profile (corrections included) and this call's one question.
+   * `plan: false` = a continuation (handoff to the other device): the same conversation, not a new call — the
+   * profile only; no question, no first-call nod, and growth.calls is not counted (P1 11/3, demo S4).
+   */
+  async startCall(userId: string, opts: { plan?: boolean } = {}): Promise<CallStart | null> {
+    if (opts.plan === false) {
+      const card = await this.store.getStyle(userId);
+      return card ? { profile: styleProfileText(card, 2000, { toConfirm: false }), taste: tasteLines(card) } : null;
+    }
     return this.update(userId, (card) => {
       const r = beginCall(card, this.now().toISOString());
       if (r.ask) this.log("profile.ask_planned", { call: r.card.growth!.calls });
@@ -288,6 +296,19 @@ export class Personalize {
         card: r.card,
         out: { ...(firstCallNod(r.card) ? { nod: firstCallNod(r.card)! } : {}), profile: styleProfileText(r.card, 2000, { toConfirm: false }), ...(r.ask ? { ask: askLine(r.ask), askItem: r.ask.item, askTopic: r.ask } : {}), taste: tasteLines(r.card) },
       };
+    });
+  }
+
+  /**
+   * The call turned out not to be a new conversation (watch together attached before the question was asked):
+   * give back the call count and the planned topic so a later call can ask it.
+   */
+  async unplanCall(userId: string, item: string | null): Promise<void> {
+    await this.update(userId, (card) => {
+      const g = card.growth;
+      if (!g || g.calls <= 0) return null;
+      const asked = item ? g.asked.filter((a) => !(a.item === item && !a.answered)) : g.asked;
+      return { card: { ...card, growth: { calls: g.calls - 1, asked } }, out: true };
     });
   }
 
