@@ -651,12 +651,16 @@ export class Session {
         this.micOn = false;
         // ~0.8 s of silence lets endpointing finish a sentence cut by the mute
         this.asr?.sendAudio(Buffer.alloc(Math.round(PCM_SAMPLE_RATE * 0.8) * 2));
-        // muting ends the turn: a held one is answered now (CA-14)
-        this.commitHeld("mic_off");
+        // muting ends the turn: a held one is answered now (CA-14). If the user had resumed it, the final the 0.8 s of
+        // silence brings joins it and commits at once (no hold with the mic off) — one turn, not two (Codex P2)
+        if (!this.turn.userSpeaking) this.commitHeld("mic_off");
         return;
       case "text": {
         const text = str(msg.text, 2000)?.trim();
         if (!text) return;
+        // a held voice turn ends here, as before CA-14: its reply starts and the typed line cuts it (reducer `text`).
+        // First, so the typed line's own frames / card focus go with the typed line, not the held one (Codex P2)
+        this.commitHeld("text");
         this.skipPendingGreeting("text");
         if (Array.isArray(msg.frames)) this.setFrames(msg.frames);
         if (this.interp && typeof msg.findId === "string") {
@@ -665,8 +669,6 @@ export class Session {
           return;
         }
         if (typeof msg.findId === "string") this.finds?.focus(msg.findId);
-        // a held voice turn ends here, as before CA-14: its reply starts and the typed line cuts it (reducer `text`)
-        this.commitHeld("text");
         this.client.sendJson({ type: "transcript", final: true, text, source: "text" });
         if (this.interp) return this.interp.typed(text);
         return this.dispatch({ type: "text", text });
@@ -1303,7 +1305,9 @@ export class Session {
   private holdTurn(turnId: number, text: string, v: EotVerdict): void {
     if (this.held?.timer) clearTimeout(this.held.timer);
     const prev = this.held;
-    const timer = setTimeout(() => this.commitHeld("silence"), v.holdMs);
+    // never a commit clock while the user talks (a late async final, e.g. after the watch echo check): their next
+    // final re-decides (Codex P1)
+    const timer = this.turn.userSpeaking ? null : setTimeout(() => this.commitHeld("silence"), v.holdMs);
     this.held = { text, turnId, kind: v.kind, since: prev?.since ?? this.now(), segments: (prev?.segments ?? 0) + 1, timer };
     // the cue only for a turn that looks unfinished; a missing "." alone just waits a little
     if (v.kind === "incomplete") this.backchannel?.held(text, EOT.cueAfterMs, v.holdMs);
@@ -1344,8 +1348,9 @@ export class Session {
     if (this.closed || this.mode === "interpret") return;
     if (!echo) return this.completeTurn(turnId, text);
     this.log("watch.echo_dropped", { text: text.slice(0, 120) });
-    // a held turn waits again from here (the video's line was not the user going on)
-    if (this.held) return this.completeTurn(turnId, "");
+    // a held turn waits again from here (the video's line was not the user going on) — unless the user went on while
+    // this check ran: their own final joins the held turn then (Codex P1)
+    if (this.held) return this.turn.userSpeaking ? undefined : this.completeTurn(turnId, "");
     this.dispatch({ type: "speech_complete", text: "" });
     this.dropSpeculation();
   }

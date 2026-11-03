@@ -50,6 +50,9 @@ test("a finished turn is answered at once (no hold, no latency cost)", () => {
     "That's what I was talking about.",
     "That's what she said.",
     "It started.",
+    "I did it because she asked.", // Codex P2
+    "And then it began.",
+    "That was fair and just.",
     "Yeah.",
     "and?",
     "",

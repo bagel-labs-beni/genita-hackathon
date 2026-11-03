@@ -39,11 +39,10 @@ const STRANDERS = w("is are was were be been it's that's what's talking thinking
 /** clause openers: "and then he started", "so I was" */
 const OPENERS = w("and but so because cause 'cause cuz then when while if until since like");
 const PRONOUNS = w("i he she we they you it");
-/** verbs that take more after them: right after "<opener> <pronoun>" the clause is not over */
-const OPEN_VERBS = w(`
-  started starts start began begins begin kept keeps tried tries decided decides wanted wants needed needs
-  said says told asked thought realized was were is am are goes went just like gonna wanna got
-`);
+/** verbs that take more after them: right after "<opener> <person>" the clause is not over ("and then he started") */
+const OPEN_VERBS = w("started starts start began begins begin kept keeps was were is am are goes gonna wanna");
+/** a person, not "it" ("and then it began." is a finished sentence) */
+const PEOPLE = w("i he she we they");
 
 const norm = (t: string) => t.toLowerCase().replace(/[’‘]/g, "'");
 
@@ -75,9 +74,9 @@ export function judgeEndOfTurn(text: string, cfg: { incompleteMs?: number; unpun
   // "and then he", "because I"
   if (PRONOUNS.has(last) && last !== "you" && last !== "it" && (OPENERS.has(prev) || prev === "then")) return incomplete(`opener_pronoun:${prev}`);
   // "and then he started", "so I was", "because she said"
-  if (OPEN_VERBS.has(last) && PRONOUNS.has(prev) && (OPENERS.has(prev2) || prev2 === "then")) return incomplete(`open_clause:${last}`);
-  // "and he was like" handled by CONTINUERS (like); "I was just" (just after a pronoun + aux)
-  if (last === "just" && words.length >= 3) return incomplete("just");
+  if (OPEN_VERBS.has(last) && PEOPLE.has(prev) && (OPENERS.has(prev2) || prev2 === "then")) return incomplete(`open_clause:${last}`);
+  // "I was just" trailing off — not "that was fair and just." (Codex P2)
+  if (last === "just" && !punct && words.length >= 3) return incomplete("just");
   if (!punct && !/[!！]$/u.test(t)) return { kind: "unpunctuated", holdMs: unpunctuatedMs, why: "no_terminal_punct" };
   return { kind: "complete", holdMs: 0, why: "terminal_punct" };
 }

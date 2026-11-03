@@ -242,3 +242,57 @@ test("CA-14: interpretation is untouched — an unfinished-looking line is relay
   assert.ok(!h.logs.some((l) => l.event === "turn.hold"));
   assert.ok(!h.sent.some((s) => s.m.type === "backchannel"));
 });
+
+test("Codex P1: a late watch-echo verdict never restarts the commit clock while the user is talking again", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  // watch together starts sharing; its echo check is slow
+  let release!: (echo: boolean) => void;
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), close() {} };
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "Not tonight love" }); // the video's line
+  await sleep(10); // the check is running
+  h.asr.fire({ type: "speechStart", turnId: 2 }); // the user goes on while the check runs
+  release(true);
+  await sleep(EOT.incompleteMs + 200);
+  assert.equal(h.at(thinking).length, 0, "no commit while the user talks");
+  (h.session as unknown as { watch: unknown }).watch = null;
+  h.asr.fire({ type: "speechEnd", turnId: 2 });
+  h.asr.fire({ type: "speechComplete", turnId: 2, text: B_FINAL });
+  await sleep(150);
+  assert.equal(h.at(thinking).length, 1);
+  assert.match(JSON.stringify(h.sparkCalls.at(-1)!.input), /he started yelling at me about the deck/);
+});
+
+test("Codex P2: muting after the user resumed a held turn → one joined turn once their final lands, not two", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  await h.session.onClientText(JSON.stringify({ type: "audio_stop" }));
+  assert.equal(h.at(thinking).length, 0, "not yet: the resumed words are still coming");
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: B_FINAL });
+  assert.equal(h.at(thinking).length, 1, "committed at once with the mic off");
+  await sleep(100);
+  const finals = h.sent.filter((s) => s.m.type === "transcript" && s.m.final === true).map((s) => s.m.text);
+  assert.equal(finals.length, 1);
+  assert.match(String(finals[0]), /he started yelling at me/);
+  assert.equal(h.sent.filter((s) => s.m.type === "utterance.cancelled").length, 0);
+});
+
+test("Codex P2: frames typed with a line go with that line, not with the held voice turn it ends", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  const img = `data:image/jpeg;base64,${Buffer.from("x").toString("base64")}`;
+  await h.session.onClientText(JSON.stringify({ type: "text", text: "What am I wearing?", frames: [img] }));
+  await sleep(200);
+  const withImage = h.sparkCalls.filter((c) => JSON.stringify(c.input).includes("data:image/jpeg"));
+  assert.equal(withImage.length, 1);
+  assert.match(JSON.stringify(withImage[0].input), /What am I wearing/);
+});
