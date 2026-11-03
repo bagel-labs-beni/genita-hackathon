@@ -66,25 +66,42 @@ test("wrong or missing code: 401/400, no token, audit line without the code", as
   assert.ok(!JSON.stringify(events).includes('"nope"'));
 });
 
-test("rate limit: 5 wrong tries per IP, then 429 even for the right code", async (t) => {
+// 11/4: judges share a venue / office IP — 50 misses per IP; distinct prefixes so the per-prefix backoff stays out of it
+const miss = (i: number) => `${String(i).padStart(4, "0")}-wrong`;
+
+test("rate limit: 50 wrong tries per IP, then 429 (with Retry-After) even for the right code", async (t) => {
   const { judge } = await boot(t);
-  for (let i = 0; i < 5; i++) assert.equal((await judge({ code: `wrong-${i}` })).status, 401);
-  assert.equal((await judge({ code: "wrong-6" })).status, 429);
+  for (let i = 0; i < 50; i++) assert.equal((await judge({ code: miss(i) })).status, 401);
+  const over = await judge({ code: miss(50) });
+  assert.equal(over.status, 429);
+  assert.match(String(over.body.message), /^Too many tries\. Try again in \d+ min\.$/);
   assert.equal((await judge({ code: "correct-horse-1" })).status, 429);
 });
 
-test("10 concurrent wrong tries from one IP: at most 5 get checked", async (t) => {
+test("11/4: wrong guesses on one code prefix wait longer and longer; another prefix and the right code are unaffected", async (t) => {
+  const { judge: raw } = await boot(t, undefined, { GENITA_TRUST_PROXY: "1" });
+  const judge = (body: unknown, headers: Record<string, string> = { "x-forwarded-for": "203.0.113.5" }) => raw(body, headers);
+  assert.equal((await judge({ code: "corr-guess-1" })).status, 401);
+  assert.equal((await judge({ code: "corr-guess-2" })).status, 401);
+  const slow = await judge({ code: "corr-guess-3" });
+  assert.equal(slow.status, 429, "third miss on the same prefix right away");
+  assert.ok(Number(slow.body.retryAfterSec) >= 1);
+  assert.equal((await judge({ code: "battery-staple-2" })).status, 200, "another prefix (another judge's code)");
+  assert.equal((await judge({ code: "correct-horse-1" }, { "x-forwarded-for": "203.0.113.99" })).status, 200, "another IP with the right code is never locked (Codex P1)");
+});
+
+test("60 concurrent wrong tries from one IP: at most 50 get checked", async (t) => {
   const { judge } = await boot(t);
-  const rs = await Promise.all(Array.from({ length: 10 }, (_, i) => judge({ code: `wrong-${i}` })));
-  assert.equal(rs.filter((r) => r.status === 401).length, 5);
-  assert.equal(rs.filter((r) => r.status === 429).length, 5);
+  const rs = await Promise.all(Array.from({ length: 60 }, (_, i) => judge({ code: miss(i) })));
+  assert.equal(rs.filter((r) => r.status === 401).length, 50);
+  assert.equal(rs.filter((r) => r.status === 429).length, 10);
 });
 
 test("behind a proxy only the proxy-appended X-Forwarded-For entry counts, a forged first entry doesn't dodge the limit", async (t) => {
   const { judge } = await boot(t, undefined, { GENITA_TRUST_PROXY: "1" });
   const st: number[] = [];
-  for (let i = 0; i < 7; i++) st.push((await judge({ code: `wrong-${i}` }, { "x-forwarded-for": `9.9.9.${i}, 203.0.113.7` })).status);
-  assert.deepEqual(st, [401, 401, 401, 401, 401, 429, 429]);
+  for (let i = 0; i < 52; i++) st.push((await judge({ code: miss(i) }, { "x-forwarded-for": `9.9.9.${i}, 203.0.113.7` })).status);
+  assert.deepEqual(st.slice(48), [401, 401, 429, 429]);
   // another real client is not blocked by it
   assert.equal((await judge({ code: "nope" }, { "x-forwarded-for": "203.0.113.8" })).status, 401);
 });
@@ -97,13 +114,23 @@ test("no codes configured: the route is off (404)", async (t) => {
 test("JudgeAccess: window resets after 10 minutes; parse handles labels, bare codes, junk", () => {
   let now = 1_000_000;
   const j = new JudgeAccess("a=one, two ,,=x", () => now);
-  for (let i = 0; i < 5; i++) assert.equal(j.check("1.1.1.1", "bad"), null);
+  for (let i = 0; i < 50; i++) assert.equal(j.check("1.1.1.1", `${String(i).padStart(4, "0")}bad`), null);
   assert.equal(j.limited("1.1.1.1"), true);
   assert.equal(j.limited("2.2.2.2"), false);
   now += 10 * 60_000 + 1;
   assert.equal(j.limited("1.1.1.1"), false);
   assert.equal(j.check("1.1.1.1", "one"), "a");
   assert.match(j.check("1.1.1.1", "two")!, /^j[0-9a-f]{8}$/);
+  // per-prefix backoff grows (2 s, 4 s …) and lets the next try through once it has passed
+  const k = new JudgeAccess("a=one", () => now);
+  k.check("5.5.5.5", "xyzw-1"); k.check("5.5.5.5", "xyzw-2");
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-3"), 2, "same IP, same prefix");
+  assert.equal(k.retryAfterSec("6.6.6.6", "xyzw-3"), 0, "another IP is never slowed by it (Codex P1)");
+  assert.equal(k.retryAfterSec("5.5.5.5", "abcd-1"), 0);
+  now += 2000;
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-3"), 0);
+  k.check("5.5.5.5", "xyzw-3");
+  assert.equal(k.retryAfterSec("5.5.5.5", "xyzw-4"), 4);
   assert.equal(parseJudgeCodes("a=x,a=y").length, 1);
   assert.equal(parseJudgeCodes("").length, 0);
 });

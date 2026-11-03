@@ -82,6 +82,10 @@ struct AuthWireTests {
         #expect(m(GenitaAuthError.unauthorized, false) == "That code didn’t work. Check it and try again.")
         #expect(m(GenitaAuthError.server(status: 429, code: "too_many_attempts"), false) == "Too many tries. Send a new code.")
         #expect(m(GenitaAuthError.server(status: 429, code: "rate_limited"), true) == "Wait a minute, then ask for another code.")
+        // 11/4: the server's wait, in whole minutes
+        #expect(m(GenitaAuthError.server(status: 429, code: "rate_limited", retryAfterSec: 125), true) == "Too many tries. Try again in 3 min.")
+        #expect(m(GenitaAuthError.server(status: 429, code: "rate_limited", retryAfterSec: 30), false) == "Too many tries. Try again in 1 min.")
+        #expect(m(GenitaAuthError.server(status: 429, code: "too_many_attempts", retryAfterSec: 30), false) == "Too many tries. Send a new code.")
         #expect(m(GenitaAuthError.server(status: 503, code: "email_unavailable"), true) == "Email sign-in isn’t available right now.")
         #expect(m(GenitaAuthError.offline, true) == "Couldn’t reach the server. Check your connection.")
         #expect(m(GenitaAuthError.unauthorized, true) == "Email sign-in isn’t available right now.", "old server: no email route")
@@ -194,7 +198,8 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         StubProtocol.handler = { _ in (429, Data(#"{"error":"too_many_attempts"}"#.utf8)) }
         await #expect(throws: GenitaAuthError.server(status: 429, code: "too_many_attempts")) { try await client.signInWithEmailCode(email: "a@b.co", code: "000000") }
         StubProtocol.handler = { _ in (429, Data(#"{"error":"rate_limited","retryAfterSec":42}"#.utf8)) }
-        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited")) { try await client.startEmailSignIn(email: "a@b.co") }
+        // the server's wait rides along (11/4)
+        await #expect(throws: GenitaAuthError.server(status: 429, code: "rate_limited", retryAfterSec: 42)) { try await client.startEmailSignIn(email: "a@b.co") }
         #expect(store.load() == nil)
     }
 

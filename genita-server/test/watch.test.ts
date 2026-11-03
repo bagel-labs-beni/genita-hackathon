@@ -1350,3 +1350,28 @@ test("moment recall (Codex P2): two different moments 3 s apart are both kept; a
   assert.match(after!.instructions, /What a dunk!/);
   assert.deepEqual(after!.images, [], "no frames after the share");
 });
+
+test("watch socket: a replaced uplink's late stop or audio never touches the new share (#313 review P2)", () => {
+  const { c, asr } = controller([]);
+  const session = { id: "synthetic-watch", attachWatch: (sink: WatchSink) => (c.attach(sink), c) } as never;
+  const socket = () =>
+    Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1, send: () => {}, close: () => {}, terminate: () => {} });
+  const old = socket();
+  attachWatchSocket(old as never, session, () => {});
+  old.emit("message", Buffer.from(JSON.stringify({ type: "start", source: "Safari" })), false);
+  // the user picks another window: the app opens a new uplink while the old one's `stop` is still on the wire
+  const next = socket();
+  attachWatchSocket(next as never, session, () => {});
+  next.emit("message", Buffer.from(JSON.stringify({ type: "start", source: "Preview" })), false);
+  assert.equal(c.isSharing, true);
+  const heard = asr.audio;
+  old.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
+  old.emit("message", Buffer.alloc(480), true);
+  assert.equal(c.isSharing, true, "the old socket's late stop does not end the new share");
+  assert.equal(asr.audio, heard, "nor does its late sound reach the transcriber");
+  next.emit("message", Buffer.alloc(480), true);
+  assert.equal(asr.audio, heard + 480, "the new uplink's sound still flows");
+  next.emit("message", Buffer.from(JSON.stringify({ type: "stop" })), false);
+  assert.equal(c.isSharing, false, "the current uplink still stops it");
+  c.close();
+});

@@ -40,6 +40,13 @@ export function flowAssetName(file: string): string | null {
   return null;
 }
 
+/** A flow asset the route may serve: one the flow block lists, or (11/4, codex P2) the previous generation of one —
+ *  an app that fetched the manifest just before a re-flow swapped it still downloads every file it was told about. */
+export function flowAssetAllowed(flow: FaceFlow | null | undefined, name: string): boolean {
+  const cur = flowAssets(flow);
+  return cur.has(name) || (!name.endsWith("_g2") && cur.has(`${name}_g2`));
+}
+
 /** Asset names a face state's flow block lists (what the route may serve). */
 export function flowAssets(flow: FaceFlow | null | undefined): Set<string> {
   const out = new Set<string>();
@@ -81,6 +88,12 @@ export type FaceflowInput = {
   nose?: () => Promise<readonly [number, number, number, number] | null>;
   /** animal species from the image check (faceflow bird / small-muzzle / long-snout rules) */
   species?: string;
+  /** 11/4: the subject's face silhouette on the scene (SAM mask, 8-bit grey PNG at the scene size); the mouth blend never
+   *  leaves it (no see-through jaw line over the neck). null / absent = the old mask. */
+  silhouette?: () => Promise<Buffer | null>;
+  /** 11/4: suffix for every stored flow asset name (re-flow writes a new generation, e.g. "_g2", next to the old one,
+   *  so the old manifest keeps working until the new block is swapped in, and apps refetch on the new URLs) */
+  assetSuffix?: string;
   /** character2d: eye boxes on the scene (SAM) for the clean-plate blink, normalised */
   eyes?: () => Promise<Array<readonly [number, number, number, number]>>;
   signal?: AbortSignal;
@@ -136,6 +149,11 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     const nose = o.nose ? await o.nose().catch(() => null) : null;
     if (nose) args.push("--nose", fmt(nose));
     if (o.species) args.push("--species", o.species);
+    const sil = o.silhouette ? await o.silhouette().catch(() => null) : null;
+    if (sil) {
+      await writeFile(join(dir, "silhouette.png"), sil);
+      args.push("--silhouette", join(dir, "silhouette.png"));
+    }
     // 2D: the blink is a clean plate over the open eyes + the key's closed-eye lines (no flow)
     if (o.profile === "character2d" && o.state.items.blink?.status === "done" && o.eyes) {
       const eyes = await o.eyes().catch(() => []);
@@ -150,17 +168,19 @@ export async function makeFaceFlow(o: FaceflowInput): Promise<FaceFlow | null> {
     const res = JSON.parse(stdout.trim().split("\n").pop() ?? "{}") as { ok?: boolean };
     if (!res.ok) throw new Error("faceflow: no ok line");
     const raw = JSON.parse(await readFile(join(out, "flow.json"), "utf8")) as FaceFlow;
+    const suffix = o.assetSuffix && /^_[a-z0-9]{1,4}$/.test(o.assetSuffix) ? o.assetSuffix : "";
     const rename = (file: string) => {
       const a = flowAssetName(file);
       if (!a) throw new Error(`faceflow: unexpected file ${file}`);
-      return a;
+      return a + suffix;
     };
     const files: FaceFlow["files"] = {};
     for (const [k, f] of Object.entries(raw.files)) files[k] = { key: rename(f.key), ...(f.nk ? { nk: rename(f.nk) } : {}), ...(f.kn ? { kn: rename(f.kn) } : {}), ...(f.lip ? { lip: rename(f.lip) } : {}), ...(f.interior ? { interior: rename(f.interior) } : {}) };
     for (const file of await readdir(out)) {
       if (file === "flow.json") continue;
-      const a = flowAssetName(file);
-      if (!a) continue;
+      const a0 = flowAssetName(file);
+      if (!a0) continue;
+      const a = a0 + suffix;
       const bytes = await readFile(join(out, file));
       o.signal?.throwIfAborted(); // after the read: a cancel during it must not start an upload
       await o.put(a, bytes);

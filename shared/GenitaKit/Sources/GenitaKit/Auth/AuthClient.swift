@@ -130,7 +130,7 @@ public final class GenitaAuthClient: @unchecked Sendable {
     // MARK: transport
 
     struct EmptyReply: Decodable {}
-    private struct ErrorReply: Decodable { var error: String? }
+    private struct ErrorReply: Decodable { var error: String?; var retryAfterSec: Int? }
 
     /// Shared transport for the account and onboarding calls (OnboardingClient): bearer from the store,
     /// 401 clears the matching sent token, 403 consent_required and offline are typed. `query` is appended as-is ("rights=1").
@@ -172,9 +172,14 @@ public final class GenitaAuthClient: @unchecked Sendable {
             if let sentToken { store.clear(ifMatching: sentToken) }
             throw GenitaAuthError.unauthorized
         }
-        let code = (try? JSONDecoder().decode(ErrorReply.self, from: data))?.error
+        let reply = try? JSONDecoder().decode(ErrorReply.self, from: data)
+        let code = reply?.error
         if status == 403, code == "consent_required" { throw GenitaAuthError.consentRequired }
-        guard (200..<300).contains(status) else { throw GenitaAuthError.server(status: status, code: code) }
+        guard (200..<300).contains(status) else {
+            // a 429 says how long to wait (server 11/4): the body's retryAfterSec, else the Retry-After header
+            let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap { Int($0) }
+            throw GenitaAuthError.server(status: status, code: code, retryAfterSec: status == 429 ? (reply?.retryAfterSec ?? header) : nil)
+        }
         return data
     }
 }

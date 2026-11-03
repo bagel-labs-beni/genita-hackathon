@@ -86,7 +86,6 @@ async function harness(t: import("node:test").TestContext, opts: { polish?: bool
     spark: (async () => { checks++; return (opts.recheck ?? (() => ok))(checks); }) as PrepDeps["spark"],
   };
   const runner = new PrepRunner(d);
-  t.after(() => runner.stop("u1"));
   const routes = createPrepRoutes(d, runner);
   const http = createServer((req, res) => (routes.handles(req) ? void routes.handle(req, res) : (res.writeHead(404), res.end())));
   await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
@@ -96,7 +95,12 @@ async function harness(t: import("node:test").TestContext, opts: { polish?: bool
     const url = input instanceof Request ? input.url : String(input);
     return url.startsWith(base + "/") ? realFetch(input, init) : Promise.resolve(new Response("stubbed upstream failure", { status: 503 }));
   });
-  t.after(() => { http.close(); rmSync(dir, { recursive: true, force: true }); });
+  // every prep these tests start (u1, u3) is stopped and drained before the store goes; rm retries a late write (CI ENOTEMPTY)
+  t.after(async () => {
+    await Promise.all(["u1", "u2", "u3"].map((u) => runner.stop(u)));
+    http.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
   const call = async (method: string, path: string, body?: unknown, user = "u1") => {
     const r = await fetch(base + path, { method, headers: { "x-genita-user": user, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, any> };

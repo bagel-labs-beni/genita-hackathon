@@ -21,7 +21,8 @@ enum PresenceEvent: Equatable {
     /// owner nil = released (nobody has the sound until the next call start)
     case ownership(owner: ConversationDevice?, epoch: Int, trigger: String)
     case claimResult(accepted: Bool, owner: ConversationDevice?, epoch: Int)
-    case peer(device: ConversationDevice, online: Bool, active: Bool)
+    /// `inCall`: the other device has a started call open right now (server 11/4). nil = an older server that does not say.
+    case peer(device: ConversationDevice, online: Bool, active: Bool, inCall: Bool? = nil)
     case moveRequest(from: ConversationDevice)
     case moveFailed(reason: String)
     case other(String)
@@ -38,7 +39,7 @@ enum PresenceEvent: Equatable {
             self = .claimResult(accepted: accepted, owner: ConversationDevice(serverName: m["owner"] as? String), epoch: epoch)
         case "peer":
             guard let d = ConversationDevice(serverName: m["device"] as? String), let online = m["online"] as? Bool else { return nil }
-            self = .peer(device: d, online: online, active: m["active"] as? Bool ?? online)
+            self = .peer(device: d, online: online, active: m["active"] as? Bool ?? online, inCall: m["inCall"] as? Bool)
         case "move.request":
             guard let d = ConversationDevice(serverName: m["from"] as? String) else { return nil }
             self = .moveRequest(from: d)
@@ -63,16 +64,18 @@ struct PresenceState: Equatable {
     var connected = false
     var peerOnline = false
     var peerActive = false
+    /// nil until a server that reports calls says so (older servers never send `inCall`).
+    var peerInCall: Bool?
     /// Owner nil means the server released the conversation; the device keeps its own state.
     static func reduce(_ state: inout PresenceState, _ event: PresenceEvent, me: ConversationDevice) -> [PresenceEffect] {
         switch event {
         case let .ownership(owner, epoch, _), let .claimResult(_, owner, epoch):
             guard let owner else { return [] }
             return [.apply(OwnershipClaim(owner: owner, epoch: epoch))]
-        case let .peer(device, online, active):
+        case let .peer(device, online, active, inCall):
             guard device != me else { return [] }
-            let changed = state.peerOnline != online || state.peerActive != active
-            state.peerOnline = online; state.peerActive = active
+            let changed = state.peerOnline != online || state.peerActive != active || state.peerInCall != inCall
+            state.peerOnline = online; state.peerActive = active; state.peerInCall = inCall
             return changed ? [.peerChanged] : []
         case let .moveRequest(from):
             return from == me ? [] : [.moveRequested(from: from)]
@@ -130,6 +133,8 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
     var onMessage: (([String: Any]) -> Void)?
     /// The trigger reported with this device's next claim (`button`, `touch`, `continue`).
     var nextTrigger = "continue"
+    /// The trigger of the last `ownership` event (nil after a `claim.result`), read while its claim is applied.
+    private(set) var lastOwnershipTrigger: String?
     private(set) var active = true
     private var wanted = false
     private var task: URLSessionWebSocketTask?
@@ -148,6 +153,8 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
     /// The other device is running Genita and signed in to the same account.
     var peerOnline: Bool { state.connected && state.peerOnline }
     var peerActive: Bool { peerOnline && state.peerActive }
+    /// The other device is in a started call (nil: the server doesn't report calls).
+    var peerInCall: Bool? { state.connected ? state.peerInCall : nil }
 
     func start() {
         guard !wanted else { return }
@@ -197,6 +204,11 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                     if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         self.onMessage?(object)
                         if let event = PresenceEvent(object) {
+                            switch event {
+                            case let .ownership(_, _, trigger): self.lastOwnershipTrigger = trigger
+                            case .claimResult: self.lastOwnershipTrigger = nil
+                            default: break
+                            }
                             for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
                         }
                     }
@@ -245,4 +257,34 @@ final class OwnershipFanout: OwnershipTransport {
     private let transports: [OwnershipTransport]
     init(_ transports: [OwnershipTransport]) { self.transports = transports }
     func publish(_ claim: OwnershipClaim) { for t in transports { t.publish(claim) } }
+}
+
+/// Is the conversation in a real call on the iPhone right now? The Mac's home window says "Talking on your iPhone"
+/// only then (QA 171: a fresh account's default owner is the phone at epoch 0, which showed "Talking" with no call).
+enum PhoneCallPresence {
+    /// `seen`: the iPhone takes this device watched happen (only used with an older server that sends no `inCall`).
+    static func live(owner: ConversationDevice, epoch: Int, peerActive: Bool, peerInCall: Bool?, seen: PhoneCallLatch = PhoneCallLatch()) -> Bool {
+        guard owner == .phone else { return false }
+        // a server that reports calls is the truth (a locked iPhone mid-call still counts)
+        if let peerInCall { return peerInCall }
+        // older server: the iPhone took the conversation at this very epoch while this device watched, and is in front.
+        // A persisted owner from an earlier run, or a take followed by the iPhone leaving the front, is not a call (Codex P2).
+        return epoch > 0 && peerActive && seen.epoch == epoch
+    }
+}
+
+/// Older-server fallback for `PhoneCallPresence`: remembers the epoch at which this device saw the iPhone take the
+/// conversation (a call start or a move). Cleared when the owner or epoch changes, the iPhone leaves the front or
+/// goes offline, or the account changes, so "Talking on your iPhone" never outlives the call it came from.
+struct PhoneCallLatch: Equatable {
+    private(set) var epoch: Int?
+    /// A claim this device applied (server, local link or its own tap). `trigger` is the server's: a `current` or `sync`
+    /// state handed over on (re)connect is not a take this device watched, so it never latches (Codex P2 on #511).
+    mutating func applied(owner: ConversationDevice, epoch: Int, trigger: String? = nil) {
+        let watched = trigger != "current" && trigger != "sync"
+        self.epoch = watched && owner == .phone && epoch > 0 ? epoch : nil
+    }
+    /// The iPhone's presence changed: out of front or offline ends whatever call was shown.
+    mutating func peer(active: Bool) { if !active { epoch = nil } }
+    mutating func reset() { epoch = nil }
 }

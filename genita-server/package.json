@@ -19,6 +19,8 @@
     "check:spark-open": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/check-spark-open.ts",
     "prep:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/prep-e2e.ts",
     "face:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/face-e2e.ts",
+    "eval:convo": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/convo/run.ts",
+    "eval:convo:offline": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/convo/run.ts --offline",
     "eval:import": "node --experimental-strip-types --no-warnings=ExperimentalWarning evals/import/run.ts",
     "db:migrate": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/db-migrate.ts",
     "handoff:e2e": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/handoff-e2e.ts",
@@ -33,7 +35,8 @@
     "eval:perception": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/perception-eval.ts",
     "demo:template": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/demo-template.ts",
     "watch-sim": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/watch-sim.ts",
-    "funnel:report": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/funnel-report.ts"
+    "funnel:report": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/funnel-report.ts",
+    "reflow:masks": "node --experimental-strip-types --no-warnings=ExperimentalWarning scripts/reflow-masks.ts"
   },
   "dependencies": {
     "pg": "^8.23.1",

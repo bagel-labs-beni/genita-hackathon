@@ -59,7 +59,15 @@ struct MacConversationView: View {
                     InterpretOverlay(board: call.interpretBoard, onClose: { interpret.stop() }, onHold: { call.setHold($0) })
                         .frame(width: 390, height: 844)
                 } else if waitingCopy == nil {
-                    selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
+                    if MacDesignV2.enabled {
+                        // iPhone S09 HUD A (#530) on the Mac: a glass tile at the bottom left, 16 from the edge, its
+                        // bottom on the control rail's bottom (724 + 82); camera on grows it 72×96 → 108×144
+                        selfView.frame(width: selfSize.width, height: selfSize.height)
+                            .position(x: 16 + selfSize.width / 2, y: 806 - selfSize.height / 2 - railShift).opacity(sheetCovers ? 0 : 1)
+                            .animation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85), value: call.cameraOn)
+                    } else {
+                        selfView.position(x: 87.5, y: 700.5 - railShift).opacity(sheetCovers ? 0 : 1)
+                    }
                     VStack(spacing: 13) {
                         Button { call.toggleCamera() } label: { MacGlassControl(icon: "glass-camera-icon", size: 46) }.buttonStyle(MacUnchangedControlStyle())
                             .accessibilityLabel(call.cameraOn ? "Turn camera off" : "Turn camera on").accessibilityIdentifier("macCameraToggle")
@@ -111,8 +119,7 @@ struct MacConversationView: View {
                     if let text = cueText { MacCallCue(text: text).frame(maxWidth: sheetFull ? 250 : 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
                         .position(x: sheetFull ? 16 + 125 : 195, y: sheetFull ? 86 : (MacDesignV2.enabled && !displaySharing ? 103 : 142)).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false) }
                     if linkOpened != nil {
-                        if MacDesignV2.enabled { MacCallCue(text: "Opened it in your browser").frame(maxWidth: 342, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-                            .position(x: 195, y: 103).frame(width: 390, height: 844, alignment: .topLeading).allowsHitTesting(false) }
+                        // MAC-LINK = Dyno's demo video (2:16): the prompt draws its own two-line pill, so no separate cue
                         MacLinkPrompt(share: { linkOpened = nil; sharing.requestSharing() }, notNow: { withAnimation(.easeOut(duration: 0.22)) { linkOpened = nil } })
                     }
                 }
@@ -212,16 +219,29 @@ struct MacConversationView: View {
     }
     /// E01/E02 from the call's own permission checks (Dyno's sheet, the call's state).
     private var callDenied: LocalCallMedia.Kind? { call.micDenied ? .microphone : call.cameraDenied ? .camera : nil }
+    /// Self view size on Mac v2 (iPhone HUD A): camera off 72×96, on 108×144.
+    private var selfSize: CGSize { call.cameraOn ? CGSize(width: 108, height: 144) : CGSize(width: 72, height: 96) }
     @ViewBuilder private var selfView: some View {
         if call.cameraOn {
-            SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
+            if MacDesignV2.enabled {
+                SelfCameraPreview(session: call.cameraSession).clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+            } else {
+                SelfCameraPreview(session: call.cameraSession).frame(width: 113, height: 211).clipShape(RoundedRectangle(cornerRadius: 16))
+            }
         } else {
             if MacDesignV2.enabled {
-                VStack(spacing: 8) {
-                    Image(systemName: "video.slash").font(.system(size: 20, weight: .light))
-                    Text("Camera off").font(MacSheetInk.sans(12))
-                }.foregroundStyle(Color(white: 138.0 / 255)).frame(width: 113, height: 211)
-                    .background(Color(white: 26.0 / 255), in: RoundedRectangle(cornerRadius: 16)).accessibilityElement(children: .combine).accessibilityLabel("Your camera is off")
+                // the iPhone's camera-off glass tile: dark material + 28 % black, 0.7 pt white 35 % rim, video.slash
+                Image(systemName: "video.slash").font(.system(size: 18, weight: .regular)).foregroundStyle(Color.white.opacity(0.7))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 16).fill(.ultraThinMaterial).environment(\.colorScheme, .dark)
+                            RoundedRectangle(cornerRadius: 16).fill(Color.black.opacity(0.28))
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7))
+                    .accessibilityElement().accessibilityLabel("Your camera is off")
             } else {
                 resourceImage("selfPreview").resizable().frame(width: 113, height: 211).accessibilityLabel("Your camera is off")
             }
@@ -275,7 +295,7 @@ struct MacConversationView: View {
             Text("Allow screen sharing.").font(.custom("KMUTTF-SungkokSemiSerif", size: 28)).foregroundStyle(ink).position(x: 179, y: 69)
             Text("Allow Genita to record your screen in\nSystem Settings, then try sharing again.\nYou can keep talking without sharing.").font(font(16)).foregroundStyle(ink).fixedSize(horizontal: true, vertical: true).frame(width: 320, alignment: .leading).position(x: 201, y: 131)
             MacV2Button(label: "Open Settings", id: "macSharePermissionOpen") { sharing.openSettings() }.frame(width: 313).position(x: 194.5, y: 251)
-            Button { sharing.permissionRequired = false } label: { Text("Not now").font(font(15, medium: true)).foregroundStyle(ink).frame(width: 313, height: 36).contentShape(Rectangle()) }.buttonStyle(.plain).position(x: 194.5, y: 307)
+            Button { sharing.permissionRequired = false } label: { Text("Not now").font(font(15, medium: true)).foregroundStyle(ink).frame(width: 313, height: 36).contentShape(Rectangle()) }.buttonStyle(.plain).position(x: 194.5, y: 307).accessibilityLabel("Not now").accessibilityIdentifier("macSharePermissionNotNow")
         }.frame(width: 390, height: 366, alignment: .topLeading).position(x: 195, y: 661).accessibilityIdentifier("macSharePermission")
     }
 }

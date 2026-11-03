@@ -609,6 +609,7 @@ def main():
     ap.add_argument('--blink', help='character2d: Muse blink still -> BLINK.jpg + BLINKMASK.png (eye rect only)')
     ap.add_argument('--eyes', help='character2d: eye boxes x1,y1,x2,y2;x1,y1,x2,y2 (SAM)')
     ap.add_argument('--species', default='', help='animal species from the image check (bird / small-muzzle / long-snout rules)')
+    ap.add_argument('--silhouette', help='SAM face (or head) mask of the neutral, 8-bit, still size: the blend never leaves it (11/4)')
     a = ap.parse_args()
     t0 = time.time()
     kind = 'character3d' if a.kind == 'character' else a.kind
@@ -794,6 +795,29 @@ def main():
     else:
         Mfull = build_mask(H, W, face, mouth, lock_y, kind, s)
 
+    # 11/4 (Chelsea: a see-through double jaw line under the chin while talking): the blend stays inside the subject's own
+    # face silhouette (SAM), grown 3 px and feathered ~2.5 px at a 540-wide frame — outside it the still's own pixels, so a
+    # key's lower jaw line is cut at the original outline instead of ghosting over the neck / background
+    if a.silhouette:
+        sil = cv2.imread(a.silhouette, cv2.IMREAD_GRAYSCALE)
+        if sil is not None and sil.max() > 0:
+            if sil.shape[:2] != (H, W):
+                sil = cv2.resize(sil, (W, H), interpolation=cv2.INTER_NEAREST)
+            px = W / 540.0
+            g = int(round(3 * px)) * 2 + 1
+            sbin = (sil > 127).astype(np.uint8)
+            cs, _ = cv2.findContours(sbin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            sbin = cv2.drawContours(np.zeros_like(sbin), cs, -1, 1, -1)        # holes (an open mouth, eyes) filled
+            sb = cv2.dilate(sbin, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (g, g))).astype(np.float32)
+            sb = cv2.GaussianBlur(sb, (0, 0), max(0.8, 1.0 * px))
+            mx1, my1, mx2, my2 = int(mouth[0] * W), int(mouth[1] * H), int(mouth[2] * W) + 1, int(mouth[3] * H) + 1
+            cover = float(sb[my1:my2, mx1:mx2].mean()) if my2 > my1 and mx2 > mx1 else 0.0
+            if cover >= 0.9:   # codex P2: the mouth itself must be inside, or the old mask stays (a SAM miss never freezes the mouth)
+                Mfull = Mfull * sb
+                diag['silhouette'] = {'kept': round(float((Mfull > 0.5).sum()) / max(1.0, float((sb > 0.5).sum())), 4)}
+            else:
+                diag['silhouette'] = {'ignored': 'misses the mouth', 'cover': round(cover, 3)}
+
     ys, xs = np.where(Mfull > 0.004)
     pad = int(4 / s)
     X1, Y1 = max(0, xs.min() - pad), max(0, ys.min() - pad)
@@ -885,7 +909,10 @@ def main():
             'size': [int(RW), int(RH)], 'flowSize': [fw_, fh_], 'keys': list(files), 'files': files,
             'mask': 'mask.png', 'neutralRoi': 'neutral.jpg', 'lockY': round(lock_y, 5), 'lockSource': lock_src,
             'kind': kind, 'flowUsed': use_flow, 'colorfix': list(cfx) if cfx else None, 'map': deep_merge(lip_map(kind), map_extra),
-            **({'rules': [r[0] for r in rules]} if rules else {})}
+            **({'rules': [r[0] for r in rules]} if rules else {}),
+            # 11/4: mask version 2 = a face silhouette was offered (scripts/reflow-masks.ts re-runs faces below 2);
+            # `silhouette` says whether it was applied (a silhouette that misses the mouth is ignored)
+            **({'maskVersion': 2, 'silhouette': 'silhouette' in diag and 'kept' in diag['silhouette']} if a.silhouette else {})}
     if a.blink and a.eyes and kind == 'character2d':
         eyes = [box(e) for e in a.eyes.split(';') if e]
         BKr = cv2.imread(a.blink, cv2.IMREAD_COLOR)

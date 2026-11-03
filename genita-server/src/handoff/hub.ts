@@ -32,6 +32,8 @@ type UserState = {
   loading: Promise<OwnershipRecord> | null;
   conns: Set<Conn>;
   calls: Set<Call>;
+  /** started call sockets per device (any call, gated or not): `peer.inCall` */
+  live: Map<HandoffDevice, number>;
   /** claims in flight that will change the owner; the gate is shut while > 0 */
   switching: number;
   /** after a change the new owner waits until then, so the old device's cancel lands first */
@@ -96,7 +98,11 @@ export class HandoffHub {
   connect(userId: string, opts: { device: HandoffDevice; send: (m: Msg) => void }): PresenceHandle {
     const u = this.user(userId);
     const conn: Conn = { device: opts.device, send: opts.send, active: true };
-    for (const other of u.conns) if (other.device !== conn.device) conn.send(this.peer(u, other.device));
+    // the other device's state now, once: its presence, or a call already running on it (Codex P2 on #480: a Mac that
+    // joined mid-call said "Not in a call right now" when the iPhone's presence socket wasn't open, and said it twice
+    // per extra socket otherwise)
+    const other: HandoffDevice = conn.device === "mac" ? "iphone" : "mac";
+    if ([...u.conns].some((c) => c.device === other) || (u.live.get(other) ?? 0) > 0) conn.send(this.peer(u, other));
     u.conns.add(conn);
     this.peerChanged(u, conn.device);
     if (conn.device === "mac") this.proximityArmedChanged(u, conn);
@@ -155,6 +161,28 @@ export class HandoffHub {
         if (!out.changed) call.send(this.ownershipEvent(out.state, null, "current"));
       },
       close: () => void u.calls.delete(call),
+    };
+  }
+
+  /**
+   * A call on `device` has started (its `start` was handled). Returns the "call ended" closer (idempotent).
+   * The other device's presence learns it as `peer.inCall`, so the Mac says "Talking on your iPhone" only during a real call.
+   */
+  callStarted(userId: string, device: HandoffDevice): () => void {
+    const u = this.user(userId);
+    const before = (u.live.get(device) ?? 0) > 0;
+    u.live.set(device, (u.live.get(device) ?? 0) + 1);
+    if (!before) this.peerChanged(u, device);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const n = (u.live.get(device) ?? 1) - 1;
+      if (n > 0) u.live.set(device, n);
+      else {
+        u.live.delete(device);
+        this.peerChanged(u, device);
+      }
     };
   }
 
@@ -244,7 +272,7 @@ export class HandoffHub {
   private user(userId: string): UserState {
     let u = this.users.get(userId);
     if (!u) {
-      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), switching: 0, leaseUntil: 0, chain: Promise.resolve() };
+      u = { id: userId, record: null, loading: null, conns: new Set(), calls: new Set(), live: new Map(), switching: 0, leaseUntil: 0, chain: Promise.resolve() };
       this.users.set(userId, u);
     }
     return u;
@@ -347,7 +375,7 @@ export class HandoffHub {
 
   private peer(u: UserState, device: HandoffDevice): Msg {
     const conns = [...u.conns].filter((c) => c.device === device);
-    return { type: "peer", device, online: conns.length > 0, active: conns.some((c) => c.active) };
+    return { type: "peer", device, online: conns.length > 0, active: conns.some((c) => c.active), inCall: (u.live.get(device) ?? 0) > 0 };
   }
 
   private peerChanged(u: UserState, device: HandoffDevice) {

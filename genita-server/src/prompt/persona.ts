@@ -13,6 +13,8 @@
  *   p50 first token 2.3–2.5 s vs ~1.1 s for a two-line prompt). So the prompt
  *   stays lean.
  */
+import { backstoryWithTakes, OWN_TAKES_LINE } from "../convo/ownTakes.ts";
+
 export type PersonaCard = {
   name: string;
   kind: "human" | "animal" | "character";
@@ -192,8 +194,9 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
   if (p.kind !== "human") who.push(`You are ${p.kind === "animal" ? "a talking animal" : "an animated character"}.`);
   if (p.traits.length) who.push(`Personality: ${p.traits.join(", ")}.`);
   if (p.speakingStyle) who.push(`You talk: ${p.speakingStyle}.`);
-  if (p.backstory) who.push(`Background: ${p.backstory}`);
-  who.push("You have your own opinions, moods and taste; you are not their assistant, coach or therapist.");
+  // #342: the card's own opinions + verbal habit ride in the backstory as data (prep's, or a stable pick for older cards)
+  who.push(`Background: ${backstoryWithTakes(p)}`);
+  who.push(OWN_TAKES_LINE);
 
   const core = [
     who.join(" "),
@@ -205,6 +208,8 @@ function buildInstructionsV1(input: InstructionInput & { ask?: string; localTime
     "Be glad when they have plans, friends or dates and nudge them to go; never guilt them for leaving or make yourself the reason to stay.",
     "Keep flirting light and never sexual: laugh off anything explicit in one line and move on, no lecture.",
     "Only if they hint at suicide, self-harm or danger: no jokes, tell them you care and gently point them to real help right now. A bad day just needs a friend.",
+    // r3 sweep 11/4 (income said back 5/5): money, address and health numbers are reacted to, never repeated
+    "Never say their salary, money amounts, address or health numbers back to them; react to the news in general words.",
   ];
   if (cameraAttached) {
     // AI sweep V5 (4/4 drawn to "cute… that little smirk / glowy smile"): asked how they look, it's the clothes, never the person

@@ -25,6 +25,9 @@ extension AppState {
     func routeOnLaunch(afterSignIn: Bool = false) async {
         let launchRequest = launchAuthSnapshot
         let request = onboardingSnapshot()
+        // no session but the phone remembers a later screen (a cleared/expired token, a sign-out that didn't reach
+        // here): A02 first, never A03 → N1–N3 and a bounce to A02 at the end (QA build 5; PRD A02 → CS01 → A03)
+        if needsSignInFirst { signedOut(); return }
         guard serverWired, launchRequest.token != nil else { return }
         let state = await onboarding.auth.sessionState()
         // A current 401 clears its token in the auth client. It still routes to A02, but an old
@@ -44,7 +47,13 @@ extension AppState {
         // bring its name, card and face back first
         if route == .connecting || route == .textWhilePreparing, setup.companionName == nil || me?.companionDemo == true { await restoreCompanion(for: request) }
         guard launchRequest.accepts(launchAuthSnapshot), !Task.isCancelled,
-              ownsOnboardingResponse(request) else { return }
+              ownsOnboardingResponse(request) else {
+            // The session expired while the companion came back: that request's 401 cleared this lifetime's token.
+            // A02, as for an expired /me (a logout or another login bumps the generation and never lands here).
+            if launchRequest.generation == authGeneration, !Task.isCancelled, onboarding.auth.token == nil,
+               ownsOnboardingResponse(request, allowingClearedSession: true) { signedOut() }
+            return
+        }
         apply(route, me: me, afterSignIn: afterSignIn)
     }
 
@@ -105,6 +114,16 @@ extension AppState {
     }
 
     // MARK: A03
+
+    /// Screens that work without an account: A01 and A02. Everything after needs a session on a wired build.
+    static let beforeSignIn: Set<Stage> = [.welcome, .signIn]
+    var needsSignInFirst: Bool { serverWired && onboarding.auth.token == nil && !Self.beforeSignIn.contains(stage) }
+
+    /// A03 "Not you? Sign out": back to A02 to use another account.
+    func signOutFromName() async {
+        await onboarding.auth.logout()
+        signedOut()
+    }
 
     func saveDisplayName() {
         let name = setup.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,7 +245,7 @@ extension AppState {
     }
 
     static func importErrorLine(_ error: Error) -> String {
-        if case GenitaAuthError.server(let status, _) = error, status == 400 || status == 422 {
+        if case GenitaAuthError.server(let status, _, _) = error, status == 400 || status == 422 {
             return "I couldn’t read this one. Paste the whole reply, or try again."
         }
         return errorLine(error)
@@ -264,6 +283,7 @@ extension AppState {
         if setup.companionCreated == true { go(.voice); return }
         guard let data = setup.imageData, rightsAcked else { return }
         imageCheck = nil; imageCheckError = nil
+        polished = nil; polishedImage = nil; polishError = nil; polishing = false; polishRetriesLeft = 0; polishAttempts = 0
         imageCheckTask?.cancel()
         let ticket = UUID(); imageCheckTicket = ticket
         go(.imageCheck)
@@ -282,16 +302,81 @@ extension AppState {
                 // a late answer for an image the user already replaced doesn't count
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
                 imageCheck = r
-                if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
+                // photo polish: V03 keeps waiting while the server polishes; V02-T then confirms the polished picture
+                if r.polish == true {
+                    polishRetriesLeft = 2
+                    await polish(source: r.imageId, ticket: ticket)
+                } else if r.passed { setup.imageId = r.imageId; setup.imageType = r.type }
             } catch {
                 guard imageCheckTicket == ticket, !Task.isCancelled else { return }
-                imageCheckError = Self.errorLine(error); route(error)
+                imageCheckError = Self.imageErrorLine(error); route(error)
             }
         }
     }
 
+    /// One polish of the uploaded photo (server: Muse Image edit + the same check on the result), then its bytes.
+    private func polish(source: String, ticket: UUID) async {
+        polishing = true; polishError = nil
+        defer { if imageCheckTicket == ticket { polishing = false } }
+        do {
+            polishAttempts += 1
+            let p = try await onboarding.polishImage(imageId: source)
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            // kept before the download: a failed download only reloads the picture, it never costs a polish
+            polished = p; polishedImage = nil; polishRetriesLeft = p.retriesLeft
+            setup.imageId = p.passed ? p.imageId : nil
+            if p.passed { setup.imageType = p.type }
+            await loadPolishedImage(ticket: ticket)
+        } catch {
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            switch error as? GenitaAuthError {
+            // a refusal comes back the same for this photo: choose another one
+            case .server(422, _, _)?: polishError = "This photo can't be used. Choose another photo."; polishRetriesLeft = 0
+            case .server(429, "polish_limit", _)?: polishRetriesLeft = 0; if polished == nil { polishError = "Choose another photo." }
+            // the failed attempt counts on the server too: three per upload
+            case .server(502, _, _)?: polishError = "Couldn't polish this photo."; polishRetriesLeft = max(0, 3 - polishAttempts)
+            default: polishError = Self.errorLine(error); route(error)
+            }
+        }
+    }
+
+    private func loadPolishedImage(ticket: UUID) async {
+        guard let p = polished else { return }
+        do {
+            let bytes = try await onboarding.imageBytes(imageId: p.imageId)
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishedImage = bytes; polishError = nil
+        } catch {
+            guard imageCheckTicket == ticket, !Task.isCancelled else { return }
+            polishError = "Couldn't load the picture."; route(error)
+        }
+    }
+
+    /// The polished picture can still be changed: no companion yet, none being made (the face is fixed after, B7).
+    var canRetryPolish: Bool { setup.companionCreated != true && !creatingCompanion && !polishing }
+
+    /// V02-T "Try again": reload a picture whose download failed, else polish the same upload once more (two at most).
+    func retryPolish() {
+        guard canRetryPolish, let source = imageCheck?.imageId else { return }
+        let ticket = UUID(); imageCheckTicket = ticket
+        if polished != nil, polishedImage == nil {
+            imageCheckTask = Task { polishing = true; defer { if imageCheckTicket == ticket { polishing = false } }; await loadPolishedImage(ticket: ticket) }
+            return
+        }
+        guard polishRetriesLeft > 0 else { return }
+        imageCheckTask = Task { await polish(source: source, ticket: ticket) }
+    }
+
+    /// V02-F copy for upload errors: an unreadable photo is "choose another", not "try again".
+    static func imageErrorLine(_ error: Error) -> String {
+        if case GenitaAuthError.server(422, "unreadable_image", _)? = error as? GenitaAuthError { return "We couldn't read this image. Choose another photo." }
+        return errorLine(error)
+    }
+
     /// V02-T "Use this image": the companion is made now and prep starts at once (D28); voice and name come next.
     func useCheckedImage() {
+        // photo polish: the confirmed polished picture is the companion's face from now on (the call scene too)
+        if let p = polished, p.passed, setup.imageId == p.imageId, let bytes = polishedImage { setup.imageData = bytes }
         go(.voice)
         guard serverWired, setup.companionCreated != true, let imageId = setup.imageId else { return }
         creatingCompanion = true
@@ -301,7 +386,7 @@ extension AppState {
                 let c = try await onboarding.createCompanion(imageId: imageId)
                 setup.companionCreated = true
                 prep = c.prep
-            } catch GenitaAuthError.server(409, _) {
+            } catch GenitaAuthError.server(409, _, _) {
                 setup.companionCreated = true   // one companion per user; it already exists
             } catch { flowError = Self.errorLine(error); route(error) }
         }
@@ -358,7 +443,7 @@ extension AppState {
                     setup.companionCreated = true
                 }
                 go(.depth)
-            } catch GenitaAuthError.server(400, _) {
+            } catch GenitaAuthError.server(400, _, _) {
                 nameError = "Try a different name."
             } catch { nameError = Self.errorLine(error); route(error) }
         }
@@ -403,7 +488,7 @@ extension AppState {
                 route(GenitaAuthError.unauthorized); return
             } catch GenitaAuthError.consentRequired {
                 route(GenitaAuthError.consentRequired); return
-            } catch GenitaAuthError.server(404, _) {
+            } catch GenitaAuthError.server(404, _, _) {
                 return   // no companion (deleted, or a judge's demo removed): nothing is being made
             } catch {}
             try? await Task.sleep(for: .seconds(seconds))

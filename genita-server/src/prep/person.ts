@@ -98,3 +98,20 @@ export async function makePersonMatte(o: {
   }
   return null;
 }
+
+/**
+ * 11/4: the subject's face silhouette (SAM 3.1 "the person's face" / "the animal's face" / "the character's face",
+ * one_bit mask, largest match) as a grey PNG at `size`, or null. faceflow keeps the mouth blend inside it.
+ */
+export async function makeFaceSilhouette(o: {
+  media: MediaApi;
+  metaKey: string;
+  sceneDataUrl: string;
+  size: [number, number];
+  kind: CompanionKind;
+  signal?: AbortSignal;
+}): Promise<Buffer | null> {
+  const boxes = await o.media.samDetect(o.metaKey, o.sceneDataUrl, `the ${NOUN[o.kind]}'s face`, o.signal, { masks: true });
+  const r = personRaster(boxes, o.size);
+  return r ? greyPng(r, o.size[0], o.size[1]) : null;
+}

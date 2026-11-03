@@ -60,25 +60,84 @@ struct WirePage<Content: View>: View {
 
 struct ImageCheckView: View {
     @Bindable var model: AppState
-    @State private var scan = 0.0
     @State private var progress = 0.08
+    /// V03 face scan: the low-poly net, laid on top-down over 0.4 s when the check answer brings SAM's face points
+    @State private var mesh: FaceMesh?
+    /// the sparse net for a face too small on the card (FaceMesh.fitted)
+    @State private var smallMesh: FaceMesh?
+    @State private var reveal = 0.0
+    /// the uploaded photo's size (orientation applied), for mapping the points onto the `scaledToFill` frame
+    @State private var photoSize = CGSize.zero
+    /// when the bar reached 100 % (the overlay's hold, breathing and fade count from here)
+    @State private var doneAt: Date?
+    /// one .success haptic when a passed scan reaches 100 %
+    @State private var successTick = 0
+    /// V03 stays up after the answer for the finish (bar to 100 %, hold, fade) before V02-T / V02-F
+    @State private var finished = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var result: ImageCheck? { model.imageCheck }
-    private var analyzing: Bool { result == nil && model.imageCheckError == nil }
-    private var passed: Bool { result?.passed == true }
+    /// photo polish: the server polishes this upload and V02-T confirms the polished picture
+    private var polishFlow: Bool { result?.polish == true }
+    private var analyzing: Bool { model.imageCheckError == nil && (result == nil || (polishFlow && model.polishing)) }
+    /// V02-T: the upload passed (today) or the polished picture passed its check (polish flow)
+    private var passed: Bool { polishFlow ? model.polished?.passed == true && model.polishedImage != nil : result?.passed == true }
+    /// "Try again" on the polished picture (two at most)
+    private var canRetry: Bool {
+        polishFlow && model.canRetryPolish && (model.polishRetriesLeft > 0 || (model.polished != nil && model.polishedImage == nil))
+    }
 
     var body: some View {
-        if analyzing { analyzingPage } else { resultPage }
+        Group {
+            if analyzing || !finished || model.reviewScan != nil { analyzingPage } else { resultPage }
+        }
+        .onAppear { if !analyzing { finished = true } }   // reopened on V02 (back, review): no replay
+        .sensoryFeedback(.success, trigger: successTick)
+        .onChange(of: analyzing) { was, now in
+            if !was && now { finished = false; doneAt = nil; reveal = mesh == nil ? 0 : 1 }   // "Try again": scan again (polish keeps the mesh)
+            if was && !now { Task { await finish() } }
+        }
+        .onChange(of: result?.imageId, initial: true) { _, _ in showMesh() }
+    }
+
+    /// The check answer's face points → the net, swept on from the top over 0.4 s.
+    private func showMesh() {
+        guard let r = result else { mesh = nil; smallMesh = nil; reveal = 0; return }
+        mesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox)
+        smallMesh = FaceMesh.make(outline: r.faceOutline, points: r.facePoints, headBox: r.headBox, layout: .r02Small)
+        guard mesh != nil else { return }
+        photoSize = model.setup.imageData.flatMap { UIImage(data: $0)?.size } ?? .zero
+        if reduceMotion { reveal = 1 } else { withAnimation(Self.finishCurve) { reveal = 1 } }
+    }
+
+    /// r01: the answer takes the bar from where it is to 100 % in 0.4 s on an ease-in-out
+    static let finishCurve = Animation.timingCurve(0.65, 0, 0.35, 1, duration: 0.4)
+
+    /// Answer in: the line runs to the bottom (0.4 s); a passed scan with a net gets one .success haptic, holds 1 s
+    /// (the faces breathe) and fades (0.3 s); then V02-T / V02-F. A failed check skips the hold; an error goes straight on.
+    private func finish() async {
+        guard model.imageCheckError == nil else { finished = true; return }
+        withAnimation(Self.finishCurve) { progress = 1; reveal = 1 }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard !analyzing else { return }
+        doneAt = Date()
+        if passed { successTick += 1 }
+        try? await Task.sleep(for: .milliseconds(passed && mesh != nil ? 1300 : 150))
+        guard !analyzing else { return }
+        finished = true
     }
 
     /// V03 "Finding the details that make them recognizable." — a scan line over the photo and the real wait.
     private var analyzingPage: some View {
-        WirePage(title: "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
+        WirePage(title: polishFlow ? "Getting your photo\nready for the call." : "Finding the details\nthat make them\nrecognizable.", pageID: "V03", back: { model.back() }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 240)
-                .overlay(alignment: .top) {
-                    Rectangle().fill(Color(red: 0, green: 0.635, blue: 1)).frame(height: 2).shadow(color: Color(red: 0, green: 0.635, blue: 1).opacity(0.6), radius: 6)
-                        .offset(y: 240 * CGFloat(scan)).opacity(reduceMotion ? 0 : 1)
+                .overlay {
+                    // V03 face scan: the line follows the bar; the net comes with the check answer
+                    FaceScanOverlay(progress: reduceMotion ? (reveal > 0 ? 1 : 0) : progress, reveal: reveal,
+                                    mesh: mesh.map { FaceMesh.fitted(full: $0, small: smallMesh, image: photoSize, in: CGSize(width: width - 48, height: 240)) },
+                                    imageSize: photoSize, doneAt: doneAt,
+                                    reduceMotion: reduceMotion || model.reviewScan != nil, showLine: !reduceMotion)
+                        .accessibilityIdentifier("faceScan")
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color(white: 0.89), lineWidth: 1))
@@ -91,24 +150,43 @@ struct ImageCheckView: View {
                 .accessibilityIdentifier("imageCheckProgress")
         }
         .task {
-            if !reduceMotion { withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { scan = 1 } }
-            // The check takes 2–5 s (PREP_API.md); the bar eases toward 90 % and the answer finishes it.
+            if let held = model.reviewScan { progress = held; reveal = held > 0 ? 1 : 0; return }   // screen review
+            progress = 0   // a "Try again" starts the bar over
+            // r01: p = 0.92 (1 − e^(−t / 3.2 s)) while the check runs (2–5 s, PREP_API.md); the answer finishes it.
+            // Photo polish adds ~15–20 s (Muse Image edit + the same check): a slower τ (9 s) so it doesn't sit at 92 %.
+            let start = Date()
             while analyzing && !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
-                withAnimation(.linear(duration: 0.12)) { progress = min(0.9, progress + (0.92 - progress) * 0.05) }
+                guard analyzing, !Task.isCancelled else { break }   // the answer came in during the sleep: finish() owns the bar now
+                let tau = polishFlow ? 9.0 : 3.2
+                let target = 0.92 * (1 - exp(-Date().timeIntervalSince(start) / tau))
+                withAnimation(.linear(duration: 0.12)) { progress = max(progress, target) }
             }
         }
     }
 
     /// V02-T (type chips, three green checks, rights line, Use this image) or V02-F (the failed rows, Choose another image).
     private var resultPage: some View {
-        WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F", subtitle: "One clear front-facing image works best.", back: { model.returnTo(.image) },
-                 primary: passed ? "Use this image" : "Choose another image", primaryBusy: model.creatingCompanion,
-                 action: { if passed { model.useCheckedImage() } else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) } }) { width, top, _ in
+        WirePage(title: "Bring an image", pageID: passed ? "V02-T" : "V02-F",
+                 subtitle: polishFlow && passed ? "We tidied it up for the call." : "One clear front-facing image works best.", back: { model.returnTo(.image) },
+                 primary: passed ? "Use this image" : canRetry ? "Try again" : "Choose another image", primaryBusy: model.creatingCompanion,
+                 action: {
+                     if passed { model.useCheckedImage() }
+                     else if canRetry { model.retryPolish() }
+                     else { model.setup.imageData = nil; model.rightsAcked = false; model.returnTo(.image) }
+                 }) { width, top, _ in
             photo(width: width).frame(width: width - 48, height: 289)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(alignment: .topLeading) { if passed { typeChips.padding(12) } }
+                // one polish path, no type: the chips stay on today's V02-T only
+                .overlay(alignment: .topLeading) { if passed && !polishFlow { typeChips.padding(12) } }
                 .position(x: width / 2, y: 226 + 144.5 + top)
+            if passed && canRetry && model.polishRetriesLeft > 0 {
+                // V02-T: the polished picture can be made again (same text-link style as NM01 "Use Jin")
+                Button { model.retryPolish() } label: {
+                    Text("Try again (\(model.polishRetriesLeft) left)").font(TypeStyle.body(14, .medium)).underline().foregroundStyle(CallInk.ink).frame(height: 44)
+                }.buttonStyle(.plain).frame(width: width - 62, alignment: .leading).position(x: 31 + (width - 62) / 2, y: 646 + top)
+                    .accessibilityIdentifier("polishTryAgain")
+            }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(rows, id: \.0) { row in
                     HStack(spacing: 8) {
@@ -126,7 +204,15 @@ struct ImageCheckView: View {
     /// The three V02 rows; a failed check shows the server's own reason text (V02-F).
     private var rows: [(String, Bool)] {
         if let error = model.imageCheckError { return [(error, false)] }
+        if let error = model.polishError { return [(error, false)] }
         guard let r = result else { return [] }
+        // Chelsea 11/4: a photo without any face gets one plain line
+        if r.reasons.contains(where: { $0.code == "no_face" }) && r.polish != true { return [(Self.noFace, false)] }
+        if polishFlow, let p = model.polished {
+            if !p.passed { return p.reasons.prefix(2).map { ($0.label, false) } }
+            let c = p.checks
+            return [("One face, front-facing", c?.oneFaceFrontFacing ?? true), ("Sharp and well lit", c?.sharpAndLit ?? true), ("No text on the image", c?.noText ?? true)]
+        }
         // D26: a well-known person is refused whatever the photo quality; one red row with the server's reason
         if let famous = publicFigure { return [(famous, false)] }
         let reason = { (codes: [String], fallback: String) in r.reasons.first { codes.contains($0.code) }?.label ?? fallback }
@@ -138,8 +224,11 @@ struct ImageCheckView: View {
         ]
     }
     private var publicFigure: String? { result?.reasons.first { $0.code == "public_figure" }?.label }
+    static let noFace = "We couldn't find a clear face. Try another photo."
     private var note: String {
         if passed { return "Use an image you have the right to use." }
+        if model.polishError == nil, result?.reasons.contains(where: { $0.code == "no_face" }) == true { return "" }
+        if polishFlow && canRetry { return "Polishing again often fixes this." }
         // PRD v12 D26 V02-F: "This looks like a well-known person. Genita can't bring public figures to life."
         return publicFigure != nil ? "Genita can't bring public figures to life." : "Try one taken in good light, facing the camera."
     }
@@ -159,7 +248,15 @@ struct ImageCheckView: View {
     }
 
     @ViewBuilder private func photo(width: CGFloat) -> some View {
-        if let data = model.setup.imageData, let image = UIImage(data: data) {
+        // the polished picture only on V02-T: V03's finish keeps the original under its face net
+        if !analyzing, finished, polishFlow, let data = model.polishedImage, let image = UIImage(data: data) {
+            // the whole polished 9:16 picture, as the call will show it, over a soft blur of itself (no grey bars)
+            // the fitted picture sets the size; the blurred copy is only a background (it must not grow the frame)
+            Image(uiImage: image).resizable().scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background { Image(uiImage: image).resizable().scaledToFill().blur(radius: 24).opacity(0.55) }
+                .clipped().accessibilityIdentifier("polishedImage")
+        } else if let data = model.setup.imageData, let image = UIImage(data: data) {
             Image(uiImage: image).resizable().scaledToFill()
         } else { Color(white: 0.93) }
     }
@@ -390,24 +487,28 @@ struct SkipImportView: View {
         let like = Set(model.setup.skipLikes ?? []), no = Set(model.setup.skipAvoid ?? [])
         func state(_ v: String) -> TasteState { like.contains(v) ? .on : no.contains(v) ? .skipped : .off }
         return ZStack(alignment: .topLeading) {
+            // one left edge with the title (x 31) and the same margin on the right (QA build 5: labels and chips sat at 24)
+            let w = Self.tasteColumn(width)
             Text("Tap once if you like it, twice if it\u{2019}s a no.").font(TypeStyle.body(14)).foregroundStyle(SkipInk.mute)
-                .frame(width: 342, height: 20, alignment: .leading).position(x: 31 + 171, y: 186 + 10 + top)
-            group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, state: state)
-            group("Food", Self.foods, columns: 3, y: 376, top: top, state: state)
-            group("In our chats", Self.chats, columns: 2, y: 524, top: top, state: state)
+                .frame(width: w, height: 20, alignment: .leading).position(x: 31 + w / 2, y: 186 + 10 + top)
+            group("Clothes you reach for", Self.clothes, columns: 3, y: 228, top: top, width: w, state: state)
+            group("Food", Self.foods, columns: 3, y: 376, top: top, width: w, state: state)
+            group("In our chats", Self.chats, columns: 2, y: 524, top: top, width: w, state: state)
             if let e = model.flowError {   // the import failed (offline / 5xx): say so, Continue retries
                 Text(e).font(TypeStyle.body(13)).foregroundStyle(Color(red: 0.85, green: 0.2, blue: 0.2))
-                    .frame(width: 342, alignment: .leading).position(x: 24 + 171, y: 690 + top).accessibilityIdentifier("skipError")
+                    .frame(width: w, alignment: .leading).position(x: 31 + w / 2, y: 690 + top).accessibilityIdentifier("skipError")
             }
         }
     }
-    private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, state: @escaping (String) -> TasteState) -> some View {
+    /// N3's column: the title's left edge (31) to the same margin on the right
+    static func tasteColumn(_ width: CGFloat) -> CGFloat { width - 62 }
+    private func group(_ label: String, _ items: [String], columns: Int, y: CGFloat, top: CGFloat, width: CGFloat, state: @escaping (String) -> TasteState) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label).font(TypeStyle.body(14, .semibold)).foregroundStyle(CallInk.ink).frame(height: 20).padding(.bottom, 0)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: columns == 3 ? 7.5 : 8), count: columns), spacing: 8) {
                 ForEach(items, id: \.self) { tasteChip($0, state: state($0)) { cycleTaste($0) } }
             }.padding(.top, 0)
-        }.frame(width: 342, height: 124, alignment: .topLeading).position(x: 24 + 171, y: y + 62 + top)
+        }.frame(width: width, height: 124, alignment: .topLeading).position(x: 31 + width / 2, y: y + 62 + top)
     }
     private enum TasteState { case off, on, skipped }
     private func tasteChip(_ item: String, state: TasteState, action: @escaping (String) -> Void) -> some View {

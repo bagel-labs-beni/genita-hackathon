@@ -60,8 +60,8 @@ struct JudgeAccessAlert: ViewModifier {
                 model.signedIn(userId: r.me.user.id, consented: r.me.consented)
             } catch GenitaAuthError.unauthorized {
                 failure = Failure(title: "Code Not Accepted", message: "Check the code and try again.")
-            } catch GenitaAuthError.server(let status, _) where status == 429 {
-                failure = Failure(title: "Too Many Tries", message: "Wait 10 minutes and try again.")
+            } catch GenitaAuthError.server(let status, _, let wait) where status == 429 {
+                failure = Failure(title: "Too Many Tries", message: wait.map { "Try again in \(max(1, ($0 + 59) / 60)) min." } ?? "Wait 10 minutes and try again.")
             } catch GenitaAuthError.offline {
                 failure = Failure(title: "Can’t Reach the Server", message: "Check your connection and try again.")
             } catch {
