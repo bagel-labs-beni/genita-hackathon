@@ -76,8 +76,16 @@ final class MacUpdater: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.contentView = host
+        // QA 291 (11/4): 38 pt under the window top put the pill over the home title ("Jin is on this Mac."). It now
+        // hangs just under the window (the pill's own 28 pt padding is the gap), above it when there's no room below
+        // (a tall call window), and only inside the window's bottom as a last resort — never over its content's top.
         let frame = window.frame
-        panel.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: frame.maxY - size.height - 38))
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? frame
+        let inset: CGFloat = 28 - 8   // the pill's padding minus an 8 pt visual gap
+        var y = frame.minY - size.height + inset
+        if y < visible.minY { y = frame.maxY - inset }
+        if y + size.height > visible.maxY { y = frame.minY + 12 - (28 - 12) }
+        panel.setFrameOrigin(NSPoint(x: frame.midX - size.width / 2, y: y))
         window.addChildWindow(panel, ordered: .above)
         self.panel = panel
     }
@@ -160,7 +168,8 @@ struct UpdateReadyPill: View {
         .background(Capsule().fill(.black.opacity(0.78)))
         .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.25), radius: 14, y: 6)
-        .padding(12)
+        // room for the whole shadow (14 + 6): at 12 the panel's edge cut it into a visible rectangle (QA 291)
+        .padding(28)
         .scaleEffect(shown || reduceMotion ? 1 : 0.92)
         .offset(y: shown || reduceMotion ? 0 : -10)
         .opacity(shown ? 1 : 0)
