@@ -416,6 +416,8 @@ export class Session {
   private micOn = true;
   private reply: Reply | null = null;
   private spec: Speculation | null = null;
+  /** first call after onboarding (D21 greetAfterMs): the greeting's Spark answer starts at once, played when the window ends */
+  private preGreet: { built: Built; stream: Eager<SparkStreamEvent>; abort: AbortController; confirm: () => void; memoryRetry: MemoryRetryState } | null = null;
   private watch: WatchController | null = null;
   private specTimer: NodeJS.Timeout | null = null;
   private specCheck = 0;
@@ -793,16 +795,36 @@ export class Session {
     // D21: also without the memory dependency, the plain greeting
     if (startMode === "chat" && !this.greeting) this.greeting = { item: null };
     if (!this.greeting || this.closed) return;
+    // the greeting's Spark answer (≈2.3 s to its first token on prod) runs during the wait, not after it (11/3)
+    if (greetAfterMs > 0) this.startPreGreet();
     this.greetTimer = (this.deps.greetScheduler ?? schedule)(() => {
       this.greetTimer = null;
       if (!this.greeting || this.closed) return;
       if (this.reply || this.mode !== "chat" || this.turn.phase !== "listening" || this.turn.userSpeaking) {
         // busy when the window ends: drop it, or the user's next line would be taken as the greeting (Codex 11/2)
         this.greeting = null;
+        this.dropPreGreet();
         return this.log("call.greet_skipped", { by: "busy" });
       }
       this.dispatch({ type: "text", text: GREET_PROMPT });
     }, greetAfterMs);
+  }
+
+  private startPreGreet(): void {
+    if (!this.greeting || this.closed || this.preGreet) return;
+    const built = this.buildRequest(GREET_PROMPT, undefined, { greeting: this.greeting, cue: null });
+    const abort = new AbortController();
+    let confirm!: () => void;
+    const confirmed = new Promise<void>((resolve) => { confirm = resolve; });
+    abort.signal.addEventListener("abort", confirm, { once: true });
+    const memoryRetry: MemoryRetryState = {};
+    const source = this.sparkSource(built.req, abort.signal, this.greeting.item, true, confirmed, undefined, memoryRetry);
+    this.preGreet = { built, stream: new Eager(source), abort, confirm, memoryRetry };
+  }
+
+  private dropPreGreet(): void {
+    this.preGreet?.abort.abort();
+    this.preGreet = null;
   }
 
   /** D21: the user spoke or typed first inside the greetAfterMs window → no greeting, just answer them. */
@@ -811,6 +833,7 @@ export class Session {
     this.greetTimer();
     this.greetTimer = null;
     this.greeting = null;
+    this.dropPreGreet();
     this.log("call.greet_skipped", { by });
   }
 
@@ -986,6 +1009,7 @@ export class Session {
     if (this.tts === "server" && this.deps.config.voice) this.deps.voiceSeats?.release(this.id);
     if (this.bargeTimer) clearTimeout(this.bargeTimer);
     if (this.greetTimer) this.greetTimer();
+    this.dropPreGreet();
     if (this.initiativeTimer) clearInterval(this.initiativeTimer);
     this.perceptionUnsub?.();
     this.dropSpeculation();
@@ -1694,6 +1718,16 @@ export class Session {
       }
     }
     if (self) built = { req: { input: "" }, interpret: false, detected: null, images: [], lang: this.language };
+    // the greeting started during the D21 wait: its stream is already running (or done)
+    const preGreet = greeting && !self && text === GREET_PROMPT ? this.preGreet : null;
+    this.preGreet = null;
+    if (preGreet && !preGreet.abort.signal.aborted && !pre) {
+      preGreet.confirm();
+      built = preGreet.built;
+      pre = preGreet.stream;
+      memoryRetry = preGreet.memoryRetry;
+      this.log("call.greet_prestarted", { utteranceId });
+    } else preGreet?.abort.abort();
     built ??= this.buildRequest(text, renamedFrom, { greeting, cue });
     if (greeting) this.nod = null;
     const { req, interpret, lang } = built;
