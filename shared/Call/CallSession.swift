@@ -826,9 +826,9 @@ enum CallStop: Equatable {
             }
         case .interpretDetected, .asrStatus, .pong, .unknown:
             break
-        case .backchannel:
-            // convo P1 #345: the server flag is off by default; playing a soft clip is a follow-up
-            break
+        case let .backchannel(b):
+            // convo P1 #345: the server's soft "mm-hm" in the companion's own voice, played beside (never as) a reply
+            if let audio = b.audio, let pcm = Data(base64Encoded: audio) { self.audio.playCue(pcm: pcm) }
         }
     }
 

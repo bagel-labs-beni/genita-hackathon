@@ -156,12 +156,13 @@ enum JudgeAccess {
     }
 
     /// The one line under the field; nil = signed in. `status` nil = no answer at all.
-    static func message(status: Int?) -> String? {
+    /// `retryAfterSec`: a 429's wait from the server (11/4), shown in whole minutes.
+    static func message(status: Int?, retryAfterSec: Int? = nil) -> String? {
         switch status {
         case nil: "Couldn’t reach the server. Check your connection."
         case let s? where (200..<300).contains(s): nil
         case 401?: "That code didn’t work. Check it and try again."
-        case 429?: "Too many tries. Wait 10 minutes and try again."
+        case 429?: retryAfterSec.map { "Too many tries. Try again in \(max(1, ($0 + 59) / 60)) min." } ?? "Too many tries. Wait 10 minutes and try again."
         default: "Judge access isn’t available right now."
         }
     }
