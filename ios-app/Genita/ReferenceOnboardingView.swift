@@ -501,11 +501,27 @@ import UniformTypeIdentifiers
         UnevenRoundedRectangle(topLeadingRadius: 30, topTrailingRadius: 30).fill(Color(white: 0.996)).shadow(color: .black.opacity(0.04), radius: 25.9)
             .frame(width: width, height: 551 + stretch).position(x: width / 2, y: 291 + top + (551 + stretch) / 2)
         RoundedRectangle(cornerRadius: 3.5).fill(Color(white: 0.859)).frame(width: 47, height: 5).position(x: width / 2, y: 305.5 + top)
-        ForEach(texts.filter { $0.y >= 345 && $0.y < 700 }) { n in
+        ForEach(summaryRows(width: width), id: \.node.id) { row in
+            DesignText(node: row.node, text: row.text).designSlot(row.node, width: width, top: top)
+                .accessibilityIdentifier(row.key)
+        }
+    }
+    /// SUM rows at the Figma spacing (label → value 8 pt, value → next label 26 pt) for the real answers: Figma
+    /// reserves 2 lines for Why and Never, so a 1-line answer used to leave a 21 pt hole (and a long one overlapped).
+    func summaryRows(width: CGFloat) -> [(node: DesignNode, text: String?, key: String)] {
+        var shift: CGFloat = 0
+        return texts.filter { $0.y >= 345 && $0.y < 700 }.sorted { $0.y < $1.y }.map { n in
+            var placed = n
+            placed.y += shift
             let key = n.characters ?? ""
-            let replacement: String? = n.fontSize == 18 ? summaryValue(y: n.y) : nil
-            DesignText(node: n, text: referenceViewport ? nil : replacement).designSlot(n, width: width, top: top)
-                .accessibilityIdentifier(key)
+            guard n.fontSize == 18, !referenceViewport else { return (placed, nil, key) }
+            let value = summaryValue(y: n.y)
+            let margin = 390 - n.x - n.w
+            let w = n.w >= 240 && margin >= 20 && n.x >= 20 ? max(1, width - n.x - margin) : n.w   // DesignPlacement's width
+            let used = ceil(n.attributed(value).boundingRect(with: CGSize(width: w + 0.5, height: 1000), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
+            placed.h = used
+            shift += used - n.h
+            return (placed, value, key)
         }
     }
     func summaryValue(y: CGFloat) -> String {
