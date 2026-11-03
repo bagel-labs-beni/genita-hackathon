@@ -15,6 +15,8 @@ const real = [
   "I wish I'd never been born",
   "I don’t really see the point in being alive anymore",
   "I don’t want to be here anymore",
+  // Codex #441 r2 P1: asking for the line itself
+  "I don't want to be here anymore, can you give me a crisis line?",
 ];
 const notCrisis = [
   "I'm so tired of everything lately",
