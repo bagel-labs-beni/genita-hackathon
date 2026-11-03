@@ -249,7 +249,7 @@ test("Codex P1: a late watch-echo verdict never restarts the commit clock while 
   await partA(h);
   // watch together starts sharing; its echo check is slow
   let release!: (echo: boolean) => void;
-  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), close() {} };
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
   h.asr.fire({ type: "speechStart", turnId: 1 });
   h.asr.fire({ type: "speechEnd", turnId: 1 });
   h.asr.fire({ type: "speechComplete", turnId: 1, text: "Not tonight love" }); // the video's line
@@ -295,4 +295,57 @@ test("Codex P2: frames typed with a line go with that line, not with the held vo
   const withImage = h.sparkCalls.filter((c) => JSON.stringify(c.input).includes("data:image/jpeg"));
   assert.equal(withImage.length, 1);
   assert.match(JSON.stringify(withImage[0].input), /What am I wearing/);
+});
+
+test("Codex r2: a held turn whose echo check finished after an empty later final still commits (never stuck)", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  let release!: (echo: boolean) => void;
+  await h.session.onClientText(JSON.stringify({ type: "start", persona: { name: "Mina" } }));
+  await sleep(30);
+  (h.session as unknown as { watch: unknown }).watch = { isSharing: true, isEcho: () => new Promise<boolean>((r) => (release = r)), questionContext: () => null, close() {} };
+  h.asr.fire({ type: "speechStart", turnId: 0 });
+  h.advance(4000);
+  h.asr.fire({ type: "speechEnd", turnId: 0 });
+  h.asr.fire({ type: "speechComplete", turnId: 0, text: A_FINAL }); // the check runs
+  await sleep(10);
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: "" }); // noise: an empty final while A's check runs
+  release(false); // A is the user
+  await sleep(EOT.incompleteMs + 400);
+  assert.equal(h.at(thinking).length, 1, h.types().join(","));
+  const finals = h.sent.filter((s) => s.m.type === "transcript" && s.m.final === true).map((s) => s.m.text);
+  assert.ok(finals.includes(A_FINAL), JSON.stringify(finals));
+});
+
+test("Codex r2: resume → their speechEnd → mute → their final: still one joined turn", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.asr.fire({ type: "speechStart", turnId: 1 });
+  h.asr.fire({ type: "speechEnd", turnId: 1 });
+  await h.session.onClientText(JSON.stringify({ type: "audio_stop" }));
+  assert.equal(h.at(thinking).length, 0, "their final is still coming");
+  h.asr.fire({ type: "speechComplete", turnId: 1, text: B_FINAL });
+  assert.equal(h.at(thinking).length, 1);
+  await sleep(100);
+  const finals = h.sent.filter((s) => s.m.type === "transcript" && s.m.final === true).map((s) => s.m.text);
+  assert.equal(finals.length, 1);
+  assert.match(String(finals[0]), /he started yelling at me/);
+  assert.equal(h.sent.filter((s) => s.m.type === "utterance.cancelled").length, 0);
+});
+
+test("CA-14 watchdog: a resumed segment whose final never comes (ASR dropped) does not hold the turn forever", async (t) => {
+  const h = setup();
+  t.after(() => h.session.close());
+  await partA(h);
+  await sleep(100);
+  h.asr.fire({ type: "speechStart", turnId: 1 }); // …and the stream dies: no final
+  await sleep(EOT.incompleteMs + 100);
+  assert.equal(h.at(thinking).length, 0, "waiting for their final");
+  h.advance(6000); // > HOLD_WATCHDOG_MS of ASR silence
+  await sleep(400);
+  assert.equal(h.at(thinking).length, 1, "committed by the watchdog");
 });
