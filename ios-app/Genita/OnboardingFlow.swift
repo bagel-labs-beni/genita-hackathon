@@ -175,6 +175,9 @@ extension AppState {
         case .consent: if stage != .consent { go(.consent) }
         case .name: if !onboardingStages.contains(stage) || stage == .conversation { returnTo(.name) }
         case .importPrompt:
+            // the server has no companion but this phone remembers one: a Start over finished while the app was gone
+            // (killed right after the reset, #514 Codex r3 P1). Drop it here too and pick a new photo (V01).
+            if setup.companionCreated == true { companionReset(); return }
             // a companion isn't made yet: resume where this phone left off, else I01
             // (A03 stays: right after CS01 the user still confirms their name, B8)
             if setup.hasOnboarded || !(onboardingStages.contains(stage) || stage == .name) { setup.hasOnboarded = false; returnTo(.prompt) }

@@ -202,4 +202,20 @@ import UIKit
         XCTAssertFalse(AppState.forgetEarlierInstall(storage: updated) { cleared += 1 })
         XCTAssertEqual(cleared, 1)
     }
+
+    /// #514 Codex r3 P1: a Start over finished while the app was killed. /me says no companion, the phone still
+    /// remembers one: it drops it and opens V01 (a new photo), instead of blocking the new companion.
+    func testLaunchAfterAResetTheAppMissedDropsTheOldCompanion() async {
+        let me = me(name: "Summer", hasCompanion: false)
+        let (model, storage) = makeModel { req in (req.url?.path ?? "").hasSuffix("/me") ? (200, me) : (404, Data()) }
+        storage.set("u1", forKey: AppState.userKey)
+        model.setup.name = "Summer"; model.setup.companionName = "Jin"; model.setup.imageId = "img1"
+        model.setup.companionCreated = true
+        model.complete()
+        await model.routeOnLaunch()
+        XCTAssertEqual(model.stage, .image, "V01: pick a new photo")
+        XCTAssertNotEqual(model.setup.companionCreated, true)
+        XCTAssertNil(model.setup.companionName)
+        XCTAssertEqual(model.setup.name, "Summer", "the user's own name stays")
+    }
 }
