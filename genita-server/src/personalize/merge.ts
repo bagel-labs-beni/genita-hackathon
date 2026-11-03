@@ -66,7 +66,8 @@ function safe(text: string): boolean {
 const PRICE = /(?:[$€£₩¥]\s?\d|\d+\s?(?:dollars|bucks|usd|eur|euros|won|krw)\b)/i;
 const SHOPPING = /\b(?:budget|spend\w*|price\w*|under|below|less than|max(?:imum)?|clothes|clothing|outfits?|shoes|shopping|buy\w*)\b/i;
 export function asBudget(u: ProfileUpdate): ProfileUpdate {
-  if (!u.text || !PRICE.test(u.text) || !SHOPPING.test(u.text)) return u;
+  // a spending rule ("ask before buying anything over $100") is a boundary, not a taste (Codex P2)
+  if (!u.text || !PRICE.test(u.text) || !SHOPPING.test(u.text) || u.field === "boundaries" || /\b(?:ask|before|approv\w*|confirm|permission|without)\b/i.test(u.text)) return u;
   if (u.field === "likes" && /^\s*budget:/i.test(u.text)) return u;
   const body = u.text.replace(/^\s*(?:budget|prefers?|likes?|usually|tends to)\s*:?\s*/i, "").replace(/^(?:clothes|clothing)\s+/i, "");
   return { ...u, field: "likes", text: `Budget: ${body[0].toLowerCase()}${body.slice(1)}` };

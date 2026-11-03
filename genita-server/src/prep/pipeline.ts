@@ -112,7 +112,7 @@ export async function importStyle(d: PrepDeps, userId: string, pasted: unknown):
   // A reply in the prompt's format whose every section says "Not enough information" (a new Claude/ChatGPT user
   // with no memory) is not unreadable: it is an empty profile. Keep it; the story says "Most of you, I'll learn as
   // we talk" and the first calls ask (QA 11/3 P1: never "couldn't read" for it). Only text we can't place is 422.
-  if (card.itemCount === 0 && importFormat(p.text) === "unknown") throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
+  if (card.itemCount === 0 && (importFormat(p.text) === "unknown" || (p.text.match(/not enough information/gi) ?? []).length < 3)) throw new PrepError(422, "import_empty", "I couldn't read this one. Paste the whole reply, or try again.");
   if (storyJob && d.personalize) {
     const grace = new Promise<"late">((r) => setTimeout(() => r("late"), STORY_GRACE_MS).unref?.());
     const s = await Promise.race([storyJob, grace]);

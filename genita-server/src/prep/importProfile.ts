@@ -288,7 +288,9 @@ function clean(s: unknown, max = 160): string {
 
 /** Genita talks in English (11/3): a "which language" preference never becomes a setting or a card line. */
 const LANGUAGE_KEYS = new Set<string>(["communication", "response", "tendencies", "approach", "support"]);
-const LANGUAGES = /\b(?:korean|english|japanese|chinese|mandarin|cantonese|spanish|french|german|italian|portuguese|vietnamese|thai|hindi|arabic|russian|bilingual|multilingual|code-?switch\w*)\b/i;
+const LANG = "korean|english|japanese|chinese|mandarin|cantonese|spanish|french|german|italian|portuguese|vietnamese|thai|hindi|arabic|russian";
+// which language to talk in, not a cuisine or a topic ("examples from French cooking" stays — Codex P2)
+const LANGUAGES = new RegExp(`\\b(?:in|speak\\w*|talk\\w*|repl\\w*|respond\\w*|answer\\w*|writ\\w*|chat\\w*|casual|formal|polite|switch\\w* to)\\s+(?:\\w+\\s+)?(?:${LANG})\\b|\\b(?:${LANG})\\s+(?:speech|replies|messages|texts?|language|only)\\b|\\b(?:bilingual|multilingual|code-?switch\\w*)\\b`, "i");
 export function isLanguagePreference(text: string): boolean {
   return LANGUAGES.test(text);
 }

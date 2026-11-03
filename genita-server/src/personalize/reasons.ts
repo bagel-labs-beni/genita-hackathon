@@ -35,7 +35,7 @@ export function tasteLines(src: StyleCard | string | null | undefined): TasteLin
   }
   const out: TasteLine[] = [];
   for (const line of src.split("\n")) {
-    if (/^(?:Suggestions|Rules|Also)\b/.test(line)) break;
+    if (/^(?:Suggestions|Rules|Also|Leans|How they come across)\b/.test(line)) break;
     const m = line.match(/^- Taste: (.+?)(?: \([^)]*\))?$/);
     if (m) out.push({ text: m[1], label: null });
   }
