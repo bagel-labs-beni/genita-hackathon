@@ -701,3 +701,18 @@ test("bug-fix a6df112 outfit 3/8: subject-less gerund openers and 'incoming' pro
     assert.ok([...j.push(keep).speak, ...j.push("Ok.").speak, ...j.finish().speak].join(" ").includes(keep), keep);
   }
 });
+
+test("Codex r23: intentional repeats, gerund-subject answers, a real status and an 'and the X wins' pick all stay", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (first: string, tool: boolean, next: string) => { const j = new NarrationJudge(true); return [...j.push(first).speak, ...(tool ? j.onToolCall().speak : []), ...j.push(next).speak, ...j.finish().speak].join(" "); };
+  assert.match(run("Taking the bus saves you twenty minutes.", true, "It is the easiest option."), /saves you twenty/);
+  assert.match(run("Your taxi is on its way.", false, "Wait by the main entrance."), /on its way/);
+  assert.match(run("Checking my notes and the trench wins.", false, "Wear it tonight."), /trench wins/);
+  assert.match(run("Choosing your own clothes builds confidence.", false, "Trust yourself."), /builds confidence/);
+  const { client, session } = setup(["<calm> Breathe in. Breathe out. Breathe in. Breathe out."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "say breathe in breathe out twice" }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.equal(reply.text, "Breathe in. Breathe out. Breathe in. Breathe out.");
+  session.close();
+});
