@@ -545,9 +545,10 @@ struct FindCardPage: View {
     }
 
     @ViewBuilder private var recipe: some View {
-        if let cam = card.camera {
+        let camHeight = full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight)
+        if let cam = card.camera, camHeight > 0 {
             CameraFrame(frame: entry.frames.indices.contains(cam.frame) ? entry.frames[cam.frame] : nil, camera: cam, items: card.items, selected: finds.selectedItem,
-                        checking: entry.checking, height: full ? 196 : (entry.reopened ? (card.title.count <= 17 ? 196 : 130) : halfCameraHeight))
+                        checking: entry.checking, height: camHeight)
                 .findsRise(3)
         }
         chipRow.findsRise(4)
@@ -558,7 +559,12 @@ struct FindCardPage: View {
     /// Half sheet (344 pt page, scrolling off): the picture gives way so the ingredient chips show whole under a
     /// two-line title. 344 − 40 top − 44 header − 3 × 8 spacing − 44 chips = 192 for title row + picture; 132 at most
     /// (r03), 88 at least. Before: "Kimchi fried rice / with tofu and egg" cut the chip row in half (UI sweep 11/3).
-    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat { min(132, max(88, 192 - titleRow)) }
+    /// With accessibility text sizes the title row alone can take the room (AX-L: 3-line title, Appetize build 7): when 88
+    /// no longer fits, the half sheet drops the picture (it is in the full sheet) so the ingredient chips stay whole.
+    static func halfCameraHeight(titleRow: CGFloat) -> CGFloat {
+        let room = 192 - titleRow
+        return room >= 88 ? min(132, room) : 0
+    }
     private var halfCameraHeight: CGFloat { titleRowHeight > 0 ? Self.halfCameraHeight(titleRow: titleRowHeight) : 132 }
 
     // r03 `.chiprow`: missing first (blue, +), then what you have (white, ✓); maybe = faded "?"

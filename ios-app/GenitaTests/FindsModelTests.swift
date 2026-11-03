@@ -381,6 +381,7 @@ import XCTest
         XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 53), 132, "one-line title: r03 picture, unchanged")
         let twoLines: CGFloat = 87 // "Kimchi fried rice / with tofu and egg" + subtitle
         XCTAssertLessThanOrEqual(40 + 44 + 3 * 8 + twoLines + FindCardPage.halfCameraHeight(titleRow: twoLines) + 44, 344, "chips whole")
-        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 88, "never smaller than 88")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 104), 88, "88 while it fits")
+        XCTAssertEqual(FindCardPage.halfCameraHeight(titleRow: 200), 0, "big text: no picture in the half sheet, chips whole")
     }
 }
