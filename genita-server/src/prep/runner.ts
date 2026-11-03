@@ -322,7 +322,10 @@ export class PrepRunner {
       if (!img) throw new Error("source image missing");
       await setStep("scene", { status: "running", attempts: c.prep.steps.scene.attempts + 1 });
       try {
-        const s = await makeScene(d, img.bytes, img.rec.mime, c.type, signal);
+        // photo polish: the picture the user confirmed is already the 9:16 call frame; a second edit would only drift
+        const s = img.rec.check.polishedFrom
+          ? { bytes: img.bytes, mime: img.rec.mime, source: "polish" as const, ms: 0 }
+          : await makeScene(d, img.bytes, img.rec.mime, c.type, signal);
         signal.throwIfAborted();
         await this.stored(c.id, () => d.store.putAsset(c.userId, c.id, "neutral", s.bytes), ac);
         scene = s.bytes;

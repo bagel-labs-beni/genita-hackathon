@@ -23,6 +23,8 @@ export const FAIL_REASONS = {
   side_view: "Side view",
   too_blurry: "Too blurry to make a face from",
   text_on_image: "Text on the image",
+  // photo polish (11/4): the polished result came back as another kind of subject (a drawing turned photo, …)
+  style_changed: "The polished image changed the style",
 } as const;
 export type FailReason = keyof typeof FAIL_REASONS;
 
@@ -89,6 +91,8 @@ export type ImageCheck = {
   checks: { oneFaceFrontFacing: boolean; sharpAndLit: boolean; noText: boolean };
   reasons: Array<{ code: FailReason; label: string }>;
   raw: ClassifyRaw;
+  /** photo polish: the uploaded image this one was polished from */
+  polishedFrom?: string;
 };
 
 const KIND: Record<ClassifyRaw["subject"], CompanionKind | null> = { person: "human", animal: "animal", character: "character", none: null };
