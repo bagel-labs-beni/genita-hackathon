@@ -154,6 +154,8 @@ export class FindsRunner {
   afterProduct(recent: string[] = []): boolean {
     return (
       (!!this.lastProduct && this.hooks.now() - this.lastProduct.at < REFINE_WINDOW_MS) ||
+      // demo S4→S5: the shoes the outfit pick named are being searched already ("send me the links" → that card)
+      (!!this.prefetched && this.hooks.now() - this.prefetched.at < PREFETCH_WINDOW_MS) ||
       // a call continued on the other device: the search was asked on the first one (#199)
       recent.some((l) => l.startsWith("User: ") && isProductAsk(l.slice(6)))
     );
