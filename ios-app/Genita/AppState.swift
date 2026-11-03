@@ -116,6 +116,8 @@ struct SavedSetup: Codable {
     @ObservationIgnored var companionTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTask: Task<Void, Never>?
     @ObservationIgnored var imageCheckTicket: UUID?
+    /// Changes whenever sign-in state changes, so old account responses cannot affect the new account.
+    @ObservationIgnored private var onboardingSession = OnboardingSessionGeneration()
     /// After a sign-in, where to go is asked from the server (`/me`): a returning account gets its companion back
     /// and goes to the call instead of A03. nil = `routeOnLaunch()`; tests swap it.
     @ObservationIgnored var routeAfterSignIn: (() async -> Void)?
@@ -205,8 +207,22 @@ struct SavedSetup: Codable {
     static let signedOutKey = "genita.signedOut"
     static let needsConsentKey = "genita.needsConsent"
     static let userKey = "genita.userId"
+    func onboardingSnapshot() -> OnboardingSessionGeneration.Snapshot {
+        onboardingSession.snapshot(token: onboarding.auth.token)
+    }
+    func ownsOnboardingResponse(_ snapshot: OnboardingSessionGeneration.Snapshot, allowingClearedSession: Bool = false) -> Bool {
+        onboardingSession.isCurrent(snapshot, token: onboarding.auth.token, allowingClearedSession: allowingClearedSession)
+    }
+    private func invalidateOnboardingWork() {
+        onboardingSession.invalidate()
+        importTask?.cancel(); importTask = nil
+        companionTask?.cancel(); companionTask = nil
+        imageCheckTask?.cancel(); imageCheckTask = nil; imageCheckTicket = nil
+        importing = false; creatingCompanion = false; checkingImage = false
+    }
     /// CS01 "Not now", an expired session (4401) or sign-out: A02, and a restart stays there.
     func signedOut() {
+        invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         storage.set(true, forKey: Self.signedOutKey)
@@ -218,6 +234,7 @@ struct SavedSetup: Codable {
     /// profile (name, photo, preferences belong to the account that made them). Consent pending → CS01.
     /// `consented` has no default on purpose: every caller states whether CS01 was already agreed (#218).
     func signedIn(userId: String? = nil, consented: Bool) {
+        invalidateOnboardingWork()
         authGeneration += 1
         signInRouting?.cancel(); signInRouting = nil
         storage.removeObject(forKey: Self.signedOutKey)
