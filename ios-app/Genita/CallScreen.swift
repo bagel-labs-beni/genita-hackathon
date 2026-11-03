@@ -45,10 +45,14 @@ struct CompanionFaceView: View {
     var face: FaceDriver? = nil
     /// The face's one review frame under GENITA_REVIEW_STILL (CallController.faceStill).
     var faceStill: CGImage? = nil
+    /// The face set's rest frame (CallController.facePoster): the generated face in the call's crop, drawn over the
+    /// upload still as soon as it exists, so the call never opens on the original photo and then jumps.
+    var poster: CGImage? = nil
     var lip: LipSource = .none
     var body: some View {
         ZStack {
             still.resizable().scaledToFill()
+            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
             if let face {
                 FaceFrameView(driver: face, still: faceStill)
             } else if let loop, CompanionFace.clipLoopFace, !CallMotion.reviewStill {

@@ -52,7 +52,7 @@ struct ConversationView: View {
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
-                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
+                        CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: full.size.width, height: full.size.height).clipped()
                             // S07 veiled → S09 the veil lifts (motion lane); never in the handoff snapshot (ImageRenderer, no onAppear)
                             .genitaFaceReveal(veiled: connecting, enabled: handoffEnabled)
                             .grayscale(sheetOffline ? 1 : 0).brightness(sheetOffline ? -0.25 : 0).blur(radius: unclear ? 8 : 0)
@@ -114,7 +114,7 @@ struct ConversationView: View {
                         if sheet == .full {
                             // r03 `.pip`: the face as a 96 × 128 window; tap → back to half
                             Button { withAnimation(.drawer) { call.finds.pipTapped() } } label: {
-                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
+                                CompanionFaceView(still: companionImage, loop: loopURL, face: call.face, faceStill: call.faceStill, poster: call.facePoster).frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 16))
                                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(CallInk.onInk, lineWidth: 2)).shadow(color: CallInk.ink.opacity(0.18), radius: 12, y: 8)
                             }.buttonStyle(PressScale()).position(x: full.size.width - 64, y: 112 + top)
                                 .accessibilityLabel("Back to half height").accessibilityIdentifier("findsPip").transition(.opacity)
@@ -207,7 +207,8 @@ struct ConversationView: View {
         }
         #endif
         // L4: the Meta face animates only while the call screen is up and the app is active (UI review: one frame)
-        .onAppear { if !connecting { showFace() } }
+        // S07: fetch the face set while connecting, so S09 opens on the generated face (build 6: upload photo ~4 s, then a jump)
+        .onAppear { if connecting { call.prepareFace(reduceMotion: reduceMotion || CallMotion.reviewStill) } else { showFace() } }
         .onDisappear { if !connecting { call.hideFace() } }
         .onChange(of: scenePhase) { _, phase in if !connecting { if phase == .active { showFace() } else { call.hideFace() } } }
         .onChange(of: reduceMotion) { _, on in call.setFaceReduceMotion(on || CallMotion.reviewStill) }
@@ -215,6 +216,8 @@ struct ConversationView: View {
         .sheet(isPresented: $model.settingsOpen) { SettingsView(model: model) }
         .reportFlow(isPresented: $reportOpen, surface: "call", auth: model.onboarding.auth) { call.lastReplyText }
         .task(id: model.setup.imageData) { loopURL = model.companionLoopURL }
+        // the prep call scene is the still under the face (also after a relaunch, when PREP-1 didn't load it)
+        .task(id: model.prep?.sceneURL) { await model.loadScene() }
         // S09-P (D28): the face is still being made while the call runs; keep `model.prep` fresh so the in-call
         // indicator (`model.callPrepIndicator`, S09-PREP 228:543) follows scene → expressions → mouth.
         // keyed on the status too: a PREP-1e Try again answered after the call started (failed → running) polls again
@@ -384,7 +387,8 @@ struct ConversationView: View {
         }
     }
     var companionImage: Image {
-        if let data = model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
+        // the prep call scene (the generated face) before the upload photo: same framing as the face set
+        if let data = model.sceneImageData ?? model.setup.imageData, let image = UIImage(data: data) { return Image(uiImage: image) }
         return Image(resource: "companion")
     }
 }
