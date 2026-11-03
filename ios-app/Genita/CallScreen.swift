@@ -139,31 +139,54 @@ struct CallCueView: View {
 
     private struct Content { let icon: AnyView; let text: String; let action: (title: String, run: () -> Void)? }
 
-    /// "{name} is thinking" when the pill (12 + icon ≤ 16 + 7 + text + 14) fits in `rowWidth`, else the short word.
+    /// "{name} is thinking" when its pill fits in `rowWidth`, else the short word (HUD r01 A: plain cues stay on the row).
     static func nameLine(_ name: String, _ verb: String, short: String, rowWidth: CGFloat?) -> String {
         let full = "\(name) is \(verb)"
         guard let rowWidth else { return full }
         return pillWidth(text: full) <= rowWidth ? full : short
     }
-    static func pillWidth(text: String) -> CGFloat {
+    private static func textWidth(_ text: String) -> CGFloat {
         let font = UIFont(name: "PretendardVariable-Medium", size: 14) ?? .systemFont(ofSize: 14, weight: .medium)
-        let w = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        return CallPillMetrics.leading + 16 + CallPillMetrics.iconSpacing + w + CallPillMetrics.trailing
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
-    /// Cues with a button ("Try again", "Settings") are too wide for the menu row: they take the line under it.
-    static func needsOwnLine(_ cue: CallCue) -> Bool { cue == .answerFailed || cue == .micBlocked }
-    private var content: Content? {
-        if let findsText, cue != .reconnecting, cue != .answerFailed { return Content(icon: AnyView(CueWave()), text: findsText, action: nil) }
+    /// The pill's width for a line (icon counted at its widest, the 20 pt alert). With a button: + 7 + 8 + title + 8.
+    static func pillWidth(text: String, action: String? = nil) -> CGFloat {
+        let base = CallPillMetrics.leading + 20 + CallPillMetrics.iconSpacing + textWidth(text)
+        guard let action else { return base + CallPillMetrics.trailing }
+        return base + CallPillMetrics.iconSpacing + 16 + textWidth(action)
+    }
+    /// What the pill says: the Finds line (PF-1) unless the call is reconnecting or the answer failed, else the cue.
+    static func line(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> (text: String, action: String?)? {
+        if let findsText, cue != .reconnecting, cue != .answerFailed { return (findsText, nil) }
         return switch cue {
         case .none: nil
-        case .listening: Content(icon: AnyView(CueDot()), text: "Listening", action: nil)
-        case .thinking: Content(icon: AnyView(CueSpinner()), text: Self.nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), action: nil)
-        case .speaking: Content(icon: AnyView(CueWave()), text: Self.nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), action: nil)
-        case .interrupted: Content(icon: AnyView(CueDot()), text: "Stopped. Go ahead.", action: nil)
-        case .reconnecting: Content(icon: AnyView(CueSpinner()), text: "Reconnecting…", action: nil)
-        case .answerFailed: Content(icon: AnyView(CueAlert()), text: "Couldn’t get an answer.", action: ("Try again", retry))
-        case .micBlocked: Content(icon: AnyView(CueAlert()), text: "Microphone is off for Genita.", action: ("Settings", openSettings))
+        case .listening: ("Listening", nil)
+        case .thinking: (nameLine(name, "thinking", short: "Thinking", rowWidth: rowWidth), nil)
+        case .speaking: (nameLine(name, "talking", short: "Talking", rowWidth: rowWidth), nil)
+        case .interrupted: ("Stopped. Go ahead.", nil)
+        case .reconnecting: ("Reconnecting…", nil)
+        case .answerFailed: ("Couldn’t get an answer.", "Try again")
+        case .micBlocked: ("Microphone is off for Genita.", "Settings")
         }
+    }
+    /// The measured pill width of what it shows now; nil = nothing to show.
+    static func width(cue: CallCue, name: String, findsText: String?, rowWidth: CGFloat?) -> CGFloat? {
+        line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth).map { pillWidth(text: $0.text, action: $0.action) }
+    }
+    private var content: Content? {
+        guard let line = Self.line(cue: cue, name: name, findsText: findsText, rowWidth: rowWidth) else { return nil }
+        let showingFinds = findsText != nil && cue != .reconnecting && cue != .answerFailed
+        let icon: AnyView
+        if showingFinds { icon = AnyView(CueWave()) } else {
+            switch cue {
+            case .none, .speaking: icon = AnyView(CueWave())
+            case .listening, .interrupted: icon = AnyView(CueDot())
+            case .thinking, .reconnecting: icon = AnyView(CueSpinner())
+            case .answerFailed, .micBlocked: icon = AnyView(CueAlert())
+            }
+        }
+        guard let title = line.action else { return Content(icon: icon, text: line.text, action: nil) }
+        return Content(icon: icon, text: line.text, action: (title: title, run: cue == .micBlocked ? openSettings : retry))
     }
 }
 

@@ -14,7 +14,7 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual([g.railY(.more), g.railY(.mic), g.railY(.camera)], [806, 750, 694], "44 pt, 12 apart, ending on 828")
         XCTAssertEqual(g.selfCenter(), CGPoint(x: 52, y: 780), "camera-off tile 72 × 96: left 16, bottom 828")
         XCTAssertEqual(g.rowPillWidth, 402 - 136, "pill room on the row: clear of the menu button and its mirror by 8")
-        XCTAssertEqual(g.secondLineY, 160, "the line under the row: the board's status line (PF-1)")
+        XCTAssertEqual(g.secondLineY, 132, "second line: top 8 under the row's pill (62 + 46 + 8), 32 tall")
         // the chip and the prep line stack 6 pt under whatever is above them
         XCTAssertEqual(g.chipCenterY(status: .row, prepLine: false), 92 + 16 + 6 + 15)
         XCTAssertEqual(g.prepLineCenterY(status: .row), 92 + 16 + 6 + 18)
@@ -23,8 +23,9 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: true), 92 + 18 + 6 + 15)
         XCTAssertEqual(g.chipCenterY(status: .none, prepLine: false), 92 + 16 + 6 + 15, "alone: under the row, never on it (Codex P2: a wide chip covered the button)")
         XCTAssertGreaterThanOrEqual(g.chipCenterY(status: .none, prepLine: false) - 15, g.menuCenter.y + CallHUDGrid.button / 2, "clear of the menu button")
-        XCTAssertEqual(g.prepLineCenterY(status: .second), 160 + 16 + 6 + 18, "under a Finds line, not on it (Codex P2)")
-        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: true), 160 + 16 + 6 + 36 + 6 + 15)
+        XCTAssertEqual(g.prepLineCenterY(status: .second), 132 + 16 + 6 + 18, "under the second line, not on it (Codex P2)")
+        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: true), 132 + 16 + 6 + 36 + 6 + 15)
+        XCTAssertEqual(g.chipCenterY(status: .second, prepLine: false), 132 + 16 + 6 + 15, "chip 6 under the second line too")
     }
 
     /// The rail and the self view end on one line, and both sides keep the same 16 pt margin, on every size.
@@ -56,17 +57,24 @@ final class CallHUDGridTests: XCTestCase {
         XCTAssertFalse(ConversationView.cueHidden(sheet: .half, findsLine: false, cue: .micBlocked), "a problem stays")
     }
 
-    /// Plain cues on the menu row; a Finds line or a cue with a button on the line under it (they don't fit the row).
+    /// Measured, not counted (춘식이): a pill no wider than the row's room stays on the row, wider ones take the second line.
     func testStatusLinePlacement() {
-        XCTAssertEqual(ConversationView.statusLine(cue: .listening, findsLine: false, moveLine: false, shown: true), .row)
-        XCTAssertEqual(ConversationView.statusLine(cue: .listening, findsLine: true, moveLine: false, shown: true), .second)
-        XCTAssertEqual(ConversationView.statusLine(cue: .reconnecting, findsLine: true, moveLine: false, shown: true), .row, "the cue wins over Finds: no button, fits the row")
-        XCTAssertEqual(ConversationView.statusLine(cue: .answerFailed, findsLine: false, moveLine: false, shown: true), .second, "Try again doesn't fit the row")
-        XCTAssertEqual(ConversationView.statusLine(cue: .micBlocked, findsLine: false, moveLine: false, shown: true), .second)
-        XCTAssertEqual(ConversationView.statusLine(cue: .none, findsLine: false, moveLine: false, shown: true), .none)
-        XCTAssertEqual(ConversationView.statusLine(cue: .listening, findsLine: false, moveLine: false, shown: false), .none)
-        XCTAssertEqual(ConversationView.statusLine(cue: .none, findsLine: false, moveLine: true, shown: true), .row, "MV-1 move line on the row")
-        XCTAssertEqual(ConversationView.statusLine(cue: .none, findsLine: false, moveLine: true, moveFailed: true, shown: true), .second, "MV-E (\"Mac not responding. Still here.\") goes under the row on every size")
+        XCTAssertEqual(ConversationView.statusLine(width: 140, rowWidth: 266), .row)
+        XCTAssertEqual(ConversationView.statusLine(width: 266, rowWidth: 266), .row, "exactly the room: row")
+        XCTAssertEqual(ConversationView.statusLine(width: 267, rowWidth: 266), .second)
+        XCTAssertEqual(ConversationView.statusLine(width: nil, rowWidth: 266), .none)
+        let se = CallHUDGrid(size: CGSize(width: 375, height: 667), safeTop: 20, safeBottom: 0)
+        let pro = CallHUDGrid(size: CGSize(width: 402, height: 874), safeTop: 62, safeBottom: 34)
+        func line(_ cue: CallCue, _ g: CallHUDGrid, finds: String? = nil) -> CallHUDGrid.StatusLine {
+            ConversationView.statusLine(width: CallCueView.width(cue: cue, name: "Jin", findsText: finds, rowWidth: g.rowPillWidth), rowWidth: g.rowPillWidth)
+        }
+        XCTAssertEqual(line(.listening, se), .row)
+        XCTAssertEqual(line(.thinking, se), .row)
+        XCTAssertEqual(line(.answerFailed, se), .second, "Couldn’t get an answer. + Try again: too wide for the row")
+        XCTAssertEqual(line(.micBlocked, pro), .second, "Microphone is off for Genita. + Settings")
+        XCTAssertEqual(line(.none, pro), .none)
+        XCTAssertEqual(line(.listening, pro, finds: "Found two for you."), .row, "a short Finds line fits the row")
+        XCTAssertEqual(line(.reconnecting, pro, finds: "Found two for you."), .row, "Reconnecting wins over Finds")
     }
 
     /// Codex P2: a 20-character name (NM01) made "{name} is thinking" run into the menu button. Too wide → the short word;

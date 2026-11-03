@@ -43,12 +43,12 @@ struct CallHUDGrid: Equatable {
         case none
         /// the call cue on the menu row (HUD r01 A)
         case row
-        /// the line under the row (the board's status line, 142 on 390 × 844): a PF-1 Finds line, or a cue with a button
+        /// the line just under the row: anything too wide for the row (a cue with a button, a long Finds line, MV-E)
         case second
     }
     var pillCenter: CGPoint { CGPoint(x: size.width / 2, y: rowY) }
-    /// The line under the row: the Figma status line (PF-1), 98 under the safe area top.
-    var secondLineY: CGFloat { safeTop + 98 }
+    /// The second line's centre: its top 8 under the row's pill (safe top + 46 + 8), 32 tall. Max width = screen − 32.
+    var secondLineY: CGFloat { safeTop + 54 + CallPillMetrics.height / 2 }
     /// Room for a centred pill on the menu row without touching the menu button or its mirror (8 pt clear).
     var rowPillWidth: CGFloat { size.width - 2 * (Self.margin + Self.button + 8) }
     func statusY(_ line: StatusLine) -> CGFloat { line == .second ? secondLineY : rowY }

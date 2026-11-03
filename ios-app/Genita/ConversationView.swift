@@ -47,11 +47,11 @@ struct ConversationView: View {
                 let findsOpen = !connecting && sheet != .idle && sheet != .dismissed && !unclear
                 let moveLine = !connecting && handoffEnabled && (handoff.moving || handoff.moveFailed)
                 let findsPill = call.finds.pillText
-                // the pill shows the Finds line (PF-1) unless the call is reconnecting or the answer failed (CallCueView)
-                let showingFinds = findsPill != nil && call.cue != .reconnecting && call.cue != .answerFailed
                 // HUD r01 A: which line the status pill is on, so the prep line, the chip and camera labels stack around it
-                let status = Self.statusLine(cue: call.cue, findsLine: findsPill != nil, moveLine: moveLine && !findsTabOpen && !interpreting && !unclear,
-                                             moveFailed: !handoff.moving && handoff.moveFailed, shown: !findsTabOpen && !connecting && !interpreting && !unclear)
+                let moveShown = moveLine && !findsTabOpen && !interpreting && !unclear
+                let statusWidth = moveShown ? CallCueView.pillWidth(text: HandoffMoveStatusLine.text(moving: handoff.moving))
+                    : !findsTabOpen && !connecting && !interpreting && !unclear ? CallCueView.width(cue: call.cue, name: call.companionName, findsText: findsPill, rowWidth: grid.rowPillWidth) : nil
+                let status = Self.statusLine(width: statusWidth, rowWidth: grid.rowPillWidth)
                 ZStack(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
                         // r03 / PF-1: the call sits on ink — the band above a full sheet (and the edges of a
@@ -59,7 +59,7 @@ struct ConversationView: View {
                         CallInk.ink.frame(width: full.size.width, height: full.size.height).accessibilityHidden(true)
                         // F5-U-CAM CAM-H: with the camera on it is the stage, the face becomes a small window
                         if call.cameraOn { CameraStage(call: call, size: full.size, topInset: top, grid: grid,
-                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, leadingWidth: showingFinds && status == .second ? findsPill.map { CallCueView.pillWidth(text: $0) } : nil)).blur(radius: unclear ? 8 : 0).transition(.opacity) }
+                                                       statusRect: CameraBoxes.statusRect(grid: grid, line: status, width: statusWidth ?? 0)).blur(radius: unclear ? 8 : 0).transition(.opacity) }
                         // F10-U-SHEET r03: the face steps back as the sheet rises (half .814, rising .895) and
                         // becomes a 96 × 128 window when the sheet is full.
                         CompanionFaceView(still: companionImage, loop: loopURL, face: connecting ? nil : call.face, faceStill: call.faceStill).frame(width: full.size.width, height: full.size.height).clipped()
@@ -147,9 +147,9 @@ struct ConversationView: View {
                             HandoffMoveStatusLine().position(x: grid.pillCenter.x, y: grid.statusY(status))
                         } else if !findsTabOpen && !connecting && !interpreting && !unclear {
                             CallCueView(cue: call.cue, name: call.companionName, findsText: findsPill, retry: call.retryAnswer, openSettings: openAppSettings, rowWidth: grid.rowPillWidth)
-                                .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || showingFinds ? .leading : .center)
-                                // HUD r01 A: the call cue sits on the menu row (same centre line). A Finds line (PF-1, Figma) and a
-                                // cue with a button take the line under it; beside the face window when the sheet is full.
+                                .frame(width: sheet == .full ? 250 : full.size.width - 2 * CallHUDGrid.margin, alignment: sheet == .full ? .leading : .center)
+                                // HUD r01 A: on the menu row (same centre line) when it fits between the menu button and its
+                                // mirror, else centred on the line just under it; beside the face window when the sheet is full.
                                 .position(x: sheet == .full ? 16 + 125 : grid.pillCenter.x, y: sheet == .full ? 82 + top : grid.statusY(status))
                                 // and the call cue steps aside once the Finds sheet is half up or more (200 ms)
                                 .opacity(Self.cueHidden(sheet: sheet, findsLine: findsPill != nil, cue: call.cue) ? 0 : 1)
@@ -318,14 +318,11 @@ struct ConversationView: View {
         }
     }
     /// HUD r01 A: which line the status pill is on (CallHUDGrid.StatusLine), from what it shows.
-    static func statusLine(cue: CallCue, findsLine: Bool, moveLine: Bool, moveFailed: Bool = false, shown: Bool) -> CallHUDGrid.StatusLine {
-        // MV-1 "Moving to your Mac…" fits the row; MV-E "Mac not responding. Still here." doesn't
-        if moveLine { return moveFailed ? .second : .row }
-        guard shown else { return .none }
-        // CallCueView shows the Finds line unless the call is reconnecting or the answer failed
-        if findsLine && cue != .reconnecting && cue != .answerFailed { return .second }
-        if CallCueView.needsOwnLine(cue) { return .second }
-        return cue == .none ? .none : .row
+    /// Measured, not counted: a pill no wider than the row's room stays on the row; wider ones (a cue with a button,
+    /// a long Finds line, MV-E) take the second line. Plain "{name} is …" cues shorten instead (CallCueView.nameLine).
+    static func statusLine(width: CGFloat?, rowWidth: CGFloat) -> CallHUDGrid.StatusLine {
+        guard let width else { return .none }
+        return width <= rowWidth ? .row : .second
     }
     /// HUD r01 A: the call cue fades out once the sheet is half up or more. A Finds line (PF-1) and the problem cues
     /// (reconnecting, no answer, mic off) stay: they are what the sheet is about, or something to act on.

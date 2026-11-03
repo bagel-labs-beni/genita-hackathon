@@ -214,18 +214,17 @@ import XCTest
         XCTAssertEqual(o, CGPoint(x: 150, y: 126), "masks: inside the top too")
     }
 
-    /// Codex P2: during a fridge search the PF-1 Finds line sits on the line under the row (left 24); a box label
-    /// keeps clear of it there, not of the empty row.
-    func testLabelsStayClearOfTheFindsLine() {
+    /// Codex P2: a pill on the second line (a cue with a button, a long Finds line) is where labels must keep clear of.
+    func testLabelsStayClearOfTheSecondLine() {
         let grid = Self.grid16, view = grid.size, label = CGSize(width: 90, height: 28)
-        let finds = CameraBoxes.statusRect(grid: grid, line: .second, leadingWidth: 220)
-        XCTAssertEqual(finds.midY, grid.secondLineY)
-        XCTAssertEqual(finds.minX, 20)
-        let box = CGRect(x: 100, y: 170, width: 120, height: 100)
+        let second = CameraBoxes.statusRect(grid: grid, line: .second, width: 300)
+        XCTAssertEqual(second.midY, grid.secondLineY)
+        XCTAssertEqual(second.midX, view.width / 2, "centred")
+        let box = CGRect(x: 100, y: 150, width: 120, height: 100)
         let boxRule = CGRect(x: box.minX, y: box.minY - label.height - 4, width: label.width, height: label.height)
-        XCTAssertTrue(boxRule.intersects(finds), "red: above the box lands on the Finds line")
-        let o = CameraBoxes.labelOrigin(box, label: label, view: view, topInset: grid.labelFloor, obstacles: [CameraBoxes.menuRect(grid: grid), finds])
-        XCTAssertFalse(CGRect(origin: o, size: label).intersects(finds), "green: moved off the Finds line")
+        XCTAssertTrue(boxRule.intersects(second), "red: above the box lands on the second line")
+        let o = CameraBoxes.labelOrigin(box, label: label, view: view, topInset: grid.labelFloor, obstacles: [CameraBoxes.menuRect(grid: grid), second])
+        XCTAssertFalse(CGRect(origin: o, size: label).intersects(second), "green: moved off it")
     }
 
     /// UI sweep 11/3 (after the status-line fix): a label moved below its box landed on the next box's label.

@@ -59,16 +59,13 @@ struct LiveBox: Identifiable, Equatable {
         let c = grid.menuCenter, r = CallHUDGrid.button / 2 + 6
         return CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)
     }
-    /// The status line pill ("Listening", "Jin is talking": 32 pt tall, up to ~240 pt wide, centred on the grid's menu
-    /// row; or on the line under it — a PF-1 Finds line starts at left 24, `leadingWidth` wide), padded 4 pt.
+    /// The status line pill, centred, 32 pt tall, on the grid's menu row or the line under it, `width` wide (measured;
+    /// at least 240 so a changing line never uncovers a label), padded 4 pt.
     /// A box label under it read as one pill over another ("Green onion" behind "Listening", UI sweep 11/3).
-    static func statusRect(grid: CallHUDGrid, line: CallHUDGrid.StatusLine = .row, leadingWidth: CGFloat? = nil) -> CGRect {
+    static func statusRect(grid: CallHUDGrid, line: CallHUDGrid.StatusLine = .row, width: CGFloat = 240) -> CGRect {
         let y = grid.statusY(line), h = CallPillMetrics.height
-        if line == .second, let w = leadingWidth {
-            return CGRect(x: 24 - 4, y: y - h / 2 - 4, width: min(w, grid.size.width - 48) + 8, height: h + 8)
-        }
-        let c = grid.size.width / 2
-        return CGRect(x: c - 120 - 4, y: y - h / 2 - 4, width: 240 + 8, height: h + 8)
+        let w = min(max(width, 240), grid.size.width - 2 * CallHUDGrid.margin), c = grid.size.width / 2
+        return CGRect(x: c - w / 2 - 4, y: y - h / 2 - 4, width: w + 8, height: h + 8)
     }
     /// How far the right-hand control rail (camera, mic, more) moves up with the Finds sheet (ConversationView reads it too).
     static func railShift(_ s: SheetState) -> CGFloat {

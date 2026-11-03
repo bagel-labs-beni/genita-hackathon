@@ -134,11 +134,12 @@ struct HandoffMoveStatusLine: View {
     @ObservedObject private var handoff = PhoneHandoff.shared
     var body: some View {
         Group {
-            if handoff.moving { pill(icon: AnyView(CueSpinner()), text: "Moving to your Mac…", id: "moveStatusMoving") }
-            else if handoff.moveFailed { pill(icon: AnyView(CueAlert()), text: "Mac not responding. Still here.", id: "moveStatusFailed") }
+            if handoff.moving { pill(icon: AnyView(CueSpinner()), text: Self.text(moving: true), id: "moveStatusMoving") }
+            else if handoff.moveFailed { pill(icon: AnyView(CueAlert()), text: Self.text(moving: false), id: "moveStatusFailed") }
         }
         .animation(.easeOut(duration: 0.2), value: handoff.moving).animation(.easeOut(duration: 0.2), value: handoff.moveFailed)
     }
+    static func text(moving: Bool) -> String { moving ? "Moving to your Mac…" : "Mac not responding. Still here." }
     private func pill(icon: AnyView, text: String, id: String) -> some View {
         // the same pill box as the call cue (HUD r01 A, CallPillMetrics)
         HStack(spacing: CallPillMetrics.iconSpacing) {
