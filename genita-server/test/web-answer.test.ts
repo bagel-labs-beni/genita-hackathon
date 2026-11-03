@@ -9,7 +9,7 @@ import { loadConfig } from "../src/config.ts";
 import { Session, type SessionDeps, type ClientSink } from "../src/session/session.ts";
 import { MemoryFindsStore, ownerKey } from "../src/finds/store.ts";
 import { sparkStream, type SparkRequest, type SparkStreamEvent } from "../src/meta/spark.ts";
-import { answerPoints, webAnswerCard } from "../src/finds/webAnswer.ts";
+import { answerPoints, pickSources, webAnswerCard } from "../src/finds/webAnswer.ts";
 import type { FindCard, ServerEvent } from "../src/protocol.ts";
 
 const sse = (events: unknown[]) => new Response(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join(""));
@@ -63,9 +63,15 @@ test("the card: the spoken answer without the 'let me check' line, one source pe
   assert.equal(card.kind, "answer");
   assert.equal(card.eyebrow, "From the web");
   assert.equal(card.title, "Current CEO of Nintendo 2026");
-  assert.deepEqual(card.sources.map((s) => s.domain), ["nintendo.co.jp", "simplywall.st", "screenrant.com"]);
+  assert.deepEqual(card.sources.map((s) => s.domain), ["nintendo.co.jp", "screenrant.com", "famiboards.com"], "official first; simplywall.st (SEO aggregator) never");
   assert.deepEqual(card.steps, [{ text: "It's Shuntaro Furukawa." }]);
   assert.equal(card.say, undefined, "already said: the card has no line of its own");
+  // real Spark 11/3 picks: junk and betting out, official / large outlets first
+  const domains = (urls: string[], q = "") => pickSources([{ query: q, urls }], q).map((x) => x.domain);
+  assert.deepEqual(domains(["https://omega.evening.pp.ua/a", "https://si.com/b", "https://news.bet365.com/c", "https://box-toppers.com/d", "https://www.mlb.com/e"], "who won the last World Series"), ["si.com", "mlb.com", "box-toppers.com"]);
+  assert.deepEqual(domains(["https://nova-maind.com/a", "https://spacelaunchschedule.com/b", "https://www.nasa.gov/c", "https://medium.com/d"], "Artemis moon mission news"), ["nasa.gov", "nova-maind.com", "spacelaunchschedule.com"]);
+  assert.deepEqual(domains(["https://bbcbreakingnews.pages.dev/a", "https://gambyl.com/b", "https://tech-insider.org/c"]), ["tech-insider.org"], "a look-alike on a free host and a betting site never");
+  assert.deepEqual(domains(["https://evil-casino.top/a", "https://bet-now.com/b"]), [], "nothing usable: no card");
   assert.equal(webAnswerCard({ id: "f2", question: "q", said: "Hi.", searches: [{ query: "q", urls: [] }] }), null, "no pages, no card");
   assert.equal(webAnswerCard({ id: "f3", question: "q", said: "", searches: [{ query: "q", urls: ["https://a.com"] }] }), null, "nothing said, no card");
 });
