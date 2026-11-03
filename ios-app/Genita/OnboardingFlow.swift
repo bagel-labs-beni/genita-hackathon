@@ -494,6 +494,12 @@ extension AppState {
         }
     }
 
+    /// SUM Cancel (PRD F4): back to the first question (P1, after D01), every answer kept.
+    func cancelSummary() {
+        guard stage == .summary, !savingPrefs else { return }
+        go(setup.depth.path.first { $0 != .depth } ?? .help)
+    }
+
     /// PREP-1 (every 2 s) and the call (S09-PREP, every 5 s): poll `GET /v1/companion/prep` while the screen is up
     /// (scene → expressions → mouth). Stops at ready or failed (PREP-1e Try again starts it again).
     func followPrep(every seconds: Double = 2) async {

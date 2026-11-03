@@ -49,7 +49,8 @@ import UniformTypeIdentifiers
             GeometryReader { full in
                 let viewport = referenceViewport ? CGSize(width: 390, height: stage == .name ? 519 : 844) : full.size
                 let top = referenceViewport ? CGFloat(0) : safe.safeAreaInsets.top - 44
-                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing ? 140 : 108)
+                // SUM: room for Cancel under Continue, same footer as I02's Cancel processing
+                let footerY = stage == .name ? viewport.height - 65 : viewport.height - (stage == .preparing || stage == .summary ? 140 : 108)
                 let stretch = max(0, viewport.height - 844 - top)
                 ZStack(alignment: .topLeading) {
                     Color("Canvas")
@@ -67,6 +68,19 @@ import UniformTypeIdentifiers
                                 DesignText(node: label).frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
                             }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
                         }.buttonStyle(.plain).position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel processing")
+                    }
+                    if stage == .summary {
+                        // PRD F4: SUM Cancel = back to the first question, answers kept (Figma summary* "Cancel", Pretendard
+                        // Medium 16; ink on the light sheet — the Figma layer is white under the button)
+                        Button { model.cancelSummary() } label: {
+                            let label = texts.first { $0.characters == "Cancel" }!
+                            ZStack(alignment: .topLeading) {
+                                Color.clear
+                                DesignText(node: label, color: UIColor(red: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: 1))
+                                    .frame(width: viewport.width - 77, height: label.h).position(x: (viewport.width - 77) / 2, y: label.h / 2)
+                            }.frame(width: viewport.width - 77, height: 36).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(model.savingPrefs).opacity(model.savingPrefs ? 0.4 : 1)
+                            .position(x: (viewport.width - 1) / 2, y: footerY + 81).accessibilityLabel("Cancel").accessibilityIdentifier("summaryCancel")
                     }
                 }.frame(width: viewport.width, height: viewport.height).clipped()
             }.ignoresSafeArea(.container)
