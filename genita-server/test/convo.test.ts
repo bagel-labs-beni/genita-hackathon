@@ -431,3 +431,55 @@ test("narration (Codex #356 round 4): a lookup clause that already states its re
   assert.equal(guardSentence("Checking the map confirms City Hall is closed today.", none), null, "Codex round 5");
   assert.equal(guardSentence("Figuring out where you mean so I can map City Hall for you.", none), "narration");
 });
+
+// Scene 5 (Mac product search): the narration before the tool is never voiced, the product answer is, and there is
+// no "not sure" with a tool in flight (main 11/3)
+function toolSetup(attempts: SparkStreamEvent[][]) {
+  const client = new Client();
+  let n = 0;
+  const session = new Session("t1", client, {
+    config, openAsr: () => { throw new Error("no asr"); },
+    async *spark(): AsyncGenerator<SparkStreamEvent> { for (const e of attempts[Math.min(n++, attempts.length - 1)]) { await new Promise((r) => setTimeout(r, 1)); yield e; } },
+    async *tts() {},
+  });
+  return { client, session };
+}
+
+test("Scene 5 eval: product search turn → product answer, zero narration, zero 'not sure'", { skip: !v1 }, async () => {
+  const text = (t: string): SparkStreamEvent => ({ type: "text", delta: t });
+  const { client, session } = toolSetup([[
+    text("<curious> Let me search for some black boots that match your style. "),
+    { type: "tool", name: "web_search", status: "in_progress" },
+    { type: "tool", name: "web_search", status: "completed" },
+    text("<happy> Got two: the Dr. Martens 1460 in black and the Blundstone 2058, both under two hundred."),
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ]]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Find me boots that go with this outfit." }));
+  const reply = await client.waitFor((m) => m.type === "reply");
+  assert.match(String(reply.text), /Dr\. Martens 1460/);
+  const said = client.json.filter((m) => m.type === "say" || m.type === "reply.delta").map((m) => String(m.text)).join(" ");
+  assert.doesNotMatch(said, /let me search|not sure off the top/i);
+  session.close();
+});
+
+test("tool in flight with only narration (both attempts) → silence, never the 'not sure' line", { skip: !v1 }, async () => {
+  const attempt: SparkStreamEvent[] = [
+    { type: "text", delta: "<curious> Figuring out where you mean so I can map City Hall for you. " },
+    { type: "tool", name: "web_search", status: "completed" },
+    { type: "done", responseId: "r", text: "", status: "completed" },
+  ];
+  const { client, session } = toolSetup([attempt, attempt]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device" }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "Map City Hall for me." }));
+  await client.waitFor((m) => m.type === "error" || m.type === "reply");
+  const said = client.json.filter((m) => m.type === "say" || m.type === "reply.delta" || m.type === "reply").map((m) => String(m.text)).join(" ");
+  assert.doesNotMatch(said, /not sure off the top|figuring out/i);
+  session.close();
+});
+
+test("narration (Codex #356 round 6): any stated result stays — past tense, numbers, results in a joined clause", () => {
+  assert.equal(guardSentence("Looking up the address returned 123 Main Street.", none), null);
+  assert.equal(guardSentence("Let me pull that up; checking my notes confirms your appointment for Thursday.", none), null);
+  for (const line of ["Figuring out where you mean so I can map City Hall for you.", "let me pull up what you told me.", "Let me pull that up and check the route for you."]) assert.equal(guardSentence(line, none), "narration", line);
+});

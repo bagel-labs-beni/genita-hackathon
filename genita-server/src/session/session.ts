@@ -47,6 +47,7 @@ import { WatchController, type WatchSink } from "../watch/watch.ts";
 import { detectRename } from "./rename.ts";
 import { convoV1, initiativeOn } from "../convo/flags.ts";
 import { fallbackLine, guardSentence, neverSpoken, NO_ANSWER_LINE, type GuardClass } from "../convo/guard.ts";
+import { isInterjectionOnly } from "../text/toolNarration.ts";
 import { openerBlock } from "../convo/opener.ts";
 import { InitiativeGovernor, initiativeBlock, initiativeInput, type InitiativeSource } from "../convo/initiative.ts";
 import type { PerceptionSource } from "../convo/types.ts";
@@ -1331,7 +1332,7 @@ export class Session {
     const hasAnswer = () => narration.hasAnswer(sentences.map(({ display }) => display));
     let onlyOpener: string | null = null;
     // v1 sentence guard (src/convo/guard.ts): the first dropped sentence, spoken only if nothing else is
-    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean } = { first: null, narration: false };
+    const guarded: { first: { raw: string; cls: GuardClass } | null; narration: boolean; tool: boolean } = { first: null, narration: false, tool: false };
     let laughs = 0;
     const guardCtx = { camera: (built?.images.length ?? 0) > 0, userText: synthetic ? "" : text };
     const enqueueSentences = (list: string[], keepOpener = false) => {
@@ -1349,7 +1350,9 @@ export class Session {
           continue;
         }
         if (this.v1 && !keepOpener && !interpret && !self) {
-          const cls = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
+          const found = guardSentence(parseTaggedSentence(tts).displayText, guardCtx);
+          // an announcement only leads a reply: once content was spoken, a later "lookup" sentence is kept (Codex #356 r6)
+          const cls = found === "narration" && sentences.some((x) => !isInterjectionOnly(x.display)) ? null : found;
           if (cls) {
             // narration never becomes the spoken fallback; a style drop does (the first one kept)
             if (!neverSpoken(cls)) guarded.first ??= { raw, cls };
@@ -1415,6 +1418,7 @@ export class Session {
                 gotText ||= !!ev.delta.trim();
                 pushSentences(splitter.push(ev.delta));
               } else if (ev.type === "tool") {
+                guarded.tool = true;
                 if (!interpret) {
                   // A tool may follow a sentence with no trailing space, or an unfinished clause.
                   pushSentences(splitter.flush());
@@ -1440,8 +1444,9 @@ export class Session {
             enqueueSentences(fb ? [fb] : [guarded.first.raw], true);
           }
           if (!sentences.length && onlyOpener) enqueueSentences([onlyOpener], true);
-          // the retry also only announced a lookup: say so honestly rather than the announcement or an error
-          if (!sentences.length && attempt === 1 && guarded.narration) enqueueSentences([NO_ANSWER_LINE], true);
+          // the retry also only announced a lookup and NO tool ran: say so honestly. With a tool, never "not sure"
+          // right before (or instead of) the real result — say nothing (main 11/3: Scene 4 map, Scene 5 products)
+          if (!sentences.length && attempt === 1 && guarded.narration && !guarded.tool) enqueueSentences([NO_ANSWER_LINE], true);
           if (hasAnswer()) { sparkError = attemptError; break; }
           emptyCause = attemptError ? "upstream_error_before_text" : gotText ? "filtered_only_content" : `${status || "stream_ended"}_without_text`;
           if (attempt === 0) this.log("spark.empty_retry", { utteranceId, cause: emptyCause, status });

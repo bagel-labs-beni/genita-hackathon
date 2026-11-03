@@ -139,7 +139,8 @@ for (const [text, expected] of [
   // conversation engine v1 (prod smoke 11/3): an announcement is never spoken; announcement-only retries, then says it doesn't know
   ["<curious> I'll look that up.", process.env.GENITA_CONVO_V1 === "0" ? "I'll look that up." : "Hmm, not sure off the top of my head."],
   ["<warm> Let me think — tofu works.", "Let me think — tofu works."],
-  ["<warm> Tofu works. I'll look that up.", process.env.GENITA_CONVO_V1 === "0" ? "Tofu works. I'll look that up." : "Tofu works."],
+  // an announcement after real content is kept (v1 drops only a leading one, Codex #356 r6)
+  ["<warm> Tofu works. I'll look that up.", "Tofu works. I'll look that up."],
 ] as const) test(`first narration only, with more content required: ${text}`, async (t) => {
   const { session, client } = setup({ sparkText: text });
   t.after(() => session.close());

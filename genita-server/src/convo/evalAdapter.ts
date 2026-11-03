@@ -69,7 +69,8 @@ export const adapter = {
     for (const part of parts) {
       let tts = kept.length ? part : avoidRepeatedOpener(part, recent);
       if (!parseTaggedSentence(tts).displayText) continue;
-      const cls = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
+      const found = guardSentence(parseTaggedSentence(tts).displayText, { camera: false, userText });
+      const cls = found === "narration" && kept.length ? null : found;
       if (cls) { if (!neverSpoken(cls)) first ??= { raw: part, cls }; continue; }
       kept.push(tts);
     }

@@ -66,12 +66,28 @@ const BARE_LOOKUP = new RegExp(String.raw`^(?:then\s+|also\s+)?(?:${LOOKUP_VERB}
  */
 const RESULT_VERB = /\b(?:is|are|was|were|isn'?t|aren'?t|has|have|had|confirms|shows|says|means|seems|opens|closes|takes|costs|runs|leaves|arrives|gets? there|it'?s|that'?s|there'?s|they'?re|you'?re|we'?re|he'?s|she'?s)\b/i;
 
+/** what is left beside an announcement carries no answer: short, no number, no stated or past-tense result (Codex #356 r6) */
+function noAnswerIn(rest: string): boolean {
+  const r = rest.replace(/\bwhat (?:you|i|we) (?:told|said|mentioned)(?: (?:me|you))?\b/gi, " ").trim();
+  if (!r) return true;
+  if (r.split(/\s+/).length > 12) return false;
+  if (/\d/.test(r)) return false;
+  if (RESULT_VERB.test(r)) return false;
+  if (/\b(?:found|got|gave|came back|brought|returned|confirmed|showed|turned up|pulled up \w+ \w+)\b/i.test(r)) return false;
+  return !/\b\w{3,}ed\b/i.test(r.replace(/\b(?:need|needed|used|based)\b/gi, " "));
+}
+
 function announcementOnly(clause: string): boolean {
   for (const re of NARRATION) {
     const m = re.exec(clause);
-    if (m && !RESULT_VERB.test(clause.slice(0, m.index) + " " + clause.slice(m.index + m[0].length))) return true;
+    if (m && noAnswerIn(clause.slice(0, m.index) + " " + clause.slice(m.index + m[0].length))) return true;
   }
   return false;
+}
+
+function bareLookupOnly(part: string): boolean {
+  const m = BARE_LOOKUP.exec(part);
+  return !!m && !RESULT_CLAUSE.test(part) && noAnswerIn(part.slice(m[0].length));
 }
 
 export function isNarration(sentence: string): boolean {
@@ -79,7 +95,7 @@ export function isNarration(sentence: string): boolean {
   if (!announcementOnly(s) && !s.split(CONTENT_JOIN).some((p) => announcementOnly(p.trim()))) return false;
   // every joined part must itself be narration (or a 1–2 word filler); real content anywhere keeps it
   const parts = s.split(CONTENT_JOIN).map((p) => p.trim()).filter(Boolean);
-  return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || (BARE_LOOKUP.test(p) && !RESULT_CLAUSE.test(p)) || FILLER_PART.test(p));
+  return parts.every((p) => (announcementOnly(p) && !RESULT_STRONG.test(p)) || bareLookupOnly(p) || FILLER_PART.test(p));
 }
 
 /** A real hint of suicide, self-harm or danger in the user's own line: the only case a referral is spoken. */
