@@ -162,6 +162,7 @@ struct InsightReportView: View {
         if r.observations.isEmpty {
             section("WHAT I NOTICED") {
                 Text(InsightCopy.keepLast("Most of you, I’ll learn as we talk.")).insightText(17, line: 24, color: InsightInk.body)
+                    .accessibilityIdentifier("insightEmpty")
             }
         } else {
             section("WHAT I NOTICED") {

@@ -54,7 +54,7 @@ final class InsightReportUITests: XCTestCase {
         app.launchArguments = ["--uitesting"]
         app.launchEnvironment = ["GENITA_REVIEW_STAGE": "summary", "GENITA_REVIEW_VARIANT": "insight-empty"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Most of you, I’ll learn as we talk."].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["insightEmpty"].waitForExistence(timeout: 10), "Most of you, I’ll learn as we talk.")
         Thread.sleep(forTimeInterval: 0.6); shot(app, "7-empty")
     }
 }
