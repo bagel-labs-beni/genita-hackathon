@@ -1427,3 +1427,13 @@ test("Codex #506 gate: cooking amounts, oven temperatures, minutes and a shoppin
   assert.equal(c("That one fifty over ninety five is scary.", "my blood pressure was 150 over 95 today"), "sensitive");
   assert.equal(c("Fourteen twenty three Maple, nice!", "the new place is 1423 Maple Street"), "sensitive");
 });
+
+test("팔월이 P3 (first greeting): a sentence after '!' or '?' starts upper case, device and server voice", { skip: !v1 }, async () => {
+  for (const serverVoice of [false, true]) {
+    const { client, session } = setup(["<happy> Hey hey, Summer! did you finally try the kimchi pasta? or are we still waiting."], serverVoice ? { config: { ...config, voice: { url: "http://voice.invalid", token: "x", speakers: { human: 0, animal: 0, character: 0 }, speed: 1, timeoutMs: 1000, model: "seamless" } as never, serverTts: true } } : {});
+    await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, ...(serverVoice ? {} : { tts: "device" }), greetAfterMs: 0, user: { name: "Summer", profile: "Likes: ramen." } }));
+    const greet = await client.waitFor((m) => m.type === "reply");
+    assert.equal(greet.text, "Hey hey, Summer! Did you finally try the kimchi pasta? Or are we still waiting.", `serverVoice=${serverVoice}`);
+    session.close();
+  }
+});
