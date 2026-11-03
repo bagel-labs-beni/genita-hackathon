@@ -3,14 +3,18 @@
  * what the call already knows. No extra Spark call; the line rides the turn's instructions (read last, after the
  * voice block). Pure.
  *
- *   closeness   call count → how familiar to be (call 1 is the opener's job, so nothing)
- *   rhythm      the last reply ended in "?" → end on a statement (no two questions in a row)
+ *   closeness   call count → how familiar to be (#343: call 1 already knows you and is a bit giddy, 2–4 teasing and
+ *               callbacks, 5+ running jokes, honest disagreement, fewer questions)
+ *   rhythm      a reply ended in "?" → the next replies end on a statement: 2 of them, 3 once close (#343); an
+ *               unprompted line after an unanswered question never asks another (cueRhythm)
  *   mood        {valence, energy} drifts with what the user says, decays each turn toward baseline (per call)
  *   landed      they laughed at the last line → stay in that lane; a long answer → stay on it
  *   recall      news + something remembered → name the remembered thing specifically (eval 11/3: "I got the job"
  *               answered without the design-studio interview, recall 0.78)
  * Intent only, never a line to copy.
  */
+
+import type { InitiativeSource } from "./initiative.ts";
 
 const GOOD_NEWS = /\b(?:i|we) (?:got|landed) (?:the |a |an |my )?(?:job|offer|part|role|promotion|raise|apartment|place|internship|spot|scholarship|tickets?)\b|\b(?:i|we) (?:passed|won|aced|nailed|crushed)\b|\bi did it\b|\bthey said yes\b|\bgot (?:in|accepted|promoted|engaged|hired)\b/i;
 const BAD_NEWS = /\b(?:rough|awful|terrible|horrible|sucks|sucked|sad|exhausted|stressed|cried|crying|failed|fired|dumped|broke up|rejected|didn'?t get|so bad|worst|tore (?:it|my)|redid my)\b/i;
@@ -68,14 +72,34 @@ export type TurnHintInput = {
   remembers: boolean;
   /** K-test 11/3: this call already brought up one personal thing on its own (MENTION_RULE budget) */
   mentionSpent?: boolean;
+  /** the last replies as stored, oldest first (session keeps 3) */
+  recentReplies?: string[];
 };
 
 const plain = (s: string) => s.replace(/<[^>]*>|\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
 
 export function closenessLine(callNumber: number | undefined): string | null {
-  if (!callNumber || callNumber <= 1) return null;
+  if (!callNumber) return null;
+  // #343: the opener makes call 1's first line; the rest of call 1 keeps that "already knows you" footing
+  if (callNumber <= 1) return "First call, but you already know them: a little giddy to finally talk, familiar, never formal.";
   if (callNumber <= 4) return "You've talked a few times now: a little more teasing and callbacks are fine.";
-  return "You're close by now: running jokes and honest disagreement are fine.";
+  return "You're close by now: running jokes and honest disagreement are fine, and fewer questions.";
+}
+
+/** #343: after a reply that ended in "?", this many replies (that one included) end on a statement; close friends riff more than they ask */
+export function questionRest(callNumber: number | undefined): number {
+  return callNumber && callNumber >= 5 ? 3 : 2;
+}
+
+// a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
+const endsAsking = (reply: string) => /\?[\s—–…-]*$/.test(plain(reply));
+
+/** #343: an unprompted line right after the companion's own unanswered question says something instead of asking again
+ * (the tired check stays the soft question DESIGN §10 asks for) */
+export function cueRhythm(block: string, source: InitiativeSource, recentReplies: string[]): string {
+  const last = recentReplies.at(-1);
+  if (source === "looks_tired" || !last || !endsAsking(last)) return block;
+  return `${block} Your last question is still open: don't ask another; end on a statement.`;
 }
 
 export function turnHints(t: TurnHintInput): string | null {
@@ -88,8 +112,8 @@ export function turnHints(t: TurnHintInput): string | null {
   if (last && laughed(user) && !said(BAD_NEWS, user)) out.push("Your last line landed (they laughed): stay in that lane.");
   else if (user.split(/\s+/).length >= 30) out.push("They're opening up: stay on what they said.");
   if (t.remembers && (said(GOOD_NEWS, user) || said(BAD_NEWS, user))) out.push("If this connects to something you remember, name that thing specifically.");
-  // a reply cut off by the user is stored with a trailing "—" (session.ts): it still ended on a question
-  if (/\?[\s—–…-]*$/.test(last)) out.push("End on a statement this time.");
+  const replies = t.recentReplies?.length ? t.recentReplies : t.lastReply ? [t.lastReply] : [];
+  if (replies.slice(-questionRest(t.callNumber)).some(endsAsking)) out.push("End on a statement this time.");
   if (t.mentionSpent) out.push("Don't bring up their tastes or personal details on your own; only if they do.");
   return out.length ? `This turn: ${out.join(" ")}` : null;
 }

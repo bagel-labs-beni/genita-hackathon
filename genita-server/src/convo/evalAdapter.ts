@@ -14,7 +14,7 @@ import { parseTaggedSentence } from "../text/tags.ts";
 import { fallbackLine, guardSentence, neverSpoken, type GuardClass } from "./guard.ts";
 import { noteHook, openerBlock, openerKind, pickOpenerHook, profileHooks } from "./opener.ts";
 import { initiativeBlock, initiativeInput, type InitiativeSource } from "./initiative.ts";
-import { moodFrom, moodLine, turnHints } from "./rhythm.ts";
+import { cueRhythm, moodFrom, moodLine, turnHints } from "./rhythm.ts";
 import type { PerceptionTriggerKind } from "./types.ts";
 
 type Turn = { kind: "greet" } | { kind: "user"; text: string } | { kind: "silence"; quietMs: number } | { kind: "perception"; hint: string; trigger?: string };
@@ -62,7 +62,8 @@ export const adapter = {
     if (t.kind === "silence" || t.kind === "perception") {
       // the governor's budget is unit-tested; here every scripted cue is one allowed initiative
       const source: InitiativeSource = t.kind === "perception" && t.trigger ? (t.trigger as PerceptionTriggerKind) : "silence";
-      const instructions = buildInstructions({ ...base, initiative: initiativeBlock(source, threads(s)) });
+      const replies = ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text);
+      const instructions = buildInstructions({ ...base, initiative: cueRhythm(initiativeBlock(source, threads(s)), source, replies) });
       return { instructions, input: [...msgs(ctx.history), { role: "user", content: initiativeInput(source) }], maxOutputTokens: 800, effort: "minimal" };
     }
     // P1 "This turn:" line, as session.v1Extras builds it (closeness, question rhythm, mood, landed, recall)
@@ -73,6 +74,7 @@ export const adapter = {
       userText: t.text,
       mood: moodLine(moodFrom(userLines)),
       remembers: !!(s.memories?.length || s.summaries?.length || s.opening),
+      recentReplies: ctx.history.filter((h) => h.role === "assistant").slice(-3).map((h) => h.text),
     }) ?? undefined;
     const instructions = buildInstructions({ ...base, turn }) + memoryPrompt((s.memories ?? []).map(mem), false);
     return { instructions, input: [...msgs(ctx.history), { role: "user", content: t.text }], maxOutputTokens: 800, effort: "minimal" };
