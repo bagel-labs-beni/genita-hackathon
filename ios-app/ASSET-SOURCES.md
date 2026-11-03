@@ -19,6 +19,11 @@ No Figma screenshots are used as complete app screens. Layouts, inputs, text and
 - `GenitaHandoffApproach.caf`, `GenitaHandoffConnected.caf`: original Genita sounds, synthesized by code for this project. They contain no recorded or third-party audio.
 - `shared/Handoff/EffectSource`: existing Duo blur shader / sampler and Genita payload compositor from the handoff lab. Upstream MIT license retained alongside the sources. `handoff-effect.js` is the locally bundled build, including Three.js (MIT).
 
+## How I see you (HISY v2)
+
+- `NotoSerifKR-Regular-Latin.ttf`: Noto Serif KR Regular (SIL Open Font License 1.1, `NotoSerifKR-OFL.txt` next to it), the HISY-0~7 / S0~S4 / C1~C3 headline face in Figma `rp1wR9pxV0IsgyjvOcwo92`. Subset to Latin ASCII + ‘’“”…–—·• (Google Fonts `text=` subset, 27 KB); the HISY copy is English.
+- `Assets.xcassets/hisy-*`: the HISY frames' own 12–20 pt icon SVGs (evidence chips, ✕, ⊘, ?, check, mic, toast check), exported from the frames.
+
 ## Camera mask fixtures (demo S3)
 
 - `Resources/finds-frame-counter-0.jpg`: a kitchen-counter photo (tomatoes, red bell peppers, onions, garlic) generated with Muse Image for this project; no real person or third-party photo.

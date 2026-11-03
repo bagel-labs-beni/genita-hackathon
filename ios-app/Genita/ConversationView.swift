@@ -132,6 +132,12 @@ struct ConversationView: View {
                                 .frame(width: sheet == .full ? 250 : full.size.width - 48, alignment: sheet == .full || findsPill != nil ? .leading : .center)
                                 .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 82 : 142) + top)
                         }
+                        // CC-1 wins over GK-1 (a "Noted: …" answers the question)
+                        if !connecting, let chip = call.profileChip ?? call.askingChip {
+                            ProfileChipView(text: chip, soft: call.profileChip == nil).id(chip)
+                                .frame(width: sheet == .full ? 250 : full.size.width, alignment: sheet == .full ? .leading : .center)
+                                .position(x: sheet == .full ? 16 + 125 : full.size.width / 2, y: (sheet == .full ? 122 : (model.callPrepIndicator != nil && !interpreting ? 232 : 184)) + top)
+                        }
                         // S09-PREP (228:543): the face is still being made while the call runs (S09-P, D28)
                         if !connecting && !interpreting && !moveLine && sheet != .full, let line = model.callPrepIndicator {
                             CallPrepLine(text: line).position(x: full.size.width / 2, y: (call.cue == .none ? 142 : 190) + top).transition(.opacity)
@@ -218,6 +224,7 @@ struct ConversationView: View {
                 model.setup.firstCallPending = false
                 #if DEBUG
                 call.installFindsFixture()
+                call.installProfileChipFixture()
                 installFindsTabFixture()
                 #endif
             }
@@ -320,11 +327,14 @@ struct ConversationView: View {
     #if DEBUG
     /// Screenshots of the Finds tab without a server: GENITA_FINDS_TAB = list | empty | detail (recorded cards).
     func installFindsTabFixture() {
-        guard let mode = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"] else { return }
+        let configured = ProcessInfo.processInfo.environment["GENITA_FINDS_TAB"]
+        // Appetize preview: Finds always reads the recorded cards (the demo has no account), the tab opens by itself only when asked
+        guard let mode = configured ?? (BrowserPreview.isActive ? "list" : nil) else { return }
         let recorded = FixtureFindsAPI.recorded()
         findsList.api = FixtureFindsAPI(cards: mode == "empty" ? [] : recorded.cards)
         findsList.frames = { recorded.frames[$0] ?? [] }
         findsList.purge = { _ in }
+        guard configured != nil else { return }
         Task { @MainActor in
             for _ in 0..<80 where call.link != .live { try? await Task.sleep(for: .milliseconds(100)) }
             try? await Task.sleep(for: .milliseconds(300))

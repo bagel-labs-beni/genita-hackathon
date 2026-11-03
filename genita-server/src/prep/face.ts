@@ -83,6 +83,8 @@ export type FaceState = {
   /** mouth profile and the keys this set is made of (absent on sets from before 11/3 = FACE_KEYS) */
   profile?: FlowProfile;
   keys?: FaceKey[];
+  /** SAM 3.1 subject matte stored as asset "person" (grey PNG at `size`); absent = none (app #310 falls back to a face-box ellipse) */
+  person?: boolean;
 };
 
 /** `flow` block written by prep-py/faceflow.py (see that file for the binary format). */
@@ -107,7 +109,7 @@ export type FaceFlow = {
 
 export type MediaApi = {
   imageEdit(key: string, image: Buffer, prompt: string, opts: { size?: string; mime?: string; signal?: AbortSignal }): Promise<Buffer>;
-  samDetect(key: string, imageDataUrl: string, prompt: string, signal?: AbortSignal): Promise<SamBox[]>;
+  samDetect(key: string, imageDataUrl: string, prompt: string, signal?: AbortSignal, opts?: { masks?: boolean }): Promise<SamBox[]>;
 };
 
 // ---------- prompts ----------
@@ -471,7 +473,8 @@ export type FaceManifest = {
   size: [number, number];
   faceBox: NBox;
   mouthBox: NBox;
-  images: Partial<Record<"neutral" | FaceExpression, string>>;
+  /** neutral + expressions; `person` = subject matte (8-bit grey PNG, still size, 0 bg / 255 subject) for the background lock */
+  images: Partial<Record<"neutral" | "person" | FaceExpression, string>>;
   visemes: Partial<Record<Viseme, string>>;
   /** conversational mouth keys (MID AH AH2 EH OH), full-frame images like the visemes */
   mouthKeys: Partial<Record<MouthKey, string>>;
@@ -482,8 +485,8 @@ export type FaceManifest = {
   ms: { total: number; edits: number; sam: number };
 };
 
-export function faceManifest(s: FaceState, urlFor: (key: "neutral" | FaceKey) => string, flowUrl: (asset: string) => string = (a) => a): FaceManifest {
-  const images: FaceManifest["images"] = { neutral: urlFor("neutral") };
+export function faceManifest(s: FaceState, urlFor: (key: "neutral" | "person" | FaceKey) => string, flowUrl: (asset: string) => string = (a) => a): FaceManifest {
+  const images: FaceManifest["images"] = { neutral: urlFor("neutral"), ...(s.person ? { person: urlFor("person") } : {}) };
   const visemes: FaceManifest["visemes"] = {};
   const mouthKeys: FaceManifest["mouthKeys"] = {};
   const boxes: Record<string, FaceBoxes> = { neutral: s.ref };

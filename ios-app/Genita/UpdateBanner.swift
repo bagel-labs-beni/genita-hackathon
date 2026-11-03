@@ -85,6 +85,9 @@ extension GenitaAppConfigStore {
         }
         #endif
         if args.contains("--uitesting") { return }
+        #if DEBUG
+        if BrowserPreview.isActive { return } // Appetize preview: stay offline
+        #endif
         await refresh(force: force)
     }
     #if DEBUG

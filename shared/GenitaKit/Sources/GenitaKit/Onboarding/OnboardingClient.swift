@@ -25,6 +25,9 @@ public struct ImportedStyle: Equatable, Sendable {
     public var toConfirm: [String]
     public var profile: String
     public var source: String
+    /// D47 "How I see you" cards, written with the import in parallel; nil when they weren't ready in time
+    /// (or for N1–N3): read them with `story(wait:)`.
+    public var story: [StoryCard]? = nil
 
     /// I04 is read-only text: one heading per row, then its items; an empty row says so (I04-P).
     public var displayText: String {
@@ -202,12 +205,25 @@ public final class OnboardingClient: @unchecked Sendable {
         var partial: Bool?
         var toConfirm: [String]?
     }
-    private struct ImportReply: Decodable { var status: String; var style: StyleWire?; var profile: String? }
+    private struct ImportReply: Decodable {
+        var status: String; var style: StyleWire?; var profile: String?; var story: [StoryCard]?
+        private enum CodingKeys: String, CodingKey { case status, style, profile, story }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            status = try c.decode(String.self, forKey: .status)
+            style = try c.decodeIfPresent(StyleWire.self, forKey: .style)
+            profile = try c.decodeIfPresent(String.self, forKey: .profile)
+            // the story is extra: one the app can't read never fails the import (it's read again later)
+            // (one card it can't read is left out, not the whole story)
+            let cards = ((try? c.decodeIfPresent([Lenient<StoryCard>].self, forKey: .story)) ?? []).compactMap(\.value)
+            story = cards.isEmpty ? nil : StoryCard.ordered(cards)
+        }
+    }
 
     private func style(_ r: ImportReply) throws -> ImportedStyle {
         guard r.status == "ready", let s = r.style else { throw GenitaAuthError.badResponse }
         return ImportedStyle(rows: s.display, partial: s.partial ?? s.display.contains { $0.items.isEmpty }, toConfirm: s.toConfirm ?? [],
-                             profile: r.profile ?? "", source: s.source ?? "import")
+                             profile: r.profile ?? "", source: s.source ?? "import", story: r.story)
     }
 
     /// I02 → I03 → I04: Spark turns the pasted reply into the style card (4–8 s). The text itself isn't stored.

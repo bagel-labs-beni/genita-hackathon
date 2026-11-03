@@ -19,7 +19,7 @@ import type { ClientSink } from "../session/session.ts";
 import { HandoffHub, type CallHandle, type Trigger } from "./hub.ts";
 import { asDevice, validEpoch, type HandoffDevice } from "./rules.ts";
 
-const TRIGGERS: Trigger[] = ["button", "touch", "continue", "start", "sync", "move"];
+const TRIGGERS: Trigger[] = ["button", "touch", "continue", "start", "sync", "move", "proximity"];
 const MAX_PRESENCE_BYTES = 8 * 1024;
 const MAX_BODY_BYTES = 4 * 1024;
 const HEARTBEAT_MS = 2000;
@@ -125,6 +125,12 @@ export function attachPresence(hub: HandoffHub, ws: WebSocket, userId: string, d
       case "presence":
         if (typeof m.active === "boolean") handle.setActive(m.active);
         return;
+      case "proximity.arm":
+        return void handle.proximityArm().catch(fail);
+      case "proximity.disarm":
+        return handle.proximityDisarm();
+      case "proximity.seen":
+        return void handle.proximitySeen(m.token).catch(fail);
       case "ping":
         return send({ type: "pong", t: m.t ?? null });
       default:

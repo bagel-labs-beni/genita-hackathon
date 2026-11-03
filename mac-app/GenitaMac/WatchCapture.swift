@@ -37,6 +37,14 @@ final class WatchCapture: @unchecked Sendable {
         lastThumb = nil; lastSent = .distantPast; blankRun = 0; blank = false; isBlankSent = false; ring = []; audioBuffer = Data()
     }
 
+    /// A static screen may only emit `.idle` after reconnect, so replay its latest JPEG now.
+    /// `reset()` discards the ring when sharing stops (including sign-out or ownership transfer).
+    func forceNextFrame() {
+        // Replaying the same picture seeds the new session without inventing a motion spike.
+        if let latest = ring.last { onFrame?(latest.jpeg, isBlankSent, 0) }
+        else { lastThumb = nil; lastSent = .distantPast }
+    }
+
     // MARK: frames
 
     func handleScreen(_ sampleBuffer: CMSampleBuffer, now: Date = Date()) {

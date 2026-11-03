@@ -126,6 +126,8 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
     var onEffect: ((PresenceEffect) -> Void)?
     /// Called when the socket opens; the owner of this link answers with `hello` via `publishCurrent`.
     var onConnect: (() -> Void)?
+    /// Every message, before the ownership reducer (proximity handoff reads its own types and the move's trigger here).
+    var onMessage: (([String: Any]) -> Void)?
     /// The trigger reported with this device's next claim (`button`, `touch`, `continue`).
     var nextTrigger = "continue"
     private(set) var active = true
@@ -156,7 +158,7 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
         pingTimer?.invalidate(); pingTimer = nil
         task?.cancel(with: .goingAway, reason: nil); task = nil
         session?.invalidateAndCancel(); session = nil
-        if state.connected { state = PresenceState() }
+        state = PresenceState(); nextTrigger = "continue"; backoff = 1
     }
     func setActive(_ value: Bool) {
         active = value
@@ -192,8 +194,11 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
                 guard let self, gen == self.generation else { return }
                 switch result {
                 case let .success(.string(text)):
-                    if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let event = PresenceEvent(object) {
-                        for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
+                    if let data = text.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        self.onMessage?(object)
+                        if let event = PresenceEvent(object) {
+                            for effect in PresenceState.reduce(&self.state, event, me: self.device) { self.onEffect?(effect) }
+                        }
                     }
                     self.receive(task, gen)
                 case .success:
@@ -226,8 +231,9 @@ final class ServerOwnershipLink: NSObject, ObservableObject, URLSessionWebSocket
         if wasConnected { onEffect?(.peerChanged) }
         guard wanted else { return }
         let delay = backoff; backoff = min(backoff * 2, 15)
+        let retryGeneration = generation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self, self.wanted, self.task == nil else { return }
+            guard let self, self.wanted, self.generation == retryGeneration, self.task == nil else { return }
             self.connect()
         }
     }
