@@ -1623,3 +1623,21 @@ test("Codex 11/4 P1: method lines are real crisis lines and their help sentence 
   for (const t of ["I shot myself in the foot with that email", "I drown myself in work lol", "I burned myself on the pan", "I'm going to hang my jacket up"]) assert.ok(!realCrisisSignal(t), t);
   assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: "honestly I don't want to be here, I keep thinking about my wrists" }), null, "near self-harm words keep a help line");
 });
+
+test("Codex r2 11/4: fail-safe — a help sentence stays whenever the user's words come near harm; forced help only on real signals (idioms and kitchen cuts excluded)", { skip: !v1 }, async () => {
+  for (const line of ["I'm going to slash my throat tonight", "I'm going to hang myself tonight", "I cut myself again", "I want to drown myself in the lake"]) {
+    assert.ok(realCrisisSignal(line), line);
+    assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: line }), null, line);
+  }
+  for (const line of ["drowning myself in paperwork", "shot myself in both feet with that email", "I cut myself chopping onions", "I accidentally cut myself on a can lid"]) {
+    assert.ok(!realCrisisSignal(line), `${line}: no forced help`);
+    assert.equal(guardSentence("If it's ever more than that, you can call nine eight eight.", { camera: false, userText: line }), null, `${line}: a help line the model chose stays`);
+  }
+  assert.equal(guardSentence("Please call nine eight eight right now.", { camera: false, userText: "I'm kinda tired today" }), "referral", "plainly harmless: dropped");
+  const { client, session } = setup(["<happy> Paperwork is the worst, ugh."]);
+  await session.onClientText(JSON.stringify({ type: "start", persona: mina, mic: false, tts: "device", greetAfterMs: 999999 }));
+  await session.onClientText(JSON.stringify({ type: "text", text: "drowning myself in paperwork lol" }));
+  const reply = await client.waitFor((m) => m.type === "reply" && m.final === true);
+  assert.doesNotMatch(String(reply.text), /988|crisis/, "no forced help on an idiom");
+  session.close();
+});

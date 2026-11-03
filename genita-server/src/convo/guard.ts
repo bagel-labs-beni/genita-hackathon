@@ -256,9 +256,11 @@ const CRISIS_PLAN = /\bcount(?:ing|ed)? (?:out )?(?:all )?(?:my |the |these )?(?
  * method is a real signal; idioms ("shot myself in the foot", "drown myself in work") are not. Cut / burn / starve
  * need intent ("I cut myself chopping onions" is an accident).
  */
-const METHOD_SELF = /\b(?:hang(?:ing|ed)?|shoot(?:ing)?|shot|stab(?:bing|bed)?|drown(?:ing|ed)?|poison(?:ing|ed)?|strangl(?:e|ing|ed)|suffocat(?:e|ing|ed)|smother(?:ing)?|electrocut(?:e|ing))\s+myself\b(?!\s+(?:in the foot|in (?:work|coffee|homework|tea|music|books|tv)|with (?:work|coffee|homework|music)))|\bslit(?:ting)?\s+(?:my\s+)?(?:wrists?|throat)\b|\b(?:want(?:s|ed)? to|wanna|going to|gonna|about to|thinking (?:about|of)|keep (?:wanting|thinking about)|plan(?:ning)? to|ready to|will|i'?ll)\s+(?:cut(?:ting)?|burn(?:ing)?|starv(?:e|ing)|hurt(?:ing)?|harm(?:ing)?)\s+myself\b/i;
+const METHOD_SELF = /\b(?:hang(?:ing|ed)?|stab(?:bing|bed)?|poison(?:ing|ed)?|strangl(?:e|ing|ed)|suffocat(?:e|ing|ed)|smother(?:ing)?|electrocut(?:e|ing))\s+myself\b|\b(?:shoot(?:ing)?|shot)\s+myself\b(?!\s+in\s+(?:the|both|my|one)\s+(?:foot|feet|leg|legs|knee))|\bdrown(?:ing|ed)?\s+myself\b(?!\s+in\s+(?!(?:the\s+)?(?:water|lake|river|ocean|sea|bath|bathtub|tub|pool)\b))|\b(?:slit(?:ting)?|slash(?:ing)?|cut(?:ting)?|open(?:ing)?)\s+(?:my\s+)?(?:wrists?|throat)\b|\b(?:want(?:s|ed)? to|wanna|going to|gonna|about to|thinking (?:about|of)|keep (?:wanting|thinking about)|plan(?:ning)? to|ready to|will|i'?ll)\s+(?:cut(?:ting)?|burn(?:ing)?|starv(?:e|ing)|hurt(?:ing)?|harm(?:ing)?)\s+myself\b/i;
+const ACCIDENT_CUT = /\b(?:i\s+)?(?:just\s+)?(?:accidentally\s+)?cut\s+myself\b(?=[^.!?]{0,40}\b(?:chopping|cooking|dicing|slicing|mincing|peeling|shaving|opening|kitchen|knife slipped|by accident|accidentally|on (?:a|the|some) (?:can|paper|glass|box|lid|knife|mandoline|grater|razor)|paper cut|cutting (?:onions|veggies|vegetables|bread|garlic|tomatoes))\b)/gi;
+const CUT_INTENT = /\b(?:again|on purpose|deeper|want(?:ed)? to|wanna|going to|gonna|keep|kept|thinking about|need to|have been cutting|been cutting|relapse)\b/i;
 /** wider than realCrisisSignal on purpose: a help line is never dropped when the user's words come near self-harm */
-const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|wrists?|noose|overdos\w*|o\.?d\.?|end (?:it all|my life)|not wake up|(?:don'?t|do not) want to (?:be alive|live|exist|be here)|kill me|better off without me)\b/i;
+const NEAR_SELF_HARM = /\b(?:myself|suicid\w*|die|dying|dead|death|kill\w*|hurt\w*|harm\w*|cut(?:ting)?|slash\w*|slit\w*|bleed\w*|blood|blade|razor|knife|gun|pills?|overdos\w*|o\.?d\.?|jump\w*|bridge|roof|ledge|railing|hang\w*|rope|noose|wrists?|throat|end (?:it|it all|things|my life|everything)|not wake up|alive|exist|be here|better off without me|goodbye|kill me)\b/i;
 export function mayBeSelfHarm(text: string): boolean { return NEAR_SELF_HARM.test(text.replace(/[‘’ʼ]/g, "'")) || realCrisisSignal(text); }
 
 export function realCrisisSignal(text: string): boolean {
@@ -267,7 +269,10 @@ export function realCrisisSignal(text: string): boolean {
   if (CRISIS_PLAN.test(t) && !DENIED.test(t.slice(0, t.search(CRISIS_PLAN)))) return true;
   if (METHOD_SELF.test(t) && !DENIED.test(t.slice(0, t.search(METHOD_SELF)))) return true;
   // everything but the weapon alternation reads the whole line (its lookaheads run to the sentence end)
-  if (REAL_CRISIS.test(t.replace(WEAPON, " "))) return true;
+  // "I cut myself chopping onions" is an accident (REAL_CRISIS lists "cut myself"): a cut with a kitchen / accident
+  // context and no intent word is left out of that test; intent ("cut myself again", "want to cut myself") still counts
+  const accident = ACCIDENT_CUT.test(t) && !CUT_INTENT.test(t) ? t.replace(ACCIDENT_CUT, " ") : t;
+  if (REAL_CRISIS.test(accident.replace(WEAPON, " "))) return true;
   const clauses = clausesOf(t);
   return meansHit(t, clauses) || weaponHit(t, clauses);
 }
