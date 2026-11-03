@@ -755,3 +755,12 @@ test("hard fail (main 11/3, smoke 95acde0): ack + dash + subject-less process '-
   const j = new NarrationJudge(true);
   assert.ok([...j.push("Got it — taking the 2 line is fastest.").speak, ...j.finish().speak].join(" ").includes("2 line"));
 });
+
+test("Codex #371: an ack + a real choice or result stays; a pick named by its features stays", async () => {
+  const { NarrationJudge } = await import("../src/text/toolNarration.ts");
+  const run = (lines: string[]) => { const j = new NarrationJudge(true); return [...lines.flatMap((l) => j.push(l).speak), ...j.finish().speak].join(" "); };
+  assert.match(run(["You got it — taking the bus saves you twenty minutes.", "Get off at City Hall."]), /saves you twenty minutes/);
+  assert.match(run(["You got it — wearing the trench tonight."]), /wearing the trench/);
+  assert.match(run(["I'll pick the one that has the red buttons.", "It matches your understated style."]), /red buttons/);
+  assert.doesNotMatch(run(["I'll pick the one that fits tonight best.", "Go with the trench."]), /I'll pick the one/);
+});

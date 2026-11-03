@@ -56,7 +56,7 @@ const LOOKING_NOW = new RegExp(`^(?:now |so |just )?(?:i'm )?(?:just )?(?:pullin
 const THINK_INTENT = new RegExp(`^(?:let me|i'll|i need to|i have to) (?:think|figure out|decide|work out) (?:about )?(?:which|what|how)\\b${TAIL}$`);
 /** a plan to choose, not the choice: "I'll pick between the two" (bug-fix lane, fcece2f outfit 1/6) */
 // …and "I'll pick one for you" / "a favorite" / "the winner": a choice promised with nothing chosen (bug-fix 5784953, 3/6)
-const NO_CHOICE = "(?:one|a favorite|a favourite|the winner|a winner|something|for you|the one (?:that|which|you))";
+const NO_CHOICE = "(?:one|a favorite|a favourite|the winner|a winner|something|for you|the one (?:that|which) (?:fits|works|suits|goes)(?: [\\w']+){0,3} best|the one you(?:'ll| will)? (?:like|love) (?:most|best))";
 const CHOOSE_PLAN = new RegExp(`^(?:(?:got it|okay|ok|alright)\\b[^a-z]*)?(?:[^—–;]*[—–;,]\\s*)?(?:let me|i'll|i will|i need to|i'm gonna|i'm going to) (?:pick|choose|decide)(?: (?:between|which)\\b| ${NO_CHOICE}\\b)${TAIL}$|^(?:still |just )?(?:deciding|choosing|picking|torn) between\\b${TAIL}$`);
 /** a wait that promises a lookup, tool or no tool: "give me a sec to remember your vibe", "one sec while I check" */
 const WAIT_TO = new RegExp(`^(?:${WAIT})(?: (?:to|while i|so i can|and i'll|let me))? (?:remember|recall|think|check|look|pull|find|map|dig|figure|search|go through)\\b${TAIL}$`);
@@ -141,14 +141,17 @@ export function stripNarrationClauses(raw: string): string {
  * (the judge drops a "process" line at EOF too, so a reply that is only this says nothing and retries).
  */
 const PROCESS_ACK = /^(?:got it|you got it|okay|ok|alright|all right|sure|on it|yep|yeah|mm+|hm+|your (?:\w+ )?(?:idea|ideas|pick|picks|answer|suggestion|recipe|plan|options?) (?:is|are) (?:coming|on (?:its|the) way))$/;
+const PROCESS_ING = /^(?:just )?(?:picking (?:something|one|a)|thinking (?:back|about which|it over)|pulling|checking|figuring|working (?:on|out)|cooking up|whipping up|putting together|digging|looking (?:up|into|through|for)|searching|plotting|mapping|deciding|weighing|choosing (?:something|one|a|between)|scrolling|loading|grabbing (?:something|a few))\b/;
 const OPINION_ING = /^(?:loving|seeing|feeling|liking|looking (?:good|great|sharp|cute)|nothing|something|anything|everything|morning|evening)\b/;
 export function isProcessLine(sentence: string): boolean {
   const s = normalize(sentence);
   const clauses = s.split(/\s*(?:—|–|;| - |,)\s*/).map((c) => c.trim()).filter(Boolean);
   if (clauses.length < 2) return false;
   const [head, ...rest] = clauses;
-  return PROCESS_ACK.test(head) && rest.length === 1 && /^\w{3,}ing\b/.test(rest[0]) && !OPINION_ING.test(rest[0])
-    && !/\b(?:shows|says|is|are|it'?s|that'?s|takes)\b|\d/.test(rest[0]);
+  // only a lookup / plan in progress, never a choice or a result ("You got it — wearing the trench tonight",
+  // "… taking the bus saves you twenty minutes", Codex #371)
+  return PROCESS_ACK.test(head) && rest.length === 1 && PROCESS_ING.test(rest[0]) && !OPINION_ING.test(rest[0])
+    && !/\b(?:shows|says|is|are|it'?s|that'?s|takes)\b|\d/.test(rest[0]) && !/\b\w{3,}(?:s|es)\s+(?:the|a|an|your|you|it|up|out)\b/.test(rest[0]);
 }
 
 /** Hold a wait or interjection until the following clause can be judged. */
@@ -194,7 +197,7 @@ const SUSPECT = /^(?:i'?m|i am)(?: \w+ly)? (?!(?:seeing|loving|liking|feeling|th
 /** "I'll go with the black blazer" is the answer, not a plan (Codex #356 r11) */
 // a stated choice is the answer: "I'll go with…", "I'm going with the trench", "I'm leaning toward…" (Codex r15) — but not
 // "I'll pick between the two" (a plan to choose)
-const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you|the one (?:that|which|you))|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
+const DECISION = /\b(?:i'?ll|i'?d|i will|i would|let me) (?:go with|pick (?!between|which|one\b(?!\s*[:,—–]\s*(?:the|that|this|it'?s))|a favou?rite|the winner|a winner|something|for you|the one (?:that|which) (?:fits|works|suits|goes)(?: [\w']+){0,3} best|the one you(?:'ll| will)? (?:like|love) (?:most|best))|take (?!a (?:sec|moment|minute))|choose (?!between|which|one\b)|vote for|say|recommend|bet on|stick with)|\bi'?m (?:going (?:with|for)|leaning (?:toward|towards|to)|voting for|sticking with|rooting for|picking the|choosing the|all in on)\b|\b(?:go with|pick|wear) the\b/;
 /** the line already states what was chosen ("… and it's the trench", "the winner is…"): an answer, never held (Codex r18) */
 const CARRIES_CHOICE = /\b(?:and|so) (?:it'?s|that'?s|the winner is|i'?m going with)\b|\bthe winner is\b|:\s*(?:the|that|this)\b/;
 /** "let me walk you through it / tell you / explain" leads into content, never a tool (#194 S1 cut-off test) */
