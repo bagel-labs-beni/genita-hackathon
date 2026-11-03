@@ -71,4 +71,13 @@ final class SoulOrbTests: XCTestCase {
         clock.reduceMotion = false
         XCTAssertEqual(clock.scale, 1)
     }
+
+    /// CI crash (FidelitySnapshotTests, signal trap): draw(in:) converted an infinite drawable size to Int.
+    func testDrawSkipsSizesMetalCannotAllocate() {
+        XCTAssertNil(SoulOrbRenderer.targetSize(CGSize(width: CGFloat.infinity, height: 481)))
+        XCTAssertNil(SoulOrbRenderer.targetSize(CGSize(width: 519, height: CGFloat.nan)))
+        XCTAssertNil(SoulOrbRenderer.targetSize(CGSize(width: 0, height: 481)))
+        XCTAssertNil(SoulOrbRenderer.targetSize(CGSize(width: 20_000, height: 481)))
+        XCTAssertEqual(SoulOrbRenderer.targetSize(CGSize(width: 519.5, height: 481))?.0, 519)
+    }
 }
